@@ -8,6 +8,7 @@ paths:
   - 'src/deployment/rollback-executor/**'
   - 'src/cli/commands/destroy-runner.ts'
   - 'src/provisioning/cloud-control-provider.ts'
+  - 'src/provisioning/cloud-control/**'
 ---
 
 # `delete-outcome.ts`

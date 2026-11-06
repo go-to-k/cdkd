@@ -159,7 +159,7 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     // EventBridge x2 / ElastiCache / Redshift / OpenSearch and four
     // account-info lookups, the other six the `readCcResourceModel` calls
     // above. No SDK provider makes a Cloud Control call either (the one
-    // `GetResourceCommand` in `apigateway-provider.ts` is API Gateway's, not
+    // `GetResourceCommand` in `apigateway/read-state.ts` is API Gateway's, not
     // Cloud Control's). So a non-UPDATE `UnsupportedActionException` cannot
     // reach this walk today.
     //

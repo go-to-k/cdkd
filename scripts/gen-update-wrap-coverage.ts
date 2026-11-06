@@ -1029,7 +1029,8 @@ function atomicWrite(path: string, content: string): void {
 const isMainModule = (): boolean =>
   Boolean(process.argv[1]) && resolve(process.argv[1]!) === __filename;
 
-function loadReport(): UpdateWrapCoverageReport {
+/** The matrix as `gen:update-wrap-coverage` builds it from the real tree. */
+export function loadReport(): UpdateWrapCoverageReport {
   const classes: ClassClassification[] = [];
   for (const file of readdirSync(PROVIDERS_DIR).sort()) {
     if (!file.endsWith('.ts') || file.endsWith('.d.ts')) continue;
@@ -1038,7 +1039,15 @@ function loadReport(): UpdateWrapCoverageReport {
     classes.push(...classifySource(src, file, UPDATE_WRAP_ALLOW_LIST, companions));
   }
   for (const abs of EXTRA_PROVIDER_FILES) {
-    classes.push(...classifySource(readFileSync(abs, 'utf8'), abs.slice(repoRoot.length + 1)));
+    const companions = companionFiles(abs).map((f) => readFileSync(f, 'utf8'));
+    classes.push(
+      ...classifySource(
+        readFileSync(abs, 'utf8'),
+        abs.slice(repoRoot.length + 1),
+        UPDATE_WRAP_ALLOW_LIST,
+        companions
+      )
+    );
   }
   return buildReport(classes);
 }

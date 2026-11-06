@@ -1,60 +1,8 @@
-import { isDeepStrictEqual } from 'node:util';
-import {
-  APIGatewayClient,
-  UpdateAccountCommand,
-  GetAccountCommand,
-  CreateResourceCommand,
-  DeleteResourceCommand,
-  GetResourceCommand,
-  CreateDeploymentCommand,
-  DeleteDeploymentCommand,
-  GetDeploymentCommand,
-  UpdateDeploymentCommand,
-  CreateStageCommand,
-  UpdateStageCommand,
-  DeleteStageCommand,
-  GetStageCommand,
-  PutMethodCommand,
-  UpdateMethodCommand,
-  DeleteMethodCommand,
-  GetMethodCommand,
-  PutIntegrationCommand,
-  PutIntegrationResponseCommand,
-  PutMethodResponseCommand,
-  DeleteIntegrationCommand,
-  DeleteIntegrationResponseCommand,
-  DeleteMethodResponseCommand,
-  CreateAuthorizerCommand,
-  UpdateAuthorizerCommand,
-  DeleteAuthorizerCommand,
-  GetAuthorizerCommand,
-  GetAuthorizersCommand,
-  GetDeploymentsCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
-  NotFoundException,
-} from '@aws-sdk/client-api-gateway';
-import type {
-  CacheClusterSize,
-  CanarySettings,
-  CreateAuthorizerCommandOutput,
-  CreateDeploymentCommandOutput,
-} from '@aws-sdk/client-api-gateway';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
-import { getLogger } from '../../utils/logger.js';
+import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
+import { type ConsoleLogger, getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { stringifyValue } from '../../utils/stringify.js';
-import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { markNotGone } from '../not-gone.js';
-import { replayWarn, requireConfigString } from '../config-shape.js';
-import {
-  compositeIdFormatMessage,
-  packCompositeId,
-  type CompositeIdFormat,
-} from '../composite-id.js';
+import type { DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -66,106 +14,64 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import {
-  createMaskedLogSinks,
-  withDerivedNameMasks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
-import {
-  markRedactedCause,
-  relayedNameCollision,
-  wrapMaskedAwsError,
-} from '../../deployment/retryable-errors.js';
+import type { MaskedLogSinks, MaskerFn } from '../masked-retry-logger.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+  getCreateClient,
+  orphanCommandRegionArg,
+  wrapMaskedError,
+  create,
+  update,
+  deleteImpl,
+  getAttribute,
+  buildStageArn,
+  applyTagDiff,
+  sleep,
+} from './apigateway/core.js';
 import {
-  redactedDeleteAddressFields,
-  redactedDeleteAddressSkip,
-} from '../redacted-delete-address.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { withRemovalDefaults } from '../update-removal.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from '../../utils/apigateway-pacing.js';
-import { injectiveKey } from '../../state/record-keys.js';
-import { collectOrphanIds, reportPossibleOrphans } from './orphan-report.js';
+  createAccount,
+  updateAccount,
+  deleteAccount,
+  updateAccountWithRetry,
+} from './apigateway/account.js';
 import {
-  AmbiguousCreateLatch,
-  RecentIdSet,
-  isInsideWindow,
-  replayedSendWindow,
-  withoutServerErrorRetries,
-  type AmbiguousCreateWindow,
-} from './ambiguous-create.js';
-import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
-import { getPriorAttempts } from '../../deployment/prior-attempt-scope.js';
+  createAuthorizer,
+  updateAuthorizer,
+  deleteAuthorizer,
+  getAuthorizerAttribute,
+} from './apigateway/authorizer.js';
+import {
+  createResource,
+  updateResource,
+  deleteResource,
+  getResourceAttribute,
+  createDeployment,
+  updateDeployment,
+  deleteDeployment,
+  getDeploymentAttribute,
+} from './apigateway/resource-deployment.js';
+import { createStage, updateStage, deleteStage, getStageAttribute } from './apigateway/stage.js';
+import {
+  createMethod,
+  priorAttemptLeftMethod,
+  updateMethod,
+  deleteMethod,
+  getMethodAttribute,
+} from './apigateway/method.js';
+import {
+  canonicalizeDriftProperties,
+  getDriftUnorderedPaths,
+  readCurrentState,
+  readCurrentStateAuthorizer,
+  readCurrentStateResource,
+  readCurrentStateDeployment,
+  readCurrentStateStage,
+  readCurrentStateAccount,
+  readCurrentStateMethod,
+  importImpl,
+} from './apigateway/read-state.js';
 
-/**
- * Retry-safety state for the two API Gateway creates that mint their id and
- * carry no idempotency token, `CreateAuthorizer` and `CreateDeployment`
- * (issue [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
- * `orphan-report.ts`. Module-scoped: a provider instance is per
- * registry, and one process can build several.
- */
-const createAuthorizerLatch = new AmbiguousCreateLatch('apigateway:CreateAuthorizer');
-const createDeploymentLatch = new AmbiguousCreateLatch('apigateway:CreateDeployment');
-/**
- * Children this process created and recorded, never reported as orphan
- * candidates. Keyed by `(restApiId, id)`: a child id is unique only inside
- * its REST API.
- */
-const authorizersCreatedByThisProcess = new RecentIdSet();
-const deploymentsCreatedByThisProcess = new RecentIdSet();
-
-/** `limit` of each orphan-lookup list page (the API's maximum). */
-const ORPHAN_LIST_PAGE_SIZE = 500;
-
-/** Reset the module-scoped retry-safety state. TEST-ONLY. */
-export function resetApiGatewayCreateRetryStateForTests(): void {
-  createAuthorizerLatch.resetForTests();
-  createDeploymentLatch.resetForTests();
-  authorizersCreatedByThisProcess.resetForTests();
-  deploymentsCreatedByThisProcess.resetForTests();
-}
-
-/** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
-const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
-  label: 'API Gateway Method',
-  segments: ['restApiId', 'resourceId', 'httpMethod'],
-};
-
-/** The ApiGateway types whose delete addresses the child through `RestApiId`. */
-const REST_API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
-  'AWS::ApiGateway::Authorizer',
-  'AWS::ApiGateway::Resource',
-  'AWS::ApiGateway::Deployment',
-  'AWS::ApiGateway::Stage',
-]);
-
-/**
- * The masked sinks ONE Stage `create()` / `update()` logs through (issue
- * #2177). A Stage's physical id IS its `StageName`, a template value that can
- * be secret-derived. The deploy's masker knows the name this deploy resolved;
- * what it cannot know is a name recorded from a PREVIOUS secret, which state
- * persists as its `{{resolve:` reference (or `***`) while the old plaintext
- * stays the physical id. `withDerivedNameMasks` masks the name whenever the
- * value it came from is secret-derived, including inside the stage ARN the tag
- * lines print. No length floor, per that helper's contract: a short
- * secret-derived name over-masks this operation's lines rather than printing.
- */
-function stageSinks(
-  logger: { debug(message: string): void; warn(message: string): void },
-  context: CreateContext | UpdateContext | undefined,
-  pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
-): MaskedLogSinks {
-  return withDerivedNameMasks(logger, createMaskedLogSinks(logger, context?.maskSecrets), pairs);
-}
+export { resetApiGatewayCreateRetryStateForTests, methodChildCalls } from './apigateway/shared.js';
 
 /**
  * AWS API Gateway Provider
@@ -185,8 +91,8 @@ function stageSinks(
  * - Stage: Needs RestApiId, StageName, DeploymentId from properties
  */
 export class ApiGatewayProvider implements ResourceProvider {
-  private apiGatewayClient: APIGatewayClient;
-  private logger = getLogger().child('ApiGatewayProvider');
+  apiGatewayClient: APIGatewayClient;
+  logger: ConsoleLogger = getLogger().child('ApiGatewayProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::ApiGateway::Account', new Set(['CloudWatchRoleArn'])],
@@ -281,153 +187,45 @@ export class ApiGatewayProvider implements ResourceProvider {
   ]);
 
   /** Maximum number of retries for IAM propagation delays */
-  private static readonly MAX_IAM_RETRIES = 3;
+  static readonly MAX_IAM_RETRIES = 3;
   /** Delay between IAM propagation retries (ms) - exponential backoff */
-  private static readonly IAM_RETRY_DELAY_MS = 10000;
+  static readonly IAM_RETRY_DELAY_MS = 10000;
 
   constructor() {
     const awsClients = getAwsClients();
     this.apiGatewayClient = awsClients.apiGateway;
   }
 
-  private createClient: Promise<APIGatewayClient> | undefined;
+  createClient: Promise<APIGatewayClient> | undefined;
 
-  /**
-   * The client `CreateAuthorizer` and `CreateDeployment` go through: SDK
-   * retries on, except a 5xx (`withoutServerErrorRetries`, issue #2080).
-   * Separate so every other call keeps the full SDK retry, and built in the
-   * shared client's REGION (read from it, as `config.region()` resolves it) so
-   * the create cannot land in another region than the calls around it. The
-   * PROMISE is cached, so two creates on a cold provider build one client; a
-   * rejected region read is not cached, so the next create retries it.
-   */
-  private getCreateClient(): Promise<APIGatewayClient> {
-    this.createClient ??= this.apiGatewayClient.config.region().then(
-      (region) =>
-        withoutServerErrorRetries(
-          withApiGatewayPacing(
-            new APIGatewayClient({
-              ...ambientClientDefaults(),
-              region,
-              maxAttempts: API_GATEWAY_MAX_ATTEMPTS,
-            })
-          )
-        ),
-      (error: unknown) => {
-        this.createClient = undefined;
-        throw error;
-      }
-    );
-    return this.createClient;
+  getCreateClient(): Promise<APIGatewayClient> {
+    return getCreateClient.call(this);
   }
 
-  /**
-   * ` --region <r>` for an orphan report's pasteable commands (issue #2080),
-   * from the client the lookup listed through: without it a stack deployed
-   * outside the operator's default region pastes a read against the wrong
-   * region, and its NotFound reads as "no orphan". Empty when the region
-   * cannot be read -- the report must never fail the create.
-   */
-  private async orphanCommandRegionArg(
+  orphanCommandRegionArg(
     aws: ReturnType<typeof pasteableAwsCommand>
   ): Promise<PasteableAwsCommand> {
-    let region: string | undefined;
-    try {
-      region = await this.apiGatewayClient.config.region();
-    } catch {
-      region = undefined;
-    }
-    return region ? aws` --region ${region}` : aws``;
+    return orphanCommandRegionArg.call(this, aws);
   }
 
-  /**
-   * The failure wrap every `create()` / `update()` / `delete()` catch throws.
-   *
-   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
-   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
-   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
-   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
-   * masker, and the wrap is stamped `markRedactedCause`, so the retry
-   * classifiers read the withheld text on the `cause` chain. An "already
-   * exists" is restated ({@link relayedNameCollision}), except from a
-   * post-create step (`markAuxiliaryFailure`: the Stage patch, the Method
-   * wiring), where "it" would read as the resource just created.
-   *
-   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
-   * masked (issue #2177): AWS quotes a rejected request value back off the
-   * RESOLVED `properties` bag, and masking the RAW text reaches the masker's
-   * whole-value arm (`wrapMaskedAwsError`, issue #4259). A delete passes
-   * its `DeleteContext.maskSecrets`, or the identity.
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
-   * sees the catch that throws it as a wrap.
-   */
-  private wrapMaskedError(
+  wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(mask(failure.detail));
-    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
-    this.logger.debug(mask(build(mask(failure.detail)).message));
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
+    return wrapMaskedError.call(this, mask, error, build);
   }
 
-  /**
-   * Create a resource.
-   *
-   * Each `create()` / `update()` builds ONE masked sink set from its own
-   * context (issue #2177, `.claude/rules/provider-masking.md`) and routes every
-   * log line and wrapped AWS error text through it; every bag value a cdkd
-   * line interpolates is also masked RAW (`log.value`), so a secret below the
-   * masker's substring floor is caught too. Absent context means identity.
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    switch (resourceType) {
-      case 'AWS::ApiGateway::Account':
-        return this.createAccount(logicalId, resourceType, properties, log);
-      case 'AWS::ApiGateway::Authorizer':
-        return this.createAuthorizer(logicalId, resourceType, properties, log);
-      case 'AWS::ApiGateway::Resource':
-        return this.createResource(logicalId, resourceType, properties, log);
-      case 'AWS::ApiGateway::Deployment':
-        return this.createDeployment(logicalId, resourceType, properties, log);
-      case 'AWS::ApiGateway::Stage':
-        return this.createStage(
-          logicalId,
-          resourceType,
-          properties,
-          // `withDerivedNameMasks` drops a non-string name at runtime.
-          stageSinks(this.logger, context, [
-            [properties['StageName'], properties['StageName'] as string | undefined],
-          ])
-        );
-      case 'AWS::ApiGateway::Method':
-        return this.createMethod(logicalId, resourceType, properties, log, context);
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId
-        );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update a resource. `context` is read for its masker (issue #2177; see
-   * `create()`) and, on the Account arm, for `removedProperties` via
-   * `withRemovalDefaults` (issue #1160).
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -435,511 +233,78 @@ export class ApiGatewayProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    switch (resourceType) {
-      case 'AWS::ApiGateway::Account':
-        properties = withRemovalDefaults(
-          this.removalDefaults,
-          resourceType,
-          properties,
-          previousProperties,
-          context
-        );
-        return this.updateAccount(logicalId, physicalId, resourceType, properties, log);
-      case 'AWS::ApiGateway::Authorizer':
-        return this.updateAuthorizer(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          log
-        );
-      case 'AWS::ApiGateway::Resource':
-        return this.updateResource(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          log
-        );
-      case 'AWS::ApiGateway::Deployment':
-        return this.updateDeployment(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          log
-        );
-      case 'AWS::ApiGateway::Stage':
-        // The recorded name is the physical id. Either side's `StageName`
-        // being secret-derived makes it a needle. The desired side covers the
-        // threaded callers (a rotated secret resolves to a NEW plaintext the
-        // masker knows, and the needle then removes the OLD one). The previous
-        // side is a backstop for a caller whose masker does not know the
-        // desired name while state recorded the name as a `{{resolve:`
-        // reference or `***`; it can only over-mask.
-        return this.updateStage(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          stageSinks(this.logger, context, [
-            [properties['StageName'], physicalId],
-            [previousProperties['StageName'], physicalId],
-          ])
-        );
-      case 'AWS::ApiGateway::Method':
-        return this.updateMethod(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          log,
-          context?.desiredFromAwsReadback === true
-        );
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
   }
 
-  /**
-   * Delete a resource
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    // go-to-k/cdkd#3952: these four address the child through the recorded
-    // RestApiId, and an unknown id answers NotFoundException, which their
-    // catches read as "already deleted" -- a redacted id would DROP the record.
-    if (REST_API_ID_ADDRESSED_TYPES.has(resourceType)) {
-      const skip = redactedDeleteAddressSkip(
-        this.logger,
-        logicalId,
-        resourceType,
-        redactedDeleteAddressFields({ RestApiId: properties?.['RestApiId'] })
-      );
-      if (skip) return skip;
-    }
-    switch (resourceType) {
-      case 'AWS::ApiGateway::Account':
-        return this.deleteAccount(logicalId, physicalId, resourceType, context);
-      case 'AWS::ApiGateway::Authorizer':
-        return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties, context);
-      case 'AWS::ApiGateway::Resource':
-        return this.deleteResource(logicalId, physicalId, resourceType, properties, context);
-      case 'AWS::ApiGateway::Deployment':
-        return this.deleteDeployment(logicalId, physicalId, resourceType, properties, context);
-      case 'AWS::ApiGateway::Stage':
-        return this.deleteStage(logicalId, physicalId, resourceType, properties, context);
-      case 'AWS::ApiGateway::Method':
-        return this.deleteMethod(logicalId, physicalId, resourceType, context);
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Get resource attributes (for Fn::GetAtt resolution)
-   */
-  async getAttribute(
-    physicalId: string,
-    resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
-    switch (resourceType) {
-      case 'AWS::ApiGateway::Account':
-        // Account has no useful GetAtt attributes
-        return undefined;
-      case 'AWS::ApiGateway::Authorizer':
-        return this.getAuthorizerAttribute(physicalId, attributeName);
-      case 'AWS::ApiGateway::Resource':
-        return this.getResourceAttribute(physicalId, resourceType, attributeName);
-      case 'AWS::ApiGateway::Deployment':
-        return this.getDeploymentAttribute(physicalId, attributeName);
-      case 'AWS::ApiGateway::Stage':
-        return this.getStageAttribute(physicalId, attributeName);
-      case 'AWS::ApiGateway::Method':
-        return this.getMethodAttribute(physicalId, attributeName);
-      default:
-        return undefined;
-    }
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
+    return getAttribute.call(this, physicalId, resourceType, attributeName);
   }
 
-  // ─── AWS::ApiGateway::Account ───────────────────────────────────────
-
-  /**
-   * Create API Gateway Account settings
-   *
-   * Uses UpdateAccountCommand because API Gateway Account is a singleton.
-   * Retries on "not authorized" errors due to IAM role trust propagation delays.
-   */
-  private async createAccount(
+  createAccount(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Account ${logicalId}`);
-
-    const cloudWatchRoleArn = properties['CloudWatchRoleArn'] as string | undefined;
-
-    try {
-      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType, log);
-
-      log.debug(`Successfully created API Gateway Account ${logicalId}`);
-
-      return {
-        physicalId: 'ApiGatewayAccount',
-        attributes: {},
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Account ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return createAccount.call(this, logicalId, resourceType, properties, log);
   }
 
-  /**
-   * Update API Gateway Account settings
-   */
-  private async updateAccount(
+  updateAccount(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    log.debug(`Updating API Gateway Account ${logicalId}`);
-
-    const cloudWatchRoleArn = properties['CloudWatchRoleArn'] as string | undefined;
-
-    try {
-      await this.updateAccountWithRetry(cloudWatchRoleArn, logicalId, resourceType, log);
-
-      log.debug(`Successfully updated API Gateway Account ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {},
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update API Gateway Account ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return updateAccount.call(this, logicalId, physicalId, resourceType, properties, log);
   }
 
-  /**
-   * Delete API Gateway Account settings
-   *
-   * Clears the CloudWatch role ARN by setting it to empty string.
-   */
-  private async deleteAccount(
+  deleteAccount(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Account ${logicalId}`);
-
-    try {
-      await this.apiGatewayClient.send(
-        new UpdateAccountCommand({
-          patchOperations: [
-            {
-              op: 'replace',
-              path: '/cloudwatchRoleArn',
-              value: '',
-            },
-          ],
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Account ${logicalId}`);
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Account ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The Account is a per-region singleton that cannot be absent, so a
-      // `NotFoundException` from `UpdateAccount` names something else and the
-      // CloudWatch role ARN is still set. The wrap carries that class, which
-      // satisfies the "already deleted" classifiers' `NotFoundException`
-      // needle and would drop the record, so mark it not gone: they check the
-      // marker first (go-to-k/cdkd#5222, #5228). Retryability stays the retry
-      // classifiers'.
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(failure)
-        : failure;
-    }
+    return deleteAccount.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  /**
-   * Update Account with retry logic for IAM propagation delays
-   *
-   * When a new IAM role is created and immediately assigned as the API Gateway
-   * CloudWatch role, API Gateway may reject it with "not authorized" because
-   * the IAM trust relationship hasn't fully propagated yet.
-   *
-   * `log` is the calling operation's masked sink (issue #2177).
-   */
-  private async updateAccountWithRetry(
+  updateAccountWithRetry(
     cloudWatchRoleArn: string | undefined,
     logicalId: string,
     _resourceType: string,
     log: MaskedLogSinks
   ): Promise<void> {
-    // Use `!== undefined` rather than a truthy gate so that an explicit
-    // empty string `''` (the cdkd-state representation of "no
-    // CloudWatchRole configured", produced by readCurrentStateAccount,
-    // by deleteAccount, and by `removalDefaults` for a removed property) reaches AWS as a legitimate
-    // `replace /cloudwatchRoleArn ''` patch operation. A truthy gate
-    // would silently drop `''` and produce an empty patchOperations
-    // list, so `cdkd drift --revert` would succeed with no actual
-    // AWS-side change and the very next `cdkd drift` would re-detect
-    // the same drift — a silent fail mode.
-    const patchOperations =
-      cloudWatchRoleArn !== undefined
-        ? [
-            {
-              op: 'replace' as const,
-              path: '/cloudwatchRoleArn',
-              value: cloudWatchRoleArn,
-            },
-          ]
-        : [];
-
-    for (let attempt = 1; attempt <= ApiGatewayProvider.MAX_IAM_RETRIES; attempt++) {
-      try {
-        await this.apiGatewayClient.send(new UpdateAccountCommand({ patchOperations }));
-        return;
-      } catch (error) {
-        // `.detail`, never `.summary`: the substring test below is what keeps this
-        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
-        // the ternary it replaced, minus that ternary's throw.
-        const message = describeAwsFailure(error).detail;
-        const isIamPropagationError =
-          message.toLowerCase().includes('not authorized') ||
-          message.toLowerCase().includes('does not have required permissions') ||
-          message.toLowerCase().includes('the role arn does not have required trust') ||
-          message.toLowerCase().includes('too many requests');
-
-        if (isIamPropagationError && attempt < ApiGatewayProvider.MAX_IAM_RETRIES) {
-          log.warn(
-            `IAM propagation delay for ${logicalId} (attempt ${attempt}/${ApiGatewayProvider.MAX_IAM_RETRIES}), ` +
-              `retrying in ${ApiGatewayProvider.IAM_RETRY_DELAY_MS / 1000}s...`
-          );
-          await this.sleep(ApiGatewayProvider.IAM_RETRY_DELAY_MS);
-          continue;
-        }
-
-        throw error;
-      }
-    }
+    return updateAccountWithRetry.call(this, cloudWatchRoleArn, logicalId, _resourceType, log);
   }
 
-  // ─── AWS::ApiGateway::Authorizer ────────────────────────────────────
-
-  /**
-   * Create an API Gateway Authorizer
-   *
-   * Physical ID is the authorizer ID (not composite), so that Ref resolves
-   * to the authorizer ID that API Gateway Methods expect for AuthorizerId.
-   */
-  private async createAuthorizer(
+  createAuthorizer(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Authorizer ${logicalId}`);
-
-    const restApiId = properties['RestApiId'] as string;
-    const name = properties['Name'] as string;
-    const type = properties['Type'] as string;
-
-    if (!restApiId || !name || !type) {
-      throw new ProvisioningError(
-        `RestApiId, Name, and Type are required for API Gateway Authorizer ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    try {
-      const providerArns = properties['ProviderARNs'] as string[] | undefined;
-
-      // Issue #2080: after an earlier ambiguous attempt, name the authorizer
-      // it may have made before a second CreateAuthorizer is sent. Detection
-      // only -- see `reportPossibleOrphans`.
-      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
-        const aws = pasteableAwsCommand(log.mask);
-        const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, lookupWindow, log, {
-          action: 'CreateAuthorizer',
-          listAction: 'GetAuthorizers',
-          subject: `an authorizer named ${log.value(name)} (type ${log.value(type)}) in REST API ${log.value(restApiId)}`,
-          noun: 'authorizer(s)',
-          list: () =>
-            collectOrphanIds(
-              async (position) => {
-                const page = await this.apiGatewayClient.send(
-                  new GetAuthorizersCommand({
-                    restApiId,
-                    limit: ORPHAN_LIST_PAGE_SIZE,
-                    ...(position && { position }),
-                  })
-                );
-                return { items: page.items ?? [], next: page.position };
-              },
-              (a) =>
-                a.id &&
-                a.name === name &&
-                a.type === type &&
-                !authorizersCreatedByThisProcess.has(injectiveKey(restApiId, a.id))
-                  ? a.id
-                  : undefined
-            ),
-          inspect: (id) =>
-            aws`aws apigateway get-authorizer --rest-api-id ${restApiId} --authorizer-id ${id}${regionArg}`.render(),
-        });
-      };
-      const orphanWindow = createAuthorizerLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
-        await reportOrphans(orphanWindow);
-      }
-      const createClient = await this.getCreateClient();
-      const attemptStartMs = Date.now();
-      let response: CreateAuthorizerCommandOutput;
-      try {
-        response = await createClient.send(
-          new CreateAuthorizerCommand({
-            restApiId,
-            name,
-            type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
-            authType: properties['AuthType'] as string | undefined,
-            providerARNs: providerArns,
-            authorizerUri: properties['AuthorizerUri'] as string | undefined,
-            authorizerCredentials: properties['AuthorizerCredentials'] as string | undefined,
-            identitySource: properties['IdentitySource'] as string | undefined,
-            identityValidationExpression: properties['IdentityValidationExpression'] as
-              | string
-              | undefined,
-            authorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
-              | number
-              | undefined,
-          })
-        );
-      } catch (error) {
-        createAuthorizerLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
-        throw error;
-      }
-
-      const authorizerId = response.id!;
-      authorizersCreatedByThisProcess.add(injectiveKey(restApiId, authorizerId));
-      // Issue #4687: the SDK replayed this CreateAuthorizer inside its `send`, so
-      // an earlier attempt may have made one too. Detection only.
-      const replayWindow = replayedSendWindow(response, attemptStartMs);
-      if (replayWindow !== undefined) {
-        await reportOrphans(replayWindow);
-      }
-      log.debug(`Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`);
-
-      return {
-        physicalId: authorizerId,
-        attributes: {
-          AuthorizerId: authorizerId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Authorizer ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return createAuthorizer.call(this, logicalId, resourceType, properties, log);
   }
 
-  /**
-   * Update an API Gateway Authorizer via `UpdateAuthorizerCommand` (RFC 6902
-   * JSON Patch operations).
-   *
-   * Mutable fields (per AWS API Gateway PATCH operations docs):
-   *   `/name`, `/type`, `/authType`, `/authorizerUri`, `/authorizerCredentials`,
-   *   `/identitySource`, `/identityValidationExpression`,
-   *   `/authorizerResultTtlInSeconds`, `/providerARNs`.
-   *
-   * Only `RestApiId` is create-only (the deploy engine replaces the
-   * authorizer for that change before this method is called). A `Type`
-   * change is updated in place, as CloudFormation updates it
-   * (go-to-k/cdkd#5391).
-   *
-   * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
-   * `cdkd drift --revert`: an empty placeholder coming from
-   * `readCurrentStateAuthorizer` (e.g. `IdentitySource: ''` on a Cognito
-   * authorizer) MUST reach AWS as `replace /<field> ''` so a console-side
-   * change away from "" is actually cleared on revert. A truthy gate would
-   * silently drop the empty placeholder and the next drift run would
-   * re-detect the same divergence forever.
-   */
-  private async updateAuthorizer(
+  updateAuthorizer(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -947,551 +312,87 @@ export class ApiGatewayProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    log.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId}`);
-
-    const restApiId = properties['RestApiId'] as string | undefined;
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to update API Gateway Authorizer ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    // ProviderARNs is a list API Gateway patches only element by element:
-    // `replace /providerARNs` is refused (go-to-k/cdkd#5408). The adds go
-    // FIRST and the removes LAST because AWS applies the operations in
-    // order and refuses one that leaves a Cognito authorizer's list empty
-    // ("The list of providerARNs cannot be empty"), so swapping the only
-    // pool, and a TOKEN/REQUEST -> COGNITO_USER_POOLS switch, need the add
-    // before the `/type` replace, while a COGNITO_USER_POOLS ->
-    // TOKEN/REQUEST switch needs the remove after it.
-    const arnOps = listPatchOps(
-      '/providerARNs',
-      properties['ProviderARNs'] as string[] | undefined,
-      previousProperties['ProviderARNs'] as string[] | undefined
-    );
-    const patchOperations: Array<{
-      op: 'replace' | 'add' | 'remove';
-      path: string;
-      value: string;
-    }> = [...arnOps.adds];
-
-    // Simple `replace` ops for primitive / single-value string fields.
-    const primitiveFields: Array<{ key: string; path: string }> = [
-      { key: 'Name', path: '/name' },
-      { key: 'Type', path: '/type' },
-      { key: 'AuthType', path: '/authType' },
-      { key: 'AuthorizerUri', path: '/authorizerUri' },
-      { key: 'AuthorizerCredentials', path: '/authorizerCredentials' },
-      { key: 'IdentitySource', path: '/identitySource' },
-      { key: 'IdentityValidationExpression', path: '/identityValidationExpression' },
-      { key: 'AuthorizerResultTtlInSeconds', path: '/authorizerResultTtlInSeconds' },
-    ];
-
-    for (const { key, path } of primitiveFields) {
-      const newVal = properties[key];
-      const prevVal = previousProperties[key];
-      if (newVal !== prevVal) {
-        // A REMOVED AuthorizerUri is left on the authorizer, as
-        // CloudFormation leaves it: a CFn A/B in us-east-1 kept the URI both
-        // when the property was dropped from a TOKEN authorizer and on a
-        // TOKEN -> COGNITO_USER_POOLS switch (go-to-k/cdkd#5408), and
-        // API Gateway refuses an empty URI on a TOKEN / REQUEST authorizer
-        // ("URI is a required field in an Authorizer"). An explicit `''`
-        // (a `cdkd drift --revert` placeholder) still clears it.
-        if (key === 'AuthorizerUri' && newVal === undefined) continue;
-        // `!== undefined` gate (not truthy) — see method docstring.
-        patchOperations.push({
-          op: 'replace',
-          path,
-          value: newVal !== undefined ? stringifyValue(newVal) : '',
-        });
-      }
-    }
-
-    patchOperations.push(...arnOps.removes);
-
-    if (patchOperations.length === 0) {
-      log.debug(`No changes detected for API Gateway Authorizer ${logicalId}`);
-      return { physicalId, wasReplaced: false };
-    }
-
-    try {
-      // Not idempotent: should the SDK retry a call AWS already applied, a
-      // repeated `add /providerARNs` appends a duplicate and a repeated
-      // `remove` fails with "doesn't contain the value".
-      await this.apiGatewayClient.send(
-        new UpdateAuthorizerCommand({
-          restApiId,
-          authorizerId: physicalId,
-          patchOperations,
-        })
-      );
-      log.debug(
-        `Successfully updated API Gateway Authorizer ${logicalId} (${patchOperations.length} patch ops)`
-      );
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update API Gateway Authorizer ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
-  }
-
-  /**
-   * Delete an API Gateway Authorizer
-   */
-  private async deleteAuthorizer(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties?: Record<string, unknown>,
-    context?: DeleteContext
-  ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Authorizer ${logicalId}: ${physicalId}`);
-
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to delete API Gateway Authorizer ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    try {
-      await this.apiGatewayClient.send(
-        new DeleteAuthorizerCommand({
-          restApiId,
-          authorizerId: physicalId,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Authorizer ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.apiGatewayClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`API Gateway Authorizer ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Authorizer ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
-  }
-
-  /**
-   * Get API Gateway Authorizer attribute
-   */
-  private getAuthorizerAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    if (attributeName === 'AuthorizerId') {
-      return Promise.resolve(physicalId);
-    }
-
-    return Promise.resolve(undefined);
-  }
-
-  // ─── AWS::ApiGateway::Resource ──────────────────────────────────────
-
-  /**
-   * Create an API Gateway Resource (path part)
-   */
-  private async createResource(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    log: MaskedLogSinks
-  ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Resource ${logicalId}`);
-
-    const restApiId = properties['RestApiId'] as string;
-    const parentId = properties['ParentId'] as string;
-    const pathPart = properties['PathPart'] as string;
-
-    if (!restApiId || !parentId || !pathPart) {
-      throw new ProvisioningError(
-        `RestApiId, ParentId, and PathPart are required for API Gateway Resource ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    try {
-      const response = await this.apiGatewayClient.send(
-        new CreateResourceCommand({
-          restApiId,
-          parentId,
-          pathPart,
-        })
-      );
-
-      const resourceId = response.id!;
-      log.debug(`Successfully created API Gateway Resource ${logicalId}: ${resourceId}`);
-
-      return {
-        physicalId: resourceId,
-        attributes: {
-          ResourceId: resourceId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Resource ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
-  }
-
-  /**
-   * Update an API Gateway Resource
-   *
-   * API Gateway Resources are immutable - if PathPart changes,
-   * the resource must be replaced (returns wasReplaced: true).
-   */
-  private async updateResource(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
-  ): Promise<ResourceUpdateResult> {
-    log.debug(`Updating API Gateway Resource ${logicalId}: ${physicalId}`);
-
-    const newPathPart = properties['PathPart'] as string;
-    const oldPathPart = previousProperties['PathPart'] as string;
-
-    // PathPart is immutable - if it changed, resource must be replaced
-    if (newPathPart !== oldPathPart) {
-      // Both path parts are bag values, masked RAW (issue #2177).
-      log.debug(
-        `PathPart changed from "${log.value(oldPathPart)}" to "${log.value(newPathPart)}", replacing resource`
-      );
-
-      // Create new resource
-      const createResult = await this.createResource(logicalId, resourceType, properties, log);
-
-      // Delete old resource. What it leaves behind rides out on the update's
-      // `'partial'` outcome (issue #1819): the new resource already exists so
-      // the replacement cannot be aborted, and a survivor here is not inert --
-      // the OLD PathPart stays routable on the deployed API while cdkd's state
-      // points only at the new one.
-      let orphanReason: string | undefined;
-      // go-to-k/cdkd#4911: what the failed delete proves about the old one.
-      let oldResourceSurvivor: 'kept' | 'unconfirmed' = 'unconfirmed';
-      try {
-        // go-to-k/cdkd#3952: a redacted RestApiId would answer NotFound, which
-        // `deleteResource` reads as "already deleted" -- report the survivor.
-        if (
-          redactedDeleteAddressFields({ RestApiId: previousProperties['RestApiId'] }).length > 0
-        ) {
-          orphanReason = `old API Gateway Resource ${physicalId} was not deleted: its recorded RestApiId is redacted`;
-          // Never sent: the old resource is whole.
-          oldResourceSurvivor = 'kept';
-          log.warn(
-            safeMsg`Old API Gateway Resource ${physicalId} was not deleted during replacement: its ` +
-              `recorded RestApiId is redacted in state, which names no API. The old resource ` +
-              `may be orphaned and require manual cleanup.`
-          );
-        } else {
-          // The update's masker, so the wrap's debug line of AWS's own text is
-          // masked like the warning below (go-to-k/cdkd#2319).
-          await this.deleteResource(logicalId, physicalId, resourceType, previousProperties, {
-            maskSecrets: log.mask,
-          });
-        }
-      } catch (error) {
-        oldResourceSurvivor = replacedDeleteFailureVerdict(error);
-        // The delete error is AWS text that can quote the recorded RestApiId
-        // back; the reason rides out on the update's result, so it is masked
-        // here too, not only in the warning (issue #2177).
-        orphanReason = log.mask(
-          `old API Gateway Resource ${physicalId} could not be deleted: ${safeStringify(error)}`
-        );
-        log.warn(
-          `Failed to delete old API Gateway Resource ${physicalId} during replacement: ${safeStringify(error)}. ` +
-            `The old resource may be orphaned and require manual cleanup.`
-        );
-      }
-
-      const base = {
-        physicalId: createResult.physicalId,
-        wasReplaced: true as const,
-        attributes: createResult.attributes ?? {},
-      };
-      return orphanReason !== undefined
-        ? {
-            ...base,
-            outcome: 'partial' as const,
-            reason: orphanReason,
-            ...(oldResourceSurvivor === 'kept' && { oldResourceSurvivor }),
-          }
-        : base;
-    }
-
-    // No changes needed (RestApiId and ParentId changes also require replacement,
-    // but the deployment engine handles those via immutable property detection)
-    return {
+    return updateAuthorizer.call(
+      this,
+      logicalId,
       physicalId,
-      wasReplaced: false,
-      attributes: {
-        ResourceId: physicalId,
-      },
-    };
+      resourceType,
+      properties,
+      previousProperties,
+      log
+    );
   }
 
-  /**
-   * Delete an API Gateway Resource
-   */
-  private async deleteResource(
+  deleteAuthorizer(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Resource ${logicalId}: ${physicalId}`);
-
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to delete API Gateway Resource ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    try {
-      await this.apiGatewayClient.send(
-        new DeleteResourceCommand({
-          restApiId,
-          resourceId: physicalId,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Resource ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.apiGatewayClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`API Gateway Resource ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Resource ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteAuthorizer.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Get API Gateway Resource attribute
-   */
-  private getResourceAttribute(
+  getAuthorizerAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getAuthorizerAttribute.call(this, physicalId, attributeName);
+  }
+
+  createResource(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceCreateResult> {
+    return createResource.call(this, logicalId, resourceType, properties, log);
+  }
+
+  updateResource(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceUpdateResult> {
+    return updateResource.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log
+    );
+  }
+
+  deleteResource(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    return deleteResource.call(this, logicalId, physicalId, resourceType, properties, context);
+  }
+
+  getResourceAttribute(
     physicalId: string,
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // ResourceId is the most common attribute
-    if (attributeName === 'ResourceId') {
-      return Promise.resolve(physicalId);
-    }
-
-    return Promise.resolve(undefined);
+    return getResourceAttribute.call(this, physicalId, _resourceType, attributeName);
   }
 
-  // ─── AWS::ApiGateway::Deployment ───────────────────────────────────
-
-  /**
-   * Create an API Gateway Deployment
-   */
-  private async createDeployment(
+  createDeployment(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Deployment ${logicalId}`);
-
-    const restApiId = properties['RestApiId'] as string;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required for API Gateway Deployment ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    try {
-      const description = properties['Description'] as string | undefined;
-      // Issue #2080: after an earlier ambiguous attempt, name the deployment
-      // it may have made before a second CreateDeployment is sent. Detection
-      // only -- see `reportPossibleOrphans`.
-      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
-        const aws = pasteableAwsCommand(log.mask);
-        const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, lookupWindow, log, {
-          action: 'CreateDeployment',
-          listAction: 'GetDeployments',
-          subject: `a deployment of REST API ${log.value(restApiId)}${description !== undefined ? ` described ${log.value(description)}` : ''}`,
-          noun: 'deployment(s)',
-          list: () =>
-            collectOrphanIds(
-              async (position) => {
-                const page = await this.apiGatewayClient.send(
-                  new GetDeploymentsCommand({
-                    restApiId,
-                    limit: ORPHAN_LIST_PAGE_SIZE,
-                    ...(position && { position }),
-                  })
-                );
-                return { items: page.items ?? [], next: page.position };
-              },
-              (d) =>
-                d.id &&
-                (d.description ?? '') === (description ?? '') &&
-                isInsideWindow(d.createdDate, lookupWindow) &&
-                !deploymentsCreatedByThisProcess.has(injectiveKey(restApiId, d.id))
-                  ? d.id
-                  : undefined
-            ),
-          inspect: (id) =>
-            aws`aws apigateway get-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
-          remove: (id) =>
-            aws`aws apigateway delete-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
-        });
-      };
-      const orphanWindow = createDeploymentLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
-        await reportOrphans(orphanWindow);
-      }
-      const createClient = await this.getCreateClient();
-      const attemptStartMs = Date.now();
-      let response: CreateDeploymentCommandOutput;
-      try {
-        response = await createClient.send(new CreateDeploymentCommand({ restApiId, description }));
-      } catch (error) {
-        createDeploymentLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
-        throw error;
-      }
-
-      const deploymentId = response.id!;
-      deploymentsCreatedByThisProcess.add(injectiveKey(restApiId, deploymentId));
-      // Issue #4687: the SDK replayed this CreateDeployment inside its `send`, so
-      // an earlier attempt may have made one too. Detection only.
-      const replayWindow = replayedSendWindow(response, attemptStartMs);
-      if (replayWindow !== undefined) {
-        await reportOrphans(replayWindow);
-      }
-      log.debug(`Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`);
-
-      return {
-        physicalId: deploymentId,
-        attributes: {
-          DeploymentId: deploymentId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Deployment ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return createDeployment.call(this, logicalId, resourceType, properties, log);
   }
 
-  /**
-   * Update an API Gateway Deployment's `Description` in place with
-   * `UpdateDeployment` (`replace /description`), as CloudFormation does
-   * (go-to-k/cdkd#5391). `RestApiId` is create-only, so the deploy engine
-   * replaces the deployment for that change before this method is called;
-   * `Description` is the only other property this provider handles.
-   *
-   * A removed `Description` is sent as `''`, which clears it, and is also
-   * what `readCurrentStateDeployment` reports for none, so a
-   * `cdkd drift --revert` of a console-side description clears it.
-   */
-  private async updateDeployment(
+  updateDeployment(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1499,1114 +400,92 @@ export class ApiGatewayProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    const restApiId = properties['RestApiId'] as string | undefined;
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to update API Gateway Deployment ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    // `''` and absent are the same on AWS (no description), and
-    // `readCurrentStateDeployment` reports none as `''`, so they compare equal.
-    const newDesc = properties['Description'];
-    const prevDesc = previousProperties['Description'];
-    if ((newDesc ?? '') === (prevDesc ?? '')) {
-      log.debug(`No changes detected for API Gateway Deployment ${logicalId}`);
-      return { physicalId, wasReplaced: false };
-    }
-
-    log.debug(`Updating API Gateway Deployment ${logicalId}: ${physicalId}`);
-    try {
-      await this.apiGatewayClient.send(
-        new UpdateDeploymentCommand({
-          restApiId,
-          deploymentId: physicalId,
-          patchOperations: [
-            {
-              op: 'replace',
-              path: '/description',
-              value: newDesc !== undefined ? stringifyValue(newDesc) : '',
-            },
-          ],
-        })
-      );
-      log.debug(`Successfully updated API Gateway Deployment ${logicalId}`);
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update API Gateway Deployment ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
-  }
-
-  /**
-   * Delete an API Gateway Deployment
-   */
-  private async deleteDeployment(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties?: Record<string, unknown>,
-    context?: DeleteContext
-  ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Deployment ${logicalId}: ${physicalId}`);
-
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to delete API Gateway Deployment ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    try {
-      await this.apiGatewayClient.send(
-        new DeleteDeploymentCommand({
-          restApiId,
-          deploymentId: physicalId,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Deployment ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.apiGatewayClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`API Gateway Deployment ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Deployment ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
-  }
-
-  /**
-   * Get API Gateway Deployment attribute
-   */
-  private getDeploymentAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    if (attributeName === 'DeploymentId') {
-      return Promise.resolve(physicalId);
-    }
-
-    return Promise.resolve(undefined);
-  }
-
-  // ─── AWS::ApiGateway::Stage ──────────────────────────────────────
-
-  /**
-   * Create an API Gateway Stage
-   */
-  private async createStage(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    log: MaskedLogSinks
-  ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Stage ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-
-    const restApiId = properties['RestApiId'] as string;
-    const stageName = properties['StageName'] as string;
-    const deploymentId = properties['DeploymentId'] as string;
-
-    if (!restApiId || !stageName || !deploymentId) {
-      throw new ProvisioningError(
-        `RestApiId, StageName, and DeploymentId are required for API Gateway Stage ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // #1471/#1493 class: a present-but-malformed nested block (a string,
-    // array, or unresolved intrinsic) indexes every sub-field to undefined,
-    // which would silently create the stage WITHOUT the declared config.
-    // Create is template-borne, so refuse loudly (the update path warns and
-    // skips instead — see updateStage).
-    for (const key of ['AccessLogSetting', 'CanarySetting'] as const) {
-      const block = properties[key];
-      if (block != null && !isPlainObjectBlock(block)) {
-        throw new ProvisioningError(
-          `AWS::ApiGateway::Stage ${key} for ${logicalId} must be an object block; got ${Array.isArray(block) ? 'an array' : typeof block}. Fix the template value instead of letting cdkd drop the config.`,
-          resourceType,
-          logicalId
-        );
-      }
-    }
-
-    // go-to-k/cdkd#4583: set when the post-create cleanup could not delete the
-    // stage, which then exists with no state record.
-    let stageLeftBehind = false;
-    try {
-      // CFn declares CacheClusterSize as a string enum ('0.5' | '1.6' | ...)
-      // and so does the SDK, but an unquoted YAML template legitimately
-      // carries the NUMBER 0.5 — stringify so both shapes reach AWS as the
-      // enum string instead of being rejected by the serializer.
-      const rawCacheClusterSize = properties['CacheClusterSize'] as string | number | undefined;
-      await this.apiGatewayClient.send(
-        new CreateStageCommand({
-          restApiId,
-          stageName,
-          deploymentId,
-          description: properties['Description'] as string | undefined,
-          tracingEnabled: properties['TracingEnabled'] as boolean | undefined,
-          variables: properties['Variables'] as Record<string, string> | undefined,
-          tags:
-            properties['Tags'] != null
-              ? Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]))
-              : undefined,
-          cacheClusterEnabled: properties['CacheClusterEnabled'] as boolean | undefined,
-          cacheClusterSize:
-            rawCacheClusterSize != null
-              ? (String(rawCacheClusterSize) as CacheClusterSize)
-              : undefined,
-          documentationVersion: properties['DocumentationVersion'] as string | undefined,
-          canarySettings: toSdkCanarySettings(
-            properties['CanarySetting'] as CfnStageCanarySetting | undefined
-          ),
-        })
-      );
-      // go-to-k/cdkd#5511: report before the post-create patch.
-      reportCreatedResource(logicalId, resourceType, stageName);
-
-      // MethodSettings (issue #966), AccessLogSetting and ClientCertificateId
-      // (#609 backfill): CreateStage does not accept any of these — they are
-      // applied via UpdateStage patch operations, merged into ONE post-create
-      // UpdateStage call so the create-failure cleanup below covers them all.
-      const methodSettings = properties['MethodSettings'] as CfnStageMethodSetting[] | undefined;
-      const postCreateOps = buildMethodSettingsPatchOps(undefined, methodSettings);
-      const accessLogSetting = properties['AccessLogSetting'] as
-        | CfnStageAccessLogSetting
-        | undefined;
-      if (accessLogSetting != null) {
-        if (accessLogSetting.DestinationArn !== undefined) {
-          postCreateOps.push({
-            op: 'replace',
-            path: '/accessLogSettings/destinationArn',
-            value: normalizeAccessLogDestinationArn(String(accessLogSetting.DestinationArn)),
-          });
-        }
-        if (accessLogSetting.Format !== undefined) {
-          postCreateOps.push({
-            op: 'replace',
-            path: '/accessLogSettings/format',
-            value: String(accessLogSetting.Format),
-          });
-        }
-      }
-      const clientCertificateId = properties['ClientCertificateId'] as string | undefined;
-      if (clientCertificateId !== undefined) {
-        postCreateOps.push({
-          op: 'replace',
-          path: '/clientCertificateId',
-          value: clientCertificateId,
-        });
-      }
-      if (postCreateOps.length > 0) {
-        try {
-          await this.apiGatewayClient.send(
-            new UpdateStageCommand({
-              restApiId,
-              stageName,
-              patchOperations: postCreateOps,
-            })
-          );
-        } catch (patchError) {
-          // The stage was already created but no state record will be
-          // written — without cleanup the corpse holds the stage name and
-          // every retry dies with ConflictException (same class as the
-          // Cloud Control create-remnant fix, PR #957). Best-effort delete,
-          // then rethrow the original failure.
-          try {
-            await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
-            retractCreatedResource(logicalId, resourceType, stageName);
-          } catch (cleanupError) {
-            stageLeftBehind = true;
-            // An AWS-authored failure is named by its class at warn, and AWS's
-            // text (a denied `DeleteStage` names the caller) goes to `debug`
-            // under the same head (go-to-k/cdkd#2319).
-            const cleanupFailure = describeAwsFailure(cleanupError);
-            const cleanupHead = `Failed to clean up stage ${log.value(stageName)} after a post-create patch failure: `;
-            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
-            log.warn(
-              `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
-            );
-          }
-          // The stage itself was created: an "already exists" from the patch is
-          // not this stage's name collision (#3826).
-          throw markAuxiliaryFailure(patchError, logicalId);
-        }
-      }
-
-      log.debug(`Successfully created API Gateway Stage ${logicalId}: ${log.value(stageName)}`);
-
-      return {
-        physicalId: stageName,
-        attributes: {
-          StageName: stageName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Stage ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-      if (stageLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, stageName);
-      throw thrown;
-    }
-  }
-
-  /**
-   * Update an API Gateway Stage
-   *
-   * Uses UpdateStageCommand with patch operations for changed properties.
-   */
-  private async updateStage(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
-  ): Promise<ResourceUpdateResult> {
-    log.debug(`Updating API Gateway Stage ${logicalId}: ${log.value(physicalId)}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    const restApiId = properties['RestApiId'] as string;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to update API Gateway Stage ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    // Build patch operations for changed properties. UpdateStage supports
-    // both `replace` (deploymentId / description / tracingEnabled, and
-    // adding/replacing a single variables key) and `remove` (dropping a
-    // variables key), so the patch op type covers both.
-    const patchOperations: Array<{ op: 'replace' | 'remove'; path: string; value?: string }> = [];
-
-    const deploymentId = properties['DeploymentId'] as string | undefined;
-    const prevDeploymentId = previousProperties['DeploymentId'] as string | undefined;
-    if (deploymentId && deploymentId !== prevDeploymentId) {
-      patchOperations.push({ op: 'replace', path: '/deploymentId', value: deploymentId });
-    }
-
-    const description = properties['Description'] as string | undefined;
-    const prevDescription = previousProperties['Description'] as string | undefined;
-    if (description !== prevDescription) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/description',
-        value: description ?? '',
-      });
-    }
-
-    // TracingEnabled — X-Ray. UpdateStage renders the boolean as a string
-    // value ('true' / 'false') under the `/tracingEnabled` path.
-    const tracingEnabled = properties['TracingEnabled'] as boolean | undefined;
-    const prevTracingEnabled = previousProperties['TracingEnabled'] as boolean | undefined;
-    if (tracingEnabled !== prevTracingEnabled) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/tracingEnabled',
-        value: String(tracingEnabled ?? false),
-      });
-    }
-
-    // CacheClusterEnabled — response cache cluster (#609 backfill). Boolean
-    // renders as a string 'true' / 'false' patch value (the /tracingEnabled
-    // pattern). Removal semantics (#1160 class): the field dropped from the
-    // template patches 'false' — the CFn default — instead of silently
-    // keeping the live cache cluster running (and billing).
-    const cacheClusterEnabled = properties['CacheClusterEnabled'] as boolean | undefined;
-    const prevCacheClusterEnabled = previousProperties['CacheClusterEnabled'] as
-      | boolean
-      | undefined;
-    if (cacheClusterEnabled !== prevCacheClusterEnabled) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/cacheClusterEnabled',
-        value: String(cacheClusterEnabled ?? false),
-      });
-    }
-
-    // CacheClusterSize — only patched when PRESENT and changed (#609
-    // backfill). Removal semantics (#1160 class): deliberately NOT cleared
-    // on removal — the size is only meaningful while a cache cluster
-    // exists, `/cacheClusterSize` accepts only valid enum values (no empty
-    // clear), and dropping CacheClusterEnabled already tears the cluster
-    // down, taking the size with it. Stringified because an unquoted YAML
-    // template carries the NUMBER 0.5 for the CFn string enum '0.5'.
-    const rawCacheClusterSize = properties['CacheClusterSize'] as string | number | undefined;
-    const prevRawCacheClusterSize = previousProperties['CacheClusterSize'] as
-      | string
-      | number
-      | undefined;
-    if (
-      rawCacheClusterSize != null &&
-      (prevRawCacheClusterSize == null ||
-        String(rawCacheClusterSize) !== String(prevRawCacheClusterSize))
-    ) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/cacheClusterSize',
-        value: String(rawCacheClusterSize),
-      });
-    }
-
-    // ClientCertificateId — scalar (#609 backfill). Removal semantics
-    // (#1160 class): the field dropped from the template patches '' —
-    // UpdateStage supports `remove` only for map keys / whole nested
-    // blocks, and API Gateway treats an empty-string replace as detaching
-    // the certificate (the same scalar-clear pattern Account uses for
-    // /cloudwatchRoleArn) — instead of silently keeping the live value.
-    const clientCertificateId = properties['ClientCertificateId'] as string | undefined;
-    const prevClientCertificateId = previousProperties['ClientCertificateId'] as string | undefined;
-    if (clientCertificateId !== prevClientCertificateId) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/clientCertificateId',
-        value: clientCertificateId ?? '',
-      });
-    }
-
-    // DocumentationVersion — scalar (#609 backfill). Removal semantics
-    // (#1160 class): the field dropped from the template patches '' (the
-    // same scalar-clear-on-removal approach as ClientCertificateId above)
-    // instead of silently keeping the live documentation version.
-    const documentationVersion = properties['DocumentationVersion'] as string | undefined;
-    const prevDocumentationVersion = previousProperties['DocumentationVersion'] as
-      | string
-      | undefined;
-    if (documentationVersion !== prevDocumentationVersion) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/documentationVersion',
-        value: documentationVersion ?? '',
-      });
-    }
-
-    // AccessLogSetting — nested {DestinationArn, Format} block applied via
-    // field-level replace ops (#609 backfill). Removal semantics (#1160
-    // class): the WHOLE block dropped from the template emits
-    // `remove /accessLogSettings` — access logging is disabled, matching
-    // CFn's absent-block behavior — instead of silently keeping the live
-    // config. A sub-field dropped while the block remains is cleared with
-    // an empty-string replace (the scalar-clear pattern above).
-    // #1471/#1493 class guard (DESIRED side only — the previous side comes
-    // from cdkd state): a present-but-malformed block would index every
-    // sub-field to undefined and emit CLEAR patches, silently disabling a
-    // live config from a broken template. On the update path we WARN and
-    // SKIP the property (a rollback replays update() with a state record as
-    // the desired bag, so a refusal would make the stage un-rollbackable;
-    // emitting the remove op would be the very harm the guard exists for).
-    const rawAccessLog = properties['AccessLogSetting'];
-    const accessLogMalformed = rawAccessLog != null && !isPlainObjectBlock(rawAccessLog);
-    if (accessLogMalformed) {
-      log.warn(
-        `AWS::ApiGateway::Stage AccessLogSetting for ${logicalId} is not an object block (got ${Array.isArray(rawAccessLog) ? 'an array' : typeof rawAccessLog}); leaving the live access-log config untouched.`
-      );
-    }
-    const accessLog = accessLogMalformed
-      ? undefined
-      : (rawAccessLog as CfnStageAccessLogSetting | undefined);
-    const prevAccessLog = previousProperties['AccessLogSetting'] as
-      | CfnStageAccessLogSetting
-      | undefined;
-    if (accessLogMalformed) {
-      // Skip both the patch and the removal arm for this property.
-    } else if (accessLog == null) {
-      if (prevAccessLog != null) {
-        patchOperations.push({ op: 'remove', path: '/accessLogSettings' });
-      }
-    } else {
-      if (accessLog.DestinationArn !== prevAccessLog?.DestinationArn) {
-        patchOperations.push({
-          op: 'replace',
-          path: '/accessLogSettings/destinationArn',
-          value:
-            accessLog.DestinationArn !== undefined
-              ? normalizeAccessLogDestinationArn(String(accessLog.DestinationArn))
-              : '',
-        });
-      }
-      if (accessLog.Format !== prevAccessLog?.Format) {
-        patchOperations.push({
-          op: 'replace',
-          path: '/accessLogSettings/format',
-          value: accessLog.Format !== undefined ? String(accessLog.Format) : '',
-        });
-      }
-    }
-
-    // CanarySetting — nested canary release block (#609 backfill). Removal
-    // semantics (#1160 class): the WHOLE block dropped from the template
-    // emits `remove /canarySettings` — the canary is torn down, matching
-    // CFn's absent-block behavior — instead of silently leaving a live
-    // canary diverting traffic. Sub-field changes patch the individual
-    // /canarySettings/* paths; a scalar sub-field dropped while the block
-    // remains reverts to its CFn/API default (0 / '' / false).
-    // Same #1471/#1493 guard as AccessLogSetting above: warn and skip a
-    // present-but-malformed desired block instead of emitting clear patches.
-    const rawCanary = properties['CanarySetting'];
-    const canaryMalformed = rawCanary != null && !isPlainObjectBlock(rawCanary);
-    if (canaryMalformed) {
-      log.warn(
-        `AWS::ApiGateway::Stage CanarySetting for ${logicalId} is not an object block (got ${Array.isArray(rawCanary) ? 'an array' : typeof rawCanary}); leaving the live canary config untouched.`
-      );
-    }
-    const canary = canaryMalformed ? undefined : (rawCanary as CfnStageCanarySetting | undefined);
-    const prevCanary = previousProperties['CanarySetting'] as CfnStageCanarySetting | undefined;
-    if (canaryMalformed) {
-      // Skip both the patch and the removal arm for this property.
-    } else if (canary == null) {
-      if (prevCanary != null) {
-        patchOperations.push({ op: 'remove', path: '/canarySettings' });
-      }
-    } else {
-      if (canary.PercentTraffic !== prevCanary?.PercentTraffic) {
-        patchOperations.push({
-          op: 'replace',
-          path: '/canarySettings/percentTraffic',
-          value: String(canary.PercentTraffic ?? 0),
-        });
-      }
-      if (canary.DeploymentId !== prevCanary?.DeploymentId) {
-        patchOperations.push({
-          op: 'replace',
-          path: '/canarySettings/deploymentId',
-          value: canary.DeploymentId ?? '',
-        });
-      }
-      if (canary.UseStageCache !== prevCanary?.UseStageCache) {
-        // Boolean renders as a string 'true' / 'false' patch value.
-        patchOperations.push({
-          op: 'replace',
-          path: '/canarySettings/useStageCache',
-          value: String(canary.UseStageCache ?? false),
-        });
-      }
-      // StageVariableOverrides — per-key replace / remove, mirroring the
-      // /variables/{key} pattern below. Removal semantics (#1160 class): a
-      // key dropped from the map emits
-      // `remove /canarySettings/stageVariableOverrides/{key}`.
-      const overrides = canary.StageVariableOverrides ?? {};
-      const prevOverrides = prevCanary?.StageVariableOverrides ?? {};
-      for (const [key, value] of Object.entries(overrides)) {
-        if (prevOverrides[key] !== value) {
-          patchOperations.push({
-            op: 'replace',
-            path: `/canarySettings/stageVariableOverrides/${key}`,
-            value,
-          });
-        }
-      }
-      for (const key of Object.keys(prevOverrides)) {
-        // `Object.hasOwn`, not `in` (issue #2776's sweep): a key named
-        // `constructor` / `toString` answers `in` through the prototype chain,
-        // so dropping it from the template emitted no `remove` op.
-        if (!Object.hasOwn(overrides, key)) {
-          patchOperations.push({
-            op: 'remove',
-            path: `/canarySettings/stageVariableOverrides/${key}`,
-          });
-        }
-      }
-    }
-
-    // Variables — stage variables map. UpdateStage takes one patch op per
-    // key: `replace /variables/{key}` to add or change, `remove
-    // /variables/{key}` to delete a key that is no longer declared.
-    const variables = (properties['Variables'] as Record<string, string> | undefined) ?? {};
-    const prevVariables =
-      (previousProperties['Variables'] as Record<string, string> | undefined) ?? {};
-    for (const [key, value] of Object.entries(variables)) {
-      if (prevVariables[key] !== value) {
-        patchOperations.push({ op: 'replace', path: `/variables/${key}`, value });
-      }
-    }
-    for (const key of Object.keys(prevVariables)) {
-      // `Object.hasOwn` for the reason given at the overrides twin above.
-      if (!Object.hasOwn(variables, key)) {
-        patchOperations.push({ op: 'remove', path: `/variables/${key}` });
-      }
-    }
-
-    // MethodSettings (issue #966) — per-method-path overrides
-    // (throttling / metrics / logging / caching) ride the same UpdateStage
-    // call as field-level replace/remove ops; a whole entry dropped from the
-    // template removes every override for that method path.
-    patchOperations.push(
-      ...buildMethodSettingsPatchOps(
-        previousProperties['MethodSettings'] as CfnStageMethodSetting[] | undefined,
-        properties['MethodSettings'] as CfnStageMethodSetting[] | undefined
-      )
+    return updateDeployment.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log
     );
-
-    try {
-      if (patchOperations.length > 0) {
-        await this.apiGatewayClient.send(
-          new UpdateStageCommand({
-            restApiId,
-            stageName: physicalId,
-            patchOperations,
-          })
-        );
-      }
-
-      // Apply tag diff. API Gateway Stage tags require a constructed ARN:
-      // arn:{partition}:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}
-      const stageArn = await this.buildStageArn(restApiId, physicalId);
-      if (stageArn) {
-        await this.applyTagDiff(
-          stageArn,
-          resourceType,
-          logicalId,
-          previousProperties['Tags'],
-          properties['Tags'],
-          log,
-          // Display-only (issue #2177): the RestApiId segment is a bag value,
-          // masked RAW like the Method ids; the raw ARN still goes to AWS.
-          stageArn.replace(`/restapis/${restApiId}/`, `/restapis/${log.value(restApiId)}/`)
-        );
-      }
-
-      log.debug(`Successfully updated API Gateway Stage ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          StageName: physicalId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update API Gateway Stage ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  /**
-   * Delete an API Gateway Stage
-   */
-  private async deleteStage(
+  deleteDeployment(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Stage ${logicalId}: ${physicalId}`);
-
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-
-    if (!restApiId) {
-      throw new ProvisioningError(
-        `RestApiId is required to delete API Gateway Stage ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    try {
-      await this.apiGatewayClient.send(
-        new DeleteStageCommand({
-          restApiId,
-          stageName: physicalId,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Stage ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.apiGatewayClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`API Gateway Stage ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Stage ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteDeployment.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Get API Gateway Stage attribute
-   */
-  private getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    if (attributeName === 'StageName') {
-      return Promise.resolve(physicalId);
-    }
-
-    return Promise.resolve(undefined);
+  getDeploymentAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getDeploymentAttribute.call(this, physicalId, attributeName);
   }
 
-  // ─── AWS::ApiGateway::Method ──────────────────────────────────────
+  createStage(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceCreateResult> {
+    return createStage.call(this, logicalId, resourceType, properties, log);
+  }
 
-  /**
-   * Create an API Gateway Method
-   *
-   * Creates a method on a resource and optionally sets up the integration
-   * (and per-status-code integration responses) plus method responses.
-   * PhysicalId format: `{restApiId}|{resourceId}|{httpMethod}`
-   *
-   * All mutable Method-level fields supported by `PutMethodRequest` are
-   * forwarded (`ApiKeyRequired`, `OperationName`, `RequestParameters`,
-   * `RequestModels`, `RequestValidatorId`, `AuthorizationScopes`).
-   *
-   * All mutable Integration-level fields supported by
-   * `PutIntegrationRequest` are forwarded (`ConnectionType`,
-   * `ConnectionId`, `Credentials`, `RequestParameters`, `RequestTemplates`,
-   * `PassthroughBehavior`, `ContentHandling`, `TimeoutInMillis`,
-   * `CacheNamespace`, `CacheKeyParameters`, `TlsConfig`,
-   * `ResponseTransferMode`). Pre-fix only `Type` / `IntegrationHttpMethod`
-   * / `Uri` were forwarded — silently dropping every other field. This
-   * surfaced as e.g. `responseTransferMode: 'STREAM'` being lost,
-   * producing the AWS rejection
-   *   "Invalid ResponseTransferMode. Cannot use ResponseTransferMode
-   *    BUFFERED for Lambda functions invoked by InvokeWithResponseStream
-   *    for AWS_PROXY integrations."
-   * when CDK's `LambdaIntegration({ responseTransferMode: STREAM })` was
-   * used together with the streaming `response-streaming-invocations` URI.
-   *
-   * `MethodResponses` and `IntegrationResponses` are applied as separate
-   * per-entry calls (`PutMethodResponseCommand` /
-   * `PutIntegrationResponseCommand`). Order matters: every
-   * `MethodResponse` is put BEFORE any `IntegrationResponse`, because AWS
-   * validates that the matching method response already exists when
-   * accepting an integration response (the integration response's
-   * `ResponseParameters` / `ResponseTemplates` map onto headers declared
-   * by the method response). The inverse order surfaces as
-   * `Invalid mapping expression specified: ... [No method response exists
-   * for method.]` — the canonical trigger is a CORS preflight OPTIONS
-   * method emitted by `RestApi({ defaultCorsPreflightOptions: ... })`.
-   *
-   * Partial-failure cleanup: if any AWS call AFTER `PutMethodCommand`
-   * fails, the method has already been created on AWS but cdkd state
-   * does NOT record it (the throw happens before the success return).
-   * A subsequent redeploy would then attempt CREATE again and AWS would
-   * reject with `Method already exists for this resource`. To prevent
-   * this orphan, the post-`PutMethod` block is wrapped in an inner
-   * try/catch that issues a best-effort `DeleteMethodCommand` before
-   * re-throwing the original error. Cleanup failures are logged at warn
-   * (the underlying create failure is what matters; we don't mask it by
-   * promoting a cleanup error). The class of bug — partial AWS-side
-   * commit on `createMethod` failure — was first seen via the
-   * `PutIntegrationResponse`-before-`PutMethodResponse` ordering bug
-   * fixed in PR #373; this cleanup makes any future shape of
-   * post-`PutMethod` failure self-healing on the next redeploy.
-   */
-  private async createMethod(
+  updateStage(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceUpdateResult> {
+    return updateStage.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log
+    );
+  }
+
+  deleteStage(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    return deleteStage.call(this, logicalId, physicalId, resourceType, properties, context);
+  }
+
+  getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getStageAttribute.call(this, physicalId, attributeName);
+  }
+
+  createMethod(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating API Gateway Method ${logicalId}`);
-
-    const restApiId = properties['RestApiId'] as string;
-    const resourceId = properties['ResourceId'] as string;
-    const httpMethod = properties['HttpMethod'] as string;
-    // The highest-value site of issue #1513: the default is NO AUTHORIZATION,
-    // so a null / mis-nested value used to silently publish a PUBLIC method.
-    const authorizationType = requireConfigString(
-      properties['AuthorizationType'],
-      'NONE',
-      'AWS::ApiGateway::Method AuthorizationType',
-      replayWarn(log, context)
-    );
-    const authorizerId = properties['AuthorizerId'] as string | undefined;
-    const apiKeyRequired = properties['ApiKeyRequired'] as boolean | undefined;
-    const operationName = properties['OperationName'] as string | undefined;
-    const methodRequestParameters = properties['RequestParameters'] as
-      | Record<string, boolean>
-      | undefined;
-    const requestModels = properties['RequestModels'] as Record<string, string> | undefined;
-    const requestValidatorId = properties['RequestValidatorId'] as string | undefined;
-    // Deduplicated: PutMethod stores a repeated scope twice, but the update
-    // path diffs scopes as a SET (see `updateMethod`), which is exact only
-    // while AWS holds no duplicate (go-to-k/cdkd#5408).
-    const declaredScopes = properties['AuthorizationScopes'] as string[] | undefined;
-    const authorizationScopes = declaredScopes ? [...new Set(declaredScopes)] : undefined;
-
-    if (!restApiId || !resourceId || !httpMethod) {
-      throw new ProvisioningError(
-        `RestApiId, ResourceId, and HttpMethod are required for API Gateway Method ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // Refuse a `|` in any segment BEFORE `PutMethod` runs (issue #1672).
-    // `RestApiId` / `ResourceId` are AWS-generated and `HttpMethod` is a verb
-    // from a closed set, so no segment is realistically pipe-capable — this is
-    // uniform defense-in-depth. Computed here so the refusal cannot orphan a
-    // method AWS has already put (this method's own inner failure path already
-    // has to `DeleteMethod` for exactly that reason).
-    const physicalId = packCompositeId(
-      resourceType,
-      logicalId,
-      [
-        { name: 'restApiId', value: restApiId },
-        { name: 'resourceId', value: resourceId },
-        { name: 'httpMethod', value: httpMethod },
-      ],
-      // A reverse-replacement rollback creates from a STATE record, so the
-      // refusal downgrades to a warning — the same `context` this method
-      // already consults for its `AuthorizationType` guard.
-      {
-        // Issue #2176: the refusal QUOTES the offending segment value, on the
-        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
-        // goes through unconditionally -- it is absent on the paths that have no
-        // context, where it degrades to identity.
-        maskSecrets: log.mask,
-        ...(context?.replayingState === true && {
-          onRefusal: (message: string) => log.warn(message),
-        }),
-      }
-    );
-    // Issue #2177: the three ids are bag values (resolved `Ref`s and the
-    // verb), each masked RAW before it joins a line, so a secret shorter than
-    // the masker's substring floor is caught too.
-    const maskedIds = [restApiId, resourceId, httpMethod].map((id) => log.value(id));
-    const methodPath = maskedIds.join('/');
-    // go-to-k/cdkd#4583: set when the wiring cleanup could not delete the
-    // method, which then exists with no state record.
-    let methodLeftBehind = false;
-
-    try {
-      const putMethod = () =>
-        this.apiGatewayClient.send(
-          new PutMethodCommand({
-            restApiId,
-            resourceId,
-            httpMethod,
-            authorizationType,
-            authorizerId,
-            apiKeyRequired,
-            operationName,
-            requestParameters: methodRequestParameters,
-            requestModels,
-            requestValidatorId,
-            authorizationScopes,
-          })
-        );
-      try {
-        await putMethod();
-      } catch (putError) {
-        // go-to-k/cdkd#5294: the method may be what an earlier attempt of THIS
-        // resource left behind when its wiring cleanup also failed (below).
-        // Replaced only on the stack's own evidence; anything else keeps
-        // AWS's refusal.
-        if (
-          !isMethodAlreadyExists(putError) ||
-          !(await this.priorAttemptLeftMethod(logicalId, physicalId, log))
-        ) {
-          throw putError;
-        }
-        log.warn(
-          `Replacing API Gateway Method ${logicalId} (${methodPath}), which an earlier failed attempt of it left behind`
-        );
-        try {
-          await this.apiGatewayClient.send(
-            new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
-          );
-        } catch (deleteError) {
-          // Gone in the meantime: the slot is free, which is what the delete was for.
-          if (!(deleteError instanceof NotFoundException)) throw deleteError;
-        }
-        await putMethod();
-      }
-      // go-to-k/cdkd#5511: report before the wiring calls.
-      reportCreatedResource(logicalId, resourceType, physicalId);
-
-      // PutMethodCommand has succeeded — AWS has now committed the
-      // Method resource. Every subsequent call wires sub-resources onto
-      // it; if any of them fail, the method exists on AWS but cdkd state
-      // will NOT (the throw aborts before the success-return). The next
-      // redeploy would then re-try CREATE and AWS would reject with
-      // `Method already exists for this resource`. Wrap the rest of the
-      // wiring in an inner try/catch that issues a best-effort
-      // `DeleteMethodCommand` before re-throwing, so the failed attempt
-      // is self-healing on the next redeploy.
-      try {
-        // If Integration property exists, set up the integration. All
-        // fields supported by `PutIntegrationRequest` are forwarded — see
-        // the JSDoc on this method for the full list and the
-        // `ResponseTransferMode` regression that motivated the fix.
-        const integration = properties['Integration'] as Record<string, unknown> | undefined;
-        if (integration) {
-          await this.apiGatewayClient.send(
-            new PutIntegrationCommand(
-              putIntegrationInput({ restApiId, resourceId, httpMethod }, integration)
-            )
-          );
-        }
-
-        // MethodResponses must be created BEFORE IntegrationResponses:
-        // `PutIntegrationResponse` validates that the `MethodResponse` for the
-        // same `statusCode` already exists (because IntegrationResponse's
-        // ResponseParameters / ResponseTemplates map onto headers declared by
-        // the MethodResponse). Inverting the order makes AWS reject with
-        // `Invalid mapping expression specified: ... [No method response
-        // exists for method.]` — the canonical failure mode is a CORS
-        // preflight OPTIONS method emitted by
-        // `RestApi({ defaultCorsPreflightOptions: ... })`.
-        const methodResponses = properties['MethodResponses'] as
-          | Array<Record<string, unknown>>
-          | undefined;
-        if (methodResponses) {
-          for (const resp of methodResponses) {
-            await this.apiGatewayClient.send(
-              new PutMethodResponseCommand(
-                putMethodResponseInput({ restApiId, resourceId, httpMethod }, resp)
-              )
-            );
-          }
-        }
-
-        if (integration) {
-          // IntegrationResponses (CFn shape:
-          //   [{StatusCode, SelectionPattern?, ResponseParameters?,
-          //     ResponseTemplates?, ContentHandling?}, ...])
-          // requires per-entry `PutIntegrationResponseCommand` calls after
-          // the integration itself is created AND after the matching
-          // MethodResponses are in place (see comment above).
-          const integrationResponses = integration['IntegrationResponses'] as
-            | Array<Record<string, unknown>>
-            | undefined;
-          if (integrationResponses) {
-            for (const ir of integrationResponses) {
-              await this.apiGatewayClient.send(
-                new PutIntegrationResponseCommand(
-                  putIntegrationResponseInput({ restApiId, resourceId, httpMethod }, ir)
-                )
-              );
-            }
-          }
-        }
-      } catch (innerError) {
-        // Best-effort cleanup of the AWS-side Method that PutMethodCommand
-        // committed. Failures here are logged at warn but do NOT mask the
-        // original error — the user needs to see what actually broke.
-        try {
-          await this.apiGatewayClient.send(
-            new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
-          );
-          retractCreatedResource(logicalId, resourceType, physicalId);
-          log.debug(
-            `Cleaned up partially-created API Gateway Method ${logicalId} (${methodPath}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          methodLeftBehind = true;
-          // The engine's retry of this dispatch meets the method before any
-          // journal names it (go-to-k/cdkd#5294).
-          getPriorAttempts(logicalId)?.notePossiblyLanded();
-          // All three ids are TEMPLATE values (resolved `Ref`s and the
-          // method), so the command renders through `pasteableAwsCommand`
-          // (issue #3136): quoted, or withheld when one cannot be printed
-          // exactly.
-          // An AWS-authored failure is named by its class at warn, and AWS's
-          // text goes to `debug` under the same head (go-to-k/cdkd#2319).
-          const cleanupFailure = describeAwsFailure(cleanupError);
-          const cleanupHead = `Failed to clean up partially-created API Gateway Method ${logicalId} (${methodPath}): `;
-          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
-          log.warn(
-            `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy: ${pasteableAwsCommand(log.mask)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
-          );
-        }
-        // The method itself was created: an "already exists" from its wiring
-        // (a method or integration response) is not this method's (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
-
-      log.debug(`Successfully created API Gateway Method ${logicalId}: ${maskedIds.join('|')}`);
-
-      return {
-        physicalId,
-        attributes: {},
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create API Gateway Method ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-      if (methodLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
-      throw thrown;
-    }
+    return createMethod.call(this, logicalId, resourceType, properties, log, context);
   }
 
-  /**
-   * Whether an earlier attempt of `logicalId` left THIS method (`physicalId`,
-   * its `restApiId|resourceId|httpMethod`) behind: its wiring failed and so
-   * did its cleanup delete (go-to-k/cdkd#5294). Two sources, both the stack's
-   * own proof:
-   *
-   * - an earlier deploy's failed CREATE journaled with that id as one its
-   *   provider proved it made (`markCreatedBeforeFailure` below), via
-   *   `provenOrphanIds`;
-   * - an earlier attempt of THIS dispatch (the engine's retry), noted with
-   *   `notePossiblyLanded` where the cleanup failed. Nothing else notes it
-   *   for a Method.
-   *
-   * Never the bare attempted bags: a create AWS refused because another
-   * owner's method held the keys, or one whose cleanup succeeded, also leaves
-   * one, and replacing on it would delete a method this stack never made. An
-   * unreadable journal or a caller that bound none is no evidence.
-   *
-   * Residual: a cleanup delete that failed ambiguously yet applied, followed
-   * by another owner putting a method on the same keys before the re-run.
-   * Those keys are this stack's own `RestApiId` / `ResourceId`, so the other
-   * owner would be writing into this stack's REST API resource.
-   */
-  private async priorAttemptLeftMethod(
+  priorAttemptLeftMethod(
     logicalId: string,
     physicalId: string,
     log: MaskedLogSinks
   ): Promise<boolean> {
-    const lookup = getPriorAttempts(logicalId);
-    if (lookup === undefined) return false;
-    if (lookup.possiblyLanded()) return true;
-    if (lookup.provenOrphanIds === undefined) return false;
-    try {
-      return (await lookup.provenOrphanIds()).includes(physicalId);
-    } catch (error) {
-      log.debug(
-        `API Gateway Method ${logicalId}: rollback journal read failed: ${describeAwsFailure(error).detail}`
-      );
-      return false;
-    }
+    return priorAttemptLeftMethod.call(this, logicalId, physicalId, log);
   }
 
-  /**
-   * Update an API Gateway Method via `UpdateMethodCommand` (RFC 6902 JSON
-   * Patch operations).
-   *
-   * Mutable top-level fields:
-   *   `/authorizationType`, `/authorizerId`, `/apiKeyRequired`,
-   *   `/operationName`, `/requestValidatorId`.
-   *
-   * Map fields (`RequestParameters`, `RequestModels`) emit per-key
-   * `add` / `remove` / `replace` ops with paths like
-   *   `/requestParameters/method.request.querystring.foo`
-   *   `/requestModels/application~1json` (slashes escaped per RFC 6901).
-   *
-   * `AuthorizationScopes` is a list, patched per element with `add` /
-   * `remove /authorizationScopes` ops (see {@link listPatchOps}; same as
-   * Authorizer's `ProviderARNs`).
-   *
-   * `HttpMethod`, `ResourceId`, `RestApiId` are immutable (replacement
-   * layer handles them via DELETE + CREATE).
-   *
-   * `Integration` and `MethodResponses` are separate API Gateway
-   * sub-resources, applied after the patch by {@link methodChildCalls}
-   * (go-to-k/cdkd#5140), as CloudFormation updates them in place.
-   *
-   * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
-   * `cdkd drift --revert`: `ApiKeyRequired: false` and empty-string
-   * placeholders must reach AWS as a real `replace` op so a console-
-   * side toggle is actually cleared on revert.
-   */
-  private async updateMethod(
+  updateMethod(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -2615,257 +494,36 @@ export class ApiGatewayProvider implements ResourceProvider {
     log: MaskedLogSinks,
     previousIsLiveReadback = false
   ): Promise<ResourceUpdateResult> {
-    const parts = physicalId.split('|');
-    // Issue #2177: the recorded ids came off a resolved bag, each masked RAW,
-    // on the updating line and in the malformed-id refusal alike.
-    const maskedId = parts.map((p) => log.value(p)).join('|');
-    log.debug(`Updating API Gateway Method ${logicalId}: ${maskedId}`);
-
-    if (parts.length !== 3) {
-      throw new ProvisioningError(
-        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, maskedId),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-    const [restApiId, resourceId, httpMethod] = parts;
-
-    const patchOperations: Array<{
-      op: 'replace' | 'add' | 'remove';
-      path: string;
-      value?: string;
-    }> = [];
-
-    const primitiveFields: Array<{ key: string; path: string }> = [
-      { key: 'AuthorizationType', path: '/authorizationType' },
-      { key: 'AuthorizerId', path: '/authorizerId' },
-      { key: 'ApiKeyRequired', path: '/apiKeyRequired' },
-      { key: 'OperationName', path: '/operationName' },
-      { key: 'RequestValidatorId', path: '/requestValidatorId' },
-    ];
-
-    for (const { key, path } of primitiveFields) {
-      const newVal = properties[key];
-      const prevVal = previousProperties[key];
-      if (newVal !== prevVal) {
-        patchOperations.push({
-          op: 'replace',
-          path,
-          value: newVal !== undefined ? stringifyValue(newVal) : '',
-        });
-      }
-    }
-
-    // Map fields: per-key add / remove / replace.
-    appendMapPatchOps(
-      patchOperations,
-      '/requestParameters',
-      (properties['RequestParameters'] as Record<string, unknown> | undefined) ?? {},
-      (previousProperties['RequestParameters'] as Record<string, unknown> | undefined) ?? {}
+    return updateMethod.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log,
+      previousIsLiveReadback
     );
-    appendMapPatchOps(
-      patchOperations,
-      '/requestModels',
-      (properties['RequestModels'] as Record<string, unknown> | undefined) ?? {},
-      (previousProperties['RequestModels'] as Record<string, unknown> | undefined) ?? {}
-    );
-
-    // AuthorizationScopes is a list API Gateway patches only element by
-    // element: `replace /authorizationScopes` is refused ("Must be one of:
-    // [add, remove]"; go-to-k/cdkd#5408). Diffed as a SET: an `add` of a scope
-    // already present is a no-op on AWS (measured), so an occurrence count
-    // would drift from what AWS holds, and a later remove could then take
-    // out a scope the template still declares. createMethod deduplicates.
-    // A dropped scope is removed once per occurrence AWS holds when the
-    // previous side IS the live readback (`cdkd drift --revert`), since a
-    // method created elsewhere can hold a repeat; a template previous side is
-    // a set on AWS, so one remove each.
-    const scopeOps = listPatchOps(
-      '/authorizationScopes',
-      properties['AuthorizationScopes'] as string[] | undefined,
-      previousProperties['AuthorizationScopes'] as string[] | undefined,
-      { asSet: true, removeEveryPrevOccurrence: previousIsLiveReadback }
-    );
-    patchOperations.push(...scopeOps.adds, ...scopeOps.removes);
-
-    const ids = { restApiId: restApiId!, resourceId: resourceId!, httpMethod: httpMethod! };
-    const childCalls = methodChildCalls(ids, properties, previousProperties);
-    if (patchOperations.length === 0 && childCalls.length === 0) {
-      log.debug(`No changes detected for API Gateway Method ${logicalId}`);
-      return { physicalId, wasReplaced: false };
-    }
-
-    try {
-      if (patchOperations.length > 0) {
-        // Not idempotent: should the SDK retry a call AWS already applied, a
-        // repeated `remove /authorizationScopes` fails with "doesn't contain
-        // the value".
-        await this.apiGatewayClient.send(
-          new UpdateMethodCommand({
-            restApiId,
-            resourceId,
-            httpMethod,
-            patchOperations,
-          })
-        );
-      }
-      // go-to-k/cdkd#5140: the integration and the method / integration
-      // responses are sub-resources UpdateMethod does not reach.
-      for (const call of childCalls) {
-        try {
-          await this.apiGatewayClient.send(call.command as never);
-        } catch (error) {
-          // A delete of what is already gone has done its job.
-          if (!(call.kind === 'delete' && error instanceof NotFoundException)) throw error;
-        }
-      }
-      log.debug(
-        `Successfully updated API Gateway Method ${logicalId} (${patchOperations.length} patch ops, ${childCalls.length} sub-resource calls)`
-      );
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update API Gateway Method ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  /**
-   * Delete an API Gateway Method
-   *
-   * Parses the composite physicalId (`restApiId|resourceId|httpMethod`) and
-   * calls DeleteMethodCommand. Handles NotFoundException gracefully.
-   */
-  private async deleteMethod(
+  deleteMethod(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting API Gateway Method ${logicalId}: ${physicalId}`);
-
-    const parts = physicalId.split('|');
-    if (parts.length !== 3) {
-      throw new ProvisioningError(
-        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, physicalId),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    const [restApiId, resourceId, httpMethod] = parts;
-
-    try {
-      await this.apiGatewayClient.send(
-        new DeleteMethodCommand({
-          restApiId,
-          resourceId,
-          httpMethod,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted API Gateway Method ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.apiGatewayClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`API Gateway Method ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text) => text),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete API Gateway Method ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteMethod.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  /**
-   * Get API Gateway Method attribute
-   */
-  private getMethodAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    const parts = physicalId.split('|');
-    if (parts.length === 3) {
-      if (attributeName === 'RestApiId') return Promise.resolve(parts[0]);
-      if (attributeName === 'ResourceId') return Promise.resolve(parts[1]);
-      if (attributeName === 'HttpMethod') return Promise.resolve(parts[2]);
-    }
-
-    return Promise.resolve(undefined);
+  getMethodAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getMethodAttribute.call(this, physicalId, attributeName);
   }
 
-  /**
-   * Build the ARN for an API Gateway Stage, used for tag mutations.
-   *
-   * Format:
-   * `arn:{partition}:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}`.
-   * The double colon (`::`) is intentional: API Gateway tagging uses an
-   * account-id-less ARN.
-   *
-   * The partition is derived from the region through the same closed mapping
-   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws`.
-   * Unlike the pure attribute builders this one is passed straight to
-   * `TagResource` / `UntagResource` as `resourceArn`, so in `aws-cn` /
-   * `aws-us-gov` a commercial literal does not just record a wrong string —
-   * it aims the tag mutation at an ARN that names no stage.
-   */
-  private async buildStageArn(restApiId: string, stageName: string): Promise<string | undefined> {
-    try {
-      const region = await this.apiGatewayClient.config.region();
-      const { partition } = derivePartitionAndUrlSuffix(region);
-      return `arn:${partition}:apigateway:${region}::/restapis/${restApiId}/stages/${stageName}`;
-    } catch {
-      return undefined;
-    }
+  buildStageArn(restApiId: string, stageName: string): Promise<string | undefined> {
+    return buildStageArn.call(this, restApiId, stageName);
   }
 
-  /**
-   * Apply a diff between old and new CFn-shape Tags arrays via API Gateway's
-   * `TagResource` / `UntagResource` APIs. API Gateway's `TagResource` takes
-   * lowercase camelCase fields plus a tag-map (`{ resourceArn, tags: {key: value} }`);
-   * `UntagResource` takes `{ resourceArn, tagKeys: [...] }`. Both sides are
-   * read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record
-   * untags nothing.
-   *
-   * `log` is the calling update's masked sink (issue #2177): the stage ARN
-   * embeds the stage name, which can be secret-derived. `displayArn` is the
-   * ARN the lines print, its RestApiId segment masked RAW by the caller;
-   * `resourceArn` is what AWS receives.
-   */
-  private async applyTagDiff(
+  applyTagDiff(
     resourceArn: string,
     resourceType: string,
     logicalId: string,
@@ -2874,935 +532,81 @@ export class ApiGatewayProvider implements ResourceProvider {
     log: MaskedLogSinks,
     displayArn: string
   ): Promise<void> {
-    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      log.warn(tagWarning);
-    }
-    const tagsToAdd: Record<string, string> = Object.fromEntries(plan.set);
-    const tagsToRemove = plan.remove;
-
-    if (tagsToRemove.length > 0) {
-      await this.apiGatewayClient.send(
-        new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove })
-      );
-      log.debug(`Removed ${tagsToRemove.length} tag(s) from API Gateway resource ${displayArn}`);
-    }
-    if (Object.keys(tagsToAdd).length > 0) {
-      await this.apiGatewayClient.send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
-      log.debug(
-        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on API Gateway resource ${displayArn}`
-      );
-    }
+    return applyTagDiff.call(
+      this,
+      resourceArn,
+      resourceType,
+      logicalId,
+      oldTagsRaw,
+      newTagsRaw,
+      log,
+      displayArn
+    );
   }
 
-  /**
-   * Sleep for specified milliseconds
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  sleep(ms: number): Promise<void> {
+    return sleep.call(this, ms);
   }
 
-  /**
-   * Authorizer `ProviderARNs` and Method `AuthorizationScopes` are unordered:
-   * the update path diffs them as multisets ({@link listPatchOps}) and sends
-   * nothing for a reorder, and AWS returns them in append order, so a
-   * template reorder would otherwise read as drift that `--revert` can never
-   * clear on the template-`properties` baseline (go-to-k/cdkd#5408).
-   */
-  /**
-   * Method `AuthorizationScopes` is a set on the update path (see
-   * `updateMethod`), so a repeated scope is compared once: a template
-   * declaring `['a', 'a']` against a live `['a']` is not drift
-   * (go-to-k/cdkd#5408). Pure; returns the input when nothing applies.
-   */
   canonicalizeDriftProperties(
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    if (resourceType !== 'AWS::ApiGateway::Method') return properties;
-    const scopes = properties['AuthorizationScopes'];
-    if (!Array.isArray(scopes) || new Set(scopes).size === scopes.length) return properties;
-    return { ...properties, AuthorizationScopes: [...new Set(scopes)] };
+    return canonicalizeDriftProperties.call(this, resourceType, properties);
   }
 
   getDriftUnorderedPaths(resourceType: string): string[] {
-    if (resourceType === 'AWS::ApiGateway::Authorizer') return ['ProviderARNs'];
-    if (resourceType === 'AWS::ApiGateway::Method') return ['AuthorizationScopes'];
-    return [];
+    return getDriftUnorderedPaths.call(this, resourceType);
   }
 
-  /**
-   * Read the AWS-current API Gateway resource configuration in CFn-property
-   * shape.
-   *
-   * **Coverage**:
-   *   - `AWS::ApiGateway::Account` → `GetAccount` for `CloudWatchRoleArn`.
-   *   - `AWS::ApiGateway::Method` → `GetMethod`. PhysicalId is the composite
-   *     `restApiId|resourceId|httpMethod`, so we have everything needed
-   *     without `Properties`.
-   *   - `AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`:
-   *     each uses `properties.RestApiId` (passed through PR G's signature
-   *     extension) to issue the appropriate `Get*` call.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    switch (resourceType) {
-      case 'AWS::ApiGateway::Account':
-        return this.readCurrentStateAccount();
-      case 'AWS::ApiGateway::Method':
-        return this.readCurrentStateMethod(physicalId);
-      case 'AWS::ApiGateway::Authorizer':
-        return this.readCurrentStateAuthorizer(physicalId, properties);
-      case 'AWS::ApiGateway::Resource':
-        return this.readCurrentStateResource(physicalId, properties);
-      case 'AWS::ApiGateway::Deployment':
-        return this.readCurrentStateDeployment(physicalId, properties);
-      case 'AWS::ApiGateway::Stage':
-        return this.readCurrentStateStage(physicalId, properties);
-      default:
-        return undefined;
-    }
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
   }
 
-  private async readCurrentStateAuthorizer(
+  readCurrentStateAuthorizer(
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-    if (!restApiId) return undefined;
-
-    try {
-      const resp = await this.apiGatewayClient.send(
-        new GetAuthorizerCommand({ restApiId, authorizerId: physicalId })
-      );
-      const result: Record<string, unknown> = { RestApiId: restApiId };
-      result['Name'] = resp.name ?? '';
-      if (resp.type !== undefined) result['Type'] = resp.type;
-      // AuthType is a customer-defined label (free-form string used by
-      // OpenAPI import/export tooling, no functional impact on the
-      // deployed authorizer). Emit-when-present so an Authorizer that
-      // never set AuthType does not grow a phantom field that would
-      // round-trip into drift.
-      if (resp.authType !== undefined) result['AuthType'] = resp.authType;
-      result['ProviderARNs'] = resp.providerARNs ? [...resp.providerARNs] : [];
-      result['AuthorizerUri'] = resp.authorizerUri ?? '';
-      result['AuthorizerCredentials'] = resp.authorizerCredentials ?? '';
-      result['IdentitySource'] = resp.identitySource ?? '';
-      result['IdentityValidationExpression'] = resp.identityValidationExpression ?? '';
-      if (resp.authorizerResultTtlInSeconds !== undefined) {
-        result['AuthorizerResultTtlInSeconds'] = resp.authorizerResultTtlInSeconds;
-      }
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+    return readCurrentStateAuthorizer.call(this, physicalId, properties);
   }
 
-  private async readCurrentStateResource(
+  readCurrentStateResource(
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-    if (!restApiId) return undefined;
-
-    try {
-      const resp = await this.apiGatewayClient.send(
-        new GetResourceCommand({ restApiId, resourceId: physicalId })
-      );
-      const result: Record<string, unknown> = { RestApiId: restApiId };
-      result['ParentId'] = resp.parentId ?? '';
-      if (resp.pathPart !== undefined) result['PathPart'] = resp.pathPart;
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+    return readCurrentStateResource.call(this, physicalId, properties);
   }
 
-  private async readCurrentStateDeployment(
+  readCurrentStateDeployment(
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-    if (!restApiId) return undefined;
-
-    try {
-      const resp = await this.apiGatewayClient.send(
-        new GetDeploymentCommand({ restApiId, deploymentId: physicalId })
-      );
-      const result: Record<string, unknown> = { RestApiId: restApiId };
-      result['Description'] = resp.description ?? '';
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+    return readCurrentStateDeployment.call(this, physicalId, properties);
   }
 
-  private async readCurrentStateStage(
+  readCurrentStateStage(
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const restApiId = properties?.['RestApiId'] as string | undefined;
-    if (!restApiId) return undefined;
-
-    try {
-      const resp = await this.apiGatewayClient.send(
-        new GetStageCommand({ restApiId, stageName: physicalId })
-      );
-      const result: Record<string, unknown> = { RestApiId: restApiId };
-      if (resp.stageName !== undefined) result['StageName'] = resp.stageName;
-      result['DeploymentId'] = resp.deploymentId ?? '';
-      result['Description'] = resp.description ?? '';
-      // #609 backfill: emit-when-present (do NOT emit a default when absent,
-      // so a stage that never set these does not surface phantom drift).
-      if (resp.tracingEnabled !== undefined) result['TracingEnabled'] = resp.tracingEnabled;
-      if (resp.variables !== undefined) result['Variables'] = resp.variables;
-      if (resp.cacheClusterEnabled !== undefined) {
-        result['CacheClusterEnabled'] = resp.cacheClusterEnabled;
-      }
-      if (resp.cacheClusterSize !== undefined) result['CacheClusterSize'] = resp.cacheClusterSize;
-      if (resp.clientCertificateId !== undefined) {
-        result['ClientCertificateId'] = resp.clientCertificateId;
-      }
-      if (resp.documentationVersion !== undefined) {
-        result['DocumentationVersion'] = resp.documentationVersion;
-      }
-      if (resp.accessLogSettings !== undefined) {
-        const accessLog: Record<string, unknown> = {};
-        if (resp.accessLogSettings.destinationArn !== undefined) {
-          accessLog['DestinationArn'] = resp.accessLogSettings.destinationArn;
-        }
-        if (resp.accessLogSettings.format !== undefined) {
-          accessLog['Format'] = resp.accessLogSettings.format;
-        }
-        result['AccessLogSetting'] = accessLog;
-      }
-      if (resp.canarySettings !== undefined) {
-        const canary: Record<string, unknown> = {};
-        if (resp.canarySettings.percentTraffic !== undefined) {
-          canary['PercentTraffic'] = resp.canarySettings.percentTraffic;
-        }
-        if (resp.canarySettings.deploymentId !== undefined) {
-          canary['DeploymentId'] = resp.canarySettings.deploymentId;
-        }
-        if (resp.canarySettings.stageVariableOverrides !== undefined) {
-          canary['StageVariableOverrides'] = resp.canarySettings.stageVariableOverrides;
-        }
-        if (resp.canarySettings.useStageCache !== undefined) {
-          canary['UseStageCache'] = resp.canarySettings.useStageCache;
-        }
-        result['CanarySetting'] = canary;
-      }
-      // MethodSettings (issue #966): rebuild the CFn list shape from the
-      // get-stage `methodSettings` map, iterating the STATE's entries so the
-      // list order matches the baseline (the drift comparator walks arrays
-      // positionally) and emitting only the fields the state entry declares
-      // (get-stage returns every setting with its default filled in, which
-      // would otherwise surface phantom drift on undeclared fields).
-      // NOTE this deliberately does NOT require `resp.methodSettings` to be
-      // present: when every override was removed out-of-band, the entries
-      // still emit (with the declared fields absent) so the drift surfaces
-      // instead of the key silently dropping out of the comparison.
-      const stateMethodSettings = properties?.['MethodSettings'] as
-        | CfnStageMethodSetting[]
-        | undefined;
-      if (stateMethodSettings && stateMethodSettings.length > 0) {
-        result['MethodSettings'] = stateMethodSettings.map((stateEntry) => {
-          const awsEntry = (resp.methodSettings ?? {})[methodSettingKey(stateEntry)] as
-            | Record<string, unknown>
-            | undefined;
-          const entry: Record<string, unknown> = {};
-          if (stateEntry.ResourcePath !== undefined)
-            entry['ResourcePath'] = stateEntry.ResourcePath;
-          if (stateEntry.HttpMethod !== undefined) entry['HttpMethod'] = stateEntry.HttpMethod;
-          for (const { cfnKey, responseKey } of METHOD_SETTING_PATCH_FIELDS) {
-            if (stateEntry[cfnKey] !== undefined && awsEntry?.[responseKey] !== undefined) {
-              entry[cfnKey] = awsEntry[responseKey];
-            }
-          }
-          return entry;
-        });
-      }
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+    return readCurrentStateStage.call(this, physicalId, properties);
   }
 
-  private async readCurrentStateAccount(): Promise<Record<string, unknown> | undefined> {
-    try {
-      const resp = await this.apiGatewayClient.send(new GetAccountCommand({}));
-      const result: Record<string, unknown> = {};
-      result['CloudWatchRoleArn'] = resp.cloudwatchRoleArn ?? '';
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
-      throw err;
-    }
+  readCurrentStateAccount(): Promise<Record<string, unknown> | undefined> {
+    return readCurrentStateAccount.call(this);
   }
 
-  private async readCurrentStateMethod(
+  readCurrentStateMethod(
     physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const parts = physicalId.split('|');
-    if (parts.length !== 3) return undefined;
-    const [restApiId, resourceId, httpMethod] = parts;
-
-    try {
-      const resp = await this.apiGatewayClient.send(
-        new GetMethodCommand({ restApiId, resourceId, httpMethod })
-      );
-      const result: Record<string, unknown> = {};
-      if (restApiId !== undefined) result['RestApiId'] = restApiId;
-      if (resourceId !== undefined) result['ResourceId'] = resourceId;
-      if (resp.httpMethod !== undefined) result['HttpMethod'] = resp.httpMethod;
-      if (resp.authorizationType !== undefined) {
-        result['AuthorizationType'] = resp.authorizationType;
-      }
-      // Class 1 (type-discriminator-dependent fields, see
-      // docs/provider-rules.md#readcurrentstate-for-drift-detection). AuthorizerId is only valid
-      // when AuthorizationType is CUSTOM or COGNITO_USER_POOLS — AWS
-      // rejects PutMethod with "Invalid authorizer ID specified" or
-      // "Authorizer not found" when sent on AuthorizationType=NONE /
-      // AWS_IAM. Emitting `''` as a placeholder on a NONE method would
-      // make `cdkd drift --revert`'s round-trip push that empty value
-      // back as Method.update's `/authorizerId` patch. Drift
-      // detection is not lost: a NONE method cannot legally have
-      // AuthorizerId on AWS, so a console-side ADD is impossible.
-      const authType = resp.authorizationType;
-      if (authType === 'CUSTOM' || authType === 'COGNITO_USER_POOLS') {
-        result['AuthorizerId'] = resp.authorizerId ?? '';
-      }
-      // Same Class 1 gate: AWS refuses scopes on any other authorization
-      // type. Emitted (`[]` when none) so drift sees a console-side scope
-      // change and `--revert` diffs against the LIVE scopes rather than an
-      // absent key, which would `add` every recorded scope
-      // (go-to-k/cdkd#5408).
-      if (authType === 'COGNITO_USER_POOLS') {
-        result['AuthorizationScopes'] = resp.authorizationScopes
-          ? [...resp.authorizationScopes]
-          : [];
-      }
-      result['Integration'] = resp.methodIntegration ?? {};
-      result['MethodResponses'] = resp.methodResponses ?? {};
-      return result;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+    return readCurrentStateMethod.call(this, physicalId);
   }
 
-  /**
-   * Adopt an existing API Gateway sub-resource into cdkd state.
-   *
-   * **Explicit override only.** API Gateway sub-resources (Authorizer,
-   * Resource, Deployment, Stage, Method) live under a parent `RestApi`,
-   * and their physical ids are not globally unique — they're scoped
-   * `<restApiId>/<sub-id>`. Auto-lookup by `aws:cdk:path` would need to
-   * walk every RestApi in the account, then every sub-resource within
-   * each, which is impractical and error-prone.
-   *
-   * `AWS::ApiGateway::RestApi` itself is handled by the Cloud Control
-   * API fallback (also explicit-override only — see
-   * `cloud-control-provider.ts`).
-   *
-   * Users adopting an existing API Gateway should pass
-   * `--resource <logicalId>=<physicalId>` for each sub-resource; the
-   * physical id format follows what `create()` returns for the same
-   * type. Note this is NOT uniformly a composite: `create()` returns a
-   * BARE `resourceId` for `AWS::ApiGateway::Resource` (the parent
-   * `RestApiId` is read from the recorded properties by every other
-   * method), while `AWS::ApiGateway::Method` genuinely is
-   * `<restApiId>|<resourceId>|<httpMethod>`.
-   *
-   * `import()` otherwise honours the supplied id verbatim, so a composite
-   * passed for a type whose provider stores a SCALAR would be written to
-   * state and then fed to the API as a resource id (issue #1663). That is
-   * not merely a failed call: `deleteResource` treats `NotFoundException`
-   * as an idempotent success, so the bad id would be reported as deleted
-   * while the resource stayed live in AWS — a silent orphan, the same class
-   * as issues #1651 / #1658. So the one type whose stored shape is
-   * unambiguously scalar refuses a composite up front, where the user can
-   * still act on it.
-   */
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      // Scoped to Resource deliberately: `Method` IS a composite, and this
-      // type cannot take the #614 Cloud-Control route (all three of its CFn
-      // properties are in `handledProperties`), so a `|` here is always the
-      // user mis-following the old docstring rather than a CC-shaped id.
-      if (
-        input.resourceType === 'AWS::ApiGateway::Resource' &&
-        input.knownPhysicalId.includes('|')
-      ) {
-        this.logger.warn(
-          `AWS::ApiGateway::Resource ${input.logicalId}: '${input.knownPhysicalId}' looks like a ` +
-            `composite, but cdkd stores a BARE resourceId for this type (the parent RestApiId ` +
-            `comes from the template). Adopting it would send the whole string to the API as a ` +
-            `resource id, and the delete path would then report success on the NotFound. Pass ` +
-            `just the resourceId.`
-        );
-        return null;
-      }
-      return { physicalId: input.knownPhysicalId, attributes: {} };
-    }
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
-}
-
-/**
- * CFn `AWS::ApiGateway::Stage.MethodSetting` entry (template shape). Per the
- * CFn docs, `ResourcePath` is ALREADY `~1`-escaped in the template (`/` in a
- * real path segment is encoded as `~1`, e.g. `/~1pets`; `/*` is the
- * all-resources wildcard CDK's `deployOptions` emits), so building the
- * UpdateStage patch path only needs the leading slash stripped.
- */
-/**
- * CFn `AWS::ApiGateway::Stage.AccessLogSetting` block (template shape).
- * NOT a CreateStage parameter — applied via UpdateStage patch operations
- * (`replace /accessLogSettings/destinationArn` / `.../format`).
- */
-interface CfnStageAccessLogSetting {
-  DestinationArn?: string;
-  Format?: string;
-}
-
-/**
- * CFn `AWS::ApiGateway::Stage.CanarySetting` block (template shape). Maps
- * onto the SDK's `CanarySettings` (camelCase) via {@link toSdkCanarySettings}
- * on create; update rides field-level `/canarySettings/*` patch ops.
- */
-interface CfnStageCanarySetting {
-  PercentTraffic?: number;
-  DeploymentId?: string;
-  StageVariableOverrides?: Record<string, string>;
-  UseStageCache?: boolean;
-}
-
-/**
- * `PutMethod` refused because the method exists. API Gateway also answers
- * `ConflictException` for a concurrent modification, so the message decides.
- */
-function isMethodAlreadyExists(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.name === 'ConflictException' &&
-    /already exists/i.test(error.message)
-  );
-}
-
-/**
- * A nested CFn config block must be a plain object; a string, array, or
- * unresolved intrinsic that leaks through resolution indexes every sub-field
- * to `undefined` (#1471/#1493 class). Create refuses such a block; update
- * warns and skips the property.
- */
-function isPlainObjectBlock(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Strip the `:*` suffix off a CloudWatch Logs log-group ARN.
- *
- * CDK's canonical `LogGroupLogDestination` emits `Fn::GetAtt [LogGroup, Arn]`
- * for `AccessLogSetting.DestinationArn`, and a log group's Arn attribute ends
- * with `:*` — a shape API Gateway's UpdateStage REJECTS ("Access log
- * destination must only contain characters a-z, ..."). CloudFormation's Stage
- * handler normalizes the suffix and accepts the template (proven by the
- * apigw-stage-throttling fixture's CC-routed history), so the SDK provider
- * must match for parity or every CDK `deployOptions.accessLogDestination`
- * app fails on deploy (caught live by that integ, 2026-08-11).
- */
-function normalizeAccessLogDestinationArn(arn: string): string {
-  return arn.endsWith(':*') ? arn.slice(0, -2) : arn;
-}
-
-/**
- * Map the CFn `CanarySetting` block to the SDK `CreateStageCommand`
- * `canarySettings` shape (PascalCase -> camelCase member rename).
- */
-function toSdkCanarySettings(
-  setting: CfnStageCanarySetting | undefined
-): CanarySettings | undefined {
-  if (setting == null) return undefined;
-  return {
-    percentTraffic: setting.PercentTraffic,
-    deploymentId: setting.DeploymentId,
-    stageVariableOverrides: setting.StageVariableOverrides,
-    useStageCache: setting.UseStageCache,
-  };
-}
-
-interface CfnStageMethodSetting {
-  ResourcePath?: string;
-  HttpMethod?: string;
-  ThrottlingRateLimit?: number;
-  ThrottlingBurstLimit?: number;
-  MetricsEnabled?: boolean;
-  LoggingLevel?: string;
-  DataTraceEnabled?: boolean;
-  CachingEnabled?: boolean;
-  CacheTtlInSeconds?: number;
-  CacheDataEncrypted?: boolean;
-  RequireAuthorizationForCacheControl?: boolean;
-  UnauthorizedCacheControlHeaderStrategy?: string;
-}
-
-/**
- * CFn MethodSetting field → UpdateStage patch-path suffix under
- * `/{method_setting_key}/`. The get-stage response field for each is the
- * camelCase of the CFn name (used by the drift readback).
- */
-const METHOD_SETTING_PATCH_FIELDS: ReadonlyArray<{
-  cfnKey: keyof CfnStageMethodSetting & string;
-  patchSuffix: string;
-  responseKey: string;
-}> = [
-  {
-    cfnKey: 'ThrottlingRateLimit',
-    patchSuffix: 'throttling/rateLimit',
-    responseKey: 'throttlingRateLimit',
-  },
-  {
-    cfnKey: 'ThrottlingBurstLimit',
-    patchSuffix: 'throttling/burstLimit',
-    responseKey: 'throttlingBurstLimit',
-  },
-  { cfnKey: 'MetricsEnabled', patchSuffix: 'metrics/enabled', responseKey: 'metricsEnabled' },
-  { cfnKey: 'LoggingLevel', patchSuffix: 'logging/loglevel', responseKey: 'loggingLevel' },
-  { cfnKey: 'DataTraceEnabled', patchSuffix: 'logging/dataTrace', responseKey: 'dataTraceEnabled' },
-  { cfnKey: 'CachingEnabled', patchSuffix: 'caching/enabled', responseKey: 'cachingEnabled' },
-  {
-    cfnKey: 'CacheTtlInSeconds',
-    patchSuffix: 'caching/ttlInSeconds',
-    responseKey: 'cacheTtlInSeconds',
-  },
-  {
-    cfnKey: 'CacheDataEncrypted',
-    patchSuffix: 'caching/dataEncrypted',
-    responseKey: 'cacheDataEncrypted',
-  },
-  {
-    cfnKey: 'RequireAuthorizationForCacheControl',
-    patchSuffix: 'caching/requireAuthorizationForCacheControl',
-    responseKey: 'requireAuthorizationForCacheControl',
-  },
-  {
-    cfnKey: 'UnauthorizedCacheControlHeaderStrategy',
-    patchSuffix: 'caching/unauthorizedCacheControlHeaderStrategy',
-    responseKey: 'unauthorizedCacheControlHeaderStrategy',
-  },
-];
-
-/**
- * The `{method_setting_key}` API Gateway keys a stage's method settings by:
- * `{resource_path}/{http_method}` with the resource path's leading slash
- * stripped — CDK's stage-level `deployOptions` (`ResourcePath: '/*',
- * HttpMethod: '*'`) keys as the star-slash-star wildcard (the get-stage
- * `methodSettings` map key and the UpdateStage patch-path segment are the
- * same string).
- */
-function methodSettingKey(setting: CfnStageMethodSetting): string {
-  const resourcePath = setting.ResourcePath ?? '/*';
-  const httpMethod = setting.HttpMethod ?? '*';
-  // The ROOT resource path is the bare `/` (CFn's documented root shape) and
-  // API Gateway keys it as `~1` — `~1/GET` in the get-stage map and in the
-  // UpdateStage patch path (verified live 2026-07-03). Bare leading-slash
-  // stripping would produce the malformed `//GET` patch path.
-  const escaped = resourcePath === '/' ? '~1' : resourcePath.replace(/^\//, '');
-  return `${escaped}/${httpMethod}`;
-}
-
-/**
- * Build the UpdateStage patch operations that take a stage's method settings
- * from `previous` to `next` (both in the CFn `MethodSettings` list shape):
- *   - an entry present only in `next`: `replace` each specified field
- *     (`replace` both adds and changes a method-setting override)
- *   - an entry present in both with NO fields dropped: `replace` only the
- *     changed fields
- *   - an entry present in both with a field DROPPED: `remove /{key}` then
- *     `replace` every remaining specified field — API Gateway REJECTS a
- *     field-level `remove` (`remove <key>/throttling/rateLimit` fails with
- *     "Cannot remove method setting ... because there is no method setting
- *     for this method"), while whole-key remove followed by field replaces
- *     in the SAME UpdateStage call applies sequentially (both verified live
- *     2026-07-03), so the dropped field reverts to its default (CFn
- *     absent-field semantics)
- *   - an entry present only in `previous`: `remove /{key}` — drops every
- *     override for that method path at once (CFn absent-entry semantics)
- * Values are rendered as strings (the UpdateStage wire format).
- */
-function buildMethodSettingsPatchOps(
-  previous: CfnStageMethodSetting[] | undefined,
-  next: CfnStageMethodSetting[] | undefined
-): Array<{ op: 'replace' | 'remove'; path: string; value?: string }> {
-  const ops: Array<{ op: 'replace' | 'remove'; path: string; value?: string }> = [];
-  const prevByKey = new Map((previous ?? []).map((s) => [methodSettingKey(s), s]));
-  const nextByKey = new Map((next ?? []).map((s) => [methodSettingKey(s), s]));
-
-  for (const key of prevByKey.keys()) {
-    if (!nextByKey.has(key)) {
-      ops.push({ op: 'remove', path: `/${key}` });
-    }
-  }
-
-  for (const [key, setting] of nextByKey) {
-    const prevSetting = prevByKey.get(key);
-    const fieldDropped =
-      prevSetting !== undefined &&
-      METHOD_SETTING_PATCH_FIELDS.some(
-        ({ cfnKey }) => prevSetting[cfnKey] !== undefined && setting[cfnKey] === undefined
-      );
-    if (fieldDropped) {
-      // Reset-and-rebuild: clear the whole key, then re-apply every field the
-      // new entry still specifies (see the JSDoc — leaf removes are rejected).
-      ops.push({ op: 'remove', path: `/${key}` });
-    }
-    for (const { cfnKey, patchSuffix } of METHOD_SETTING_PATCH_FIELDS) {
-      const nextValue = setting[cfnKey];
-      const prevValue = fieldDropped ? undefined : prevSetting?.[cfnKey];
-      if (nextValue !== undefined && String(nextValue) !== String(prevValue ?? '')) {
-        ops.push({ op: 'replace', path: `/${key}/${patchSuffix}`, value: String(nextValue) });
-      }
-    }
-  }
-
-  return ops;
-}
-
-/**
- * Append RFC 6902 patch operations describing the diff between two map-shaped
- * properties (e.g. API Gateway Method `RequestParameters` /
- * `RequestModels`). For each key:
- *   - present in `next`, absent in `prev`         → `add`     `<basePath>/<key>` `value`
- *   - absent in `next`, present in `prev`         → `remove`  `<basePath>/<key>`
- *   - present in both with different values       → `replace` `<basePath>/<key>` `value`
- *
- * Slashes inside individual keys are escaped per RFC 6901
- * (`/` → `~1`, `~` → `~0`) so paths like
- *   `/requestModels/application~1json` are well-formed JSON Pointers.
- */
-function appendMapPatchOps(
-  ops: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: string }>,
-  basePath: string,
-  next: Record<string, unknown>,
-  prev: Record<string, unknown>
-): void {
-  const escape = (k: string): string => k.replace(/~/g, '~0').replace(/\//g, '~1');
-
-  // add / replace
-  for (const [key, val] of Object.entries(next)) {
-    const path = `${basePath}/${escape(key)}`;
-    const stringValue = String(val);
-    if (!Object.hasOwn(prev, key)) {
-      ops.push({ op: 'add', path, value: stringValue });
-    } else if (String(prev[key]) !== stringValue) {
-      ops.push({ op: 'replace', path, value: stringValue });
-    }
-  }
-
-  // remove keys present in prev but not in next
-  for (const key of Object.keys(prev)) {
-    if (!Object.hasOwn(next, key)) {
-      ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
-    }
-  }
-}
-
-/**
- * RFC 6902 patch operations turning the list `prev` into `next` for an API
- * Gateway list field (Authorizer `ProviderARNs`, Method
- * `AuthorizationScopes`). API Gateway takes neither `replace` nor a
- * per-element path on these: each element is an `add` or `remove` against the
- * list path itself, with the element as `value` (measured in us-east-1,
- * go-to-k/cdkd#5408). A `remove` takes out ONE occurrence and fails the whole
- * call when the element is absent. `ProviderARNs` keeps duplicates on `add`,
- * so its diff counts occurrences; `AuthorizationScopes` ignores an `add` of a
- * scope already present (PutMethod alone stores a repeat), so it passes
- * `asSet`: membership is compared on deduplicated sides, and a dropped value
- * is removed once, or once per `prev` occurrence with
- * `removeEveryPrevOccurrence` (when `prev` is the live readback, which can
- * hold a repeat). Order is not compared, since AWS appends. On a
- * deploy `prev` is the last-deployed template, so an element already removed
- * out-of-band and then dropped from the template fails the call (`Existing
- * providerARNs list doesn't contain the value`) rather than being skipped.
- */
-function listPatchOps(
-  path: string,
-  next: readonly string[] | undefined,
-  prev: readonly string[] | undefined,
-  options: { asSet?: boolean; removeEveryPrevOccurrence?: boolean } = {}
-): {
-  adds: Array<{ op: 'add'; path: string; value: string }>;
-  removes: Array<{ op: 'remove'; path: string; value: string }>;
-} {
-  if (options.asSet) {
-    const nextSet = new Set(next ?? []);
-    const prevSet = new Set(prev ?? []);
-    const dropped = options.removeEveryPrevOccurrence ? (prev ?? []) : [...prevSet];
-    return {
-      adds: [...nextSet]
-        .filter((v) => !prevSet.has(v))
-        .map((value) => ({ op: 'add', path, value })),
-      removes: dropped
-        .filter((v) => !nextSet.has(v))
-        .map((value) => ({ op: 'remove', path, value })),
-    };
-  }
-  const remaining = new Map<string, number>();
-  for (const value of prev ?? []) remaining.set(value, (remaining.get(value) ?? 0) + 1);
-  const adds: Array<{ op: 'add'; path: string; value: string }> = [];
-  for (const value of next ?? []) {
-    const count = remaining.get(value) ?? 0;
-    if (count > 0) remaining.set(value, count - 1);
-    else adds.push({ op: 'add', path, value });
-  }
-  const removes: Array<{ op: 'remove'; path: string; value: string }> = [];
-  for (const [value, count] of remaining) {
-    for (let i = 0; i < count; i++) removes.push({ op: 'remove', path, value });
-  }
-  return { adds, removes };
-}
-
-/** The three ids addressing one API Gateway method. */
-interface MethodAddress {
-  restApiId: string;
-  resourceId: string;
-  httpMethod: string;
-}
-
-/**
- * The `PutIntegration` request for a CFn `Integration` block. Every mutable
- * field `PutIntegrationRequest` supports is forwarded; see `createMethod`'s
- * JSDoc for why (the `ResponseTransferMode` regression).
- */
-function putIntegrationInput(
-  ids: MethodAddress,
-  integration: Record<string, unknown>
-): ConstructorParameters<typeof PutIntegrationCommand>[0] {
-  return {
-    ...ids,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    type: integration['Type'] as any,
-    integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
-    uri: integration['Uri'] as string | undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    connectionType: integration['ConnectionType'] as any,
-    connectionId: integration['ConnectionId'] as string | undefined,
-    credentials: integration['Credentials'] as string | undefined,
-    requestParameters: integration['RequestParameters'] as Record<string, string> | undefined,
-    requestTemplates: integration['RequestTemplates'] as Record<string, string> | undefined,
-    passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    contentHandling: integration['ContentHandling'] as any,
-    timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
-    cacheNamespace: integration['CacheNamespace'] as string | undefined,
-    cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
-    // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
-    // SDK input shape is { insecureSkipVerification } (camelCase);
-    // passing the CFn object verbatim would silently drop the field.
-    tlsConfig: integration['TlsConfig']
-      ? {
-          insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
-            'InsecureSkipVerification'
-          ] as boolean | undefined,
-        }
-      : undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    responseTransferMode: integration['ResponseTransferMode'] as any,
-    // The ALB / NLB ARN of a private integration through a VPC link
-    // (go-to-k/cdkd#5391).
-    integrationTarget: integration['IntegrationTarget'] as string | undefined,
-  };
-}
-
-/** The `PutMethodResponse` request for one CFn `MethodResponses` entry. */
-function putMethodResponseInput(
-  ids: MethodAddress,
-  resp: Record<string, unknown>
-): ConstructorParameters<typeof PutMethodResponseCommand>[0] {
-  return {
-    ...ids,
-    statusCode: String(resp['StatusCode']),
-    responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
-    responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
-  };
-}
-
-/** The `PutIntegrationResponse` request for one CFn `IntegrationResponses` entry. */
-function putIntegrationResponseInput(
-  ids: MethodAddress,
-  ir: Record<string, unknown>
-): ConstructorParameters<typeof PutIntegrationResponseCommand>[0] {
-  return {
-    ...ids,
-    statusCode: String(ir['StatusCode']),
-    selectionPattern: ir['SelectionPattern'] as string | undefined,
-    responseParameters: ir['ResponseParameters'] as Record<string, string> | undefined,
-    responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    contentHandling: ir['ContentHandling'] as any,
-  };
-}
-
-type MethodChildCall =
-  | {
-      kind: 'delete';
-      command:
-        | DeleteIntegrationCommand
-        | DeleteIntegrationResponseCommand
-        | DeleteMethodResponseCommand;
-    }
-  | {
-      kind: 'put';
-      command: PutIntegrationCommand | PutIntegrationResponseCommand | PutMethodResponseCommand;
-    };
-
-/**
- * Whether `props` carries `Integration` / `MethodResponses` in CloudFormation's
- * shape (each absent, or an integration with a `Type` / an empty one, and an
- * array of method responses), not `readCurrentState`'s read-back shape.
- */
-function isCfnMethodChildShape(props: Record<string, unknown>): boolean {
-  const integration = integrationBlock(props['Integration']);
-  if (integration !== undefined && !('Type' in integration)) return false;
-  const responses = props['MethodResponses'];
-  return responses === undefined || Array.isArray(responses);
-}
-
-/** A CFn response list keyed by `StatusCode`; a malformed list reads as empty. */
-function responsesByStatus(value: unknown): Map<string, Record<string, unknown>> {
-  const out = new Map<string, Record<string, unknown>>();
-  if (!Array.isArray(value)) return out;
-  for (const entry of value) {
-    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
-      const record = entry as Record<string, unknown>;
-      out.set(String(record['StatusCode']), record);
-    }
-  }
-  return out;
-}
-
-/**
- * An `Integration` block, or `undefined` for none. An empty object is none:
- * `readCurrentState` emits `{}` for a method without an integration, and
- * putting it would send an integration with no type.
- */
-function integrationBlock(value: unknown): Record<string, unknown> | undefined {
-  return value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    Object.keys(value).length > 0
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-/**
- * The calls that move a method's integration and responses from `previous` to
- * `desired` (go-to-k/cdkd#5140), in the order API Gateway accepts, as
- * measured live:
- *
- * - `PutIntegration` REPLACES the integration and drops every integration
- *   response, so after it each desired integration response is put again.
- * - `PutIntegrationResponse` overwrites an existing status code.
- * - `PutMethodResponse` refuses an existing status code (`ConflictException`),
- *   so a changed method response is deleted first, and the integration
- *   response mapping onto it before that.
- * - Method responses are put before the integration responses that map onto
- *   them (see `createMethod`).
- *
- * Nothing is called when neither side changed.
- */
-export function methodChildCalls(
-  ids: MethodAddress,
-  desired: Record<string, unknown>,
-  previous: Record<string, unknown>
-): MethodChildCall[] {
-  // `cdkd drift --revert` hands either side as `readCurrentState` emits it:
-  // the SDK's camelCase `methodIntegration` and a status-code-keyed map of
-  // method responses. Read as CloudFormation's shape, that plans an
-  // integration with no type and a put of every existing method response.
-  // Such an update leaves both alone, as before go-to-k/cdkd#5140.
-  if (!isCfnMethodChildShape(desired) || !isCfnMethodChildShape(previous)) return [];
-  const newInt = integrationBlock(desired['Integration']);
-  const oldInt = integrationBlock(previous['Integration']);
-  const newMr = responsesByStatus(desired['MethodResponses']);
-  const oldMr = responsesByStatus(previous['MethodResponses']);
-  const newIr = responsesByStatus(newInt?.['IntegrationResponses']);
-  const oldIr = responsesByStatus(oldInt?.['IntegrationResponses']);
-  const withoutResponses = (b: Record<string, unknown> | undefined): unknown => {
-    if (b === undefined) return undefined;
-    const { IntegrationResponses: _dropped, ...rest } = b;
-    return rest;
-  };
-  const integrationChanged = !isDeepStrictEqual(withoutResponses(newInt), withoutResponses(oldInt));
-  const mrGoing = [...oldMr.keys()].filter(
-    (code) => !newMr.has(code) || !isDeepStrictEqual(newMr.get(code), oldMr.get(code))
-  );
-  const mrComing = [...newMr.keys()].filter(
-    (code) => !oldMr.has(code) || !isDeepStrictEqual(newMr.get(code), oldMr.get(code))
-  );
-
-  const calls: MethodChildCall[] = [];
-  // Integration responses that live on until the integration is put again or
-  // re-put below: the live set after the deletes in step 1.
-  const liveIr = new Map(oldInt === undefined ? [] : oldIr);
-  // 1. Integration gone: delete it (its responses go with it). Otherwise
-  //    delete each integration response whose code leaves, or whose method
-  //    response is about to be deleted.
-  if (oldInt !== undefined && newInt === undefined) {
-    calls.push({ kind: 'delete', command: new DeleteIntegrationCommand(ids) });
-    liveIr.clear();
-  } else if (oldInt !== undefined) {
-    for (const code of oldIr.keys()) {
-      if (!newIr.has(code) || mrGoing.includes(code)) {
-        calls.push({
-          kind: 'delete',
-          command: new DeleteIntegrationResponseCommand({ ...ids, statusCode: code }),
-        });
-        liveIr.delete(code);
-      }
-    }
-  }
-  // 2. Method responses: delete the leaving and changed ones, then put the
-  //    new and changed ones.
-  for (const code of mrGoing) {
-    calls.push({
-      kind: 'delete',
-      command: new DeleteMethodResponseCommand({ ...ids, statusCode: code }),
-    });
-  }
-  for (const code of mrComing) {
-    calls.push({
-      kind: 'put',
-      command: new PutMethodResponseCommand(putMethodResponseInput(ids, newMr.get(code)!)),
-    });
-  }
-  // 3. The integration, then its responses.
-  if (newInt !== undefined) {
-    if (integrationChanged) {
-      calls.push({
-        kind: 'put',
-        command: new PutIntegrationCommand(putIntegrationInput(ids, newInt)),
-      });
-      liveIr.clear();
-    }
-    for (const [code, ir] of newIr) {
-      if (liveIr.has(code) && isDeepStrictEqual(liveIr.get(code), ir)) continue;
-      calls.push({
-        kind: 'put',
-        command: new PutIntegrationResponseCommand(putIntegrationResponseInput(ids, ir)),
-      });
-    }
-  }
-  return calls;
 }

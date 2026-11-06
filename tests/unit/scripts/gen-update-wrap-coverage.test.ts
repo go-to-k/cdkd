@@ -7,6 +7,7 @@ import {
   buildReport,
   classifySource,
   findGaps,
+  loadReport,
 } from '../../../scripts/gen-update-wrap-coverage.ts';
 import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
@@ -894,9 +895,27 @@ describe('real-repo coverage floors', () => {
       ),
     ...classifySource(
       readFileSync(resolve(process.cwd(), 'src/provisioning/cloud-control-provider.ts'), 'utf8'),
-      'src/provisioning/cloud-control-provider.ts'
+      'src/provisioning/cloud-control-provider.ts',
+      UPDATE_WRAP_ALLOW_LIST,
+      companionFiles(resolve(process.cwd(), 'src/provisioning/cloud-control-provider.ts')).map(
+        (c) => readFileSync(c, 'utf8')
+      )
     ),
   ];
+
+  it('follows the CC provider update() into its companion files', () => {
+    // The class keeps a `return update.call(this, ...)` delegator; the body,
+    // and its sends, live in src/provisioning/cloud-control/ (#5835). Read
+    // without them, the class would lose its classification.
+    const cc = classes.filter((c) => c.className === 'CloudControlProvider');
+    expect(cc.map((c) => c.bucket)).toEqual(['wrapped']);
+    // And the generator's own read of it (`EXTRA_PROVIDER_FILES`), which the
+    // committed matrix comes from.
+    const generated = loadReport().classes.filter((c) => c.className === 'CloudControlProvider');
+    expect(generated.map((c) => [c.file, c.bucket])).toEqual([
+      ['src/provisioning/cloud-control-provider.ts', 'wrapped'],
+    ]);
+  });
 
   it('parses a realistic number of provider classes with update()', () => {
     // 83 at the time of writing; the floor guards against a parser regression

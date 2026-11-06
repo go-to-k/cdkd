@@ -178,6 +178,18 @@ describe('provider error-cause critic — the real tree', () => {
     expect(site?.verdict).toBe('threaded');
   });
 
+  it('sees the CC provider error classes its companion files construct', () => {
+    // Declared in cloud-control/shared.ts, constructed in cloud-control/wait.ts.
+    const wait = report.sites.filter((s) => s.file.endsWith('provisioning/cloud-control/wait.ts'));
+    expect(
+      wait.filter((s) => s.errorClass === 'CloudControlOperationFailedError').map((s) => s.within)
+    ).toEqual(['waitForOperation']);
+    const abandoned = wait.filter((s) => s.errorClass === 'CloudControlWaitAbandonedError');
+    expect(abandoned.map((s) => [s.within, s.context, s.verdict])).toEqual([
+      ['abandonWait', 'helper', 'threaded'],
+    ]);
+  });
+
   it('classifies the reference site (sqs-queue-policy-provider) as threaded', () => {
     const sites = report.sites.filter((s) => s.file.endsWith('sqs-queue-policy-provider.ts'));
     expect(sites.length).toBeGreaterThan(0);
@@ -217,6 +229,27 @@ describe('provider error-cause critic — the DERIVED error-class table', () => 
     );
     expect(sites.map((s) => s.verdict)).toEqual(['dropped']);
     expect(sites[0]?.errorClass).toBe('HostedZoneNameNotFoundError');
+  });
+
+  it('picks up a subclass declared in ANOTHER file of a split provider', () => {
+    // `CloudControlOperationFailedError` is declared in cloud-control/shared.ts
+    // and constructed in cloud-control/wait.ts. A per-file class table never
+    // sees it there, and a dropped cause would pass with no site at all.
+    const declaringFile = `export class LocalError extends ProvisioningError {
+         constructor(m: string, r: string, l: string, p?: string, cause?: Error) {
+           super(m, r, l, p, cause);
+         }
+       }`;
+    const constructingFile = `function f() {
+         try { go(); } catch (error) {
+           throw new LocalError('m', 'r', 'l', 'p');
+         }
+       }`;
+    const sites = analyzeFile('wait.ts', constructingFile, undefined, 'wait.ts', [declaringFile]);
+    expect(sites.map((s) => s.verdict)).toEqual(['dropped']);
+    expect(sites[0]?.errorClass).toBe('LocalError');
+    // Without the family, the class is unknown and the site is not seen.
+    expect(analyzeFile('wait.ts', constructingFile)).toEqual([]);
   });
 
   it('inherits the cause position when a subclass declares no constructor', () => {

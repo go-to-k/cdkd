@@ -980,6 +980,14 @@ stage_filter_hunk "src/provisioning/cloud-control-provider.ts" \
 run_case "hunk filter: cloud-control-provider.ts delete symbol arms the gate" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# The CC provider's method bodies live in `cloud-control/` (#5835); the
+# `cloud-control/.*\.ts` arm keeps them in scope. A real path, for the reason
+# the deploy-engine/ case above gives.
+stage_filter_hunk "src/provisioning/cloud-control/delete.ts" \
+  "  await this.deleteThroughCloudControl(logicalId, physicalId, resourceType);"
+run_case "hunk filter: cloud-control/ module delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # NOT a comment line: `comment_line_pattern` strips `//` lines before the symbol
 # grep, so a commented delete symbol correctly does NOT arm the gate. Writing
 # this fixture as a comment first is how that was confirmed -- it came back 0.

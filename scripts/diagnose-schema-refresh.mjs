@@ -128,9 +128,43 @@ import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from '
 import { join, dirname, relative } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
+// Dependency-free (node: built-ins only), so a static import keeps the
+// token-less backfill mode loadable without `vp install` (see loadEvidenceDeps).
+import { companionFiles } from './provider-companion-files.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
+
+/**
+ * A provider file plus its companion files (`scripts/provider-companion-files.ts`):
+ * a split provider's moved code, and any SDK client only that code imports,
+ * lives in `<stem>/`. Reading the provider file alone drops it silently
+ * (go-to-k/cdkd#5835).
+ *
+ * @param {string} abs
+ * @returns {string[]}
+ */
+function providerFamily(abs) {
+  return [abs, ...companionFiles(abs)];
+}
+
+/**
+ * Every `@aws-sdk/client-*` a provider family imports, in file order, deduplicated.
+ *
+ * @param {string} abs
+ * @returns {string[]}
+ */
+function importedSdkClients(abs) {
+  return [
+    ...new Set(
+      providerFamily(abs).flatMap((file) =>
+        [...readFileSync(file, 'utf8').matchAll(/from '(@aws-sdk\/client-[a-z0-9-]+)'/g)].map(
+          (m) => m[1]
+        )
+      )
+    ),
+  ];
+}
 
 /**
  * The two evidence helpers, loaded ON DEMAND rather than imported at the top.
@@ -548,8 +582,26 @@ export function findDeclarationCandidates(
   if (!providerRelPath) return [];
   const abs = join(repoRoot, providerRelPath);
   if (!existsSync(abs)) return [];
-  const lines = readFileSync(abs, 'utf8').split('\n');
+  /** @type {string[]} */
+  const hits = [];
+  for (const file of providerFamily(abs)) {
+    const rel = file === abs ? providerRelPath : relative(repoRoot, file);
+    const lines = readFileSync(file, 'utf8').split('\n');
+    hits.push(...declarationCandidatesIn(lines, rel, property, resourceType));
+  }
+  return hits;
+}
 
+/**
+ * One file's `file:line` candidates, inside the type's block when one is found.
+ *
+ * @param {string[]} lines
+ * @param {string} rel
+ * @param {string} property
+ * @param {string | undefined} resourceType
+ * @returns {string[]}
+ */
+function declarationCandidatesIn(lines, rel, property, resourceType) {
   let from = 0;
   let to = lines.length;
   if (resourceType) {
@@ -567,7 +619,7 @@ export function findDeclarationCandidates(
   const hits = [];
   for (let i = from; i < to; i++) {
     if (lines[i].includes(`'${property}'`) || lines[i].includes(`"${property}"`)) {
-      hits.push(`${providerRelPath}:${i + 1}`);
+      hits.push(`${rel}:${i + 1}`);
     }
   }
   return hits;
@@ -615,13 +667,7 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
   if (!/^[A-Za-z0-9]+$/.test(property)) return undefined;
   const abs = join(repoRoot, providerRelPath);
   if (!existsSync(abs)) return undefined;
-  const clients = [
-    ...new Set(
-      [...readFileSync(abs, 'utf8').matchAll(/from '(@aws-sdk\/client-[a-z0-9-]+)'/g)].map(
-        (m) => m[1]
-      )
-    ),
-  ];
+  const clients = importedSdkClients(abs);
   if (clients.length === 0) return undefined;
 
   const needle = new RegExp(`\\b${property}\\b`, 'i');
@@ -721,13 +767,7 @@ export function sdkClientVersions(providerRelPath, repoRoot = REPO_ROOT) {
   if (!existsSync(abs)) return [];
   /** @type {Array<{client: string, version: string}>} */
   const out = [];
-  const clients = [
-    ...new Set(
-      [...readFileSync(abs, 'utf8').matchAll(/from '(@aws-sdk\/client-[a-z0-9-]+)'/g)].map(
-        (m) => m[1]
-      )
-    ),
-  ];
+  const clients = importedSdkClients(abs);
   for (const client of clients) {
     if (!existsSync(join(repoRoot, 'node_modules', client, 'dist-types/models'))) continue;
     try {
@@ -955,7 +995,7 @@ export const CHECK_GUIDANCE = {
     '```',
     '',
     'Add the attribute to that type\'s `case` in',
-    '`src/provisioning/cloud-control-provider.ts`, or allow-list it with a',
+    '`src/provisioning/cloud-control/enrich.ts`, or allow-list it with a',
     'rationale if AWS does not return it.',
   ],
   'sdk-wire-coverage': [

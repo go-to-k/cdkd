@@ -65,7 +65,7 @@ const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
  * by `targets`; a removed `AuthorizerUri` kept).
  */
 
-const APIGW_SRC = 'apigateway-provider.ts';
+const APIGW_SRC = 'apigateway';
 const APIGW_API_ID = 'api-1';
 const APIGW_ROLE = `arn:aws:iam::${ACCOUNT}:role/apigw`;
 const APIGW_FN_URI = `arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:${ACCOUNT}:function:f/invocations`;
@@ -83,7 +83,7 @@ const apigwRequired = (keys: string[], at: string, says: RegExp): Record<string,
     keys.map((key) => [
       `create:${key}`,
       {
-        why: `create() refuses a resource without ${keys.join(' / ')} before any call (${APIGW_SRC}:${at})`,
+        why: `create() refuses a resource without ${keys.join(' / ')} before any call (${APIGW_SRC}/${at})`,
         says,
       },
     ])
@@ -110,7 +110,7 @@ const APIGW_ACCOUNT_CASE: TypeCase = {
 
 const APIGW_AUTHORIZER_REQUIRED = apigwRequired(
   ['RestApiId', 'Name', 'Type'],
-  '809-815',
+  'authorizer.ts',
   /RestApiId, Name, and Type are required for API Gateway Authorizer/
 );
 
@@ -166,7 +166,7 @@ const APIGW_AUTHORIZER_CASE: TypeCase = {
       },
       variants: { Type: 'REQUEST' },
       expectedSilent: {
-        'update-remove:AuthorizerUri': `left in place on removal: CloudFormation keeps the URI (real CloudFormation A/B in us-east-1, go-to-k/cdkd#5408), and API Gateway refuses an empty URI on a TOKEN / REQUEST authorizer (${APIGW_SRC}:996-1003)`,
+        'update-remove:AuthorizerUri': `left in place on removal: CloudFormation keeps the URI (real CloudFormation A/B in us-east-1, go-to-k/cdkd#5408), and API Gateway refuses an empty URI on a TOKEN / REQUEST authorizer (${APIGW_SRC}/authorizer.ts)`,
       },
       expectedRemovalThrows: APIGW_AUTHORIZER_REQUIRED,
     },
@@ -190,7 +190,7 @@ const APIGW_RESOURCE_CASE: TypeCase = {
       bag: { RestApiId: APIGW_API_ID, ParentId: 'root-1', PathPart: 'pets' },
       expectedRemovalThrows: apigwRequired(
         ['RestApiId', 'ParentId', 'PathPart'],
-        '1148-1154',
+        'resource-deployment.ts',
         /RestApiId, ParentId, and PathPart are required for API Gateway Resource/
       ),
     },
@@ -216,7 +216,7 @@ const APIGW_DEPLOYMENT_CASE: TypeCase = {
       bag: { RestApiId: APIGW_API_ID, Description: 'd' },
       expectedRemovalThrows: apigwRequired(
         ['RestApiId'],
-        '1388-1394',
+        'resource-deployment.ts',
         /RestApiId is required for API Gateway Deployment/
       ),
     },
@@ -316,13 +316,13 @@ const APIGW_STAGE_CASE: TypeCase = {
       },
       variants: { CacheClusterSize: '1.6' },
       expectedSilent: {
-        'update-remove:DeploymentId': `a stage always points at a deployment: create() refuses a stage without one (${APIGW_SRC}:1652-1658), and update() patches /deploymentId only to a declared value, so a removal leaves the live deployment (${APIGW_SRC}:1838-1842). CloudFormation is unmeasured for this removal`,
-        'update-remove:CacheClusterSize': `deliberately not cleared on removal: /cacheClusterSize takes only an enum value (no empty clear) and dropping CacheClusterEnabled tears the cluster down with its size (${APIGW_SRC}:1883-1905). CloudFormation is unmeasured for this removal`,
+        'update-remove:DeploymentId': `a stage always points at a deployment: create() refuses a stage without one (${APIGW_SRC}/stage.ts), and update() patches /deploymentId only to a declared value, so a removal leaves the live deployment (${APIGW_SRC}/stage.ts). CloudFormation is unmeasured for this removal`,
+        'update-remove:CacheClusterSize': `deliberately not cleared on removal: /cacheClusterSize takes only an enum value (no empty clear) and dropping CacheClusterEnabled tears the cluster down with its size (${APIGW_SRC}/stage.ts). CloudFormation is unmeasured for this removal`,
       },
       expectedRemovalThrows: {
         ...apigwRequired(
           ['RestApiId', 'StageName', 'DeploymentId'],
-          '1652-1658',
+          'stage.ts',
           /RestApiId, StageName, and DeploymentId are required for API Gateway Stage/
         ),
         ...TAG_THROWS(APIGW_ALL_DIRECTIONS, 2),
@@ -333,7 +333,7 @@ const APIGW_STAGE_CASE: TypeCase = {
 
 // --- AWS::ApiGateway::Method --------------------------------------------------------
 
-const APIGW_INTEGRATION_WITHOUT_TYPE = `an Integration block without Type is \`readCurrentState\`'s read-back shape, which update() leaves alone on either side (\`isCfnMethodChildShape\`, ${APIGW_SRC}:3663-3673, 3723-3728); CloudFormation requires Integration.Type, so no deployable template removes it`;
+const APIGW_INTEGRATION_WITHOUT_TYPE = `an Integration block without Type is \`readCurrentState\`'s read-back shape, which update() leaves alone on either side (\`isCfnMethodChildShape\`, ${APIGW_SRC}/shared.ts); CloudFormation requires Integration.Type, so no deployable template removes it`;
 
 const APIGW_METHOD_CASE: TypeCase = {
   resourceType: 'AWS::ApiGateway::Method',
@@ -453,7 +453,7 @@ const APIGW_METHOD_CASE: TypeCase = {
       },
       expectedRemovalThrows: apigwRequired(
         ['RestApiId', 'ResourceId', 'HttpMethod'],
-        '2318-2324',
+        'method.ts',
         /RestApiId, ResourceId, and HttpMethod are required for API Gateway Method/
       ),
     },

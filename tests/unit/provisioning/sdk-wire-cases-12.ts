@@ -1184,10 +1184,10 @@ const ELBV2_LISTENER_ARN = `${ELBV2_PREFIX}:listener/app/lb/0123456789abcdef/fed
 /**
  * A removed attribute key is never sent: it keeps its live value, as
  * CloudFormation leaves it (CFn A/B us-east-1 2026-10-17,
- * elbv2-provider.ts:385-397).
+ * elbv2/shared.ts).
  */
 const ELBV2_ATTRIBUTE_RETAINED =
-  'a removed attribute key keeps its live value, as CloudFormation leaves it (CFn A/B 2026-10-17, RETAIN_REMOVED_ATTRIBUTE, elbv2-provider.ts:385-397)';
+  'a removed attribute key keeps its live value, as CloudFormation leaves it (CFn A/B 2026-10-17, RETAIN_REMOVED_ATTRIBUTE, elbv2/shared.ts)';
 
 /** `update-remove` labels of a two-entry attribute list whose removal sends nothing. */
 const elbv2AttributeRemovals = (bag: string): Record<string, string> =>
@@ -1216,7 +1216,7 @@ function armElbv2LoadBalancer(): void {
 }
 
 const ELBV2_LB_FLAG_RETAINED = (key: string): string =>
-  `${key} rides on a Set* call and a removed flag is left in place, as CloudFormation leaves it (CFn A/B 2026-10-17; AWS retains it when the Set* call omits it, A/B 2026-08-12; elbv2-provider.ts:1707-1723, 1753-1764, 763-766)`;
+  `${key} rides on a Set* call and a removed flag is left in place, as CloudFormation leaves it (CFn A/B 2026-10-17; AWS retains it when the Set* call omits it, A/B 2026-08-12; elbv2/load-balancer-update.ts and removalHandledInUpdate in elbv2-provider.ts)`;
 
 const LOAD_BALANCER_CASE: TypeCase = {
   resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
@@ -1226,7 +1226,7 @@ const LOAD_BALANCER_CASE: TypeCase = {
   arm: () => armElbv2LoadBalancer(),
   exempt: {
     EnableCapacityReservationProvisionStabilize:
-      'a CloudFormation-only wait flag with no SDK member: it only gates a DescribeCapacityReservation poll (a read, which the wire capture leaves out) after ModifyCapacityReservation (elbv2-provider.ts:1422-1451, 1881-1887)',
+      'a CloudFormation-only wait flag with no SDK member: it only gates a DescribeCapacityReservation poll (a read, which the wire capture leaves out) after ModifyCapacityReservation (elbv2/load-balancer.ts and elbv2/load-balancer-update.ts)',
   },
   targets: ELBV2_TAG_TARGETS,
   bags: [
@@ -1271,7 +1271,7 @@ const LOAD_BALANCER_CASE: TypeCase = {
     },
     {
       // The SetSubnets arm that sends `Subnets` (SubnetMappings wins when both
-      // are declared, elbv2-provider.ts:1724-1735).
+      // are declared, elbv2/load-balancer-update.ts).
       name: 'application load balancer, subnets',
       bag: { Subnets: ['subnet-1', 'subnet-2'] },
     },
@@ -1291,18 +1291,18 @@ function armElbv2TargetGroup(): void {
 /**
  * ModifyTargetGroup is built from the desired bag, and a removed health-check
  * member is passed through: CloudFormation keeps every one but HealthCheckPort
- * (CFn A/B 2026-08-10, re-run 2026-10-17, elbv2-provider.ts:2388-2399).
+ * (CFn A/B 2026-08-10, re-run 2026-10-17, elbv2/target-group.ts).
  */
 const ELBV2_HEALTH_CHECK_RETAINED =
-  'a removed health-check member is left in place, as CloudFormation leaves it (CFn A/B 2026-08-10 and 2026-10-17; only HealthCheckPort is reset, elbv2-provider.ts:2388-2404)';
+  'a removed health-check member is left in place, as CloudFormation leaves it (CFn A/B 2026-08-10 and 2026-10-17; only HealthCheckPort is reset, elbv2/target-group.ts)';
 
 const ELBV2_TARGETS_REFUSED = ELBV2_REQUIRED(
-  'a Targets entry without its Id is refused before any call (go-to-k/cdkd#3989, elbv2-provider.ts:2116-2128, 3259-3270)',
+  'a Targets entry without its Id is refused before any call (go-to-k/cdkd#3989, elbv2/target-group.ts and elbv2/attributes.ts)',
   /is not a list of targets/
 );
 
 const ELBV2_TARGET_CONTROL_PORT_REFUSED = ELBV2_REQUIRED(
-  'TargetControlPort has no modify API: a change is refused with ResourceUpdateNotSupportedError, which the engine turns into a replacement (elbv2-provider.ts:2330-2359)',
+  'TargetControlPort has no modify API: a change is refused with ResourceUpdateNotSupportedError, which the engine turns into a replacement (elbv2/target-group.ts)',
   /TargetControlPort is immutable/
 );
 
@@ -1345,9 +1345,9 @@ const TARGET_GROUP_CASE: TypeCase = {
           { Key: 'stickiness.enabled', Value: 'false' },
         ],
         // A Port other than the group's, so a removed one (defaulted to the
-        // group port, elbv2-provider.ts:339-372) is another tuple. The first
+        // group port, elbv2/shared.ts) is another tuple. The first
         // entry's QuicServerId alone changing takes the deregister-first arm
-        // (go-to-k/cdkd#5398, elbv2-provider.ts:2479-2500).
+        // (go-to-k/cdkd#5398, elbv2/target-group.ts).
         Targets: [
           {
             Id: 'i-1',
@@ -1376,7 +1376,7 @@ const TARGET_GROUP_CASE: TypeCase = {
         ),
         ...elbv2AttributeRemovals('TargetGroupAttributes'),
         'update-vary:TargetControlPort':
-          'TargetControlPort has no modify API: every in-place change is refused before any call and replaced by the engine (elbv2-provider.ts:2330-2359); create-vary reads its value',
+          'TargetControlPort has no modify API: every in-place change is refused before any call and replaced by the engine (elbv2/target-group.ts); create-vary reads its value',
       },
       expectedRemovalThrows: {
         ...TAG_THROWS(ELBV2_ALL_DIRECTIONS, 2),
@@ -1406,13 +1406,13 @@ function armElbv2Listener(): void {
  * the whole DefaultActions / Certificates / MutualAuthentication, and a removed
  * top-level is left in place, as CloudFormation leaves each of them (CFn A/B
  * us-east-1 2026-10-20, LISTENER_LEFT_IN_PLACE_ON_REMOVAL,
- * elbv2-provider.ts:559-576, 2885-2937); DefaultActions is required.
+ * elbv2/shared.ts and elbv2/listener.ts); DefaultActions is required.
  * ListenerAttributes and Tags are diffed against the previous side.
  */
 const LISTENER_FROM_NEXT = {
   keys: (key: string) => key !== 'ListenerAttributes' && key !== 'Tags',
   reason:
-    'ModifyListener is a full send from the desired bag; a removed property is left in place as CloudFormation leaves it (CFn A/B 2026-10-20, elbv2-provider.ts:559-576, 2920-2937)',
+    'ModifyListener is a full send from the desired bag; a removed property is left in place as CloudFormation leaves it (CFn A/B 2026-10-20, elbv2/shared.ts and elbv2/listener.ts)',
 };
 
 const ELBV2_TG_ARN_2 = `${ELBV2_PREFIX}:targetgroup/tg2/0123456789abcdef`;

@@ -96,7 +96,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // `ecs-provider.ts`'s `isNotFoundException`, moved to its companion file.
   { file: 'provisioning/providers/ecs/convert-service.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/elbv2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `ELBv2Provider`'s `isNotFoundError`, moved to its companion file.
+  { file: 'provisioning/providers/elbv2/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/neptune-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // RDSProvider's `isNotFoundError`, in its companion directory (`rds/`).
   { file: 'provisioning/providers/rds/calls.ts', sites: 1, reason: SDK_PROVIDER_REASON },
@@ -322,11 +323,13 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
       'deployment/deploy-engine/delete.ts',
       'deployment/deploy-engine/update-in-place.ts',
       'provisioning/cc-protection-properties.ts',
-      'provisioning/cloud-control-provider.ts',
+      'provisioning/cloud-control/poll-failure.ts',
     ]);
     // FIVE governed sites: the engine's DELETE and UPDATE arms (one each, in
     // their #4200 split-out modules), plus one each in `destroy-runner.ts`,
-    // `cloud-control-provider.ts` and `cc-protection-properties.ts` (the
+    // `cloud-control/poll-failure.ts` (the CC provider's delete classifier,
+    // split out of `cloud-control-provider.ts` by #5835) and
+    // `cc-protection-properties.ts` (the
     // `--remove-protection` compensation's not-found arm, issue #2204, whose
     // input can be an abandoned re-enable wait). Another guard exists
     // — `cleanupFailedCreateRemnant`'s early return — and is deliberately NOT

@@ -139,7 +139,7 @@ export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<Threshold
  * files under six different names — `config-shape.ts`, `wafv2-provider.ts`,
  * `s3-bucket/shared.ts` (`isPlainObject`), `emr-configuration.ts`,
  * `lambda-microvm-image-provider.ts` (`isRecord`),
- * `apigateway-provider.ts` (`isPlainObjectBlock`), `drift.ts`
+ * `apigateway/shared.ts` (`isPlainObjectBlock`), `drift.ts`
  * (`isPlainRecord`), `lambda-vpc-deps.ts` (`isObject`), and this one — plus
  * further INLINE copies (`route53-provider.ts` x2,
  * `custom-resource-provider.ts`, `diff-recursive.ts`,
