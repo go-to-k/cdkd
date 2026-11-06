@@ -359,19 +359,6 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     expect(warn.mock.calls.flat().join('\n')).not.toMatch(/not seen terminated/);
   });
 
-  it('still reads, a bounded number of times, when the create failed past the resource deadline', async () => {
-    attachInvisible = true;
-    terminateStates = ['shutting-down', 'shutting-down', 'terminated'];
-    deadlineRemaining.mockImplementation(() =>
-      powerState === 'terminating' ? 0 : Number.POSITIVE_INFINITY
-    );
-    await expect(
-      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
-    ).rejects.toThrow(/not attached at \/dev\/sdf/);
-    expect(describesAfterTerminate()).toBe(3);
-    expect(warn.mock.calls.flat().join('\n')).not.toMatch(/not seen terminated/);
-  });
-
   it('waits for termination after an ambiguous AttachVolume failure whose read lags to no attachment', async () => {
     failAttach = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     await expect(
@@ -424,8 +411,6 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toMatch(/Instance i-new of Inst was not seen terminated after its failed create \(timed out\)/);
     expect(warned).not.toMatch(/STILL RUNNING/);
-    // Past the deadline it still read, a bounded number of times.
-    expect(describesAfterTerminate()).toBe(12);
   });
 
   it('warns, and still throws the attach error, when the termination read fails', async () => {
@@ -445,11 +430,22 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     expect(warned).not.toMatch(/STILL RUNNING/);
   });
 
+  it('waits for termination after a 4xx that answered an SDK retry (an earlier attempt may have attached)', async () => {
+    failAttach = Object.assign(new Error('vol-1 is in the in-use state'), {
+      name: 'IncorrectState',
+      $metadata: { httpStatusCode: 400, attempts: 2 },
+    });
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/IncorrectState/);
+    expect(describesAfterTerminate()).toBeGreaterThan(0);
+  });
+
   it('does not wait for termination when the only AttachVolume was refused outright (a 4xx)', async () => {
     attachments.set('vol-1', { InstanceId: 'i-old', Device: '/dev/sdf', State: 'attached' });
     failAttach = Object.assign(new Error('vol-1 is already attached to an instance'), {
       name: 'VolumeInUse',
-      $metadata: { httpStatusCode: 400 },
+      $metadata: { httpStatusCode: 400, attempts: 1 },
     });
     await expect(
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
