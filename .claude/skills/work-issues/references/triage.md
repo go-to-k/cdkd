@@ -37,7 +37,7 @@ row, so it CC-routes where a CC route exists (#5636).
 
 ```bash
 git fetch origin -q                    # REQUIRED before the ref probe below
-git worktree list
+git worktree list --porcelain           # skip your own tree and `prunable` ones
 gh pr list --state open --limit 200 --json number,title,headRefName,files,changedFiles
 # `files` stops at 100 per PR: where changedFiles is larger, page the rest with
 # `gh api --paginate repos/go-to-k/cdkd/pulls/<N>/files -q '.[].filename'`.
@@ -47,8 +47,7 @@ gh pr list --state open --limit 200 --json number,title,headRefName,files,change
 git for-each-ref --sort=-committerdate \
   --format='%(committerdate:iso) %(refname:short)' refs/remotes/origin | head -10
 
-# Per live worktree: every `worktree` path `git worktree list --porcelain`
-# prints, never a glob of <MAIN_CHECKOUT>/.claude/worktrees/ (peer lanes in
+# Per live worktree: every `worktree` path the list above prints, never a glob of <MAIN_CHECKOUT>/.claude/worktrees/ (peer lanes in
 # sibling workspaces live outside it, #5890's run). The diff is EVERY file that lane holds.
 git -C "<worktree path>" diff --name-only origin/main...HEAD
 git -C "<worktree path>" status --porcelain
