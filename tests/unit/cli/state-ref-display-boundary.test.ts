@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 /**
  * Issue [#3164](https://github.com/go-to-k/cdkd/issues/3164): every `Stack
- * (region)` reference `src/cli/commands/state.ts` renders goes through
+ * (region)` reference `src/cli/commands/state.ts` (and `state/**`) renders
+ * goes through
  * `formatStackRefSafe`, and that helper now renders BOTH halves with
  * `displayIdent` rather than the bare ASCII allowlist.
  *
@@ -26,7 +27,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * Both are asserted at EVERY caller of the helper, not at the listing alone.
  * Guarding one site and leaving the rest is the per-site spelling that failed
  * twice (go-to-k/cdkd#2772, and the first cut of go-to-k/cdkd#3003), so the
- * population lives here as a TABLE: a new caller added to `state.ts` is a row
+ * population lives here as a TABLE: a new caller added to the state sources is
+ * a row
  * added here, and the floor below refuses a table that silently shrinks.
  *
  * The two CONFIRMATION PROMPTS left this helper for `describedStackRef`
@@ -34,8 +36,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * non-plain value is described rather than shown. Their own describe block is
  * at the end of this file.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { setStdinIsTty } from '../../stdin-tty.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -125,6 +125,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createStateCommand, stateBrowseDeps } from '../../../src/cli/commands/state.js';
+import { readStateSourceWithoutWiring } from './_state-source.js';
 import { IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS, UNRENDERABLE, cutMarker } from '../../../src/utils/display-safe.js';
 
 interface Ref {
@@ -182,7 +183,8 @@ function lastLine(spy: typeof infoSpy, prefix: string): string {
 }
 
 /**
- * One row per `formatStackRefSafe` caller in `src/cli/commands/state.ts`.
+ * One row per `formatStackRefSafe` caller in `src/cli/commands/state.ts` and
+ * `src/cli/commands/state/**`.
  * `render` drives the real command with a state bucket holding exactly ONE
  * ref and returns the reference string THAT site produced for it, with every
  * surrounding word of cdkd's own sentence stripped -- so the assertions below
@@ -287,7 +289,7 @@ const SITES: Array<{
  *
  * It is only HALF the fence, and on its own it is the weaker half: it catches
  * the table shrinking and cannot see the SOURCE growing. A seventh caller
- * added to `state.ts` would be rendered by the changed helper and exercised by
+ * added to the state sources would be rendered by the changed helper and exercised by
  * nothing here -- which is precisely the per-site miss this PR cites as having
  * happened twice. `formatStackRefSafe callers` below closes that direction by
  * counting the call sites in the source.
@@ -295,11 +297,14 @@ const SITES: Array<{
 const EXPECTED_SITE_COUNT = 8;
 
 /**
- * Where the source population is read from. A literal path, not a glob: this
- * fence is a claim about ONE function in ONE file, and a walk that silently
- * matched nothing would be green.
+ * Where the source population is read from: `state.ts` plus every module under
+ * `state/`, read recursively, with the split's import / re-export wiring
+ * removed so a sibling's import of the helper is not counted as a caller. The
+ * fence is a claim about ONE function across ONE command's sources; a read
+ * that silently matched nothing is caught by the `code.length` and
+ * declaration floors below.
  */
-const STATE_TS = fileURLToPath(new URL('../../../src/cli/commands/state.ts', import.meta.url));
+const readStateCode = (): string => readStateSourceWithoutWiring();
 
 /**
  * Every shape a LEGITIMATE row takes. A top-level stack name comes from
@@ -403,8 +408,8 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     expect(new Set(SITES.map((s) => s.name)).size).toBe(EXPECTED_SITE_COUNT);
   });
 
-  it('and state.ts names formatStackRefSafe in CODE exactly 1 + EXPECTED_SITE_COUNT times', () => {
-    const source = readFileSync(STATE_TS, 'utf-8');
+  it('and the state sources name formatStackRefSafe in CODE exactly 1 + EXPECTED_SITE_COUNT times', () => {
+    const source = readStateCode();
 
     // Strip comments FIRST, then count every remaining mention of the name.
     //

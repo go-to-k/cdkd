@@ -2,6 +2,7 @@
 description: cdkd state subcommands and the per-resource cdkd orphan
 paths:
   - 'src/cli/commands/state.ts'
+  - 'src/cli/commands/state/**'
   - 'src/cli/commands/state-list-tree.ts'
   - 'src/cli/commands/state-refresh-observed.ts'
   - 'src/cli/commands/orphan.ts'
@@ -13,6 +14,16 @@ paths:
 
 ## `state` — reads the S3 state bucket, no CDK app
 
+- **Module layout.** `state.ts` holds `createStateCommand` and re-exports every
+  public symbol, so callers and tests import from it alone; the code lives in
+  `state/*.ts`: `refs.ts` (stack-ref rendering, region resolution, the
+  `--long` row reasons), `setup.ts` (`setupStateBackend`, `stackRegionOption`,
+  `warnOnLiveForeignLock`), one module per subcommand — `list.ts`,
+  `resources.ts`, `show.ts` + `show-containers.ts` (the read-only repairs and
+  the `skippedOutputs` block), `orphan.ts`, `destroy.ts`, `info.ts`,
+  `refresh-observed.ts` + `refresh-observed-stack.ts` (the per-stack writer),
+  `browse.ts`. Source fences read the whole set through
+  `tests/unit/cli/_state-source.ts`.
 - **`info`** — the ONLY on-demand printer of the bucket name (account id).
 - **`list`** (`ls`) — one row per `(stackName, region)`. `--tree` reads v6
   `parentStack` / `parentRegion`; `renderTreeMode` does one `getState` per ref

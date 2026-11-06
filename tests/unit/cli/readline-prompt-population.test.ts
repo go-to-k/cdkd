@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
+import { stateSourceRelPaths } from './_state-source.js';
 
 /**
  * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275) was a DUPLICATION
@@ -157,7 +158,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
 /**
  * The SEVEN files that lost their whole readline interface to the fold. The
  * nine folded SITES are these seven plus two inside `state.ts` (`state orphan`
- * and `state refresh-observed`). `state.ts` kept a third, deliberately unfolded
+ * and `state refresh-observed`, now in `state/orphan.ts` and
+ * `state/refresh-observed.ts`). `state.ts` kept a third, deliberately unfolded
  * one — the `state destroy --all` batch prompt — until that option was removed
  * (go-to-k/cdkd#3865), so it is asserted separately below.
  *
@@ -236,22 +238,36 @@ describe('readline interface population (issue #2275)', () => {
     // `state.ts` held THREE before the fold: two were folded (`state orphan`,
     // `state refresh-observed`) and the third, the `state destroy --all` batch
     // prompt, went with that option (go-to-k/cdkd#3865).
-    expect(
-      actual['src/cli/commands/state.ts'],
-      'state.ts constructs a readline interface again'
-    ).toBeUndefined();
+    // Since the split (go-to-k/cdkd#5835) that is `state.ts` and every module
+    // under `state/`.
+    const stateFiles = stateSourceRelPaths();
+    expect(stateFiles).toContain('src/cli/commands/state.ts');
+    expect(stateFiles.length).toBeGreaterThan(1);
+    for (const path of stateFiles) {
+      expect(actual[path], `${path} constructs a readline interface again`).toBeUndefined();
+    }
   });
 
   it('every folded site imports the shared guarded helper instead', () => {
     // The complement of the count assertion above: a site could stop
     // constructing an interface by having its prompt DELETED rather than
     // routed, which the counts alone read as an improvement.
-    for (const path of [...FOLDED_FILES, 'src/cli/commands/state.ts']) {
+    // `state.ts`'s two folded sites moved with its split (go-to-k/cdkd#5835):
+    // `state orphan`'s prompt into `state/orphan.ts`, `state refresh-observed`'s
+    // into `state/refresh-observed.ts`.
+    for (const path of [
+      ...FOLDED_FILES,
+      'src/cli/commands/state/orphan.ts',
+      'src/cli/commands/state/refresh-observed.ts',
+    ]) {
       const text = readFileSync(join(REPO_ROOT, path), 'utf-8');
-      // `drift/plan.ts` and `export/command-helpers.ts` sit one directory
-      // below their siblings, so they reach the helper as `../`.
+      // `drift/plan.ts`, `export/command-helpers.ts` and the two `state/`
+      // modules sit one directory below their siblings, so they reach the
+      // helper as `../`.
       const spec =
-        path.startsWith('src/cli/commands/drift/') || path.startsWith('src/cli/commands/export/')
+        path.startsWith('src/cli/commands/drift/') ||
+        path.startsWith('src/cli/commands/export/') ||
+        path.startsWith('src/cli/commands/state/')
           ? '../confirm-prompt.js'
           : './confirm-prompt.js';
       expect(text, `${path} no longer routes through confirmOrRefuse`).toContain(

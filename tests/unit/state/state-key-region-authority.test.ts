@@ -715,7 +715,8 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // where a bare length would say only "expected 3".
     expect(files).toEqual([
       'cli/commands/destroy.ts',
-      'cli/commands/state.ts',
+      // `cdkd state destroy`, moved out of `state.ts` (go-to-k/cdkd#5835).
+      'cli/commands/state/destroy.ts',
       'provisioning/providers/nested-stack-provider.ts',
     ]);
     for (const file of files) {

@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { stateSourceRelPaths } from '../cli/_state-source.js';
 import {
   STATE_RESOURCES_MALFORMED,
   divergentRecordRegionRefusalMessage,
@@ -3865,11 +3866,13 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * itself read the bag it is being pointed at.
    */
   it('cdkd state orphan reads no resources bag, so the destroy refusal may point at it', () => {
-    const src = code('src/cli/commands/state.ts');
+    // `stateOrphanCommand` moved from `state.ts` into `state/orphan.ts` with the
+    // split (go-to-k/cdkd#5835).
+    const src = code('src/cli/commands/state/orphan.ts');
     const at = src.indexOf('async function stateOrphanCommand');
     expect(at, 'stateOrphanCommand was renamed; this fence is reading nothing').toBeGreaterThan(-1);
-    // Bounded to that function's own body: `state.ts` hosts every `cdkd state`
-    // subcommand, so a whole-file scan would be answered by `state resources`.
+    // Bounded to that function's own body: `state/orphan.ts` also hosts
+    // `state orphan --resource`, which does read the bag.
     const body = src.slice(at, src.indexOf('\nfunction ', at + 1));
     expect(
       body.includes('.resources'),
@@ -4851,7 +4854,8 @@ describe('every repair the module exports is classified and has its read-only ca
   /**
    * The files calling each repair, derived from the tree's AST. Every
    * one of them is READ-ONLY on the path that calls it: `diff-recursive.ts`,
-   * `state.ts` (`state resources` and `state show`'s text modes) and
+   * `state/resources.ts` and `state/show-containers.ts` (`state resources` and
+   * `state show`'s text modes) and
    * `s3-local-state-provider.ts` write no `state.json`; `drift/detect.ts` repairs only
    * outside `--accept` / `--revert`; `scrub.ts` only under `--dry-run`, which
    * the REFUSE loop above pins. A file joining a list is a new caller whose
@@ -4862,7 +4866,8 @@ describe('every repair the module exports is classified and has its read-only ca
       'src/cli/commands/diff-recursive.ts',
       'src/cli/commands/drift/detect.ts',
       'src/cli/commands/scrub.ts',
-      'src/cli/commands/state.ts',
+      'src/cli/commands/state/resources.ts',
+      'src/cli/commands/state/show-containers.ts',
       'src/local/s3-local-state-provider.ts',
     ],
     repairMalformedOutputsForReadOnly: [
@@ -7250,7 +7255,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ['src/cli/commands/scrub.ts', 5],
     ['src/cli/commands/local-state-loader.ts', 1],
     ['src/state/s3-state-backend.ts', 2],
-    ['src/cli/commands/state.ts', 1],
+    // `state show --json`'s tree key, moved from `state.ts` (go-to-k/cdkd#5835).
+    ['src/cli/commands/state/show.ts', 1],
     ['src/cli/commands/state-list-tree.ts', 1],
     ['src/cli/commands/rollback.ts', 1],
   ];
@@ -7702,7 +7708,10 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
   }
 
   it('src/cli/commands/state.ts — refresh-observed refuses both shapes before it reads either', () => {
-    const src = code('src/cli/commands/state.ts');
+    // The command module and every module split out of it under `state/`
+    // (go-to-k/cdkd#5835), read as one source like `drift/` below.
+    const src = stateSourceRelPaths().map(code).join('\n');
+    expect(src, 'the state sources were not read').toContain('function createStateCommand(');
     const body = flow(src, 'async function refreshObservedForStack(');
 
     // The premise: this flow is the file's writer. If it stops persisting, the

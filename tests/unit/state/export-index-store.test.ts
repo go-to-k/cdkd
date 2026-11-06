@@ -363,15 +363,24 @@ describe('ExportIndexStore', () => {
 
     it('every command constructing a store hands it the run\'s --profile (go-to-k/cdkd#4159)', async () => {
       const { readFileSync } = await import('node:fs');
+      const { readStateSource } = await import('../cli/_state-source.js');
+      const STATE_FAMILY = 'src/cli/commands/state.ts + state/**';
       const sites: Array<[string, string]> = [
         ['src/cli/commands/deploy.ts', 'options.profile'],
         ['src/cli/commands/destroy.ts', 'options.profile'],
         ['src/cli/commands/scrub.ts', 'options.profile'],
-        ['src/cli/commands/state.ts', 'options.profile'],
+        // `cdkd state` is `state.ts` plus every module under `state/`
+        // (go-to-k/cdkd#5835), read as ONE source so a second store built in
+        // any sibling module counts against the family's single site
+        // (`setupStateBackend`).
+        [STATE_FAMILY, 'options.profile'],
         ['src/cli/commands/local-state-loader.ts', 'opts.profile'],
       ];
       for (const [file, profile] of sites) {
-        const source = readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
+        const source =
+          file === STATE_FAMILY
+            ? readStateSource()
+            : readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
         const calls = source.split('new ExportIndexStore(').slice(1);
         expect(calls, file).toHaveLength(1);
         const args = calls[0]!.slice(0, calls[0]!.indexOf(');'));

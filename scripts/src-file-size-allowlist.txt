@@ -27,7 +27,6 @@ src/cli/commands/refactor.ts
 src/cli/commands/retire-cfn-stack.ts
 src/cli/commands/rollback.ts
 src/cli/commands/scrub.ts
-src/cli/commands/state.ts
 src/cli/options.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts

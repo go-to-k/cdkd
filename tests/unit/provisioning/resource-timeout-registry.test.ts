@@ -95,7 +95,9 @@ describe('resource-timeout registry (issue #1280)', () => {
 // removed) without seeding silently reverts the inner waiter to its floor.
 describe('resource-timeout registry seeding (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const seedingCommands = ['deploy.ts', 'destroy.ts', 'state.ts'];
+  // `cdkd state destroy`'s handler moved from `state.ts` into `state/destroy.ts`
+  // with the split (go-to-k/cdkd#5835).
+  const seedingCommands = ['deploy.ts', 'destroy.ts', 'state/destroy.ts'];
 
   it.each(seedingCommands)(
     '%s seeds the registry right after validateResourceTimeouts',

@@ -135,6 +135,7 @@ vi.mock('../../../src/state/malformed-resources-bag.js', async () => {
 });
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { readStateSourceWithoutWiring } from './_state-source.js';
 import {
   malformedRenderedContainersWarning,
   malformedResourcesWarning,
@@ -152,7 +153,12 @@ import {
  */
 const RUN_ACCOUNT = { stateBucket: 'test-bucket', statePrefix: 'cdkd' };
 
-const STATE_TS = fileURLToPath(new URL('../../../src/cli/commands/state.ts', import.meta.url));
+/**
+ * The `cdkd state` source population: `state.ts` plus every module under
+ * `state/` (read recursively), with the split's import / re-export wiring
+ * removed so a sibling's import of a helper does not count as a reference.
+ */
+const readStateCode = (): string => readStateSourceWithoutWiring();
 
 /** Answer each command the real read path issues, by name and key. */
 function route(command: {
@@ -1144,7 +1150,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expect(fixture).toContain(`if grep -q "${needle}" "\${MALFORMED_SHOW_JSON_ERR}"`);
     });
 
-    it('state.ts names renderStateBlock in CODE exactly 1 + 3 times', () => {
+    it('the state sources name renderStateBlock in CODE exactly 1 + 3 times', () => {
       // The source half of the fence, ported from
       // `state-ref-display-boundary.test.ts`: the behavioural cases above cover
       // the three call sites that exist, and cannot see a FOURTH being added.
@@ -1156,7 +1162,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // `const render = renderStateBlock;` adds a rendering site while matching
       // neither a call nor the declaration, and the doc comments name both
       // helpers repeatedly, so a prose edit would otherwise move the count.
-      const source = readFileSync(STATE_TS, 'utf-8');
+      const source = readStateCode();
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
       const references = code.match(/\brenderStateBlock\b/g) ?? [];
@@ -1682,7 +1688,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       }
     );
 
-    it('state.ts walks exactly these record fields, at these counts', () => {
+    it('the state sources walk exactly these record fields, at these counts', () => {
       // The direction the byte-identity oracle above CANNOT see, and it took a
       // review probe to find it: that oracle compares a malformed render to an
       // EMPTIED one, so it is blind to a walk over a container no case plants a
@@ -1707,7 +1713,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // reasoned, and a review round then found `Object.values` — which this
       // pattern had simply omitted from its alternation while the walk DID
       // spell `owner.field`, so it was a hole rather than a residual. Each
-      // class below carries what the search returned against `state.ts`:
+      // class below carries what the search returned against the state sources:
       //
       //   two-level owner   `Object.X(a.b.field)`      0 today
       //   bracket access    `Object.X(a['field'])`     0 today
@@ -1725,7 +1731,8 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // needs alias tracking, which is a different instrument again; the
       // BEHAVIOURAL oracle covers it for any container a case plants.
       //
-      // And a walk in any file but this one: the scan reads `STATE_TS` alone.
+      // And a walk in any file outside `cdkd state`: the scan reads `state.ts`
+      // and `state/**` alone.
       //
       // The `resources` row is the reason the annotation column is worth
       // keeping: its two walks are NOT both repaired.
@@ -1747,7 +1754,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         ],
       ];
 
-      const source = readFileSync(STATE_TS, 'utf-8');
+      const source = readStateCode();
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
       const WALK = /Object\.(?:entries|keys|values)\(\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)/g;
