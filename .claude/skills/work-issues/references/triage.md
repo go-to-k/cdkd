@@ -47,8 +47,9 @@ gh pr list --state open --limit 200 --json number,title,headRefName,files,change
 git for-each-ref --sort=-committerdate \
   --format='%(committerdate:iso) %(refname:short)' refs/remotes/origin | head -10
 
-# Per live worktree: every `worktree` path the list above prints, never a glob of <MAIN_CHECKOUT>/.claude/worktrees/ (peer lanes in
-# sibling workspaces live outside it, #5890's run). The diff is EVERY file that lane holds.
+# Per live worktree: every `worktree` path the list above prints, never a
+# glob of <MAIN_CHECKOUT>/.claude/worktrees/ (peer lanes in sibling workspaces
+# live outside it, #5890's run). The diff is EVERY file that lane holds.
 git -C "<worktree path>" diff --name-only origin/main...HEAD
 git -C "<worktree path>" status --porcelain
 ```
