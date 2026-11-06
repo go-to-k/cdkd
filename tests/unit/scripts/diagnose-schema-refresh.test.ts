@@ -4620,12 +4620,13 @@ describe('writeAutoTolerated', () => {
         cpSync(join(REPO_ROOT, rel), join(root, rel));
       }
       // A split provider's evidence is read from its companion directory too.
-      const APIGW_COMPANIONS = 'src/provisioning/providers/apigateway';
-      cpSync(join(REPO_ROOT, APIGW_COMPANIONS), join(root, APIGW_COMPANIONS), { recursive: true });
-      const ROUTE53_COMPANIONS = 'src/provisioning/providers/route53';
-      cpSync(join(REPO_ROOT, ROUTE53_COMPANIONS), join(root, ROUTE53_COMPANIONS), {
-        recursive: true,
-      });
+      for (const companions of [
+        'src/provisioning/providers/apigateway',
+        'src/provisioning/providers/asg',
+        'src/provisioning/providers/route53',
+      ]) {
+        cpSync(join(REPO_ROOT, companions), join(root, companions), { recursive: true });
+      }
       const backfill = join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
       writeFileSync(backfill, `${JSON.stringify(seed, null, 2)}\n`);
       run(root, backfill);

@@ -8,7 +8,16 @@
  * BOTH directions so neither half of the wiring can silently disappear.
  */
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
@@ -27,6 +36,8 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const SCRIPT = join(REPO_ROOT, 'scripts/check-provider-secret-mask.ts');
 const PROVIDERS_DIR = join(REPO_ROOT, 'src/provisioning/providers');
 const COMPOSITE_ID = join(REPO_ROOT, 'src/provisioning/composite-id.ts');
+const CLOUD_CONTROL_FILE = join(REPO_ROOT, 'src/provisioning/cloud-control-provider.ts');
+const CLOUD_CONTROL_DIR = join(REPO_ROOT, 'src/provisioning/cloud-control');
 const SPAWN_TIMEOUT_MS = 120_000;
 
 const scratchDirs: string[] = [];
@@ -45,13 +56,16 @@ function scratch(prefix: string): string {
 }
 
 /**
- * A throwaway COPY of the real providers tree plus its `composite-id.ts`
- * sibling, laid out the way `buildReport` resolves the extra file.
+ * A throwaway COPY of the real providers tree plus its `composite-id.ts` and
+ * Cloud Control family siblings (the class file AND its `cloud-control/`
+ * directory, both required), laid out the way `buildReport` resolves them.
  */
 function copyTree(): string {
   const root = join(scratch('cdkd-mask-probe-'), 'provisioning');
   cpSync(PROVIDERS_DIR, join(root, 'providers'), { recursive: true });
   cpSync(COMPOSITE_ID, join(root, 'composite-id.ts'));
+  cpSync(CLOUD_CONTROL_FILE, join(root, 'cloud-control-provider.ts'));
+  cpSync(CLOUD_CONTROL_DIR, join(root, 'cloud-control'), { recursive: true });
   return join(root, 'providers');
 }
 
@@ -60,6 +74,11 @@ function emptyTree(padFiles: number): string {
   const root = join(scratch('cdkd-mask-empty-'), 'provisioning');
   const providers = join(root, 'providers');
   cpSync(COMPOSITE_ID, join(root, 'composite-id.ts'));
+  // A site-free Cloud Control stand-in, both halves: either one ABSENT is a
+  // scan failure that returns before any floor is evaluated.
+  writeFileSync(join(root, 'cloud-control-provider.ts'), 'export const cc = 0;\n');
+  mkdirSync(join(root, 'cloud-control'));
+  writeFileSync(join(root, 'cloud-control', 'stand-in.ts'), 'export const ccDir = 0;\n');
   writeFileSync(join(root, '.keep'), '');
   rmSync(join(root, '.keep'));
   // `providers/` has to exist before anything is written into it.
@@ -695,6 +714,30 @@ describe('provider secret-mask critic — the real tree', () => {
     expect(report.masked + report.exempt).toBe(report.sites);
   });
 
+  it('scans the Cloud Control provider family (issue #5880)', () => {
+    // The family sits outside `providers/**`, so the walk alone never reached
+    // it. Dropping it from the input list zeroes both counts. Measured 2 sites:
+    // the CREATE keys and UPDATE op/path debug lines, both routed through the
+    // caller's masker before the stringify (issue #5894).
+    expect(report.cloudControlFiles).toBeGreaterThanOrEqual(2);
+    expect(report.cloudControlSites).toBeGreaterThanOrEqual(2);
+    const ccSites = report.siteList.filter(
+      (site) =>
+        site.file === 'src/provisioning/cloud-control-provider.ts' ||
+        site.file.startsWith('src/provisioning/cloud-control/')
+    );
+    expect(ccSites.length).toBe(report.cloudControlSites);
+    expect(ccSites.filter((site) => site.verdict !== 'masked')).toEqual([]);
+    const debugLines = ccSites.filter(
+      (site) =>
+        (site.file === 'src/provisioning/cloud-control/create.ts' &&
+          site.expression === 'maskDeep(Object.keys(ccProperties), mask)') ||
+        (site.file === 'src/provisioning/cloud-control/update.ts' &&
+          /^maskDeep\( ?patch\.map\(/.test(site.expression))
+    );
+    expect(debugLines.map((site) => site.verdict)).toEqual(['masked', 'masked']);
+  });
+
   it('keeps the two known FALSE POSITIVES of the naive rule masked', () => {
     // These are the sites a "wrap it inside the stringify" rule reds. If either
     // ever reports raw, the dataflow walk has regressed to the naive rule and
@@ -1075,6 +1118,69 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     expect(status).toBe(1);
     expect(stderr).toContain('composite-id.ts is missing');
   }, SPAWN_TIMEOUT_MS);
+
+  // Each half is REQUIRED (issue #5894): with either one renamed away the other
+  // still clears every floor, so only the scan failure turns the run red.
+  it('FAILS when the Cloud Control class file is renamed away (issue #5894)', () => {
+    const dir = copyTree();
+    const root = join(dir, '..');
+    renameSync(join(root, 'cloud-control-provider.ts'), join(root, 'cc-provider-renamed.ts'));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain(
+      "Cloud Control provider family's class file cloud-control-provider.ts is missing"
+    );
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS when the Cloud Control directory is renamed away (issue #5894)', () => {
+    const dir = copyTree();
+    const root = join(dir, '..');
+    renameSync(join(root, 'cloud-control'), join(root, 'cc-renamed'));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain("Cloud Control provider family's directory cloud-control/ is missing");
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS on a Cloud Control stat error other than ENOENT rather than skipping that half', () => {
+    // A self-referencing symlink stats as ELOOP: a broken tree, not an absent layout.
+    const dir = copyTree();
+    const root = join(dir, '..');
+    rmSync(join(root, 'cloud-control'), { recursive: true, force: true });
+    symlinkSync(join(root, 'cloud-control'), join(root, 'cloud-control'));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain(`cannot stat ${join(root, 'cloud-control')}`);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS a raw site injected into the REAL Cloud Control provider (issue #5880)', () => {
+    // Real-code probe: the site must be found AND classified raw, naming the
+    // file — the shape an unmasked properties-derived message would take.
+    const dir = copyTree();
+    const cc = join(dir, '..', 'cloud-control', 'create.ts');
+    writeFileSync(
+      cc,
+      `${readFileSync(cc, 'utf8')}\nexport function probeRaw5880(properties: unknown, logger: { warn(m: string): void }) {\n` +
+        '  logger.warn(`bad ${JSON.stringify(properties)}`);\n}\n'
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('src/provisioning/cloud-control/create.ts:');
+    expect(stderr).toContain('`JSON.stringify(properties)` is interpolated');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('scans a NEW module under cloud-control/** (issue #5880)', () => {
+    const dir = copyTree();
+    const root = join(dir, '..');
+    writeFileSync(
+      join(root, 'cloud-control', 'probe-5880.ts'),
+      'export function probeRaw5880(properties: unknown, logger: { warn(m: string): void }) {\n' +
+        '  logger.warn(`bad ${JSON.stringify(properties)}`);\n}\n'
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).not.toContain('Cloud Control provider family');
+    expect(stderr).toContain('src/provisioning/cloud-control/probe-5880.ts:');
+  }, SPAWN_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -1108,6 +1214,9 @@ describe('provider secret-mask critic — floors', () => {
     expect(stderr).toContain('pre-stringify masked sites');
     expect(stderr).toContain('files carrying a site');
     expect(stderr).toContain('derived masker names');
+    // emptyTree's Cloud Control stand-in carries no site (issue #5880).
+    expect(stderr).toContain('sites in the Cloud Control family');
+    expect(stderr).not.toContain('Cloud Control family files scanned');
   }, SPAWN_TIMEOUT_MS);
 });
 

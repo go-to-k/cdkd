@@ -272,6 +272,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       // go-to-k/cdkd#5630: ModifyPrivateDnsNameOptions' spelling.
       'PrivateDnsNameOptions.HostnameType': ['PrivateDnsHostnameType'],
       SecurityGroupIds: ['Groups'],
+      // go-to-k/cdkd#5630: CreateAssociation's document member.
+      'SsmAssociations.DocumentName': ['Name'],
     },
     containers: {
       CreditSpecification: ['InstanceCreditSpecifications'],
@@ -280,6 +282,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       PrivateDnsNameOptions: ['ModifyPrivateDnsNameOptionsCommand'],
       // go-to-k/cdkd#5630: one AttachVolume per entry, its members at the top level.
       Volumes: ['AttachVolumeCommand'],
+      // go-to-k/cdkd#5630: one CreateAssociation per entry, its members at the top level.
+      SsmAssociations: ['CreateAssociationCommand'],
     },
     transformed: {
       Monitoring:
@@ -287,6 +291,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       // go-to-k/cdkd#5630.
       PropagateTagsToVolumeOnCreation:
         'the flag adds a `volume` copy of the instance TagSpecification to RunInstances; it carries the tags, not the value',
+      // go-to-k/cdkd#5630: CreateAssociation takes a `Parameters` map.
+      'SsmAssociations.AssociationParameters.Key':
+        'each parameter becomes one CreateAssociation `Parameters` map entry, keyed by its Key and valued by its Value list',
+      'SsmAssociations.AssociationParameters.Value':
+        'each parameter becomes one CreateAssociation `Parameters` map entry, keyed by its Key and valued by its Value list',
     },
   },
   'AWS::EC2::NatGateway': {

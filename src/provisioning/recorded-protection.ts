@@ -33,7 +33,7 @@ const READER_LABELS: Record<string, string> = {
  * Where a replacement's delete is blocked by FEWER values than the destroy
  * prompt counts as protected. An Auto Scaling group's `prevent-force-deletion`
  * stops only a forced delete, and the deploy path's delete does not force one
- * (`asg-provider.ts`'s own replacement refusal reads the same way).
+ * (`asg/update.ts`'s own replacement refusal reads the same way).
  */
 const REPLACEMENT_BLOCKING_VALUES: Record<string, ReadonlySet<unknown>> = {
   'AWS::AutoScaling::AutoScalingGroup': new Set(['prevent-all-deletion']),

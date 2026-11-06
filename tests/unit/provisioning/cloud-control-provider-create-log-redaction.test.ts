@@ -5,11 +5,12 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // debug must be the shared spy.
 const mockCcSend = vi.fn();
 const mockDebug = vi.fn();
+const mockCfnSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     cloudControl: { send: mockCcSend, config: { region: () => Promise.resolve('us-east-1') } },
-    cloudFormation: { send: vi.fn() },
+    cloudFormation: { send: mockCfnSend },
   }),
 }));
 
@@ -37,6 +38,9 @@ describe('CloudControlProvider create-path DesiredState log redaction (GHSA sibl
   beforeEach(() => {
     mockCcSend.mockReset();
     mockDebug.mockReset();
+    mockCfnSend.mockReset();
+    // DescribeType (write-only / read-only lookups): a schema declaring none.
+    mockCfnSend.mockResolvedValue({ Schema: JSON.stringify({}) });
   });
 
   it('logs top-level property KEYS only on create, never a resolved secret value', async () => {
@@ -70,5 +74,54 @@ describe('CloudControlProvider create-path DesiredState log redaction (GHSA sibl
     expect(desiredLog).not.toContain(secretValue);
     // Hard invariant: the secret appears in NO debug line at all.
     expect(mockDebug.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(secretValue);
+  });
+
+  // Both debug lines go through the caller's masker BEFORE the stringify
+  // (issue #5894). A key or path holds no resolved value, so the masker here
+  // treats a KEY as the recorded secret purely to make its application
+  // observable. The key carries a quote and a newline: the provider's id-log
+  // sink also masks the FINISHED line, which recognises a plain alphanumeric
+  // key even after the stringify, but not one the stringify has escaped.
+  const SECRET_KEY = 'Recorded"Secret\nKey';
+  const maskKey = (text: string): string => text.split(SECRET_KEY).join('***');
+
+  it('routes the create-path keys through the caller masker (issue #5894)', async () => {
+    mockCcSend.mockRejectedValue(new Error('CreateResource boom (log already fired)'));
+
+    await new CloudControlProvider()
+      .create(
+        'MaskedKeysRes',
+        'AWS::SomeCc::Type',
+        { [SECRET_KEY]: 'v', PublicId: 'public-value' },
+        { maskSecrets: maskKey }
+      )
+      .catch(() => undefined);
+
+    const desiredLog = mockDebug.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('DesiredState for MaskedKeysRes'));
+    expect(desiredLog).toBe('DesiredState for MaskedKeysRes: keys=["***","PublicId"]');
+  });
+
+  it('routes the update-path patch paths through the caller masker (issue #5894)', async () => {
+    mockCcSend.mockRejectedValue(new Error('UpdateResource boom (log already fired)'));
+
+    await new CloudControlProvider()
+      .update(
+        'MaskedPatchRes',
+        'masked-patch-id',
+        'AWS::SomeCc::Type',
+        { [SECRET_KEY]: 'new', PublicId: 'same' },
+        { [SECRET_KEY]: 'old', PublicId: 'same' },
+        { maskSecrets: maskKey }
+      )
+      .catch(() => undefined);
+
+    const patchLog = mockDebug.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('patch operations for MaskedPatchRes'));
+    expect(patchLog).toBe(
+      'Generated 1 patch operations for MaskedPatchRes: [{"op":"replace","path":"/***"}]'
+    );
   });
 });

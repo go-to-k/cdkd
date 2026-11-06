@@ -107,13 +107,43 @@ export function isCommentLine(text: string): boolean {
  * write above it in the same function as restoring — both the exact opposite of
  * what the comment says.
  *
- * A string literal containing one of the tokens is deliberately not modelled:
- * nothing in the tree has one, and a quote-aware scan would be its own source of
- * silent misses. Comments ARE modelled, because they are where an author
- * explains the very decision being asserted.
+ * QUOTE-AWARE (issue #5866): a `//` inside a string is not a comment. A plain
+ * regex cut `` `http://localhost/?t=${process.env.AWS_SESSION_TOKEN}` `` at the
+ * scheme and hid the read after it — on a surface whose URLs are built exactly
+ * that way. The scan tracks `'`, `"` and `` ` `` (with backslash escapes) on
+ * ONE line; a template's `${...}` stays inside the string, so a comment there
+ * survives as code — it adds a site, or decides one if it names a verdict
+ * token (`ignoreAssumedRole: true`). A regex literal holding `//` or a lone
+ * quote desynchronises it the same way; none is on the surface. String CONTENTS are kept: a token spelled inside a string is still
+ * not modelled, and comments are, because they are where an author explains
+ * the very decision being asserted.
  */
 export function stripComments(line: string): string {
-  return line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '');
+  let out = '';
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] ?? '';
+    if (quote !== undefined) {
+      out += ch;
+      if (ch === '\\') {
+        out += line[i + 1] ?? '';
+        i++;
+      } else if (ch === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '/' && line[i + 1] === '/') break;
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    out += ch;
+  }
+  return out;
 }
 
 /**
@@ -204,7 +234,72 @@ export function clientSiteKind(code: string): ClientSiteKind | undefined {
   return undefined;
 }
 
-/** Every surface file holding at least one SDK-client site, comments stripped. */
+/**
+ * A direct SDK client construction: `new STSClient(`, `new ECRClient(`, ... —
+ * any `<Name>Client(`, never the `AwsClients` bag, which has its own shape.
+ *
+ * A construction spreading one of the three helpers above is already a site
+ * through that helper. One spreading NONE of them is the gap issue #5866
+ * named: `new STSClient({ region })` resolves the SDK's default chain, which
+ * under `--role-arn` reads the role's env triple, and the role fence never saw
+ * it because it keyed on the helpers alone. A namespace-qualified constructor
+ * (`new sts.STSClient(`) is the same shape. The v3 AGGREGATED clients
+ * (`new STS(`) carry no `Client` suffix and are not matched; none is used on
+ * this surface.
+ */
+export const CLIENT_CONSTRUCTION = /\bnew\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?[A-Z][A-Za-z0-9]*Client\s*\(/;
+
+/**
+ * An explicit credential choice inside a construction: a `credentials` key
+ * (shorthand too) or a call to a credential provider. Spread AFTER a helper,
+ * it replaces the helper's identity — `...awsClientDefaults({ ignoreAssumedRole:
+ * true }), credentials: fromEnv()` reads the role's env triple while the line
+ * above it says it opted out.
+ */
+export const CREDENTIAL_OVERRIDE =
+  /\bcredentials\b|\bfrom(?:Env|Ini|NodeProviderChain|TemporaryCredentials|ContainerMetadata|InstanceMetadata|Process|SSO|TokenFile|WebToken|Cognito\w*)\s*\(|\bdefaultProvider\s*\(/;
+
+/** Is this code line (comments stripped) an SDK-client site of either fence's sibling? */
+export function isClientChannelLine(code: string): boolean {
+  return clientSiteKind(code) !== undefined || CLIENT_CONSTRUCTION.test(code);
+}
+
+/**
+ * The comment-stripped text of the construction starting on line `index`, from
+ * `new` to its balancing `)`, or `undefined` when the parens do not balance
+ * within the cap. A caller treats `undefined` as "no helper found", so an
+ * unmodelled shape is a site a human decides, never a silent pass. Parens
+ * inside string literals are not modelled, like `stripComments`.
+ */
+export function constructionStatement(lines: string[], index: number): string | undefined {
+  const first = stripComments(lines[index] ?? '');
+  const match = CLIENT_CONSTRUCTION.exec(first);
+  if (match === null) return undefined;
+  let text = '';
+  let depth = 0;
+  let opened = false;
+  for (let i = index; i < lines.length && i - index <= 60; i++) {
+    const raw = lines[i] ?? '';
+    const code = i === index ? first.slice(match.index) : isCommentLine(raw) ? '' : stripComments(raw);
+    for (const ch of code) {
+      text += ch;
+      if (ch === '(') {
+        depth++;
+        opened = true;
+      } else if (ch === ')') {
+        depth--;
+        if (opened && depth === 0) return text;
+      }
+    }
+    text += '\n';
+  }
+  return undefined;
+}
+
+/**
+ * Every surface file holding at least one SDK-client site — a helper shape or
+ * a direct client construction — comments stripped.
+ */
 export function clientChannelFiles(): Set<string> {
   const files = new Set<string>();
   for (const file of surfaceFiles()) {
@@ -212,7 +307,7 @@ export function clientChannelFiles(): Set<string> {
     const lines = readFileSync(file, 'utf8').split('\n');
     for (const line of lines) {
       if (isCommentLine(line)) continue;
-      if (clientSiteKind(stripComments(line)) !== undefined) {
+      if (isClientChannelLine(stripComments(line))) {
         files.add(file);
         break;
       }
