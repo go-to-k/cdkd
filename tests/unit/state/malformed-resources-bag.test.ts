@@ -7817,7 +7817,7 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
     // The command module and every module split out of it under `drift/`.
     const src = [
       'src/cli/commands/drift.ts',
-      ...readdirSync(join(repoRoot, 'src/cli/commands/drift'))
+      ...readdirSync(join(repoRoot, 'src/cli/commands/drift'), { recursive: true, encoding: 'utf8' })
         .filter((f) => f.endsWith('.ts'))
         .sort()
         .map((f) => `src/cli/commands/drift/${f}`),
@@ -7899,6 +7899,13 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
       expect(
         occurrences(body, call),
         `${call} appears more than once in runDriftForStack, so one copy runs in BOTH modes`
+      ).toBe(1);
+      // ...and once in the whole drift family: the per-resource comparison
+      // (`compareDriftReadback`) and every other helper live in sibling
+      // modules the `runDriftForStack` flow does not include.
+      expect(
+        occurrences(src, call),
+        `${call} appears outside runDriftForStack's own arm in the drift modules`
       ).toBe(1);
     }
 

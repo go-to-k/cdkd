@@ -28,7 +28,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const DRIFT_DIR = `${REPO_ROOT}src/cli/commands/drift/`;
 const DRIFT_SOURCES = [
   `${REPO_ROOT}src/cli/commands/drift.ts`,
-  ...readdirSync(DRIFT_DIR)
+  ...readdirSync(DRIFT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => `${DRIFT_DIR}${f}`),
