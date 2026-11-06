@@ -1,4 +1,5 @@
-import { ModifyDBClusterCommand } from '@aws-sdk/client-rds';
+import { DescribeGlobalClustersCommand, ModifyDBClusterCommand } from '@aws-sdk/client-rds';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -45,7 +46,16 @@ import {
   PORT_CHANGE_MEMBER_STATUSES,
   clusterPortToSend,
 } from './cluster-members.js';
-import { securityGroupListChanged } from './shared.js';
+import {
+  securityGroupListChanged,
+  GlobalClusterDetachError,
+  usableGlobalClusterId,
+  readableGlobalClusterId,
+  recordedGlobalClusterIdentifier,
+  GLOBAL_CLUSTER_CHANGE_REFUSED,
+  type GlobalClusterUpdate,
+} from './shared.js';
+import { maskerOrIdentity } from '../../masked-retry-logger.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -167,7 +177,27 @@ export async function updateDBCluster(
     skippedKeys.push(['EnableLocalWriteForwarding', usableLocalWriteForwarding]);
   }
 
+  // Set once this update detached the cluster, so a later failure says so.
+  let detachedFrom: string | undefined;
   try {
+    // go-to-k/cdkd#5639: an add or change CloudFormation fails is refused
+    // before any write; its ProvisioningError passes through the catch.
+    const globalClusterPlan = await planGlobalClusterUpdate.call(
+      this,
+      physicalId,
+      properties,
+      previousProperties,
+      resourceType,
+      logicalId,
+      context
+    );
+    if (globalClusterPlan.kind === 'keep') {
+      skippedKeys.push(['GlobalClusterIdentifier', usableGlobalClusterId]);
+    }
+    if (globalClusterPlan.kind === 'drop') {
+      // Never restored: the previous value names a membership AWS no longer holds.
+      skippedKeys.push(['GlobalClusterIdentifier', () => false]);
+    }
     // go-to-k/cdkd#5639: a changed EngineLifecycleSupport is refused before
     // any change, as CloudFormation refuses it; its ProvisioningError passes
     // through the catch.
@@ -292,6 +322,22 @@ export async function updateDBCluster(
       context
     );
     const scalarMembers = clusterModifyScalarMembers(properties, previousProperties, context);
+    // go-to-k/cdkd#5639: a removed GlobalClusterIdentifier detaches the
+    // cluster in place BEFORE the ModifyDBCluster, as CloudFormation's update
+    // handler does (`removeFromGlobalCluster`): the detach leaves it
+    // `modifying` until it is out and `available` again. The wait runs under
+    // `--no-wait` too, since RDS refuses the ModifyDBCluster meanwhile.
+    if (globalClusterPlan.kind === 'detach') {
+      const detached = await this.detachFromGlobalCluster(
+        logicalId,
+        physicalId,
+        globalClusterPlan.globalClusterId,
+        { beforeDelete: false, removeProtection: false },
+        { stripped: false },
+        maskerOrIdentity(context?.maskSecrets)
+      );
+      if (detached) detachedFrom = globalClusterPlan.globalClusterId;
+    }
     await this.getClient().send(
       new ModifyDBClusterCommand({
         DBClusterIdentifier: physicalId,
@@ -541,18 +587,183 @@ export async function updateDBCluster(
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
+    if (error instanceof GlobalClusterDetachError) {
+      // Already masked and waited through: a retry would only repeat it.
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to update DBCluster ${logicalId}: ${error.message}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error
+        )
+      );
+    }
     const cause = error instanceof Error ? error : undefined;
+    const detachedNote =
+      detachedFrom !== undefined
+        ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+        : '';
     throw this.wrapCaughtError(
       context?.maskSecrets,
       error,
       (text) =>
         new ProvisioningError(
-          `Failed to update DBCluster ${logicalId}: ${text}`,
+          `Failed to update DBCluster ${logicalId}: ${text}${detachedNote}`,
           resourceType,
           logicalId,
           physicalId,
           cause
         )
     );
+  }
+}
+
+/**
+ * go-to-k/cdkd#5639: what an update does about `GlobalClusterIdentifier`.
+ * ModifyDBCluster has no member for it. CloudFormation's update handler
+ * (archived `aws-cloudformation-resource-providers-rds` at
+ * 5a410e843efb90076c1c4d322707bc989e5a058b, `ImmutabilityHelper.
+ * isGlobalClusterMutable` and `UpdateHandler.shouldRemoveFromGlobalCluster`;
+ * read from the source, not measured for RDS):
+ *
+ * - REMOVAL, or `""`, updates in place: RemoveFromGlobalCluster, waiting
+ *   until the cluster is out and `available`. Here a template removal is
+ *   `detach` (`detachFromGlobalCluster`, which does nothing once the live
+ *   cluster is no longer listed).
+ * - ADD or CHANGE fails `NotUpdatable` ("Resource is immutable"). Whether
+ *   CloudFormation then replaces the cluster is not measured for this
+ *   property (DocDB's handler failed both, go-to-k/cdkd#5628 A/B), so cdkd
+ *   refuses it before any write, the conservative side: a replacement
+ *   destroys the database. One exception: a cluster the live global cluster
+ *   already lists (a CDK `GlobalCluster` made with `SourceDBClusterIdentifier`
+ *   holds it before the template names it) needs no change, so `none`.
+ *
+ * A STATE-BORNE bag (a rollback replay, `drift --revert`) changes no
+ * membership, and its record follows what the restored bag declares only
+ * where that cannot arm a later write the user never asked for:
+ * - An add (a rollback of a forward removal asks to re-join) cannot be
+ *   applied: it warns, and `keep` records the previous side.
+ * - A removal (a rollback of a forward add, which cdkd only ever accepted for
+ *   a cluster already a member) never detaches: a detach is irreversible.
+ *   `none` records the restored bag, without the key, so re-deploying the
+ *   restored template detaches nothing either. Recording the key instead
+ *   would turn that re-deploy into a removal, and so into a detach.
+ * - An unchanged one the live cluster does not show (a forward update that
+ *   failed after its detach) is `drop`: the record loses the key, as the
+ *   cluster did.
+ * - A `drift --revert` readback never carries the key (a drift-unknown path),
+ *   so its ABSENCE there is no change: `keep`, silently.
+ */
+export async function planGlobalClusterUpdate(
+  this: RDSProvider,
+  physicalId: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  context: UpdateContext | undefined
+): Promise<GlobalClusterUpdate> {
+  const desired = properties['GlobalClusterIdentifier'];
+  if (context?.desiredFromAwsReadback === true && desired === undefined) {
+    return previousProperties['GlobalClusterIdentifier'] !== undefined
+      ? { kind: 'keep' }
+      : { kind: 'none' };
+  }
+  const mask = maskerOrIdentity(context?.maskSecrets);
+  const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
+  const readable = readableGlobalClusterId(desired);
+  const desiredId = recordedGlobalClusterIdentifier(properties);
+  const previousId = recordedGlobalClusterIdentifier(previousProperties);
+  if (readable && desiredId === previousId) {
+    if (!stateBorne || desiredId === undefined) return { kind: 'none' };
+    const live = await liveGlobalClusterMembership.call(this, physicalId, desiredId);
+    if (live.kind !== 'answered' || live.member) return { kind: 'none' };
+    this.logger.warn(
+      mask(
+        safeMsg`${logicalId} (${resourceType}): the cluster is no longer a member of global cluster ${desiredId}, so the record drops GlobalClusterIdentifier.`
+      )
+    );
+    return { kind: 'drop' };
+  }
+  if (readable && desiredId === undefined && previousId !== undefined) {
+    if (!stateBorne) return { kind: 'detach', globalClusterId: previousId };
+    const live = await liveGlobalClusterMembership.call(this, physicalId, previousId);
+    if (live.kind !== 'answered' || live.member) {
+      this.logger.warn(
+        mask(
+          safeMsg`${logicalId} (${resourceType}): the restored state has no GlobalClusterIdentifier; cdkd never detaches on a restore, so the cluster stays wherever it is${live.kind === 'answered' ? safeMsg` (a member of global cluster ${previousId})` : ''}. A destroy is refused while it is a member: detach it first with aws rds remove-from-global-cluster.`
+        )
+      );
+    }
+    return { kind: 'none' };
+  }
+  let unreadable = '';
+  if (readable) {
+    const live = await liveGlobalClusterMembership.call(this, physicalId, desiredId);
+    if (live.kind === 'answered' && live.member) return { kind: 'none' };
+    if (live.kind === 'unreadable') {
+      unreadable = ` (cdkd could not read the cluster's global cluster membership: ${live.summary})`;
+    }
+  }
+  if (!stateBorne) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${resourceType} ${logicalId}: ${readable ? GLOBAL_CLUSTER_CHANGE_REFUSED : 'GlobalClusterIdentifier must be a string'}${unreadable}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  this.logger.warn(
+    mask(
+      readable
+        ? safeMsg`${logicalId} (${resourceType}): the restored state names global cluster ${desiredId ?? ''}, but cdkd never adds an existing cluster to a global cluster, so it keeps its current membership.`
+        : safeMsg`${logicalId} (${resourceType}): the restored GlobalClusterIdentifier is not a string; the cluster keeps its current membership.`
+    )
+  );
+  return { kind: 'keep' };
+}
+
+/**
+ * go-to-k/cdkd#5639: whether the live cluster's global cluster is
+ * `desiredId` (`undefined`: none). Every global cluster is listed, as a
+ * cluster can be in at most one. A failed read is `unreadable`, carrying
+ * the failure's class, which callers keep apart from an answer: an add keeps
+ * its refusal on either.
+ */
+export async function liveGlobalClusterMembership(
+  this: RDSProvider,
+  physicalId: string,
+  desiredId: string | undefined
+): Promise<{ kind: 'answered'; member: boolean } | { kind: 'unreadable'; summary: string }> {
+  try {
+    const arn = (await this.describeDBCluster(physicalId))?.DBClusterArn;
+    if (typeof arn !== 'string' || arn === '') {
+      return { kind: 'unreadable', summary: 'DescribeDBClusters reported no cluster ARN' };
+    }
+    let liveId: string | undefined;
+    let marker: string | undefined;
+    do {
+      const page = await this.getClient().send(
+        new DescribeGlobalClustersCommand({ ...(marker !== undefined && { Marker: marker }) })
+      );
+      const holder = (page.GlobalClusters ?? []).find((global) =>
+        (global.GlobalClusterMembers ?? []).some((member) => member.DBClusterArn === arn)
+      );
+      if (holder !== undefined) {
+        liveId = holder.GlobalClusterIdentifier;
+        break;
+      }
+      marker = page.Marker;
+    } while (marker);
+    return { kind: 'answered', member: liveId === desiredId };
+  } catch (error) {
+    const failure = describeAwsFailure(error);
+    this.logger.debug(
+      safeMsg`Could not read an RDS cluster's global cluster membership: ${failure.summary}`
+    );
+    return { kind: 'unreadable', summary: failure.summary };
   }
 }
