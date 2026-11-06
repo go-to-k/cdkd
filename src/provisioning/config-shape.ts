@@ -728,7 +728,7 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * SEVERAL `readConfigString` UPDATE sites pass no `onUnusable` and therefore
  * now throw on an intrinsic — `route53/hosted-zone.ts` (`HostedZoneConfig`),
  * `cloudfront-oai-provider.ts` (`CloudFrontOriginAccessIdentityConfig`),
- * `kinesis-provider.ts` (`StreamModeDetails`), `ecs-provider.ts`
+ * `kinesis/update.ts` (`StreamModeDetails`), `ecs-provider.ts`
  * (`DeploymentController`) and `codebuild/map-properties.ts` (reached from `update()`
  * through `mapProperties`). `secretsmanager-secret-provider.ts` was on this
  * list until issue #3048 moved its update path to a SKIP (the container is
