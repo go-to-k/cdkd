@@ -13,6 +13,7 @@ import {
   repairMalformedResourcesForReadOnly,
 } from '../../../state/malformed-resources-bag.js';
 import { stripForDisplay } from '../../../utils/regexp.js';
+import { withSecretPhysicalIdsMaskedInState } from '../../../provisioning/secret-physical-id.js';
 import type { LockInfo, ResourceState } from '../../../types/state.js';
 import {
   type ResourceDetail,
@@ -154,7 +155,10 @@ export async function printStackResources(
   // No `?? {}`: the repair above leaves a plain object behind whatever the
   // record held, and a fallback that can no longer fire only makes a later
   // reader think the bag is guarded one line down instead of at the load.
-  const resources = stateResult.state.resources;
+  // go-to-k/cdkd#5868: a display copy, every key the state's records hold
+  // (resources, orphans, superseded copies) as `****last4`, wherever a value
+  // copied it (stdout reaches no log masker).
+  const resources = withSecretPhysicalIdsMaskedInState(stateResult.state).resources;
   const details: ResourceDetail[] = (
     Object.entries(resources) as Array<[string, ResourceState | null]>
   )

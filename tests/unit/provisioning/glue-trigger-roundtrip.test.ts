@@ -276,7 +276,7 @@ describe('GlueTriggerProvider', () => {
     });
   });
 
-  // #3515 — glue/shared.ts applyGlueTagDiff (called from GlueTriggerProvider.update) removal loop
+  // #3515 — glue-provider.ts GlueTriggerProvider.applyTagDiff (~L5234) removal loop
   it('update() removes a dropped tag keyed `constructor` via UntagResource (own-key membership, #3515)', async () => {
     mockSend.mockImplementation((cmd) => {
       if (cmd instanceof GetTriggerCommand) {

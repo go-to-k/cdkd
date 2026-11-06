@@ -24,7 +24,7 @@ cdkd state list
 # logical id, type, physical id
 cdkd state resources MyStack
 
-# the whole record, with properties
+# the whole record, with properties (an AppSync API key shown as ****<last 4>)
 cdkd state show MyStack
 
 # pick a stack with the keyboard, then view its resources or record
@@ -404,7 +404,27 @@ for cdkd's SDK providers, or `cc-api` for the AWS Cloud Control API.
 
 Use `--json` when you need the stored values exactly, for example to inspect a
 record that another command refused. The text output shortens and filters some
-values, and `--json` does not.
+values, and `--json` does not, apart from the API keys described next.
+
+### AppSync API keys are masked
+
+An `AWS::AppSync::ApiKey`'s physical id is `<apiId>|<apiKeyId>` (or, on a
+record imported before cdkd built its own ids, the key's ARN), and the key is
+the credential a client sends. `state show` and `state resources`, in text and
+in `--json`, print every key the record holds as `****<last 4>`: the ApiKey's
+id and attributes (`ApiKey`, `Arn`), and every other value the key was copied
+to, such as another resource's property (a Lambda environment variable), a
+stack output, a rollback orphan, a superseded copy, and, with `--show-nested`,
+a nested stack's values. The apiId stays readable. The record itself keeps the
+full key, and so does `cdkd export`. Read the object from the state bucket to
+see it.
+
+A key that a NESTED stack's record holds, repeated in the parent's row for
+that stack (an output of the child, under the row's attributes), is masked
+too: a deploy records which of the row's outputs carry one. A row the current
+version has not deployed since that output first carried the key has no such
+record until its next update, so without `--show-nested` (which reads the
+child's record itself) that output is printed in full.
 
 ### `--show-nested`
 

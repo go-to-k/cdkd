@@ -50,6 +50,9 @@ its earlier object versions. cdkd cannot recognise every secret, and
   [Import Existing Resources](import.md) describes this case.
 - A credential that a provider records in `attributes` so that `Fn::GetAtt`
   can return it, such as the `SecretAccessKey` of an `AWS::IAM::AccessKey`.
+- A physical id that is itself a credential: an `AWS::AppSync::ApiKey`'s id
+  `<apiId>|<apiKeyId>` holds the API key. cdkd's log lines and `cdkd state`
+  output mask the key segment, but the record stores it whole.
 - A `NoEcho` parameter's value in a record written before schema version 11.
   It stays until the next `cdkd deploy`, and it stays in every earlier object
   version of the record.

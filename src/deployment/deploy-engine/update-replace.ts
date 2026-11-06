@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { updatePartialMessage } from '../update-outcome.js';
 import { guardedReplacementCreate } from './create.js';
@@ -404,7 +405,7 @@ export async function updateByReplacement(
       // token, so the create below must not send it again.
       await noteRetainedResource(oldResourceType, logicalId);
       engine.logger.warn(
-        safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} leaves the old physical resource (${currentResource.physicalId}) in place, no longer tracked by cdkd.`
+        safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} leaves the old physical resource (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) in place, no longer tracked by cdkd.`
       );
     }
     createResult = await createFirstThenDeleteOld(engine.replacementRun, engine.replacementDeps(), {
@@ -1049,10 +1050,12 @@ export async function updateByReplacement(
       // go-to-k/cdkd#4438: as on the `--recreate-via-*` arms above.
       await noteRetainedResource(oldResourceType, logicalId);
       engine.logger.info(
-        safeMsg`  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+        safeMsg`  Retaining old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) - UpdateReplacePolicy: Retain`
       );
     } else {
-      engine.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+      engine.logger.info(
+        safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
+      );
       // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
       // old resource before the post-replacement cleanup delete.
       // Two failure classes, deliberately handled differently:

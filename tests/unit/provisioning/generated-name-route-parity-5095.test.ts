@@ -510,7 +510,7 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
           /DeliveryStreamName:\s+deliveryStreamName \|\| generatedNameFor\('AWS::KinesisFirehose::DeliveryStream', logicalId\)/,
       },
       'AWS::Glue::Connection': {
-        file: 'glue/connection.ts',
+        file: 'glue-provider.ts',
         read: /const connectionInput = properties\['ConnectionInput'\] as Record<string, unknown> \| undefined;/,
         fallback:
           /const name =\s+\(connectionInput\['Name'\] as string \| undefined\) \?\?\s+generatedNameFor\('AWS::Glue::Connection', logicalId\);/,

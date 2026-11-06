@@ -1,9 +1,126 @@
-import { GlueClient } from '@aws-sdk/client-glue';
-import { STSClient } from '@aws-sdk/client-sts';
-import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
-import type { DeleteContext } from '../region-check.js';
-import type { MaskerFn } from '../masked-retry-logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import {
+  GlueClient,
+  CreateDatabaseCommand,
+  UpdateDatabaseCommand,
+  DeleteDatabaseCommand,
+  CreateTableCommand,
+  UpdateTableCommand,
+  DeleteTableCommand,
+  GetDatabaseCommand,
+  GetTableCommand,
+  GetTagsCommand,
+  CreateWorkflowCommand,
+  UpdateWorkflowCommand,
+  DeleteWorkflowCommand,
+  GetWorkflowCommand,
+  CreateSecurityConfigurationCommand,
+  DeleteSecurityConfigurationCommand,
+  GetSecurityConfigurationCommand,
+  CreateJobCommand,
+  UpdateJobCommand,
+  DeleteJobCommand,
+  GetJobCommand,
+  CreateCrawlerCommand,
+  UpdateCrawlerCommand,
+  DeleteCrawlerCommand,
+  GetCrawlerCommand,
+  StartCrawlerScheduleCommand,
+  StopCrawlerScheduleCommand,
+  CreateConnectionCommand,
+  UpdateConnectionCommand,
+  DeleteConnectionCommand,
+  GetConnectionCommand,
+  CreateTriggerCommand,
+  UpdateTriggerCommand,
+  DeleteTriggerCommand,
+  GetTriggerCommand,
+  StartTriggerCommand,
+  StopTriggerCommand,
+  StopCrawlerCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
+  EntityNotFoundException,
+  CrawlerRunningException,
+  ConcurrentModificationException,
+  type DatabaseInput,
+  type DatabaseIdentifier,
+  type FederatedDatabase,
+  type PrincipalPermissions,
+  type DataLakePrincipal,
+  type Permission,
+  type TableInput,
+  type OpenTableFormatInput,
+  type StorageDescriptor,
+  type Column,
+  type Order,
+  type SerDeInfo,
+  type SkewedInfo,
+  type SchemaReference,
+  type TableIdentifier,
+  type ViewDefinitionInput,
+  type EncryptionConfiguration,
+  type S3Encryption,
+  type CloudWatchEncryption,
+  type JobBookmarksEncryption,
+  type JobUpdate,
+  type JobCommand as JobCommandShape,
+  type ExecutionProperty,
+  type NotificationProperty,
+  type SourceControlDetails,
+  type CrawlerTargets,
+  type SchemaChangePolicy,
+  type RecrawlPolicy,
+  type LineageConfiguration,
+  type LakeFormationConfiguration,
+  type ConnectionInput,
+  type TriggerUpdate,
+  type Action as TriggerAction,
+  type Predicate,
+  type Condition as TriggerCondition,
+  type EventBatchingCondition,
+} from '@aws-sdk/client-glue';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { getLogger } from '../../utils/logger.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import {
+  compositeIdFormatMessage,
+  compositeIdSkipResult,
+  logicalIdShown,
+  segmentAfterAnchor,
+  type CompositeIdFormat,
+} from '../composite-id.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
+import {
+  createMaskedLogSinks,
+  isSecretDerivedValue,
+  MASK_WALK_DEPTH_CAP_MARKER,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import {
+  isPlainImportValue,
+  isQuotableImportValue,
+  normalizeAwsTagsToCfn,
+  quotedRemedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import {
+  planTagDiff,
+  refuseMalformedDesiredTags,
+  tagMapAsList,
+  tagPlanWarning,
+} from '../tag-list.js';
+import {
+  replayWarn,
+  requireConfigArray,
+  requireConfigObject,
+  type ConfigArrayOptions,
+} from '../config-shape.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -15,123 +132,940 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { type Mixin, installMethods } from './glue/mixins.js';
-import { databaseMethods } from './glue/database.js';
-import { tableWriteMethods } from './glue/table-write.js';
-import { tableReadMethods } from './glue/table-read.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
-  workflowMethods,
-  workflowWrapMaskedError,
-  workflowGetClient,
-  workflowGetCreateClient,
-  workflowCreate,
-  workflowUpdate,
-  workflowDelete,
-  workflowGetAttribute,
-  workflowReadCurrentState,
-  workflowImport,
-} from './glue/workflow.js';
-import {
-  crawlerMethods,
-  crawlerWrapMaskedError,
-  CRAWLER_LEFT_IN_PLACE_ON_REMOVAL,
-  crawlerGetClient,
-  crawlerGetCreateClient,
-  crawlerGetStsClient,
-  crawlerCreate,
-  crawlerUpdate,
-  crawlerDelete,
-  crawlerGetAttribute,
-  crawlerReadCurrentState,
-  crawlerStartSchedule,
-  crawlerStopSchedule,
-  crawlerResourceArn,
-  crawlerImport,
-} from './glue/crawler.js';
-import {
-  triggerMethods,
-  triggerWrapMaskedError,
-  triggerGetClient,
-  triggerGetCreateClient,
-  triggerGetStsClient,
-  triggerCreate,
-  triggerUpdate,
-  triggerUnsettledInTransition,
-  triggerDelete,
-  triggerGetAttribute,
-  triggerReadCurrentState,
-  triggerResourceArn,
-  triggerImport,
-} from './glue/trigger.js';
-import { makeCallerAccountResolver } from './glue/names.js';
-import {
-  glueWrapMaskedError,
-  glueGetClient,
-  glueGetCreateClient,
-  glueCreate,
-  glueUpdate,
-  glueDelete,
-  glueReadCurrentState,
-  glueGetDriftUnknownPaths,
-  glueImport,
-} from './glue/dispatch.js';
-import {
-  securityConfigurationWrapMaskedError,
-  securityConfigurationGetClient,
-  securityConfigurationGetCreateClient,
-  securityConfigurationCreate,
-  securityConfigurationUpdate,
-  securityConfigurationDelete,
-  securityConfigurationGetAttribute,
-  securityConfigurationReadCurrentState,
-  securityConfigurationImport,
-} from './glue/security-configuration.js';
-import {
-  jobWrapMaskedError,
-  jobGetClient,
-  jobGetCreateClient,
-  jobGetStsClient,
-  jobCreate,
-  jobUpdate,
-  jobDelete,
-  jobGetAttribute,
-  jobReadCurrentState,
-  jobResourceArn,
-  jobImport,
-} from './glue/job.js';
-import {
-  connectionWrapMaskedError,
-  connectionGetStsClient,
-  connectionResourceArn,
-  connectionGetClient,
-  connectionGetCreateClient,
-  connectionCreate,
-  connectionUpdate,
-  connectionDelete,
-  connectionGetAttribute,
-  connectionReadCurrentState,
-  connectionImport,
-} from './glue/connection.js';
+  redactedDeleteAddressFields,
+  redactedDeleteAddressSkip,
+} from '../redacted-delete-address.js';
+import { generatedNameFor } from '../resource-name.js';
 
-/*
- * Each provider class's methods live in `./glue/*.ts` as `this:`-typed
- * functions. A method other providers also declare (`create`, `getClient`, ...)
- * keeps a delegating method in its class; the rest are installed on the
- * class's prototype at the bottom of this file (`installMethods`), so they are
- * ordinary prototype methods at runtime, and these interfaces give them their
- * types. The fields the moved bodies read are therefore not `private`.
+/** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
+const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'Glue Table',
+  segments: ['databaseName', 'tableName'],
+};
+
+/**
+ * Decode an `AWS::Glue::Table` physicalId `<databaseName>|<tableName>`.
+ *
+ * The separator is unescaped (issue #1672), so a bare split of an id whose
+ * table or database name carries a `|` returns a DIFFERENT table — `mydb|a|b`
+ * splits to `mydb.a`, both halves non-empty, and a delete of it would hit the
+ * wrong table. Such ids are ordinary since `createTable` accepts a `|` in the
+ * table name (issue #1672) and in the database name (#3892), and older ones
+ * exist too: binaries before the #1719 refusal recorded them. The recorded `DatabaseName`
+ * disambiguates the id without re-deriving the identity from the bag: it is
+ * used only when the id starts with it, and the table name is the remainder
+ * ({@link segmentAfterAnchor}). The `Ref` resolver anchors the same way
+ * (`glueTableRefFromPhysicalId` in `intrinsic-resolver/ref-values.ts`), so a
+ * `{Ref: <Table>}` names the table these sites address.
+ *
+ * `bags` are tried in order, so pass the one describing what was DEPLOYED
+ * first. With no usable anchor only an id with exactly one separator decodes;
+ * anything longer returns `undefined`, the malformed-id arm every caller
+ * already has. That is deliberately stricter than the `Ref` fallback (which
+ * takes everything after the FIRST `|`): these sites WRITE — `deleteTable`
+ * deletes what they decode — and a database name may carry the `|` (#3892),
+ * where the first-`|` reading names a different table. A loud skip is the safe
+ * failure for a write.
  */
-// eslint-disable-next-line typescript/no-unsafe-declaration-merging
-export interface GlueProvider extends Mixin<
-  typeof databaseMethods & typeof tableWriteMethods & typeof tableReadMethods
-> {}
-// eslint-disable-next-line typescript/no-unsafe-declaration-merging
-export interface GlueWorkflowProvider extends Mixin<typeof workflowMethods> {}
-// eslint-disable-next-line typescript/no-unsafe-declaration-merging
-export interface GlueCrawlerProvider extends Mixin<typeof crawlerMethods> {}
-// eslint-disable-next-line typescript/no-unsafe-declaration-merging
-export interface GlueTriggerProvider extends Mixin<typeof triggerMethods> {}
+/**
+ * The message for an id {@link decodeTableId} could not place.
+ *
+ * An id with ONE `|` that fails is malformed (an empty half), and the shared
+ * wording's remedy — repair the id — is right. An id with MORE than one `|`
+ * whose bags carry no string `DatabaseName` is usually NOT malformed: cdkd
+ * places it by that value, and `cdkd import` can record it as an unresolved
+ * intrinsic. There the remedy is the property, not the id, and saying
+ * otherwise would send the user to edit a correct id.
+ */
+function tableIdDecodeFailure(
+  logicalId: string,
+  physicalId: string,
+  bags: readonly (Record<string, unknown> | undefined)[],
+  options?: { readonly skipping?: boolean; readonly mask?: MaskerFn }
+): string {
+  // The id is masked RAW before it joins the sentence (issue #2177): an update
+  // passes its operation's masker, a delete its `DeleteContext.maskSecrets`
+  // (#2007).
+  const shownId = options?.mask ? options.mask(physicalId) : physicalId;
+  const head = compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, shownId, options);
+  const longId = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
+  // A MASKED string is no anchor either: it prefixes nothing.
+  const anchorless = bags.every((bag) => {
+    const databaseName = bag?.['DatabaseName'];
+    return typeof databaseName !== 'string' || carriesSecretMask(databaseName);
+  });
+  if (!longId || !anchorless) return head;
+  return (
+    `${head}${head.endsWith('.') ? '' : '.'} NOTE: this id carries more than one '|', which ` +
+    `cdkd places by the recorded DatabaseName, and this record's DatabaseName is not a usable ` +
+    `string (an unresolved intrinsic, as cdkd import can record it, or a redaction mask). The ` +
+    `id itself may be correct: set the record's properties.DatabaseName in state.json to the ` +
+    `table's database, EXACTLY — cdkd takes the table name as everything after it, so a shorter ` +
+    `prefix of the real name would address a different table.`
+  );
+}
+
+function decodeTableId(
+  physicalId: string,
+  ...bags: (Record<string, unknown> | undefined)[]
+): { databaseName: string; tableName: string } | undefined {
+  for (const bag of bags) {
+    const databaseName = bag?.['DatabaseName'];
+    if (typeof databaseName !== 'string') continue;
+    const tableName = segmentAfterAnchor(physicalId, databaseName);
+    if (tableName !== undefined) return { databaseName, tableName };
+  }
+  const parts = physicalId.split('|');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+  return { databaseName: parts[0], tableName: parts[1] };
+}
+
+/**
+ * Read a template-borne value that is about to be forwarded to a Glue read
+ * API as a string.
+ *
+ * `import()` runs against the template, where `cdkd import` resolves only the
+ * `Ref`s in its overrides map and the intrinsics built from literals and the
+ * account / region pseudo-parameters (issue #1897). So
+ * `CatalogId: {Ref: AWS::AccountId}` (what `@aws-cdk/aws-glue-alpha` renders
+ * for an environment-agnostic stack) normally arrives as the account id — but
+ * survives as an OBJECT when the account is unknown (STS failed and no
+ * `AWS_ACCOUNT_ID`, issue #1730). A bare `as string` cast then hands that object to
+ * `GetTable` / `GetDatabase` as if it were an id. Dropping it instead matches
+ * the API default (the caller's own account), which is what the intrinsic
+ * would have resolved to anyway.
+ */
+function importableString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** The one pseudo parameter whose value IS the Glue API's `CatalogId` default. */
+const ACCOUNT_ID_PSEUDO_PARAMETER = 'AWS::AccountId';
+const ACCOUNT_ID_SUB_TEMPLATE = '${AWS::AccountId}';
+
+/**
+ * Is this unresolved intrinsic PROVABLY the caller's own account id?
+ *
+ * `@aws-cdk/aws-glue-alpha` sets `catalogId: Stack.of(this).account`, which
+ * renders as `{Ref: AWS::AccountId}` (or an `Fn::Sub` wrapper) for an
+ * environment-agnostic stack. A pseudo parameter is never in the import
+ * overrides map, so a `cdkd import`-written state record holds the intrinsic
+ * verbatim — but its resolved value is exactly what OMITTING `CatalogId` gives
+ * the Glue API, so dropping it is not a loss and a NotFound afterwards is
+ * ordinary idempotency, not the silent-leak shape.
+ *
+ * Kept deliberately narrow. An intrinsic object has exactly ONE key, and only
+ * the two account-id spellings qualify: `{Ref: SomeParam}`, `Fn::ImportValue`,
+ * an `Fn::Sub` of anything else, and every other shape stay UNUSABLE, because
+ * their resolved value could be any catalog at all.
+ */
+function isAccountIdPseudoParameter(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length !== 1) return false;
+  const bag = value as Record<string, unknown>;
+  if (keys[0] === 'Ref') return bag['Ref'] === ACCOUNT_ID_PSEUDO_PARAMETER;
+  if (keys[0] === 'Fn::Sub') {
+    const arg = bag['Fn::Sub'];
+    if (typeof arg === 'string') return arg === ACCOUNT_ID_SUB_TEMPLATE;
+    // 2-arg form `['${AWS::AccountId}', {vars}]`. CFn forbids shadowing a
+    // pseudo parameter in the variable map, so the template alone decides.
+    return Array.isArray(arg) && arg[0] === ACCOUNT_ID_SUB_TEMPLATE;
+  }
+  return false;
+}
+
+/**
+ * Coerce a template-borne `CatalogId` into the string the Glue API wants, or
+ * `undefined` when no usable value is present (issue
+ * [#1675](https://github.com/go-to-k/cdkd/issues/1675)).
+ *
+ * This is {@link importableString} plus a NUMBER arm, and the number arm is
+ * load-bearing rather than defensive, and the reason is NOT the one this
+ * comment gave for three revisions. It claimed
+ * `cdkd import --migrate-from-cloudformation` (earlier: `cdkd migrate`) read
+ * the source stack's ORIGINAL CloudFormation template and handed those raw
+ * properties to providers. It never did. Both commands take properties from
+ * the SYNTH assembly; `cdkd migrate` reached `runImport` with
+ * `app: <assemblyDir>` plus a logical-id mapping, and the ORIGINAL template it
+ * fetched was consumed only by transform detection and by the Pass-2
+ * property-equality MATCH, never forwarded. The `GetTemplate` that survives in
+ * `retire-cfn-stack.ts` feeds Retain injection and the re-upload, and reaches
+ * no properties bag either. Do not restore any of that.
+ *
+ * The two producers that ARE real, both current:
+ *
+ *  1. A numeric literal in the synth template itself — `new CfnResource({
+ *     properties: { CatalogId: 123456789012 } })`, or an
+ *     `addPropertyOverride`. CDK emits the number verbatim; nothing between
+ *     synth and this provider stringifies it.
+ *  2. The macro-expanded deploy template. `src/synthesis/macro-expander.ts`
+ *     fetches `GetTemplate` at `TemplateStage: 'Processed'` and parses the
+ *     JSON body as the template deploy / diff / import then use, so a macro
+ *     that emits an unquoted number lands here as a number.
+ *
+ * The DELETE path reaches it too, from the other side: `destroy-runner.ts`
+ * hands the recorded `resource.properties` straight to `provider.delete`, so a
+ * state row holding either shape above replays it at teardown. Rejecting it
+ * as "not a string" would drop the field and silently retarget the call at the
+ * account's DEFAULT catalog — which on a DELETE can destroy a same-named
+ * resource that happens to live there. `Number.isFinite` keeps `NaN` /
+ * `Infinity` out (they fall through to the unusable arm, where they are
+ * reported); a non-integer is stringified and AWS rejects it loudly, which is
+ * the right failure.
+ *
+ * The coercion lives HERE rather than inside `importableString`: that helper is
+ * shared with `DatabaseName` / `TableInput.Name` reads, where a number is a
+ * malformed template rather than a YAML scalar to recover.
+ */
+function catalogIdForApi(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return importableString(value);
+}
+
+/**
+ * The Data Catalog a Glue call must address, read out of a properties bag.
+ *
+ * `CatalogId` selects the Data Catalog; OMITTING it means the caller's own
+ * account's DEFAULT catalog. So for a table / database / connection that lives
+ * in a NON-default catalog (a cross-account Data Catalog, a Lake Formation
+ * federated catalog) a call that drops the field targets the wrong catalog. On
+ * a DELETE that is the issue-#1675 defect: AWS answers
+ * `EntityNotFoundException`, the delete path's warn-and-continue idempotency
+ * treats it as "already gone", and `cdkd destroy` reports SUCCESS while the
+ * resource is still there — a silent LEAK, not a loud failure.
+ *
+ * cdkd's physical ids for these types encode no catalog (`<db>|<table>` for a
+ * table, the bare name for a database / connection), so the id cannot carry it
+ * — but the properties bag can, and `CatalogId` is a declared property of all
+ * three types.
+ *
+ * `declaredButUnusable` is what lets the DELETE's NotFound arm DISCRIMINATE: a
+ * NotFound after a correctly-targeted delete is legitimately idempotent, while
+ * a NotFound after cdkd knowingly fell back to the default catalog is not
+ * evidence of anything. It is deliberately FALSE for the account-id pseudo
+ * parameter (see {@link isAccountIdPseudoParameter}) — dropping that one is
+ * provably harmless, so warning about it would fire a leak alarm on every
+ * ordinary destroy of an environment-agnostic CDK stack.
+ *
+ * SCOPE — the guard is applied to every read whose bag can be a RAW template:
+ * the three deletes, the three `readCurrentState` readers, and the three
+ * `import()` probes. The CREATE / UPDATE reads deliberately keep their bare
+ * `as string | undefined` cast: the deploy engine resolves intrinsics before
+ * the provider sees them, so guarding there is the separate issue-#1513
+ * decision that #1651 already recorded. The one residual is a rollback replay
+ * (`rollback-executor.ts` calls `update(..., previousState.properties, ...)`),
+ * where an IMPORTED stack's raw bag does reach the update path — narrow enough
+ * to leave to #1513 rather than widen this change into the deploy path.
+ */
+interface CatalogTarget {
+  /** The value to send, or `undefined` to let the API default to this account. */
+  catalogId: string | undefined;
+  /** A catalog WAS declared, cdkd could not use it, and the drop is not provably safe. */
+  declaredButUnusable: boolean;
+}
+
+function deleteCatalogId(properties: Record<string, unknown> | undefined): CatalogTarget {
+  const raw = properties?.['CatalogId'];
+  const catalogId = catalogIdForApi(raw);
+  return {
+    catalogId,
+    declaredButUnusable: catalogId === undefined && raw != null && !isAccountIdPseudoParameter(raw),
+  };
+}
+
+/**
+ * The readCurrentState answer for an `EntityNotFoundException` on a
+ * catalog-scoped read: `RESOURCE_NOT_FOUND`, except when a declared `CatalogId`
+ * was unusable and the read fell back to the default catalog — that NotFound
+ * proves nothing about the declared one (the delete's same discrimination), so
+ * it stays `undefined`.
+ */
+function notFoundInCatalog(
+  properties: Record<string, unknown> | undefined
+): ResourceNotFound | undefined {
+  return deleteCatalogId(properties).declaredButUnusable ? undefined : RESOURCE_NOT_FOUND;
+}
+
+/**
+ * Human-readable name for the catalog a call addressed, for log messages. A
+ * create / update passes its operation's masker, which sees the id RAW
+ * (issue #2177). The delete path names only a catalog id it could not use (an
+ * unresolved intrinsic), which no masker would change.
+ */
+function describeCatalog(catalogId: string | undefined, mask: MaskerFn = (text) => text): string {
+  return catalogId === undefined
+    ? "this account's default Data Catalog"
+    : `Data Catalog ${mask(String(catalogId))}`;
+}
+
+/**
+ * Report the `EntityNotFoundException` arm of a Glue delete, at the severity
+ * the evidence supports (issue #1675).
+ *
+ * With a correctly-targeted delete a NotFound means the resource is already
+ * gone and the skip is ordinary idempotency — debug. When the template DECLARED
+ * a `CatalogId` that {@link deleteCatalogId} could not use, cdkd addressed the
+ * DEFAULT catalog instead, so a NotFound is equally consistent with "the
+ * resource is alive in the declared catalog" — that is the silent-leak shape,
+ * and it gets a warning.
+ *
+ * BOTH arms name the catalog actually addressed. A LITERAL-but-wrong
+ * `CatalogId` (a typo, a stale account id) is otherwise indistinguishable from
+ * an already-deleted resource in the log, and it takes the debug arm.
+ */
+function logCatalogScopedDeleteSkip(
+  logger: { debug: (message: string) => void; warn: (message: string) => void },
+  target: CatalogTarget,
+  kind: 'Database' | 'Table' | 'Connection',
+  logicalId: string,
+  physicalId: string
+): void {
+  const where = describeCatalog(target.catalogId);
+  if (!target.declaredButUnusable) {
+    logger.debug(`Glue ${kind} ${physicalId} does not exist in ${where}, skipping deletion`);
+    return;
+  }
+  logger.warn(
+    `Glue ${kind} ${logicalId} (${physicalId}) was not found, so cdkd skipped its deletion — ` +
+      `but the recorded CatalogId is not a usable value (likely an unresolved intrinsic), so ` +
+      `the delete targeted ${where}. If the resource lives in a different Data Catalog it ` +
+      `still exists. cdkd cannot retry this delete: the state record is dropped once the ` +
+      `destroy completes, so check the intended catalog (aws glue get-${kind.toLowerCase()} ` +
+      `--catalog-id '<id>' ...) and delete the resource there by hand.`
+  );
+}
+
+/**
+ * Resolve the `(databaseName, tableName)` pairs an `AWS::Glue::Table` import
+ * should probe, in order, from either physicalId shape (issue #1651).
+ *
+ * cdkd's physicalId for a Glue Table is the composite `<databaseName>|<tableName>`
+ * (built by `createTable`), because `GetTable` / `UpdateTable` / `DeleteTable`
+ * all need both while `ResourceProvider`'s read-side methods receive a single
+ * string. CloudFormation's physicalId for the same type is the TABLE NAME
+ * ALONE — `Ref` returns it. Auto-mode import merges CloudFormation-derived ids
+ * into the overrides before the loop (#1128 / #1130), so `knownPhysicalId`
+ * legitimately arrives in either shape and both must resolve; treating the bare
+ * form as malformed reported every `cdk deploy`-managed table as not-found while
+ * pointing the user at the very id it had just rejected.
+ *
+ * `|` is the usual discriminator, but it is not a clean one: the "lowercase
+ * alphanumerics and underscore" rule usually quoted for Glue names is the Athena
+ * / Data Catalog CONVENTION, not the API's constraint. Live probe (us-east-1,
+ * 2026-08-12): `glue:CreateTable` ACCEPTS a table literally named `a|b`, and
+ * CloudFormation manages it, reporting the bare `a|b` as its physical id.
+ *
+ * Such a table IS adoptable (issue #1672 for a table name, #3892 for a
+ * database name; Glue accepts `|` in both), on one condition: the record must
+ * decode back to the same table. A `|` in either name is decodable —
+ * `updateTable` / `deleteTable` / `readTable` anchor on the recorded
+ * `DatabaseName` ({@link decodeTableId}) and so does the `Ref` resolver — but
+ * only when that recorded `DatabaseName` IS the database probed. Import records
+ * the template's bag, so a name carrying `|` is accepted only paired with the
+ * template's own `DatabaseName`; paired with anything else (a composite naming
+ * another database, or an unresolved template intrinsic) the record would
+ * carry no anchor, and without one the writers decode only the exact
+ * two-segment form.
+ *
+ * A `|`-bearing known id that EQUALS the template's `TableInput.Name` is read
+ * only as that bare name in the template's database: it is CloudFormation's id
+ * for the table the template declares. Otherwise it yields:
+ *
+ * 1. `<templateDb>|<rest>` — anchored on the template's `DatabaseName`: the
+ *    table is everything after it.
+ * 2. Otherwise, for EXACTLY two segments, the composite `(<a>, <b>)` — the
+ *    established contract, including a composite naming a database other than
+ *    the template's.
+ * 3. And, beside either, when the template's `DatabaseName` is usable, the
+ *    BARE reading: the whole id is a table name in that database. This is the
+ *    CloudFormation migration path for a table named `a|b`, whose CFn id is
+ *    `a|b` — and for one named `mydb|a` in database `mydb`, whose id the
+ *    anchored reading would otherwise take for table `a`. It costs an
+ *    ordinary `<db>|<table>` import a second `GetTable`; correctness of the
+ *    adopted table outweighs that.
+ *
+ * `importTable` probes them ALL and adopts a reading only when it is the one
+ * that exists, or the one of several whose table name is the template's
+ * `TableInput.Name`; otherwise it refuses as ambiguous. An id of
+ * three or more segments that the template's `DatabaseName` does not anchor and
+ * cannot pair with (it is unusable) is refused: `x|a|b` could be table `a|b` in
+ * `x` or table `b` in a database `x|a`, and nothing says which. An earlier
+ * revision of #1651 retried the bare reading and recorded an id the writers
+ * could not decode — the #1658 failure mode (`AWS::Route53::RecordSet`
+ * accepted CloudFormation's id verbatim and made the stack undestroyable). The
+ * pairing condition above is what keeps reading 3 from repeating it.
+ *
+ * On failure it returns the REASON rather than a bare `undefined`, because the
+ * three causes need three different messages and re-deriving the cause from the
+ * inputs at the call site gets it wrong: `'db|'` contains a `|` but its real
+ * defect is the empty segment, not the separator.
+ */
+/** One `(database, table)` pair an import probes, and which reading of the id produced it. */
+interface TableReading {
+  readonly databaseName: string;
+  readonly tableName: string;
+  /** Named in the error when this reading's probe cannot answer. */
+  readonly reading: 'template' | 'anchored' | 'composite' | 'bare';
+}
+
+/** Glue's `NameString` limit: a longer table name cannot exist, so is never probed. */
+const GLUE_NAME_MAX_LENGTH = 255;
+
+type TableIdentityResult =
+  | { ok: true; candidates: readonly TableReading[] }
+  /**
+   * The id cannot be placed: a `|`-bearing id that the template's
+   * `DatabaseName` neither anchors nor pairs with has more than two segments,
+   * or equals the template's table name with no usable `DatabaseName`.
+   */
+  | { ok: false; reason: 'pipe-in-name' }
+  /** An id was supplied but no usable `(database, table)` pair came out of it. */
+  | { ok: false; reason: 'unpairable' }
+  /** Nothing identified the table: no override and no usable template names. */
+  | { ok: false; reason: 'unidentified' };
+
+function resolveTableIdentity(input: {
+  knownPhysicalId: string | undefined;
+  templateDatabaseName: string | undefined;
+  templateTableName: string | undefined;
+}): TableIdentityResult {
+  const { knownPhysicalId, templateDatabaseName, templateTableName } = input;
+
+  const candidates: TableReading[] = [];
+  let sawPipeInName = false;
+  // Every pair goes through here.
+  //
+  // The one condition a record needs — a `|` in EITHER name must be paired
+  // with the TEMPLATE's `DatabaseName`, the value later readers anchor on —
+  // holds by construction rather than by a check here: the only branches that
+  // can yield such a name (template, anchored, bare) all pair it with
+  // `templateDatabaseName`, and the two-segment composite yields pipe-free
+  // halves. A new branch must keep it so. (`importTable` records the probed
+  // database as an attribute too, so the `Ref` resolver can anchor even when
+  // `cdkd import` records the property unresolved.)
+  const consider = (
+    databaseName: string | undefined,
+    tableName: string | undefined,
+    reading: TableReading['reading']
+  ): void => {
+    if (databaseName === undefined || tableName === undefined) return;
+    candidates.push({ databaseName, tableName, reading });
+  };
+
+  if (knownPhysicalId === undefined) {
+    consider(templateDatabaseName, templateTableName, 'template');
+  } else if (knownPhysicalId.includes('|') && knownPhysicalId === templateTableName) {
+    // The id IS the template's own table name: CloudFormation's bare id for a
+    // table named `a|b`, which auto-mode import passes verbatim. Read it only
+    // as that name, in the template's database. Splitting it too would adopt
+    // an unrelated table `b` in a database `a` whenever one exists, and the
+    // template would then describe a table the record does not name.
+    //
+    // Without a usable template `DatabaseName` there is nothing to pair it
+    // with, and the composite `--resource '<db>|a|b'` the `unpairable` message
+    // would suggest is itself unanchored (refused below as `pipe-in-name`).
+    // So this reports `pipe-in-name`, whose message names the one remedy that
+    // works: set the template's DatabaseName.
+    if (templateDatabaseName === undefined) sawPipeInName = true;
+    else consider(templateDatabaseName, knownPhysicalId, 'bare');
+  } else if (knownPhysicalId.includes('|')) {
+    const parts = knownPhysicalId.split('|');
+    const anchored = segmentAfterAnchor(knownPhysicalId, templateDatabaseName);
+    if (anchored !== undefined) {
+      consider(templateDatabaseName, anchored, 'anchored');
+    } else if (parts.length === 2) {
+      consider(parts[0] || undefined, parts[1] || undefined, 'composite');
+    } else {
+      // Never destructure the first two of three segments: `mydb|a|b` read as
+      // database `mydb`, table `a` is a DIFFERENT table, adopted under an id
+      // that round-trips cleanly and therefore never looks wrong again. The
+      // anchored arm above is what reads that id.
+      sawPipeInName = true;
+    }
+    // The bare reading, beside whichever reading the id also has: the whole id
+    // is a table name in the template's database. CloudFormation's id for a
+    // table named `mydb|a` is `mydb|a`, and with a template `DatabaseName` of
+    // `mydb` the anchored reading alone would adopt an unrelated table `a` —
+    // which `cdkd destroy` would then delete. Probing both lets `importTable`
+    // refuse when both exist. Skipped for an id with an EMPTY segment (`db|`,
+    // `|t`: the missing half of a composite, whose `unpairable` guidance a
+    // silent not-found would replace) and for one longer than Glue's name
+    // limit, which no table can be named.
+    if (
+      templateDatabaseName !== undefined &&
+      parts.every((part) => part !== '') &&
+      knownPhysicalId.length <= GLUE_NAME_MAX_LENGTH
+    ) {
+      consider(templateDatabaseName, knownPhysicalId, 'bare');
+    }
+  } else {
+    // Bare CloudFormation id: the table name. The database comes from the
+    // template, where CDK renders `DatabaseName` as a `Ref` to the sibling
+    // `AWS::Glue::Database` — whose CFn physicalId IS the database name, so the
+    // overrides map resolves it to a literal before `import()` is called.
+    //
+    // The override wins over the template's `TableInput.Name`: the user named a
+    // specific resource to adopt, and probing a different one would adopt the
+    // wrong table. `importableString` rejects the empty string, so a
+    // `--resource-mapping` entry of `""` (which `parseMappingJson` accepts,
+    // unlike the `--resource` flag) still returns not-found rather than sending
+    // `GetTable({Name: ''})`, whose `InvalidInputException` is not
+    // `EntityNotFoundException` and would abort the whole import.
+    consider(templateDatabaseName, importableString(knownPhysicalId), 'template');
+  }
+
+  if (candidates.length > 0) return { ok: true, candidates };
+  if (sawPipeInName) return { ok: false, reason: 'pipe-in-name' };
+  return { ok: false, reason: knownPhysicalId === undefined ? 'unidentified' : 'unpairable' };
+}
+
+/**
+ * Describe an unresolved name by SHAPE only. Its leaves can be resolved
+ * secrets, and the engine's masker matches a secret's full plaintext, which a
+ * JSON rendering (escaping) or a cut (a fragment) would defeat.
+ */
+function describeUnresolvedName(value: unknown, mask: MaskerFn = (text) => text): string {
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'object' && value !== null) {
+    // Each key RAW through the operation's masker (issue #2177): a resolved
+    // secret used as a map key would otherwise print here.
+    const keys = Object.keys(value)
+      .slice(0, 5)
+      .map((key) => mask(key));
+    return keys.length === 0 ? 'an empty object' : `an object with keys [${keys.join(', ')}]`;
+  }
+  if (typeof value === 'number') return 'a number that is not a safe integer';
+  return `a ${typeof value}`;
+}
+
+/**
+ * Refuse an UPDATE whose nested `Name` renames the recorded Glue entity
+ * (issue #3724).
+ *
+ * CDK emits the NESTED name (`TableInput.Name`, `DatabaseInput.Name`,
+ * `ConnectionInput.Name`). Since issue #3750 the diff plans a Table or
+ * Connection rename as a REPLACEMENT, as CloudFormation does (a
+ * `replacement-rules.ts` rule for the Table, the schema's nested createOnly
+ * path for the Connection), so for those two this is a BACKSTOP for the
+ * paths that still reach `update()` with a changed name: a name the diff
+ * could not compare, `drift --revert`, a rollback replay. A Database rename
+ * is not a replacement (CloudFormation's update FAILS on it), so for a
+ * Database this is the answer, not a backstop. For a table the update would
+ * be a wrong-target write: `UpdateTable` addresses the
+ * table BY `TableInput.Name`, so it would rewrite whichever table holds the new
+ * name — possibly one cdkd does not manage — while the state record kept the
+ * old id. `UpdateDatabase` / `UpdateConnection` address the recorded name, but
+ * whatever AWS does with a different name inside the definition, cdkd keeps
+ * recording the old one. No arm is licensed to downgrade this on a replay: the
+ * alternative is a write to a resource the record does not name.
+ *
+ * `ResourceUpdateNotSupportedError` is what the deploy engine's `--replace`
+ * fallback reacts to, so the remedy it names is a real path. An ABSENT name
+ * passes: the builders then send the recorded one. Any other non-string value
+ * still reaches the wire uncoerced, so a safe integer is compared by its string
+ * form (the one spelling JS and Glue cannot disagree on) and anything else is
+ * refused with an untyped error, since a `--replace` CREATE would carry the
+ * same value — cdkd cannot tell which entity it addresses.
+ * `foldCase` is set for tables and databases, whose names Glue folds to
+ * lowercase: a case-only difference addresses the same entity, and a
+ * `drift --revert` bag read back from AWS carries the folded spelling. Only
+ * ASCII is folded, so a guess wrong about Glue's folding over-refuses rather
+ * than letting a different entity through.
+ */
+function refuseNestedRename(args: {
+  resourceType: string;
+  logicalId: string;
+  field: string;
+  noun: string;
+  recordedName: string;
+  desiredName: unknown;
+  foldCase: boolean;
+  /** Receives the desired name already masked through {@link mask}. */
+  consequence: (shownDesiredName: string) => string;
+  stateful: boolean;
+  /**
+   * The update's masker (issue #2177). Both names are masked RAW before they
+   * join the sentence, the only arm a secret shorter than the substring floor
+   * reaches.
+   */
+  mask: MaskerFn;
+}): void {
+  const { desiredName: raw, recordedName, mask } = args;
+  if (raw == null) return;
+  const comparable =
+    typeof raw === 'string' || (typeof raw === 'number' && Number.isSafeInteger(raw));
+  if (!comparable) {
+    // NOT `ResourceUpdateNotSupportedError`: `--replace` reacts to that type, and
+    // its DELETE would retire the recorded entity before a CREATE carrying the
+    // same unaddressable value.
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${args.field} is not a resolved name (${describeUnresolvedName(raw, mask)}), so cdkd ` +
+          `cannot tell which Glue ${args.noun} the update of ${args.logicalId} would address ` +
+          `and will not send it. Declare ${args.field} as a string ('${mask(recordedName)}' ` +
+          `keeps the recorded ${args.noun})`,
+        args.resourceType,
+        args.logicalId
+      )
+    );
+  }
+  const desiredName = String(raw);
+  const fold = (name: string): string =>
+    args.foldCase ? name.replace(/[A-Z]/g, (c) => c.toLowerCase()) : name;
+  if (fold(desiredName) === fold(recordedName)) return;
+  const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
+  const shownRecorded = mask(recordedName);
+  const shownDesired = mask(desiredName);
+  throw new ResourceUpdateNotSupportedError(
+    args.resourceType,
+    args.logicalId,
+    `${args.field} changed from '${shownRecorded}' to '${shownDesired}', and cdkd cannot rename ` +
+      `a Glue ${args.noun} in place — ${args.consequence(shownDesired)}. To rename it, re-deploy ` +
+      `with ${remedyFlags}, which DELETEs the ${args.noun} '${shownRecorded}' and then CREATEs ` +
+      `'${shownDesired}' (under UpdateReplacePolicy: Retain the old one is kept instead); the ` +
+      `CREATE fails if a ${args.noun} named '${shownDesired}' already exists, after the DELETE. ` +
+      `If the template did not change this name, the state record was left by an earlier ` +
+      `deploy that wrote to '${shownDesired}': check that ${args.noun} before ` +
+      `re-deploying. Otherwise keep the name '${shownRecorded}'`
+  );
+}
+
+/** A `[raw value, name to mask]` pair for {@link glueOperationSinks}. */
+type NamePair = readonly [unknown, string | undefined];
+
+/**
+ * `[name, name]` pairs for {@link glueOperationSinks} (issue #2177): a name that
+ * IS a secret of this deploy is masked as a needle, so it is hidden even inside
+ * text cdkd did not write, such as an AWS error quoting it back, where the
+ * masker's substring arm skips a secret shorter than `MIN_NEEDLE_LENGTH`. A
+ * non-secret name is left alone.
+ */
+function secretNamePairs(values: readonly unknown[]): NamePair[] {
+  return values.map((value) => [value, typeof value === 'string' ? value : undefined] as const);
+}
+
+/**
+ * Shortest name {@link glueOperationSinks} makes a SUBSTRING needle. A needle is
+ * replaced wherever it occurs, cdkd's own fixed wording included, so a very
+ * short secret would mask letters of `Creating Glue Database` and the masked
+ * positions would hint at it. It narrows that rather than closing it (a
+ * 3-character one such as `lue` still can).
+ *
+ * Below the floor a secret name is still hidden at every site cdkd interpolates
+ * it: those sites mask the value RAW, and the sinks render a secret-derived name
+ * as `***` by whole-value equality -- including a ROTATED recorded name, whose
+ * old plaintext is in no bag of this deploy. Only an AWS echo of a 1-2
+ * character name goes unmasked; a secret that short has almost no
+ * confidentiality either way.
+ */
+const SELF_NEEDLE_MIN_LENGTH = 3;
+
+/**
+ * {@link secretNamePairs} for a recorded name, plus a `[previous raw value,
+ * recorded name]` pair per property the recorded name can have come from.
+ *
+ * A Glue physical id IS the name the template declared, so on a plain deploy
+ * the masker already knows it. What it cannot know is a name recorded from a
+ * PREVIOUS secret: state persists that value as its `{{resolve:` reference (or
+ * as `***`), and after a rotation the old plaintext is in no bag of this
+ * deploy. The recorded name is then masked too.
+ */
+function previousNamePairs(
+  recordedName: string | undefined,
+  previousValues: readonly unknown[]
+): NamePair[] {
+  return [
+    ...secretNamePairs([recordedName]),
+    ...previousValues.map((raw) => [raw, recordedName] as const),
+  ];
+}
+
+/**
+ * The masked sinks ONE Glue `create()` / `update()` logs through (issue #2177):
+ * `createMaskedLogSinks` over the context's masker, extended by `pairs` (see
+ * {@link secretNamePairs}, {@link previousNamePairs}). Each name whose raw value
+ * is secret-derived (`isSecretDerivedValue`) is:
+ *
+ *  - rendered as `***` wherever a sink masks it as a WHOLE value -- every site
+ *    cdkd interpolates a name through `value` / `mask`, at any length;
+ *  - and, at {@link SELF_NEEDLE_MIN_LENGTH} or longer, a substring needle, so
+ *    it is also masked where it OCCURS inside other text (an AWS echo).
+ *
+ * Built per call; never cached on the provider, which serves concurrent
+ * resources.
+ */
+function glueOperationSinks(
+  logger: { debug(message: string): void; warn(message: string): void },
+  maskSecrets: MaskerFn | undefined,
+  pairs: readonly NamePair[]
+): MaskedLogSinks {
+  const base = createMaskedLogSinks(logger, maskSecrets);
+  const secretNames = new Set<string>();
+  for (const [raw, name] of pairs) {
+    if (typeof name === 'string' && name !== '' && isSecretDerivedValue(raw, base.mask)) {
+      secretNames.add(name);
+    }
+  }
+  // The ORIGINAL pairs, not `[name, name]`: a ROTATED recorded name qualifies
+  // only through its PREVIOUS raw value (`{{resolve:` / `***`) -- the old
+  // plaintext itself is in no bag of this deploy, so the name alone would fail
+  // the predicate and an AWS error quoting it would print it.
+  const needled = withDerivedNameMasks(
+    logger,
+    base,
+    pairs.filter(
+      (pair): pair is readonly [unknown, string] =>
+        typeof pair[1] === 'string' && pair[1].length >= SELF_NEEDLE_MIN_LENGTH
+    )
+  );
+  if (secretNames.size === 0) return needled;
+  const mask: MaskerFn = (text: string) =>
+    secretNames.has(text) ? MASK_WALK_DEPTH_CAP_MARKER : needled.mask(text);
+  return {
+    mask,
+    value: (value: unknown) => mask(String(value)),
+    debug: (message: string) => logger.debug(mask(message)),
+    warn: (message: string) => logger.warn(mask(message)),
+  };
+}
+
+/**
+ * The recorded `CatalogId` a `readCurrentState` snapshot carries back, so a
+ * `drift --revert` built from that snapshot addresses the catalog the entity
+ * was READ from (issue #3756). `GetDatabase` / `GetTable` / `GetConnection` do
+ * not echo it, and a snapshot without it made the revert's update target this
+ * account's DEFAULT catalog. Echoed only when usable: the raw value keeps drift
+ * comparing like with like, and an unusable one (the account-id pseudo
+ * parameter, another intrinsic) stays absent, which is what the reads
+ * addressed for it.
+ */
+function withRecordedCatalogId(
+  snapshot: Record<string, unknown>,
+  properties: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const raw = properties?.['CatalogId'];
+  return catalogIdForApi(raw) === undefined ? snapshot : { ...snapshot, CatalogId: raw };
+}
+
+/**
+ * The `CatalogId` an UPDATE sends. A finite number (a YAML-numeric account id,
+ * which {@link withRecordedCatalogId} can now carry into a `drift --revert`
+ * bag) is stringified the way the readers and deletes do; anything else keeps
+ * the pre-existing cast, so an unresolved intrinsic still reaches AWS and is
+ * rejected there rather than silently defaulting to this account's catalog.
+ */
+function updateCatalogId(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? String(value)
+    : (value as string | undefined);
+}
+
+/** Which Data Catalog a `CatalogId` value addresses, as far as cdkd can tell offline. */
+type CatalogSide = { kind: 'default' } | { kind: 'literal'; id: string } | { kind: 'unusable' };
+
+/**
+ * Classify a `CatalogId`. Absent and the account-id pseudo parameter both mean
+ * the caller's own catalog ({@link isAccountIdPseudoParameter}); a usable
+ * literal is itself; anything else (another intrinsic, a malformed value)
+ * cannot be placed.
+ */
+function classifyCatalog(value: unknown): CatalogSide {
+  if (value == null || isAccountIdPseudoParameter(value)) return { kind: 'default' };
+  const id = catalogIdForApi(value);
+  return id === undefined ? { kind: 'unusable' } : { kind: 'literal', id };
+}
+
+/**
+ * Refuse an UPDATE whose `CatalogId` moves the entity to another Data Catalog
+ * (issue #3756).
+ *
+ * Every Glue update sends the DESIRED `CatalogId` while the state record names
+ * only the entity, so a changed catalog addresses the same-named entity in
+ * ANOTHER catalog — rewriting it while the recorded one is left alone.
+ * `AWS::Glue::Database` reaches this on every such edit (its registry schema
+ * marks only `DatabaseName` createOnly); Table and Connection mark `CatalogId`
+ * createOnly and reach it only when the createOnly lookup degrades.
+ *
+ * Equivalence is decided, not string-compared: absent and a literal equal to
+ * the caller's own account are the SAME catalog, so the mixed case asks STS
+ * (`callerAccountId`), which a CDK stack's `catalogId: Stack.of(this).account`
+ * hits whenever the recorded side holds the pseudo parameter an import left.
+ * An unusable DESIRED side is left to the wire as before, and an unusable
+ * RECORDED side (an imported raw intrinsic) cannot be placed, so it warns and
+ * proceeds: refusing would wedge every later deploy on a record the user
+ * cannot edit.
+ */
+async function refuseCatalogMove(args: {
+  resourceType: string;
+  logicalId: string;
+  noun: string;
+  entityName: string;
+  recorded: unknown;
+  desired: unknown;
+  stateful: boolean;
+  callerAccountId: () => Promise<string>;
+  warn: (message: string) => void;
+  /** Where AWS's own text for a failed STS call goes (go-to-k/cdkd#2319). */
+  debug: (message: string) => void;
+  /**
+   * The update's masker (issue #2177): the entity name, every literal catalog
+   * id and the STS failure text are masked RAW before they join a sentence.
+   */
+  mask: MaskerFn;
+}): Promise<void> {
+  const { mask } = args;
+  const recorded = classifyCatalog(args.recorded);
+  const desired = classifyCatalog(args.desired);
+  const describe = (side: CatalogSide): string =>
+    describeCatalog(side.kind === 'literal' ? side.id : undefined, mask);
+  if (desired.kind === 'unusable') return;
+  if (recorded.kind === 'unusable') {
+    args.warn(
+      `Glue ${args.noun} ${args.logicalId}: the recorded CatalogId is not a usable value ` +
+        `(likely an unresolved intrinsic an import recorded), so cdkd cannot confirm the update ` +
+        `addresses the Data Catalog the ${args.noun} was deployed to; it proceeds against ` +
+        `${describe(desired)}.`
+    );
+    return;
+  }
+  if (recorded.kind === 'default' && desired.kind === 'default') return;
+  if (recorded.kind === 'literal' && desired.kind === 'literal') {
+    if (recorded.id === desired.id) return;
+  } else {
+    const literal = recorded.kind === 'literal' ? recorded.id : (desired as { id: string }).id;
+    let callerAccount: string;
+    try {
+      callerAccount = await args.callerAccountId();
+    } catch (error) {
+      throw wrapGlueError(
+        mask,
+        args.debug,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Could not resolve the caller's account id (sts:GetCallerIdentity) to tell whether ` +
+              `CatalogId ${mask(literal)} is this account's default Data Catalog, so cdkd did not ` +
+              `update Glue ${args.noun} ${args.logicalId}: ${text}`,
+            args.resourceType,
+            args.logicalId,
+            undefined,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+    if (literal === callerAccount) return;
+  }
+  const remedyFlags = args.stateful ? '--replace --force-stateful-recreation' : '--replace';
+  throw new ResourceUpdateNotSupportedError(
+    args.resourceType,
+    args.logicalId,
+    `CatalogId moves the ${args.noun} '${mask(args.entityName)}' from ${describe(recorded)} to ` +
+      `${describe(desired)}, and an in-place update would address the same-named ${args.noun} ` +
+      `in the NEW catalog while the state record kept the old one. To move it, re-deploy with ` +
+      `${remedyFlags}, which DELETEs the ${args.noun} from ${describe(recorded)} and then ` +
+      `CREATEs it in ${describe(desired)} (under UpdateReplacePolicy: Retain the old one is ` +
+      `kept instead); or keep the recorded CatalogId`
+  );
+}
+
+/**
+ * A memoized "which account am I" for {@link refuseCatalogMove}'s mixed case,
+ * built per provider instance so the STS call happens at most once and only
+ * when a catalog comparison needs it. A failure is not cached.
+ */
+function makeCallerAccountResolver(region: string | undefined): () => Promise<string> {
+  let stsClient: STSClient | undefined;
+  let cached: string | undefined;
+  return async () => {
+    if (cached) return cached;
+    stsClient ??= new STSClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) });
+    cached = await resolveAccountId(stsClient);
+    return cached;
+  };
+}
+
+/**
+ * A Glue provider's two clients, built in ONE synchronous step so both capture
+ * the region and identity active at that call: `client` for every call, and
+ * `createClient` for the provider's main create only -- SDK retries on, except
+ * a 5xx (`withoutServerErrorRetries`, issue #4639).
+ *
+ * None of `CreateDatabase`, `CreateTable`, `CreateWorkflow`,
+ * `CreateSecurityConfiguration`, `CreateJob`, `CreateCrawler`,
+ * `CreateConnection` or `CreateTrigger` carries an idempotency token, and each
+ * name is unique in its scope (catalog, database, account and region), so the
+ * SDK's own replay of a 5xx whose request had succeeded collides with what the
+ * first send made, and that `AlreadyExistsException` surfaced from the
+ * engine's FIRST attempt as a name somebody else holds. Refused here, the 5xx
+ * reaches the deploy engine's retry, which marks the create as possibly
+ * replayed (`withRetry`, #3978). Nothing is adopted on that collision: a name
+ * is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
+ * attribution").
+ */
+function newGlueClients(region: string | undefined): {
+  client: GlueClient;
+  createClient: GlueClient;
+} {
+  return {
+    client: new GlueClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) }),
+    createClient: withoutServerErrorRetries(
+      new GlueClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) })
+    ),
+  };
+}
+
+/**
+ * Wrap what a Glue operation caught into the error it throws, keeping the
+ * caller's identity out of the thrown message (go-to-k/cdkd#2319; the S3
+ * bucket provider's twin is go-to-k/cdkd#2302).
+ *
+ * A thrown message is persisted to `deployments/{runId}.jsonl`, and Glue words
+ * an `AccessDeniedException` as `User:
+ * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized to
+ * perform: ...`. So an AWS-authored failure (`describeAwsFailure`) reaches
+ * `build` as its CLASS, and the message `build` would have made from AWS's own
+ * text goes to `debug`, through the operation's masker. A cdkd-authored or
+ * transport error keeps its text and the masked-quote wrap it had
+ * (`wrapMaskedAwsError`). A non-`Error` throw no longer out-throws a value
+ * `String()` cannot convert.
+ *
+ * `build` must thread `error` as the wrap's `cause`: the redaction is stamped
+ * so the retry classifiers read that chain, where the withheld `not authorized
+ * to perform` still is. A non-`Error` throw has no chain, so it is not stamped.
+ * An "already exists" is restated ({@link relayedNameCollision}), so a
+ * create-first replacement still recognises the collision. Every delete checks
+ * `EntityNotFoundException` by type before it wraps, and stamps a wrap naming
+ * any other `NotFound` class `markNotGone`, which the destroy loop's "already
+ * deleted" match refuses.
+ */
+function wrapGlueError(
+  mask: MaskerFn,
+  debug: (message: string) => void,
+  error: unknown,
+  build: (text: string) => ProvisioningError
+): ProvisioningError {
+  const failure = describeAwsFailure(error);
+  if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+  // `build` runs twice here (debug text, then the throw), so it must stay a
+  // side-effect-free constructor call.
+  debug(mask(build(failure.detail).message));
+  const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+  return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+}
 
 /**
  * SDK Provider for AWS Glue resources
@@ -144,18 +1078,27 @@ export interface GlueTriggerProvider extends Mixin<typeof triggerMethods> {}
  * polling overhead for operations that complete immediately.
  */
 export class GlueProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  readonly providerRegion = ambientRegion();
-  readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
-  logger: ConsoleLogger = getLogger().child('GlueProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private readonly providerRegion = ambientRegion();
+  private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
+  private logger = getLogger().child('GlueProvider');
 
-  wrapMaskedError(
+  /**
+   * A failure wrap quoting the caught error's text through the operation's
+   * masker (issue #2177), stamped when the mask changed it so the retry
+   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
+   * #4244), and naming an AWS-authored failure by its class only
+   * ({@link wrapGlueError}, go-to-k/cdkd#2319). Each Glue class carries this member rather than calling the module
+   * function, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return glueWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -166,21 +1109,51 @@ export class GlueProvider implements ResourceProvider {
     ],
   ]);
 
-  getClient(): GlueClient {
-    return glueGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return glueGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  create(
+
+  // ─── Dispatch ─────────────────────────────────────────────────────
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return glueCreate.call(this, logicalId, resourceType, properties, context);
+    switch (resourceType) {
+      case 'AWS::Glue::Database':
+        return this.createDatabase(logicalId, resourceType, properties, context);
+      case 'AWS::Glue::Table':
+        return this.createTable(logicalId, resourceType, properties, context);
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId
+        );
+    }
   }
-  update(
+
+  /**
+   * `context` is read for the ORIGIN of the desired bag
+   * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
+   * malformed `DatabaseInput` block refuses (a template-path update) or warns
+   * (a rollback revert or `cdkd drift --revert`) — issue #3740 — and for its
+   * masker (issue #2177).
+   */
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -188,38 +1161,2106 @@ export class GlueProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return glueUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
+    switch (resourceType) {
+      case 'AWS::Glue::Database':
+        return this.updateDatabase(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
+      case 'AWS::Glue::Table':
+        return this.updateTable(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    return glueDelete.call(this, logicalId, physicalId, resourceType, properties, context);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // database or table cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+    switch (resourceType) {
+      case 'AWS::Glue::Database':
+        return this.deleteDatabase(logicalId, physicalId, resourceType, properties, context);
+      case 'AWS::Glue::Table':
+        return this.deleteTable(logicalId, physicalId, resourceType, properties, context);
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
   }
-  readCurrentState(
+
+  // ─── AWS::Glue::Database ──────────────────────────────────────────
+
+  private async createDatabase(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    context?: CreateContext
+  ): Promise<ResourceCreateResult> {
+    // Issue #2177: ONE masked sink per operation, and every bag-derived value
+    // masked RAW as well. Absent context means identity.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([
+        asRecord(properties['DatabaseInput'])?.['Name'],
+        properties['DatabaseName'],
+        properties['CatalogId'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Database ${logicalId}`);
+
+    const databaseInput = properties['DatabaseInput'] as Record<string, unknown> | undefined;
+    if (!databaseInput) {
+      throw new ProvisioningError(
+        `DatabaseInput is required for Glue Database ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    // CFn schema accepts both top-level `DatabaseName` (the canonical
+    // resource identifier) and nested `DatabaseInput.Name`. Prefer the
+    // nested value when set so existing templates keep working; fall back
+    // to top-level when only the resource-level identifier is provided.
+    const databaseName =
+      (databaseInput['Name'] as string | undefined) ??
+      (properties['DatabaseName'] as string | undefined);
+    if (!databaseName) {
+      throw new ProvisioningError(
+        `DatabaseInput.Name or top-level DatabaseName is required for Glue Database ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const catalogId = properties['CatalogId'] as string | undefined;
+
+    try {
+      await this.getCreateClient().send(
+        new CreateDatabaseCommand({
+          CatalogId: catalogId,
+          // No `onUnusable` on an ordinary template-path create, so a
+          // malformed nested block is REFUSED before the AWS call; a
+          // reverse-replacement replay downgrades it to a warning, because the
+          // desired bag is then a STATE record (issue #1463).
+          DatabaseInput: this.buildDatabaseInput(databaseInput, databaseName, {
+            ...replayWarn(log, context),
+          }),
+        })
+      );
+
+      log.debug(`Successfully created Glue Database ${logicalId}: ${v(databaseName)}`);
+
+      return {
+        physicalId: databaseName,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
+  }
+
+  private async updateDatabase(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    // Issue #2177 -- see `createDatabase()`. The recorded name is ALSO a needle
+    // when the PREVIOUS value it came from is secret-derived: after a rotated or
+    // re-pointed secret, that value is the `{{resolve:` reference state holds
+    // and the OLD plaintext is in no masker bag of this deploy.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [
+        asRecord(previousProperties?.['DatabaseInput'])?.['Name'],
+        previousProperties?.['DatabaseName'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Updating Glue Database ${logicalId}: ${v(physicalId)}`);
+
+    const databaseInput = properties['DatabaseInput'] as Record<string, unknown> | undefined;
+    if (!databaseInput) {
+      throw new ProvisioningError(
+        `DatabaseInput is required for Glue Database update ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'DatabaseInput.Name',
+      noun: 'database',
+      recordedName: physicalId,
+      desiredName: databaseInput['Name'],
+      foldCase: true,
+      consequence: () =>
+        `UpdateDatabase would address '${v(physicalId)}' with a different name inside its ` +
+        `definition, and the state record would keep '${v(physicalId)}' whatever AWS did with it`,
+      stateful: true,
+      mask: log.mask,
+    });
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'database',
+      entityName: physicalId,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: true,
+      callerAccountId: this.callerAccountId,
+      warn: log.warn,
+      debug: log.debug,
+      mask: log.mask,
+    });
+
+    const catalogId = updateCatalogId(properties['CatalogId']);
+
+    const previousDatabaseInput = asRecord(previousProperties?.['DatabaseInput']);
+
+    // Split on the ORIGIN of the desired bag (issue #3740, the #3728 shape).
+    // On a TEMPLATE-path update a malformed `TargetDatabase` /
+    // `FederatedDatabase` / `CreateTableDefaultPermissions` block is
+    // template-borne, and `DatabaseInput` is mutable in place (only
+    // `DatabaseName` is createOnly), so the template is where it gets fixed:
+    // REFUSE, as `create()` does, before the first AWS call below (the
+    // `GetDatabase` read) and so before `UpdateDatabase`. NOT gated on the
+    // block having changed: `UpdateDatabase` replaces `DatabaseInput`
+    // wholesale, so every declared block is sent on every update — an
+    // unchanged malformed one would be retained from a previous side that is
+    // just as unusable, and DROPPED, which erases the live block. The two
+    // state-borne callers keep the warning and the retain-previous ladder —
+    // the rollback executor's revert arms (`replayingState`) and
+    // `cdkd drift --revert` (`desiredFromAwsReadback`) — because refusing a bag
+    // the user cannot edit from the template would leave the database
+    // un-rollbackable. The build is pure, so it moves ahead of the read; the
+    // messages it raises name the block and the value's TYPE, never the value.
+    const stateBorneDesired =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    let builtDatabaseInput: DatabaseInput;
+    try {
+      builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId, {
+        ...(stateBorneDesired && {
+          onUnusable: log.warn,
+        }),
+        previousDatabaseInput,
+      });
+    } catch (error) {
+      // Outside the `try` below, so the refusal is not re-labelled as an AWS
+      // update failure. Only the template path reaches here: given the warn
+      // callback, every arm of the builder warns instead of throwing.
+      throw new ProvisioningError(
+        `${v(describeAwsFailure(error).detail)}. Nothing was applied to ` +
+          `Glue Database ${logicalId}; fix the template value`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+
+    // Read-merge-write for AWS-authored `DatabaseInput.Parameters` — see
+    // {@link preserveAwsManagedParameters}. The read sits outside the `try`,
+    // because it raises a typed `ProvisioningError` the catch wrapper below
+    // would re-label.
+    const liveParameters = await this.readLiveDatabaseParameters(
+      logicalId,
+      resourceType,
+      physicalId,
+      catalogId,
+      log.mask
+    );
+
+    try {
+      this.preserveAwsManagedParameters(
+        builtDatabaseInput,
+        databaseInput['Parameters'],
+        previousDatabaseInput?.['Parameters'],
+        liveParameters
+      );
+
+      await this.getClient().send(
+        new UpdateDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+          DatabaseInput: builtDatabaseInput,
+        })
+      );
+
+      log.debug(`Successfully updated Glue Database ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+  }
+
+  private async deleteDatabase(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Deleting Glue Database ${logicalId}: ${log.value(physicalId)}`);
+
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
+      this.logger.debug(
+        `Glue Database ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteDatabase targets ${describeCatalog(target.catalogId)}.`
+      );
+    }
+
+    try {
+      await this.getClient().send(
+        new DeleteDatabaseCommand({
+          Name: physicalId,
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
+        })
+      );
+      this.logger.debug(`Successfully deleted Glue Database ${logicalId}`);
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        logCatalogScopedDeleteSkip(log, target, 'Database', logicalId, log.value(physicalId));
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
+  }
+
+  // ─── AWS::Glue::Table ─────────────────────────────────────────────
+
+  private async createTable(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    context?: CreateContext
+  ): Promise<ResourceCreateResult> {
+    // Issue #2177 -- see `createDatabase()`.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([
+        properties['DatabaseName'],
+        asRecord(properties['TableInput'])?.['Name'],
+        properties['Name'],
+        properties['CatalogId'],
+      ])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Table ${logicalId}`);
+
+    const databaseName = properties['DatabaseName'] as string | undefined;
+    if (!databaseName) {
+      throw new ProvisioningError(
+        `DatabaseName is required for Glue Table ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const tableInput = properties['TableInput'] as Record<string, unknown> | undefined;
+    if (!tableInput) {
+      throw new ProvisioningError(
+        `TableInput is required for Glue Table ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    // CFn schema accepts both top-level `Name` (the canonical resource
+    // identifier) and nested `TableInput.Name`. Prefer the nested value
+    // when set; fall back to top-level when only the resource-level
+    // identifier is provided.
+    const tableName =
+      (tableInput['Name'] as string | undefined) ?? (properties['Name'] as string | undefined);
+    if (!tableName) {
+      throw new ProvisioningError(
+        `TableInput.Name or top-level Name is required for Glue Table ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const catalogId = properties['CatalogId'] as string | undefined;
+
+    enforceIcebergTableInputAbsent(logicalId, resourceType, properties, {
+      warn: log.warn,
+      replayingState: context?.replayingState === true,
+    });
+
+    // `OpenTableFormatInput` (Apache Iceberg) is a top-level `CreateTableCommand`
+    // param — a SIBLING of `TableInput`, NOT nested inside it. Omit when absent.
+    // Iceberg's `MetadataOperation: 'CREATE'` is a create-time directive, so it
+    // is intentionally wired on create only — `UpdateTableCommandInput` has no
+    // `OpenTableFormatInput` member at all (it carries the different,
+    // update-only `UpdateOpenTableFormatInput` shape, which CFn does not model;
+    // verified against @aws-sdk/client-glue `UpdateTableRequest`).
+    //
+    // Every member of the DEPLOYABLE shape (`IcebergInput.MetadataOperation` /
+    // `.Version`) is spelled identically in CFn and the SDK, so the blob is
+    // forwarded verbatim. The one divergent member —
+    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above on a
+    // TEMPLATE-driven create, so it never reaches here from that path. On a
+    // STATE REPLAY (`CreateContext.replayingState`, issue #1463) the pre-flight
+    // only WARNS, so the blob DOES arrive carrying it and is forwarded verbatim
+    // — deliberately: that reproduces the degraded table the replay is
+    // restoring rather than failing the rollback. See
+    // {@link enforceIcebergTableInputAbsent} for the full reasoning, and read
+    // its warning before ever relaxing the refusal.
+    const openTableFormatInput = properties['OpenTableFormatInput'] as
+      | Record<string, unknown>
+      | undefined;
+
+    // The id is `<databaseName>|<tableName>`, and EITHER name may contain `|`,
+    // as CloudFormation allows: Glue accepts it in a table name (probe,
+    // us-east-1 2026-08-12, issue #1672) and in a database name (probe through
+    // the `glue-update-hardening` fixture, 2026-09-28, issue #3892). The id is
+    // therefore not split by any reader. The provider's decode sites
+    // (`decodeTableId`) and the `Ref` resolver (`glueTableRefFromPhysicalId`)
+    // place the table name by the recorded `DatabaseName` — which this create
+    // always records as a resolved string. Without a usable anchor the decode
+    // sites read only an id with exactly one `|` and SKIP or refuse anything
+    // longer, and `Ref` reports a masked anchor as a redacted read. So nothing
+    // is refused here and nothing is packed through `packCompositeId`.
+    // `import()` pairs a `|`-bearing name with the template's own
+    // `DatabaseName` for the same reason (`resolveTableIdentity`).
+    //
+    // Both names must be STRINGS: the reads above are unvalidated casts, and a
+    // template can put an array or object there (`Name: ['a|b']` is truthy and
+    // passes the presence checks). Stringified into the id it would record a
+    // value no reader can place, and `CreateTable` rejects it anyway — so this
+    // refuses on every path, a state replay included: no replay of such a
+    // value could have succeeded.
+    for (const [field, value] of [
+      ['DatabaseName', databaseName],
+      ['TableInput.Name', tableName],
+    ] as const) {
+      if (typeof value !== 'string') {
+        throw new ProvisioningError(
+          `Glue Table ${logicalId}: ${field} must be a string, got ` +
+            `${describeUnresolvedName(value, log.mask)}. Set it to the ${field === 'DatabaseName' ? 'database' : 'table'} name.`,
+          resourceType,
+          logicalId
+        );
+      }
+    }
+    const physicalId = `${databaseName}|${tableName}`;
+
+    try {
+      await this.getCreateClient().send(
+        new CreateTableCommand({
+          CatalogId: catalogId,
+          DatabaseName: databaseName,
+          TableInput: this.buildTableInput(tableInput, tableName),
+          ...(openTableFormatInput !== undefined && {
+            OpenTableFormatInput: openTableFormatInput as OpenTableFormatInput,
+          }),
+        })
+      );
+
+      log.debug(`Successfully created Glue Table ${logicalId}: ${v(databaseName)}|${v(tableName)}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      // An `AlreadyExistsException` (an occupied table address) is relayed
+      // like any other failure, so the engine's collision classifier sees it
+      // (issue #3932). Who holds the address is the engine's question, not
+      // this provider's: a rename, a `DatabaseName` or a `CatalogId` change
+      // moves it (#3750), and the engine's holder proof
+      // (`replacement-name-holder/name-keys.ts`, keyed by the name and scoped
+      // by `DatabaseName` and `CatalogId`) refuses `--replace` for those, while
+      // a replacement that keeps the address — a top-level `Name` change —
+      // takes the `--replace` delete-first recovery.
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
+  }
+
+  private async updateTable(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    const decoded = decodeTableId(physicalId, previousProperties, properties);
+    // Issue #2177 -- see `updateDatabase()`. Both halves of the recorded id are
+    // needles when the previous value each came from is secret-derived.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      decoded
+        ? [
+            ...previousNamePairs(decoded.databaseName, [previousProperties?.['DatabaseName']]),
+            ...previousNamePairs(decoded.tableName, [
+              asRecord(previousProperties?.['TableInput'])?.['Name'],
+              previousProperties?.['Name'],
+            ]),
+          ]
+        : // No halves to place: the WHOLE recorded id is the needle when any
+          // name it can have come from is secret-derived.
+          previousNamePairs(physicalId, [
+            previousProperties?.['DatabaseName'],
+            asRecord(previousProperties?.['TableInput'])?.['Name'],
+            previousProperties?.['Name'],
+          ])
+    );
+    const { value: v } = log;
+    // Each half RAW when the id decodes: the joined id is longer than either
+    // secret, so only a per-half mask reaches one below the substring floor.
+    const shownId = decoded ? `${v(decoded.databaseName)}|${v(decoded.tableName)}` : v(physicalId);
+    log.debug(`Updating Glue Table ${logicalId}: ${shownId}`);
+
+    if (!decoded) {
+      throw new ProvisioningError(
+        tableIdDecodeFailure(logicalId, physicalId, [previousProperties, properties], {
+          mask: log.mask,
+        }),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const { databaseName, tableName } = decoded;
+
+    const tableInput = properties['TableInput'] as Record<string, unknown> | undefined;
+    if (!tableInput) {
+      throw new ProvisioningError(
+        `TableInput is required for Glue Table update ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // Before the pre-read: `readLiveTableState` reads the RECORDED table, and
+    // its `VersionId` would then ride an `UpdateTable` aimed at another one.
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'TableInput.Name',
+      noun: 'table',
+      recordedName: tableName,
+      desiredName: tableInput['Name'],
+      foldCase: true,
+      consequence: (desired) =>
+        `UpdateTable addresses the table by TableInput.Name, so it would write to the table ` +
+        `named '${desired}' in database '${v(databaseName)}' (possibly one cdkd ` +
+        `does not manage) while the state record kept '${v(tableName)}'`,
+      stateful: true,
+      mask: log.mask,
+    });
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'table',
+      // Each half masked RAW: the joined name is longer than either secret.
+      entityName: `${v(databaseName)}.${v(tableName)}`,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: true,
+      callerAccountId: this.callerAccountId,
+      warn: log.warn,
+      debug: log.debug,
+      mask: log.mask,
+    });
+
+    const catalogId = updateCatalogId(properties['CatalogId']);
+
+    // UPDATE only WARNS where create REFUSES, and the asymmetry is deliberate.
+    //
+    // Rollback restores a resource from cdkd STATE, not from the template
+    // (`rollback-executor.ts` calls `provider.update(..., op.previousState.properties)`).
+    // A table created by a cdkd build older than #1390 succeeded with the
+    // property silently dropped by the SDK serializer, so its state record
+    // still carries the key. Refusing here would hard-fail both any UPDATE to
+    // such a table AND its ROLLBACK — and for the rollback there is no
+    // template-side remedy, only hand-editing state.json. That is a worse
+    // outcome than the one this refusal exists to prevent.
+    //
+    // Warning costs nothing HERE: cdkd does not wire Glue's update-only
+    // `UpdateOpenTableFormatInput` shape, and `buildTableInput` is an explicit
+    // allow-list, so no `OpenTableFormatInput` value can reach AWS from this
+    // path by any route. The user still gets the full actionable message, and
+    // the CREATE path (where the property could actually be sent) still refuses.
+    //
+    // Kept as a warning on the TEMPLATE path too (re-decided in issue #3740,
+    // now that `UpdateContext` can tell a template push from a replay): unlike
+    // the `DatabaseInput` split in `updateDatabase`, no template edit makes the
+    // declared value land in place — nothing is sent for it on update, whatever
+    // its shape — so the only fix for the declared intent is a replacement.
+    //
+    // The other rollback arm is covered too, since issue #1463:
+    // `replayRollback`'s reverse-replacement path revives the OLD resource by
+    // calling `create()` with `previousState.properties`, and it now passes
+    // `CreateContext.replayingState` so the create-side pre-flight downgrades
+    // to the same warning instead of failing that rollback operation.
+    const updateIcebergKey = findIcebergTableInputKey(properties);
+    if (updateIcebergKey !== undefined) {
+      log.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
+    }
+
+    // Read-merge-write for AWS-authored `TableInput.Parameters` — see
+    // {@link preserveAwsManagedParameters}. ONLY the read sits outside the
+    // `try`, because only IT raises a typed `ProvisioningError` the catch
+    // wrapper below would re-label. The build + merge stay inside so a
+    // malformed template (`Parameters: null`) still surfaces as a
+    // `ProvisioningError` rather than a raw `TypeError`.
+    const live = await this.readLiveTableState(
+      logicalId,
+      resourceType,
+      physicalId,
+      databaseName,
+      tableName,
+      catalogId,
+      log.mask
+    );
+
+    try {
+      const builtTableInput = this.buildTableInput(tableInput, tableName);
+      this.preserveAwsManagedParameters(
+        builtTableInput,
+        tableInput['Parameters'],
+        (previousProperties?.['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
+        live.parameters
+      );
+      this.preserveAwsManagedStorageDescriptor(
+        builtTableInput,
+        tableInput,
+        previousProperties?.['TableInput'],
+        live.storageDescriptor
+      );
+
+      await this.getClient().send(
+        new UpdateTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          DatabaseName: databaseName,
+          TableInput: builtTableInput,
+          // Optimistic-concurrency guard for the read-modify-write window.
+          // Sent whenever the pre-read returned a version — see
+          // {@link readLiveTableState} for why this is unconditional.
+          ...(live.versionId !== undefined && { VersionId: live.versionId }),
+        })
+      );
+
+      log.debug(`Successfully updated Glue Table ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      // A `ConcurrentModificationException` means someone else changed the
+      // table under us. Say so explicitly — the generic wrap would leave the
+      // user staring at a bare SDK error with no hint that a concurrent
+      // Iceberg commit is the likely cause and that a re-run is the fix.
+      //
+      // The wording is gated on whether cdkd actually attached the `VersionId`
+      // precondition. Without one, AWS raised this on its own and claiming
+      // "cdkd refused" would be a lie about our own behavior.
+      let hint = '';
+      if (error instanceof ConcurrentModificationException) {
+        hint +=
+          `. Another writer changed the table between cdkd's pre-update read and its ` +
+          `UpdateTable call.`;
+        hint +=
+          live.versionId !== undefined
+            ? ` cdkd sent the version it read (${live.versionId}) as a precondition and AWS ` +
+              `rejected the write, rather than let it put back the AWS-managed Parameters and ` +
+              `StorageDescriptor members read a moment earlier — which for an Apache Iceberg ` +
+              `table would have pinned it to an older metadata_location (an effective snapshot ` +
+              `rollback).`
+            : ` AWS returned no VersionId on the pre-update read, so cdkd could not attach a ` +
+              `precondition; AWS rejected the write on its own.`;
+        hint += ` Re-run the deploy to pick up the current values.`;
+      }
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            // Each half brings its own sentence end: a redacted `detail` ends
+            // in a period and `hint` opens with one.
+            `Failed to update Glue Table ${logicalId}: ${hint ? withoutFinalPeriod(detail) : detail}${hint}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+  }
+
+  private async deleteTable(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    // Each `<database>|<table>` part masked as a VALUE, so a part below the
+    // masker's substring floor is caught too.
+    const shownId = physicalId
+      .split('|')
+      .map((part) => log.value(part))
+      .join('|');
+    log.debug(`Deleting Glue Table ${logicalId}: ${shownId}`);
+
+    // The bag's `DatabaseName` only DISAMBIGUATES the id; it never stands in
+    // for one. An id that does not start with it and is not an exact
+    // two-segment composite still skips, since deleting a table named by the
+    // bag rather than by the record risks deleting one cdkd never created.
+    const decoded = decodeTableId(physicalId, properties);
+    if (!decoded) {
+      this.logger.warn(
+        tableIdDecodeFailure(logicalId, physicalId, [properties], {
+          skipping: true,
+          mask: log.mask,
+        })
+      );
+      // Issue #1752: report the SKIP rather than returning void. A bare
+      // `return` here is indistinguishable from a completed delete, so the
+      // destroy summary counted this table as deleted while it stayed alive.
+      return compositeIdSkipResult();
+    }
+    const { databaseName, tableName } = decoded;
+
+    // `CatalogId` must be threaded here or the delete silently targets this
+    // account's DEFAULT Data Catalog — see {@link deleteCatalogId} for the leak
+    // this closes (issue #1675). `createTable` and `importTable` both forward
+    // it; this call omitted it.
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
+      this.logger.debug(
+        `Glue Table ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteTable targets ${describeCatalog(target.catalogId)}.`
+      );
+    }
+
+    try {
+      await this.getClient().send(
+        new DeleteTableCommand({
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
+          DatabaseName: databaseName,
+          Name: tableName,
+        })
+      );
+      this.logger.debug(`Successfully deleted Glue Table ${logicalId}`);
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        logCatalogScopedDeleteSkip(log, target, 'Table', logicalId, shownId);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Merge AWS-AUTHORED `Parameters` back into a full-replace update payload
+   * (issue [#1461](https://github.com/go-to-k/cdkd/issues/1461)).
+   *
+   * `UpdateTable` / `UpdateDatabase` replace `TableInput` / `DatabaseInput`
+   * **wholesale**: whatever the payload omits is erased. `Parameters` is a
+   * general-purpose bag that AWS itself writes into, so keys with NO template
+   * representation were wiped by the first unrelated edit. For an Apache
+   * Iceberg table that is not cosmetic — `table_type: ICEBERG` and
+   * `metadata_location` are what make the table readable as Iceberg by
+   * Athena / Spark / EMR, and losing them silently degrades it to a plain
+   * external table pointing at Iceberg data files. Verified live 2026-08-10
+   * in us-east-1: a deploy changing only `TableInput.Description` left
+   * `Table.Parameters` as `null`. The same exposure covers a Glue crawler's
+   * `classification`, `EXTERNAL`, `comment`, and Lake Formation markers.
+   *
+   * The merge is keyed on **"present in NEITHER template side"**, not on
+   * "absent from the desired side" — the latter would make user-authored
+   * parameters unremovable, i.e. the mirror image of the bug:
+   *
+   * | key in desired | key in previous | outcome                              |
+   * | -------------- | --------------- | ------------------------------------ |
+   * | yes            | (either)        | the user's value wins                |
+   * | no             | yes             | the USER REMOVED it -> stays removed |
+   * | no             | no              | AWS-AUTHORED -> preserved from live  |
+   *
+   * That keeps this provider on the repo's established clear-on-removal
+   * position (docs/provider-rules.md#update-removal-semantics-clear-on-removal, issue #1155): a removal the
+   * user expressed in the template still reaches AWS. Glue's update APIs are
+   * full-replace, so removal needs no explicit reset sentinel — omitting the
+   * key IS the reset, and the only thing this helper adds back is the set of
+   * keys the user never authored in the first place. The generalized rule for
+   * any full-replace update API lives in
+   * docs/provider-rules.md#full-replace-update-apis-erase-aws-authored-values.
+   *
+   * Audited siblings that do NOT get this treatment: `JobUpdate`'s
+   * `DefaultArguments` / `NonOverridableArguments`, `ConnectionInput`'s
+   * `ConnectionProperties`, `WorkflowUpdate.DefaultRunProperties` and
+   * `Crawler.Configuration` are purely USER-authored bags — AWS does not
+   * write into them, so merging live values back would only resurrect
+   * console-side additions and break `cdkd drift --revert`.
+   *
+   * `desiredParameters` / `previousParameters` are the raw CFn-side maps
+   * (their KEY SET is all that matters here; `buildTableInput` already
+   * stringified the desired VALUES into `built.Parameters`).
+   */
+  private preserveAwsManagedParameters(
+    built: { Parameters?: Record<string, string> | undefined },
+    desiredParameters: unknown,
+    previousParameters: unknown,
+    liveParameters: Record<string, string> | undefined
+  ): void {
+    if (!liveParameters || Object.keys(liveParameters).length === 0) return;
+
+    const desiredKeys = parameterKeySet(desiredParameters);
+    const previousKeys = parameterKeySet(previousParameters);
+
+    const awsAuthored: Record<string, string> = {};
+    for (const [key, value] of Object.entries(liveParameters)) {
+      // Present in the desired template -> the user's value wins.
+      // Present only in the previous template -> the user removed it.
+      if (desiredKeys.has(key) || previousKeys.has(key)) continue;
+      awsAuthored[key] = value;
+    }
+    if (Object.keys(awsAuthored).length === 0) return;
+
+    // Desired values are spread LAST so a template-declared key always wins
+    // over the live readback (which is a snapshot from before this update).
+    built.Parameters = { ...awsAuthored, ...(built.Parameters ?? {}) };
+  }
+
+  /**
+   * Read-merge-write for out-of-band-authored `TableInput.StorageDescriptor`
+   * members (issue #1479) — the subtree sibling of
+   * {@link preserveAwsManagedParameters}, applied per SD MEMBER, with the two
+   * nested bags (`StorageDescriptor.Parameters`, `SerdeInfo.Parameters`)
+   * getting the same per-KEY rule one level down.
+   *
+   * Live probes (2026-08-10, us-east-1 — recorded on issue #1479) established
+   * WHO authors what, which is why this is per-member rather than a blanket
+   * merge:
+   *
+   * - A USER-authored `EXTERNAL_TABLE`: re-sending the template verbatim
+   *   reads back identical — the service itself authors only scalar defaults
+   *   (`Compressed: false`, `NumberOfBuckets: 0`, ...). Full-replace is
+   *   CORRECT for template-declared members, and `drift --revert` depends on
+   *   it to clear console-side edits.
+   * - A CRAWLER-populated table: the crawler authors `Columns`,
+   *   `InputFormat` / `OutputFormat`, `SerdeInfo` (incl. its `Parameters`
+   *   bag), and `StorageDescriptor.Parameters`; an UpdateTable restating only
+   *   a minimal template wiped ALL of them (`Columns` -> `[]`, `SerdeInfo`
+   *   gone) while reporting success.
+   * - An ICEBERG table: an UpdateTable omitting `Columns` was ACCEPTED and
+   *   wiped the catalog schema to `[]` (Glue re-derives Iceberg columns from
+   *   table metadata, so the catalog copy is metadata-authored between
+   *   engine commits).
+   *
+   * The preservation key is the SAME "present in NEITHER template side" test
+   * as {@link preserveAwsManagedParameters}, per member:
+   *
+   * | member in desired | member in previous | outcome                            |
+   * | ----------------- | ------------------ | ---------------------------------- |
+   * | yes               | (either)           | template wins                      |
+   * | no                | yes                | the USER REMOVED it -> stays removed |
+   * | no                | no                 | out-of-band authored -> carried forward from live |
+   *
+   * A template that never declared `StorageDescriptor` on EITHER side (a
+   * crawler-managed table adopted into a minimal template) carries the whole
+   * live block forward. Deliberately scoped to the `StorageDescriptor`
+   * subtree per issue #1479 — the crawler also authors `PartitionKeys` /
+   * `Owner`, but widening beyond the issue's member set is a separate
+   * decision (recorded there).
+   *
+   * TOCTOU: the write rides the same unconditional `VersionId` precondition
+   * as the Parameters merge (see {@link readLiveTableState}), so a concurrent
+   * out-of-band write fails the update loudly instead of being clobbered.
+   */
+  private preserveAwsManagedStorageDescriptor(
+    built: TableInput,
+    desiredTableInput: Record<string, unknown>,
+    previousTableInput: unknown,
+    liveSd: StorageDescriptor | undefined
+  ): void {
+    if (!liveSd || Object.keys(liveSd).length === 0) return;
+
+    const desiredSdRaw = desiredTableInput['StorageDescriptor'];
+    const previousSdRaw = asRecord(previousTableInput)?.['StorageDescriptor'];
+
+    // Neither template side ever declared the block -> it is entirely
+    // out-of-band authored (crawler / Iceberg metadata); carry it forward
+    // whole. `undefined` (not key-set emptiness) is the declaration test, so
+    // a declared-but-empty `StorageDescriptor: {}` takes the per-member path.
+    if (desiredSdRaw === undefined && previousSdRaw === undefined) {
+      built.StorageDescriptor = liveSd;
+      return;
+    }
+
+    const desiredKeys = parameterKeySet(desiredSdRaw);
+    const previousKeys = parameterKeySet(previousSdRaw);
+    const sdOut: Record<string, unknown> = {
+      ...((built.StorageDescriptor as Record<string, unknown> | undefined) ?? {}),
+    };
+
+    for (const [member, liveValue] of Object.entries(liveSd as Record<string, unknown>)) {
+      if (liveValue === undefined) continue;
+      if (desiredKeys.has(member) || previousKeys.has(member)) continue;
+      sdOut[member] = liveValue;
+    }
+
+    // The two nested BAGS get the per-KEY rule whenever EITHER template side
+    // declares the containing member — when neither does, the member loop
+    // above already carried the whole bag forward. Gating on the desired side
+    // alone would make removing the whole bag wipe its AWS-authored keys, the
+    // exact action the top-level #1461 helper handles per key (desired absent
+    // + previous declared -> user keys removed, AWS-authored keys survive);
+    // the OR keeps the two levels on one semantic. SerdeInfo is deliberately
+    // different — see its gate below.
+    const desiredSd = asRecord(desiredSdRaw);
+    const previousSd = asRecord(previousSdRaw);
+    if (desiredKeys.has('Parameters') || previousKeys.has('Parameters')) {
+      this.preserveAwsManagedParameters(
+        sdOut as { Parameters?: Record<string, string> | undefined },
+        desiredSd?.['Parameters'],
+        previousSd?.['Parameters'],
+        liveSd.Parameters
+      );
+    }
+    // SerdeInfo is STRUCTURAL, not a bag: its members (SerializationLibrary,
+    // Name) are user-authored in every template shape, so removing the whole
+    // block from the template is a whole-member removal the member loop above
+    // honors — resurrecting a partial SerdeInfo carrying only the crawler's
+    // Parameters would leave an incoherent serde. Hence the desired-only gate
+    // here, unlike the Parameters bags.
+    if (desiredKeys.has('SerdeInfo') && liveSd.SerdeInfo) {
+      const desiredSerde = asRecord(desiredSd?.['SerdeInfo']);
+      const previousSerde = asRecord(previousSd?.['SerdeInfo']);
+      const desiredSerdeKeys = parameterKeySet(desiredSerde);
+      const previousSerdeKeys = parameterKeySet(previousSerde);
+      const serdeOut: Record<string, unknown> = {
+        ...((sdOut['SerdeInfo'] as Record<string, unknown> | undefined) ?? {}),
+      };
+      for (const [member, liveValue] of Object.entries(
+        liveSd.SerdeInfo as Record<string, unknown>
+      )) {
+        if (liveValue === undefined) continue;
+        if (desiredSerdeKeys.has(member) || previousSerdeKeys.has(member)) continue;
+        serdeOut[member] = liveValue;
+      }
+      // Same OR gate as StorageDescriptor.Parameters — the inner bag keeps
+      // per-key semantics even when the user removes the whole bag.
+      if (desiredSerdeKeys.has('Parameters') || previousSerdeKeys.has('Parameters')) {
+        this.preserveAwsManagedParameters(
+          serdeOut as { Parameters?: Record<string, string> | undefined },
+          desiredSerde?.['Parameters'],
+          previousSerde?.['Parameters'],
+          liveSd.SerdeInfo.Parameters
+        );
+      }
+      if (Object.keys(serdeOut).length > 0) {
+        sdOut['SerdeInfo'] = serdeOut;
+      }
+    }
+
+    if (Object.keys(sdOut).length > 0) {
+      built.StorageDescriptor = sdOut as StorageDescriptor;
+    }
+  }
+
+  /**
+   * The live table state the two merges need: its current `Parameters` (for
+   * {@link preserveAwsManagedParameters}), its `StorageDescriptor` (for
+   * {@link preserveAwsManagedStorageDescriptor}, issue #1479), plus the
+   * `VersionId` that pins both.
+   *
+   * A missing table returns empty rather than throwing: `UpdateTable` is about
+   * to surface the real, more actionable error. Any OTHER failure is fatal by
+   * design — degrading to "skip the merge" would silently reinstate the very
+   * wipe this read exists to prevent, and the wrapped cause keeps a transient
+   * throttle retryable by the deploy engine's outer `withRetry` (every
+   * `provider.update()` call site wraps it, including both rollback arms since
+   * this issue).
+   *
+   * **Why `VersionId` matters and why it is SCOPED.** Reading `Parameters`
+   * here and writing them back in the next call opens a TOCTOU window: an
+   * Apache Iceberg commit from Spark / Athena / EMR landing in between would
+   * be undone by writing back the `metadata_location` we read, pinning the
+   * table to an older snapshot — silent data-visibility loss, strictly worse
+   * than the bug this read fixes. `UpdateTableRequest.VersionId` is AWS's
+   * optimistic-concurrency token for exactly this
+   * (`ConcurrentModificationException` is a documented `UpdateTable` error),
+   * so the caller sends the version it read and a concurrent commit makes the
+   * update fail loudly instead of silently rolling back.
+   *
+   * It is sent UNCONDITIONALLY whenever this read returned a version, and the
+   * earlier attempt to scope it to "only when the merge wrote back live
+   * values" was wrong on both counts. Wrong on SAFETY: the merge also reports
+   * nothing-written-back when the live read came back EMPTY, and that update
+   * still ships a wholesale `TableInput` replace — so a commit landing in the
+   * window would have been wiped with no guard at all, i.e. #1461 surviving
+   * its own fix. Wrong on its PREMISE: this read runs milliseconds before the
+   * send on every update, so a pure template push (`cdkd drift --revert`, the
+   * case the scoping was meant to protect) carries a FRESH version too. An
+   * unconditional guard therefore cannot fire spuriously — it fires only when
+   * somebody else genuinely wrote in between, which is exactly when a revert
+   * should stop and be re-run against current values rather than clobber a
+   * change it never saw.
+   *
+   * The precondition's real-AWS semantics are pinned by the `data-analytics`
+   * integ, which advances a table's version out of band and asserts cdkd's
+   * update is REFUSED — without that, "AWS silently ignores a stale VersionId"
+   * would make this guard a placebo.
+   */
+  private async readLiveTableState(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    databaseName: string,
+    tableName: string,
+    catalogId: string | undefined,
+    mask: MaskerFn
+  ): Promise<{
+    parameters: Record<string, string> | undefined;
+    storageDescriptor: StorageDescriptor | undefined;
+    versionId: string | undefined;
+  }> {
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          DatabaseName: databaseName,
+          Name: tableName,
+        })
+      );
+      return {
+        parameters: resp.Table?.Parameters,
+        storageDescriptor: resp.Table?.StorageDescriptor,
+        versionId: resp.Table?.VersionId,
+      };
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        return { parameters: undefined, storageDescriptor: undefined, versionId: undefined };
+      }
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, detail),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+  }
+
+  /**
+   * `Database.Parameters` as AWS currently holds them, for
+   * {@link preserveAwsManagedParameters}. Same not-found / fail-closed
+   * contract as {@link readLiveTableState}.
+   *
+   * There is NO `VersionId` analogue here: `UpdateDatabaseRequest` has no such
+   * member (verified against `@aws-sdk/client-glue`), so the database merge
+   * carries the TOCTOU exposure the table merge closes. It is far narrower in
+   * practice — nothing commits to a Glue DATABASE out of band the way an
+   * Iceberg engine commits to a table — but it is real, and is written up in
+   * docs/supported-resources.md rather than left implicit.
+   */
+  private async readLiveDatabaseParameters(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    catalogId: string | undefined,
+    mask: MaskerFn
+  ): Promise<Record<string, string> | undefined> {
+    try {
+      const resp = await this.getClient().send(
+        new GetDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+        })
+      );
+      return resp.Database?.Parameters;
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) return undefined;
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (detail) =>
+          new ProvisioningError(
+            preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, detail),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+  }
+
+  /**
+   * Build DatabaseInput for Glue API from CFn template properties.
+   *
+   * Used by both `createDatabase` and `updateDatabase` so the same
+   * field-by-field shape is sent on both paths. Optional fields use
+   * `!== undefined` gates (per `feedback_update_optional_field_undefined_check.md`)
+   * so empty-string Description, empty Parameters map, etc. reach AWS
+   * intact — `cdkd drift --revert` relies on this to clear console-side
+   * additions.
+   *
+   * `options` carries the shape-guard policy for the three nested blocks added
+   * by issue #1807, and the two call sites answer differently because their
+   * desired bag has a different provenance (`.claude/rules/providers.md`):
+   *
+   *   - CREATE passes NO `onUnusable`, so a malformed block is REFUSED before
+   *     the AWS call — the value is template-borne, and the alternative is
+   *     sending an empty `{}` block AWS would reject with a far less
+   *     actionable message. Under `CreateContext.replayingState` the refusal
+   *     downgrades through the shared `replayWarn`, since a reverse-replacement
+   *     re-create reads a STATE record the user cannot edit from the template.
+   *   - UPDATE splits on the desired bag's ORIGIN (issue #3740). A
+   *     template-path update passes NO `onUnusable` and so REFUSES like
+   *     CREATE, before any AWS call. The state-borne callers — the rollback
+   *     revert arms (`UpdateContext.replayingState`) and `drift --revert`
+   *     (`desiredFromAwsReadback`) — pass a warn callback, and the builder
+   *     then RETAINS the PREVIOUS side's block, which is why
+   *     `previousDatabaseInput` is threaded in. Omitting instead would ERASE a
+   *     live resource link, because `UpdateDatabase` replaces `DatabaseInput`
+   *     wholesale — the #1612 "UPDATE retains the previous value" row, reached
+   *     here through a whole-blob API rather than a per-item one. When the
+   *     previous side is unusable too the key is DROPPED: there is no value
+   *     cdkd can vouch for either way (#1653 review).
+   */
+  private buildDatabaseInput(
+    databaseInput: Record<string, unknown>,
+    fallbackName: string,
+    options?: {
+      onUnusable?: ((message: string) => void) | undefined;
+      previousDatabaseInput?: Record<string, unknown> | undefined;
+    }
+  ): DatabaseInput {
+    // A guard with no callback THROWS; `replayWarn` / a state-borne update
+    // supply one. Spread rather than passed as `{ onUnusable: undefined }`, because
+    // the guards branch on the KEY being present.
+    const guardOptions = options?.onUnusable ? { onUnusable: options.onUnusable } : undefined;
+    const previous = options?.previousDatabaseInput;
+    /**
+     * The record a nested block is BUILT FROM: the desired side when it names
+     * at least one sendable member, else the previous side when IT does, else
+     * nothing.
+     *
+     * The emptiness test is what makes the ladder complete, and getting it
+     * wrong is how the first cut of this guard still erased a live resource
+     * link: a bare `{}` and an unresolved `{Ref: ...}` are plain OBJECTS, so
+     * the shape guard accepts them and a `?? previous` fallback never fires —
+     * the block then built empty and `UpdateDatabase`, which replaces
+     * `DatabaseInput` wholesale, dropped a link the template still declared.
+     *
+     * A member counts as sendable only when it is a STRING or a NUMBER: the
+     * leaf casts below are unchecked, so an intrinsic-valued `DatabaseName`
+     * would otherwise put an OBJECT on the wire — the same defect one level in.
+     */
+    const pickBlockSource = (
+      desiredRaw: unknown,
+      previousRaw: unknown,
+      path: string,
+      block: string,
+      members: readonly string[]
+    ): Record<string, unknown> | undefined => {
+      // Usable means EVERY declared member that is present is sendable, AND at
+      // least one is. `some` alone was the silent-narrowing shape this guard
+      // exists to refuse (both re-reviewers found it): one literal member would
+      // license the block while an intrinsic-valued sibling was dropped with no
+      // message, so `{DatabaseName: 'src', CatalogId: {Ref: 'Acct'}}` shipped
+      // WITHOUT `CatalogId` — a cross-account resource link silently retargeted
+      // at the caller's own catalog. It also made the guard's strictness depend
+      // on siblings: `{CatalogId: {Ref}}` alone was refused, the same value next
+      // to a literal `DatabaseName` was not.
+      const namesSendable = (bag: Record<string, unknown> | undefined): boolean => {
+        if (bag === undefined) return false;
+        const present = members.filter((m) => bag[m] !== undefined);
+        return present.length > 0 && present.every((m) => isSendableLeaf(bag[m]));
+      };
+      const desired = guardOptions
+        ? requireConfigObject(desiredRaw, path, guardOptions)
+        : requireConfigObject(desiredRaw, path);
+      if (namesSendable(desired)) return desired;
+      if (desired !== undefined) {
+        // Right SHAPE, nothing cdkd can send. Same ladder as a wrong shape.
+        const message = emptyBlockMessage(block);
+        if (options?.onUnusable) options.onUnusable(message);
+        else throw new Error(message);
+      }
+      const retained = asRecord(previousRaw);
+      return namesSendable(retained) ? retained : undefined;
+    };
+    const result: DatabaseInput = {
+      Name: (databaseInput['Name'] as string | undefined) ?? fallbackName,
+    };
+
+    if (databaseInput['Description'] !== undefined) {
+      result.Description = databaseInput['Description'] as string;
+    }
+    if (databaseInput['LocationUri'] !== undefined) {
+      result.LocationUri = databaseInput['LocationUri'] as string;
+    }
+    if (databaseInput['Parameters'] !== undefined) {
+      // Stringified like `buildTableInput` does: CFn may deliver booleans /
+      // numbers, and the SDK member is `Record<string, string>`. The two
+      // builders diverging here was a latent inconsistency, not a decision.
+      result.Parameters = stringifyParameterValues(databaseInput['Parameters']);
+    }
+
+    // `TargetDatabase` (resource links), `FederatedDatabase` (an entity outside
+    // the Glue Data Catalog) and `CreateTableDefaultPermissions` (Lake Formation
+    // defaults) complete the CFn `DatabaseInput` member set. Until issue #1807
+    // this builder named only Description / LocationUri / Parameters, so a
+    // template setting any of the three deployed "successfully" as a plain empty
+    // database — no error, no warning, and nothing for `cdkd drift` to report
+    // because `readDatabase` did not surface them either.
+    //
+    // Every member is named INDIVIDUALLY rather than cast through verbatim
+    // (both spellings agree, so a cast would typecheck). The shape was chosen
+    // for the nested-key critic's write pass, which could only see per-member
+    // writes; that pass was retired by issue #3723.
+    if (databaseInput['TargetDatabase'] !== undefined) {
+      const target = pickBlockSource(
+        databaseInput['TargetDatabase'],
+        previous?.['TargetDatabase'],
+        'AWS::Glue::Database DatabaseInput.TargetDatabase',
+        'TargetDatabase',
+        TARGET_DATABASE_MEMBERS
+      );
+      if (target !== undefined) {
+        const targetDatabase: DatabaseIdentifier = {};
+        if (isSendableLeaf(target['CatalogId'])) {
+          targetDatabase.CatalogId = String(target['CatalogId']);
+        }
+        if (isSendableLeaf(target['DatabaseName'])) {
+          targetDatabase.DatabaseName = String(target['DatabaseName']);
+        }
+        if (isSendableLeaf(target['Region'])) {
+          targetDatabase.Region = String(target['Region']);
+        }
+        result.TargetDatabase = targetDatabase;
+      }
+    }
+
+    if (databaseInput['FederatedDatabase'] !== undefined) {
+      const federated = pickBlockSource(
+        databaseInput['FederatedDatabase'],
+        previous?.['FederatedDatabase'],
+        'AWS::Glue::Database DatabaseInput.FederatedDatabase',
+        'FederatedDatabase',
+        FEDERATED_DATABASE_MEMBERS
+      );
+      if (federated !== undefined) {
+        const federatedDatabase: FederatedDatabase = {};
+        if (isSendableLeaf(federated['ConnectionName'])) {
+          federatedDatabase.ConnectionName = String(federated['ConnectionName']);
+        }
+        if (isSendableLeaf(federated['Identifier'])) {
+          federatedDatabase.Identifier = String(federated['Identifier']);
+        }
+        // The SDK also declares `ConnectionType`, which the CFn schema does not,
+        // so no template can set it and it is deliberately not mapped.
+        result.FederatedDatabase = federatedDatabase;
+      }
+    }
+
+    if (databaseInput['CreateTableDefaultPermissions'] !== undefined) {
+      const permissions =
+        this.usableDefaultPermissions(
+          databaseInput['CreateTableDefaultPermissions'],
+          guardOptions
+        ) ??
+        this.usableDefaultPermissions(previous?.['CreateTableDefaultPermissions'], {
+          // The PREVIOUS side is validated with the SAME predicate (#1653
+          // review) but SILENTLY: the desired side has already warned, and a
+          // second message about a historical record helps nobody.
+          onUnusable: () => undefined,
+        });
+      if (permissions !== undefined) {
+        result.CreateTableDefaultPermissions = permissions.map((entry) => {
+          const permission: PrincipalPermissions = {};
+          if (entry['Permissions'] !== undefined) {
+            permission.Permissions = entry['Permissions'] as Permission[];
+          }
+          const declaredPrincipal = asRecord(entry['Principal']);
+          if (declaredPrincipal !== undefined) {
+            const principal: DataLakePrincipal = {};
+            if (isSendableLeaf(declaredPrincipal['DataLakePrincipalIdentifier'])) {
+              // Coerced like every other leaf: the entry guard accepts a NUMBER
+              // (CFn is stringly typed), and the SDK member is a string.
+              principal.DataLakePrincipalIdentifier = String(
+                declaredPrincipal['DataLakePrincipalIdentifier']
+              );
+            }
+            permission.Principal = principal;
+          }
+          return permission;
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * `DatabaseInput.CreateTableDefaultPermissions` as a USABLE list, or
+   * `undefined` when the declared value is a shape cdkd refuses to narrow.
+   *
+   * The block is validated ALL-OR-NOTHING rather than per entry, which is the
+   * opposite of the S3 per-`Id` appliers and deliberate: this is a Lake
+   * Formation grant list delivered by ONE wholesale `CreateDatabase` /
+   * `UpdateDatabase` call, so dropping the entries cdkd cannot read would
+   * silently NARROW the permissions the template declared — the failure this
+   * guard exists to prevent, one level in from the block itself. A malformed
+   * ENTRY therefore invalidates the block, and the caller then refuses (create)
+   * or retains the previous list (update).
+   *
+   * `Permissions` is checked for ARRAY-ness for the same reason: the SDK member
+   * is `Permission[]`, so a bare string would be forwarded verbatim and the
+   * serializer would drop it, granting nothing while the deploy reports success.
+   */
+  private usableDefaultPermissions(
+    value: unknown,
+    guardOptions?: ConfigArrayOptions
+  ): Array<Record<string, unknown>> | undefined {
+    if (value === undefined) return undefined;
+    const path = 'AWS::Glue::Database DatabaseInput.CreateTableDefaultPermissions';
+    const entries = guardOptions
+      ? requireConfigArray(value, path, guardOptions)
+      : requireConfigArray(value, path);
+    if (entries === undefined) return undefined;
+
+    for (const entry of entries) {
+      // `entries` is typed as records but is only ARRAY-checked, so an entry
+      // can be `null` or a scalar: read `Principal` off the guarded record,
+      // or a `[null]` list throws a raw TypeError past the warn ladder.
+      const record = asRecord(entry);
+      const principal = asRecord(record?.['Principal']);
+      const usable =
+        record !== undefined &&
+        (entry['Permissions'] !== undefined || entry['Principal'] !== undefined) &&
+        (entry['Permissions'] === undefined || Array.isArray(entry['Permissions'])) &&
+        // A `Principal` naming no sendable identifier is the empty-block defect
+        // one level in: it would ride an unchecked cast onto the wire as `{}`.
+        (entry['Principal'] === undefined ||
+          (principal !== undefined && isSendableLeaf(principal['DataLakePrincipalIdentifier'])));
+      if (usable) continue;
+      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object naming Permissions as a list and/or Principal as an object whose DataLakePrincipalIdentifier is a string or a number)`;
+      if (guardOptions?.onUnusable) {
+        guardOptions.onUnusable(
+          `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list. ` +
+            `On an UPDATE that is a RESET: UpdateDatabase replaces DatabaseInput wholesale, so ` +
+            `unless a usable previous list is retained the database falls back to the account default ` +
+            `(IAM_ALLOWED_PRINCIPALS / ALL) until a readable list restores the declared grants`
+        );
+        return undefined;
+      }
+      throw new Error(detail);
+    }
+    return entries;
+  }
+
+  /**
+   * Build TableInput for Glue API from CFn template properties
+   */
+  private buildTableInput(tableInput: Record<string, unknown>, fallbackName: string): TableInput {
+    const result: TableInput = {
+      Name: (tableInput['Name'] as string | undefined) ?? fallbackName,
+    };
+
+    if (tableInput['Description'] !== undefined) {
+      result.Description = tableInput['Description'] as string;
+    }
+
+    if (tableInput['TableType'] !== undefined) {
+      result.TableType = tableInput['TableType'] as string;
+    }
+
+    if (tableInput['Parameters'] !== undefined) {
+      // Convert all values to strings (CDK may pass booleans/numbers)
+      result.Parameters = stringifyParameterValues(tableInput['Parameters']);
+    }
+
+    if (tableInput['Owner'] !== undefined) {
+      result.Owner = tableInput['Owner'] as string;
+    }
+
+    if (tableInput['Retention'] !== undefined) {
+      result.Retention = tableInput['Retention'] as number;
+    }
+
+    if (tableInput['ViewOriginalText'] !== undefined) {
+      result.ViewOriginalText = tableInput['ViewOriginalText'] as string;
+    }
+
+    if (tableInput['ViewExpandedText'] !== undefined) {
+      result.ViewExpandedText = tableInput['ViewExpandedText'] as string;
+    }
+
+    // StorageDescriptor
+    if (tableInput['StorageDescriptor'] !== undefined) {
+      const sd = tableInput['StorageDescriptor'] as Record<string, unknown>;
+      result.StorageDescriptor = this.buildStorageDescriptor(sd);
+    }
+
+    // PartitionKeys
+    if (tableInput['PartitionKeys'] !== undefined) {
+      result.PartitionKeys = tableInput['PartitionKeys'] as Column[];
+    }
+
+    // `TargetTable` (resource-link tables) and `ViewDefinition` complete the CFn
+    // `TableInput` member set. Found by diffing the WHOLE blob against the live
+    // registry schema while fixing the StorageDescriptor allow-list (issue
+    // #1505) — the same silent-drop class one level up, and WORSE there: the
+    // #1479 read-merge-write only covers the `StorageDescriptor` subtree and
+    // `Parameters`, so nothing carries these forward and `UpdateTable`'s full
+    // replace erased a live value unconditionally. `readCurrentState` already
+    // reads `TargetTable` back, so drift surfaced a member deploy could never
+    // send.
+    //
+    // Both forward verbatim: all 12 CFn `TableInput` members were compared
+    // against `@aws-sdk/client-glue`, and `TableIdentifier`
+    // ({CatalogId, DatabaseName, Name, Region}) plus `ViewDefinition`
+    // ({Definer, SubObjects, Representations, IsProtected}, whose
+    // `ViewRepresentation` is {Dialect, DialectVersion, ValidationConnection,
+    // ViewExpandedText, ViewOriginalText}) are same-spelled and same-shaped.
+    if (tableInput['TargetTable'] !== undefined) {
+      result.TargetTable = tableInput['TargetTable'] as TableIdentifier;
+    }
+
+    if (tableInput['ViewDefinition'] !== undefined) {
+      result.ViewDefinition = tableInput['ViewDefinition'] as ViewDefinitionInput;
+    }
+
+    return result;
+  }
+
+  /**
+   * Build StorageDescriptor for Glue API
+   */
+  private buildStorageDescriptor(sd: Record<string, unknown>): StorageDescriptor {
+    const result: StorageDescriptor = {};
+
+    if (sd['Columns'] !== undefined) {
+      result.Columns = sd['Columns'] as Column[];
+    }
+
+    if (sd['Location'] !== undefined) {
+      result.Location = sd['Location'] as string;
+    }
+
+    if (sd['InputFormat'] !== undefined) {
+      result.InputFormat = sd['InputFormat'] as string;
+    }
+
+    if (sd['OutputFormat'] !== undefined) {
+      result.OutputFormat = sd['OutputFormat'] as string;
+    }
+
+    if (sd['Compressed'] !== undefined) {
+      result.Compressed = sd['Compressed'] as boolean;
+    }
+
+    if (sd['NumberOfBuckets'] !== undefined) {
+      result.NumberOfBuckets = sd['NumberOfBuckets'] as number;
+    }
+
+    if (sd['SerdeInfo'] !== undefined) {
+      const serde = sd['SerdeInfo'] as Record<string, unknown>;
+      if (serde['Parameters']) {
+        // Copy rather than mutate: `sd` is the caller's template object, and
+        // the same block is re-read by the #1479 merge's key-set walk.
+        result.SerdeInfo = {
+          ...serde,
+          Parameters: stringifyParameterValues(serde['Parameters']),
+        } as SerDeInfo;
+      } else {
+        result.SerdeInfo = serde as SerDeInfo;
+      }
+    }
+
+    if (sd['BucketColumns'] !== undefined) {
+      result.BucketColumns = sd['BucketColumns'] as string[];
+    }
+
+    if (sd['SortColumns'] !== undefined) {
+      result.SortColumns = sd['SortColumns'] as Order[];
+    }
+
+    if (sd['Parameters'] !== undefined) {
+      result.Parameters = sd['Parameters'] as Record<string, string>;
+    }
+
+    if (sd['StoredAsSubDirectories'] !== undefined) {
+      result.StoredAsSubDirectories = sd['StoredAsSubDirectories'] as boolean;
+    }
+
+    // `SkewedInfo` / `SchemaReference` complete the CFn `StorageDescriptor`
+    // member set (issue #1505). Before this they were dropped by the
+    // allow-list, and the #1479 merge made that WORSE than a plain drop: its
+    // key sets come from the RAW template, so DECLARING one suppressed the
+    // live carry-forward (the member counts as user-authored) while the
+    // builder never sent a value — erasing the live value with nothing
+    // replacing it. An UNDECLARED member was, and still is, preserved by the
+    // carry-forward.
+    //
+    // The issue also named `AdditionalLocations`, but the live CFn registry
+    // schema declares exactly the 13 members handled here with
+    // `additionalProperties: false` — that one exists only in the SDK model,
+    // so no template can reach it and forwarding it would be dead code.
+    if (sd['SkewedInfo'] !== undefined) {
+      // `asRecord` rather than a cast: a malformed / null block would otherwise
+      // throw a raw TypeError from the member read below, surfacing as
+      // "Cannot read properties of null" instead of AWS's real validation
+      // error. Same convention as `parameterKeySet` / the #1471 shape guards.
+      const skewed = asRecord(sd['SkewedInfo']) ?? {};
+      // CFn types `SkewedColumnValueLocationMaps` as a free-form object while
+      // the SDK member is `Record<string, string>` — the same CFn-delivers-
+      // non-strings case `Parameters` handles.
+      result.SkewedInfo =
+        skewed['SkewedColumnValueLocationMaps'] !== undefined
+          ? ({
+              ...skewed,
+              SkewedColumnValueLocationMaps: stringifyParameterValues(
+                skewed['SkewedColumnValueLocationMaps']
+              ),
+            } as SkewedInfo)
+          : (skewed as SkewedInfo);
+    }
+
+    if (sd['SchemaReference'] !== undefined) {
+      // Every member (`SchemaId.{RegistryName,SchemaName,SchemaArn}`,
+      // `SchemaVersionId`, `SchemaVersionNumber`) is same-spelled and
+      // same-shaped between the CFn schema and `@aws-sdk/client-glue`, so the
+      // block forwards verbatim.
+      // `SchemaVersionNumber` is the one member needing coercion: CFn types it
+      // as an integer, but a hand-authored template (or a `Ref` to a Number
+      // parameter) can deliver "2", which the SDK's number field rejects with a
+      // SerializationException. Same treatment the Job numerics get.
+      const schemaRef = asRecord(sd['SchemaReference']) ?? {};
+      result.SchemaReference = (
+        schemaRef['SchemaVersionNumber'] !== undefined
+          ? { ...schemaRef, SchemaVersionNumber: coerceNumber(schemaRef['SchemaVersionNumber']) }
+          : schemaRef
+      ) as SchemaReference;
+    }
+
+    return result;
+  }
+
+  /**
+   * Adopt an existing Glue Database or Table into cdkd state.
+   *
+   * Lookup (per type): explicit override / template name → verify with
+   * `GetDatabase` or `GetTable`. There is no `aws:cdk:path` tag walk — AWS
+   * rejects `aws:`-prefixed tag writes, so that tag never exists on a real
+   * resource (issue #1134); auto-mode import resolves ids from
+   * CloudFormation's `DescribeStackResources` instead.
+   */
+  /**
+   * Read the AWS-current Glue resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `Database` → `GetDatabase` returning DatabaseInput-shape
+   *    (`Name`, `Description`, `LocationUri`, `Parameters`).
+   *  - `Table` → `GetTable` returning the same-named TableInput-shape
+   *    fields (`Name`, `Description`, `Owner`, `Retention`, `TableType`,
+   *    `PartitionKeys`, `Parameters`, `StorageDescriptor`, `ViewOriginalText`,
+   *    `ViewExpandedText`, `TargetTable`). The table physicalId is
+   *    `databaseName|tableName`; we recover both from the split.
+   *
+   * `CatalogId` is not READ — `GetDatabase` / `GetTable` do not echo it —
+   * but the recorded usable value is carried back
+   * ({@link withRecordedCatalogId}), so a `drift --revert` built from this
+   * snapshot addresses the catalog it was read from.
+   *
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone
+   * (`EntityNotFoundException`), unless the read fell back from an unusable
+   * recorded `CatalogId` ({@link notFoundInCatalog}).
+   * Other Glue resource types (`Job`, `Crawler`, `Connection`, `Trigger`,
+   * `Workflow`, `SecurityConfiguration`, etc.) are out of scope for v1 —
+   * the provider's `create()` only handles Database/Table; CC API picks
+   * up drift detection for the rest.
+   */
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return glueReadCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
+    // `CatalogId` is threaded through the same way the pre-update readers do
+    // it (issue #1461). On a cross-account / non-default Data Catalog, a
+    // `GetTable` without it reads the ACCOUNT-DEFAULT catalog — so drift
+    // compares against the wrong table, or reports the resource gone.
+    //
+    // Read through the shared guard rather than a bare cast (issue #1675): the
+    // bag here is the STATE record, so for an imported stack it holds the raw
+    // template value — an unresolved intrinsic OBJECT (which the cast would
+    // hand to `GetTable` as if it were an id) or a YAML-numeric account id.
+    const catalogId = catalogIdForApi(properties?.['CatalogId']);
+    let snapshot: Record<string, unknown> | ResourceNotFound | undefined;
+    switch (resourceType) {
+      case 'AWS::Glue::Database':
+        snapshot = await this.readDatabase(physicalId, catalogId);
+        break;
+      case 'AWS::Glue::Table':
+        snapshot = await this.readTable(physicalId, catalogId, properties);
+        break;
+      default:
+        return undefined;
+    }
+    if (snapshot === RESOURCE_NOT_FOUND) return notFoundInCatalog(properties);
+    return snapshot && withRecordedCatalogId(snapshot, properties);
   }
+
+  /**
+   * `OpenTableFormatInput` is a create-time directive (`IcebergInput.MetadataOperation`
+   * can only be `CREATE`). `GetTable` does NOT echo it back as an
+   * `OpenTableFormatInput` field — an Iceberg table surfaces only via
+   * `Table.Parameters['table_type'] == 'ICEBERG'`, which is not the same
+   * round-trippable shape. There is therefore no clean emit-when-present
+   * readback for it (and fabricating a placeholder would itself fire false
+   * drift). Declaring it here keeps the drift comparator from false-positiving
+   * on a state-recorded `OpenTableFormatInput` that the readback never surfaces.
+   *
+   * `AWS::Glue::Database` declares `DatabaseInput.CreateTableDefaultPermissions`
+   * PER RESOURCE (the issue #1602 seam), and only for a database whose template
+   * does NOT declare the block. AWS materializes a Lake Formation DEFAULT there
+   * — `[{IAM_ALLOWED_PRINCIPALS, [ALL]}]` on a catalog that has not been
+   * onboarded to Lake Formation (measured us-east-1, 2026-08-13) — so once
+   * issue #1807 taught `readDatabase` to surface the block, comparing it would
+   * report drift on EVERY existing database: the baseline is an
+   * `observedProperties` capture written by a binary that did not read the key,
+   * `drift.ts` walks the key UNION on that baseline (`unionWalkObjects`), and
+   * `deploy-engine.ts` does not refresh a record that already has one — so the
+   * phantom would persist until an unrelated UPDATE or a `drift --accept`.
+   * This is the ELBv2 `Targets` shape one type over: a value a SIBLING owns is
+   * ignored while the template declares none, and an explicit declaration —
+   * including an empty list — IS a declaration and stays compared.
+   *
+   * `TargetDatabase` / `FederatedDatabase` need no such scoping: AWS reports
+   * them only when they were actually set, so an appearance is real drift.
+   */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
-    return glueGetDriftUnknownPaths.call(this, resourceType, properties);
+    if (resourceType === 'AWS::Glue::Table') {
+      return ['OpenTableFormatInput'];
+    }
+    if (resourceType === 'AWS::Glue::Database') {
+      // The usual default is to COMPARE when the bag is absent or unreadable —
+      // hiding real drift is the worse failure. This one key inverts it, and
+      // the reason is specific rather than a preference: AWS ALWAYS materializes
+      // a Lake Formation default here, so a record cdkd cannot read the
+      // declaration out of (an older import carrying only the top-level
+      // `DatabaseName`) would report drift on EVERY run with no way to clear it.
+      // The path is compared exactly when the template DECLARES the block.
+      const declared = asRecord(properties?.['DatabaseInput']);
+      if (declared?.['CreateTableDefaultPermissions'] === undefined) {
+        return ['DatabaseInput.CreateTableDefaultPermissions'];
+      }
+    }
+    return [];
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return glueImport.call(this, input);
+
+  private async readDatabase(
+    physicalId: string,
+    catalogId?: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    let db;
+    try {
+      const resp = await this.getClient().send(
+        new GetDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+        })
+      );
+      db = resp.Database;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!db) return undefined;
+
+    const dbInput: Record<string, unknown> = {};
+    if (db.Name !== undefined) dbInput['Name'] = db.Name;
+    dbInput['Description'] = db.Description ?? '';
+    if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
+    dbInput['Parameters'] = db.Parameters ?? {};
+    // The three members the write side gained with issue #1807, reverse-mapped
+    // so `cdkd drift` can see them at all. EMIT-WHEN-PRESENT rather than the
+    // always-emit placeholder Description / Parameters use: AWS reports a
+    // Lake Formation DEFAULT for `CreateTableDefaultPermissions` on databases
+    // whose template never declared one (`IAM_ALLOWED_PRINCIPALS` / `ALL` on a
+    // catalog that has not been onboarded to Lake Formation), and a placeholder
+    // would have to invent one of the two shapes and be wrong on the other
+    // population.
+    //
+    // That AWS default is ALSO why emitting it is not enough on its own: on the
+    // `observedProperties` baseline the comparator walks the key UNION
+    // (`unionWalkObjects`), so a record written before this member was read
+    // would report the default as drift. `getDriftUnknownPaths` scopes the path
+    // out PER RESOURCE for a database whose template declares no block — see
+    // its JSDoc; only the `properties`-fallback baseline is covered by the
+    // comparator's own baseline-keys-only rule.
+    //
+    // The always-emitted `Description: ''` placeholder is safe next to a
+    // resource link, which is not obvious: AWS REFUSES a database carrying both
+    // a description and a `TargetDatabase`. Measured us-east-1 2026-08-13 — the
+    // refusal is on a NON-EMPTY description; `Description: ''` is accepted on
+    // both `CreateDatabase` and `UpdateDatabase` alongside a link (and reads
+    // back as null), so the `cdkd drift --revert` round-trip through this
+    // readback does not trip it.
+    if (db.TargetDatabase !== undefined) {
+      dbInput['TargetDatabase'] = { ...db.TargetDatabase };
+    }
+    if (db.FederatedDatabase !== undefined) {
+      dbInput['FederatedDatabase'] = { ...db.FederatedDatabase };
+    }
+    if (db.CreateTableDefaultPermissions !== undefined) {
+      dbInput['CreateTableDefaultPermissions'] = db.CreateTableDefaultPermissions.map((entry) => ({
+        ...entry,
+      }));
+    }
+    // CFn schema accepts BOTH nested `DatabaseInput.Name` AND top-level
+    // `DatabaseName` (see #613 B-bucket fix in createDatabase). Surface
+    // both so drift comparison works for either template shape.
+    const result: Record<string, unknown> = { DatabaseInput: dbInput };
+    if (db.Name !== undefined) result['DatabaseName'] = db.Name;
+    return result;
+  }
+
+  private async readTable(
+    physicalId: string,
+    catalogId?: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const decoded = decodeTableId(physicalId, properties);
+    if (!decoded) return undefined;
+    const { databaseName, tableName } = decoded;
+
+    let table;
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          DatabaseName: databaseName,
+          Name: tableName,
+        })
+      );
+      table = resp.Table;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!table) return undefined;
+
+    const tableInput: Record<string, unknown> = {};
+    if (table.Name !== undefined) tableInput['Name'] = table.Name;
+    tableInput['Description'] = table.Description ?? '';
+    if (table.Owner !== undefined) tableInput['Owner'] = table.Owner;
+    if (table.Retention !== undefined) tableInput['Retention'] = table.Retention;
+    if (table.TableType !== undefined) tableInput['TableType'] = table.TableType;
+    tableInput['PartitionKeys'] = (table.PartitionKeys ?? []).map(
+      (k) => k as unknown as Record<string, unknown>
+    );
+    tableInput['Parameters'] = table.Parameters ?? {};
+    if (table.StorageDescriptor) {
+      tableInput['StorageDescriptor'] = table.StorageDescriptor as unknown as Record<
+        string,
+        unknown
+      >;
+    }
+    if (table.ViewOriginalText !== undefined) {
+      tableInput['ViewOriginalText'] = table.ViewOriginalText;
+    }
+    if (table.ViewExpandedText !== undefined) {
+      tableInput['ViewExpandedText'] = table.ViewExpandedText;
+    }
+    if (table.TargetTable) {
+      tableInput['TargetTable'] = table.TargetTable as unknown as Record<string, unknown>;
+    }
+
+    // CFn schema accepts BOTH nested `TableInput.Name` AND top-level
+    // `Name` (see #613 B-bucket fix in createTable). Surface both so
+    // drift comparison works for either template shape.
+    const result: Record<string, unknown> = {
+      DatabaseName: databaseName,
+      TableInput: tableInput,
+    };
+    if (table.Name !== undefined) result['Name'] = table.Name;
+    return result;
+  }
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::Glue::Database':
+        return this.importDatabase(input);
+      case 'AWS::Glue::Table':
+        return this.importTable(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importDatabase(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName =
+      input.knownPhysicalId ??
+      importableString(
+        (input.properties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Name']
+      );
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
+
+    if (explicitName) {
+      try {
+        await this.getClient().send(
+          new GetDatabaseCommand({ Name: explicitName, ...(catalogId && { CatalogId: catalogId }) })
+        );
+        return { physicalId: explicitName, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // database reaching here needs an explicit `--resource` override.
+    return null;
+  }
+
+  private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const databaseName = importableString(input.properties['DatabaseName']);
+    const tableInput = input.properties['TableInput'] as Record<string, unknown> | undefined;
+    const templateTableName = importableString(tableInput?.['Name']);
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
+
+    const identity = resolveTableIdentity({
+      knownPhysicalId: input.knownPhysicalId,
+      templateDatabaseName: databaseName,
+      templateTableName,
+    });
+    if (!identity.ok) {
+      // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+      // that tag never exists on a real resource and the walk could not match
+      // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+      // `DescribeStackResources` or the template's physical-name property; a
+      // table reaching here needs an explicit `--resource` override.
+      //
+      // Each cause gets its own message. A single text would be FALSE for two
+      // of the three, and the caller-side hint (`pass --resource
+      // <LogicalId>=<physicalId>`) is actionable for only one of them — the
+      // original #1651 bug WAS a dead end where the suggested remedy was the
+      // thing being rejected, so being vague here would reproduce it.
+      switch (identity.reason) {
+        case 'pipe-in-name':
+          // Says what to change rather than suggesting another id: the only ids
+          // that would work are the ones this message names. `|` is cdkd's own
+          // separator (see `createTable`); AWS accepts it in a Glue name even
+          // though the Athena convention does not.
+          this.logger.warn(
+            `AWS::Glue::Table ${input.logicalId}: cannot be imported because the '|' in a name ` +
+              `cannot be placed. cdkd records this type's physical id as ` +
+              `<databaseName>|<tableName>, with '|' as the separator: a name containing '|' is ` +
+              `adopted only with the template's own DatabaseName (which is how cdkd later tells ` +
+              `the two apart). Set the template's DatabaseName to the table's database, or ` +
+              `manage this resource outside cdkd.`
+          );
+          break;
+        case 'unpairable': {
+          // Ends in a `--resource` remedy, so the logical id and the supplied
+          // id are shown only when plain (a `|` is literal inside cdkd's
+          // `'...'`), and the fragment names the logical id only when plain
+          // (go-to-k/cdkd#4273): inside cdkd's own quotes, a `'` in either
+          // closed them and the rest of a pasted line ran.
+          const supplied = input.knownPhysicalId ?? '';
+          this.logger.warn(
+            `AWS::Glue::Table ${logicalIdShown(input.logicalId)}: cannot resolve a database for physical id ` +
+              `${isQuotableImportValue(supplied) ? `'${supplied}'` : VALUE_NOT_SHOWN}. ` +
+              (input.knownPhysicalId === ''
+                ? `The supplied physical id is empty. `
+                : `The template's DatabaseName is absent or is an unresolved intrinsic, so ` +
+                  `the bare table name cannot be paired. `) +
+              `Pass the composite form instead: ` +
+              `--resource '${quotedRemedyLogicalId(input.logicalId)}=<databaseName>|<tableName>' ` +
+              `(quote it — '|' is a shell pipe).`
+          );
+          break;
+        }
+        case 'unidentified':
+          // Nothing named the table at all. The caller already prints the
+          // `--resource` hint for this case, so a second message would be noise.
+          break;
+      }
+      return null;
+    }
+
+    // Probe EVERY reading, then adopt only an unambiguous one. Adopting the
+    // first that exists would take the two-segment composite `(a, b)` for
+    // CloudFormation's bare `a|b` whenever an unrelated table `b` happens to
+    // exist in a database `a`, and the recorded `a|b` would then round-trip to
+    // that other table — which `cdkd destroy` deletes. A non-not-found error is
+    // an unknown answer, never "absent", so it stops the walk.
+    const found: TableReading[] = [];
+    for (const candidate of identity.candidates) {
+      try {
+        await this.getClient().send(
+          new GetTableCommand({
+            DatabaseName: candidate.databaseName,
+            Name: candidate.tableName,
+            ...(catalogId && { CatalogId: catalogId }),
+          })
+        );
+        found.push(candidate);
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) continue;
+        // A lone reading keeps the AWS error as it was. With several, say WHICH
+        // reading could not be answered — a bare-name probe the user never asked
+        // for can hit a Lake Formation denial the reading they meant would not —
+        // and still FAIL CLOSED: adopting another reading while this one is
+        // unknown could take the wrong table. Named by error CLASS, not AWS's
+        // message, which can quote the account and role; the original rides as
+        // `cause`.
+        if (identity.candidates.length === 1 || !(err instanceof Error)) throw err;
+        throw new ProvisioningError(
+          safeMsg`AWS::Glue::Table ${input.logicalId}: could not check whether table ${candidate.tableName} exists in database ${candidate.databaseName} (the ${candidate.reading} reading of physical id ${input.knownPhysicalId ?? ''}): ${err.name}. cdkd does not adopt a table while another reading of the id is unanswered. Grant glue:GetTable on that table and database, then re-run.`,
+          'AWS::Glue::Table',
+          input.logicalId,
+          undefined,
+          err
+        );
+      }
+    }
+    // More than one reading exists: the template's own `TableInput.Name`
+    // settles it when exactly one of them carries it. (With a single reading
+    // the id wins over the template name, as an explicit override always has.)
+    const chosen =
+      found.length > 1 && templateTableName !== undefined
+        ? found.filter((pair) => pair.tableName === templateTableName)
+        : found;
+    if (chosen.length > 1 || (found.length > 1 && chosen.length === 0)) {
+      // The remedies are the two inputs that settle it, NOT a re-spelled id:
+      // any id with a `|` is read the same several ways again (the #1651 shape,
+      // where the suggested remedy is the thing being refused).
+      //
+      // Ends in a `--resource` remedy, so every value on the line is shown
+      // only when inert and described otherwise (go-to-k/cdkd#4273). The
+      // table name is the supplied id or one of its segments, which in auto
+      // mode is CloudFormation's physical id and so the template's
+      // `TableInput.Name`; the database name is the template's `DatabaseName`.
+      // GetTable only confirmed a table of that spelling exists, and Glue
+      // accepts `'`, `;` and `$(` in a name. Inside cdkd's `'...'` a `|` is
+      // literal, so a genuine separator-bearing table name is still shown; the
+      // database name prints bare and must be plain, and also free of `,`
+      // (`displayIdent`'s `listMember` rule), since this list is
+      // `, `-joined and `a,b` would read as two entries.
+      const existing = found
+        .map(
+          (pair) =>
+            `${isQuotableImportValue(pair.tableName) ? `'${pair.tableName}'` : VALUE_NOT_SHOWN} in ` +
+            (isPlainImportValue(pair.databaseName) && !pair.databaseName.includes(',')
+              ? pair.databaseName
+              : VALUE_NOT_SHOWN)
+        )
+        .join(', ');
+      this.logger.warn(
+        safeMsg`AWS::Glue::Table ${logicalIdShown(input.logicalId)}: cannot be imported because its physical id names more than one existing table (${existing}). Set the template's TableInput.Name to the table this resource is, which settles it. For a table whose own name starts with '<databaseName>|', you can instead pass --resource '${quotedRemedyLogicalId(input.logicalId)}=<databaseName>|<databaseName>|<rest of the name>'.`
+      );
+      return null;
+    }
+    const adopted = chosen[0];
+    if (adopted === undefined) return null;
+    // Always normalize to cdkd's composite form: `updateTable` /
+    // `deleteTable` / `readTable` all decode the stored physicalId as
+    // `<db>|<table>` ({@link decodeTableId}), so recording CloudFormation's
+    // bare table name would adopt the resource into a state record the rest of
+    // the provider cannot use — trading a visible not-found for a silent one.
+    // That is the #1658 failure mode (`AWS::Route53::RecordSet` accepted CFn's
+    // id verbatim and the stack became undestroyable). The composite is built
+    // from the pair actually PROBED. A `|` in either name is only ever paired
+    // with the template's `DatabaseName`, which later readers anchor on — provided
+    // the recorded bag carries it resolved; when `cdkd import` cannot resolve
+    // it, a three-segment record has no anchor and destroy SKIPS it (loudly,
+    // keeping the record) rather than guessing.
+    const physicalId = `${adopted.databaseName}|${adopted.tableName}`;
+    // An id with more than one `|` is read only by anchoring on `DatabaseName`.
+    // `cdkd import` records the TEMPLATE's bag, where that property can stay an
+    // unresolved intrinsic, so the probed database also rides as an attribute:
+    // the `Ref` resolver reads `properties` then `attributes`. (The decode sites
+    // read only `properties`; without it they skip such a record loudly.)
+    const needsAnchor = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
+    return {
+      physicalId,
+      attributes: needsAnchor ? { DatabaseName: adopted.databaseName } : {},
+    };
   }
 }
 
@@ -255,19 +3296,20 @@ export class GlueProvider implements ResourceProvider {
  * (matches `feedback_update_optional_field_undefined_check.md`).
  */
 export class GlueWorkflowProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  stsClient: STSClient | undefined;
-  cachedAccountId: string | undefined;
-  readonly providerRegion = ambientRegion();
-  logger: ConsoleLogger = getLogger().child('GlueWorkflowProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('GlueWorkflowProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return workflowWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -300,21 +3342,87 @@ export class GlueWorkflowProvider implements ResourceProvider {
     ],
   ]);
 
-  getClient(): GlueClient {
-    return workflowGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return workflowGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return workflowCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Workflow ${logicalId}`);
+
+    const name = properties['Name'] as string | undefined;
+    if (!name) {
+      throw new ProvisioningError(
+        `Name is required for Glue Workflow ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    // Glue Workflow Tags may arrive as a CFn tag map OR a `{Key,Value}[]` list;
+    // a malformed one is refused before any call (go-to-k/cdkd#4073). The key
+    // is elided when there are no tags.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+
+    try {
+      await this.getCreateClient().send(
+        new CreateWorkflowCommand({
+          Name: name,
+          ...(properties['Description'] !== undefined && {
+            Description: properties['Description'] as string,
+          }),
+          ...(properties['DefaultRunProperties'] !== undefined && {
+            DefaultRunProperties: properties['DefaultRunProperties'] as Record<string, string>,
+          }),
+          ...(properties['MaxConcurrentRuns'] !== undefined && {
+            MaxConcurrentRuns: coerceNumber(properties['MaxConcurrentRuns']) as number,
+          }),
+          ...(tags && { Tags: tags }),
+        })
+      );
+
+      log.debug(`Successfully created Glue Workflow ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -322,37 +3430,251 @@ export class GlueWorkflowProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return workflowUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
     );
+    const { value: v } = log;
+    log.debug(`Updating Glue Workflow ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+
+    try {
+      // A full replace: a field left out here is CLEARED on AWS, which is how a
+      // property removed from the template is reset, as CloudFormation does
+      // (issue #1160). Never fill an absent field from `previousProperties`.
+      await this.getClient().send(
+        new UpdateWorkflowCommand({
+          Name: physicalId,
+          ...(properties['Description'] !== undefined && {
+            Description: properties['Description'] as string,
+          }),
+          ...(properties['DefaultRunProperties'] !== undefined && {
+            DefaultRunProperties: properties['DefaultRunProperties'] as Record<string, string>,
+          }),
+          ...(properties['MaxConcurrentRuns'] !== undefined && {
+            MaxConcurrentRuns: coerceNumber(properties['MaxConcurrentRuns']) as number,
+          }),
+        })
+      );
+
+      // `UpdateWorkflow` does not carry tags: reconcile them out of band. Tags
+      // used to be dropped here, so a template or `drift --revert` tag change
+      // never reached AWS (go-to-k/cdkd#4073).
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.buildWorkflowArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
+
+      log.debug(`Successfully updated Glue Workflow ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    return workflowDelete.call(this, logicalId, physicalId, resourceType, _properties, context);
+    this.logger.debug(`Deleting Glue Workflow ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // workflow cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+
+    try {
+      await this.getClient().send(new DeleteWorkflowCommand({ Name: physicalId }));
+      this.logger.debug(`Successfully deleted Glue Workflow ${logicalId}`);
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Workflow ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return workflowGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
   }
-  readCurrentState(
+
+  /**
+   * Read AWS-current Workflow shape via `GetWorkflow`. Surfaces every
+   * user-controllable top-level CFn key with always-emit placeholders
+   * (PR #145):
+   *  - `Description` → `?? ''`
+   *  - `DefaultRunProperties` → `?? {}`
+   *  - `MaxConcurrentRuns` → omitted when AWS reports `undefined` (no
+   *    AWS-side default to anchor a placeholder against; cdkd state may
+   *    legitimately leave this unset)
+   *  - `Tags` → `?? []` (filtered against `aws:cdk:path` and the rest of
+   *    the `aws:`-prefixed reserved space)
+   */
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return workflowReadCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    let workflow;
+    try {
+      const resp = await this.getClient().send(
+        new GetWorkflowCommand({ Name: physicalId, IncludeGraph: false })
+      );
+      workflow = resp.Workflow;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!workflow) return undefined;
+
+    const result: Record<string, unknown> = {
+      Name: workflow.Name ?? physicalId,
+      Description: workflow.Description ?? '',
+      DefaultRunProperties: workflow.DefaultRunProperties ?? {},
+    };
+
+    if (workflow.MaxConcurrentRuns !== undefined) {
+      result['MaxConcurrentRuns'] = workflow.MaxConcurrentRuns;
+    }
+
+    // Tags via separate GetTags(ResourceArn) call.
+    const arn = await this.buildWorkflowArn(physicalId);
+    let tags: Array<{ Key: string; Value: string }> = [];
+    try {
+      const tagResp = await this.getClient().send(new GetTagsCommand({ ResourceArn: arn }));
+      tags = normalizeAwsTagsToCfn(tagResp.Tags);
+    } catch (err) {
+      // Best-effort — `GetTags` failure should not abort the drift read.
+      this.logger.debug(
+        `GetTags failed for Glue Workflow ${physicalId}: ${describeAwsFailure(err).detail}`
+      );
+    }
+    result['Tags'] = tags;
+
+    return result;
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return workflowImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+
+    if (explicitName) {
+      try {
+        await this.getClient().send(new GetWorkflowCommand({ Name: explicitName }));
+        return { physicalId: explicitName, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // workflow reaching here needs an explicit `--resource` override.
+    return null;
+  }
+
+  /**
+   * The workflow ARN `GetTags` needs. The partition is derived from the
+   * client's region (issue #1815): the literal `arn:aws:` is structurally valid
+   * everywhere, so in `aws-cn` / `aws-us-gov` nothing rejected it — `GetTags`
+   * was simply aimed at an ARN naming no workflow, and the best-effort catch
+   * below reads a failure there as EMPTY tags. A commercial region still derives to `aws`,
+   * so commercial output is unchanged byte for byte.
+   */
+  private async buildWorkflowArn(workflowName: string): Promise<string> {
+    const region = await this.getRegion();
+    const account = await this.getAccountId();
+    const { partition } = derivePartitionAndUrlSuffix(region);
+    return `arn:${partition}:glue:${region}:${account}:workflow/${workflowName}`;
+  }
+
+  private async getRegion(): Promise<string> {
+    const region = await this.getClient().config.region();
+    return region || this.providerRegion || 'us-east-1';
+  }
+
+  private async getAccountId(): Promise<string> {
+    if (this.cachedAccountId) return this.cachedAccountId;
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+    if (!identity.Account) {
+      throw new Error('Failed to resolve AWS account id from STS');
+    }
+    this.cachedAccountId = identity.Account;
+    return this.cachedAccountId;
   }
 }
 
@@ -387,38 +3709,102 @@ export class GlueWorkflowProvider implements ResourceProvider {
  * key in `readCurrentState` even with an always-emit placeholder.
  */
 export class GlueSecurityConfigurationProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  readonly providerRegion = ambientRegion();
-  logger: ConsoleLogger = getLogger().child('GlueSecurityConfigurationProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('GlueSecurityConfigurationProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return securityConfigurationWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::SecurityConfiguration', new Set(['Name', 'EncryptionConfiguration'])],
   ]);
 
-  getClient(): GlueClient {
-    return securityConfigurationGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return securityConfigurationGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return securityConfigurationCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue SecurityConfiguration ${logicalId}`);
+
+    const name = properties['Name'] as string | undefined;
+    if (!name) {
+      throw new ProvisioningError(
+        `Name is required for Glue SecurityConfiguration ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const encryptionConfiguration = properties['EncryptionConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    if (!encryptionConfiguration) {
+      throw new ProvisioningError(
+        `EncryptionConfiguration is required for Glue SecurityConfiguration ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      await this.getCreateClient().send(
+        new CreateSecurityConfigurationCommand({
+          Name: name,
+          EncryptionConfiguration: buildEncryptionConfiguration(encryptionConfiguration),
+        })
+      );
+
+      log.debug(`Successfully created Glue SecurityConfiguration ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue SecurityConfiguration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -426,44 +3812,544 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     _previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return securityConfigurationUpdate.call(
-      this,
+    // go-to-k/cdkd#2613: this update sends nothing, but the refusal below is a
+    // `ResourceUpdateNotSupportedError`, which `update-in-place.ts` turns into a
+    // DELETE + CREATE under `--replace`. The physical id is the configuration
+    // NAME, so with a client in another region than the state record that
+    // replacement would act on a same-named configuration cdkd does not manage.
+    // Refused first, so the error names the region rather than steering toward
+    // a replacement. The client's region is resolved only when there is one to
+    // compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
       logicalId,
       physicalId,
+      'pre-update'
+    );
+    // SecurityConfiguration is immutable per AWS — no `UpdateSecurity*`
+    // command exists. `cdkd drift --revert` and replacement-detection
+    // both end up here; the latter expects the CREATE→DELETE replacement
+    // layer to handle it. Surface the error so revert reports a clean
+    // "could not revert" outcome instead of silently succeeding.
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
-      _properties,
-      _previousProperties,
-      context
+      logicalId,
+      'AWS Glue SecurityConfiguration is immutable on AWS — there is no UpdateSecurityConfiguration API; every change requires DeleteSecurityConfiguration + CreateSecurityConfiguration. Use cdkd deploy --replace, or destroy + redeploy with the new EncryptionConfiguration.'
     );
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    return securityConfigurationDelete.call(
-      this,
+    this.logger.debug(`Deleting Glue SecurityConfiguration ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // security configuration cdkd does not manage. Refuse before any call,
+    // not only on NotFound; the client's region is resolved only when there
+    // is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
       logicalId,
       physicalId,
-      resourceType,
-      _properties,
-      context
+      'pre-delete'
     );
+
+    try {
+      await this.getClient().send(new DeleteSecurityConfigurationCommand({ Name: physicalId }));
+      this.logger.debug(`Successfully deleted Glue SecurityConfiguration ${logicalId}`);
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(
+          `Glue SecurityConfiguration ${physicalId} does not exist, skipping deletion`
+        );
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return securityConfigurationGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
   }
-  readCurrentState(
+
+  /**
+   * Read AWS-current SecurityConfiguration shape via
+   * `GetSecurityConfiguration`. Always emits the three CFn-modeled
+   * sub-configs (`S3Encryptions: []`, `CloudWatchEncryption: {}`,
+   * `JobBookmarksEncryption: {}`) per PR #145 even when AWS reports
+   * nothing — closes the "console-side encryption enable on a previously
+   * default config" detection gap on the v3 baseline.
+   *
+   * `DataQualityEncryption` is silently dropped: the CFn schema for
+   * `AWS::Glue::SecurityConfiguration` does not model it, so surfacing it
+   * would fire false drift on every clean run for a key cdkd state can
+   * never carry.
+   */
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return securityConfigurationReadCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    let cfg;
+    try {
+      const resp = await this.getClient().send(
+        new GetSecurityConfigurationCommand({ Name: physicalId })
+      );
+      cfg = resp.SecurityConfiguration;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!cfg) return undefined;
+
+    return {
+      Name: cfg.Name ?? physicalId,
+      EncryptionConfiguration: mapEncryptionConfigurationToCfn(cfg.EncryptionConfiguration),
+    };
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return securityConfigurationImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+
+    if (explicitName) {
+      try {
+        await this.getClient().send(new GetSecurityConfigurationCommand({ Name: explicitName }));
+        return { physicalId: explicitName, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    // Nothing left to look up. SecurityConfiguration is not taggable at all
+    // (the type has no ARN to hand to `GetTags`), so it never had even the
+    // now-removed `aws:cdk:path` walk to fall back on — and without an
+    // explicit name there is no other key to match a candidate against.
+    // Import users must pass `--resource <logicalId>=<name>` for this type.
+    //
+    // This previously paginated all of `GetSecurityConfigurations` into a
+    // loop whose body was an explicit no-op, burning a full listing on every
+    // call to reach the same `null` (issue #1134).
+    return null;
+  }
+}
+
+// ─── Helpers (file-level) ──────────────────────────────────────────
+
+/** Max GetCrawler polls while waiting for a stopped crawler to settle. */
+const CRAWLER_STOP_MAX_ATTEMPTS = 30;
+/** Delay between GetCrawler polls while waiting for a crawler to stop. */
+const CRAWLER_STOP_POLL_INTERVAL_MS = 2000;
+/** Max GetTrigger polls while waiting for a trigger to reach DEACTIVATED. */
+const TRIGGER_DEACTIVATE_MAX_ATTEMPTS = 30;
+/** Delay between GetTrigger polls while waiting for a trigger to deactivate. */
+const TRIGGER_DEACTIVATE_POLL_INTERVAL_MS = 1000;
+
+/** Promise-based sleep used by the crawler / trigger state-machine waiters. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Both spellings of the Iceberg table spec cdkd refuses inside
+ * `OpenTableFormatInput.IcebergInput`: the CFn registry schema's
+ * `IcebergTableInput` and `@aws-sdk/client-glue`'s `CreateIcebergTableInput`.
+ * A hand-written template can carry either, and neither is deployable, so the
+ * pre-flight matches both and names whichever it found.
+ */
+const ICEBERG_TABLE_INPUT_KEYS = ['IcebergTableInput', 'CreateIcebergTableInput'] as const;
+
+/**
+ * Return whichever {@link ICEBERG_TABLE_INPUT_KEYS} spelling the template
+ * carries under `OpenTableFormatInput.IcebergInput`, or `undefined`.
+ *
+ * Non-object shapes at either level (an unresolved intrinsic) are treated as
+ * "absent" so AWS surfaces the real validation error rather than this refusal.
+ */
+function findIcebergTableInputKey(properties: Record<string, unknown>): string | undefined {
+  const openTableFormatInput = properties['OpenTableFormatInput'];
+  if (
+    typeof openTableFormatInput !== 'object' ||
+    openTableFormatInput === null ||
+    Array.isArray(openTableFormatInput)
+  ) {
+    return undefined;
+  }
+  const iceberg = (openTableFormatInput as Record<string, unknown>)['IcebergInput'];
+  if (typeof iceberg !== 'object' || iceberg === null || Array.isArray(iceberg)) {
+    return undefined;
+  }
+  return ICEBERG_TABLE_INPUT_KEYS.find((key) => key in iceberg);
+}
+
+/**
+ * PRE-FLIGHT REFUSAL of `AWS::Glue::Table`
+ * `OpenTableFormatInput.IcebergInput.IcebergTableInput` (issue #1454).
+ *
+ * **This is a deliberate PARITY DIVERGENCE, and it was a conscious choice.**
+ * cdkd's compatibility target is CloudFormation, and CloudFormation does not
+ * validate this property — it forwards it and lets the deploy roll back. cdkd
+ * refuses it EARLIER and with a better message instead. The justification is
+ * that no user is losing a working deployment: the live probe on issue #1408
+ * (2026-08-09, us-east-1 — 5 raw `glue:CreateTable` shapes plus 5
+ * `AWS::Glue::Table` CloudFormation stacks) proved the property is undeployable
+ * on BOTH paths.
+ *
+ * - **The raw `glue:CreateTable` API — the call cdkd itself makes** — rejects
+ *   every `CreateIcebergTableInput` shape: without a
+ *   `TableInput.StorageDescriptor` it fails `Location information cannot be
+ *   null while creating an iceberg table`, and with one it fails `Table
+ *   metadata information present at multiple parts of input request`. The
+ *   spec's own `Location` is never read. So this is NOT merely cdkd declining
+ *   what CloudFormation declines — cdkd's own path cannot deploy it either.
+ * - **CloudFormation** rolls back all three variants with `Table metadata is
+ *   expected only via TableInput or via IcebergTableInputProperties inside
+ *   OpenTableFormatInput` — naming a property that exists in NEITHER the CFn
+ *   registry schema (`IcebergInput.IcebergTableInput`) NOR
+ *   `@aws-sdk/client-glue` (`IcebergInput.CreateIcebergTableInput`). That
+ *   three-way contract mismatch is an AWS-side bug.
+ *
+ * Because there is no shape in which the property works, forwarding it can only
+ * produce a late, cryptic AWS error. Failing fast with the working shape spelled
+ * out is strictly more useful.
+ *
+ * **TEMPLATE creates only — every STATE REPLAY warns instead.** The refusal is
+ * conditioned on the ORIGIN of the properties, not on the operation name:
+ *
+ * - `update()` warns unconditionally. Rollback replays from cdkd STATE, and a
+ *   table created by a pre-#1390 build carries the key in its state record, so
+ *   refusing there would make such a table unrollbackable with no
+ *   template-side remedy. cdkd does not wire Glue's update-only
+ *   `UpdateOpenTableFormatInput` shape and `buildTableInput` is an explicit
+ *   allow-list, so warning forwards nothing and loses no protection.
+ * - `create()` warns when {@link CreateContext.replayingState} is set — the
+ *   rollback executor's reverse-replacement arm, which revives the OLD
+ *   resource from `previousState.properties` (issue #1463). Same reasoning:
+ *   the user cannot edit a state record from the template. Unlike the update
+ *   path this one DOES forward the value, so the re-created table is degraded
+ *   in exactly the way the original was (the CFn spelling is dropped by the
+ *   SDK serializer per #1390; the SDK spelling is sent and Glue rejects it) —
+ *   the warning says so, and the fix-forward is a `cdkd deploy`.
+ * - Every deploy-engine `create()` refuses: the CREATE branch, the
+ *   property-driven replacement, the `--recreate-via-*` destroy-then-create,
+ *   the `--replace` delete-first fallback, and the update-failure replacement.
+ *   All are driven by freshly resolved TEMPLATE properties, so the user CAN
+ *   fix the input and a fast, actionable refusal is strictly better.
+ *
+ * The asymmetry constrains where this provider may re-create. `GlueProvider`
+ * must never call `this.create()` from inside its own `update()` the way ACM /
+ * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
+ * forward `update()`'s `properties` — a STATE record during a rollback replay —
+ * and forward no `replayingState` (IAM role / IAM managed policy pass a
+ * masker-only `CreateContext`, issue #2177), so this refusal would fire on a
+ * replay with no way to detect it. (`update()` DOES take a context — an `UpdateContext` since
+ * issue #1732 — and since issue #3141 that context carries its own
+ * `replayingState`, set by the rollback executor's two revert arms. So the
+ * information now reaches `update()`; what is missing is a re-create that
+ * forwards it into a `CreateContext`, and none of those providers does. An
+ * earlier revision said `update()` had "no context parameter to carry the
+ * flag" — issue #1999.) Were GlueProvider ever to re-create inside `update()`,
+ * it would have to forward a replay signal into that `create()` —
+ * `context.replayingState` on the rollback path — and decide separately what
+ * this refusal means for the `desiredFromAwsReadback` bag `cdkd drift --revert`
+ * hands it, since that path sets no `replayingState`.
+ *
+ * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
+ * pre-flight, so it only runs on the SDK route. When a table's state record
+ * carries `provisionedBy: 'cc-api'`, `ProviderRegistry.getProviderFor` sticky-
+ * routes it to `CloudControlProvider`, which forwards the property to
+ * CloudFormation and gets AWS's rollback instead of this message. That route is
+ * opt-in only (`--recreate-via-cc-api`, or a legacy state record) —
+ * `AWS::Glue::Table` has an empty `sdkUnwired` map, so no ordinary deploy takes
+ * it. The outcome there is still a failure, just a later and less helpful one,
+ * which is why this is documented rather than duplicated into the CC provider.
+ *
+ * **WARNING before relaxing this refusal.** cdkd used to RENAME the CFn
+ * `IcebergTableInput` to the SDK's `CreateIcebergTableInput` (issue #1390); that
+ * rename existed because the AWS SDK v3 serializer DROPS unknown members, so the
+ * CFn spelling silently discarded the entire Iceberg spec while `CreateTable`
+ * reported success. The rename was removed here as unreachable once this
+ * refusal landed. If AWS ever ships a deployable shape and this check is
+ * relaxed, the rename MUST be restored in the same change — otherwise the
+ * silent-drop bug of #1390 comes straight back.
+ */
+function enforceIcebergTableInputAbsent(
+  logicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  options: { warn: (message: string) => void; replayingState: boolean }
+): void {
+  const key = findIcebergTableInputKey(properties);
+  if (key === undefined) {
+    return;
+  }
+  if (options.replayingState) {
+    options.warn(icebergTableInputRefusalMessage(logicalId, key, 'create-replay'));
+    return;
+  }
+  throw new ProvisioningError(
+    icebergTableInputRefusalMessage(logicalId, key, 'create'),
+    resourceType,
+    logicalId
+  );
+}
+
+/**
+ * The shared #1454 message body, so the CREATE refusal, the UPDATE warning and
+ * the rollback-replay CREATE warning cannot drift apart. `mode` only changes
+ * the lead clause — everything after it (the probe evidence and the working
+ * shape) is identical, because the user's next action is the same either way.
+ */
+function icebergTableInputRefusalMessage(
+  logicalId: string,
+  key: string,
+  mode: 'create' | 'create-replay' | 'update'
+): string {
+  const lead =
+    mode === 'create'
+      ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue.`
+      : mode === 'create-replay'
+        ? `cannot be deployed by AWS in any shape, so cdkd normally refuses it before calling ` +
+          `Glue — but this create is REPLAYING a historical cdkd STATE record (a ` +
+          `rollback reverse-replacement re-creating the OLD table), not your template, and ` +
+          `refusing would leave that table unrestorable with no template-side remedy, only a ` +
+          `hand-edit of state.json. cdkd therefore warns and proceeds. The ` +
+          `re-created table is DEGRADED exactly as the original was: under the CFn spelling ` +
+          `IcebergTableInput the AWS SDK serializer drops the unknown member, so ` +
+          `the table comes back without its Iceberg metadata; under the SDK spelling ` +
+          `CreateIcebergTableInput the value IS sent and Glue rejects the call, failing this ` +
+          `one rollback operation. Either way, fix it forward with 'cdkd deploy' using the ` +
+          `working shape below.`
+        : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
+          `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
+          `only warns. A CREATE of this table would be refused outright.`;
+  return (
+    safeMsg`AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ` +
+    `${lead}\n` +
+    `  Measured against AWS: glue:CreateTable — the API cdkd ` +
+    `calls — rejects every Iceberg table spec ("Location information cannot be null while ` +
+    `creating an iceberg table" without a TableInput.StorageDescriptor, "Table metadata ` +
+    `information present at multiple parts of input request" with one), and CloudFormation ` +
+    `rolls the same template back with "Table metadata is expected only via TableInput or ` +
+    `via IcebergTableInputProperties inside OpenTableFormatInput" — a property name that ` +
+    `exists in neither the CFn registry schema (IcebergInput.IcebergTableInput) nor ` +
+    `@aws-sdk/client-glue (IcebergInput.CreateIcebergTableInput).\n` +
+    `  Working shape — put the table metadata in TableInput and leave IcebergInput carrying ` +
+    `only the create-time directive:\n` +
+    `    TableInput: { Name, TableType: 'EXTERNAL_TABLE', StorageDescriptor: { Location: ` +
+    `'s3://your-bucket/prefix/', Columns: [...] } }\n` +
+    `    OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE' } }   ` +
+    `// Version: '2' is also accepted\n` +
+    `  Glue then writes the Iceberg metadata itself — the created table comes back with ` +
+    `Parameters.table_type = ICEBERG and a populated Parameters.metadata_location.`
+  );
+}
+
+/**
+ * Build the SDK `EncryptionConfiguration` from the CFn-shape input
+ * (`AWS::Glue::SecurityConfiguration.EncryptionConfiguration`). Each
+ * sub-config (`S3Encryptions[]` / `CloudWatchEncryption` /
+ * `JobBookmarksEncryption`) maps to the SDK member names — `CloudWatchEncryption`
+ * / `JobBookmarksEncryption` match verbatim, but the CFn `S3Encryptions` (plural)
+ * list maps to the SDK `S3Encryption` (singular) field.
+ */
+function buildEncryptionConfiguration(input: Record<string, unknown>): EncryptionConfiguration {
+  const result: EncryptionConfiguration = {};
+
+  // CFn names this property `S3Encryptions` (PLURAL); the SDK input field is
+  // `S3Encryption` (singular). Reading the singular CFn key silently dropped
+  // S3 encryption on every create (CDK / a hand-authored template always emits
+  // the plural form). CloudWatchEncryption / JobBookmarksEncryption ARE singular
+  // in both CFn and the SDK, so only this one diverges.
+  if (Array.isArray(input['S3Encryptions'])) {
+    result.S3Encryption = input['S3Encryptions'].map((entry) => {
+      const e = entry as Record<string, unknown>;
+      const item: S3Encryption = {};
+      if (typeof e['S3EncryptionMode'] === 'string') {
+        item.S3EncryptionMode = e['S3EncryptionMode'] as S3Encryption['S3EncryptionMode'];
+      }
+      if (typeof e['KmsKeyArn'] === 'string') {
+        item.KmsKeyArn = e['KmsKeyArn'];
+      }
+      return item;
+    });
+  }
+
+  if (input['CloudWatchEncryption'] !== undefined) {
+    const cw = input['CloudWatchEncryption'] as Record<string, unknown>;
+    const item: CloudWatchEncryption = {};
+    if (typeof cw['CloudWatchEncryptionMode'] === 'string') {
+      item.CloudWatchEncryptionMode = cw[
+        'CloudWatchEncryptionMode'
+      ] as CloudWatchEncryption['CloudWatchEncryptionMode'];
+    }
+    if (typeof cw['KmsKeyArn'] === 'string') {
+      item.KmsKeyArn = cw['KmsKeyArn'];
+    }
+    result.CloudWatchEncryption = item;
+  }
+
+  if (input['JobBookmarksEncryption'] !== undefined) {
+    const jb = input['JobBookmarksEncryption'] as Record<string, unknown>;
+    const item: JobBookmarksEncryption = {};
+    if (typeof jb['JobBookmarksEncryptionMode'] === 'string') {
+      item.JobBookmarksEncryptionMode = jb[
+        'JobBookmarksEncryptionMode'
+      ] as JobBookmarksEncryption['JobBookmarksEncryptionMode'];
+    }
+    if (typeof jb['KmsKeyArn'] === 'string') {
+      item.KmsKeyArn = jb['KmsKeyArn'];
+    }
+    result.JobBookmarksEncryption = item;
+  }
+
+  return result;
+}
+
+/**
+ * Reverse-map AWS's `EncryptionConfiguration` SDK shape into the CFn
+ * shape with always-emit placeholders (PR #145):
+ *   - `S3Encryptions[]` → `?? []` (so console-side ADD is detectable)
+ *   - `CloudWatchEncryption` → `?? {}`
+ *   - `JobBookmarksEncryption` → `?? {}`
+ *   - `DataQualityEncryption` → silently dropped (not in CFn schema)
+ */
+function mapEncryptionConfigurationToCfn(
+  cfg: EncryptionConfiguration | undefined
+): Record<string, unknown> {
+  const c = cfg ?? {};
+  return {
+    // CFn shape uses `S3Encryptions` (plural) — see buildEncryptionConfiguration.
+    S3Encryptions: (c.S3Encryption ?? []).map((entry) => {
+      const out: Record<string, unknown> = {};
+      if (entry.S3EncryptionMode !== undefined) out['S3EncryptionMode'] = entry.S3EncryptionMode;
+      if (entry.KmsKeyArn !== undefined) out['KmsKeyArn'] = entry.KmsKeyArn;
+      return out;
+    }),
+    CloudWatchEncryption: c.CloudWatchEncryption
+      ? cleanCfnObject({
+          CloudWatchEncryptionMode: c.CloudWatchEncryption.CloudWatchEncryptionMode,
+          KmsKeyArn: c.CloudWatchEncryption.KmsKeyArn,
+        })
+      : {},
+    JobBookmarksEncryption: c.JobBookmarksEncryption
+      ? cleanCfnObject({
+          JobBookmarksEncryptionMode: c.JobBookmarksEncryption.JobBookmarksEncryptionMode,
+          KmsKeyArn: c.JobBookmarksEncryption.KmsKeyArn,
+        })
+      : {},
+  };
+}
+
+function cleanCfnObject(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+// ─── Shared helpers for sibling Glue providers ──────────────────────────
+
+/**
+ * Build the ARN for a Glue resource. Used by tag-fetch via
+ * `GetTagsCommand` which only accepts an ARN, and by the Job / Crawler /
+ * Trigger `applyGlueTagDiff` as the `TagResource` / `UntagResource` target.
+ * Account id falls back to STS when not provided.
+ *
+ * The partition is derived from the region (issue #1815). A hardcoded
+ * `arn:aws:` is structurally valid everywhere, so in `aws-cn` / `aws-us-gov`
+ * nothing rejected it: the tag MUTATION was aimed at an ARN naming no
+ * resource, and the drift read's best-effort `GetTags` read the failure as
+ * empty tags. A commercial region still derives to `aws`, so commercial output
+ * is unchanged byte for byte.
+ */
+async function buildGlueResourceArn(
+  client: GlueClient,
+  stsClient: STSClient,
+  resource: 'job' | 'crawler' | 'connection' | 'trigger',
+  name: string,
+  accountId: string | undefined
+): Promise<string> {
+  const region = (await client.config.region()) || ambientRegion() || 'us-east-1';
+  const account = accountId ?? (await resolveAccountId(stsClient));
+  const { partition } = derivePartitionAndUrlSuffix(region);
+  return `arn:${partition}:glue:${region}:${account}:${resource}/${name}`;
+}
+
+async function resolveAccountId(stsClient: STSClient): Promise<string> {
+  const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+  if (!identity.Account) {
+    throw new Error('Failed to resolve AWS account id from STS');
+  }
+  return identity.Account;
+}
+
+/**
+ * Best-effort fetch of CFn-shape `Tags: [{Key, Value}]` for a Glue resource.
+ * Returns `[]` when no tags or on error (tags are non-critical for drift —
+ * a permission failure should not abort the whole drift read).
+ */
+async function fetchGlueTags(
+  client: GlueClient,
+  stsClient: STSClient,
+  resource: 'job' | 'crawler' | 'connection' | 'trigger',
+  name: string,
+  accountId: string | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<Array<{ Key: string; Value: string }>> {
+  try {
+    const arn = await buildGlueResourceArn(client, stsClient, resource, name, accountId);
+    const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
+    return normalizeAwsTagsToCfn(resp.Tags);
+  } catch (err) {
+    // Neither the NAME nor AWS's own text: a Connection's name can be
+    // secret-derived (go-to-k/cdkd#2007), and an AccessDenied message quotes
+    // the resource ARN, which carries it. The summary is the error code.
+    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).summary}`);
+    return [];
   }
 }
 
@@ -483,19 +4369,20 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
  * `UpdateJob` / `JobUpdate` does not carry tags.
  */
 export class GlueJobProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  stsClient: STSClient | undefined;
-  cachedAccountId: string | undefined;
-  readonly providerRegion = ambientRegion();
-  logger: ConsoleLogger = getLogger().child('GlueJobProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('GlueJobProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return jobWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -530,24 +4417,97 @@ export class GlueJobProvider implements ResourceProvider {
     ],
   ]);
 
-  getClient(): GlueClient {
-    return jobGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return jobGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  getStsClient(): STSClient {
-    return jobGetStsClient.call(this);
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return jobCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Job ${logicalId}`);
+    // go-to-k/cdkd#5095: a stack with an instance id generates the name; a
+    // legacy stack keeps the bare logical id.
+    const name =
+      (properties['Name'] as string | undefined) ?? generatedNameFor('AWS::Glue::Job', logicalId);
+    const role = properties['Role'] as string | undefined;
+    const command = properties['Command'] as Record<string, unknown> | undefined;
+    if (!role) {
+      throw new ProvisioningError(
+        `Role is required for Glue Job ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!command) {
+      throw new ProvisioningError(
+        `Command is required for Glue Job ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+    try {
+      await this.getCreateClient().send(
+        new CreateJobCommand({
+          Name: name,
+          Role: role,
+          Command: buildJobCommand(command),
+          ...buildJobCommonFields(properties),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      log.debug(`Successfully created Glue Job ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -555,42 +4515,602 @@ export class GlueJobProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return jobUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
     );
+    const { value: v } = log;
+    log.debug(`Updating Glue Job ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    try {
+      const command = properties['Command'] as Record<string, unknown> | undefined;
+      const update: JobUpdate = {
+        ...(command !== undefined && { Command: buildJobCommand(command) }),
+        ...buildJobCommonFields(properties),
+        // Role is required at create but mutable on update; include only when defined
+        ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
+      };
+      await this.getClient().send(new UpdateJobCommand({ JobName: physicalId, JobUpdate: update }));
+
+      // Tags are not part of JobUpdate; reconcile via TagResource diff if tags changed.
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    return jobDelete.call(this, logicalId, physicalId, resourceType, _properties, context);
+    this.logger.debug(`Deleting Glue Job ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // job cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+    try {
+      await this.getClient().send(new DeleteJobCommand({ JobName: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Job ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return jobGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
   }
-  readCurrentState(
+
+  /**
+   * Read the AWS-current Glue Job in CFn-property shape.
+   *
+   * Always-emit placeholders for user-controllable top-level keys per
+   * PR #145 (`?? '' | [] | {}`) so the v3 `observedProperties` baseline
+   * detects console-side ADDs to fields that weren't templated. Tags
+   * always emit `[]` (PR H pattern).
+   */
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return jobReadCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    let job;
+    try {
+      const resp = await this.getClient().send(new GetJobCommand({ JobName: physicalId }));
+      job = resp.Job;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!job) return undefined;
+
+    const result: Record<string, unknown> = {
+      Name: job.Name ?? physicalId,
+      Role: job.Role ?? '',
+      Command: pickDefined({
+        Name: job.Command?.Name,
+        ScriptLocation: job.Command?.ScriptLocation,
+        PythonVersion: job.Command?.PythonVersion,
+        Runtime: job.Command?.Runtime,
+      }),
+      Description: job.Description ?? '',
+      LogUri: job.LogUri ?? '',
+      DefaultArguments: job.DefaultArguments ?? {},
+      NonOverridableArguments: job.NonOverridableArguments ?? {},
+      Connections: { Connections: job.Connections?.Connections ?? [] },
+      MaxRetries: job.MaxRetries ?? 0,
+      Timeout: job.Timeout ?? 0,
+      ExecutionProperty: { MaxConcurrentRuns: job.ExecutionProperty?.MaxConcurrentRuns ?? 1 },
+      NotificationProperty: { NotifyDelayAfter: job.NotificationProperty?.NotifyDelayAfter ?? 0 },
+      GlueVersion: job.GlueVersion ?? '',
+      NumberOfWorkers: job.NumberOfWorkers ?? 0,
+      WorkerType: job.WorkerType ?? '',
+      MaxCapacity: job.MaxCapacity ?? 0,
+      AllocatedCapacity: job.AllocatedCapacity ?? 0,
+      SecurityConfiguration: job.SecurityConfiguration ?? '',
+      ExecutionClass: job.ExecutionClass ?? '',
+      JobMode: job.JobMode ?? '',
+      JobRunQueuingEnabled: job.JobRunQueuingEnabled ?? false,
+      MaintenanceWindow: job.MaintenanceWindow ?? '',
+      SourceControlDetails: job.SourceControlDetails
+        ? pickDefined(job.SourceControlDetails as Record<string, unknown>)
+        : {},
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'job',
+      job.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
   }
-  resourceArn(physicalId: string): Promise<string> {
-    return jobResourceArn.call(this, physicalId);
+
+  /** The job ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'job',
+      physicalId,
+      this.cachedAccountId
+    );
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return jobImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetJobCommand({ JobName: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
   }
 }
+
+// ─── helpers shared by GlueJobProvider ──────────────────────────────────
+
+function buildJobCommand(c: Record<string, unknown>): JobCommandShape {
+  const result: JobCommandShape = {};
+  if (c['Name'] !== undefined) result.Name = c['Name'] as string;
+  if (c['ScriptLocation'] !== undefined) result.ScriptLocation = c['ScriptLocation'] as string;
+  if (c['PythonVersion'] !== undefined) result.PythonVersion = c['PythonVersion'] as string;
+  if (c['Runtime'] !== undefined) result.Runtime = c['Runtime'] as string;
+  return result;
+}
+
+/**
+ * Fields shared by `CreateJob` and `UpdateJob.JobUpdate` (everything except
+ * `Name` / `Role` / `Command`). Each is gated on `!== undefined` so empty
+ * strings / `false` / `0` round-trip cleanly via `cdkd drift --revert`.
+ */
+function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
+  const r: Partial<JobUpdate> = {};
+  // String pass-through props (CFn delivers these as strings and the SDK types
+  // them as strings too).
+  const stringPassThrough: Array<keyof JobUpdate> = [
+    'JobMode',
+    'JobRunQueuingEnabled',
+    'Description',
+    'LogUri',
+    'DefaultArguments',
+    'NonOverridableArguments',
+    'WorkerType',
+    'SecurityConfiguration',
+    'GlueVersion',
+    'ExecutionClass',
+    'MaintenanceWindow',
+  ];
+  for (const k of stringPassThrough) {
+    if (p[k as string] !== undefined) {
+      // Cast to any: union of multiple field types, type-gated by AWS SDK at the wire layer.
+      (r as Record<string, unknown>)[k as string] = p[k as string];
+    }
+  }
+  // Numeric props: CFn delivers these as STRINGS (CDK synths e.g. "10"), but the
+  // Glue SDK types them as int/double. `as number` is compile-only and does NOT
+  // coerce at runtime, so the SDK would receive a string for a number-typed field.
+  // Coerce at the wire boundary. See feedback_cfn_stringly_typed_numerics_need_coerce.
+  const numericPassThrough: Array<keyof JobUpdate> = [
+    'MaxRetries',
+    'AllocatedCapacity',
+    'Timeout',
+    'MaxCapacity',
+    'NumberOfWorkers',
+  ];
+  for (const k of numericPassThrough) {
+    const v = p[k as string];
+    if (v !== undefined) {
+      (r as Record<string, unknown>)[k as string] = coerceNumber(v);
+    }
+  }
+  if (p['ExecutionProperty'] !== undefined) {
+    const ep = { ...(p['ExecutionProperty'] as Record<string, unknown>) };
+    if (ep['MaxConcurrentRuns'] !== undefined) {
+      ep['MaxConcurrentRuns'] = coerceNumber(ep['MaxConcurrentRuns']);
+    }
+    r.ExecutionProperty = ep as ExecutionProperty;
+  }
+  if (p['Connections'] !== undefined) {
+    const conn = p['Connections'] as Record<string, unknown>;
+    r.Connections = { Connections: (conn['Connections'] as string[] | undefined) ?? [] };
+  }
+  if (p['NotificationProperty'] !== undefined) {
+    const np = { ...(p['NotificationProperty'] as Record<string, unknown>) };
+    if (np['NotifyDelayAfter'] !== undefined) {
+      np['NotifyDelayAfter'] = coerceNumber(np['NotifyDelayAfter']);
+    }
+    r.NotificationProperty = np as NotificationProperty;
+  }
+  if (p['SourceControlDetails'] !== undefined) {
+    r.SourceControlDetails = p['SourceControlDetails'] as SourceControlDetails;
+  }
+  return r;
+}
+
+/**
+ * CFn `Parameters` map -> the SDK's `Record<string, string>`. CDK may deliver
+ * booleans / numbers; the SDK member is string-valued.
+ */
+function stringifyParameterValues(raw: unknown): Record<string, string> {
+  const params: Record<string, string> = {};
+  // A non-object (a string / array / unresolved intrinsic) must contribute NO
+  // keys: `Object.entries('s3://x')` yields {'0':'s','1':'3',...}, which would
+  // be written to AWS as a real map. Same refusal as `parameterKeySet` /
+  // `asRecord` (the #1471 convention).
+  const source = asRecord(raw);
+  if (source === undefined) return params;
+  for (const [k, v] of Object.entries(source)) {
+    params[k] = String(v);
+  }
+  return params;
+}
+
+/**
+ * Key set of a CFn-side `Parameters` map, for
+ * {@link GlueProvider.preserveAwsManagedParameters}.
+ *
+ * A non-object (absent, or an unresolved intrinsic) contributes NO keys — so
+ * a template that declares no `Parameters` at all can never be mistaken for
+ * one that removed a key, and every live key stays preserved.
+ */
+function parameterKeySet(value: unknown): Set<string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return new Set<string>();
+  }
+  return new Set(Object.keys(value as Record<string, unknown>));
+}
+
+/**
+ * Narrow an unknown template / state value to a plain object, or `undefined`.
+ * A malformed side (string / array / null) yields `undefined` and therefore
+ * an empty key set — the tolerant treatment `parameterKeySet` already gives
+ * bags, extended to the StorageDescriptor merge's containers. (An unresolved
+ * intrinsic is itself a plain object, so it passes through and contributes
+ * its `Fn::*`/`Ref` key — harmless here, since providers only ever see
+ * resolved values.)
+ */
+/**
+ * The CFn members of the two `DatabaseInput` object blocks, as the SENDABLE-ness
+ * test sees them. They must stay in step with the per-member writes in
+ * `buildDatabaseInput` — a name here that the builder does not write would let
+ * an EMPTY block onto the wire, and one the builder writes but this list omits
+ * would refuse a valid template that names only it. The unit suite fences both
+ * directions by asserting each member ALONE reaches AWS, which fails on a
+ * dropped entry (the member stops being sendable) and on an added one (the
+ * block builds empty).
+ */
+const TARGET_DATABASE_MEMBERS = ['CatalogId', 'DatabaseName', 'Region'] as const;
+const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
+
+/**
+ * Is this leaf value one cdkd can put on the wire? A STRING or a NUMBER — CFn
+ * is stringly typed, and an account id can reach a provider as a JSON number
+ * (the reason {@link catalogIdForApi} exists; that function's note carries the
+ * two producers, neither of which is a YAML read — an earlier version of this
+ * sentence said "an unquoted YAML account id" and was wrong the same way) —
+ * and nothing else, so an unresolved intrinsic cannot ride an unchecked cast
+ * into the request.
+ */
+const isSendableLeaf = (value: unknown): boolean =>
+  typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+
+/**
+ * The refusal sentence for a `DatabaseInput` block that IS a plain object and
+ * still names nothing cdkd can send — an unresolved intrinsic or a bare `{}`.
+ * Shared so the create refusal and the update warning cannot drift apart.
+ */
+const emptyBlockMessage = (block: string): string =>
+  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send ` +
+  `(an unresolved intrinsic, an empty block), or mixes sendable members with ` +
+  `unreadable ones; sending it would put an empty or NARROWED ${block} on the ` +
+  `wire. Where this is only WARNED — a rollback revert, drift --revert, or a ` +
+  `state replay — the ` +
+  `previously applied block is retained if cdkd can still read one, and ` +
+  `otherwise the key is omitted, which UpdateDatabase applies as a removal ` +
+  `because it replaces DatabaseInput wholesale`;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
+ * `text` without one trailing period, for a builder that appends its own
+ * sentence end: a redacted summary ends in one (go-to-k/cdkd#2319), and so
+ * does most AWS text.
+ */
+function withoutFinalPeriod(text: string): string {
+  return text.endsWith('.') ? text.slice(0, -1) : text;
+}
+
+/**
+ * Message for a failed pre-update `Get*` read (issue #1461). Names the IAM
+ * action so a permission gap is one line away from fixed, and says what the
+ * read is FOR so the failure does not read as gratuitous. `detail` is AWS's
+ * text already masked through the update's masker (#2177): AWS quotes the
+ * request back.
+ */
+function preUpdateReadFailureMessage(
+  kind: 'Table' | 'Database',
+  iamAction: string,
+  logicalId: string,
+  detail: string
+): string {
+  return (
+    `Failed to read the current Glue ${kind} ${logicalId} before update: ${withoutFinalPeriod(detail)}. ` +
+    `cdkd reads the live ${kind.toLowerCase()} so AWS-managed Parameters (Apache Iceberg's ` +
+    `table_type / metadata_location, a crawler's classification, Lake Formation markers) ` +
+    `survive an update that Glue applies as a full replace. Grant ${iamAction} to the ` +
+    `deploy identity — proceeding without the read would silently erase them.`
+  );
+}
+
+/**
+ * Coerce a CFn-delivered numeric property (often a string like `"10"`) to a
+ * JS number at the SDK wire boundary. Non-finite / unparseable inputs are
+ * returned unchanged so AWS surfaces a clear validation error rather than
+ * silently sending `NaN`.
+ */
+function coerceNumber(value: unknown): unknown {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return value;
+}
+
+/**
+ * The shape a refused Glue `Tags` names. Every Glue type's CloudFormation
+ * `Tags` is a key -> value MAP; `readCurrentState` emits the `{Key,Value}[]`
+ * list, which a `drift --revert` hands back as the desired side, so both are
+ * read.
+ */
+const GLUE_TAGS_WHAT =
+  'a map of tag keys to scalar values or a list of tags with a non-empty string Key and a scalar Value';
+
+/**
+ * Refuse a malformed desired Glue `Tags` before any call (go-to-k/cdkd#4073)
+ * and return it as the Glue `Record<string,string>` a Create command takes, or
+ * `undefined` when there are no tags so the caller elides the key. `physicalId`
+ * is set on the update path.
+ */
+function desiredGlueTags(
+  raw: unknown,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): Record<string, string> | undefined {
+  const tags = refuseMalformedDesiredTags(
+    tagMapAsList(raw),
+    resourceType,
+    logicalId,
+    physicalId,
+    'Tags',
+    GLUE_TAGS_WHAT
+  );
+  return tags.length > 0 ? Object.fromEntries(tags.map((t) => [t.Key, t.Value])) : undefined;
+}
+
+/**
+ * Reconcile a Glue resource's tags through `planTagDiff` (go-to-k/cdkd#4073):
+ * only the keys the desired side dropped are untagged and only new or changed
+ * tags are set; a recorded `Tags` cdkd cannot read untags nothing, and a
+ * recorded secret-derived key is never untagged. The desired side must already
+ * have passed {@link desiredGlueTags}. The ARN is resolved only when there is
+ * something to send.
+ */
+async function applyGlueTagDiff(
+  client: GlueClient,
+  resourceArn: () => Promise<string>,
+  recorded: unknown,
+  desired: unknown,
+  resourceType: string,
+  logicalId: string,
+  warn: (message: string) => void,
+  unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+    forceUpsert: false,
+    beforeWrite: () => undefined,
+  }
+): Promise<void> {
+  const plan = planTagDiff(tagMapAsList(recorded), tagMapAsList(desired));
+  const warning = tagPlanWarning(plan, resourceType, logicalId);
+  if (warning !== undefined) warn(warning);
+  // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may lack
+  // the ones a failed update did not reach) and remove only the recorded ones
+  // the template dropped.
+  const toSet = unsettled.forceUpsert ? planTagDiff([], tagMapAsList(desired)).set : plan.set;
+  if (toSet.size === 0 && plan.remove.length === 0) return;
+  unsettled.beforeWrite();
+  const arn = await resourceArn();
+  if (toSet.size > 0) {
+    await client.send(
+      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(toSet) })
+    );
+  }
+  if (plan.remove.length > 0) {
+    await client.send(new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: plan.remove }));
+  }
+}
+
+/**
+ * Recursively strip undefined / null values and empty objects from a plain
+ * record, returning the cleaned shape. Used by `readCurrentState` to emit
+ * tight CFn-shape sub-objects without leaking SDK-injected `undefined` keys.
+ */
+function pickDefined(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      const inner = pickDefined(v as Record<string, unknown>);
+      out[k] = inner;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Crawler properties whose REMOVAL from the template cdkd leaves in place
+ * (issue #1160). `UpdateCrawler` keeps a field it is not sent, and cdkd sends
+ * no reset, because CloudFormation keeps them too (CFn A/B us-east-1
+ * 2026-10-21: all ten schema properties removed at once, with no other change
+ * and again beside a `Targets` change, left every live value, and the
+ * handler's `UpdateCrawler` carried only Name, Role and Targets).
+ * `LineageConfiguration` is not in the
+ * CloudFormation schema at all (early validation refuses it); `UpdateCrawler`
+ * keeps it the same way.
+ */
+const CRAWLER_LEFT_IN_PLACE_ON_REMOVAL = [
+  'DatabaseName',
+  'Description',
+  'Classifiers',
+  'TablePrefix',
+  'Schedule',
+  'SchemaChangePolicy',
+  'RecrawlPolicy',
+  'LineageConfiguration',
+  'LakeFormationConfiguration',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+] as const;
+
+/**
+ * The ONE warning line for {@link CRAWLER_LEFT_IN_PLACE_ON_REMOVAL} removals.
+ * Names are template-borne, so they go through `safeMsg`. The deploy line
+ * says CloudFormation keeps the value too (the CFn A/B above), but only when
+ * every name is a CloudFormation property: `LineageConfiguration` is not one.
+ * A rollback revert restores an earlier state record, so there the property
+ * is one the failed deploy ADDED, and the line says that instead.
+ */
+const crawlerLeftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const cfnKeeps = names.includes('LineageConfiguration')
+    ? ''
+    : `, as CloudFormation leaves ${one ? 'it' : 'them'}`;
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateCrawler keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value${cfnKeeps}; UpdateCrawler keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+};
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateCrawler` sends (`Role`,
+ * `Targets` and `buildCrawlerCommonFields`'s), each marked unsettled before
+ * the call when it changes.
+ */
+const CRAWLER_UPDATE_KEYS = [
+  'Role',
+  'Targets',
+  'Classifiers',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+  'DatabaseName',
+  'Description',
+  'LakeFormationConfiguration',
+  'LineageConfiguration',
+  'RecrawlPolicy',
+  'Schedule',
+  'SchemaChangePolicy',
+  'TablePrefix',
+] as const;
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateTrigger`'s `TriggerUpdate`
+ * carries, each marked unsettled before the call when it changes.
+ */
+const TRIGGER_UPDATE_KEYS = [
+  'Description',
+  'Schedule',
+  'Actions',
+  'Predicate',
+  'EventBatchingCondition',
+] as const;
 
 /**
  * SDK Provider for `AWS::Glue::Crawler`.
@@ -605,19 +5125,20 @@ export class GlueJobProvider implements ResourceProvider {
  * `physicalId` is the crawler name.
  */
 export class GlueCrawlerProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  stsClient: STSClient | undefined;
-  cachedAccountId: string | undefined;
-  readonly providerRegion = ambientRegion();
-  logger: ConsoleLogger = getLogger().child('GlueCrawlerProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('GlueCrawlerProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return crawlerWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -666,24 +5187,97 @@ export class GlueCrawlerProvider implements ResourceProvider {
     ],
   ]);
 
-  getClient(): GlueClient {
-    return crawlerGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return crawlerGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  getStsClient(): STSClient {
-    return crawlerGetStsClient.call(this);
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return crawlerCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Crawler ${logicalId}`);
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Crawler', logicalId);
+    const role = properties['Role'] as string | undefined;
+    const targets = properties['Targets'] as Record<string, unknown> | undefined;
+    if (!role) {
+      throw new ProvisioningError(
+        `Role is required for Glue Crawler ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!targets) {
+      throw new ProvisioningError(
+        `Targets is required for Glue Crawler ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+    try {
+      await this.getCreateClient().send(
+        new CreateCrawlerCommand({
+          Name: name,
+          Role: role,
+          Targets: toSdkCrawlerTargets(targets),
+          ...buildCrawlerCommonFields(properties),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      log.debug(`Successfully created Glue Crawler ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -691,47 +5285,491 @@ export class GlueCrawlerProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return crawlerUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
     );
+    const { value: v } = log;
+    log.debug(`Updating Glue Crawler ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
+    try {
+      const updateInput = {
+        Name: physicalId,
+        ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
+        ...(properties['Targets'] !== undefined && {
+          Targets: toSdkCrawlerTargets(properties['Targets'] as Record<string, unknown>),
+        }),
+        ...buildCrawlerCommonFields(properties),
+      };
+      for (const key of CRAWLER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
+      try {
+        await this.getClient().send(new UpdateCrawlerCommand(updateInput));
+      } catch (err) {
+        // UpdateCrawler rejects a mid-run crawler with CrawlerRunningException.
+        // Stop it, wait for it to settle, then retry the update.
+        if (err instanceof CrawlerRunningException) {
+          log.debug(
+            `Glue Crawler ${v(physicalId)} is running; stopping before update and retrying`
+          );
+          await this.stopCrawlerAndWait(physicalId, log);
+          await this.getClient().send(new UpdateCrawlerCommand(updateInput));
+        } else {
+          throw err;
+        }
+      }
+
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
+      );
+
+      // Issue #1160: a CRAWLER_LEFT_IN_PLACE_ON_REMOVAL property removed from
+      // the desired side is simply not sent, as CloudFormation does. Named
+      // once, and only after the update SUCCEEDED (the shared caller's warning
+      // has the same timing). Not on `drift --revert`: its previous side is an
+      // AWS readback, so a key the desired side lacks was never removed from a
+      // template.
+      if (!context?.desiredFromAwsReadback) {
+        // A direct call (no caller context) diffs the previous template itself.
+        const removed = context?.removedProperties;
+        const leftInPlace: string[] = [];
+        for (const key of CRAWLER_LEFT_IN_PLACE_ON_REMOVAL) {
+          const gone =
+            removed !== undefined
+              ? removed.has(key)
+              : properties[key] === undefined && previousProperties?.[key] !== undefined;
+          if (gone) leftInPlace.push(key);
+        }
+        if (leftInPlace.length > 0) {
+          log.warn(
+            crawlerLeftInPlaceWarning(
+              logicalId,
+              leftInPlace,
+              context?.replayingState ? 'rollback' : 'deploy'
+            )
+          );
+        }
+      }
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    return crawlerDelete.call(this, logicalId, physicalId, resourceType, _properties, context);
+    // go-to-k/cdkd#2007: the crawler name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Deleting Glue Crawler ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would stop and delete a same-named crawler
+    // cdkd does not manage. Refuse before any call, not only on NotFound; the
+    // client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+    try {
+      await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        log.debug(`Glue Crawler ${v(physicalId)} does not exist, skipping deletion`);
+        return;
+      }
+      // A crawler that is mid-run rejects DeleteCrawler with
+      // CrawlerRunningException. Stop it, wait for it to settle, then retry the
+      // delete so destroy does not fail on an actively-crawling crawler.
+      // A failure of the retry goes through the same wrap rather than escaping
+      // raw, so its AWS text is withheld from the thrown message too
+      // (go-to-k/cdkd#2319).
+      let failure: unknown = error;
+      if (error instanceof CrawlerRunningException) {
+        log.debug(`Glue Crawler ${v(physicalId)} is running; stopping before delete and retrying`);
+        try {
+          await this.stopCrawlerAndWait(physicalId, log);
+          await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
+          return;
+        } catch (retryError) {
+          // Gone between the stop and the retry: the region was confirmed
+          // before the first call, so this is ordinary idempotency.
+          if (retryError instanceof EntityNotFoundException) {
+            log.debug(`Glue Crawler ${v(physicalId)} does not exist, skipping deletion`);
+            return;
+          }
+          failure = retryError;
+        }
+      }
+      const cause = failure instanceof Error ? failure : undefined;
+      const thrown = this.wrapMaskedError(
+        log.mask,
+        failure,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw failure instanceof Error && failure.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return crawlerGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  /**
+   * Stop a running crawler and poll until it leaves the RUNNING / STOPPING
+   * state (or until {@link CRAWLER_STOP_MAX_ATTEMPTS} is exhausted). Tolerates a
+   * CrawlerStoppingException / "not running" race (the crawler may have just
+   * finished on its own) so callers can unconditionally retry their delete /
+   * update afterwards.
+   */
+  private async stopCrawlerAndWait(
+    physicalId: string,
+    // An update passes its masked sink (issue #2177), `delete()` one over its
+    // `DeleteContext.maskSecrets` (#2007).
+    log: Pick<MaskedLogSinks, 'debug' | 'value'> = {
+      debug: (message) => this.logger.debug(message),
+      value: (value) => String(value),
+    }
+  ): Promise<void> {
+    try {
+      await this.getClient().send(new StopCrawlerCommand({ Name: physicalId }));
+    } catch (err) {
+      // CrawlerNotRunningException / CrawlerStoppingException etc. mean the
+      // crawler is already stopping or stopped — nothing to do but wait it out.
+      log.debug(
+        `StopCrawler for ${log.value(physicalId)} returned ${
+          err instanceof Error ? err.name : safeStringify(err)
+        }; continuing to wait`
+      );
+    }
+    for (let attempt = 0; attempt < CRAWLER_STOP_MAX_ATTEMPTS; attempt++) {
+      try {
+        const cur = await this.getClient().send(new GetCrawlerCommand({ Name: physicalId }));
+        const state = cur.Crawler?.State;
+        if (state !== 'RUNNING' && state !== 'STOPPING') return;
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return;
+        // Inconclusive read — keep polling until the attempt budget is gone.
+      }
+      await sleep(CRAWLER_STOP_POLL_INTERVAL_MS);
+    }
   }
-  readCurrentState(
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
+  }
+
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return crawlerReadCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    let crawler;
+    try {
+      const resp = await this.getClient().send(new GetCrawlerCommand({ Name: physicalId }));
+      crawler = resp.Crawler;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!crawler) return undefined;
+
+    const result: Record<string, unknown> = {
+      Name: crawler.Name ?? physicalId,
+      Role: crawler.Role ?? '',
+      // SDK `DynamoDBTarget.{scanAll,scanRate}` -> the CFn `ScanAll` / `ScanRate`
+      // spelling recorded in state, so drift compares like with like.
+      Targets: crawler.Targets
+        ? toCfnCrawlerTargets(pickDefined(crawler.Targets as Record<string, unknown>))
+        : {},
+      DatabaseName: crawler.DatabaseName ?? '',
+      Description: crawler.Description ?? '',
+      // CFn `Schedule` is the structured wrapper; reverse-map from the
+      // SDK's `Schedule { ScheduleExpression, State }` Description shape.
+      Schedule: crawler.Schedule?.ScheduleExpression
+        ? { ScheduleExpression: crawler.Schedule.ScheduleExpression }
+        : {},
+      Classifiers: crawler.Classifiers ?? [],
+      TablePrefix: crawler.TablePrefix ?? '',
+      SchemaChangePolicy: crawler.SchemaChangePolicy
+        ? pickDefined(crawler.SchemaChangePolicy as Record<string, unknown>)
+        : {},
+      RecrawlPolicy: crawler.RecrawlPolicy
+        ? pickDefined(crawler.RecrawlPolicy as Record<string, unknown>)
+        : {},
+      LineageConfiguration: crawler.LineageConfiguration
+        ? pickDefined(crawler.LineageConfiguration as Record<string, unknown>)
+        : {},
+      LakeFormationConfiguration: crawler.LakeFormationConfiguration
+        ? pickDefined(crawler.LakeFormationConfiguration as Record<string, unknown>)
+        : {},
+      Configuration: crawler.Configuration ?? '',
+      CrawlerSecurityConfiguration: crawler.CrawlerSecurityConfiguration ?? '',
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'crawler',
+      crawler.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
   }
-  startSchedule(physicalId: string): Promise<void> {
-    return crawlerStartSchedule.call(this, physicalId);
+
+  /**
+   * Start (or stop) a crawler's schedule. Exposed for downstream tooling
+   * — not part of `update()` because AWS treats schedule activation as a
+   * separate side-effect from crawler config update.
+   */
+  async startSchedule(physicalId: string): Promise<void> {
+    await this.getClient().send(new StartCrawlerScheduleCommand({ CrawlerName: physicalId }));
   }
-  stopSchedule(physicalId: string): Promise<void> {
-    return crawlerStopSchedule.call(this, physicalId);
+  async stopSchedule(physicalId: string): Promise<void> {
+    await this.getClient().send(new StopCrawlerScheduleCommand({ CrawlerName: physicalId }));
   }
-  resourceArn(physicalId: string): Promise<string> {
-    return crawlerResourceArn.call(this, physicalId);
+
+  /** The crawler ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'crawler',
+      physicalId,
+      this.cachedAccountId
+    );
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return crawlerImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetCrawlerCommand({ Name: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
   }
+}
+
+// ─── helpers shared by GlueCrawlerProvider ──────────────────────────────
+
+/**
+ * Crawler optional fields shared by `CreateCrawler` and `UpdateCrawler`.
+ * `Schedule` is the bare cron string at the SDK layer, but CFn wraps it
+ * in `{ ScheduleExpression: '...' }`. cdkd unwraps here.
+ */
+function buildCrawlerCommonFields(p: Record<string, unknown>): Record<string, unknown> {
+  const r: Record<string, unknown> = {};
+  if (p['DatabaseName'] !== undefined) r['DatabaseName'] = p['DatabaseName'] as string;
+  if (p['Description'] !== undefined) r['Description'] = p['Description'] as string;
+  if (p['Classifiers'] !== undefined) r['Classifiers'] = p['Classifiers'] as string[];
+  if (p['TablePrefix'] !== undefined) r['TablePrefix'] = p['TablePrefix'] as string;
+  if (p['Schedule'] !== undefined) {
+    // Accept both the CFn structured shape and a bare string for forward-compat.
+    const sched = p['Schedule'];
+    if (typeof sched === 'string') {
+      r['Schedule'] = sched;
+    } else if (typeof sched === 'object' && sched !== null) {
+      const wrap = sched as Record<string, unknown>;
+      if (wrap['ScheduleExpression'] !== undefined) {
+        r['Schedule'] = wrap['ScheduleExpression'] as string;
+      }
+    }
+  }
+  if (p['SchemaChangePolicy'] !== undefined) {
+    r['SchemaChangePolicy'] = p['SchemaChangePolicy'] as SchemaChangePolicy;
+  }
+  if (p['RecrawlPolicy'] !== undefined) {
+    r['RecrawlPolicy'] = p['RecrawlPolicy'] as RecrawlPolicy;
+  }
+  if (p['LineageConfiguration'] !== undefined) {
+    r['LineageConfiguration'] = p['LineageConfiguration'] as LineageConfiguration;
+  }
+  if (p['LakeFormationConfiguration'] !== undefined) {
+    r['LakeFormationConfiguration'] = p['LakeFormationConfiguration'] as LakeFormationConfiguration;
+  }
+  if (p['Configuration'] !== undefined) r['Configuration'] = p['Configuration'] as string;
+  if (p['CrawlerSecurityConfiguration'] !== undefined) {
+    r['CrawlerSecurityConfiguration'] = p['CrawlerSecurityConfiguration'] as string;
+  }
+  return r;
+}
+
+/**
+ * CFn -> SDK key renames for `Targets.DynamoDBTargets[]`.
+ *
+ * The SDK's `DynamoDBTarget` is a lowercase island in an otherwise-PascalCase
+ * model: `Path` is PascalCase but the scan-tuning members are `scanAll` /
+ * `scanRate` (@aws-sdk/client-glue `models_0.d.ts` `DynamoDBTarget`), while CFn
+ * spells them `ScanAll` / `ScanRate`. The AWS SDK v3 serializer drops unknown
+ * members, so forwarding the CFn spelling silently loses the scan tuning while
+ * the target itself (matched by `Path`) still reaches AWS. Every other
+ * `CrawlerTargets` sub-type (`S3Target` / `JdbcTarget` / `MongoDBTarget` —
+ * whose own `ScanAll` IS PascalCase — `CatalogTarget` / `DeltaTarget` /
+ * `IcebergTarget` / `HudiTarget`) spells every member exactly as CFn does.
+ */
+const CFN_TO_SDK_DYNAMODB_TARGET_KEYS: Record<string, string> = {
+  ScanAll: 'scanAll',
+  ScanRate: 'scanRate',
+};
+
+/**
+ * CFn is stringly typed, so a template (or an unresolved-then-resolved
+ * intrinsic) can carry `ScanRate: "0.9"`. The SDK models it as a double and the
+ * serializer forwards a string verbatim, so the value has to be coerced HERE —
+ * this converter is the wire boundary for `Targets` now that it re-shapes the
+ * blob. Non-numeric input passes through so AWS surfaces the real validation
+ * error rather than cdkd mangling it.
+ */
+const SDK_DYNAMODB_TARGET_NUMERIC_KEYS: readonly string[] = ['scanRate'];
+
+/**
+ * Same stringly-typed-CFn reasoning as {@link SDK_DYNAMODB_TARGET_NUMERIC_KEYS},
+ * for the boolean member: a hand-written `ScanAll: "false"` would otherwise
+ * forward the STRING `"false"` — which is truthy — to a boolean member.
+ */
+const SDK_DYNAMODB_TARGET_BOOLEAN_KEYS: readonly string[] = ['scanAll'];
+
+/** CFn booleans arrive as `true` / `false` or as the strings `"true"` / `"false"`. */
+function coerceBoolean(value: unknown): unknown {
+  if (typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  return value;
+}
+
+const SDK_TO_CFN_DYNAMODB_TARGET_KEYS: Record<string, string> = {
+  scanAll: 'ScanAll',
+  scanRate: 'ScanRate',
+};
+
+/**
+ * Shallow-rename an object's keys per `renames`, leaving unlisted keys — and
+ * non-object values (an unresolved intrinsic) — untouched.
+ */
+function renameRecordKeys(
+  entry: unknown,
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
+): unknown {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
+    const key = renames[k] ?? k;
+    if (numericKeys.includes(key)) out[key] = coerceNumber(v);
+    else if (booleanKeys.includes(key)) out[key] = coerceBoolean(v);
+    else out[key] = v;
+  }
+  return out;
+}
+
+/**
+ * Apply `renames` to every element of `targets[key]` when that entry is an
+ * array, returning the original object untouched otherwise so a non-array value
+ * reaches AWS verbatim and surfaces the real validation error.
+ */
+function renameCrawlerTargetList(
+  targets: Record<string, unknown>,
+  key: string,
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
+): Record<string, unknown> {
+  const list = targets[key];
+  if (!Array.isArray(list)) return targets;
+  return {
+    ...targets,
+    [key]: list.map((entry) => renameRecordKeys(entry, renames, numericKeys, booleanKeys)),
+  };
+}
+
+/**
+ * Convert the CFn `AWS::Glue::Crawler.Targets` blob to the SDK `CrawlerTargets`
+ * shape — see {@link CFN_TO_SDK_DYNAMODB_TARGET_KEYS} for the one divergence.
+ */
+function toSdkCrawlerTargets(targets: Record<string, unknown>): CrawlerTargets {
+  return renameCrawlerTargetList(
+    targets,
+    'DynamoDBTargets',
+    CFN_TO_SDK_DYNAMODB_TARGET_KEYS,
+    SDK_DYNAMODB_TARGET_NUMERIC_KEYS,
+    SDK_DYNAMODB_TARGET_BOOLEAN_KEYS
+  ) as CrawlerTargets;
+}
+
+/**
+ * Inverse of {@link toSdkCrawlerTargets}: re-shape a `GetCrawler` `Targets`
+ * blob back into the CFn spelling so `cdkd drift` compares like with like
+ * instead of reporting a phantom `ScanRate` removal + `scanRate` addition.
+ */
+function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, unknown> {
+  return renameCrawlerTargetList(targets, 'DynamoDBTargets', SDK_TO_CFN_DYNAMODB_TARGET_KEYS);
 }
 
 /**
@@ -742,19 +5780,20 @@ export class GlueCrawlerProvider implements ResourceProvider {
  * `USERNAME` for JDBC), surfaced as-is on read for state-shape parity.
  */
 export class GlueConnectionProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  stsClient: STSClient | undefined;
-  readonly providerRegion = ambientRegion();
-  readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
-  logger: ConsoleLogger = getLogger().child('GlueConnectionProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private readonly providerRegion = ambientRegion();
+  private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
+  private logger = getLogger().child('GlueConnectionProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return connectionWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -764,27 +5803,104 @@ export class GlueConnectionProvider implements ResourceProvider {
     ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId', 'Tags'])],
   ]);
 
-  getStsClient(): STSClient {
-    return connectionGetStsClient.call(this);
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
   }
-  resourceArn(name: string, catalogIdValue: unknown): Promise<string> {
-    return connectionResourceArn.call(this, name, catalogIdValue);
+
+  /**
+   * The connection ARN `TagResource` / `UntagResource` / `GetTags` address. A
+   * connection lives in a Data Catalog, and the ARN's account is the catalog's
+   * owner, so a usable `CatalogId` names it; otherwise the caller's account
+   * (the catalog `CatalogId` omitted means) is resolved through STS.
+   */
+  private resourceArn(name: string, catalogIdValue: unknown): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'connection',
+      name,
+      catalogIdForApi(catalogIdValue)
+    );
   }
-  getClient(): GlueClient {
-    return connectionGetClient.call(this);
+
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return connectionGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return connectionCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([asRecord(properties['ConnectionInput'])?.['Name'], properties['CatalogId']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Connection ${logicalId}`);
+    const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
+    if (!connectionInput) {
+      throw new ProvisioningError(
+        `ConnectionInput is required for Glue Connection ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (connectionInput['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Connection', logicalId);
+    const catalogId = properties['CatalogId'] as string | undefined;
+    try {
+      await this.getCreateClient().send(
+        new CreateConnectionCommand({
+          ...(catalogId && { CatalogId: catalogId }),
+          ConnectionInput: buildConnectionInput(connectionInput, name),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      log.debug(`Successfully created Glue Connection ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -792,39 +5908,310 @@ export class GlueConnectionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return connectionUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [asRecord(previousProperties?.['ConnectionInput'])?.['Name']])
     );
+    const { value: v } = log;
+    log.debug(`Updating Glue Connection ${logicalId}: ${v(physicalId)}`);
+    const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
+    if (!connectionInput) {
+      throw new ProvisioningError(
+        `ConnectionInput is required for Glue Connection update ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    // Exact comparison: Glue documents no case folding for connection names.
+    refuseNestedRename({
+      resourceType,
+      logicalId,
+      field: 'ConnectionInput.Name',
+      noun: 'connection',
+      recordedName: physicalId,
+      desiredName: connectionInput['Name'],
+      foldCase: false,
+      consequence: () =>
+        `UpdateConnection would address '${v(physicalId)}' with a different name inside its ` +
+        `definition, and the state record would keep '${v(physicalId)}' whatever AWS did with it`,
+      stateful: false,
+      mask: log.mask,
+    });
+    await refuseCatalogMove({
+      resourceType,
+      logicalId,
+      noun: 'connection',
+      entityName: physicalId,
+      recorded: previousProperties?.['CatalogId'],
+      desired: properties['CatalogId'],
+      stateful: false,
+      callerAccountId: this.callerAccountId,
+      warn: log.warn,
+      debug: log.debug,
+      mask: log.mask,
+    });
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
+    // so a half-applied update never untags on the strength of it.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const catalogId = updateCatalogId(properties['CatalogId']);
+    try {
+      await this.getClient().send(
+        new UpdateConnectionCommand({
+          // `!== undefined`, not truthiness: a falsy unusable value (NaN, '')
+          // must reach AWS and be rejected, not silently drop to the default
+          // catalog (issue #3756).
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+          ConnectionInput: buildConnectionInput(connectionInput, physicalId),
+        })
+      );
+      // `UpdateConnection` carries no tags (go-to-k/cdkd#2762).
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId, properties['CatalogId']),
+        previousProperties?.['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
-  delete(
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    return connectionDelete.call(this, logicalId, physicalId, resourceType, properties, context);
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Deleting Glue Connection ${logicalId}: ${log.value(physicalId)}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // connection cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+    // Same catalog-scoping rule as the Table / Database deletes — see
+    // {@link deleteCatalogId} (issue #1675). This call already forwarded
+    // `CatalogId`, but through a bare cast that would have sent an unresolved
+    // intrinsic OBJECT to the API.
+    // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
+    // NotFound arm below reads a miss as "already deleted".
+    const redactedSkip = redactedDeleteAddressSkip(
+      this.logger,
+      logicalId,
+      resourceType,
+      redactedDeleteAddressFields({ CatalogId: properties?.['CatalogId'] })
+    );
+    if (redactedSkip) return redactedSkip;
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
+      this.logger.debug(
+        `Glue Connection ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteConnection targets ${describeCatalog(target.catalogId)}.`
+      );
+    }
+    try {
+      await this.getClient().send(
+        new DeleteConnectionCommand({
+          ConnectionName: physicalId,
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
+        })
+      );
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        logCatalogScopedDeleteSkip(log, target, 'Connection', logicalId, log.value(physicalId));
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const thrown = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return connectionGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
   }
-  readCurrentState(
+
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return connectionReadCurrentState.call(this, physicalId, _logicalId, _resourceType, properties);
+    // Shared guard, not a bare cast — same reasoning as the Database / Table
+    // `readCurrentState` above (issue #1675).
+    const catalogId = catalogIdForApi(properties?.['CatalogId']);
+    let conn;
+    try {
+      const resp = await this.getClient().send(
+        new GetConnectionCommand({
+          Name: physicalId,
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+        })
+      );
+      conn = resp.Connection;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return notFoundInCatalog(properties);
+      throw err;
+    }
+    if (!conn) return undefined;
+
+    const ci: Record<string, unknown> = {
+      Name: conn.Name ?? physicalId,
+      ConnectionType: conn.ConnectionType ?? '',
+      Description: conn.Description ?? '',
+      MatchCriteria: conn.MatchCriteria ?? [],
+      ConnectionProperties: conn.ConnectionProperties ?? {},
+      SparkProperties: conn.SparkProperties ?? {},
+      AthenaProperties: conn.AthenaProperties ?? {},
+      PythonProperties: conn.PythonProperties ?? {},
+      PhysicalConnectionRequirements: conn.PhysicalConnectionRequirements
+        ? pickDefined(conn.PhysicalConnectionRequirements as Record<string, unknown>)
+        : {},
+    };
+    const name = conn.Name ?? physicalId;
+    return withRecordedCatalogId(
+      {
+        ConnectionInput: ci,
+        Tags: await fetchGlueTags(
+          this.getClient(),
+          this.getStsClient(),
+          'connection',
+          name,
+          catalogId,
+          this.logger
+        ),
+      },
+      properties
+    );
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return connectionImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName =
+      input.knownPhysicalId ??
+      ((input.properties['ConnectionInput'] as Record<string, unknown> | undefined)?.['Name'] as
+        | string
+        | undefined);
+    if (!explicitName) return null;
+    // `import()` runs against the RAW template, so this is exactly the shape
+    // `importableString` exists for — the Table / Database import paths have
+    // used it since #1651 and this one was the straggler (issue #1675).
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
+    try {
+      await this.getClient().send(
+        new GetConnectionCommand({
+          Name: explicitName,
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+        })
+      );
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
   }
+}
+
+// ─── helpers shared by GlueConnectionProvider ───────────────────────────
+
+function buildConnectionInput(ci: Record<string, unknown>, fallbackName: string): ConnectionInput {
+  const result: ConnectionInput = {
+    Name: (ci['Name'] as string | undefined) ?? fallbackName,
+    ConnectionType: ci['ConnectionType'] as ConnectionInput['ConnectionType'],
+    ConnectionProperties:
+      (ci['ConnectionProperties'] as ConnectionInput['ConnectionProperties'] | undefined) ?? {},
+  };
+  if (ci['Description'] !== undefined) result.Description = ci['Description'] as string;
+  if (ci['MatchCriteria'] !== undefined) result.MatchCriteria = ci['MatchCriteria'] as string[];
+  if (ci['SparkProperties'] !== undefined) {
+    result.SparkProperties = ci['SparkProperties'] as Record<string, string>;
+  }
+  if (ci['AthenaProperties'] !== undefined) {
+    result.AthenaProperties = ci['AthenaProperties'] as Record<string, string>;
+  }
+  if (ci['PythonProperties'] !== undefined) {
+    result.PythonProperties = ci['PythonProperties'] as Record<string, string>;
+  }
+  if (ci['PhysicalConnectionRequirements'] !== undefined) {
+    result.PhysicalConnectionRequirements = ci[
+      'PhysicalConnectionRequirements'
+    ] as ConnectionInput['PhysicalConnectionRequirements'];
+  }
+  if (ci['AuthenticationConfiguration'] !== undefined) {
+    result.AuthenticationConfiguration = ci[
+      'AuthenticationConfiguration'
+    ] as ConnectionInput['AuthenticationConfiguration'];
+  }
+  if (ci['ValidateCredentials'] !== undefined) {
+    result.ValidateCredentials = ci['ValidateCredentials'] as boolean;
+  }
+  if (ci['ValidateForComputeEnvironments'] !== undefined) {
+    result.ValidateForComputeEnvironments = ci[
+      'ValidateForComputeEnvironments'
+    ] as ConnectionInput['ValidateForComputeEnvironments'];
+  }
+  return result;
 }
 
 /**
@@ -844,19 +6231,20 @@ export class GlueConnectionProvider implements ResourceProvider {
  * `TriggerUpdate`).
  */
 export class GlueTriggerProvider implements ResourceProvider {
-  client: GlueClient | undefined;
-  createClient: GlueClient | undefined;
-  stsClient: STSClient | undefined;
-  cachedAccountId: string | undefined;
-  readonly providerRegion = ambientRegion();
-  logger: ConsoleLogger = getLogger().child('GlueTriggerProvider');
+  private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('GlueTriggerProvider');
 
-  wrapMaskedError(
+  /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
+  private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return triggerWrapMaskedError.call(this, mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -909,24 +6297,114 @@ export class GlueTriggerProvider implements ResourceProvider {
     ],
   ]);
 
-  getClient(): GlueClient {
-    return triggerGetClient.call(this);
+  private getClient(): GlueClient {
+    if (!this.client) {
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
+    }
+    return this.client;
   }
-  getCreateClient(): GlueClient {
-    return triggerGetCreateClient.call(this);
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
-  getStsClient(): STSClient {
-    return triggerGetStsClient.call(this);
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
   }
-  create(
+
+  async create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    return triggerCreate.call(this, logicalId, resourceType, properties, context);
+    // Issue #2177: ONE masked sink per operation, every bag value masked RAW.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      secretNamePairs([properties['Name']])
+    );
+    const { value: v } = log;
+    log.debug(`Creating Glue Trigger ${logicalId}`);
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Trigger', logicalId);
+    const type = properties['Type'] as string | undefined;
+    const actions = properties['Actions'] as TriggerAction[] | undefined;
+    if (!type) {
+      throw new ProvisioningError(
+        `Type is required for Glue Trigger ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!actions) {
+      throw new ProvisioningError(
+        `Actions is required for Glue Trigger ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+    try {
+      await this.getCreateClient().send(
+        new CreateTriggerCommand({
+          Name: name,
+          Type: type as 'SCHEDULED' | 'CONDITIONAL' | 'ON_DEMAND' | 'EVENT',
+          Actions: actions,
+          ...(properties['Schedule'] !== undefined && {
+            Schedule: properties['Schedule'] as string,
+          }),
+          ...(properties['Predicate'] !== undefined && {
+            Predicate: properties['Predicate'] as Predicate,
+          }),
+          ...(properties['Description'] !== undefined && {
+            Description: properties['Description'] as string,
+          }),
+          ...(properties['StartOnCreation'] !== undefined && {
+            StartOnCreation: properties['StartOnCreation'] as boolean,
+          }),
+          ...(properties['WorkflowName'] !== undefined && {
+            WorkflowName: properties['WorkflowName'] as string,
+          }),
+          ...(properties['EventBatchingCondition'] !== undefined && {
+            EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
+          }),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      log.debug(`Successfully created Glue Trigger ${logicalId}: ${v(name)}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
+    }
   }
-  update(
+
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -934,52 +6412,352 @@ export class GlueTriggerProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    return triggerUpdate.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
+    // Issue #2177 -- the recorded name is a needle too after a rotated secret.
+    const log = glueOperationSinks(
+      this.logger,
+      context?.maskSecrets,
+      previousNamePairs(physicalId, [previousProperties?.['Name']])
     );
+    const { value: v } = log;
+    log.debug(`Updating Glue Trigger ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
+    // so a doomed update never deactivates the trigger.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
+    try {
+      // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
+      // current state to decide whether we need to stop+restart.
+      let restart = false;
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        if (cur.Trigger?.State === 'ACTIVATED') {
+          restart = true;
+          await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          // StopTrigger is async — UpdateTrigger fails if the trigger has not
+          // yet transitioned out of ACTIVATED, so wait for DEACTIVATED first.
+          await this.waitForTriggerDeactivated(physicalId);
+        }
+      } catch (err) {
+        // If GetTrigger fails for any reason other than NotFound, fall
+        // through and let UpdateTrigger surface a clear AWS error.
+        if (!(err instanceof EntityNotFoundException)) {
+          log.debug(
+            `GetTrigger pre-check failed for ${v(physicalId)}; continuing anyway: ${
+              describeAwsFailure(err).detail
+            }`
+          );
+        }
+      }
+
+      // A full replace: a field left out here is CLEARED on AWS, which is how a
+      // property removed from the template is reset, as CloudFormation does for
+      // Description and EventBatchingCondition (issue #1160). Never fill an
+      // absent field from `previousProperties`.
+      const update: TriggerUpdate = {
+        ...(properties['Description'] !== undefined && {
+          Description: properties['Description'] as string,
+        }),
+        ...(properties['Schedule'] !== undefined && {
+          Schedule: properties['Schedule'] as string,
+        }),
+        ...(properties['Actions'] !== undefined && {
+          Actions: properties['Actions'] as TriggerAction[],
+        }),
+        ...(properties['Predicate'] !== undefined && {
+          Predicate: properties['Predicate'] as Predicate,
+        }),
+        ...(properties['EventBatchingCondition'] !== undefined && {
+          EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
+        }),
+      };
+      // Restore the ACTIVATED state even if UpdateTrigger throws — otherwise a
+      // failed update would leave a previously-running trigger stuck
+      // DEACTIVATED. Capture the update error rather than using `finally` so
+      // that if BOTH the update and the re-activation throw, the root-cause
+      // update error wins (a bare `finally` would let the secondary
+      // "failed to re-activate" error mask it). A re-activation failure on an
+      // OTHERWISE-successful update still surfaces (the trigger really is stuck
+      // deactivated in that case).
+      let updateError: unknown;
+      for (const key of TRIGGER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
+      try {
+        await this.getClient().send(
+          new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
+        );
+      } catch (err) {
+        updateError = err;
+      }
+      if (restart) {
+        try {
+          await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
+        } catch (restartError) {
+          if (updateError === undefined) throw restartError;
+          // The class at default level, AWS's text (which can name the
+          // caller) at debug only (go-to-k/cdkd#2319).
+          const restartFailure = describeAwsFailure(restartError);
+          log.warn(
+            `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${restartFailure.summary}`
+          );
+          if (restartFailure.redacted) {
+            log.debug(
+              `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${restartFailure.detail}`
+            );
+          }
+        }
+      }
+      if (updateError !== undefined) throw updateError;
+
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId),
+        previousProperties['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
+      );
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
-  unsettledInTransition(
+
+  /**
+   * go-to-k/cdkd#5487: while the trigger reads ACTIVATING, DEACTIVATING,
+   * CREATING or UPDATING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps every name, which only costs the next deploy
+   * a re-send.
+   */
+  async unsettledInTransition(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     names: ReadonlySet<string>
   ): Promise<ReadonlySet<string>> {
-    return triggerUnsettledInTransition.call(this, physicalId, _logicalId, _resourceType, names);
+    try {
+      const state = (await this.getClient().send(new GetTriggerCommand({ Name: physicalId })))
+        .Trigger?.State;
+      return state === 'ACTIVATING' ||
+        state === 'DEACTIVATING' ||
+        state === 'CREATING' ||
+        state === 'UPDATING'
+        ? new Set([...names].filter((name) => name !== 'Tags'))
+        : new Set();
+    } catch {
+      return names;
+    }
   }
-  delete(
+
+  /**
+   * Poll GetTrigger until the trigger leaves the ACTIVATED / ACTIVATING state
+   * (StopTrigger is async). Returns once DEACTIVATED (or any non-active state)
+   * is observed, the trigger is gone, or the attempt budget is exhausted —
+   * callers then proceed with UpdateTrigger / DeleteTrigger.
+   */
+  private async waitForTriggerDeactivated(physicalId: string): Promise<void> {
+    for (let attempt = 0; attempt < TRIGGER_DEACTIVATE_MAX_ATTEMPTS; attempt++) {
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        const state = cur.Trigger?.State;
+        if (state !== 'ACTIVATED' && state !== 'ACTIVATING') return;
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return;
+        // Inconclusive read — keep polling until the budget is gone.
+      }
+      await sleep(TRIGGER_DEACTIVATE_POLL_INTERVAL_MS);
+    }
+  }
+
+  async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    return triggerDelete.call(this, logicalId, physicalId, resourceType, _properties, context);
+    this.logger.debug(`Deleting Glue Trigger ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // trigger cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
+    // go-to-k/cdkd#4946: set once a stop is sent, so a refused
+    // `DeleteTrigger` is never read as a whole (still firing) survivor.
+    let stripped = false;
+    try {
+      // An ACTIVATED scheduled / conditional trigger should be stopped before
+      // deletion so a firing trigger does not race the delete.
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        if (cur.Trigger?.State === 'ACTIVATED') {
+          // Before the stop: its failure is swallowed below and may have landed,
+          // unless AWS refused it by name (then nothing changed).
+          stripped = true;
+          try {
+            await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          } catch (stopError) {
+            if (isRefusedByName(stopError)) stripped = false;
+            throw stopError;
+          }
+          await this.waitForTriggerDeactivated(physicalId);
+        }
+      } catch (err) {
+        // Pre-check is best-effort; if it fails for anything other than NotFound
+        // (which DeleteTrigger handles below) let DeleteTrigger surface the error.
+        if (!(err instanceof EntityNotFoundException)) {
+          this.logger.debug(
+            `GetTrigger pre-delete check failed for ${physicalId}; continuing: ${
+              describeAwsFailure(err).detail
+            }`
+          );
+        }
+      }
+      await this.getClient().send(new DeleteTriggerCommand({ Name: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Trigger ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      const wrapped = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
+      throw stripped ? markDeleteStarted(failure) : failure;
+    }
   }
-  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
-    return triggerGetAttribute.call(this, physicalId, _resourceType, attributeName);
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
   }
-  readCurrentState(
+
+  async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return triggerReadCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    let trig;
+    try {
+      const resp = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+      trig = resp.Trigger;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+    if (!trig) return undefined;
+
+    // Predicate.Conditions[]: AWS preserves the array order on read; we
+    // surface entries as-is since cdkd state holds the same shape.
+    const result: Record<string, unknown> = {
+      Name: trig.Name ?? physicalId,
+      Type: trig.Type ?? '',
+      Schedule: trig.Schedule ?? '',
+      Description: trig.Description ?? '',
+      WorkflowName: trig.WorkflowName ?? '',
+      Actions: (trig.Actions ?? []).map((a) =>
+        pickDefined(a as unknown as Record<string, unknown>)
+      ),
+      Predicate: trig.Predicate
+        ? {
+            Logical: trig.Predicate.Logical ?? '',
+            Conditions: (trig.Predicate.Conditions ?? []).map((c: TriggerCondition) =>
+              pickDefined(c as unknown as Record<string, unknown>)
+            ),
+          }
+        : {},
+      EventBatchingCondition: trig.EventBatchingCondition
+        ? pickDefined(trig.EventBatchingCondition as unknown as Record<string, unknown>)
+        : {},
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'trigger',
+      trig.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
   }
-  resourceArn(physicalId: string): Promise<string> {
-    return triggerResourceArn.call(this, physicalId);
+
+  /** The trigger ARN `TagResource` / `UntagResource` target. */
+  private resourceArn(physicalId: string): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'trigger',
+      physicalId,
+      this.cachedAccountId
+    );
   }
-  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    return triggerImport.call(this, input);
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetTriggerCommand({ Name: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
   }
 }
-
-installMethods(GlueProvider, databaseMethods, tableWriteMethods, tableReadMethods);
-installMethods(GlueWorkflowProvider, workflowMethods);
-installMethods(GlueCrawlerProvider, crawlerMethods);
-installMethods(GlueTriggerProvider, triggerMethods);

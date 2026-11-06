@@ -16,6 +16,7 @@ import {
   PRE_DELETE_SNAPSHOT_TYPES,
 } from '../provisioning/final-snapshot.js';
 import { isSecretDerivedValue } from '../provisioning/masked-retry-logger.js';
+import { secretPhysicalIdSegment } from '../provisioning/secret-physical-id.js';
 import { secretDerivedNamePairs } from './rollback-executor/names.js';
 import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import {
@@ -52,8 +53,9 @@ import {
  *    ssm value is stored resolved): its plaintext is not in hand, so the id's
  *    own spellings stand in, the whole id and its name segments.
  *
- * Two more arms: an IAM `Path` (the ARN carries it, and the rollback's keys
- * omit it) adds the whole id, and a needle of `secrets` the id embeds as it
+ * Three more arms: an IAM `Path` (the ARN carries it, and the rollback's keys
+ * omit it) adds the whole id, a type whose id IS a bearer credential adds that
+ * segment ({@link secretPhysicalIdSegment}, go-to-k/cdkd#5868), and a needle of `secrets` the id embeds as it
  * is (a queue URL ending in the resolved name) is added for a READER's bag,
  * which does not hold the resource's plaintext. Last, the spellings a
  * final-snapshot name of the id needs ({@link finalSnapshotSpellingsOf}), and
@@ -131,6 +133,9 @@ export function secretNameNeedlesOf(
       ? (properties as Record<string, unknown>)['Path']
       : undefined;
   if (physicalId !== undefined && isSecretDerivedValue(path, mask)) add(physicalId);
+  // go-to-k/cdkd#5868: a type whose id IS a bearer credential (an AppSync
+  // ApiKey's key segment). The segment only, never the public rest of the id.
+  add(secretPhysicalIdSegment(record?.resourceType, physicalId));
   const embedded = options === undefined ? secrets : options.embedded;
   const embeddedBag = embedded !== undefined && hasMaskableValues(embedded) ? embedded : undefined;
   if (embeddedBag !== undefined && physicalId !== undefined) {

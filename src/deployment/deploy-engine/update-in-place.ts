@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { guardedReplacementCreate } from './create.js';
@@ -1348,7 +1349,7 @@ export async function updateInPlace(
           // strictly LESS surprising version of this outcome.
           engine.logger.warn(
             safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
-              safeMsg`resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
+              safeMsg`resource (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) is RETAINED and is no longer ` +
               `tracked by cdkd: it keeps running and incurring cost, and ` +
               `\`cdkd destroy\` will not remove it. Delete it yourself once you no ` +
               `longer need its data.`
@@ -1385,7 +1386,7 @@ export async function updateInPlace(
           //     touch.
           retainedSurvivorReason =
             `UpdateReplacePolicy: Retain kept the old ${resourceType} ` +
-            `(${currentResource.physicalId}), now untracked by cdkd`;
+            `(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}), now untracked by cdkd`;
         }
         // Annotated rather than inferred: `result` is an evolving `let`,
         // and a conditional spread makes the literal's type a union that
@@ -1547,7 +1548,7 @@ export async function updateInPlace(
       properties: resolvedProps,
     });
     engine.logger.info(
-      safeMsg`Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
+      safeMsg`Resource ${logicalId} was replaced: ${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)} -> ${displayPhysicalId(resourceType, result.physicalId)}`
     );
   }
 

@@ -52,6 +52,10 @@ cdkd state show MyStack          # outputs and resources, human-readable
 cdkd state show MyStack --json   # the whole record, for a script
 ```
 
+An output holding an AppSync API key (`Fn::GetAtt` of an
+`AWS::AppSync::ApiKey`'s `ApiKey`) is printed as `****<last 4>` there:
+[AppSync API keys are masked](cli-state.md#appsync-api-keys-are-masked).
+
 ## Write outputs to a file
 
 `--outputs-file` (`-O`) writes every deployed stack's outputs to a JSON file,

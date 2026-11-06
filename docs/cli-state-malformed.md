@@ -102,7 +102,8 @@ described under
 ### `--json` and the stored values
 
 `cdkd state show --json` prints the stored values without any of this
-filtering. `cdkd state resources --json` is different: it prints the resource
+filtering, except that an AppSync API key is printed as `****<last 4>`
+([AppSync API keys are masked](cli-state.md#appsync-api-keys-are-masked)). `cdkd state resources --json` is different: it prints the resource
 list cdkd derived from the record, so a malformed part of the record does not
 appear in it.
 
@@ -118,7 +119,7 @@ and print a warning on stderr.
 | `cdkd state resources`, plain and `--long` | Nothing, plus the warning. |
 | `cdkd state resources --json` | `[]`, plus the warning. |
 | `cdkd state show` | `Resources (0):` and no resource blocks, plus the warning. |
-| `cdkd state show --json` | The stored value, unchanged. No warning. |
+| `cdkd state show --json` | The stored value, unchanged (an AppSync API key aside). No warning. |
 | `cdkd state list --long` | `Resources: unknown (...)` for that row. |
 
 An absent or `null` `resources` is reported the same way, with one difference:
@@ -154,7 +155,7 @@ the warning names each part it read as empty.
 | `cdkd state resources --long` | `Attributes: (none)`, plus the warning. |
 | `cdkd state resources --json` | `"attributes": {}`, plus the warning. |
 | `cdkd state resources`, plain | The usual three columns. No warning. |
-| `cdkd state show --json` | The stored value, unchanged. No warning. |
+| `cdkd state show --json` | The stored value, unchanged (an AppSync API key aside). No warning. |
 
 In `cdkd state show`, "without that block" means the following. An emptied
 `outputs` prints no `Outputs:` block, and an emptied `skippedOutputs` prints

@@ -1,4 +1,5 @@
 import { withReplayDeletePrinting } from './replay-scope.js';
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { ResourceCreateResult, ResourceProvider } from '../../types/resource.js';
@@ -1414,7 +1415,12 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     }
     // Issue #4037: the re-created id is the OLD name's spelling, which the
     // literal mask misses when a rewriting provider derived it.
-    const recreatedId = displaySafe(mask(String(createResult.physicalId)));
+    // go-to-k/cdkd#5868: an id that IS a credential (an AppSync ApiKey's key)
+    // is new here, so no bag holds it yet. The re-created resource is the OLD
+    // one, so its type is `oldType` (a Type change rolls back across types).
+    const recreatedId = displaySafe(
+      mask(String(displayPhysicalId(oldType, createResult.physicalId)))
+    );
     logger.info(
       mask(
         adoptedLiveNewResource

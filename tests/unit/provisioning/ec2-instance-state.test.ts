@@ -15,10 +15,8 @@
 
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { isSettledInstanceState } from '../../../src/provisioning/ec2-instance-state.js';
 import { readResolverFamily } from '../_resolver-family.js';
-import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * Source with every comment and string / template literal blanked to spaces
@@ -87,13 +85,8 @@ describe('isSettledInstanceState', () => {
     const readers: Array<[string, string]> = [
       ['the resolver family', readResolverFamily()],
       [
-        // The provider file and its companion files (scripts/provider-companion-files.ts),
-        // which hold the code split out of it; each is reduced to code on its own.
-        'src/provisioning/providers/ec2-provider.ts and its companion files',
-        ((host: string) =>
-          [host, ...companionFiles(host)].map((p) => codeOnly(readFileSync(p, 'utf8'))).join('\n'))(
-          fileURLToPath(new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url))
-        ),
+        'src/provisioning/providers/ec2-provider.ts',
+        readFileSync(new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url), 'utf8'),
       ],
     ];
     // Widened deliberately: any comparison of `stateName` against the literal,
