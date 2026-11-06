@@ -385,8 +385,13 @@ export async function deleteInstance(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  context?: DeleteContext
+  context?: DeleteContext,
+  properties?: Record<string, unknown>
 ): Promise<void> {
+  // go-to-k/cdkd#5630: only a record declaring SsmAssociations pays the
+  // Systems Manager reads of the association cleanup.
+  const ssm = properties?.['SsmAssociations'];
+  const declaresSsmAssociations = Array.isArray(ssm) && ssm.length > 0;
   // The region the compensation's commands name: the state's, else the
   // client's own (a pre-v2 state record carries none), so a pasted command
   // never falls back to the operator's default region. Resolved only under
@@ -403,7 +408,15 @@ export async function deleteInstance(
   await deleteWithProtectionCompensation({
     registry: this.protectionFlips,
     key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-    run: (flip) => this.terminateInstance(logicalId, physicalId, resourceType, context, flip),
+    run: (flip) =>
+      this.terminateInstance(
+        logicalId,
+        physicalId,
+        resourceType,
+        context,
+        flip,
+        declaresSsmAssociations
+      ),
     compensation: {
       logicalId,
       physicalId,
@@ -421,7 +434,8 @@ export async function terminateInstance(
   physicalId: string,
   resourceType: string,
   context: DeleteContext | undefined,
-  flip: ProtectionFlipRecord
+  flip: ProtectionFlipRecord,
+  declaresSsmAssociations = false
 ): Promise<void> {
   this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
@@ -453,6 +467,18 @@ export async function terminateInstance(
       // must not re-enable the guard.
       flip.deleteAccepted = true;
       this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
+
+      // go-to-k/cdkd#5630: once AWS took the terminate (a refused one keeps
+      // the instance and its association), delete the instance's SSM
+      // association, best effort. CloudFormation leaves it on the terminated
+      // instance; a warning here never blocks the delete.
+      if (declaresSsmAssociations) {
+        await this.deleteInstanceSsmAssociationsBestEffort(
+          logicalId,
+          physicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
+      }
 
       // Wait for instance to reach terminated state so ENIs are released
       await waitUntilInstanceTerminated(

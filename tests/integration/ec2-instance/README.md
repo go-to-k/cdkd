@@ -54,6 +54,16 @@ Minimal EC2 Instance deployment example for cdkd.
   volume detached and re-attached). Phase 1k removes the `Volumes` property and the second volume in
   one deploy: that volume is detached from the same instance before it is deleted, and neither volume
   remains attached.
+- `LicenseSpecifications` and `SsmAssociations` (issue #5630): a sixth instance launches with a
+  license configuration and an association of the Amazon-owned `AWS-RunShellScript` document (a
+  schema 1.2 document, which the instance-id `CreateAssociation` accepts; it needs the instance
+  profile the stack declares). The license configuration is PERMANENT and account-level:
+  `verify.sh` looks it up by the name `cdkd-integ-ec2-instance-5630`, creates it only when absent,
+  and never deletes it (License Manager keeps counting a terminated instance for an hour or more, so
+  a delete right after a run fails). Phase 1l (`CDKD_TEST_SSM_5630=params`) changes the parameter
+  (a new association on the same instance), 1m (`=removed`) removes the association, 1n
+  (`=readded`) adds one back, and 1o (`=unlicensed`) drops the license, which replaces the instance;
+  the replaced instance's association is deleted, and so is the last one on destroy.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.

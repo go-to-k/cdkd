@@ -28,8 +28,12 @@ import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import {
   instanceIpv6AddressesRefusal,
   instanceLaunchTemplateRefusal,
+  instanceLicenseSpecificationsRefusal,
+  instanceSsmAssociationsRefusal,
   instanceVolumesRefusal,
   launchTemplateRequest,
+  licenseSpecificationsRequest,
+  ssmAssociationsAwsRefusal,
   privateDnsNameOptionsRefusal,
   privateDnsNameOptionsRequest,
 } from './instance-support.js';
@@ -351,6 +355,7 @@ export function buildLaunchOnlyInstanceOptions(
   Ipv6Addresses?: Array<{ Ipv6Address: string }>;
   PrivateDnsNameOptions?: PrivateDnsNameOptionsRequest;
   LaunchTemplate?: LaunchTemplateSpecification;
+  LicenseSpecifications?: Array<{ LicenseConfigurationArn: string }>;
 } {
   const cpu = properties['CpuOptions'];
   const hibernation = properties['HibernationOptions'];
@@ -376,7 +381,14 @@ export function buildLaunchOnlyInstanceOptions(
     // go-to-k/cdkd#5630: a launch template the launch would otherwise drop,
     // and volumes the create would otherwise not attach.
     instanceLaunchTemplateRefusal(properties['LaunchTemplate'], resourceType) ??
-    instanceVolumesRefusal(properties['Volumes'], resourceType);
+    instanceVolumesRefusal(properties['Volumes'], resourceType) ??
+    // go-to-k/cdkd#5630: a license configuration the launch would otherwise
+    // drop, an association the create would otherwise not make, and the two
+    // association shapes AWS refuses every time (CloudFormation fails them
+    // before RunInstances, measured).
+    instanceLicenseSpecificationsRefusal(properties['LicenseSpecifications'], resourceType) ??
+    instanceSsmAssociationsRefusal(properties['SsmAssociations'], resourceType) ??
+    ssmAssociationsAwsRefusal(properties, resourceType);
   if (refusal !== undefined) {
     throw markNonRetryable(
       new ProvisioningError(
@@ -422,6 +434,8 @@ export function buildLaunchOnlyInstanceOptions(
   if (dnsOptions !== undefined) out.PrivateDnsNameOptions = dnsOptions;
   const launchTemplate = launchTemplateRequest(properties['LaunchTemplate']);
   if (launchTemplate !== undefined) out.LaunchTemplate = launchTemplate;
+  const licenses = licenseSpecificationsRequest(properties['LicenseSpecifications']);
+  if (licenses !== undefined) out.LicenseSpecifications = licenses;
   return out;
 }
 

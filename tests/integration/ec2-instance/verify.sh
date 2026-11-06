@@ -89,6 +89,14 @@
 # that volume to a third device. Phase 1k removes the Volumes property and
 # volume B in one deploy (B detached and deleted; neither volume remains
 # attached).
+# The fifth #5630 slice: an instance launched with LicenseSpecifications (a
+# PERMANENT account-level license configuration, looked up by name and created
+# only when absent, never deleted: License Manager counts a terminated
+# instance for an hour or more) and an AWS-RunShellScript SsmAssociations
+# entry. Phase 1l changes the association's parameter in place (new
+# association id, same instance), 1m removes it, 1n adds it back, and 1o
+# drops the license, which replaces the instance; the replaced instance's
+# association is deleted, and so is the last one on destroy.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -185,6 +193,34 @@ LT_INSTANCE_ID=""
 LT_VOLUME_A_ID=""
 LT_VOLUME_B_ID=""
 LAUNCH_TEMPLATE_ID=""
+# Issue #5630 (fifth slice): every SsmInstance5630 id this run saw (Phase 1o
+# replaces it), whose SSM associations and instance the trap sweeps if state
+# destroy cannot reach them.
+SSM_INSTANCE_IDS=""
+# The permanent license configuration's fixed name (see the header).
+LICENSE_CONFIG_NAME="cdkd-integ-ec2-instance-5630"
+
+# Issue #5630: delete an instance's instance-id SSM associations by id and
+# terminate it. Best effort, for the trap: a subshell, so calling it from a
+# `set +eu` cleanup never re-arms strict mode.
+sweep_ssm_instance() { (
+  set +eu
+  ssm_assoc_ids=$(aws ssm list-associations \
+    --association-filter-list "key=InstanceId,value=$1" \
+    --region "${REGION}" \
+    --query 'Associations[].AssociationId' \
+    --output text 2>/dev/null)
+  for ssm_assoc in ${ssm_assoc_ids}; do
+    [ "${ssm_assoc}" = "None" ] && continue
+    aws ssm delete-association \
+      --association-id "${ssm_assoc}" \
+      --region "${REGION}" >/dev/null 2>&1 \
+      || echo "NOTE: issue #5630 -- could not delete SSM association ${ssm_assoc}; remove it with: aws ssm delete-association --association-id ${ssm_assoc} --region ${REGION}" >&2
+  done
+  aws ec2 terminate-instances \
+    --instance-ids "$1" \
+    --region "${REGION}" >/dev/null 2>&1 || true
+) }
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -296,6 +332,9 @@ cleanup() {
     aws ec2 terminate-instances \
       --instance-ids "${v6_instance}" \
       --region "${REGION}" >/dev/null 2>&1 || true
+  done
+  for ssm_instance in ${SSM_INSTANCE_IDS:-}; do
+    sweep_ssm_instance "${ssm_instance}"
   done
   if [ -n "${LT_INSTANCE_ID:-}" ]; then
     # Issue #5630: a volume refuses DeleteVolume while it is attached, so
@@ -414,6 +453,33 @@ case "${DEFAULT_VPC_ID}" in
     exit 1
     ;;
 esac
+
+# --- issue #5630 pre-flight: the permanent license configuration ----------
+# Looked up by its fixed name and created only when absent; never deleted
+# (License Manager counts a terminated instance for an hour or more, so a
+# delete right after the run fails on non-zero usage). `--output json` so the
+# CLI merges every page before jq reads it.
+LICENSE_CONFIGS=$(aws license-manager list-license-configurations \
+  --region "${REGION}" \
+  --output json) || { echo "FAIL: issue #5630 -- could not list license configurations" >&2; exit 1; }
+CDKD_TEST_LICENSE_ARN=$(echo "${LICENSE_CONFIGS}" | jq -r --arg n "${LICENSE_CONFIG_NAME}" '[.LicenseConfigurations[] | select(.Name == $n) | .LicenseConfigurationArn] | first // ""')
+if [ -z "${CDKD_TEST_LICENSE_ARN}" ]; then
+  CDKD_TEST_LICENSE_ARN=$(aws license-manager create-license-configuration \
+    --name "${LICENSE_CONFIG_NAME}" \
+    --description "cdkd ec2-instance integ (go-to-k/cdkd#5630): permanent; verify.sh looks it up by name and never deletes it" \
+    --license-counting-type vCPU \
+    --region "${REGION}" \
+    --query LicenseConfigurationArn \
+    --output text) || { echo "FAIL: issue #5630 -- could not create license configuration ${LICENSE_CONFIG_NAME}" >&2; exit 1; }
+  echo "    created the permanent license configuration ${LICENSE_CONFIG_NAME}: ${CDKD_TEST_LICENSE_ARN}"
+fi
+case "${CDKD_TEST_LICENSE_ARN}" in
+  arn:aws*:license-manager:*:license-configuration:lic-*) ;;
+  *) echo "FAIL: issue #5630 -- license configuration ${LICENSE_CONFIG_NAME} has no usable ARN ('${CDKD_TEST_LICENSE_ARN}')" >&2; exit 1 ;;
+esac
+export CDKD_TEST_LICENSE_ARN
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "FAIL: issue #5630 -- could not read the account id" >&2; exit 1; }
 
 # Issue #3097: the security group declared WITHOUT VpcId, as recorded in a
 # state file and as AWS holds it. Run after BOTH deploys: the provider reads
@@ -552,6 +618,9 @@ LT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtInstanceId // ""')
 LT_VOLUME_A_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtVolumeAId // ""')
 LT_VOLUME_B_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtVolumeBId // ""')
 LAUNCH_TEMPLATE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LaunchTemplateId // ""')
+# Issue #5630 (fifth slice): the licensed, associated instance, for the trap.
+SSM_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.resources.SsmInstance5630.physicalId // ""')
+SSM_INSTANCE_IDS="${SSM_INSTANCE_ID}"
 # Issue #5445: the fixture CMK exists from this deploy on, so the trap's
 # schedule-key-deletion must be able to reach it from here too.
 EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
@@ -1988,6 +2057,191 @@ fi
 rm -f "${DRIFT_JSON}"
 echo "    OK: #5630 Phase 1k detached volume ${LT_VOLUME_B_ID} from ${LT_INSTANCE_ID} and deleted it (same instance, SDK route); neither volume remains attached, and drift is clean"
 
+# --- Phases 1l-1o: LicenseSpecifications and SsmAssociations (issue #5630) ---
+# CloudFormation (measured us-east-1, CloudTrail-verified) sends the license
+# on RunInstances and associates the document with the instance-id form of
+# CreateAssociation after the launch. Every selector below is pinned to the
+# SsmInstance5630 logical id or to an instance id, never a type-filtered
+# `first`.
+
+# `<association id>|<document>` of every instance-id association of `$1`,
+# sorted and comma-joined ('' for none). `--output json` so the CLI merges
+# every page before jq reads it.
+ssm_associations_of() {
+  local out
+  out=$(aws ssm list-associations \
+    --association-filter-list "key=InstanceId,value=$1" \
+    --region "${REGION}" \
+    --output json) || return 1
+  echo "${out}" | jq -r --arg id "$1" '[.Associations[] | select(.InstanceId == $id) | "\(.AssociationId)|\(.Name)"] | sort | join(",")'
+}
+# The `commands` parameter of association `$1`, as compact JSON.
+ssm_commands_of() {
+  local out
+  out=$(aws ssm describe-association \
+    --association-id "$1" \
+    --region "${REGION}" \
+    --output json) || return 1
+  echo "${out}" | jq -c '.AssociationDescription.Parameters.commands // null'
+}
+# The license configuration ARNs License Manager lists for instance `$1`,
+# sorted and comma-joined. DescribeInstances reports none (measured), so this
+# is the only reader.
+licenses_of() {
+  local out
+  out=$(aws license-manager list-license-specifications-for-resource \
+    --resource-arn "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/$1" \
+    --region "${REGION}" \
+    --output json) || return 1
+  echo "${out}" | jq -r '[.LicenseSpecifications[].LicenseConfigurationArn] | sort | join(",")'
+}
+# `$1` = phase label. Reads the state record of SsmInstance5630 into
+# SSM_RECORD (`<physical id>|<provisionedBy>`) and its one association into
+# SSM_ASSOC_ID, asserting exactly one AWS-RunShellScript association whose
+# commands are `$2` (compact JSON), or none when `$2` is `none`.
+assert_ssm_instance() {
+  local phase="$1" want="$2" state assocs commands
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+    echo "FAIL: issue #5630 -- could not read the state after ${phase}: $(sanitize_aws_output "${state}")" >&2
+    exit 1
+  }
+  SSM_RECORD=$(echo "${state}" | jq -r '[.resources.SsmInstance5630.physicalId // "", (.resources.SsmInstance5630.provisionedBy // "sdk")] | join("|")')
+  case "${SSM_RECORD}" in
+    i-*"|sdk") ;;
+    *) echo "FAIL: issue #5630 (${phase}) -- SsmInstance5630 physicalId|provisionedBy is '${SSM_RECORD}', expected an instance id on the SDK route" >&2; exit 1 ;;
+  esac
+  assocs=$(ssm_associations_of "${SSM_RECORD%%|*}") || {
+    echo "FAIL: issue #5630 (${phase}) -- could not list the SSM associations of ${SSM_RECORD%%|*}" >&2
+    exit 1
+  }
+  if [ "${want}" = none ]; then
+    if [ -n "${assocs}" ]; then
+      echo "FAIL: issue #5630 (${phase}) -- ${SSM_RECORD%%|*} still has SSM associations '${assocs}', expected none" >&2
+      exit 1
+    fi
+    SSM_ASSOC_ID=""
+    return 0
+  fi
+  case "${assocs}" in
+    *,*|"") echo "FAIL: issue #5630 (${phase}) -- ${SSM_RECORD%%|*} has SSM associations '${assocs}', expected exactly one" >&2; exit 1 ;;
+    *"|AWS-RunShellScript") ;;
+    *) echo "FAIL: issue #5630 (${phase}) -- ${SSM_RECORD%%|*}'s association is '${assocs}', expected document AWS-RunShellScript" >&2; exit 1 ;;
+  esac
+  SSM_ASSOC_ID="${assocs%%|*}"
+  commands=$(ssm_commands_of "${SSM_ASSOC_ID}") || {
+    echo "FAIL: issue #5630 (${phase}) -- could not describe SSM association ${SSM_ASSOC_ID}" >&2
+    exit 1
+  }
+  if [ "${commands}" != "${want}" ]; then
+    echo "FAIL: issue #5630 (${phase}) -- association ${SSM_ASSOC_ID} has commands ${commands}, expected ${want}" >&2
+    exit 1
+  fi
+}
+# `$1` = instance id, `$2` = wanted ARN list ('' for none), `$3` = phase.
+# License Manager can lag the launch, so a mismatch is re-read for 2 minutes.
+assert_licenses() {
+  local got="" _
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    got=$(licenses_of "$1") || got="<read error>"
+    [ "${got}" = "$2" ] && return 0
+    sleep 10
+  done
+  echo "FAIL: issue #5630 ($3) -- License Manager lists '${got}' for $1, expected '$2'" >&2
+  exit 1
+}
+
+echo "==> Phase 1l-0: the instance launched with LicenseSpecifications and SsmAssociations (issue #5630)"
+assert_ssm_instance "create" '["echo cdkd-5630-a"]'
+if [ "${SSM_RECORD%%|*}" != "${SSM_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- SsmInstance5630 is ${SSM_RECORD%%|*} after Phase 1k, expected the Phase 0 instance ${SSM_INSTANCE_ID} (nothing before Phase 1o may replace it)" >&2
+  exit 1
+fi
+assert_licenses "${SSM_INSTANCE_ID}" "${CDKD_TEST_LICENSE_ARN}" "create"
+P1L0_ASSOC="${SSM_ASSOC_ID}"
+echo "    OK: #5630 ${SSM_INSTANCE_ID} launched on the SDK route with license ${CDKD_TEST_LICENSE_ARN} and association ${P1L0_ASSOC} (AWS-RunShellScript, commands a)"
+
+# Phase 1l: a parameter change. CloudFormation fails it (its handler deletes
+# the association, then the update fails); cdkd deletes and re-creates it on
+# the same instance (a deliberate deviation), so the association id changes.
+echo "==> Phase 1l: SsmAssociations parameter change, in place (issue #5630)"
+removal_deploy P1L_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=params
+assert_ssm_instance "Phase 1l" '["echo cdkd-5630-b"]'
+if [ "${SSM_RECORD%%|*}" != "${SSM_INSTANCE_ID}" ] || [ "${SSM_ASSOC_ID}" = "${P1L0_ASSOC}" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1l instance|association is '${SSM_RECORD%%|*}|${SSM_ASSOC_ID}', expected the same instance ${SSM_INSTANCE_ID} and a new association (not ${P1L0_ASSOC})" >&2
+  exit 1
+fi
+assert_gone "issue #5630 -- the Phase 0 association ${P1L0_ASSOC} still exists after Phase 1l replaced it" aws ssm describe-association --association-id "${P1L0_ASSOC}" --region "${REGION}"
+# The readback: drift must compare SsmInstance5630 and find nothing.
+DRIFT_JSON="$(mktemp -t cdkd-ec2-instance-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+P1L_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "SsmInstance5630")] | length' "${DRIFT_JSON}") || P1L_CLEAN="?"
+P1L_DRIFTED=$(jq -r '[.[].drifted[] | select(.logicalId == "SsmInstance5630") | .changes[].path] | join(",")' "${DRIFT_JSON}") || P1L_DRIFTED="?"
+if [ "${P1L_CLEAN}" != "1" ] || [ -n "${P1L_DRIFTED}" ]; then
+  echo "FAIL: issue #5630 -- cdkd drift on SsmInstance5630 after Phase 1l: clean=${P1L_CLEAN} drifted paths='${P1L_DRIFTED}' (rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+P1L_ASSOC="${SSM_ASSOC_ID}"
+echo "    OK: #5630 Phase 1l replaced association ${P1L0_ASSOC} with ${P1L_ASSOC} (commands b) on the same instance; drift is clean"
+
+echo "==> Phase 1m: SsmAssociations removed, in place (issue #5630)"
+removal_deploy P1M_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=removed
+assert_ssm_instance "Phase 1m" none
+if [ "${SSM_RECORD%%|*}" != "${SSM_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- Phase 1m replaced SsmInstance5630 (${SSM_INSTANCE_ID} -> ${SSM_RECORD%%|*}); removing the association is in place" >&2
+  exit 1
+fi
+assert_gone "issue #5630 -- association ${P1L_ASSOC} still exists after Phase 1m removed SsmAssociations" aws ssm describe-association --association-id "${P1L_ASSOC}" --region "${REGION}"
+echo "    OK: #5630 Phase 1m deleted association ${P1L_ASSOC}; ${SSM_INSTANCE_ID} has none"
+
+# Phase 1n: absent -> one entry, the one in-place change CloudFormation
+# itself completes.
+echo "==> Phase 1n: SsmAssociations added back, in place (issue #5630)"
+removal_deploy P1N_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=readded
+assert_ssm_instance "Phase 1n" '["echo cdkd-5630-c"]'
+if [ "${SSM_RECORD%%|*}" != "${SSM_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- Phase 1n replaced SsmInstance5630 (${SSM_INSTANCE_ID} -> ${SSM_RECORD%%|*}); adding the association is in place" >&2
+  exit 1
+fi
+P1N_ASSOC="${SSM_ASSOC_ID}"
+echo "    OK: #5630 Phase 1n associated ${P1N_ASSOC} (commands c) with the same instance"
+
+# Phase 1o: removing LicenseSpecifications replaces the instance (create-only,
+# CloudFormation measured). The new instance is created with the association,
+# and the replaced one's delete removes its association (CloudFormation leaves
+# it on the terminated instance).
+echo "==> Phase 1o: LicenseSpecifications removed, which replaces the instance (issue #5630)"
+removal_deploy P1O_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=unlicensed
+assert_ssm_instance "Phase 1o" '["echo cdkd-5630-c"]'
+P1O_INSTANCE_ID="${SSM_RECORD%%|*}"
+SSM_INSTANCE_IDS="${SSM_INSTANCE_IDS} ${P1O_INSTANCE_ID}"
+if [ "${P1O_INSTANCE_ID}" = "${SSM_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- Phase 1o kept SsmInstance5630 ${SSM_INSTANCE_ID}; removing LicenseSpecifications must replace it" >&2
+  exit 1
+fi
+assert_licenses "${P1O_INSTANCE_ID}" "" "Phase 1o"
+P1O_OLD_ASSOCS=$(ssm_associations_of "${SSM_INSTANCE_ID}") || P1O_OLD_ASSOCS="<list-failed>"
+if [ -n "${P1O_OLD_ASSOCS}" ]; then
+  echo "FAIL: issue #5630 -- the replaced instance ${SSM_INSTANCE_ID} still has SSM associations '${P1O_OLD_ASSOCS}'; its delete must remove them" >&2
+  exit 1
+fi
+if gone_probe aws ec2 describe-instances --instance-ids "${SSM_INSTANCE_ID}" --region "${REGION}"; then
+  P1O_OLD_STATE="gone"
+else
+  P1O_OLD_STATE=$(aws ec2 describe-instances --instance-ids "${SSM_INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1) || P1O_OLD_STATE="<describe-failed: $(sanitize_aws_output "${P1O_OLD_STATE}")>"
+fi
+case "${P1O_OLD_STATE}" in
+  terminated|shutting-down|gone) ;;
+  *) echo "FAIL: issue #5630 -- the replaced instance ${SSM_INSTANCE_ID} is '${P1O_OLD_STATE}' after Phase 1o, expected terminated" >&2; exit 1 ;;
+esac
+echo "    OK: #5630 Phase 1o replaced ${SSM_INSTANCE_ID} with ${P1O_INSTANCE_ID} (no license, association ${SSM_ASSOC_ID}); the old instance and its association are gone"
+P1O_ASSOC="${SSM_ASSOC_ID}"
+
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -2116,6 +2370,22 @@ assert_gone "issue #5630 -- launch template ${LAUNCH_TEMPLATE_ID} still exists a
 echo "    OK: #5630 launch template ${LAUNCH_TEMPLATE_ID} is gone"
 LAUNCH_TEMPLATE_ID=""
 
+# Issue #5630 (fifth slice): the last SsmInstance5630 is gone, and its
+# association with it (CloudFormation leaves it; cdkd deletes it, best effort).
+if gone_probe aws ec2 describe-instances --instance-ids "${P1O_INSTANCE_ID}" --region "${REGION}"; then
+  SSM_STATE="gone"
+else
+  SSM_STATE=$(aws ec2 describe-instances --instance-ids "${P1O_INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1) || SSM_STATE="<describe-failed: $(sanitize_aws_output "${SSM_STATE}")>"
+fi
+case "${SSM_STATE}" in
+  terminated|shutting-down|gone) ;;
+  *) echo "FAIL: #5630 instance ${P1O_INSTANCE_ID} still in unexpected state after destroy: ${SSM_STATE}" >&2; exit 1 ;;
+esac
+assert_gone "issue #5630 -- association ${P1O_ASSOC} of ${P1O_INSTANCE_ID} still exists after destroy" aws ssm describe-association --association-id "${P1O_ASSOC}" --region "${REGION}"
+echo "    OK: #5630 instance ${P1O_INSTANCE_ID} is ${SSM_STATE} and its association ${P1O_ASSOC} is gone"
+SSM_INSTANCE_IDS=""
+
 # Issue #5445: the fixture CMK must be scheduled for deletion by the destroy
 # (RemovalPolicy.DESTROY), never left Enabled.
 EBS_KEY_STATE=$(aws kms describe-key \
@@ -2131,4 +2401,4 @@ echo "    OK: #5445 fixture CMK is PendingDeletion"
 EBS_KEY_ARN=""
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update + #5630 launch options, LaunchTemplate and Volumes) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update + #5630 launch options, LaunchTemplate, Volumes, LicenseSpecifications and SsmAssociations) ==="
