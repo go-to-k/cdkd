@@ -121,6 +121,9 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   `dirty-path-restore-gate` on the staged copy. `tests/fixtures/cfn-schemas/_todo-backfill.json`
   is no `gen:all-matrices` output, so re-running gen will not restore it: merge
   it by hand (#5829).
+- **A peer SPLIT a file you changed** (refactor waves do not read claims,
+  #5879): take `main`'s copy whole, re-apply your hunk where it moved; that
+  stales the marker, so the integ re-runs — budget it (#5873).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
