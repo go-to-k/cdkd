@@ -4,7 +4,7 @@
  * decide must answer `holds: false`, and only a PROVEN holder may answer true.
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   reverseReplacementCaseInsensitiveTypes,
@@ -17,6 +17,7 @@ import {
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 type Input = Parameters<typeof reverseReplacementNewHoldsName>[0];
 
@@ -802,8 +803,19 @@ describe('the rewriting-types table matches every caller of generateResourceName
     const callers: string[] = [];
     let calls = 0;
     let specCalls = 0;
+    // The `src/`-relative files a mapped provider's calls live in: the provider
+    // file or one of its companion files (scripts/provider-companion-files.ts).
+    const callerPaths: string[] = [];
     for (const file of readdirSync(DIR).filter((f) => f.endsWith('.ts'))) {
-      const text = readFileSync(join(DIR, file), 'utf8');
+      // A provider's text includes its companion files, which hold the code
+      // split out of it.
+      const paths = [join(DIR, file), ...companionFiles(join(DIR, file))];
+      const text = paths.map((p) => readFileSync(p, 'utf8')).join('\n');
+      for (const p of paths) {
+        if (readFileSync(p, 'utf8').includes('generateResourceNameWithFallback(')) {
+          callerPaths.push(relative(join(process.cwd(), 'src'), p).split('\\').join('/'));
+        }
+      }
       const constant = (expr: string): number => {
         if (/^\d+$/.test(expr)) return Number(expr);
         const m = new RegExp(`const ${expr} = (\\d+);`).exec(text);
@@ -864,7 +876,7 @@ describe('the rewriting-types table matches every caller of generateResourceName
         'deployment/replacement-name-holder/name-keys.ts',
         'deployment/replacement-name-holder/rewritten.ts',
         'provisioning/resource-name.ts',
-        ...Object.keys(FILE_TYPES).map((f) => `provisioning/providers/${f}`),
+        ...callerPaths,
       ].sort()
     );
     expect([...seen].sort()).toEqual(Object.keys(table).sort());

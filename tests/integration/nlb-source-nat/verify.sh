@@ -195,7 +195,7 @@ if [[ "${SN_P2}" != "on" ]]; then
   echo ""
   echo "    AWS's omission semantics CHANGED: it now RESETS instead of retaining."
   echo "    cdkd must start re-sending the retained value with the SetSubnets call"
-  echo "    (see updateLoadBalancer in src/provisioning/providers/elbv2-provider.ts)."
+  echo "    (see updateLoadBalancer in src/provisioning/providers/elbv2/load-balancer-update.ts)."
   echo "    Until then an unrelated subnet change silently flips a live NLB's IPv6"
   echo "    source-NAT off."
   exit 1

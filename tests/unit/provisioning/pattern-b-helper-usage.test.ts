@@ -33,6 +33,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
@@ -48,7 +49,11 @@ describe('Pattern B providers import generateResourceNameWithFallback (issue #30
   for (const relPath of PATTERN_B_PROVIDER_FILES) {
     it(`${relPath} references generateResourceNameWithFallback`, () => {
       const absPath = join(repoRoot, relPath);
-      const source = readFileSync(absPath, 'utf-8');
+      // A provider's text includes its companion files
+      // (scripts/provider-companion-files.ts), which hold the code split out of it.
+      const source = [absPath, ...companionFiles(absPath)]
+        .map((p) => readFileSync(p, 'utf-8'))
+        .join('\n');
       expect(
         source.includes('generateResourceNameWithFallback'),
         `${relPath} must use generateResourceNameWithFallback for user-supplied physical names. ` +

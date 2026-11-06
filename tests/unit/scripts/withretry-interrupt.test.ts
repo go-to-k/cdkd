@@ -358,15 +358,15 @@ describe('withRetry interrupt critic — failure probes', () => {
     const dir = copyTree();
     mutate(
       dir,
-      'providers/elbv2-provider.ts',
-      `                logger: this.maskedRetryLogger(maskSecrets),
-                isInterrupted: watch.isInterrupted,
-                onInterrupted: watch.onInterrupted,`,
-      '                logger: this.maskedRetryLogger(maskSecrets),'
+      'providers/elbv2/listener.ts',
+      `              logger: this.maskedRetryLogger(maskSecrets),
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,`,
+      '              logger: this.maskedRetryLogger(maskSecrets),'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('providers/elbv2-provider.ts');
+    expect(stderr).toContain('providers/elbv2/listener.ts');
     expect(stderr).toContain('is not interruptible');
     // The remedy names a file that still holds the reference shape: a split
     // moved it once (custom-resource-provider.ts -> custom-resource/).
@@ -510,11 +510,13 @@ export const go = async () => {
     const dir = copyTree();
     mutate(
       dir,
-      'providers/elbv2-provider.ts',
-      `                isInterrupted: watch.isInterrupted,
-                onInterrupted: watch.onInterrupted,`,
-      `                isInterrupted: () => false,
-                onInterrupted: () => new Error('x'),`
+      'providers/elbv2/listener.ts',
+      `              logger: this.maskedRetryLogger(maskSecrets),
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,`,
+      `              logger: this.maskedRetryLogger(maskSecrets),
+              isInterrupted: () => false,
+              onInterrupted: () => new Error('x'),`
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);

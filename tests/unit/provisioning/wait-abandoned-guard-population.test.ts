@@ -96,7 +96,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // `ecs-provider.ts`'s `isNotFoundException`, moved to its companion file.
   { file: 'provisioning/providers/ecs/convert-service.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/elbv2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `ELBv2Provider`'s `isNotFoundError`, moved to its companion file.
+  { file: 'provisioning/providers/elbv2/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/neptune-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // RDSProvider's `isNotFoundError`, in its companion directory (`rds/`).
   { file: 'provisioning/providers/rds/calls.ts', sites: 1, reason: SDK_PROVIDER_REASON },
