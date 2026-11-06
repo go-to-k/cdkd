@@ -299,7 +299,7 @@ const INSTANCE_STATE_POLL_MS = 5000;
 const VOLUME_ATTACHMENT_WAIT_CAP_MS = 10 * 60 * 1000;
 const VOLUME_ATTACHMENT_POLL_MS = 2000;
 /** Consecutive reads with no attachment after AttachVolume that fail the wait. */
-const VOLUME_ATTACHMENT_NONE_READS = 5;
+const VOLUME_ATTACHMENT_NONE_READS = 15;
 /** `DescribeVolumes`'s answer for a volume id EC2 no longer lists. */
 const VOLUME_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidVolume.NotFound']);
 /**
@@ -8821,6 +8821,9 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
     let leftBehindId: string | undefined;
+    // go-to-k/cdkd#5630: an AttachVolume went out, so the wiring cleanup waits
+    // for the instance to terminate (see there).
+    let volumeAttachIssued = false;
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
       const securityGroups = properties['SecurityGroups'] as string[] | undefined;
@@ -8983,7 +8986,8 @@ export class EC2Provider implements ResourceProvider {
         // go-to-k/cdkd#5630: declared `Volumes` wait under --no-wait too:
         // AttachVolume refuses an instance that is still `pending`.
         const volumes = instanceVolumeEntries(properties['Volumes']);
-        if (process.env['CDKD_NO_WAIT'] !== 'true' || volumes.length > 0) {
+        const waitsForRunning = process.env['CDKD_NO_WAIT'] !== 'true' || volumes.length > 0;
+        if (waitsForRunning) {
           this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
           await waitUntilInstanceRunning(
             // Poll cadence matters more here than on any other type, because an
@@ -9039,7 +9043,9 @@ export class EC2Provider implements ResourceProvider {
         // SILENTLY profile-less instance is a much worse surprise than an
         // unassigned IP, so this warns rather than staying quiet (issue #1279).
         if (iamInstanceProfile) {
-          if (process.env['CDKD_NO_WAIT'] === 'true') {
+          // go-to-k/cdkd#5630: an instance whose declared Volumes made it wait
+          // for `running` under --no-wait gets the check too.
+          if (!waitsForRunning) {
             // Both commands render through `pasteableAwsCommand` (issue
             // #3136): the profile is a template value, so it is sanitized and
             // shell-quoted, and a value that cannot be printed exactly
@@ -9098,6 +9104,7 @@ export class EC2Provider implements ResourceProvider {
         // the create (CloudFormation fails it the same way, measured), and the
         // wiring cleanup below terminates the new instance.
         for (const volume of volumes) {
+          volumeAttachIssued = true;
           await this.attachInstanceVolume(logicalId, instanceId, resourceType, volume);
         }
 
@@ -9116,9 +9123,16 @@ export class EC2Provider implements ResourceProvider {
         // (sendTaggedCreate's untagged re-send), so the volumes did not get
         // the tags either: apply them to the attached volumes now.
         if (propagateToVolumes && !tagsApplied && desiredTags.length > 0) {
+          // The declared Volumes are the template's own AWS::EC2::Volume
+          // resources, not volumes the launch created: CloudFormation
+          // propagates the tags to the latter only.
+          const declaredVolumeIds = new Set(volumes.map((v) => v.VolumeId));
           const volumeIds = (runningInstance?.BlockDeviceMappings ?? [])
             .map((m) => m.Ebs?.VolumeId)
-            .filter((id): id is string => typeof id === 'string' && id !== '');
+            .filter(
+              (id): id is string =>
+                typeof id === 'string' && id !== '' && !declaredVolumeIds.has(id)
+            );
           if (volumeIds.length === 0) {
             this.logger.warn(
               safeMsg`${logicalId}: PropagateTagsToVolumeOnCreation is set, but the launch went out without tags (the tagged RunInstances was refused) and DescribeInstances reported no attached volume for ${instanceId} yet (under --no-wait the instance may still be pending), so its volumes were not tagged. Tag them with ec2:CreateTags once they are attached.`
@@ -9143,6 +9157,20 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          // go-to-k/cdkd#5630: a volume attached to the instance stays
+          // `in-use` until the instance is gone, and a rollback deleting that
+          // AWS::EC2::Volume next would be refused (VolumeInUse) and leave it
+          // behind. Termination detaches it, so wait for it here.
+          if (volumeAttachIssued) {
+            await waitUntilInstanceTerminated(
+              { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
+              { InstanceIds: [instanceId] }
+            ).catch((waitError: unknown) => {
+              this.logger.warn(
+                safeMsg`Instance ${instanceId} of ${logicalId} was not seen terminated after its failed create (${describeAwsFailure(waitError).detail}); a volume it held may still be attached for a moment.`
+              );
+            });
+          }
           retractCreatedResource(logicalId, resourceType, instanceId);
           // Released only now, because only now is the instance this token
           // names actually going away: a retry reusing it would be handed back
@@ -10640,7 +10668,11 @@ export class EC2Provider implements ResourceProvider {
    * at `device` (`attaching`, `attached`, `detaching`), `'none'` when the
    * volume has no such attachment, or `'gone'` when EC2 no longer lists it.
    */
-  private async readVolumeAttachment(instanceId: string, volume: InstanceVolume): Promise<string> {
+  private async readVolumeAttachment(
+    instanceId: string,
+    volume: InstanceVolume,
+    anyDevice = false
+  ): Promise<string> {
     let resp;
     try {
       resp = await this.ec2Client.send(
@@ -10653,7 +10685,7 @@ export class EC2Provider implements ResourceProvider {
     const found = resp.Volumes?.find((v) => v.VolumeId === volume.VolumeId);
     if (found === undefined) return 'gone';
     const attachment = (found.Attachments ?? []).find(
-      (a) => a.InstanceId === instanceId && a.Device === volume.Device
+      (a) => a.InstanceId === instanceId && (anyDevice || a.Device === volume.Device)
     );
     return attachment?.State ?? 'none';
   }
@@ -10705,7 +10737,11 @@ export class EC2Provider implements ResourceProvider {
         })
       );
     } catch (error) {
-      const state = await this.readVolumeAttachment(instanceId, volume).catch(() => 'attached');
+      // Any device: a volume still on this instance at another device (the
+      // record's Device is stale) is not detached.
+      const state = await this.readVolumeAttachment(instanceId, volume, true).catch(
+        () => 'attached'
+      );
       if (state !== 'none' && state !== 'gone' && state !== 'detaching') throw error;
     }
     await this.waitForVolumeAttachment(logicalId, instanceId, resourceType, volume, 'detached');
@@ -10742,7 +10778,7 @@ export class EC2Provider implements ResourceProvider {
             )
           );
         }
-        last = await this.readVolumeAttachment(instanceId, volume);
+        last = await this.readVolumeAttachment(instanceId, volume, target === 'detached');
         if (target === 'attached' && last === 'attached') return;
         if (target === 'detached' && (last === 'none' || last === 'gone')) return;
         // A read right after AttachVolume can lag it, so only a `none` that
@@ -13668,7 +13704,10 @@ export class EC2Provider implements ResourceProvider {
     // live attachments of the declared volume ids, in the declared order. A
     // volume another construct attached (an `AWS::EC2::VolumeAttachment`) is
     // not this property's, so it is left out.
-    if (Array.isArray(properties?.['Volumes'])) {
+    if (
+      Array.isArray(properties?.['Volumes']) &&
+      instanceVolumesRefusal(properties['Volumes'], 'AWS::EC2::Instance') === undefined
+    ) {
       const declaredIds = instanceVolumeEntries(properties['Volumes'])
         .map((v) => v.VolumeId)
         .filter((id) => typeof id === 'string');

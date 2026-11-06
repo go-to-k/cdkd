@@ -6,7 +6,9 @@ import {
   DetachVolumeCommand,
   RunInstancesCommand,
   TerminateInstancesCommand,
+  CreateTagsCommand,
   waitUntilInstanceRunning,
+  waitUntilInstanceTerminated,
 } from '@aws-sdk/client-ec2';
 
 // go-to-k/cdkd#5630 (fourth slice): AWS::EC2::Instance LaunchTemplate and
@@ -55,7 +57,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
-  return { ...actual, waitUntilInstanceRunning: vi.fn(() => Promise.resolve({})) };
+  return {
+    ...actual,
+    waitUntilInstanceRunning: vi.fn(() => Promise.resolve({})),
+    waitUntilInstanceTerminated: vi.fn(() => Promise.resolve({})),
+  };
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
@@ -93,6 +99,12 @@ let failDetach: Error | undefined;
 /** When set, an AttachVolume is accepted but never shows up in DescribeVolumes. */
 let attachInvisible: boolean;
 let bdm: Array<{ DeviceName: string; Ebs: { VolumeId: string } }>;
+/** Reads that still show a detached volume as `detaching` after its DetachVolume. */
+let detachingReads: number;
+/** Volume ids DescribeVolumes answers InvalidVolume.NotFound for. */
+let goneVolumes: Set<string>;
+/** When set, the tagged RunInstances is denied ec2:CreateTags (the untagged re-send). */
+let denyTaggedLaunch: boolean;
 
 beforeEach(() => {
   mockSend.mockReset();
@@ -103,6 +115,10 @@ beforeEach(() => {
   failDetach = undefined;
   attachInvisible = false;
   bdm = [];
+  detachingReads = 0;
+  goneVolumes = new Set();
+  denyTaggedLaunch = false;
+  vi.mocked(waitUntilInstanceTerminated).mockClear();
   vi.spyOn(
     EC2Provider.prototype as unknown as { sleep: () => Promise<void> },
     'sleep'
@@ -111,6 +127,16 @@ beforeEach(() => {
   mockSend.mockImplementation((cmd: unknown) => {
     const input = (cmd as { input: Record<string, unknown> }).input;
     if (cmd instanceof RunInstancesCommand) {
+      if (denyTaggedLaunch && input['TagSpecifications'] !== undefined) {
+        return Promise.reject(
+          Object.assign(
+            new Error(
+              'You are not authorized to perform this operation. User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized to perform: ec2:CreateTags on resource: arn:aws:ec2:us-east-1:123456789012:instance/*'
+            ),
+            { name: 'UnauthorizedOperation' }
+          )
+        );
+      }
       return Promise.resolve({ Instances: [{ InstanceId: 'i-new' }] });
     }
     if (cmd instanceof DescribeInstancesCommand) {
@@ -142,7 +168,10 @@ beforeEach(() => {
     }
     if (cmd instanceof DetachVolumeCommand) {
       if (failDetach !== undefined) return Promise.reject(failDetach);
-      attachments.delete(input['VolumeId'] as string);
+      const id = input['VolumeId'] as string;
+      const held = attachments.get(id);
+      if (held !== undefined && detachingReads > 0) held.State = 'detaching';
+      else attachments.delete(id);
       return Promise.resolve({ State: 'detaching' });
     }
     if (cmd instanceof DescribeVolumesCommand) {
@@ -150,7 +179,15 @@ beforeEach(() => {
       // the test instead of spinning.
       if (++volumeReads > 50) return Promise.reject(new Error('runaway DescribeVolumes poll'));
       const id = (input['VolumeIds'] as string[])[0]!;
+      if (goneVolumes.has(id)) {
+        return Promise.reject(
+          Object.assign(new Error(`The volume '${id}' does not exist.`), {
+            name: 'InvalidVolume.NotFound',
+          })
+        );
+      }
       const attachment = attachments.get(id);
+      if (attachment?.State === 'detaching' && --detachingReads <= 0) attachments.delete(id);
       return Promise.resolve({
         Volumes: [{ VolumeId: id, Attachments: attachment === undefined ? [] : [attachment] }],
       });
@@ -248,7 +285,81 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     await expect(
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
     ).rejects.toThrow(/volume vol-1 is not attached at \/dev\/sdf while cdkd waited/);
-    expect(sent(DescribeVolumesCommand)).toHaveLength(5);
+    // A read right after AttachVolume can lag it: 15 empty reads, not one.
+    expect(sent(DescribeVolumesCommand)).toHaveLength(15);
+  });
+
+  it('waits for the instance to terminate when a create fails after an AttachVolume, so the volume is free for a rollback', async () => {
+    attachInvisible = true;
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/not attached at \/dev\/sdf/);
+    expect(sent(TerminateInstancesCommand)).toEqual([{ InstanceIds: ['i-new'] }]);
+    expect(waitUntilInstanceTerminated).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not wait for termination when the create failed before any AttachVolume', async () => {
+    let describes = 0;
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof DescribeInstancesCommand && ++describes === 1
+        ? Promise.reject(Object.assign(new Error('boom'), { name: 'InternalError' }))
+        : base(cmd)
+    );
+    await expect(new EC2Provider().create('Inst', TYPE, BASE)).rejects.toThrow();
+    expect(sent(TerminateInstancesCommand)).toHaveLength(1);
+    expect(waitUntilInstanceTerminated).not.toHaveBeenCalled();
+  });
+
+  it('runs the instance-profile check under --no-wait once declared Volumes made the create wait for running', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    const ensure = vi
+      .spyOn(
+        EC2Provider.prototype as unknown as { ensureIamInstanceProfileAssociated: () => Promise<void> },
+        'ensureIamInstanceProfileAssociated'
+      )
+      .mockResolvedValue(undefined);
+    await new EC2Provider().create('Inst', TYPE, {
+      ...BASE,
+      IamInstanceProfile: 'profile',
+      Volumes: [SDF1],
+    });
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Skipped the IAM instance profile/);
+    ensure.mockRestore();
+  });
+
+  it("does not propagate the instance's tags to the declared Volumes on the untagged re-send", async () => {
+    denyTaggedLaunch = true;
+    bdm = [
+      { DeviceName: '/dev/xvda', Ebs: { VolumeId: 'vol-root' } },
+      { DeviceName: '/dev/sdf', Ebs: { VolumeId: 'vol-1' } },
+    ];
+    await new EC2Provider().create('Inst', TYPE, {
+      ...BASE,
+      PropagateTagsToVolumeOnCreation: true,
+      Tags: [{ Key: 'k', Value: 'v' }],
+      Volumes: [SDF1],
+    });
+    const tagged = sent(CreateTagsCommand).flatMap((i) => i['Resources'] as string[]);
+    expect(tagged).toContain('vol-root');
+    expect(tagged).not.toContain('vol-1');
+  });
+
+  it('refuses an attach whose volume this instance holds at ANOTHER device', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdz', State: 'attached' });
+    failAttach = Object.assign(new Error('already attached'), { name: 'VolumeInUse' });
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/already attached/);
+  });
+
+  it('fails the attach wait when the volume is no longer listed', async () => {
+    goneVolumes.add('vol-1');
+    attachInvisible = true;
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/volume vol-1 is no longer returned by DescribeVolumes/);
   });
 
   it.each([
@@ -278,10 +389,44 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
     expect(sent(DetachVolumeCommand)[0]).toMatchObject({ InstanceId: 'i-new' });
   });
 
-  it('re-attaches a volume whose Device changed', async () => {
+  it('re-attaches a volume whose Device changed only once its detach has finished', async () => {
     attachments.set('vol-2', { InstanceId: 'i-new', Device: '/dev/sdg', State: 'attached' });
+    detachingReads = 2;
     await update({ ...BASE, Volumes: [SDH2] }, { ...BASE, Volumes: [SDG2] });
     expect(volumeWrites()).toEqual(['Detach vol-2 /dev/sdg', 'Attach vol-2 /dev/sdh']);
+    // The detach wait read `detaching` twice and then no attachment, all
+    // before the AttachVolume went out.
+    const order = mockSend.mock.calls
+      .map((c) => c[0] as object)
+      .filter(
+        (cmd) =>
+          cmd instanceof DescribeVolumesCommand ||
+          cmd instanceof AttachVolumeCommand ||
+          cmd instanceof DetachVolumeCommand
+      )
+      .map((cmd) => cmd.constructor.name);
+    expect(order.slice(0, 5)).toEqual([
+      'DetachVolumeCommand',
+      'DescribeVolumesCommand',
+      'DescribeVolumesCommand',
+      'DescribeVolumesCommand',
+      'AttachVolumeCommand',
+    ]);
+  });
+
+  it('takes a refused DetachVolume for a volume EC2 no longer lists as detached', async () => {
+    goneVolumes.add('vol-1');
+    failDetach = Object.assign(new Error('gone'), { name: 'InvalidVolume.NotFound' });
+    await update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) });
+    expect(volumeWrites()).toEqual(['Detach vol-1 /dev/sdf']);
+  });
+
+  it('surfaces a refused DetachVolume while the volume sits on this instance at another device', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdz', State: 'attached' });
+    failDetach = Object.assign(new Error('wrong device'), { name: 'InvalidAttachment.NotFound' });
+    await expect(
+      update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) })
+    ).rejects.toThrow(/wrong device/);
   });
 
   it('detaches every listed volume when the property is removed', async () => {
@@ -381,6 +526,15 @@ describe('AWS::EC2::Instance LaunchTemplate / Volumes read-back (#5630)', () => 
       Volumes: [SDF1, SDG2],
     });
     expect((state as Record<string, unknown>)['Volumes']).toEqual([SDF1, SDH2]);
+  });
+
+  it('omits Volumes for a malformed recorded list instead of throwing', async () => {
+    bdm = [{ DeviceName: '/dev/sdf', Ebs: { VolumeId: 'vol-1' } }];
+    const state = await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      Volumes: [null],
+    });
+    expect(state).not.toHaveProperty('Volumes');
   });
 
   it('omits Volumes for a bag that does not declare them', async () => {
