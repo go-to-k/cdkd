@@ -3,7 +3,7 @@ import { CreateResourceCommand } from '@aws-sdk/client-cloudcontrol';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { getTopLevelDeployAttributeNames } from '../read-only-properties.js';
 import { isWaitAbandonedError } from '../wait-abandoned.js';
 import type { CreateContext, ResourceCreateResult } from '../../types/resource.js';
@@ -64,13 +64,15 @@ export async function createInIdLogScope(
     const ccProperties = stringifyJsonProperties(resourceType, cleanProperties);
     const desiredState = JSON.stringify(ccProperties);
     // Log the top-level property KEYS only, never the values (GHSA fix, sibling
-    // of the update-path patch-log masking below): a CC-routed resource with no
-    // SDK provider may carry a resolved `{{resolve:secretsmanager:...}}` value
-    // in `ccProperties`, and this provider has no access to the resolver's
-    // recorded-secret map to mask it. Keys are enough to debug a CREATE; the
+    // of the update-path patch-log masking): a CC-routed resource with no SDK
+    // provider may carry a resolved `{{resolve:secretsmanager:...}}` value in
+    // `ccProperties`, and the values are never needed to debug a CREATE. A key
+    // cannot hold a resolved dynamic reference (CloudFormation resolves one only
+    // in a value), but each still goes through the caller's masker BEFORE the
+    // stringify, so the line stays masked if it ever renders more (#5894). The
     // full document still goes to AWS below.
     this.logger.debug(
-      `DesiredState for ${logicalId}: keys=${JSON.stringify(Object.keys(ccProperties))}`
+      `DesiredState for ${logicalId}: keys=${JSON.stringify(maskDeep(Object.keys(ccProperties), mask))}`
     );
     const createResponse = await this.cloudControlClient.send(
       new CreateResourceCommand({

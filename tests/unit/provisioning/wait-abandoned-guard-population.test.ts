@@ -88,7 +88,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // a `private isNotFoundError() { return a || b }` helper — which is exactly
   // why the scan had to stop matching syntax and start parsing.
   { file: 'provisioning/providers/appsync/api-key.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/asg-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `ASGProvider`'s `isNotFoundError`, moved to its companion file.
+  { file: 'provisioning/providers/asg/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // The helper both DocDB providers share (issue #3866 split the subnet group
   // out of docdb-provider.ts); it classifies only their own SDK rejections.
   { file: 'provisioning/providers/docdb-shared.ts', sites: 1, reason: SDK_PROVIDER_REASON },

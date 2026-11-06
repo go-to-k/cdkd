@@ -331,6 +331,25 @@ const DEFAULT_PROVIDERS_DIR = join(REPO_ROOT, PROVIDERS_ROOT_REL);
  */
 const EXTRA_FILES: readonly string[] = ['composite-id.ts'];
 
+/**
+ * The Cloud Control provider family, named relative to the providers
+ * directory's PARENT like {@link EXTRA_FILES} (issue #5880).
+ *
+ * It sits outside `providers/**` yet is the fallback for every type without an
+ * SDK provider, so it handles arbitrary properties and readback attributes —
+ * the values this critic exists to fence. It is the `<stem>-provider.ts` +
+ * `<stem>/` split `companionFiles` already pairs: the class file
+ * `cloud-control-provider.ts` and its `cloud-control/**` method modules. BOTH
+ * are REQUIRED (issue #5894): either one missing is a scan failure, so a rename
+ * of the file or the directory turns the run red instead of silently dropping
+ * that half — the directory alone would otherwise satisfy every floor. If the
+ * class file is ever retired, drop {@link CLOUD_CONTROL_FILE} here in the same
+ * change. {@link MIN_CLOUD_CONTROL_FILES} / {@link MIN_CLOUD_CONTROL_SITES} fail
+ * a run that stopped reading the family.
+ */
+const CLOUD_CONTROL_FILE = 'cloud-control-provider.ts';
+const CLOUD_CONTROL_DIR = 'cloud-control';
+
 /** The shared deep-mask walk, and the module that exports it. */
 const MASK_WALK_FN = 'maskDeep';
 const MASKER_DEFAULT_FN = 'maskerOrIdentity';
@@ -403,7 +422,7 @@ export interface Exemption {
  * nobody re-checks goes inert exactly when it stops being needed, and then
  * hides the next real entry.
  *
- * TWO categories, and they retire differently. A THIRD is gone: nine OTHER-LANE
+ * TWO categories, and they retire differently. Two more are gone: nine OTHER-LANE
  * rows recorded raw sites in `dynamodb-table-provider.ts`,
  * `dynamodb-globaltable-provider.ts` and `s3-bucket-provider.ts` while issue
  * #2177's per-family lanes owned those files. Both lanes merged (PRs #2248 and
@@ -411,7 +430,9 @@ export interface Exemption {
  * is the retirement this mechanism exists to force, and it is the case the
  * verdict check below had to be added for: those sites now read `masked`, and
  * an audit that never looked at a verdict would have kept reporting them
- * exempt.
+ * exempt. The other, two value-free Cloud Control debug lines (issue #5880),
+ * retired the same way once both were routed through the caller's masker
+ * (issue #5894).
  *
  * The remaining categories:
  *
@@ -507,6 +528,18 @@ const MIN_SITES = 30;
 const MIN_MASKED_SITES = 20;
 /** Minimum distinct files carrying at least one site. Measured 18. */
 const MIN_FILES_WITH_SITES = 12;
+/**
+ * Minimum Cloud Control family files scanned (issue #5880). Two: the class file
+ * plus at least one `cloud-control/**` module, both required by
+ * {@link cloudControlFamily}; the floor's job is the input-list collapse.
+ */
+const MIN_CLOUD_CONTROL_FILES = 2;
+/**
+ * Minimum interpolated `JSON.stringify` sites found in the Cloud Control family
+ * (issue #5880) — the proof its files are PARSED, not merely listed. Measured 2:
+ * the CREATE keys and UPDATE op/path debug lines, both masked (issue #5894).
+ */
+const MIN_CLOUD_CONTROL_SITES = 1;
 /**
  * Minimum DERIVED masker names across the scanned tree.
  *
@@ -680,6 +713,10 @@ export interface StringifySite {
 
 export interface MaskReport {
   readonly filesScanned: number;
+  /** Files of the Cloud Control family scanned (issue #5880). */
+  readonly cloudControlFiles: number;
+  /** Interpolated `JSON.stringify` sites found in those files. */
+  readonly cloudControlSites: number;
   readonly filesWithSites: number;
   readonly sites: number;
   readonly masked: number;
@@ -3309,6 +3346,38 @@ export function companionImportedMaskers(input: readonly string[]): Map<string, 
   return imported;
 }
 
+/**
+ * The Cloud Control family's files next to `providersDir`: the class file AND
+ * its companion directory. EITHER missing is a {@link ScanFailure} (issue
+ * #5894) — a moved or renamed half must update the constants, never drop out
+ * of the scan while the other half keeps the floors green.
+ */
+function cloudControlFamily(providersDir: string): string[] {
+  const file = resolve(providersDir, '..', CLOUD_CONTROL_FILE);
+  const dir = resolve(providersDir, '..', CLOUD_CONTROL_DIR);
+  // Only ENOENT reads as "this half is absent"; any other stat error (EACCES,
+  // ELOOP) is a broken tree, reported as such rather than as a rename.
+  const statOrAbsent = (path: string): ReturnType<typeof statSync> | undefined => {
+    try {
+      return statSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw new ScanFailure(
+        `cannot stat ${path}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
+  const missing = (what: string): ScanFailure =>
+    new ScanFailure(
+      `the Cloud Control provider family's ${what} is missing next to ${providersDir} — it is ` +
+        `in scope for issue #5880; if it moved, update CLOUD_CONTROL_FILE / CLOUD_CONTROL_DIR ` +
+        `rather than dropping the coverage`
+    );
+  if (!statOrAbsent(file)?.isFile()) throw missing(`class file ${CLOUD_CONTROL_FILE}`);
+  if (!statOrAbsent(dir)?.isDirectory()) throw missing(`directory ${CLOUD_CONTROL_DIR}/`);
+  return [file, ...listSourceFiles(dir)];
+}
+
 export function buildReport(providersDir: string): MaskReport {
   const files = listSourceFiles(providersDir);
   for (const extra of EXTRA_FILES) {
@@ -3324,8 +3393,12 @@ export function buildReport(providersDir: string): MaskReport {
     }
     files.push(full);
   }
+  const cloudControl = cloudControlFamily(providersDir);
+  files.push(...cloudControl);
+  const cloudControlSet = new Set(cloudControl);
 
   const sites: StringifySite[] = [];
+  let cloudControlSites = 0;
   let maskerNames = 0;
   let concatSites = 0;
   const bareSinkFiles: string[] = [];
@@ -3344,6 +3417,7 @@ export function buildReport(providersDir: string): MaskReport {
     concatSites += analyzed.concatSites;
     bareSinkFiles.push(...analyzed.bareSinkLocations);
     if (analyzed.fixpointTruncated) truncatedFiles.push(rel);
+    if (cloudControlSet.has(file)) cloudControlSites += analyzed.sites.length;
     for (const site of analyzed.sites) {
       const exemption = site.verdict === 'raw' ? exemptionFor(site) : undefined;
       sites.push(
@@ -3354,6 +3428,10 @@ export function buildReport(providersDir: string): MaskReport {
 
   return {
     filesScanned: files.length,
+    // Counted from the list actually SCANNED, not from the family lookup, so
+    // dropping the family from `files` zeroes it.
+    cloudControlFiles: files.filter((file) => cloudControlSet.has(file)).length,
+    cloudControlSites,
     filesWithSites: new Set(sites.map((s) => s.file)).size,
     sites: sites.length,
     masked: sites.filter((s) => s.verdict === 'masked').length,
@@ -3474,6 +3552,12 @@ export function main(
       [report.masked, MIN_MASKED_SITES, 'pre-stringify masked sites'],
       [report.filesWithSites, MIN_FILES_WITH_SITES, 'files carrying a site'],
       [report.maskerNames, MIN_MASKER_NAMES, 'derived masker names'],
+      [report.cloudControlFiles, MIN_CLOUD_CONTROL_FILES, 'Cloud Control family files scanned'],
+      [
+        report.cloudControlSites,
+        MIN_CLOUD_CONTROL_SITES,
+        'interpolated `JSON.stringify` sites in the Cloud Control family',
+      ],
     ];
     for (const [actual, minimum, label] of floors) {
       if (actual < minimum) {

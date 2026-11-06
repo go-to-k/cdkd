@@ -29,9 +29,7 @@
       "HostId",
       "HostResourceGroupArn",
       "KernelId",
-      "LicenseSpecifications",
-      "RamdiskId",
-      "SsmAssociations"
+      "RamdiskId"
     ],
     "AWS::EC2::Subnet": [
       "AvailabilityZoneId",

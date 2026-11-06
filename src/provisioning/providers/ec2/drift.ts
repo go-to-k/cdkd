@@ -323,6 +323,9 @@ export function getDriftUnknownPaths(
     // go-to-k/cdkd#5630: DescribeInstances names a `LaunchTemplate` only
     // through the `aws:ec2launchtemplate:*` tags (an id and a resolved
     // version number, never a name or `$Latest`), so it is not read back.
+    // go-to-k/cdkd#5630: DescribeInstances reports no `Licenses` for a
+    // licensed instance (measured: null on every one); only License Manager's
+    // ListLicenseSpecificationsForResource reads `LicenseSpecifications`.
     case 'AWS::EC2::Instance':
       return [
         'NetworkInterfaces',
@@ -331,6 +334,7 @@ export function getDriftUnknownPaths(
         'Ipv6AddressCount',
         'Ipv6Addresses',
         'LaunchTemplate',
+        'LicenseSpecifications',
       ];
     // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
     // read back from the CIDR instead. A `monitor` encryption control

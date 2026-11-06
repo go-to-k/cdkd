@@ -19,7 +19,7 @@ import {
   type ApiGatewayV2Reimport,
 } from '../apigwv2-body-import-patch.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
@@ -233,15 +233,20 @@ export async function updateInIdLogScope(
     // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
     // patch value can be a resolved secret (a Cloud-Control-routed
     // `{{resolve:secretsmanager:...}}` property, e.g. Cognito
-    // `ProviderDetails.client_secret`), and this provider has no access to the
-    // resolver's recorded-secret map to mask it. Paths are enough to debug
-    // patch generation; the full document still goes to AWS below.
+    // `ProviderDetails.client_secret`), and paths are enough to debug patch
+    // generation. A path names property KEYS, never a value, but it still goes
+    // through the caller's masker BEFORE the stringify, so the line stays
+    // masked if it ever renders more (#5894). The full document still goes to
+    // AWS below.
     this.logger.debug(
       `Generated ${patch.length} patch operations for ${logicalId}: ${JSON.stringify(
-        patch.map((op) => {
-          const anyOp = op as { op?: unknown; path?: unknown };
-          return { op: anyOp.op, path: anyOp.path };
-        })
+        maskDeep(
+          patch.map((op) => {
+            const anyOp = op as { op?: unknown; path?: unknown };
+            return { op: anyOp.op, path: anyOp.path };
+          }),
+          maskerOrIdentity(context?.maskSecrets)
+        )
       )}`
     );
 
