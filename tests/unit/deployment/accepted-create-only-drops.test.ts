@@ -14,11 +14,11 @@ import { childStoredInParentTypes } from '../../../src/deployment/child-of-recre
  */
 const TYPE = 'AWS::EC2::Subnet';
 const CREATE_ONLY = 'AvailabilityZoneId';
-const PLAIN = 'AssignIpv6AddressOnCreation';
+const PLAIN = 'EnableLniAtDeviceIndex';
 const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
 const RECORD = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
 
-it('PREMISE: AvailabilityZoneId is a create-only drop, AssignIpv6AddressOnCreation a plain one', () => {
+it('PREMISE: AvailabilityZoneId is a create-only drop, EnableLniAtDeviceIndex a plain one', () => {
   const cov = getPropertyCoverage(TYPE);
   if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
   expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
@@ -29,7 +29,7 @@ it('PREMISE: AvailabilityZoneId is a create-only drop, AssignIpv6AddressOnCreati
 describe('acceptedCreateOnlyDropsField (the writer)', () => {
   it('an SDK-route CREATE or REPLACEMENT names every create-only drop it kept', () => {
     expect(
-      acceptedCreateOnlyDropsField({ ...RECORD, [PLAIN]: true }, TYPE, 'sdk', 'new-resource')
+      acceptedCreateOnlyDropsField({ ...RECORD, [PLAIN]: 1 }, TYPE, 'sdk', 'new-resource')
     ).toEqual({ acceptedCreateOnlyDrops: [CREATE_ONLY] });
   });
 

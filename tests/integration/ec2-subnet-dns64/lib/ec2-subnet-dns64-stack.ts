@@ -9,14 +9,14 @@ export class Ec2SubnetDns64Stack extends cdk.Stack {
     const phase = process.env.CDKD_TEST_UPDATE ?? 'create';
     const removeDns64 = process.env.CDKD_TEST_REMOVAL === 'true';
     const removeIpv6 = phase === 'remove-ipv6';
-    const changedCidr = ['change-cidr', 'enable-dns64', 'remove-dns64', 'disable-dns64', 'remove-ipv6'].includes(phase);
+    const changedCidr = ['change-cidr', 'enable-dns64', 'move-dns-block', 'remove-dns64', 'disable-dns64', 'remove-ipv6'].includes(phase);
     const vpc = new ec2.CfnVPC(this, 'Vpc', { cidrBlock: '10.62.0.0/16' });
     const ipv6 = new ec2.CfnVPCCidrBlock(this, 'VpcIpv6', {
       vpcId: vpc.ref, amazonProvidedIpv6CidrBlock: true,
     });
-    const block = cdk.Fn.select(changedCidr ? 1 : 0,
-      cdk.Fn.cidr(cdk.Fn.select(0, vpc.attrIpv6CidrBlocks), 2, '64'));
-    // The L2 adds AssignIpv6AddressOnCreation, outside this slice's SDK coverage.
+    const blocks = cdk.Fn.cidr(cdk.Fn.select(0, vpc.attrIpv6CidrBlocks), 8, '64');
+    const block = cdk.Fn.select(changedCidr ? 1 : 0, blocks);
+    // A CfnSubnet, not the L2, so this subnet declares no AssignIpv6AddressOnCreation.
     const subnet = new ec2.CfnSubnet(this, 'Subnet', {
       vpcId: vpc.ref, cidrBlock: '10.62.1.0/24',
       ...(removeIpv6 ? {} : { ipv6CidrBlock: block }),
@@ -25,7 +25,63 @@ export class Ec2SubnetDns64Stack extends cdk.Stack {
       tags: [{ key: 'Phase', value: phase }],
     });
     subnet.addDependency(ipv6);
+
+    // go-to-k/cdkd#5632: AssignIpv6AddressOnCreation and
+    // PrivateDnsNameOptionsOnLaunch on their own dual-stack subnet, so the
+    // IPv6-block phases above never meet them. The removal phase drops both
+    // after `enable-dns64` set non-default values, which must survive it.
+    // The L1 types this block as `any` and passes its keys through verbatim,
+    // so they are spelled the CloudFormation way.
+    const dnsShape: Record<string, { assign: boolean; dns: Record<string, unknown> }> = {
+      create: {
+        assign: true,
+        dns: { HostnameType: 'resource-name', EnableResourceNameDnsARecord: true, EnableResourceNameDnsAAAARecord: true },
+      },
+      'disable-first': {
+        assign: false,
+        dns: { HostnameType: 'ip-name', EnableResourceNameDnsARecord: true, EnableResourceNameDnsAAAARecord: true },
+      },
+      'enable-dns64': {
+        assign: true,
+        dns: { HostnameType: 'resource-name', EnableResourceNameDnsARecord: false, EnableResourceNameDnsAAAARecord: true },
+      },
+      'disable-dns64': {
+        assign: false,
+        dns: { HostnameType: 'ip-name', EnableResourceNameDnsARecord: false, EnableResourceNameDnsAAAARecord: false },
+      },
+    };
+    const shape =
+      dnsShape[phase] ??
+      dnsShape[phase === 'change-cidr' ? 'disable-first' : phase === 'move-dns-block' ? 'enable-dns64' : 'disable-dns64'];
+    // `move-dns-block` changes the IPv6 block while AssignIpv6AddressOnCreation,
+    // the AAAA record and DNS64 stay true, which EC2 refuses to detach unless
+    // each is turned off first; the block stays moved until the final `create`
+    // puts it back (with DNS64 still on).
+    const movedDnsBlock = ['move-dns-block', 'remove-dns64', 'disable-dns64', 'remove-ipv6'].includes(phase);
+    const dnsBlock = cdk.Fn.select(movedDnsBlock ? 4 : 2, blocks);
+    const dnsSubnet = new ec2.CfnSubnet(this, 'DnsSubnet', {
+      vpcId: vpc.ref, cidrBlock: '10.62.2.0/24', ipv6CidrBlock: dnsBlock,
+      // DNS64 stays on, so every block move here also detaches under it.
+      ...(removeDns64
+        ? {}
+        : { assignIpv6AddressOnCreation: shape.assign, privateDnsNameOptionsOnLaunch: shape.dns, enableDns64: true }),
+      tags: [{ key: 'Phase', value: phase }],
+    });
+    dnsSubnet.addDependency(ipv6);
+
+    // go-to-k/cdkd#5632: an IPv6-only subnet, created by the SDK route with no
+    // IPv4 block; unchanged across every phase, so it must never be replaced.
+    const nativeSubnet = new ec2.CfnSubnet(this, 'NativeSubnet', {
+      vpcId: vpc.ref, ipv6Native: true, ipv6CidrBlock: cdk.Fn.select(3, blocks),
+      assignIpv6AddressOnCreation: true,
+      privateDnsNameOptionsOnLaunch: { HostnameType: 'resource-name', EnableResourceNameDnsAAAARecord: true },
+    });
+    nativeSubnet.addDependency(ipv6);
+
     new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+    new cdk.CfnOutput(this, 'DnsSubnetId', { value: dnsSubnet.ref });
+    new cdk.CfnOutput(this, 'DnsExpectedCidr', { value: dnsBlock });
+    new cdk.CfnOutput(this, 'NativeSubnetId', { value: nativeSubnet.ref });
     new cdk.CfnOutput(this, 'VpcId', { value: vpc.ref });
     new cdk.CfnOutput(this, 'ExpectedCidr', { value: removeIpv6 ? 'none' : block });
   }

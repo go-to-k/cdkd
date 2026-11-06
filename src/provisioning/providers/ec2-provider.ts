@@ -1040,6 +1040,78 @@ const VPC_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidVpcID.NotFound
 const IPAM_POOL_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidIpamPoolId.NotFound']);
 /** `DescribeSubnets`'s answer for a subnet id EC2 no longer lists. */
 const SUBNET_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidSubnetID.NotFound']);
+
+/**
+ * go-to-k/cdkd#5632: each `PrivateDnsNameOptionsOnLaunch` member and the
+ * `ModifySubnetAttribute` field that writes it, one attribute per call.
+ */
+const SUBNET_PRIVATE_DNS_MEMBERS = [
+  { member: 'HostnameType', field: 'PrivateDnsHostnameTypeOnLaunch', kind: 'string' },
+  {
+    member: 'EnableResourceNameDnsARecord',
+    field: 'EnableResourceNameDnsARecordOnLaunch',
+    kind: 'boolean',
+  },
+  {
+    member: 'EnableResourceNameDnsAAAARecord',
+    field: 'EnableResourceNameDnsAAAARecordOnLaunch',
+    kind: 'boolean',
+  },
+] as const;
+
+const AAAA_MEMBER = SUBNET_PRIVATE_DNS_MEMBERS[2];
+
+/**
+ * go-to-k/cdkd#5632: the attributes while any of which EC2 refuses
+ * DisassociateSubnetCidrBlock (`InvalidCidrBlock.InUse ... because its subnet
+ * has <attribute> set to true`, each measured us-east-1), in the order they
+ * are turned off; each is one ModifySubnetAttribute call, the only shape EC2
+ * accepts (`Only one subnet attribute can be modified at a time`).
+ */
+const SUBNET_DETACH_BLOCKERS = [
+  { attribute: 'EnableDns64', unsettledKey: 'EnableDns64', live: (s: Subnet) => s.EnableDns64 },
+  {
+    attribute: 'AssignIpv6AddressOnCreation',
+    unsettledKey: 'AssignIpv6AddressOnCreation',
+    live: (s: Subnet) => s.AssignIpv6AddressOnCreation,
+  },
+  {
+    attribute: 'EnableResourceNameDnsAAAARecordOnLaunch',
+    unsettledKey: 'PrivateDnsNameOptionsOnLaunch',
+    live: (s: Subnet) => s.PrivateDnsNameOptionsOnLaunch?.EnableResourceNameDnsAAAARecord,
+  },
+] as const;
+
+type SubnetDetachAttribute = (typeof SUBNET_DETACH_BLOCKERS)[number]['attribute'];
+
+type SubnetPrivateDnsField = (typeof SUBNET_PRIVATE_DNS_MEMBERS)[number]['field'];
+
+/** The refusal for a malformed `PrivateDnsNameOptionsOnLaunch`; absent is usable. */
+function subnetPrivateDnsOptionsRefusal(block: unknown): string | undefined {
+  const path = 'Subnet.PrivateDnsNameOptionsOnLaunch';
+  for (const { member, kind } of SUBNET_PRIVATE_DNS_MEMBERS) {
+    const message =
+      kind === 'string'
+        ? configStringRefusal(block, member, '<unset>', path)
+        : configBooleanRefusal(block, member, path);
+    if (message !== undefined) return message;
+  }
+  return undefined;
+}
+
+/** A usable member's wire value; `undefined` when the block does not declare it. */
+function subnetPrivateDnsMemberValue(
+  block: unknown,
+  member: (typeof SUBNET_PRIVATE_DNS_MEMBERS)[number]
+): string | boolean | undefined {
+  if (block === null || typeof block !== 'object' || Array.isArray(block)) return undefined;
+  const value = (block as Record<string, unknown>)[member.member];
+  return member.kind === 'string'
+    ? typeof value === 'string'
+      ? value
+      : undefined
+    : coerceCfnBoolean(value);
+}
 /** `DescribeSecurityGroups`'s answer for a group id EC2 no longer lists. */
 const SECURITY_GROUP_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidGroup.NotFound']);
 
@@ -1405,6 +1477,11 @@ export class EC2Provider implements ResourceProvider {
         'EnableDns64',
         'Ipv6CidrBlock',
         'Tags',
+        // go-to-k/cdkd#5632: Ipv6Native is a create-only CreateSubnet input;
+        // the other two are ModifySubnetAttribute writes.
+        'AssignIpv6AddressOnCreation',
+        'Ipv6Native',
+        'PrivateDnsNameOptionsOnLaunch',
       ]),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
@@ -1596,6 +1673,16 @@ export class EC2Provider implements ResourceProvider {
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      // go-to-k/cdkd#5632: both need an AWS Outposts rack, which no integ
+      // account can provision to verify a wiring against; a template
+      // declaring either still routes the subnet through Cloud Control.
+      'AWS::EC2::Subnet',
+      new Map<string, string>([
+        ['EnableLniAtDeviceIndex', 'AWS Outposts-only subnet attribute; Cloud Control applies it'],
+        ['OutpostArn', 'AWS Outposts-only create input; Cloud Control applies it'],
+      ]),
+    ],
     [
       'AWS::EC2::Instance',
       new Map<string, string>([
@@ -1915,13 +2002,27 @@ export class EC2Provider implements ResourceProvider {
   private async reportPossibleOrphanSubnets(
     logicalId: string,
     vpcId: string,
-    cidrBlock: string,
+    key: { cidr: string; family: 'ipv4' | 'ipv6' },
     sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    const wanted = canonicalizeIpv4Cidr(cidrBlock) ?? cidrBlock;
+    const cidrBlock = key.cidr;
+    const canonical = (cidr: string): string =>
+      (key.family === 'ipv4' ? canonicalizeIpv4Cidr(cidr) : canonicalizeIpv6Cidr(cidr)) ?? cidr;
+    const wanted = canonical(cidrBlock);
+    // go-to-k/cdkd#5632: an IPv6-only subnet is keyed on its IPv6 block, held
+    // only in the two states a lost create's association can be in.
+    const holdsWanted = (subnet: Subnet): boolean =>
+      key.family === 'ipv4'
+        ? subnet.CidrBlock !== undefined && canonical(subnet.CidrBlock) === wanted
+        : (subnet.Ipv6CidrBlockAssociationSet ?? []).some(
+            (association) =>
+              association.Ipv6CidrBlock !== undefined &&
+              ['associating', 'associated'].includes(association.Ipv6CidrBlockState?.State ?? '') &&
+              canonical(association.Ipv6CidrBlock) === wanted
+          );
     await this.reportPossibleEc2Orphans(logicalId, window, log, {
       action: 'CreateSubnet',
       listAction: 'DescribeSubnets',
@@ -1944,8 +2045,7 @@ export class EC2Provider implements ResourceProvider {
           (subnet) =>
             subnet.SubnetId !== undefined &&
             mayBeLostCreate(subnet.Tags, sent) &&
-            subnet.CidrBlock !== undefined &&
-            (canonicalizeIpv4Cidr(subnet.CidrBlock) ?? subnet.CidrBlock) === wanted &&
+            holdsWanted(subnet) &&
             !ec2IdsCreatedByThisProcess.has(subnet.SubnetId)
               ? subnet.SubnetId
               : undefined
@@ -3233,11 +3333,19 @@ export class EC2Provider implements ResourceProvider {
     previousProperties?: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     let prepared = properties;
-    for (const key of ['EnableDns64', 'Ipv6CidrBlock']) {
+    for (const key of [
+      'EnableDns64',
+      'Ipv6CidrBlock',
+      'AssignIpv6AddressOnCreation',
+      'Ipv6Native',
+      'PrivateDnsNameOptionsOnLaunch',
+    ]) {
       const refusal = (bag: Record<string, unknown>) =>
-        key === 'EnableDns64'
-          ? configBooleanRefusal(bag, key, 'Subnet')
-          : configStringRefusal(bag, key, '<unset>', 'Subnet');
+        key === 'Ipv6CidrBlock'
+          ? configStringRefusal(bag, key, '<unset>', 'Subnet')
+          : key === 'PrivateDnsNameOptionsOnLaunch'
+            ? subnetPrivateDnsOptionsRefusal(bag[key])
+            : configBooleanRefusal(bag, key, 'Subnet');
       const message = refusal(properties);
       if (message === undefined) continue;
       if (context?.replayingState !== true) {
@@ -3287,15 +3395,23 @@ export class EC2Provider implements ResourceProvider {
     );
 
     const vpcId = properties['VpcId'] as string;
-    const cidrBlock = properties['CidrBlock'] as string;
+    const cidrBlock = properties['CidrBlock'] as string | undefined;
+    // go-to-k/cdkd#5632: an IPv6-only subnet has no IPv4 block.
+    const ipv6Native = coerceCfnBoolean(prepared['Ipv6Native']);
 
-    if (!vpcId || !cidrBlock) {
+    if (!vpcId || (!cidrBlock && ipv6Native !== true)) {
       throw new ProvisioningError(
-        `VpcId and CidrBlock are required for Subnet ${logicalId}`,
+        `VpcId and CidrBlock are required for Subnet ${logicalId} (CidrBlock may be omitted only when Ipv6Native is true)`,
         resourceType,
         logicalId
       );
     }
+    // The orphan lookup's key: a CIDR cannot repeat in one VPC, IPv4 or IPv6.
+    const orphanCidr = cidrBlock
+      ? { cidr: cidrBlock, family: 'ipv4' as const }
+      : typeof prepared['Ipv6CidrBlock'] === 'string'
+        ? { cidr: prepared['Ipv6CidrBlock'], family: 'ipv6' as const }
+        : undefined;
 
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // delete the subnet this call created.
@@ -3306,11 +3422,11 @@ export class EC2Provider implements ResourceProvider {
       // may have made. The create below then fails with
       // `InvalidSubnet.Conflict` if it did, and that error names no subnet.
       const orphanWindow = createSubnetLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      if (orphanWindow !== undefined && orphanCidr !== undefined) {
         await this.reportPossibleOrphanSubnets(
           logicalId,
           vpcId,
-          cidrBlock,
+          orphanCidr,
           desiredTags,
           orphanWindow,
           context
@@ -3328,8 +3444,9 @@ export class EC2Provider implements ResourceProvider {
             createClient.send(
               new CreateSubnetCommand({
                 VpcId: vpcId,
-                CidrBlock: cidrBlock,
+                CidrBlock: cidrBlock || undefined,
                 Ipv6CidrBlock: prepared['Ipv6CidrBlock'] as string | undefined,
+                Ipv6Native: ipv6Native,
                 AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
                 ...(TagSpecifications && { TagSpecifications }),
               })
@@ -3347,11 +3464,11 @@ export class EC2Provider implements ResourceProvider {
       // Issue #4687: the SDK replayed this CreateSubnet inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const subnetReplayWindow = replayedSendWindow(response, attemptStartMs);
-      if (subnetReplayWindow !== undefined) {
+      if (subnetReplayWindow !== undefined && orphanCidr !== undefined) {
         await this.reportPossibleOrphanSubnets(
           logicalId,
           vpcId,
-          cidrBlock,
+          orphanCidr,
           desiredTags,
           subnetReplayWindow,
           context
@@ -3424,6 +3541,21 @@ export class EC2Provider implements ResourceProvider {
           );
           await this.waitForSubnetAttribute(subnetId, dns64, 'EnableDns64');
         }
+        // go-to-k/cdkd#5632: sent only where it differs from what the new
+        // subnet holds — false on a dual-stack subnet, while an IPv6-only one
+        // may start with it on, so there an unreported value is not assumed.
+        const assignIpv6 = coerceCfnBoolean(prepared['AssignIpv6AddressOnCreation']);
+        const createdAssign =
+          response.Subnet?.AssignIpv6AddressOnCreation ?? (ipv6Native === true ? undefined : false);
+        if (assignIpv6 !== undefined && assignIpv6 !== createdAssign) {
+          await this.writeSubnetAttribute(subnetId, 'AssignIpv6AddressOnCreation', assignIpv6);
+        }
+        await this.applySubnetPrivateDnsOptions(
+          subnetId,
+          prepared['PrivateDnsNameOptionsOnLaunch'],
+          undefined,
+          false
+        );
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
@@ -3485,7 +3617,7 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const prepared = await this.prepareSubnetProperties(
+    let prepared = await this.prepareSubnetProperties(
       logicalId,
       resourceType,
       properties,
@@ -3510,6 +3642,45 @@ export class EC2Provider implements ResourceProvider {
             `destroy + redeploy the Subnet (and the resources that depend on it). ${createOnly} is immutable in AWS`
           );
         }
+      }
+      // go-to-k/cdkd#5632: compared as booleans, since CFn spells one either way.
+      const nextNative = coerceCfnBoolean(prepared['Ipv6Native']);
+      const prevNative = coerceCfnBoolean(previousProperties['Ipv6Native']);
+      if (nextNative !== undefined && prevNative !== undefined && nextNative !== prevNative) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'destroy + redeploy the Subnet (and the resources that depend on it). Ipv6Native is immutable in AWS'
+        );
+      }
+      // go-to-k/cdkd#5632: an IPv6-only subnet cannot move its IPv6 block in
+      // place. EC2 refuses the detach while auto-assign is on, and refuses
+      // turning auto-assign off on an IPv6-native subnet (both measured,
+      // us-east-1). The schema does not mark Ipv6CidrBlock create-only, so the
+      // diff reads this as an update: refuse it before any call. A state
+      // replay or a read-back revert cannot edit the template, so it keeps the
+      // live block and warns instead.
+      const canonicalBlock = (v: unknown): unknown =>
+        typeof v === 'string' ? (canonicalizeIpv6Cidr(v) ?? v) : v;
+      if (
+        (nextNative === true || prevNative === true) &&
+        prepared['Ipv6CidrBlock'] === properties['Ipv6CidrBlock'] &&
+        canonicalBlock(prepared['Ipv6CidrBlock']) !==
+          canonicalBlock(previousProperties['Ipv6CidrBlock'])
+      ) {
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            'destroy + redeploy the Subnet (and the resources that depend on it). An IPv6-only (Ipv6Native) subnet cannot change its Ipv6CidrBlock in place: EC2 refuses to detach its block'
+          );
+        }
+        this.logger.warn(
+          safeMsg`${logicalId}: an IPv6-only (Ipv6Native) subnet cannot change its Ipv6CidrBlock in place; leaving the current block`
+        );
+        prepared = { ...prepared };
+        if (previousProperties['Ipv6CidrBlock'] === undefined) delete prepared['Ipv6CidrBlock'];
+        else prepared['Ipv6CidrBlock'] = previousProperties['Ipv6CidrBlock'];
       }
 
       // MapPublicIpOnLaunch IS mutable via ModifySubnetAttribute (issue
@@ -3557,14 +3728,61 @@ export class EC2Provider implements ResourceProvider {
       // Disable first; enabling requires the new IPv6 association ready.
       if (changedDns64 && dns64 === false) await applyDns64(false);
 
+      // go-to-k/cdkd#5632: like DNS64, a removed property leaves the live
+      // value alone; a changed one is written (false before the IPv6 block
+      // changes, true after it). An unsettled earlier attempt re-sends the
+      // desired value, which converges whatever AWS holds.
+      const assignIpv6 = coerceCfnBoolean(prepared['AssignIpv6AddressOnCreation']);
+      const changedAssignIpv6 =
+        prepared['AssignIpv6AddressOnCreation'] === properties['AssignIpv6AddressOnCreation'] &&
+        assignIpv6 !== undefined &&
+        (assignIpv6 !== coerceCfnBoolean(previousProperties['AssignIpv6AddressOnCreation']) ||
+          context?.unsettledProperties?.has('AssignIpv6AddressOnCreation') === true);
+      const applyAssignIpv6 = async (value: boolean): Promise<void> => {
+        context?.markUnsettled?.('AssignIpv6AddressOnCreation');
+        await this.writeSubnetAttribute(physicalId, 'AssignIpv6AddressOnCreation', value);
+      };
+      if (changedAssignIpv6 && assignIpv6 === false) await applyAssignIpv6(false);
+      // A replay-retained block keeps its baseline without a write; its
+      // record disables also go before the IPv6 block change.
+      const applyPrivateDns = async (
+        pass: 'disable' | 'rest',
+        skipAaaaOn = false
+      ): Promise<void> => {
+        if (
+          prepared['PrivateDnsNameOptionsOnLaunch'] !== properties['PrivateDnsNameOptionsOnLaunch']
+        )
+          return;
+        await this.applySubnetPrivateDnsOptions(
+          physicalId,
+          prepared['PrivateDnsNameOptionsOnLaunch'],
+          previousProperties['PrivateDnsNameOptionsOnLaunch'],
+          context?.unsettledProperties?.has('PrivateDnsNameOptionsOnLaunch') === true,
+          context?.markUnsettled,
+          pass,
+          skipAaaaOn
+        );
+      };
+      await applyPrivateDns('disable');
+
       // A replay-skipped field retains its baseline without issuing a write.
       const keptIpv6 = prepared['Ipv6CidrBlock'] !== properties['Ipv6CidrBlock'];
+      const attached = prepared['Ipv6CidrBlock'] !== undefined;
+      const declaredAaaa = subnetPrivateDnsMemberValue(
+        prepared['PrivateDnsNameOptionsOnLaunch'],
+        AAAA_MEMBER
+      );
+      const declaredDetachValue = (attribute: SubnetDetachAttribute): boolean | undefined =>
+        attribute === 'EnableResourceNameDnsAAAARecordOnLaunch'
+          ? (declaredAaaa as boolean | undefined)
+          : coerceCfnBoolean(prepared[attribute]);
+      const restore = new Set<SubnetDetachAttribute>();
       if (
         !keptIpv6 &&
         (prepared['Ipv6CidrBlock'] !== previousProperties['Ipv6CidrBlock'] ||
           context?.unsettledProperties?.has('Ipv6CidrBlock'))
       ) {
-        await this.updateSubnetIpv6CidrBlock(
+        const cleared = await this.updateSubnetIpv6CidrBlock(
           logicalId,
           physicalId,
           resourceType,
@@ -3572,8 +3790,89 @@ export class EC2Provider implements ResourceProvider {
           true,
           context?.markUnsettled
         );
+        // go-to-k/cdkd#5632: the detach turned off what blocks it. With a new
+        // block attached, restore each unless the template now says false (an
+        // undeclared value is left as it was, as on removal); with no block
+        // left they stay off.
+        for (const attribute of cleared) {
+          if (attached && declaredDetachValue(attribute) !== false) restore.add(attribute);
+        }
       }
-      if (changedDns64 && dns64 === true) await applyDns64(true);
+      // An earlier attempt interrupted after that clear left an undeclared
+      // value off. For these two only the clear marks an undeclared one
+      // unsettled (the AAAA record shares its key with the other private DNS
+      // members, so it is not covered): put it back once the block is
+      // attached, unless the record said false.
+      for (const attribute of ['EnableDns64', 'AssignIpv6AddressOnCreation'] as const) {
+        if (
+          declaredDetachValue(attribute) === undefined &&
+          attached &&
+          context?.unsettledProperties?.has(attribute) === true &&
+          coerceCfnBoolean(previousProperties[attribute]) !== false
+        ) {
+          restore.add(attribute);
+        }
+      }
+      // With no IPv6 block, EC2 refuses auto-assign, the AAAA record or DNS64
+      // on, so those true writes are skipped (every retry would fail the same
+      // way) and a warning says so. A template without Ipv6CidrBlock may still
+      // have a block from an AWS::EC2::SubnetCidrBlock resource, so only the
+      // live subnet decides; it is read only when one of the three is
+      // declared true.
+      const declaredAssign = declaredDetachValue('AssignIpv6AddressOnCreation');
+      let blockless = false;
+      if (
+        prepared['Ipv6CidrBlock'] === undefined &&
+        coerceCfnBoolean(prepared['Ipv6Native']) !== true &&
+        (declaredAssign === true || declaredAaaa === true || dns64 === true)
+      ) {
+        const live = await this.ec2Client.send(
+          new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+        );
+        blockless = !(live.Subnets?.[0]?.Ipv6CidrBlockAssociationSet ?? []).some(
+          (association) => association.Ipv6CidrBlockState?.State === 'associated'
+        );
+      }
+      const wantsAssignOn =
+        restore.has('AssignIpv6AddressOnCreation') || (changedAssignIpv6 && assignIpv6 === true);
+      const wantsAaaaOn =
+        restore.has('EnableResourceNameDnsAAAARecordOnLaunch') ||
+        (declaredAaaa === true &&
+          (subnetPrivateDnsMemberValue(
+            previousProperties['PrivateDnsNameOptionsOnLaunch'],
+            AAAA_MEMBER
+          ) !== true ||
+            context?.unsettledProperties?.has('PrivateDnsNameOptionsOnLaunch') === true));
+      const hadBlock = previousProperties['Ipv6CidrBlock'] !== undefined;
+      if (blockless && declaredAssign === true && (wantsAssignOn || hadBlock)) {
+        this.logger.warn(
+          safeMsg`Subnet ${logicalId}: AssignIpv6AddressOnCreation is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
+        );
+      }
+      if (blockless && declaredAaaa === true && (wantsAaaaOn || hadBlock)) {
+        this.logger.warn(
+          safeMsg`Subnet ${logicalId}: PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
+        );
+      }
+      // EC2 also refuses DNS64 on with no IPv6 block (InvalidParameterValue,
+      // measured), so that write is skipped the same way.
+      const wantsDns64On = restore.has('EnableDns64') || (changedDns64 && dns64 === true);
+      if (blockless && dns64 === true && (wantsDns64On || hadBlock)) {
+        this.logger.warn(
+          safeMsg`Subnet ${logicalId}: EnableDns64 is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
+        );
+      }
+      if (wantsDns64On && !blockless) await applyDns64(true);
+      if (wantsAssignOn && !blockless) await applyAssignIpv6(true);
+      if (restore.has('EnableResourceNameDnsAAAARecordOnLaunch')) {
+        context?.markUnsettled?.('PrivateDnsNameOptionsOnLaunch');
+        await this.writeSubnetAttribute(
+          physicalId,
+          'EnableResourceNameDnsAAAARecordOnLaunch',
+          true
+        );
+      }
+      await applyPrivateDns('rest', blockless);
 
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
@@ -3621,7 +3920,7 @@ export class EC2Provider implements ResourceProvider {
     desired: string | undefined,
     recoverOnFailure = true,
     markUnsettled?: UpdateContext['markUnsettled']
-  ): Promise<void> {
+  ): Promise<ReadonlySet<SubnetDetachAttribute>> {
     let response = await this.ec2Client.send(
       new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
     );
@@ -3656,7 +3955,7 @@ export class EC2Provider implements ResourceProvider {
     const current = subnet.Ipv6CidrBlockAssociationSet?.find(
       (association) => association.Ipv6CidrBlockState?.State === 'associated'
     );
-    if (current?.Ipv6CidrBlock === desired) return;
+    if (current?.Ipv6CidrBlock === desired) return new Set();
     const currentCidr = current?.Ipv6CidrBlock;
     const canonicalCurrent =
       currentCidr === undefined ? undefined : canonicalizeIpv6Cidr(currentCidr);
@@ -3665,7 +3964,13 @@ export class EC2Provider implements ResourceProvider {
       desired !== undefined &&
       canonicalCurrent === canonicalizeIpv6Cidr(desired)
     )
-      return;
+      return new Set();
+    // go-to-k/cdkd#5632: EC2 refuses DisassociateSubnetCidrBlock while any
+    // SUBNET_DETACH_BLOCKERS attribute is on (`InvalidCidrBlock.InUse`), so
+    // each live-on one is turned off first; the caller decides whether to turn
+    // it back on. The CloudFormation AWS::EC2::Subnet handler source is not
+    // published, so this follows the measured EC2 behavior.
+    const cleared = new Set<SubnetDetachAttribute>();
     try {
       if (current) {
         if (!current.AssociationId) {
@@ -3675,6 +3980,17 @@ export class EC2Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
+        }
+        for (const blocker of SUBNET_DETACH_BLOCKERS) {
+          if (blocker.live(subnet) !== true) continue;
+          // EC2 refuses turning auto-assign off on an IPv6-native subnet; the
+          // update path refuses its block change before reaching here.
+          if (blocker.attribute === 'AssignIpv6AddressOnCreation' && subnet.Ipv6Native === true) {
+            continue;
+          }
+          markUnsettled?.(blocker.unsettledKey);
+          await this.writeSubnetAttribute(physicalId, blocker.attribute, false);
+          cleared.add(blocker.attribute);
         }
         markUnsettled?.('Ipv6CidrBlock');
         await this.ec2Client.send(
@@ -3713,9 +4029,11 @@ export class EC2Provider implements ResourceProvider {
           'associated'
         );
       }
+      return cleared;
     } catch (error) {
       // A failed attach must not silently leave the old record on a subnet
-      // with no IPv6 block. Recover only the live block this call detached.
+      // with no IPv6 block. Recover only the live block this call detached,
+      // and what it turned off for the detach.
       if (
         current?.Ipv6CidrBlock !== undefined &&
         recoverOnFailure &&
@@ -3731,6 +4049,9 @@ export class EC2Provider implements ResourceProvider {
             false,
             markUnsettled
           );
+          for (const attribute of cleared) {
+            await this.writeSubnetAttribute(physicalId, attribute, true);
+          }
         } catch {
           this.logger.warn(
             safeMsg`Subnet ${logicalId}: IPv6 association recovery failed; inspect DescribeSubnets and redeploy before using the subnet`
@@ -3791,6 +4112,54 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /** One `ModifySubnetAttribute` boolean write, then its read-back wait. */
+  private async writeSubnetAttribute(
+    subnetId: string,
+    attribute: SubnetDetachAttribute,
+    value: boolean
+  ): Promise<void> {
+    await this.ec2Client.send(
+      new ModifySubnetAttributeCommand({ SubnetId: subnetId, [attribute]: { Value: value } })
+    );
+    await this.waitForSubnetAttribute(subnetId, value, attribute);
+  }
+
+  /**
+   * go-to-k/cdkd#5632: write each `PrivateDnsNameOptionsOnLaunch` member the
+   * desired block declares and `previous` does not hold (every declared one
+   * when `resend`), one `ModifySubnetAttribute` per member. A member the block
+   * omits is left as AWS holds it, as for a removed `EnableDns64`. `pass`
+   * splits an update around an IPv6 block change: `disable` writes only the
+   * `false` record members, `rest` everything else.
+   */
+  private async applySubnetPrivateDnsOptions(
+    subnetId: string,
+    desired: unknown,
+    previous: unknown,
+    resend: boolean,
+    markUnsettled?: UpdateContext['markUnsettled'],
+    pass: 'all' | 'disable' | 'rest' = 'all',
+    skipAaaaOn = false
+  ): Promise<void> {
+    for (const member of SUBNET_PRIVATE_DNS_MEMBERS) {
+      const value = subnetPrivateDnsMemberValue(desired, member);
+      if (value === undefined) continue;
+      if (skipAaaaOn && member === AAAA_MEMBER && value === true) continue;
+      if (pass !== 'all' && (value === false) !== (pass === 'disable')) continue;
+      if (!resend && value === subnetPrivateDnsMemberValue(previous, member)) continue;
+      markUnsettled?.('PrivateDnsNameOptionsOnLaunch');
+      await this.ec2Client.send(
+        new ModifySubnetAttributeCommand({
+          SubnetId: subnetId,
+          ...(member.kind === 'string'
+            ? { [member.field]: value as HostnameType }
+            : { [member.field]: { Value: value as boolean } }),
+        })
+      );
+      await this.waitForSubnetAttribute(subnetId, value, member.field);
+    }
+  }
+
   /**
    * Read back a subnet attribute until AWS reflects the value a
    * `ModifySubnetAttribute` just wrote (issue #1299). EC2 `Describe*` is
@@ -3808,16 +4177,25 @@ export class EC2Provider implements ResourceProvider {
    */
   private async waitForSubnetAttribute(
     subnetId: string,
-    expected: boolean,
-    attribute: 'MapPublicIpOnLaunch' | 'EnableDns64' = 'MapPublicIpOnLaunch'
+    expected: boolean | string,
+    attribute:
+      | 'MapPublicIpOnLaunch'
+      | 'EnableDns64'
+      | 'AssignIpv6AddressOnCreation'
+      | SubnetPrivateDnsField = 'MapPublicIpOnLaunch'
   ): Promise<void> {
     const maxAttempts = 6;
+    const read = (subnet: Subnet | undefined): unknown => {
+      const dns = SUBNET_PRIVATE_DNS_MEMBERS.find((m) => m.field === attribute);
+      if (dns !== undefined) return subnet?.PrivateDnsNameOptionsOnLaunch?.[dns.member];
+      return subnet?.[attribute as 'MapPublicIpOnLaunch' | 'EnableDns64'];
+    };
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const resp = await this.ec2Client.send(
           new DescribeSubnetsCommand({ SubnetIds: [subnetId] })
         );
-        if (resp.Subnets?.[0]?.[attribute] === expected) return;
+        if (read(resp.Subnets?.[0]) === expected) return;
       } catch (error) {
         this.logger.debug(
           `${attribute} read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${describeAwsFailure(error).detail}`
@@ -12288,9 +12666,31 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Record<string, unknown> {
     if (resourceType === 'AWS::EC2::Subnet') {
-      const dnsKey = 'EnableDns64';
-      const dns64 = coerceCfnBoolean(properties[dnsKey]);
-      return dns64 === undefined ? properties : { ...properties, [dnsKey]: dns64 };
+      // go-to-k/cdkd#5632: every boolean the provider coerces folds the same
+      // way, so a `"true"` / `true` spelling flip is no change (for the
+      // create-only `Ipv6Native`, no replacement). An unusable value stays.
+      let out = properties;
+      for (const key of ['EnableDns64', 'AssignIpv6AddressOnCreation', 'Ipv6Native']) {
+        const value = coerceCfnBoolean(properties[key]);
+        if (value !== undefined && value !== properties[key]) out = { ...out, [key]: value };
+      }
+      const dnsKey = 'PrivateDnsNameOptionsOnLaunch';
+      const dns = properties[dnsKey];
+      if (
+        subnetPrivateDnsOptionsRefusal(dns) === undefined &&
+        dns !== null &&
+        typeof dns === 'object'
+      ) {
+        let folded = dns as Record<string, unknown>;
+        for (const member of SUBNET_PRIVATE_DNS_MEMBERS) {
+          const value = subnetPrivateDnsMemberValue(dns, member);
+          if (value !== undefined && value !== folded[member.member]) {
+            folded = { ...folded, [member.member]: value };
+          }
+        }
+        if (folded !== dns) out = { ...out, [dnsKey]: folded };
+      }
+      return out;
     }
     if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
       // A no-op `onUnusable` rather than the logger: a diff must not throw, and
@@ -12429,6 +12829,19 @@ export class EC2Provider implements ResourceProvider {
       (association) => association.Ipv6CidrBlockState?.State === 'associated'
     );
     if (ipv6?.Ipv6CidrBlock !== undefined) result['Ipv6CidrBlock'] = ipv6.Ipv6CidrBlock;
+    // go-to-k/cdkd#5632.
+    if (subnet.AssignIpv6AddressOnCreation !== undefined) {
+      result['AssignIpv6AddressOnCreation'] = subnet.AssignIpv6AddressOnCreation;
+    }
+    if (subnet.Ipv6Native !== undefined) result['Ipv6Native'] = subnet.Ipv6Native;
+    const dns = subnet.PrivateDnsNameOptionsOnLaunch;
+    if (dns !== undefined) {
+      const block: Record<string, unknown> = {};
+      for (const { member } of SUBNET_PRIVATE_DNS_MEMBERS) {
+        if (dns[member] !== undefined) block[member] = dns[member];
+      }
+      result['PrivateDnsNameOptionsOnLaunch'] = block;
+    }
 
     return result;
   }

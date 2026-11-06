@@ -36,16 +36,11 @@
       "Volumes"
     ],
     "AWS::EC2::Subnet": [
-      "AssignIpv6AddressOnCreation",
       "AvailabilityZoneId",
-      "EnableLniAtDeviceIndex",
       "Ipv4IpamPoolId",
       "Ipv4NetmaskLength",
       "Ipv6IpamPoolId",
-      "Ipv6Native",
-      "Ipv6NetmaskLength",
-      "OutpostArn",
-      "PrivateDnsNameOptionsOnLaunch"
+      "Ipv6NetmaskLength"
     ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"

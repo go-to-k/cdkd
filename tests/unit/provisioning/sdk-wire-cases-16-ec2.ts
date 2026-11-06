@@ -57,6 +57,12 @@ const refusingUpdate = (): ResourceProvider => {
   });
 };
 
+/** go-to-k/cdkd#5632: EC2 cannot move an IPv6-native subnet's block in place. */
+const nativeBlockRefusal: Throw = {
+  why: 'update() refuses an Ipv6Native subnet Ipv6CidrBlock change before any call (go-to-k/cdkd#5632)',
+  says: /An IPv6-only \(Ipv6Native\) subnet cannot change its Ipv6CidrBlock in place/,
+};
+
 const required = (top: string, says: RegExp, line: string): Throw => ({
   why: `create() refuses a missing ${top} before any call (${SRC}:${line})`,
   says,
@@ -544,15 +550,45 @@ export const CASES_16_EC2: TypeCase[] = [
           MapPublicIpOnLaunch: true,
           EnableDns64: true,
           Ipv6CidrBlock: '2001:db8:1::/64',
+          AssignIpv6AddressOnCreation: true,
+          PrivateDnsNameOptionsOnLaunch: {
+            HostnameType: 'resource-name',
+            EnableResourceNameDnsARecord: true,
+            EnableResourceNameDnsAAAARecord: true,
+          },
           Tags: TAGS,
         },
         expectedSilent: {
           'update-remove:EnableDns64': 'CloudFormation preserves the live DNS64 value on property removal (measured, go-to-k/cdkd#5632)',
+          'update-remove:AssignIpv6AddressOnCreation': 'a removal leaves the live value, as for EnableDns64 (go-to-k/cdkd#5632)',
+          'update-remove:PrivateDnsNameOptionsOnLaunch': 'a removal leaves the live value, as for EnableDns64 (go-to-k/cdkd#5632)',
+          'update-remove:PrivateDnsNameOptionsOnLaunch.HostnameType': 'a removed member leaves the live value (go-to-k/cdkd#5632)',
+          'update-remove:PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsARecord': 'a removed member leaves the live value (go-to-k/cdkd#5632)',
+          'update-remove:PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord': 'a removed member leaves the live value (go-to-k/cdkd#5632)',
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
           'create:VpcId': required('VpcId', /VpcId and CidrBlock are required for Subnet/, '2724'),
           'create:CidrBlock': required('CidrBlock', /VpcId and CidrBlock are required for Subnet/, '2724'),
+        },
+      },
+      {
+        // go-to-k/cdkd#5632: an IPv6-only subnet carries no IPv4 block.
+        name: 'ipv6-native',
+        bag: { VpcId: 'vpc-1', Ipv6Native: true, Ipv6CidrBlock: '2001:db8:2::/64' },
+        expectedSilent: {
+          'create-vary:Ipv6Native': 'false leaves the subnet with no CidrBlock, which create() refuses before any call',
+          'update-vary:Ipv6CidrBlock': 'an IPv6-native subnet cannot move its block in place, which update() refuses before any call (go-to-k/cdkd#5632)',
+        },
+        expectedRemovalThrows: {
+          'create:VpcId': required('VpcId', /VpcId and CidrBlock are required for Subnet/, '2724'),
+          'create:Ipv6Native': required(
+            'Ipv6Native',
+            /CidrBlock may be omitted only when Ipv6Native is true/,
+            '5632'
+          ),
+          'update-add:Ipv6CidrBlock': nativeBlockRefusal,
+          'update-remove:Ipv6CidrBlock': nativeBlockRefusal,
         },
       },
     ],
