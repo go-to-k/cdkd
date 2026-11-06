@@ -102,6 +102,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { codeLines } from '../_code-lines.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
@@ -1289,9 +1290,11 @@ const markSitesByFile: ReadonlyMap<string, number> = new Map(
     .filter((f) => f.endsWith('.ts'))
     .map((f) => {
       // Comments are BLANKED by a real parser, not dropped by line: a call
-      // after a closed block comment on the same line is still a site.
-      const code = codeLines(readFileSync(join(PROVIDERS_DIR, f), 'utf8'), f)
-        .map((l) => l.text)
+      // after a closed block comment on the same line is still a site. A
+      // provider's companion files (scripts/provider-companion-files.ts) hold
+      // code split out of it, so their sites are the provider's sites.
+      const code = [join(PROVIDERS_DIR, f), ...companionFiles(join(PROVIDERS_DIR, f))]
+        .flatMap((path) => codeLines(readFileSync(path, 'utf8'), path).map((l) => l.text))
         .join('\n');
       return [f, code.match(MARK_CALL)?.length ?? 0] as const;
     })

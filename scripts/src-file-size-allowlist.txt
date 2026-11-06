@@ -79,7 +79,6 @@ src/provisioning/providers/cognito-provider.ts
 src/provisioning/providers/custom-resource-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/provisioning/providers/docdb-provider.ts
-src/provisioning/providers/dynamodb-globaltable-provider.ts
 src/provisioning/providers/dynamodb-table-provider.ts
 src/provisioning/providers/ec2-provider.ts
 src/provisioning/providers/ecs-provider.ts

@@ -52,8 +52,11 @@
  *   - a `this.x()` callee that is NOT a member of this class is recorded as an
  *     UNRESOLVED edge, because sends behind it are unobservable and the class
  *     would otherwise report a confident (green, un-reviewable) `no-aws`.
- *     KNOWN LIMITATION: only the `this.x()` form is tracked. Delegation to a
- *     module-level free function or to `this.someField.method()` is invisible
+ *     A provider whose bodies moved to its companion directory
+ *     (scripts/provider-companion-files.ts) is walked through them: a method
+ *     that is `return fn.call(this, ...)` is followed into `fn`, and so is a
+ *     `fn.call(this, ...)` inside one. KNOWN LIMITATION: only these forms
+ *     are tracked. Delegation to any other module-level free function or to `this.someField.method()` is invisible
  *     rather than `unresolved-callee`, so the `unresolvedCallees === 0`
  *     assertion is narrower than it looks. Neither shape reaches a send from
  *     `update()` in the tree today; widening it needs real call-graph
@@ -97,6 +100,7 @@ import { fileURLToPath } from 'node:url';
 // stable JS compiler API (see the note in gen-property-coverage.ts).
 import ts from 'typescript-v6';
 import { escapeCell } from './markdown-table.ts';
+import { companionFiles } from './provider-companion-files.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -214,6 +218,49 @@ export interface ClassMethod {
   readonly isProvisioningErrorFactory: boolean;
   /** Declared `: never` — so a bare statement call to it does not fall through. */
   readonly returnsNever: boolean;
+  /**
+   * A `this:`-typed function in the provider's companion directory
+   * (scripts/provider-companion-files.ts), reached as `fn.call(this, ...)`.
+   */
+  readonly companion?: boolean;
+}
+
+/**
+ * The `this:`-typed functions of a provider's companion files, by name: the
+ * bodies split out of the provider class, which keeps a delegating method
+ * (`return fn.call(this, ...)`) for each.
+ */
+export function companionFunctions(sources: readonly string[]): Map<string, ts.FunctionDeclaration> {
+  const out = new Map<string, ts.FunctionDeclaration>();
+  for (const source of sources) {
+    const sf = ts.createSourceFile('companion.ts', source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+    for (const stmt of sf.statements) {
+      const first = ts.isFunctionDeclaration(stmt) ? stmt.parameters[0] : undefined;
+      if (
+        ts.isFunctionDeclaration(stmt) &&
+        stmt.name &&
+        stmt.body &&
+        first !== undefined &&
+        ts.isIdentifier(first.name) &&
+        first.name.text === 'this'
+      ) {
+        out.set(stmt.name.text, stmt);
+      }
+    }
+  }
+  return out;
+}
+
+/** `return fn.call(this, ...)` as a method's whole body -> `fn`, else null. */
+function delegatedFunctionName(body: ts.Block): string | null {
+  const only = body.statements.length === 1 ? body.statements[0] : undefined;
+  if (!only || !ts.isReturnStatement(only) || !only.expression) return null;
+  const call = only.expression;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const target = call.expression;
+  if (target.name.text !== 'call' || !ts.isIdentifier(target.expression)) return null;
+  if (call.arguments[0]?.kind !== ts.SyntaxKind.ThisKeyword) return null;
+  return target.expression.text;
 }
 
 /** Is this node a nested function boundary we must NOT descend through? */
@@ -250,9 +297,17 @@ function producesProvisioningError(node: ts.Node): boolean {
   return found;
 }
 
-export function collectMethods(cls: ts.ClassDeclaration): Map<string, ClassMethod> {
+export function collectMethods(
+  cls: ts.ClassDeclaration,
+  companions: ReadonlyMap<string, ts.FunctionDeclaration> = new Map()
+): Map<string, ClassMethod> {
   const methods = new Map<string, ClassMethod>();
-  const add = (name: string, body: ts.Node, returnType: ts.TypeNode | undefined): void => {
+  const add = (
+    name: string,
+    body: ts.Node,
+    returnType: ts.TypeNode | undefined,
+    companion = false
+  ): void => {
     const annotatedProvisioningError =
       returnType !== undefined &&
       ts.isTypeReferenceNode(returnType) &&
@@ -267,18 +322,26 @@ export function collectMethods(cls: ts.ClassDeclaration): Map<string, ClassMetho
       // Error(m); }` returns never and wraps nothing.
       isProvisioningErrorFactory: annotatedProvisioningError || produces,
       returnsNever: returnsNever === true,
+      ...(companion ? { companion } : {}),
     });
   };
 
   for (const member of cls.members) {
     if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body) {
-      add(member.name.text, member.body, member.type);
+      // A delegating method is walked through the companion function it calls.
+      const delegate = delegatedFunctionName(member.body);
+      const fn = delegate !== null ? companions.get(delegate) : undefined;
+      if (fn?.body) add(member.name.text, fn.body, fn.type, true);
+      else add(member.name.text, member.body, member.type);
     } else if (ts.isPropertyDeclaration(member) && ts.isIdentifier(member.name)) {
       const init = member.initializer;
       if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
         add(member.name.text, init.body, init.type);
       }
     }
+  }
+  for (const [name, fn] of companions) {
+    if (!methods.has(name) && fn.body) add(name, fn.body, fn.type, true);
   }
   return methods;
 }
@@ -324,7 +387,7 @@ function catchThrowsProvisioningError(
         found = true;
         return;
       }
-      const callee = thisMethodCallName(expr);
+      const callee = thisMethodCallName(expr, methods);
       if (callee !== null && methods.get(callee)?.isProvisioningErrorFactory) {
         found = true;
         return;
@@ -335,7 +398,7 @@ function catchThrowsProvisioningError(
       const inner = ts.isAwaitExpression(node.expression)
         ? node.expression.expression
         : node.expression;
-      const callee = thisMethodCallName(inner);
+      const callee = thisMethodCallName(inner, methods);
       const target = callee !== null ? methods.get(callee) : undefined;
       if (target?.isProvisioningErrorFactory && target.returnsNever) {
         found = true;
@@ -459,7 +522,7 @@ function delegatedFactoryGuardedClasses(
           ? node.expression.expression
           : node.expression
         : undefined;
-    const callee = expr ? thisMethodCallName(expr) : null;
+    const callee = expr ? thisMethodCallName(expr, methods) : null;
     const target = callee !== null ? methods.get(callee) : undefined;
     if (
       target &&
@@ -543,7 +606,7 @@ function catchSwallows(clause: ts.CatchClause, methods: ReadonlyMap<string, Clas
     }
     if (ts.isExpressionStatement(n)) {
       const inner = ts.isAwaitExpression(n.expression) ? n.expression.expression : n.expression;
-      const callee = thisMethodCallName(inner);
+      const callee = thisMethodCallName(inner, methods);
       if (callee !== null && methods.get(callee)?.returnsNever) {
         raises = true;
         return;
@@ -571,11 +634,25 @@ function isSendCall(node: ts.Node): boolean {
   return ts.isIdentifier(node.expression) && /^waitUntil[A-Z]/.test(node.expression.text);
 }
 
-/** `this.foo(...)` -> `foo`, else null. */
-function thisMethodCallName(node: ts.Node): string | null {
+/**
+ * `this.foo(...)` -> `foo`; `foo.call(this, ...)` -> `foo` when `foo` is a
+ * companion function of the class; else null.
+ */
+function thisMethodCallName(
+  node: ts.Node,
+  methods?: ReadonlyMap<string, ClassMethod>
+): string | null {
   if (!ts.isCallExpression(node)) return null;
   const callee = node.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
+  if (
+    callee.name.text === 'call' &&
+    ts.isIdentifier(callee.expression) &&
+    node.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword &&
+    methods?.get(callee.expression.text)?.companion === true
+  ) {
+    return callee.expression.text;
+  }
   if (callee.expression.kind !== ts.SyntaxKind.ThisKeyword) return null;
   return callee.name.text;
 }
@@ -612,7 +689,7 @@ function collectRaisedControlFlowClasses(
       raised.add(n.expression.text);
       return;
     }
-    const callee = thisMethodCallName(n);
+    const callee = thisMethodCallName(n, methods);
     if (callee !== null && !seen.has(callee)) {
       seen.add(callee);
       const target = methods.get(callee);
@@ -645,8 +722,11 @@ export interface WalkResult {
  *
  * Exported so unit tests can drive it with synthetic classes.
  */
-export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
-  const methods = collectMethods(cls);
+export function analyzeClass(
+  cls: ts.ClassDeclaration,
+  companions: ReadonlyMap<string, ts.FunctionDeclaration> = new Map()
+): WalkResult | null {
+  const methods = collectMethods(cls, companions);
   const update = methods.get('update');
   if (!update) return null;
 
@@ -694,7 +774,7 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
         // Still descend: arguments can contain further calls.
       }
 
-      const callee = thisMethodCallName(node);
+      const callee = thisMethodCallName(node, methods);
       if (callee !== null) {
         const target = methods.get(callee);
         if (target) walkMethod(target, isProtected);
@@ -719,14 +799,16 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
 export function classifySource(
   source: string,
   fileName = 'provider.ts',
-  allowList: ReadonlyMap<string, AllowListEntry> = UPDATE_WRAP_ALLOW_LIST
+  allowList: ReadonlyMap<string, AllowListEntry> = UPDATE_WRAP_ALLOW_LIST,
+  companionSources: readonly string[] = []
 ): ClassClassification[] {
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const out: ClassClassification[] = [];
+  const companions = companionFunctions(companionSources);
 
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) && node.name) {
-      const result = analyzeClass(node);
+      const result = analyzeClass(node, companions);
       if (result) {
         const className = node.name.text;
         const sortNames = (s: Set<string>): string[] =>
@@ -949,7 +1031,8 @@ function loadReport(): UpdateWrapCoverageReport {
   for (const file of readdirSync(PROVIDERS_DIR).sort()) {
     if (!file.endsWith('.ts') || file.endsWith('.d.ts')) continue;
     const src = readFileSync(join(PROVIDERS_DIR, file), 'utf8');
-    classes.push(...classifySource(src, file));
+    const companions = companionFiles(join(PROVIDERS_DIR, file)).map((f) => readFileSync(f, 'utf8'));
+    classes.push(...classifySource(src, file, UPDATE_WRAP_ALLOW_LIST, companions));
   }
   for (const abs of EXTRA_PROVIDER_FILES) {
     classes.push(...classifySource(readFileSync(abs, 'utf8'), abs.slice(repoRoot.length + 1)));

@@ -272,6 +272,8 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
 
+import { companionFiles } from './provider-companion-files.ts';
+
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const PROVIDERS_ROOT_REL = join('src', 'provisioning', 'providers');
@@ -1208,8 +1210,14 @@ function wrapsFirstParameter(
   });
 }
 
-export function buildMaskerSet(source: ts.SourceFile): MaskerSet {
+export function buildMaskerSet(
+  source: ts.SourceFile,
+  importedMaskers: ReadonlySet<string> = new Set()
+): MaskerSet {
   const { names, identities, scopedIdentities, defaulters } = maskerRoots(source);
+  // Maskers a sibling file of the same provider derived and exports
+  // (see {@link companionImportedMaskers}).
+  for (const name of importedMaskers) if (!identities.has(name)) names.add(name);
   const functions = collectFunctions(source);
   const scoped = new Map<ts.Node, Set<string>>();
 
@@ -1941,9 +1949,13 @@ export interface AnalyzedFile {
   readonly fixpointTruncated: boolean;
 }
 
-export function analyzeFile(file: string, text: string): AnalyzedFile {
+export function analyzeFile(
+  file: string,
+  text: string,
+  importedMaskers: ReadonlySet<string> = new Set()
+): AnalyzedFile {
   const source = parseSource(file, text);
-  const maskerSet = buildMaskerSet(source);
+  const maskerSet = buildMaskerSet(source, importedMaskers);
   const sites: StringifySite[] = [];
   const bareSinkLocations: string[] = [];
   let concatSites = 0;
@@ -3148,6 +3160,63 @@ function listSourceFiles(dir: string): string[] {
   return out;
 }
 
+/**
+ * A provider split into `<stem>-provider.ts` plus its companion directory
+ * (scripts/provider-companion-files.ts) derives a masker in one file and calls
+ * it from another: per-file derivation would call every such use `raw`. So, per
+ * file of a group, the local names of its imports that resolve to a masker
+ * another file of the group derives and EXPORTS, grown to a fixpoint (a
+ * wrapper around an imported masker is a masker too).
+ */
+function companionImportedMaskers(files: readonly string[]): Map<string, Set<string>> {
+  const imported = new Map<string, Set<string>>();
+  const fileSet = new Set(files);
+  for (const provider of files) {
+    const group = companionFiles(provider).filter((f) => fileSet.has(f));
+    if (group.length === 0) continue;
+    group.push(provider);
+    const sources = new Map(group.map((f) => [f, parseSource(f, readFileSync(f, 'utf8'))]));
+    const exported = new Map<string, Set<string>>();
+    for (let round = 0; round < MAX_FIXPOINT_ROUNDS; round += 1) {
+      let changed = false;
+      for (const [file, source] of sources) {
+        const seeds = new Set<string>();
+        for (const stmt of source.statements) {
+          if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+          const bindings = stmt.importClause?.namedBindings;
+          if (!bindings || !ts.isNamedImports(bindings)) continue;
+          const target = resolve(dirname(file), stmt.moduleSpecifier.text.replace(/\.js$/, '.ts'));
+          const theirs = exported.get(target);
+          if (theirs === undefined) continue;
+          for (const element of bindings.elements) {
+            if (theirs.has((element.propertyName ?? element.name).text)) seeds.add(element.name.text);
+          }
+        }
+        imported.set(file, seeds);
+        const { names } = buildMaskerSet(source, seeds);
+        const mine = exported.get(file) ?? new Set<string>();
+        for (const stmt of source.statements) {
+          const declared = ts.isFunctionDeclaration(stmt)
+            ? stmt.name && [stmt.name.text]
+            : ts.isVariableStatement(stmt)
+              ? stmt.declarationList.declarations.flatMap((d) => (ts.isIdentifier(d.name) ? [d.name.text] : []))
+              : undefined;
+          if (!declared || !isExportedDeclaration(stmt)) continue;
+          for (const name of declared) {
+            if (names.has(name) && !mine.has(name)) {
+              mine.add(name);
+              changed = true;
+            }
+          }
+        }
+        exported.set(file, mine);
+      }
+      if (!changed) break;
+    }
+  }
+  return imported;
+}
+
 export function buildReport(providersDir: string): MaskReport {
   const files = listSourceFiles(providersDir);
   for (const extra of EXTRA_FILES) {
@@ -3169,6 +3238,7 @@ export function buildReport(providersDir: string): MaskReport {
   let concatSites = 0;
   const bareSinkFiles: string[] = [];
   const truncatedFiles: string[] = [];
+  const imported = companionImportedMaskers(files);
 
   for (const file of files) {
     // Reported relative to the REPO, and relative to the PROVIDERS ROOT when
@@ -3177,7 +3247,7 @@ export function buildReport(providersDir: string): MaskReport {
     const rel = isInsideDirectory(REPO_ROOT, file)
       ? relative(REPO_ROOT, file)
       : join(PROVIDERS_ROOT_REL, relative(providersDir, file));
-    const analyzed = analyzeFile(rel, readFileSync(file, 'utf8'));
+    const analyzed = analyzeFile(rel, readFileSync(file, 'utf8'), imported.get(file));
     maskerNames += analyzed.maskerNames;
     concatSites += analyzed.concatSites;
     bareSinkFiles.push(...analyzed.bareSinkLocations);
