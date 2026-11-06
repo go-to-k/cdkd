@@ -204,7 +204,54 @@ export function clientSiteKind(code: string): ClientSiteKind | undefined {
   return undefined;
 }
 
-/** Every surface file holding at least one SDK-client site, comments stripped. */
+/**
+ * A direct SDK client construction: `new STSClient(`, `new ECRClient(`, ... —
+ * any `<Name>Client(`, never the `AwsClients` bag, which has its own shape.
+ *
+ * A construction spreading one of the three helpers above is already a site
+ * through that helper. One spreading NONE of them is the gap issue #5866
+ * named: `new STSClient({ region })` resolves the SDK's default chain, which
+ * under `--role-arn` reads the role's env triple, and the role fence never saw
+ * it because it keyed on the helpers alone.
+ */
+export const CLIENT_CONSTRUCTION = /\bnew\s+[A-Z][A-Za-z0-9]*Client\s*\(/;
+
+/**
+ * The comment-stripped text of the construction starting on line `index`, from
+ * `new` to its balancing `)`, or `undefined` when the parens do not balance
+ * within the cap. A caller treats `undefined` as "no helper found", so an
+ * unmodelled shape is a site a human decides, never a silent pass. Parens
+ * inside string literals are not modelled, like `stripComments`.
+ */
+export function constructionStatement(lines: string[], index: number): string | undefined {
+  const first = stripComments(lines[index] ?? '');
+  const match = CLIENT_CONSTRUCTION.exec(first);
+  if (match === null) return undefined;
+  let text = '';
+  let depth = 0;
+  let opened = false;
+  for (let i = index; i < lines.length && i - index <= 60; i++) {
+    const raw = lines[i] ?? '';
+    const code = i === index ? first.slice(match.index) : isCommentLine(raw) ? '' : stripComments(raw);
+    for (const ch of code) {
+      text += ch;
+      if (ch === '(') {
+        depth++;
+        opened = true;
+      } else if (ch === ')') {
+        depth--;
+        if (opened && depth === 0) return text;
+      }
+    }
+    text += '\n';
+  }
+  return undefined;
+}
+
+/**
+ * Every surface file holding at least one SDK-client site — a helper shape or
+ * a direct client construction — comments stripped.
+ */
 export function clientChannelFiles(): Set<string> {
   const files = new Set<string>();
   for (const file of surfaceFiles()) {
@@ -212,7 +259,8 @@ export function clientChannelFiles(): Set<string> {
     const lines = readFileSync(file, 'utf8').split('\n');
     for (const line of lines) {
       if (isCommentLine(line)) continue;
-      if (clientSiteKind(stripComments(line)) !== undefined) {
+      const code = stripComments(line);
+      if (clientSiteKind(code) !== undefined || CLIENT_CONSTRUCTION.test(code)) {
         files.add(file);
         break;
       }
