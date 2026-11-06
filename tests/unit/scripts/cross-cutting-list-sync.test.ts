@@ -120,6 +120,7 @@ const DESTROY_SCOPE_PIN = [
   'src/deployment/rollback-executor.ts',
   'src/deployment/rollback-executor/**',
   'src/provisioning/cloud-control-provider.ts',
+  'src/provisioning/cloud-control/**',
   'src/provisioning/provider-registry.ts',
   'src/provisioning/providers/**',
   'src/provisioning/region-check.ts',

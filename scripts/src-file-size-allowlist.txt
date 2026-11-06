@@ -54,7 +54,6 @@ src/deployment/secret-redaction/redact-state.ts
 src/local/ecs-task-resolver.ts
 src/local/ecs-task-runner.ts
 src/local/lambda-resolver.ts
-src/provisioning/cloud-control-provider.ts
 src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/acm-certificate-provider.ts

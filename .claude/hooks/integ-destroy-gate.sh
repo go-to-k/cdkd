@@ -219,7 +219,7 @@ if [ -n "$diff_base" ]; then
   strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/deployment/rollback-executor/.*\.ts$|^src/deployment/retryable-errors/.*\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
   filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine(\.ts|/.*\.ts)|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
-  provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
+  provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|cloud-control/.*\.ts|region-check\.ts)$'
   # Match a delete-touching symbol on an added/removed line, but NOT inside
   # a single-line comment. This avoids the false positives PR #73 hit
   # (e.g. an ECS provider doc-comment containing the words "delete/update"

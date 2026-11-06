@@ -4,7 +4,7 @@
  * THE GAP THIS CLOSES
  * -------------------
  * `CloudControlProvider.enrichResourceAttributes` (a hand-maintained switch in
- * `src/provisioning/cloud-control-provider.ts`) overlays computed `Fn::GetAtt`
+ * `src/provisioning/cloud-control/enrich.ts`) overlays computed `Fn::GetAtt`
  * attributes onto the flat-key attribute shape cdkd's intrinsic resolver
  * expects, for resources that route through the Cloud Control API. A CC-routed
  * type with a computed `readOnly` attribute that is NOT enriched silently falls
@@ -40,8 +40,9 @@
  *   - tests/fixtures/cfn-schemas/*.json  — per-type `readOnlyProperties` (the
  *     GetAtt-able computed attributes), refreshed by
  *     `node scripts/refresh-cfn-schemas.mjs`.
- *   - src/provisioning/cloud-control-provider.ts — the `enrichResourceAttributes`
- *     switch, parsed via the TypeScript Compiler API (like
+ *   - src/provisioning/cloud-control-provider.ts and its companion files under
+ *     src/provisioning/cloud-control/ — the `enrichResourceAttributes` switch
+ *     (in cloud-control/enrich.ts since #5835), parsed via the TypeScript Compiler API (like
  *     scripts/gen-property-coverage.ts) to extract, per `case` label, the set of
  *     attribute keys the case assigns (`enriched['Attr'] = ...`).
  *
@@ -100,11 +101,12 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // `typescript-v6` is an npm alias of typescript@6 — see the note in
 // gen-property-coverage.ts (TS7 no longer ships the stable JS compiler API).
 import ts from 'typescript-v6';
+import { companionFiles } from './provider-companion-files.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -223,7 +225,68 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
 }
 
 /**
- * Parse the `enrichResourceAttributes` switch in cloud-control-provider.ts and
+ * The first `switch` inside the first `enrichResourceAttributes` declaration
+ * of `source` that has one: a class METHOD, or a top-level `this:`-typed
+ * FUNCTION of that name in a companion file (the CC provider's body lives in
+ * `src/provisioning/cloud-control/enrich.ts`, #5835). A declaration with no
+ * switch, such as the class's `return enrichResourceAttributes.call(...)`
+ * delegator, is passed over.
+ */
+function findEnrichmentSwitch(source: string, fileName: string): ts.SwitchStatement | undefined {
+  const sf = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.ESNext,
+    /* setParentNodes */ true,
+    ts.ScriptKind.TS
+  );
+
+  let switchStmt: ts.SwitchStatement | undefined;
+  const findSwitch = (node: ts.Node): void => {
+    if (ts.isSwitchStatement(node) && !switchStmt) switchStmt = node;
+    if (!switchStmt) ts.forEachChild(node, findSwitch);
+  };
+  // Find the enrichResourceAttributes method or function, then its switch.
+  const findMethod = (node: ts.Node): void => {
+    if (
+      (ts.isMethodDeclaration(node) || ts.isFunctionDeclaration(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'enrichResourceAttributes' &&
+      node.body
+    ) {
+      findSwitch(node.body);
+    }
+    if (!switchStmt) ts.forEachChild(node, findMethod);
+  };
+  findMethod(sf);
+  return switchStmt;
+}
+
+/**
+ * The CC provider's enrichment switch, read from the provider file AND its
+ * companion files (`scripts/provider-companion-files.ts`): the class keeps only
+ * a delegator, and the switch lives in a companion. EXACTLY ONE file of the
+ * family must hold it. None, or two, throws, rather than handing the matrix an
+ * empty map, which would turn every pure-CC computed attribute into a gap and
+ * point the critic's message at the wrong file. `file` is the holder, as given.
+ */
+export function readEnrichmentSwitch(
+  files: readonly { readonly path: string; readonly source: string }[]
+): { readonly file: string; readonly byType: Map<string, Set<string>> } {
+  const holders = files.filter((f) => findEnrichmentSwitch(f.source, f.path) !== undefined);
+  if (holders.length !== 1) {
+    throw new Error(
+      `enrichment-coverage: expected exactly one enrichResourceAttributes switch across ` +
+        `${files.map((f) => f.path).join(', ')}; found ${holders.length}`
+    );
+  }
+  const holder = holders[0]!;
+  return { file: holder.path, byType: parseEnrichmentSwitch(holder.source, holder.path) };
+}
+
+/**
+ * Parse the `enrichResourceAttributes` switch in `source` and
  * return, per `case '<Type>':` label, the set of attribute keys the case body
  * assigns via `enriched['<Attr>'] = ...`. The TS Compiler API walk is robust to
  * the assorted case-body shapes (plain assignment, inside try/catch, inside if).
@@ -236,38 +299,8 @@ export function parseEnrichmentSwitch(
   source: string,
   fileName = 'cloud-control-provider.ts'
 ): Map<string, Set<string>> {
-  const sf = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.ESNext,
-    /* setParentNodes */ true,
-    ts.ScriptKind.TS
-  );
-
   const byType = new Map<string, Set<string>>();
-
-  // Find the enrichResourceAttributes method, then its switch statement.
-  let enrichBody: ts.Node | undefined;
-  const findMethod = (node: ts.Node): void => {
-    if (
-      ts.isMethodDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === 'enrichResourceAttributes'
-    ) {
-      enrichBody = node.body;
-    }
-    if (!enrichBody) ts.forEachChild(node, findMethod);
-  };
-  findMethod(sf);
-  if (!enrichBody) return byType;
-
-  // Locate the switch inside the method body.
-  let switchStmt: ts.SwitchStatement | undefined;
-  const findSwitch = (node: ts.Node): void => {
-    if (ts.isSwitchStatement(node) && !switchStmt) switchStmt = node;
-    if (!switchStmt) ts.forEachChild(node, findSwitch);
-  };
-  findSwitch(enrichBody);
+  const switchStmt = findEnrichmentSwitch(source, fileName);
   if (!switchStmt) return byType;
 
   // Collect every `enriched['Attr'] = ...` assignment key inside a node.
@@ -615,9 +648,40 @@ const isMainModule = (): boolean => {
 
 function loadReport(): EnrichmentCoverageReport {
   const fixtures = loadAllFixtures();
-  const enrichmentByType = parseEnrichmentSwitch(readFileSync(CC_PROVIDER_FILE, 'utf8'));
+  const { byType: enrichmentByType } = loadEnrichmentSwitch();
   const sdkBacked = loadSdkBackedTypes();
   return buildReport(fixtures, enrichmentByType, sdkBacked);
+}
+
+/** {@link readEnrichmentSwitch} over the real CC provider family, `file` repo-relative. */
+export function loadEnrichmentSwitch(): {
+  readonly file: string;
+  readonly byType: Map<string, Set<string>>;
+} {
+  const family = [CC_PROVIDER_FILE, ...companionFiles(CC_PROVIDER_FILE)];
+  const { file, byType } = readEnrichmentSwitch(
+    family.map((path) => ({ path, source: readFileSync(path, 'utf8') }))
+  );
+  return { file: relative(repoRoot, file).split(sep).join('/'), byType };
+}
+
+/**
+ * The `--check` critic's FAIL header. It names the file that holds the switch,
+ * as {@link loadEnrichmentSwitch} found it, so the pointer follows the code if
+ * it moves again.
+ */
+export function latentGapMessage(switchFile: string): string {
+  return (
+    'enrichment-coverage: FAIL — pure-CC latent enrichment gap(s) detected.\n' +
+    'Each computed readOnly attribute below is on a type with NO SDK provider,\n' +
+    'so the CC-API path is the ONLY path and the attribute would always fall\n' +
+    'through the intrinsic resolver to the physicalId. Add an\n' +
+    'enrichResourceAttributes case\n' +
+    `in ${switchFile}, OR — if it's not-a-gap\n` +
+    '(e.g. the attribute IS the primaryIdentifier == physicalId) — add an\n' +
+    'ENRICHMENT_ALLOW_LIST entry with a rationale in\n' +
+    'scripts/gen-enrichment-coverage.ts.\n\n'
+  );
 }
 
 /**
@@ -639,17 +703,7 @@ function main(): void {
   if (checkMode) {
     const gapTypes = findLatentGaps(report);
     if (gapTypes.length > 0) {
-      process.stderr.write(
-        'enrichment-coverage: FAIL — pure-CC latent enrichment gap(s) detected.\n' +
-          'Each computed readOnly attribute below is on a type with NO SDK provider,\n' +
-          'so the CC-API path is the ONLY path and the attribute would always fall\n' +
-          'through the intrinsic resolver to the physicalId. Add an\n' +
-          'enrichResourceAttributes case\n' +
-          "in src/provisioning/cloud-control-provider.ts, OR — if it's not-a-gap\n" +
-          '(e.g. the attribute IS the primaryIdentifier == physicalId) — add an\n' +
-          'ENRICHMENT_ALLOW_LIST entry with a rationale in\n' +
-          'scripts/gen-enrichment-coverage.ts.\n\n'
-      );
+      process.stderr.write(latentGapMessage(loadEnrichmentSwitch().file));
       for (const t of gapTypes) {
         process.stderr.write(`  ${t.resourceType}: ${t.gaps.join(', ')}\n`);
       }

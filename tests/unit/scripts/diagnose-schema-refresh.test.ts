@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 // The remedy constant the sibling surfaces share; this suite is where the
 // three-surface sync is bound, because the `.mjs` guidance cannot import it.
 import { GAP_REMEDY } from '../../../scripts/gen-sdk-attr-coverage.js';
+import { loadEnrichmentSwitch } from '../../../scripts/gen-enrichment-coverage.js';
 import {
   comparePrimaryIdentifier,
   comparePropertySets,
@@ -6592,4 +6593,14 @@ describe('sdk-wire nested paths (go-to-k/cdkd#3723)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe('CHECK_GUIDANCE: the enrichment-coverage remedy names the file holding the switch', () => {
+  it('points at the file loadEnrichmentSwitch finds, not the class file', () => {
+    // The switch moved into `src/provisioning/cloud-control/enrich.ts` (#5835);
+    // the `.mjs` guidance cannot import the generator, so the binding is here.
+    const guidance = CHECK_GUIDANCE['audit:enrichment-coverage:check']!.join('\n');
+    expect(guidance).toContain(`\`${loadEnrichmentSwitch().file}\``);
+    expect(guidance).not.toContain('cloud-control-provider.ts');
+  });
 });
