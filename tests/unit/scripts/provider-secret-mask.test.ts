@@ -745,7 +745,8 @@ describe('provider secret-mask critic — the real tree', () => {
     const upstream = report.siteList.filter(
       (site) =>
         (site.file.endsWith('asg-provider.ts') && site.expression.endsWith('Sorted')) ||
-        (site.file.endsWith('cloudfront-distribution-provider.ts') &&
+        // `orphanSearchHint`, moved to the provider's companion directory.
+        (site.file === 'src/provisioning/providers/cloudfront-distribution/core.ts' &&
           site.expression === 'comment')
     );
     expect(upstream.length).toBe(3);

@@ -487,7 +487,7 @@ implementation. Three details are worth copying:
     no masker. It is DATAFLOW-aware, so the mask may sit anywhere upstream —
     through a `const` binding, a `?:` / `??` arm, an array or object literal, a
     `.map()` callback, or a helper — and both real upstream-mask sites
-    (`asg-provider.ts`, `cloudfront-distribution-provider.ts`) pass unchanged.
+    (`asg-provider.ts`, `cloudfront-distribution/core.ts`) pass unchanged.
     It became a check rather than another sentence because the rule above was
     already written and violated anyway: the #2176 sweep found raw sites in
     files already hardened for this exact contract.

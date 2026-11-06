@@ -37,8 +37,9 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   /**
    * A scratch COPY of the REAL providers tree, with one regression injected.
    * A provider split into a companion directory is edited as a whole: the
-   * provider file and every companion file (`companionFiles`). The provider
-   * file itself must change, or the anchor drifted.
+   * provider file and every companion file (`companionFiles`). The edited
+   * file (for a whole family, at least one file of it) must change, or the
+   * anchor drifted.
    */
   const regressedTree = (
     name: string,
@@ -50,11 +51,15 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     cpSync(PROVIDERS_DIR, dir, { recursive: true });
     const paths = [join(dir, file), ...(wholeFamily ? companionFiles(join(dir, file)) : [])];
     if (wholeFamily) expect(paths.length, `${name}: no companion files found`).toBeGreaterThan(1);
-    for (const path of paths) writeFileSync(path, edit(readFileSync(path, 'utf8')));
-    expect(
-      readFileSync(join(dir, file), 'utf8'),
-      `the ${name} probe changed nothing in ${file} — anchor drifted?`
-    ).not.toBe(readFileSync(join(PROVIDERS_DIR, file), 'utf8'));
+    let changed = 0;
+    for (const path of paths) {
+      const before = readFileSync(path, 'utf8');
+      const after = edit(before);
+      if (after !== before) changed++;
+      writeFileSync(path, after);
+    }
+    const drifted = `the ${name} probe changed nothing in ${file} — anchor drifted?`;
+    expect(changed, drifted).toBeGreaterThan(0);
     return dir;
   };
 
@@ -91,7 +96,9 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
 
   for (const { bucket, file, named, edit } of BLOCKING_VERDICT_PROBES) {
     it(`exits 1 naming a real ${bucket} divergence from the seam`, () => {
-      const dir = regressedTree(`providers-${bucket}`, file, edit);
+      // The provider is split into `cloudfront-distribution/`, so the rename
+      // covers the provider file and every companion file, as before the split.
+      const dir = regressedTree(`providers-${bucket}`, file, edit, { wholeFamily: true });
       const { status, stderr } = runCheck(dir);
       expect(status).toBe(1);
       expect(stderr).toContain(
@@ -126,13 +133,15 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // removing the seed collapses the walk to zero points and the
     // `minHandoffPoints` floor fires — one legible error. This is the collapse
     // mode that floor exists for, proven on real code.
+    // `convertToSdkFormat` moved to `cloudfront-distribution-provider.ts`'s
+    // companion file; its seed is still the file's first such line.
     const dir = regressedTree(
       'providers-spread-seedless',
-      'cloudfront-distribution-provider.ts',
+      'cloudfront-distribution/convert.ts',
       (source) =>
         source.replace(
-          '    const result = { ...config };\n',
-          '    const result: Record<string, unknown> = {};\n'
+          '  const result = { ...config };\n',
+          '  const result: Record<string, unknown> = {};\n'
         )
     );
     const { status, stderr } = runCheck(dir);
