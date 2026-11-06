@@ -970,7 +970,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     // The measured population that makes the escape empty TODAY: the corpus
     // has exactly seven calls taking a bare `JSON.stringify` outside the sink
     // set, and none builds a message — three hashing / encoding sinks (one is
-    // `kms-provider.ts`'s digest binding a held key to its create input,
+    // `kms/key-create.ts`'s digest binding a held key to its create input,
     // issue #2080); three
     // `JSON.parse(JSON.stringify(...))` round-trips feeding an in-memory
     // comparison whose result is compared and dropped, never logged or thrown
