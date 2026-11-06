@@ -490,7 +490,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { ApiId: apiId },
     };
   },
-  // cdkd stores `<tableBucketARN>|<namespaceName>` (s3-tables-provider.ts's
+  // cdkd stores `<tableBucketARN>|<namespaceName>` (s3-tables/namespace.ts's
   // `createNamespace`); CFn primary identifier is [TableBucketARN, Namespace] —
   // same order. Both fields are writable Properties the synth template already
   // carries (live `DescribeType`, us-east-1, 2026-08-13:

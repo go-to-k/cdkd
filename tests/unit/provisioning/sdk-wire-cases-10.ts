@@ -323,7 +323,7 @@ const CLUSTER_CASE: TypeCase = {
         'update-vary:Instances.UnhealthyNodeReplacement':
           "the vary probe's base drops all of Instances, a replacing change refused before any call; the 'unhealthy node replacement' bag varies it alone",
         'update-remove:StepConcurrencyLevel':
-          'left in place on removal: ModifyCluster keeps a setting it is not sent, and CloudFormation keeps it too (CFn A/B, emr-cluster-provider.ts:136-144)',
+          'left in place on removal: ModifyCluster keeps a setting it is not sent, and CloudFormation keeps it too (CFn A/B, LEFT_IN_PLACE_ON_REMOVAL in emr-cluster/shared.ts)',
       },
       expectedRemovalThrows: {
         ...TAG_THROWS(ALL_DIRECTIONS, 2),

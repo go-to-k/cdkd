@@ -177,7 +177,7 @@ function isProfileSite(expression: string): boolean {
  * `--ecr-role-arn`. Off that surface it is not, and the honest form of that
  * claim is narrower than a first draft's: MOST are AWS-returned (`policyArn`
  * in `iam-managed-policy-provider.ts` is the clean example), but some are
- * template-supplied — `iam-user-group-provider.ts` renders
+ * template-supplied — `iam-user-group-provider.ts`'s companions (`iam-user-group/`) render
  * `properties['ManagedPolicyArns']` at four sites. What makes them out of scope
  * is therefore the SURFACE and its reachability, not a blanket claim about
  * provenance. Demanding a display verdict on all 153 would make this fence
