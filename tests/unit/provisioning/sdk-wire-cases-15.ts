@@ -37,7 +37,7 @@ import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/do
  */
 const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-const SRC = 'fsx-filesystem-provider.ts';
+const SRC = 'fsx-filesystem';
 /** The Windows bag's DNS aliases, which the armed file system holds (go-to-k/cdkd#5469). */
 const WINDOWS_ALIASES = ['fs1.example.com', 'fs2.example.com'];
 const FS_ID = 'fs-0123456789abcdef0';
@@ -56,7 +56,7 @@ const TAGS = [
  * `DescribeFileSystems`, so the create wait and the update-action wait settle
  * on their first poll, and carrying the ARN the tag calls need. A create is
  * answered with a file system created AFTER this create's first send, so the
- * token-ownership gate (${SRC}:871-897) takes it.
+ * token-ownership gate (${SRC}/create.ts, create) takes it.
  */
 function armFs(): void {
   const created = () => ({
@@ -103,9 +103,10 @@ function armFs(): void {
 
 /**
  * Variant sub-properties outside the `UpdateFileSystem` mutable sets
- * (${SRC}:91-169): the schema marks none create-only, but `update()` refuses
- * any change to one before any call with a `--replace` pointer
- * (`ResourceUpdateNotSupportedError`, ${SRC}:1570-1576). Marked create-only
+ * (${SRC}/shared.ts, the *_MUTABLE_SUBPROPS sets): the schema marks none
+ * create-only, but `update()` refuses any change to one before any call with
+ * a `--replace` pointer (`ResourceUpdateNotSupportedError`,
+ * ${SRC}/variant-diff.ts, computeVariantConfigDiff). Marked create-only
  * here so the update probes skip them, as the engine's `--replace` would;
  * `describeFsxExtras` pins the refusal.
  */
@@ -298,15 +299,16 @@ const FROM_BACKUP_BAG: Bag = {
  * A mutable member REMOVED from the template (issue #1160): `UpdateFileSystem`
  * keeps a field it is not sent and none of these has a safe constant reset, so
  * `update()` sends nothing for it and names it in its own warning
- * (${SRC}:254-270, 1296-1301, 1356-1361, 1577-1580).
+ * (${SRC}/shared.ts leftInPlaceWarning, ${SRC}/update.ts update, and
+ * ${SRC}/variant-diff.ts computeVariantConfigDiff).
  */
 const LEFT_IN_PLACE = (name: string, measured: string): string =>
-  `left in place with a warning naming ${name} (issue #1160, ${SRC}:254-270, 1296-1301, 1356-1361, 1577-1580): ${measured}`;
-const CFN_KEEPS = `CloudFormation keeps the value too (CFn A/B, ${SRC}:272-330)`;
-/** Measured kept by CloudFormation only on `shape` (${SRC}:368-431); a union bag is not that shape, so `update()` warns with the unmeasured line (${SRC}:492-494). */
+  `left in place with a warning naming ${name} (issue #1160, ${SRC}/shared.ts leftInPlaceWarning, ${SRC}/update.ts update, and ${SRC}/variant-diff.ts computeVariantConfigDiff): ${measured}`;
+const CFN_KEEPS = `CloudFormation keeps the value too (CFn A/B, ${SRC}/shared.ts CFN_KEEPS_ON_REMOVAL)`;
+/** Measured kept by CloudFormation only on `shape` (${SRC}/shared.ts CFN_KEEPS_ON_REMOVAL_FOR_SHAPE); a union bag is not that shape, so `update()` warns with the unmeasured line (${SRC}/shared.ts leftInPlaceWarning). */
 const CFN_KEEPS_OTHER_SHAPE = (shape: string): string =>
-  `CloudFormation keeps the value only on the measured shape (${shape}; CFn A/B, ${SRC}:368-431); this bag is not that shape, so the warning claims nothing about CloudFormation (${SRC}:492-494)`;
-const CFN_UNMEASURED = `CFn unmeasured, so the warning claims nothing about CloudFormation (${SRC}:293-296, 492-494)`;
+  `CloudFormation keeps the value only on the measured shape (${shape}; CFn A/B, ${SRC}/shared.ts CFN_KEEPS_ON_REMOVAL_FOR_SHAPE); this bag is not that shape, so the warning claims nothing about CloudFormation (${SRC}/shared.ts leftInPlaceWarning)`;
+const CFN_UNMEASURED = `CFn unmeasured, so the warning claims nothing about CloudFormation (${SRC}/shared.ts leftInPlaceWarning)`;
 
 const leftInPlace = (
   entries: Record<string, string>
@@ -322,7 +324,7 @@ const leftInPlace = (
  * Harness mechanics, not delivery: `update-vary` of a scalar DIRECTLY under a
  * variant block diffs against a previous side lacking the WHOLE block, so the
  * block's update-refused members (`VARIANT_REFUSED`) change too and
- * `update()` refuses both sides before any call (${SRC}:1570-1576). The
+ * `update()` refuses both sides before any call (${SRC}/variant-diff.ts computeVariantConfigDiff). The
  * value reaches the wire on update through `update-add` and on create through
  * `create-vary`.
  */
@@ -330,16 +332,16 @@ const blockVary = (block: string, keys: readonly string[]): Record<string, strin
   Object.fromEntries(
     keys.map((k) => [
       `update-vary:${block}.${k}`,
-      `the varied update's previous side lacks the whole ${block}, so whichever of its update-refused members (${VARIANT_REFUSED[block]!.join(', ')}) the bag declares change as well and update() refuses both sides before any call (${SRC}:1570-1576); the value is observed by update-add and create-vary`,
+      `the varied update's previous side lacks the whole ${block}, so whichever of its update-refused members (${VARIANT_REFUSED[block]!.join(', ')}) the bag declares change as well and update() refuses both sides before any call (${SRC}/variant-diff.ts computeVariantConfigDiff); the value is observed by update-add and create-vary`,
     ])
   );
 
 const UNSUPPORTED_TYPE: Throw = {
-  why: `create() refuses a create with no FileSystemType (and no BackupId) before any call (${SRC}:740-755)`,
+  why: `create() refuses a create with no FileSystemType (and no BackupId) before any call (${SRC}/create.ts create)`,
   says: /FileSystemType '\(unset\)' is not supported by cdkd/,
 };
 
-const OPTIONS_DELETE_ONLY = `OpenZFSConfiguration.Options is a DeleteFileSystem option, not a create or update input (CFn "Update requires: No interruption"): create() never sends it and update() skips it, so a change only lands in the record delete() reads (go-to-k/cdkd#5431, ${SRC}:1566-1569, 1840-1853, 1904-1918); describeFsxExtras pins the delete`;
+const OPTIONS_DELETE_ONLY = `OpenZFSConfiguration.Options is a DeleteFileSystem option, not a create or update input (CFn "Update requires: No interruption"): create() never sends it and update() skips it, so a change only lands in the record delete() reads (go-to-k/cdkd#5431, ${SRC}/variant-diff.ts computeVariantConfigDiff, ${SRC}/delete.ts toDeleteOpenZFSOptions); describeFsxExtras pins the delete`;
 
 const FSX_CASE: TypeCase = {
   resourceType: TYPE,
@@ -372,7 +374,7 @@ const FSX_CASE: TypeCase = {
           'LustreConfiguration.MetadataConfiguration': CFN_KEEPS,
           'LustreConfiguration.ThroughputCapacity': CFN_KEEPS_OTHER_SHAPE('INTELLIGENT_TIERING storage on both sides'),
           'LustreConfiguration.DataReadCacheConfiguration': CFN_KEEPS_OTHER_SHAPE('INTELLIGENT_TIERING storage on both sides'),
-          'LustreConfiguration.LogConfiguration': `${CFN_UNMEASURED}; go-to-k/cdkd#5430 (${SRC}:106-110)`,
+          'LustreConfiguration.LogConfiguration': `${CFN_UNMEASURED}; go-to-k/cdkd#5430 (${SRC}/shared.ts LUSTRE_MUTABLE_SUBPROPS)`,
         }),
         ...blockVary('LustreConfiguration', [
           'AutoImportPolicy',
@@ -471,7 +473,7 @@ const FSX_CASE: TypeCase = {
         ...leftInPlace({
           StorageCapacity: CFN_KEEPS,
           StorageType: CFN_KEEPS,
-          NetworkType: `CloudFormation refuses this removal on this bag's shape (MULTI_AZ_1 with EndpointIpv6AddressRange still declared, ${SRC}:433-443); cdkd leaves it in place`,
+          NetworkType: `CloudFormation refuses this removal on this bag's shape (MULTI_AZ_1 with EndpointIpv6AddressRange still declared, ${SRC}/shared.ts cfnRefusesRemoval); cdkd leaves it in place`,
           'OpenZFSConfiguration.EndpointIpv6AddressRange': CFN_KEEPS_OTHER_SHAPE('NetworkType removed in the same deploy'),
           'OpenZFSConfiguration.ThroughputCapacity': CFN_KEEPS_OTHER_SHAPE('a NetworkType other than DUAL'),
           'OpenZFSConfiguration.AutomaticBackupRetentionDays': CFN_KEEPS,

@@ -1,20 +1,10 @@
 import {
   BudgetsClient,
-  CreateBudgetCommand,
-  UpdateBudgetCommand,
-  DeleteBudgetCommand,
   DescribeBudgetCommand,
-  DescribeNotificationsForBudgetCommand,
-  DescribeSubscribersForNotificationCommand,
-  ListTagsForResourceCommand,
-  CreateNotificationCommand,
-  DeleteNotificationCommand,
-  CreateSubscriberCommand,
-  DeleteSubscriberCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
-  NotFoundException,
-  DuplicateRecordException,
+  type CreateNotificationCommand,
+  type CreateSubscriberCommand,
+  type DeleteNotificationCommand,
+  type DeleteSubscriberCommand,
   type Budget,
   type Notification,
   type NotificationWithSubscribers,
@@ -24,312 +14,57 @@ import {
   type TimePeriod,
 } from '@aws-sdk/client-budgets';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
-import {
-  RESOURCE_NOT_FOUND,
-  type ResourceNotFound,
-  type ResourceProvider,
-  type ResourceCreateResult,
-  type ResourceUpdateResult,
-  type ResourceImportInput,
-  type ResourceImportResult,
-  type CreateContext,
-  type UpdateContext,
+import type { DeleteContext } from '../region-check.js';
+import type {
+  ResourceNotFound,
+  ResourceProvider,
+  ResourceCreateResult,
+  ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
-  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
-
-// ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
-//
-// `reconcileNotifications` / `reconcileResourceTags` derive their DELETES from
-// the gap between the desired and the recorded list. Reading a present-but-
-// malformed value (or dropping a malformed entry) as empty therefore deleted
-// every notification (with its subscribers) / untagged every key the other
-// side holds: on a rollback or `drift --revert`, where the desired side is a
-// recorded bag, `NotificationsWithSubscribers: {}` stripped the budget of its
-// alerts. So `undefined` / `null` is ABSENT (an empty list), and anything else
-// that is not a list of well-formed entries is MALFORMED. A malformed DESIRED
-// side is refused before any call; a malformed RECORDED side is applied
-// ADD-only (see `update`).
-
-type BudgetListKind = 'NotificationsWithSubscribers' | 'ResourceTags';
-type BudgetListSide = 'desired' | 'recorded';
-
-type BudgetListRead =
-  | { kind: 'list'; items: Record<string, unknown>[] }
-  // `onlySecret`: well-shaped, and malformed ONLY because an identity member
-  // holds a dynamic reference or its mask.
-  | { kind: 'malformed'; onlySecret: boolean };
-
-const BUDGET_LIST_WHAT: Record<BudgetListKind, string> = {
-  NotificationsWithSubscribers:
-    'entries with a Notification (NotificationType, ComparisonOperator, numeric Threshold) ' +
-    'and Subscribers (SubscriptionType, Address)',
-  ResourceTags: 'tags with a string Key',
-};
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
-/** A finite number, or a string holding one (CFn coerces scalars). */
-function isThreshold(value: unknown): boolean {
-  if (typeof value === 'number') return Number.isFinite(value);
-  return typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value));
-}
-
-/**
- * `side` matters for identity members only. A DESIRED notification or
- * subscriber Address (or tag Key) holding a dynamic reference or its mask names
- * nothing Budgets holds, so it is malformed. A RECORDED one is what cdkd writes
- * for a value that came from a secret (cdkd keeps the reference in state): it
- * is read, and `removableRecorded` keeps it out of the delete set.
- */
-function isWellFormedBudgetEntry(
-  kind: BudgetListKind,
-  entry: unknown,
-  side: BudgetListSide,
-  ignoreSecrets = false
-): boolean {
-  if (!isPlainRecord(entry)) return false;
-  const checkSecret = side === 'desired' && !ignoreSecrets;
-  if (kind === 'ResourceTags') {
-    if (!isNonEmptyString(entry['Key'])) return false;
-    // A `Value` keeps its existing coercion (a non-scalar sends `''`): only the
-    // Key decides what is untagged.
-    return !(checkSecret && holdsSecretDerivedEntry(entry['Key']));
-  }
-  const notification = entry['Notification'];
-  if (
-    !isPlainRecord(notification) ||
-    !isNonEmptyString(notification['NotificationType']) ||
-    !isNonEmptyString(notification['ComparisonOperator']) ||
-    !isThreshold(notification['Threshold']) ||
-    (notification['ThresholdType'] != null && !isNonEmptyString(notification['ThresholdType']))
-  ) {
-    return false;
-  }
-  if (checkSecret && holdsSecretDerivedEntry(notification)) return false;
-  const subscribers = entry['Subscribers'];
-  if (subscribers == null) return true;
-  return (
-    Array.isArray(subscribers) &&
-    subscribers.every(
-      (s) =>
-        isPlainRecord(s) &&
-        isNonEmptyString(s['SubscriptionType']) &&
-        isNonEmptyString(s['Address']) &&
-        !(checkSecret && holdsSecretDerivedEntry(s['Address']))
-    )
-  );
-}
-
-/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
-function readBudgetList(
-  kind: BudgetListKind,
-  value: unknown,
-  side: BudgetListSide
-): BudgetListRead {
-  if (value === undefined || value === null) return { kind: 'list', items: [] };
-  if (Array.isArray(value) && value.every((e) => isWellFormedBudgetEntry(kind, e, side))) {
-    return { kind: 'list', items: value as Record<string, unknown>[] };
-  }
-  return {
-    kind: 'malformed',
-    onlySecret:
-      Array.isArray(value) && value.every((e) => isWellFormedBudgetEntry(kind, e, side, true)),
-  };
-}
-
-/**
- * A recorded list minus every secret-derived identity: a notification whose
- * block holds one, a subscriber whose Address does, a tag whose Key does. The
- * reconciler would otherwise send a delete naming a literal `{{resolve:...}}`.
- * Dropping it only misses that one removal, the safe direction.
- */
-function removableRecorded(
-  kind: BudgetListKind,
-  items: Record<string, unknown>[]
-): Record<string, unknown>[] {
-  if (kind === 'ResourceTags') return items.filter((t) => !holdsSecretDerivedEntry(t['Key']));
-  return items
-    .filter((e) => !holdsSecretDerivedEntry(e['Notification']))
-    .map((e) =>
-      Array.isArray(e['Subscribers'])
-        ? {
-            ...e,
-            Subscribers: (e['Subscribers'] as Record<string, unknown>[]).filter(
-              (s) => !holdsSecretDerivedEntry(s['Address'])
-            ),
-          }
-        : e
-    );
-}
-
-// ─── Drift read-back (go-to-k/cdkd#5183) ────────────────────────────
-
-/** A finite number from a number or a numeric string; anything else is `undefined`. */
-function finiteNumber(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return undefined;
-}
-
-/**
- * A CFn `TimePeriod.Start` / `.End` as an ISO string, by the rules `toSdkDate`
- * sends it with (a date string, or an epoch in seconds or milliseconds, as a
- * number or a digit string). `undefined` when it does not parse.
- */
-function isoDate(value: unknown): string | undefined {
-  let date: Date;
-  if (typeof value === 'number') date = new Date(value < 1e12 ? value * 1000 : value);
-  else if (typeof value === 'string' && /^\d+$/.test(value)) {
-    const n = Number(value);
-    date = new Date(n < 1e12 ? n * 1000 : n);
-  } else if (typeof value === 'string') date = parseCfnTimestamp(value);
-  else if (value instanceof Date) date = value;
-  else return undefined;
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-}
-
-/** A `Spend` with its `Amount` as a number; the input itself when nothing changes. */
-function canonicalSpend(spend: unknown): unknown {
-  if (!isPlainRecord(spend)) return spend;
-  const amount = finiteNumber(spend['Amount']);
-  return amount === undefined || amount === spend['Amount'] ? spend : { ...spend, Amount: amount };
-}
-
-/**
- * One side of a budget drift comparison in the canonical form: amounts and
- * thresholds as numbers, `TimePeriod` dates as ISO strings, and an absent
- * `ThresholdType` as Budgets' default `PERCENTAGE`. Applied to BOTH sides, so
- * a template that spelled a value one way and a readback that returns it
- * another compare equal. Returns the input by identity when nothing applies.
- *
- * `side` is a drift comparison bag (the baseline or the readback), never a
- * desired bag bound for AWS, so it is not named like one.
- */
-function canonicalizeBudgetDriftBag(side: Record<string, unknown>): Record<string, unknown> {
-  let out = side;
-  const budget = side['Budget'];
-  if (isPlainRecord(budget)) {
-    let nextBudget = budget;
-    const set = (key: string, value: unknown): void => {
-      if (value === nextBudget[key]) return;
-      if (nextBudget === budget) nextBudget = { ...budget };
-      nextBudget[key] = value;
-    };
-    set('BudgetLimit', canonicalSpend(budget['BudgetLimit']));
-    const planned = budget['PlannedBudgetLimits'];
-    if (isPlainRecord(planned)) {
-      // The keys are period start times; `Object.fromEntries` keeps any key,
-      // `__proto__` included, an own property.
-      const entries = Object.entries(planned).map(([key, spend]) => [key, canonicalSpend(spend)]);
-      if (entries.some(([key, spend]) => spend !== planned[key as string])) {
-        set('PlannedBudgetLimits', Object.fromEntries(entries));
-      }
-    }
-    const period = budget['TimePeriod'];
-    if (isPlainRecord(period)) {
-      let nextPeriod = period;
-      for (const key of ['Start', 'End']) {
-        if (period[key] === undefined) continue;
-        const iso = isoDate(period[key]);
-        if (iso === undefined || iso === period[key]) continue;
-        if (nextPeriod === period) nextPeriod = { ...period };
-        nextPeriod[key] = iso;
-      }
-      set('TimePeriod', nextPeriod);
-    }
-    if (nextBudget !== budget) out = { ...out, Budget: nextBudget };
-  }
-  const list = side['NotificationsWithSubscribers'];
-  if (Array.isArray(list)) {
-    let changed = false;
-    const nextList = list.map((entry: unknown) => {
-      if (!isPlainRecord(entry) || !isPlainRecord(entry['Notification'])) return entry;
-      const notification = entry['Notification'];
-      const threshold = finiteNumber(notification['Threshold']);
-      const fillType = notification['ThresholdType'] == null;
-      const fixThreshold = threshold !== undefined && threshold !== notification['Threshold'];
-      if (!fillType && !fixThreshold) return entry;
-      changed = true;
-      return {
-        ...entry,
-        Notification: {
-          ...notification,
-          ...(fixThreshold && { Threshold: threshold }),
-          ...(fillType && { ThresholdType: 'PERCENTAGE' }),
-        },
-      };
-    });
-    if (changed) out = { ...out, NotificationsWithSubscribers: nextList };
-  }
-  return out;
-}
-
-/**
- * Whether a recorded budget declares the legacy filter shape (`CostFilters` /
- * `CostTypes`) and none of the current one (`FilterExpression` / `Metrics`).
- * `DescribeBudget` returns exactly one of the two shapes, chosen by
- * `ShowFilterExpression`; absent properties read as the current shape.
- */
-function declaresLegacyFilterShape(properties: Record<string, unknown> | undefined): boolean {
-  const budget = properties?.['Budget'];
-  if (!isPlainRecord(budget)) return false;
-  const legacy = budget['CostFilters'] != null || budget['CostTypes'] != null;
-  const current = budget['FilterExpression'] != null || budget['Metrics'] != null;
-  return legacy && !current;
-}
-
-/**
- * The baseline minus each `Budget.PlannedBudgetLimits` key that the AWS side
- * lacks and whose period start (epoch seconds) is before `nowMs`; the input by
- * identity when nothing is dropped. See `canonicalizeDriftPair`.
- */
-function dropElapsedPlannedLimits(
-  baseline: Record<string, unknown>,
-  aws: Record<string, unknown>,
-  nowMs: number
-): Record<string, unknown> {
-  const budget = baseline['Budget'];
-  const awsBudget = aws['Budget'];
-  if (!isPlainRecord(budget) || !isPlainRecord(awsBudget)) return baseline;
-  const planned = budget['PlannedBudgetLimits'];
-  if (!isPlainRecord(planned)) return baseline;
-  const awsPlanned = isPlainRecord(awsBudget['PlannedBudgetLimits'])
-    ? awsBudget['PlannedBudgetLimits']
-    : {};
-  const elapsed = (key: string): boolean =>
-    !Object.hasOwn(awsPlanned, key) && /^\d+$/.test(key) && Number(key) * 1000 < nowMs;
-  const kept = Object.entries(planned).filter(([key]) => !elapsed(key));
-  if (kept.length === Object.keys(planned).length) return baseline;
-  return { ...baseline, Budget: { ...budget, PlannedBudgetLimits: Object.fromEntries(kept) } };
-}
+import {
+  canonicalizeBudgetDriftBag,
+  isPlainRecord,
+  type BudgetListKind,
+} from './budgets-budget/shared.js';
+import { create } from './budgets-budget/create.js';
+import {
+  update,
+  readDesiredLists,
+  addNotificationsOnly,
+  createNotificationOrSubscribers,
+  sendDeleteIdempotent,
+  sendCreateIdempotent,
+  reconcileNotifications,
+  reconcileResourceTags,
+} from './budgets-budget/update.js';
+import { deleteImpl } from './budgets-budget/delete.js';
+import {
+  readCurrentState,
+  listNotifications,
+  listSubscribers,
+  budgetFromSdk,
+  canonicalizeDriftPair,
+  importImpl,
+} from './budgets-budget/read-state.js';
 
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
@@ -372,7 +107,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   private client: BudgetsClient | undefined;
   private createClient: BudgetsClient | undefined;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('BudgetsBudgetProvider');
+  logger: ConsoleLogger = getLogger().child('BudgetsBudgetProvider');
   private accountIdPromise: Promise<string> | undefined;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -382,7 +117,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): BudgetsClient {
+  getClient(): BudgetsClient {
     if (!this.client) {
       // Built together with the create client, so both capture the identity
       // active at this ONE call (issue #4639).
@@ -421,7 +156,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * masker (issue #2176), since a refusal or a 5xx can quote a resolved
    * secret-derived value.
    */
-  private wrapBudgetError(
+  wrapBudgetError(
     mask: MaskerFn,
     error: unknown,
     verb: 'create' | 'update',
@@ -458,7 +193,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
@@ -472,7 +207,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     );
   }
 
-  private getCreateClient(): BudgetsClient {
+  getCreateClient(): BudgetsClient {
     this.getClient();
     return this.createClient as BudgetsClient;
   }
@@ -483,7 +218,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * resolution is evicted so the next call retries instead of replaying a
    * transient error for the rest of the deploy.
    */
-  private resolveAccountId(): Promise<string> {
+  resolveAccountId(): Promise<string> {
     if (!this.accountIdPromise) {
       this.accountIdPromise = (async (): Promise<string> => {
         try {
@@ -530,7 +265,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * unset or unrecognized still derives to `aws`, so commercial output is
    * unchanged byte for byte.
    */
-  private async budgetArn(accountId: string, budgetName: string): Promise<string> {
+  async budgetArn(accountId: string, budgetName: string): Promise<string> {
     const region = await this.getClient().config.region();
     const { partition } = derivePartitionAndUrlSuffix(region ?? '');
     return `arn:${partition}:budgets::${accountId}:budget/${budgetName}`;
@@ -541,7 +276,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * `Amount` as a number (CDK synthesizes `budgetLimit: { amount: 10 }` to a
    * numeric JSON value); the SDK wants a numeric string.
    */
-  private toSdkSpend(raw: unknown): Spend | undefined {
+  toSdkSpend(raw: unknown): Spend | undefined {
     if (raw === undefined || raw === null || typeof raw !== 'object') return undefined;
     const spend = raw as Record<string, unknown>;
     const amount = spend['Amount'];
@@ -562,7 +297,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * seconds (possibly as a numeric string). A date string with no offset is
    * read as UTC, never the deployer's local zone (issue #5311).
    */
-  private toSdkDate(
+  toSdkDate(
     raw: unknown,
     field: string,
     logicalId: string,
@@ -605,7 +340,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * `TimePeriod.Start` / `.End` are `Date`s. `FilterExpression` / `Metrics` /
    * `CostFilters` / `CostTypes` / `AutoAdjustData` pass through verbatim.
    */
-  private toSdkBudget(
+  toSdkBudget(
     raw: unknown,
     budgetName: string,
     logicalId: string,
@@ -652,7 +387,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   }
 
   /** Normalize a CFn notification block to the SDK `Notification` shape. */
-  private toSdkNotification(raw: Record<string, unknown>): Notification {
+  toSdkNotification(raw: Record<string, unknown>): Notification {
     return {
       NotificationType: raw['NotificationType'] as Notification['NotificationType'],
       ComparisonOperator: raw['ComparisonOperator'] as Notification['ComparisonOperator'],
@@ -664,7 +399,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   }
 
   /** Normalize a CFn subscriber block to the SDK `Subscriber` shape. */
-  private toSdkSubscriber(raw: Record<string, unknown>): Subscriber {
+  toSdkSubscriber(raw: Record<string, unknown>): Subscriber {
     return {
       SubscriptionType: raw['SubscriptionType'] as Subscriber['SubscriptionType'],
       Address: raw['Address'] as string | undefined,
@@ -675,7 +410,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * Map well-formed `NotificationsWithSubscribers` entries (see
    * {@link readBudgetList}) to the SDK shape.
    */
-  private toSdkNotificationsWithSubscribers(
+  toSdkNotificationsWithSubscribers(
     items: Record<string, unknown>[]
   ): NotificationWithSubscribers[] {
     return items.map((entry) => {
@@ -696,7 +431,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * `ThresholdType` defaults to `PERCENTAGE` service-side — normalize the
    * absent case so an explicit `PERCENTAGE` and an omitted one compare equal.
    */
-  private notificationKey(n: Notification): string {
+  notificationKey(n: Notification): string {
     return JSON.stringify([
       n.NotificationType,
       n.ComparisonOperator,
@@ -706,12 +441,12 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   }
 
   /** Identity key for a subscriber. */
-  private subscriberKey(s: Subscriber): string {
+  subscriberKey(s: Subscriber): string {
     return JSON.stringify([s.SubscriptionType, s.Address]);
   }
 
   /** Map well-formed `ResourceTags` entries (see {@link readBudgetList}) to the SDK shape. */
-  private toSdkResourceTags(items: Record<string, unknown>[]): ResourceTag[] {
+  toSdkResourceTags(items: Record<string, unknown>[]): ResourceTag[] {
     return items.map((tag) => {
       const value = tag['Value'];
       return {
@@ -726,91 +461,16 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     });
   }
 
-  /**
-   * Create a budget via `CreateBudget` (a single call carries the budget,
-   * its notifications with subscribers, and resource tags — no post-create
-   * wiring to clean up on partial failure).
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // Issue #2178: `toSdkDate` quotes the offending `TimePeriod` value back at
-    // the user, and `properties` arrives RESOLVED. Absent means unmasked, the
-    // back-compatible default the SecretMaskingContext contract mandates.
-    const mask = maskerOrIdentity(context?.maskSecrets);
-
-    this.logger.debug(`Creating budget ${logicalId}`);
-
-    const rawBudget = (properties['Budget'] ?? {}) as Record<string, unknown>;
-    const rawName = rawBudget['BudgetName'];
-    // A user-supplied BudgetName is a user contract: Budgets accepts nearly
-    // every printable character except `:` and `\`, so it passes through
-    // VERBATIM (no sanitize, no stack prefix) — running it through the name
-    // generator would silently mutate names like "My Team Budget" and desync
-    // the physical id from the template (breaking import's explicit-name
-    // lookup). Only the logical-id fallback goes through the conservative
-    // generator.
-    const name =
-      typeof rawName === 'string' && rawName.length > 0
-        ? rawName
-        : generateResourceName(logicalId, {
-            maxLength: 100,
-            allowedPattern: /[^a-zA-Z0-9\-_.]/g,
-          });
-
-    // go-to-k/cdkd#3989: refused before any call, so a malformed list never
-    // creates a budget missing the alerts or tags the template declares.
-    const lists = this.readDesiredLists(
-      logicalId,
-      resourceType,
-      {
-        NotificationsWithSubscribers: properties['NotificationsWithSubscribers'],
-        ResourceTags: properties['ResourceTags'],
-      },
-      undefined
-    );
-
-    try {
-      const accountId = await this.resolveAccountId();
-      const notifications = this.toSdkNotificationsWithSubscribers(
-        lists.NotificationsWithSubscribers
-      );
-      const resourceTags = this.toSdkResourceTags(lists.ResourceTags);
-      // Read before CreateBudget, so nothing can fail once the budget exists
-      // (go-to-k/cdkd#4583).
-      const arn = await this.budgetArn(accountId, name);
-
-      await this.getCreateClient().send(
-        new CreateBudgetCommand({
-          AccountId: accountId,
-          Budget: this.toSdkBudget(properties['Budget'], name, logicalId, resourceType, mask),
-          ...(notifications.length > 0 && { NotificationsWithSubscribers: notifications }),
-          ...(resourceTags.length > 0 && { ResourceTags: resourceTags }),
-        })
-      );
-
-      this.logger.debug(`Successfully created budget ${logicalId}: ${name}`);
-      return {
-        physicalId: name,
-        attributes: {
-          Arn: arn,
-        },
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      throw this.wrapBudgetError(mask, error, 'create', logicalId, resourceType, undefined);
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update a budget: `UpdateBudget` for the budget definition, then
-   * reconcile `NotificationsWithSubscribers` in place (CloudFormation would
-   * replace the whole budget instead) and diff `ResourceTags`.
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -818,449 +478,82 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Issue #2178: same refusal, same bag, so the same sink (see `create`).
-    const mask = maskerOrIdentity(context?.maskSecrets);
-
-    this.logger.debug(`Updating budget ${logicalId}: ${physicalId}`);
-
-    // go-to-k/cdkd#3989: a malformed desired list is refused before any call.
-    const next = this.readDesiredLists(
+    return update.call(
+      this,
       logicalId,
+      physicalId,
       resourceType,
-      {
-        NotificationsWithSubscribers: properties['NotificationsWithSubscribers'],
-        ResourceTags: properties['ResourceTags'],
-      },
-      physicalId
+      properties,
+      previousProperties,
+      context
     );
-    const prevNotifications = readBudgetList(
-      'NotificationsWithSubscribers',
-      previousProperties['NotificationsWithSubscribers'],
-      'recorded'
-    );
-    const prevTags = readBudgetList('ResourceTags', previousProperties['ResourceTags'], 'recorded');
-
-    try {
-      const accountId = await this.resolveAccountId();
-
-      // The physical id is the budget name: a rename is classified as
-      // replacement upstream (replacement-rules.ts), so `physicalId` is the
-      // authoritative name here.
-      await this.getClient().send(
-        new UpdateBudgetCommand({
-          AccountId: accountId,
-          NewBudget: this.toSdkBudget(
-            properties['Budget'],
-            physicalId,
-            logicalId,
-            resourceType,
-            mask
-          ),
-        })
-      );
-
-      const newNotifications = this.toSdkNotificationsWithSubscribers(
-        next.NotificationsWithSubscribers
-      );
-      if (prevNotifications.kind === 'list') {
-        await this.reconcileNotifications(
-          accountId,
-          physicalId,
-          this.toSdkNotificationsWithSubscribers(
-            removableRecorded('NotificationsWithSubscribers', prevNotifications.items)
-          ),
-          newNotifications
-        );
-      } else {
-        try {
-          await this.addNotificationsOnly(accountId, physicalId, newNotifications);
-        } catch (error) {
-          // Nothing was deleted first, so the budget's existing notifications
-          // still count toward its limits (5 notifications, 10 email
-          // subscribers each): name what was being added beside them.
-          const cause = error instanceof Error ? error : undefined;
-          throw this.wrapMaskedError(
-            mask,
-            error,
-            (text) =>
-              new ProvisioningError(
-                `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
-                  `notification(s) beside every notification the budget already holds (the recorded ` +
-                  `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
-                  `budget allows at most 5 notifications and 10 email subscribers each): ${text}`,
-                resourceType,
-                logicalId,
-                physicalId,
-                cause
-              )
-          );
-        }
-        this.logger.warn(
-          safeMsg`The recorded NotificationsWithSubscribers of budget ${logicalId} is not a list cdkd can read, so cdkd deleted no notification or subscriber and only added the desired ones. Delete any the template no longer names yourself.`
-        );
-      }
-
-      const newTags = this.toSdkResourceTags(next.ResourceTags);
-      if (prevTags.kind === 'list') {
-        await this.reconcileResourceTags(
-          accountId,
-          physicalId,
-          this.toSdkResourceTags(removableRecorded('ResourceTags', prevTags.items)),
-          newTags
-        );
-      } else {
-        if (newTags.length > 0) {
-          await this.getClient().send(
-            new TagResourceCommand({
-              ResourceARN: await this.budgetArn(accountId, physicalId),
-              ResourceTags: newTags,
-            })
-          );
-        }
-        this.logger.warn(
-          safeMsg`The recorded ResourceTags of budget ${logicalId} is not a list cdkd can read, so cdkd removed no tag and only applied the desired ones. Untag any key the template no longer names yourself.`
-        );
-      }
-
-      this.logger.debug(`Successfully updated budget ${logicalId}`);
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          Arn: await this.budgetArn(accountId, physicalId),
-        },
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      throw this.wrapBudgetError(mask, error, 'update', logicalId, resourceType, physicalId);
-    }
   }
 
-  /**
-   * Read the DESIRED lists of a create or update, refusing a malformed one
-   * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
-   * of each property so the call site shows (and a grep finds) which property
-   * feeds the calls. `physicalId` is set on the update path.
-   */
-  private readDesiredLists(
+  readDesiredLists(
     logicalId: string,
     resourceType: string,
     values: Record<BudgetListKind, unknown>,
     physicalId: string | undefined
   ): Record<BudgetListKind, Record<string, unknown>[]> {
-    const kinds: BudgetListKind[] = ['NotificationsWithSubscribers', 'ResourceTags'];
-    const out = {} as Record<BudgetListKind, Record<string, unknown>[]>;
-    const bad: BudgetListKind[] = [];
-    const secret: BudgetListKind[] = [];
-    for (const kind of kinds) {
-      const read = readBudgetList(kind, values[kind], 'desired');
-      if (read.kind === 'list') {
-        out[kind] = read.items;
-      } else {
-        bad.push(kind);
-        if (read.onlySecret) secret.push(kind);
-      }
-    }
-    if (bad.length === 0) return out;
-    const updating = physicalId !== undefined;
-    throw markNonRetryable(
-      new ProvisioningError(
-        `${updating ? 'desired ' : ''}${bad.join(' / ')} of budget ${logicalId} is not a list ` +
-          `of ${bad.map((k) => BUDGET_LIST_WHAT[k]).join(' / ')}` +
-          (secret.length > 0
-            ? ` (${secret.join(' / ')} holds a dynamic reference or its mask where an ` +
-              `identifying value belongs, which names nothing Budgets holds)`
-            : '') +
-          ` — the budget was not ${updating ? 'updated' : 'created'}`,
-        resourceType,
-        logicalId,
-        physicalId
-      )
-    );
+    return readDesiredLists.call(this, logicalId, resourceType, values, physicalId);
   }
 
-  /**
-   * The ADD-only arm for a recorded `NotificationsWithSubscribers` cdkd cannot
-   * read (go-to-k/cdkd#3989): create every desired notification (see
-   * {@link createNotificationOrSubscribers}). Nothing is deleted, so a
-   * notification or subscriber the desired side omits stays in place.
-   */
-  private async addNotificationsOnly(
+  addNotificationsOnly(
     accountId: string,
     budgetName: string,
     list: NotificationWithSubscribers[]
   ): Promise<void> {
-    for (const nws of list) {
-      await this.createNotificationOrSubscribers(accountId, budgetName, nws);
-    }
+    return addNotificationsOnly.call(this, accountId, budgetName, list);
   }
 
-  /**
-   * Create a notification with its subscribers; on one that already exists
-   * (`DuplicateRecordException` — a retry, or a notification the old side did
-   * not list) create each desired subscriber instead, so none is skipped.
-   */
-  private async createNotificationOrSubscribers(
+  createNotificationOrSubscribers(
     accountId: string,
     budgetName: string,
     nws: NotificationWithSubscribers
   ): Promise<void> {
-    const key = this.notificationKey(nws.Notification as Notification);
-    try {
-      await this.getClient().send(
-        new CreateNotificationCommand({
-          AccountId: accountId,
-          BudgetName: budgetName,
-          Notification: nws.Notification,
-          Subscribers: nws.Subscribers,
-        })
-      );
-      return;
-    } catch (error) {
-      if (!(error instanceof DuplicateRecordException)) throw error;
-      this.logger.debug(safeMsg`Notification ${key} already exists, creating its subscribers`);
-    }
-    for (const subscriber of nws.Subscribers ?? []) {
-      await this.sendCreateIdempotent(
-        new CreateSubscriberCommand({
-          AccountId: accountId,
-          BudgetName: budgetName,
-          Notification: nws.Notification,
-          Subscriber: subscriber,
-        }),
-        `Subscriber ${this.subscriberKey(subscriber)} on notification ${key}`
-      );
-    }
+    return createNotificationOrSubscribers.call(this, accountId, budgetName, nws);
   }
 
-  /**
-   * Send a reconciler DELETE call, treating `NotFoundException` as success.
-   * The reconciler must be idempotent: after a partial failure the deploy
-   * engine retries the update forward (re-deleting an already-deleted
-   * notification/subscriber) or rolls it back with the reversed diff
-   * (deleting a notification the forward pass never created) — both land
-   * here as NotFound and must not fail the recovery.
-   */
-  private async sendDeleteIdempotent(
+  sendDeleteIdempotent(
     command: DeleteNotificationCommand | DeleteSubscriberCommand,
     what: string
   ): Promise<void> {
-    try {
-      await this.getClient().send(command as DeleteNotificationCommand);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        this.logger.debug(`${what} already absent, skipping delete`);
-        return;
-      }
-      throw error;
-    }
+    return sendDeleteIdempotent.call(this, command, what);
   }
 
-  /**
-   * Send a reconciler CREATE call, treating `DuplicateRecordException` as
-   * success — the retry/rollback twin of {@link sendDeleteIdempotent} for
-   * re-creating a notification/subscriber a previous partial pass already
-   * created.
-   */
-  private async sendCreateIdempotent(
+  sendCreateIdempotent(
     command: CreateNotificationCommand | CreateSubscriberCommand,
     what: string
   ): Promise<void> {
-    try {
-      await this.getClient().send(command as CreateNotificationCommand);
-    } catch (error) {
-      if (error instanceof DuplicateRecordException) {
-        this.logger.debug(`${what} already exists, skipping create`);
-        return;
-      }
-      throw error;
-    }
+    return sendCreateIdempotent.call(this, command, what);
   }
 
-  /**
-   * Reconcile the notification set: delete removed notifications first
-   * (frees the 10-notifications-per-budget cap before additions), create
-   * added ones, then diff subscribers on retained notifications. Every
-   * step is idempotent (NotFound on delete / DuplicateRecord on create are
-   * success) so a partial failure can be retried forward or rolled back.
-   */
-  private async reconcileNotifications(
+  reconcileNotifications(
     accountId: string,
     budgetName: string,
     oldList: NotificationWithSubscribers[],
     newList: NotificationWithSubscribers[]
   ): Promise<void> {
-    const buildKeyed = (
-      list: NotificationWithSubscribers[],
-      side: string
-    ): Map<string, NotificationWithSubscribers> => {
-      const byKey = new Map<string, NotificationWithSubscribers>();
-      for (const nws of list) {
-        if (!nws.Notification) continue;
-        const key = this.notificationKey(nws.Notification);
-        if (byKey.has(key)) {
-          // Two notifications with identical (type, operator, threshold,
-          // thresholdType) — the Budgets API itself rejects true duplicates
-          // with DuplicateRecord, and Map aggregation keeps the LAST entry's
-          // subscribers. Surface it so a silently-dropped subscriber list is
-          // diagnosable.
-          this.logger.warn(
-            `Duplicate notification key ${key} in ${side} NotificationsWithSubscribers for budget ${budgetName}; the last entry's subscribers win`
-          );
-        }
-        byKey.set(key, nws);
-      }
-      return byKey;
-    };
-    const oldByKey = buildKeyed(oldList, 'previous');
-    const newByKey = buildKeyed(newList, 'desired');
-
-    // Removed notifications (their subscribers are deleted with them).
-    for (const [key, nws] of oldByKey) {
-      if (newByKey.has(key)) continue;
-      await this.sendDeleteIdempotent(
-        new DeleteNotificationCommand({
-          AccountId: accountId,
-          BudgetName: budgetName,
-          Notification: nws.Notification,
-        }),
-        `Notification ${key} on budget ${budgetName}`
-      );
-      this.logger.debug(`Deleted notification ${key} from budget ${budgetName}`);
-    }
-
-    // Added notifications (created with their full subscriber list; one that
-    // already exists gets its desired subscribers instead).
-    for (const [key, nws] of newByKey) {
-      if (oldByKey.has(key)) continue;
-      await this.createNotificationOrSubscribers(accountId, budgetName, nws);
-      this.logger.debug(`Created notification ${key} on budget ${budgetName}`);
-    }
-
-    // Retained notifications: diff subscribers. Create additions BEFORE
-    // deleting removals — a notification must keep at least one subscriber
-    // at all times, so delete-first would fail on a full swap of a
-    // single-subscriber notification. Known trade-off: a full swap of a
-    // notification already AT the per-notification subscriber cap can
-    // transiently exceed the cap and fail — the inverse of the delete-first
-    // ordering used for whole notifications above; the at-cap full swap is
-    // the rarer case.
-    for (const [key, newNws] of newByKey) {
-      const oldNws = oldByKey.get(key);
-      if (!oldNws) continue;
-      const oldSubs = new Map<string, Subscriber>();
-      for (const s of oldNws.Subscribers ?? []) oldSubs.set(this.subscriberKey(s), s);
-      const newSubs = new Map<string, Subscriber>();
-      for (const s of newNws.Subscribers ?? []) newSubs.set(this.subscriberKey(s), s);
-
-      for (const [subKey, subscriber] of newSubs) {
-        if (oldSubs.has(subKey)) continue;
-        await this.sendCreateIdempotent(
-          new CreateSubscriberCommand({
-            AccountId: accountId,
-            BudgetName: budgetName,
-            Notification: newNws.Notification,
-            Subscriber: subscriber,
-          }),
-          `Subscriber ${subKey} on notification ${key}`
-        );
-        this.logger.debug(`Created subscriber ${subKey} on notification ${key}`);
-      }
-      for (const [subKey, subscriber] of oldSubs) {
-        if (newSubs.has(subKey)) continue;
-        await this.sendDeleteIdempotent(
-          new DeleteSubscriberCommand({
-            AccountId: accountId,
-            BudgetName: budgetName,
-            Notification: newNws.Notification,
-            Subscriber: subscriber,
-          }),
-          `Subscriber ${subKey} on notification ${key}`
-        );
-        this.logger.debug(`Deleted subscriber ${subKey} from notification ${key}`);
-      }
-    }
+    return reconcileNotifications.call(this, accountId, budgetName, oldList, newList);
   }
 
-  /** Diff `ResourceTags` via `UntagResource` (removed keys) + `TagResource` (upsert). */
-  private async reconcileResourceTags(
+  reconcileResourceTags(
     accountId: string,
     budgetName: string,
     oldTags: ResourceTag[],
     newTags: ResourceTag[]
   ): Promise<void> {
-    const sortedJson = (tags: ResourceTag[]): string =>
-      JSON.stringify([...tags].sort((a, b) => (a.Key ?? '').localeCompare(b.Key ?? '')));
-    if (sortedJson(oldTags) === sortedJson(newTags)) return;
-
-    const arn = await this.budgetArn(accountId, budgetName);
-    const newKeys = new Set(newTags.map((t) => t.Key));
-    const removedKeys = oldTags
-      .map((t) => t.Key)
-      .filter((k): k is string => {
-        return typeof k === 'string' && !newKeys.has(k);
-      });
-    if (removedKeys.length > 0) {
-      await this.getClient().send(
-        new UntagResourceCommand({ ResourceARN: arn, ResourceTagKeys: removedKeys })
-      );
-    }
-    if (newTags.length > 0) {
-      await this.getClient().send(
-        new TagResourceCommand({ ResourceARN: arn, ResourceTags: newTags })
-      );
-    }
-    this.logger.debug(`Updated resource tags for budget ${budgetName}`);
+    return reconcileResourceTags.call(this, accountId, budgetName, oldTags, newTags);
   }
 
-  /**
-   * Delete a budget (`DeleteBudget` also deletes all of its notifications
-   * and subscribers). NotFound is idempotent success — after the standard
-   * region assertion (see the class doc for why the guard stays uniform
-   * even though the Budgets namespace is global).
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting budget ${logicalId}: ${physicalId}`);
-
-    try {
-      const accountId = await this.resolveAccountId();
-      await this.getClient().send(
-        new DeleteBudgetCommand({ AccountId: accountId, BudgetName: physicalId })
-      );
-      this.logger.debug(`Successfully deleted budget ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`Budget ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete budget ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
   /**
@@ -1306,227 +599,29 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     }
   }
 
-  /**
-   * Read the budget back in the CFn property shape (go-to-k/cdkd#5183), for
-   * `cdkd drift` and the deploy-time `observedProperties` capture:
-   * `DescribeBudget`, `DescribeNotificationsForBudget`, one
-   * `DescribeSubscribersForNotification` per notification, and
-   * `ListTagsForResource`.
-   *
-   * Only CFn `BudgetData` members are emitted. `CalculatedSpend`,
-   * `LastUpdatedTime`, `HealthStatus`, `AutoAdjustData.LastAutoAdjustTime` and
-   * `HistoricalOptions.LookBackAvailablePeriods` change on their own and
-   * would read as drift. Amounts come back as numbers (AWS returns `"1.0"`,
-   * a CDK template `1`), dates as ISO strings. `ThresholdType` is emitted only
-   * when it is not the default `PERCENTAGE`, the shape a template that omits
-   * it records. Order and the default are left to
-   * {@link getDriftUnorderedPaths} and {@link canonicalizeDriftProperties},
-   * which see both sides.
-   *
-   * `DescribeBudget` answers in one of two filter shapes, never both
-   * (measured live, see PR #5188): with `ShowFilterExpression: true` it
-   * returns `FilterExpression` + `Metrics` and no `CostFilters` / `CostTypes`,
-   * even for a budget created with `CostFilters`; without it, the legacy
-   * `CostFilters` + `CostTypes` and no `FilterExpression`. The read asks for
-   * the shape the recorded properties declare ({@link declaresLegacyFilterShape}),
-   * so an unchanged budget compares clean and `drift --revert`, which sends
-   * the readback for every member that did not drift, sends `UpdateBudget`
-   * the shape the template was deployed with, never an unfiltered budget.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
+    logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    if (resourceType !== 'AWS::Budgets::Budget') return undefined;
-    const accountId = await this.resolveAccountId();
-    const client = this.getClient();
-
-    // The Budgets namespace is global (see the class doc), so a NotFound is
-    // trustworthy from any region.
-    const describe = async (): Promise<Budget | ResourceNotFound | undefined> => {
-      try {
-        const response = await client.send(
-          new DescribeBudgetCommand({
-            AccountId: accountId,
-            BudgetName: physicalId,
-            ShowFilterExpression: !declaresLegacyFilterShape(properties),
-          })
-        );
-        return response.Budget;
-      } catch (error) {
-        if (error instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-        throw error;
-      }
-    };
-    const budget = await describe();
-    if (budget === RESOURCE_NOT_FOUND || budget === undefined) return budget;
-
-    // A NotFound from a later call is either "none of these" or the budget
-    // going away mid-read: ask again, so a deleted budget reads as deleted
-    // rather than as a budget whose notifications were all removed.
-    const notifications = await this.listNotifications(accountId, physicalId);
-    if (notifications === undefined && (await describe()) === RESOURCE_NOT_FOUND) {
-      return RESOURCE_NOT_FOUND;
-    }
-    const withSubscribers = await Promise.all(
-      (notifications ?? []).map(async (notification) => {
-        const subscribers = await this.listSubscribers(accountId, physicalId, notification);
-        return subscribers === undefined ? undefined : { notification, subscribers };
-      })
-    );
-    const notificationsWithSubscribers = withSubscribers
-      .filter(
-        (e): e is { notification: Notification; subscribers: Subscriber[] } => e !== undefined
-      )
-      .map(({ notification, subscribers }) => ({
-        Notification: {
-          NotificationType: notification.NotificationType,
-          ComparisonOperator: notification.ComparisonOperator,
-          Threshold: notification.Threshold,
-          ...(notification.ThresholdType !== undefined &&
-            notification.ThresholdType !== 'PERCENTAGE' && {
-              ThresholdType: notification.ThresholdType,
-            }),
-        },
-        Subscribers: subscribers.map((s) => ({
-          SubscriptionType: s.SubscriptionType,
-          Address: s.Address,
-        })),
-      }));
-    let tags;
-    try {
-      tags = await client.send(
-        new ListTagsForResourceCommand({
-          ResourceARN: await this.budgetArn(accountId, physicalId),
-        })
-      );
-    } catch (error) {
-      if (error instanceof NotFoundException && (await describe()) === RESOURCE_NOT_FOUND) {
-        return RESOURCE_NOT_FOUND;
-      }
-      throw error;
-    }
-
-    return {
-      Budget: this.budgetFromSdk(budget),
-      NotificationsWithSubscribers: notificationsWithSubscribers,
-      ResourceTags: (tags.ResourceTags ?? []).map((t) => ({ Key: t.Key, Value: t.Value })),
-    };
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
   }
 
-  /**
-   * Every notification on the budget, or `undefined` on a `NotFoundException`:
-   * no notification, or the budget went away mid-read (`readCurrentState`
-   * tells the two apart).
-   */
-  private async listNotifications(
-    accountId: string,
-    budgetName: string
-  ): Promise<Notification[] | undefined> {
-    const out: Notification[] = [];
-    let token: string | undefined;
-    try {
-      do {
-        const page = await this.getClient().send(
-          new DescribeNotificationsForBudgetCommand({
-            AccountId: accountId,
-            BudgetName: budgetName,
-            MaxResults: 100,
-            ...(token !== undefined && { NextToken: token }),
-          })
-        );
-        out.push(...(page.Notifications ?? []));
-        token = page.NextToken;
-      } while (token);
-    } catch (error) {
-      if (error instanceof NotFoundException) return undefined;
-      throw error;
-    }
-    return out;
+  listNotifications(accountId: string, budgetName: string): Promise<Notification[] | undefined> {
+    return listNotifications.call(this, accountId, budgetName);
   }
 
-  /**
-   * Every subscriber of one notification, or `undefined` on a
-   * `NotFoundException`: the notification was removed between the two reads,
-   * so `readCurrentState` leaves it out rather than report it subscriber-less.
-   */
-  private async listSubscribers(
+  listSubscribers(
     accountId: string,
     budgetName: string,
     notification: Notification
   ): Promise<Subscriber[] | undefined> {
-    const out: Subscriber[] = [];
-    let token: string | undefined;
-    try {
-      do {
-        const page = await this.getClient().send(
-          new DescribeSubscribersForNotificationCommand({
-            AccountId: accountId,
-            BudgetName: budgetName,
-            Notification: {
-              NotificationType: notification.NotificationType,
-              ComparisonOperator: notification.ComparisonOperator,
-              Threshold: notification.Threshold,
-              ...(notification.ThresholdType !== undefined && {
-                ThresholdType: notification.ThresholdType,
-              }),
-            },
-            MaxResults: 100,
-            ...(token !== undefined && { NextToken: token }),
-          })
-        );
-        out.push(...(page.Subscribers ?? []));
-        token = page.NextToken;
-      } while (token);
-    } catch (error) {
-      if (error instanceof NotFoundException) return undefined;
-      throw error;
-    }
-    return out;
+    return listSubscribers.call(this, accountId, budgetName, notification);
   }
 
-  /** The CFn `BudgetData` members of a `DescribeBudget` response (see {@link readCurrentState}). */
-  private budgetFromSdk(budget: Budget): Record<string, unknown> {
-    const raw = budget as Budget & Record<string, unknown>;
-    const spend = (s: Spend | undefined): Record<string, unknown> | undefined =>
-      s === undefined ? undefined : { Amount: finiteNumber(s.Amount) ?? s.Amount, Unit: s.Unit };
-    const out: Record<string, unknown> = {
-      BudgetName: budget.BudgetName,
-      BudgetType: raw['BudgetType'],
-      TimeUnit: budget.TimeUnit,
-    };
-    if (budget.BudgetLimit) out['BudgetLimit'] = spend(budget.BudgetLimit);
-    if (budget.PlannedBudgetLimits && Object.keys(budget.PlannedBudgetLimits).length > 0) {
-      out['PlannedBudgetLimits'] = Object.fromEntries(
-        Object.entries(budget.PlannedBudgetLimits).map(([key, s]) => [key, spend(s)])
-      );
-    }
-    if (budget.TimePeriod) {
-      out['TimePeriod'] = {
-        ...(budget.TimePeriod.Start && { Start: isoDate(budget.TimePeriod.Start) }),
-        ...(budget.TimePeriod.End && { End: isoDate(budget.TimePeriod.End) }),
-      };
-    }
-    if (budget.CostFilters && Object.keys(budget.CostFilters).length > 0) {
-      out['CostFilters'] = budget.CostFilters;
-    }
-    if (budget.CostTypes) out['CostTypes'] = { ...budget.CostTypes };
-    const autoAdjust = raw['AutoAdjustData'];
-    if (isPlainRecord(autoAdjust)) {
-      const historical = autoAdjust['HistoricalOptions'];
-      out['AutoAdjustData'] = {
-        AutoAdjustType: autoAdjust['AutoAdjustType'],
-        ...(isPlainRecord(historical) && {
-          HistoricalOptions: { BudgetAdjustmentPeriod: historical['BudgetAdjustmentPeriod'] },
-        }),
-      };
-    }
-    if (raw['FilterExpression'] !== undefined) out['FilterExpression'] = raw['FilterExpression'];
-    if (Array.isArray(raw['Metrics']) && raw['Metrics'].length > 0) out['Metrics'] = raw['Metrics'];
-    if (raw['BillingViewArn'] !== undefined) out['BillingViewArn'] = raw['BillingViewArn'];
-    return out;
+  budgetFromSdk(budget: Budget): Record<string, unknown> {
+    return budgetFromSdk.call(this, budget);
   }
 
   /**
@@ -1571,62 +666,15 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     return resourceType === 'AWS::Budgets::Budget' ? canonicalizeBudgetDriftBag(side) : side;
   }
 
-  /**
-   * `DescribeBudget` returns the current and future `PlannedBudgetLimits`
-   * only, so a period that has ended drops out of the readback while the
-   * baseline keeps it. Drop from the BASELINE each key the readback lacks
-   * whose period start (the key, in epoch seconds) is already past: that
-   * absence is not drift, and `drift --revert`, which sends this baseline,
-   * must not send an elapsed period either. A FUTURE key the readback lacks
-   * stays, and is reported.
-   */
-  async canonicalizeDriftPair(
+  canonicalizeDriftPair(
     resourceType: string,
     baseline: Record<string, unknown>,
     aws: Record<string, unknown>
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
-    if (resourceType !== 'AWS::Budgets::Budget') return { baseline, aws };
-    return { baseline: dropElapsedPlannedLimits(baseline, aws, Date.now()), aws };
+    return canonicalizeDriftPair.call(this, resourceType, baseline, aws);
   }
 
-  /**
-   * Adopt an existing budget into cdkd state.
-   *
-   * Lookup order:
-   *  1. `--resource` override or `Properties.Budget.BudgetName` → verify via
-   *     `DescribeBudget`.
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const rawBudget = (input.properties['Budget'] ?? {}) as Record<string, unknown>;
-    const explicit =
-      input.knownPhysicalId ??
-      (typeof rawBudget['BudgetName'] === 'string' && rawBudget['BudgetName'].length > 0
-        ? rawBudget['BudgetName']
-        : undefined);
-
-    const accountId = await this.resolveAccountId();
-    const client = this.getClient();
-
-    if (explicit) {
-      try {
-        await client.send(
-          new DescribeBudgetCommand({ AccountId: accountId, BudgetName: explicit })
-        );
-        return {
-          physicalId: explicit,
-          attributes: { Arn: await this.budgetArn(accountId, explicit) },
-        };
-      } catch (error) {
-        if (error instanceof NotFoundException) return null;
-        throw error;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a
-    // budget reaching here needs an explicit `--resource` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 }

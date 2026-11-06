@@ -242,7 +242,7 @@ export function toFiniteNumber(value: unknown): number | undefined {
  * are CloudFormation's spelling of "property absent", which is a statement
  * about the PROPERTY, not about the number — they answer `undefined` here, and
  * the caller decides whether `undefined` means "absent" or "unusable" from the
- * raw value (`logs-loggroup-provider.ts`'s `assertUsableRetention` is the
+ * raw value (`logs-loggroup/shared.ts`'s `assertUsableRetention` is the
  * reference). `0` / `'0'` parse to `0` here; whether zero is usable is again the
  * property's question (the log-group handler rejects it by enum).
  */
