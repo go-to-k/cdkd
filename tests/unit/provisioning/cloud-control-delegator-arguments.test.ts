@@ -39,7 +39,11 @@ vi.mock('../../../src/utils/logger.js', () => ({
   },
 }));
 
-import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
+import { GetResourceCommand } from '@aws-sdk/client-cloudcontrol';
+import {
+  CloudControlProvider,
+  CloudControlWaitAbandonedError,
+} from '../../../src/provisioning/cloud-control-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { DeleteContext } from '../../../src/provisioning/region-check.js';
 import type { CreateContext } from '../../../src/types/resource.js';
@@ -63,6 +67,15 @@ interface Members {
     context?: CreateContext
   ): Promise<unknown>;
   handleError(e: unknown, op: string, t: string, l: string, p?: string): never;
+  abandonWait(
+    token: string,
+    l: string,
+    op: 'CREATE' | 'UPDATE' | 'DELETE',
+    t: string,
+    lastSeen: string | undefined,
+    reason: string,
+    cause: unknown
+  ): Promise<CloudControlWaitAbandonedError>;
   maskDeployedNonAttributeKeys(...args: unknown[]): Promise<Record<string, unknown>>;
 }
 
@@ -78,9 +91,10 @@ async function rejection(promise: Promise<unknown>): Promise<ProvisioningError> 
   return error as ProvisioningError;
 }
 
-function sentInput(): Record<string, unknown> {
-  const call = mockCloudControlSend.mock.calls[0];
-  return (call?.[0] as { input: Record<string, unknown> }).input;
+/** The first command sent: its class AND its input, since a sibling may send the same input. */
+function sentCommand(): { command: unknown; input: Record<string, unknown> } {
+  const command = mockCloudControlSend.mock.calls[0]?.[0];
+  return { command, input: (command as { input: Record<string, unknown> }).input };
 }
 
 describe('CloudControlProvider delegators hand each argument to its body (#5835)', () => {
@@ -136,13 +150,50 @@ describe('CloudControlProvider delegators hand each argument to its body (#5835)
   it('getResourceState: sends the type and the identifier in place', async () => {
     mockCloudControlSend.mockResolvedValue({ ResourceDescription: { Properties: '{"A":1}' } });
     await members.getResourceState('AWS::Logs::LogGroup', PHYSICAL);
-    expect(sentInput()).toMatchObject({ TypeName: 'AWS::Logs::LogGroup', Identifier: PHYSICAL });
+    const { command, input } = sentCommand();
+    expect(command).toBeInstanceOf(GetResourceCommand);
+    expect(input).toMatchObject({ TypeName: 'AWS::Logs::LogGroup', Identifier: PHYSICAL });
+  });
+
+  it("getResourceState: answers null for a gone resource and rethrows anything else, as its own body does", async () => {
+    // `readCcResourceModel` sends the same GetResource input, so the request
+    // alone cannot tell a delegator wired to it apart. Its outcomes differ:
+    // it answers `undefined` and swallows every failure.
+    mockCloudControlSend.mockRejectedValueOnce(
+      Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })
+    );
+    await expect(members.getResourceState('AWS::Logs::LogGroup', PHYSICAL)).resolves.toBeNull();
+    const throttle = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    mockCloudControlSend.mockRejectedValueOnce(throttle);
+    await expect(members.getResourceState('AWS::Logs::LogGroup', PHYSICAL)).rejects.toBe(
+      throttle
+    );
   });
 
   it('readCurrentState: reads the physical id, not the logical id', async () => {
     mockCloudControlSend.mockResolvedValue({ ResourceDescription: { Properties: '{"A":1}' } });
     await provider.readCurrentState(PHYSICAL, LOGICAL, 'AWS::Logs::LogGroup');
-    expect(sentInput()).toMatchObject({ TypeName: 'AWS::Logs::LogGroup', Identifier: PHYSICAL });
+    const { command, input } = sentCommand();
+    expect(command).toBeInstanceOf(GetResourceCommand);
+    expect(input).toMatchObject({ TypeName: 'AWS::Logs::LogGroup', Identifier: PHYSICAL });
+  });
+
+  it('abandonWait: the error names the logical id and the type, each in its own place', async () => {
+    const error = await members.abandonWait(
+      'tok-5878',
+      LOGICAL,
+      'CREATE',
+      'AWS::Logs::LogGroup',
+      undefined,
+      'the wait deadline passed',
+      undefined
+    );
+    expect(error).toBeInstanceOf(CloudControlWaitAbandonedError);
+    expect(error.logicalId).toBe(LOGICAL);
+    expect(error.resourceType).toBe('AWS::Logs::LogGroup');
+    expect(error.message.startsWith(`CREATE of ${LOGICAL} was accepted by Cloud Control API`)).toBe(
+      true
+    );
   });
 
   it("resumeCreatedResource: forwards the desired properties and the context's masker", async () => {
