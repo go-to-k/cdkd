@@ -26,6 +26,17 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+// The resolver builds its CloudFormation fallback client directly, so the SDK
+// is mocked: `ListExports` serves nothing unless a case says otherwise.
+const cfnSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnSend })),
+  };
+});
+
 import { computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
@@ -104,6 +115,56 @@ describe('condition evaluation reads through the diff resolver and state backend
     );
     expect(conditions).toEqual({ IsProd: false });
     expect(changes.get('R')!.changeType).toBe('UPDATE');
+  });
+});
+
+describe('condition evaluation and the resource diff share ONE resolver', () => {
+  // The resolver memoizes the CloudFormation `ListExports` listing per
+  // instance, so the condition pass and the resource diff read ONE snapshot of
+  // the exports. A second resolver for either pass would list them again, and
+  // a listing that moved in between would branch on one value and compare
+  // another.
+  const template: CloudFormationTemplate = {
+    Conditions: { IsProd: { 'Fn::Equals': [{ 'Fn::ImportValue': 'CfnEnv' }, 'prod'] } },
+    Resources: {
+      R: {
+        Type: SSM,
+        Properties: {
+          Type: 'String',
+          Value: { 'Fn::If': ['IsProd', { 'Fn::ImportValue': 'CfnEnv' }, 'none'] },
+        },
+      },
+    },
+  };
+
+  it('lists the exports once, and diffs the resource at the value the condition read', async () => {
+    let listings = 0;
+    cfnSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'ListExportsCommand') {
+        listings += 1;
+        return { Exports: [{ Name: 'CfnEnv', Value: listings === 1 ? 'prod' : 'dev' }] };
+      }
+      throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+    });
+    const backend = {
+      listStacks: async () => [],
+      getState: async () => null,
+    } as unknown as S3StateBackend;
+    try {
+      const { changes, conditions } = await computeStackDiff(
+        st({ R: res({ Type: 'String', Value: 'prod' }) }),
+        template,
+        REGION,
+        'S',
+        backend,
+        new DiffCalculator()
+      );
+      expect(conditions).toEqual({ IsProd: true });
+      expect(changes.get('R')!.changeType).toBe('NO_CHANGE');
+      expect(listings).toBe(1);
+    } finally {
+      cfnSend.mockReset();
+    }
   });
 });
 

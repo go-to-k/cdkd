@@ -402,14 +402,16 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     expect(offenders).toEqual([]);
   });
 
-  it('every module of src/cli/commands/diff-recursive/ (read recursively)', () => {
-    // A handler added to ANY module of the walk is scanned, not only the two
-    // named above; the floor is the family's total on the pre-split file.
+  it('the barrel and every module of src/cli/commands/diff-recursive/ (read recursively)', () => {
+    // A handler added to ANY file of the walk is scanned, not only the two
+    // named above: the barrel itself, and each module under the directory. The
+    // floor is the family's total on the pre-split file.
     const dir = 'src/cli/commands/diff-recursive/';
-    const files = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
       .filter((name) => name.endsWith('.ts'))
       .map((name) => `${dir}${name.split('\\').join('/')}`);
-    expect(files.length, 'the directory read found no modules').toBeGreaterThan(2);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThan(2);
+    const files = ['src/cli/commands/diff-recursive.ts', ...modules];
     let catchClauses = 0;
     for (const file of files) {
       const { handlers, offenders } = scan(file);

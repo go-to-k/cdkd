@@ -151,6 +151,12 @@ const DIFF_RECURSIVE_ORDER = [
   'json.ts',
   'render.ts',
 ];
+/** The modules under `diff-recursive/`, the directory read recursively. */
+function diffRecursiveModules(): string[] {
+  return readdirSync(join(repoRoot, DIFF_RECURSIVE_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
 function diffRecursiveFamily(): string[] {
   const rank = (name: string): number => {
     const at = DIFF_RECURSIVE_ORDER.indexOf(name);
@@ -158,13 +164,17 @@ function diffRecursiveFamily(): string[] {
   };
   return [
     DIFF_RECURSIVE,
-    ...readdirSync(join(repoRoot, DIFF_RECURSIVE_DIR), { recursive: true, encoding: 'utf8' })
-      .filter((name) => name.endsWith('.ts'))
-      .map((name) => name.split('\\').join('/'))
+    ...diffRecursiveModules()
       .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
       .map((name) => `${DIFF_RECURSIVE_DIR}${name}`),
   ];
 }
+
+describe("the diff-recursive family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(diffRecursiveModules().sort()).toEqual([...DIFF_RECURSIVE_ORDER].sort());
+  });
+});
 /** A file of that family stands for the barrel's path, under which it is fenced. */
 function asFencedPath(file: string): string {
   return file.startsWith(DIFF_RECURSIVE_DIR) ? DIFF_RECURSIVE : file;
