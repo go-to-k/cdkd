@@ -338,7 +338,7 @@ export function renderDisableCommand<
   Caveat extends string = string,
 >(disable: ProtectedReplacementDisableCommand<Before, After, Caveat>): string {
   // EXPORTED since issue [#2669] for the one caller that owns its own sentence
-  // (`logs-loggroup-provider.ts`), and exported OVER THE CONSTRAINED shape:
+  // (`logs-loggroup/update.ts`), and exported OVER THE CONSTRAINED shape:
   // the generic signature keeps `CdkdAuthoredLiteral` in force for a direct
   // caller exactly as {@link protectedReplacementAdvice} keeps it for the
   // five, so a template-derived `before` / `after` is a COMPILE error at both

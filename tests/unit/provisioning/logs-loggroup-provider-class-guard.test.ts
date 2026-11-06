@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
@@ -522,10 +523,23 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
  */
 describe('the LogGroupClass protection remedy stays in step with its doc (#2579)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const providerSrc = readFileSync(
-    join(repoRoot, 'src', 'provisioning', 'providers', 'logs-loggroup-provider.ts'),
-    'utf8'
-  );
+  // The provider's text is the provider file plus its companion files, read
+  // recursively (scripts/provider-companion-files.ts): the refusal moved into
+  // `logs-loggroup/update.ts` (go-to-k/cdkd#5835). Comments are stripped, so a
+  // comment quoting an older wording neither counts as a second copy nor
+  // becomes the copy validated below. Every assertion here COUNTS, so the
+  // order the files are joined in carries no meaning.
+  const providerPath = join(repoRoot, 'src', 'provisioning', 'providers', 'logs-loggroup-provider.ts');
+  const familyPaths = [providerPath, ...companionFiles(providerPath)];
+  const familyCode = familyPaths.map((path) => ({
+    path,
+    code: readFileSync(path, 'utf8')
+      .split('\n')
+      .map((line) => (line.trim().startsWith('//') ? '' : line))
+      .join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, ''),
+  }));
+  const providerSrc = familyCode.map(({ code }) => code).join('\n');
   const doc = readFileSync(join(repoRoot, 'docs', 'cli-deploy-safety.md'), 'utf8');
   /**
    * Only the doc's FENCED code blocks, whitespace-collapsed.
@@ -560,6 +574,19 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     expect(PHRASES.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('reads the whole provider family, and every file in it holds code', () => {
+    // A companion directory that stops resolving would leave only the class
+    // file, which holds no refusal: the counts below would read ZERO, not pass,
+    // but this names the cause. The per-file floor catches a file the comment
+    // strip emptied, which would hide that file's copy of a phrase.
+    expect(familyPaths.length).toBeGreaterThan(1);
+    for (const { path, code } of familyCode) {
+      expect(/\bexport\b/.test(code), `${path} has no code left after stripping comments`).toBe(
+        true
+      );
+    }
+  });
+
   it('the doc SECTION the refusal tells the reader to open still exists', () => {
     // The message hands off with `Read "<section>" at https://cdkd.dev/cli-deploy-safety/#...`
     // rather than narrating a mechanism it cannot see. That makes the section
@@ -576,10 +603,10 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     ];
     expect(
       matches.length,
-      'expected EXACTLY one doc hand-off in logs-loggroup-provider.ts. ZERO means ' +
+      'expected EXACTLY one doc hand-off in the logs-loggroup provider code. ZERO means ' +
         'the refusal no longer sends the reader anywhere — if that was deliberate, ' +
         'drop this fence; if not, the reader has been left with no next step. MORE ' +
-        'THAN ONE (typically a comment quoting an older title) makes this fence ' +
+        'THAN ONE (a second copy in code; comments are stripped) makes this fence ' +
         'inert, because it would then validate whichever copy comes first'
     ).toBe(1);
     // No null check below: `toBe(1)` throws, so this line is reached only when
@@ -589,7 +616,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     const headings = [...doc.matchAll(/^#{2,6} (.+)$/gm)].map((m) => m[1]);
     expect(
       headings.filter((h) => h.includes(section)),
-      `logs-loggroup-provider.ts sends the reader to "${section}"; exactly one heading in ` +
+      `the logs-loggroup provider sends the reader to "${section}"; exactly one heading in ` +
         'docs/cli-deploy-safety.md must contain it — zero means the reference is ' +
         'dangling, more than one means it is ambiguous. Headings: ' +
         headings.join(' | ')
@@ -601,12 +628,12 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
       const inSource = providerSrc.split(phrase).length - 1;
       expect(
         inSource,
-        `"${phrase}" must appear EXACTLY once in logs-loggroup-provider.ts — a second ` +
-          'copy (typically a comment quoting an older wording) makes this fence inert'
+        `"${phrase}" must appear EXACTLY once in the logs-loggroup provider code — a ` +
+          'second copy (comments are stripped, so one in code) makes this fence inert'
       ).toBe(1);
       expect(
         docFenced,
-        `logs-loggroup-provider.ts emits "${phrase}" but no fenced example in ` +
+        `the logs-loggroup provider emits "${phrase}" but no fenced example in ` +
           'docs/cli-deploy-safety.md contains it — the message and its documented ' +
           'runnable example have to move together'
       ).toContain(phrase);
