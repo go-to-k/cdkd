@@ -91,7 +91,7 @@
  * throwing, so the out-throw substitutes a worse error rather than killing a
  * degradation *here*. It does NOT mean nothing is lost: an always-throwing
  * handler can still run cleanup before its throw, and an out-throw skips it.
- * `lambda-function-provider.ts`'s post-create cleanup is exactly that, which is
+ * `lambda-function/create.ts`'s post-create cleanup is exactly that, which is
  * why it was converted despite sitting in the non-degrading bucket. Measured
  * across the remaining 363: none has an `await` after the occurrence, so there
  * is no live instance today -- but go-to-k/cdkd#3341 should not assume the

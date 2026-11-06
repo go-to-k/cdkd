@@ -144,7 +144,7 @@ LOG_DIR="$(mktemp -d)"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 # The provider's identity token, `<FunctionArn>@<LastModified epoch ms>`
-# (lambda-function-provider.ts, `functionIdentityToken`). Fails the call on a
+# (lambda-function/shared.ts, `functionIdentityToken`). Fails the call on a
 # read that answers no ARN or no parseable LastModified.
 fn_token() { # usage: fn_token <function>
   local out arn modified ms
@@ -258,7 +258,7 @@ aws lambda wait function-active-v2 --function-name "${BASE_FN}" --region "${REGI
 echo "[verify] step 1b: measure which post-create calls move LastModified"
 # The identity a failed CREATE journals is CreateFunction's LastModified, and
 # a CREATE that failed on a LATER post-create call has already made the
-# earlier ones (lambda-function-provider.ts, `create`: RecursiveLoop, then
+# earlier ones (lambda-function/create.ts, `create`: RecursiveLoop, then
 # ReservedConcurrentExecutions, then RuntimeManagementConfig). Each is called
 # here on BaseFn with a value it does NOT have (a Put repeating the current
 # value could be a no-op), the token compared, and the value restored before
@@ -302,7 +302,7 @@ RT_AFTER="$(fn_token "${BASE_FN}")" || { aws lambda put-runtime-management-confi
 aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}" >/dev/null
 aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
 if [ "${RT_AFTER}" = "${RT_BEFORE}" ]; then
-  echo "[verify] FAIL: measurement -- PutRuntimeManagementConfig no longer moves ${BASE_FN}'s LastModified (${RT_BEFORE}): update the go-to-k/cdkd#4606 comment in lambda-function-provider.ts \`create\` (it drops CreateFunction's token after this call) and this check" >&2
+  echo "[verify] FAIL: measurement -- PutRuntimeManagementConfig no longer moves ${BASE_FN}'s LastModified (${RT_BEFORE}): update the go-to-k/cdkd#4606 comment in lambda-function/create.ts \`create\` (it drops CreateFunction's token after this call) and this check" >&2
   exit 1
 fi
 echo "[verify]   PutRuntimeManagementConfig: LastModified moved (${RT_BEFORE} -> ${RT_AFTER}), as create() expects"
