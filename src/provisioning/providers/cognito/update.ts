@@ -719,6 +719,13 @@ export async function reconcileSchemaCustomAttributes(
   resourceType: string,
   newSchema: SchemaAttributeType[] | undefined,
   oldSchema: SchemaAttributeType[] | undefined,
+  /**
+   * Whether `DeletionProtection` is `ACTIVE` on the pool AWS holds at the
+   * moment the immutable-Schema refusal below fires. Defaults to `false` so
+   * the short advice is the fallback for any future caller that cannot
+   * answer — the same direction issue [#2579] took for protection enabled
+   * out of band.
+   */
   deletionProtected = false
 ): Promise<void> {
   const newAttrs = newSchema ?? [];

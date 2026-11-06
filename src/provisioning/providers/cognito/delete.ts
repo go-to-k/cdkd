@@ -214,6 +214,11 @@ export function reportSettingsResetByBareFlip(
   this: CognitoUserPoolProvider,
   physicalId: string,
   before: UserPoolType,
+  /**
+   * `reset` -- the bare write landed and is the pool's latest state;
+   * `earlier` -- it landed, but an echo flip landed since, so the settings
+   * may have been restored; `unclear` -- whether it landed is not known.
+   */
   kind: 'reset' | 'earlier' | 'unclear',
   mask: MaskerFn
 ): void {
