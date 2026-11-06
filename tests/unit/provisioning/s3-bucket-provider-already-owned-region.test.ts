@@ -142,6 +142,28 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
       expect(sentCommands()).toEqual(['CreateBucketCommand']);
     });
 
+    it('threads the 409 itself as the refusal\'s cause', async () => {
+      // The refusal is raised through the class's `refuseForeignRegionAdopt`
+      // delegator (its body lives in `s3-bucket/adopt.ts`); a delegator that
+      // dropped its `cause` argument would leave the transient-error
+      // classifiers nothing to walk.
+      const createError = ownedElsewhere('us-west-2');
+      mockSend.mockRejectedValueOnce(createError);
+
+      const err = await provider
+        .create('MyBucket', RESOURCE_TYPE, { BucketName: BUCKET })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/Refusing to adopt existing S3 bucket/);
+      // create()'s operation wrap carries the refusal as ITS cause.
+      const refusal = (err as Error).cause as Error;
+      expect(refusal.message).toMatch(/^Refusing to adopt existing S3 bucket/);
+      expect(refusal.cause).toBe(createError);
+    });
+
     it('names BOTH regions, so the refusal is actionable', async () => {
       clientRegion.value = 'eu-west-1';
       mockSend.mockRejectedValueOnce(ownedElsewhere('us-west-2'));

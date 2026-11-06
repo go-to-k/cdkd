@@ -103,7 +103,6 @@ src/provisioning/providers/rds-dbproxy-provider.ts
 src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts
 src/provisioning/providers/rds-provider.ts
 src/provisioning/providers/route53-provider.ts
-src/provisioning/providers/s3-bucket-provider.ts
 src/provisioning/providers/s3-directory-bucket-provider.ts
 src/provisioning/providers/s3-tables-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts

@@ -301,7 +301,7 @@ export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<Threshold
  * long before this PR and adding it here would read as a new one. Grepped for
  * a standalone helper whose body is exactly this predicate: NINE across nine
  * files under six different names — `config-shape.ts`, `wafv2-provider.ts`,
- * `s3-bucket-provider.ts` (`isPlainObject`), `emr-configuration.ts`,
+ * `s3-bucket/shared.ts` (`isPlainObject`), `emr-configuration.ts`,
  * `lambda-microvm-image-provider.ts` (`isRecord`),
  * `apigateway-provider.ts` (`isPlainObjectBlock`), `drift.ts`
  * (`isPlainRecord`), `lambda-vpc-deps.ts` (`isObject`), and this one — plus

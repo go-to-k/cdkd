@@ -545,7 +545,9 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
 
   it('a DECLARING provider that loses the parameter fails, naming it', () => {
     const dir = copyProvidersTree();
-    mutate(dir, 's3-bucket-provider.ts', SIX_PARAM_UPDATE, FIVE_PARAM_UPDATE);
+    // Its `update()` is a delegator into its companion files: not `async`.
+    const sync = (text: string): string => text.replace('async update(', 'update(');
+    mutate(dir, 's3-bucket-provider.ts', sync(SIX_PARAM_UPDATE), sync(FIVE_PARAM_UPDATE));
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[new-omitting]');

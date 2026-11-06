@@ -34,7 +34,7 @@ const LISTING_FILES = [
   'src/cli/commands/bootstrap-destroy.ts',
   'src/cli/commands/state-migrate.ts',
   'src/cli/config-loader.ts',
-  'src/provisioning/providers/s3-bucket-provider.ts',
+  'src/provisioning/providers/s3-bucket/update-delete.ts',
   'src/provisioning/providers/s3-directory-bucket-provider.ts',
   'src/deployment/recreate-targets/probe.ts',
   // `cdkd state info`'s listings, moved out of `state.ts` (go-to-k/cdkd#5835).

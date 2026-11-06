@@ -864,7 +864,8 @@ export function describeCognitoExtras(): void {
  * a documented CloudFormation parity or an invalid template.
  */
 
-const S3_SRC = 's3-bucket-provider.ts';
+// The provider file and its companion directory (`s3-bucket/`), which holds the bodies.
+const S3_SRC = 's3-bucket-provider.ts + s3-bucket/';
 const S3_REGION = 'eu-west-1';
 const S3_BUCKET = 'bucket';
 const S3_DEST_ARN = 'arn:aws:s3:::dest-bucket';
@@ -889,28 +890,28 @@ const s3Arm = (_physicalId: string, bag: Bag): void => {
 };
 
 /** A declared collection emptied by the removal: CloudFormation refuses it, the provider skips. */
-const s3EmptyCollection = (key: string, ab: string, at: string): string =>
-  `removing the only entry leaves ${key} declaring an empty collection, which CloudFormation refuses as an invalid template rather than a removal (real CloudFormation A/B, ${ab}); the provider warns and leaves the live configuration in place (${S3_SRC}:${at})`;
+const s3EmptyCollection = (key: string, ab: string): string =>
+  `removing the only entry leaves ${key} declaring an empty collection, which CloudFormation refuses as an invalid template rather than a removal (real CloudFormation A/B, ${ab}); the provider warns and leaves the live configuration in place (${S3_SRC})`;
 
 /** A required rules list removed from its declared block: no deployable template does that. */
 const s3RequiredList = (path: string): string =>
-  `${path} is CloudFormation-required, so no deployable template declares the block without it; the provider warns and leaves the live configuration in place, as for an empty list (${S3_SRC}:5403-5422)`;
+  `${path} is CloudFormation-required, so no deployable template declares the block without it; the provider warns and leaves the live configuration in place, as for an empty list (${S3_SRC})`;
 
-const S3_PAB_KEPT = `left in place on removal: PublicAccessBlockConfiguration is re-sent whole from the desired side on every update and never removed, because CloudFormation also leaves the block in place when the property is removed (real CloudFormation A/B, #1466; ${S3_SRC}:5551-5555, 4914-4919)`;
+const S3_PAB_KEPT = `left in place on removal: PublicAccessBlockConfiguration is re-sent whole from the desired side on every update and never removed, because CloudFormation also leaves the block in place when the property is removed (real CloudFormation A/B, #1466; ${S3_SRC})`;
 
-const S3_OBJECT_LOCK_TOP = `the top-level ObjectLockEnabled reaches S3 only through CreateBucket (${S3_SRC}:7164-7166): on an existing bucket update() writes nothing for it and only warns, as CloudFormation does (real CloudFormation A/B, go-to-k/cdkd#5395; ${S3_SRC}:7877-7950)`;
+const S3_OBJECT_LOCK_TOP = `the top-level ObjectLockEnabled reaches S3 only through CreateBucket (${S3_SRC}): on an existing bucket update() writes nothing for it and only warns, as CloudFormation does (real CloudFormation A/B, go-to-k/cdkd#5395; ${S3_SRC})`;
 
-const S3_NESTED_LOCK_CONSTANT = `the provider always sends ObjectLockConfiguration.ObjectLockEnabled: 'Enabled', the only value the member takes, whether or not it is declared (${S3_SRC}:4767-4769); CloudFormation is unmeasured for an omitted member`;
+const S3_NESTED_LOCK_CONSTANT = `the provider always sends ObjectLockConfiguration.ObjectLockEnabled: 'Enabled', the only value the member takes, whether or not it is declared (${S3_SRC}); CloudFormation is unmeasured for an omitted member`;
 
-const S3_VERSIONING_LOCKED = `suspending versioning is refused on an Object Lock bucket (this bag declares ObjectLockEnabled and the live bucket reads locked): the provider warns and leaves versioning enabled, since S3 does not allow suspending it there (${S3_SRC}:6205-6262); the 'versioning without object lock' bag observes the suspend`;
+const S3_VERSIONING_LOCKED = `suspending versioning is refused on an Object Lock bucket (this bag declares ObjectLockEnabled and the live bucket reads locked): the provider warns and leaves versioning enabled, since S3 does not allow suspending it there (${S3_SRC}); the 'versioning without object lock' bag observes the suspend`;
 
 const S3_REPLICATION_DESTINATION: Throw = {
-  why: `Destination is CloudFormation-required on a replication rule; with it absent the provider reads Bucket off the missing block and throws (a TypeError, not a refusal) before that configuration's call (${S3_SRC}:4629, 4510)`,
+  why: `Destination is CloudFormation-required on a replication rule; with it absent the provider reads Bucket off the missing block and throws (a TypeError, not a refusal) before that configuration's call (${S3_SRC})`,
   says: /Cannot read properties of undefined \(reading 'Bucket'\)/,
 };
 
 const S3_NO_DESTINATION_BUCKET = (what: string): Throw => ({
-  why: `${what} Destination.BucketArn is required by CloudFormation and by S3; without it the provider refuses the item before that configuration's call (${S3_SRC}:3818-3825)`,
+  why: `${what} Destination.BucketArn is required by CloudFormation and by S3; without it the provider refuses the item before that configuration's call (${S3_SRC})`,
   says: /has no destination bucket \(BucketArn\)/,
 });
 
@@ -1369,25 +1370,22 @@ const BUCKET_CASE: TypeCase = {
         'update-remove:VersioningConfiguration.Status': S3_VERSIONING_LOCKED,
         'update-remove:BucketEncryption.ServerSideEncryptionConfiguration.0': s3EmptyCollection(
           'BucketEncryption.ServerSideEncryptionConfiguration',
-          '#1713',
-          '5048-5056, 5403-5422'
+          '#1713'
         ),
         'update-remove:OwnershipControls.Rules.0': s3EmptyCollection(
           'OwnershipControls.Rules',
-          '#1713',
-          '5048-5056, 5403-5422'
+          '#1713'
         ),
         'update-remove:CorsConfiguration.CorsRules': s3RequiredList('CorsConfiguration.CorsRules'),
         'update-remove:CorsConfiguration.CorsRules.0': s3EmptyCollection(
           'CorsConfiguration.CorsRules',
-          '#1671',
-          '5361-5375, 5403-5422'
+          '#1671'
         ),
         'update-remove:LifecycleConfiguration.Rules': s3RequiredList('LifecycleConfiguration.Rules'),
-        'create:NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled': `EventBridgeEnabled is CloudFormation-required, so no deployable template removes it; a declared block without it reads as enabled, which this bag declares (${S3_SRC}:683-688)`,
-        'create:AnalyticsConfigurations.0.StorageClassAnalysis.DataExport.OutputSchemaVersion': `OutputSchemaVersion is CloudFormation-required and takes one value, V_1, which the provider sends when it is absent (${S3_SRC}:4003-4009)`,
-        'create:AnalyticsConfigurations.0.StorageClassAnalysis.DataExport.Destination.Format': `Destination.Format is CloudFormation-required, and an analytics export takes only CSV, which the provider sends when it is absent (${S3_SRC}:4024-4029)`,
-        'create:AnalyticsConfigurations.1.StorageClassAnalysis': `StorageClassAnalysis is CloudFormation-required, and the empty block this item declares is what the provider sends when it is absent (${S3_SRC}:3898-3901)`,
+        'create:NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled': `EventBridgeEnabled is CloudFormation-required, so no deployable template removes it; a declared block without it reads as enabled, which this bag declares (${S3_SRC})`,
+        'create:AnalyticsConfigurations.0.StorageClassAnalysis.DataExport.OutputSchemaVersion': `OutputSchemaVersion is CloudFormation-required and takes one value, V_1, which the provider sends when it is absent (${S3_SRC})`,
+        'create:AnalyticsConfigurations.0.StorageClassAnalysis.DataExport.Destination.Format': `Destination.Format is CloudFormation-required, and an analytics export takes only CSV, which the provider sends when it is absent (${S3_SRC})`,
+        'create:AnalyticsConfigurations.1.StorageClassAnalysis': `StorageClassAnalysis is CloudFormation-required, and the empty block this item declares is what the provider sends when it is absent (${S3_SRC})`,
       },
       expectedRemovalThrows: {
         ...TAG_THROWS(S3_ALL_DIRECTIONS, 2),
