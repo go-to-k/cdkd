@@ -59,16 +59,19 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-Mandatory, BEFORE design and the first edit. A lane's `Agent` call goes in
+A lane's `Agent` call goes in
 a LATER message, after the read-back below: sent beside a refused post, two
 lanes launched briefed "claim posted" (#5637).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
 that list**: beside the fix, its unit test and (user-visible) its
 `changelog.d/entries/` file, each EXISTING suite whose
 assertions the fix changes (`grep -rl '<[dir/]basename, no
-extension>' tests/unit` hits; suites need not mirror `src/`), the fixture §8-c will
-extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one
-adds `gen:all-matrices`' outputs in `docs/`) and, when a
+extension>' tests/unit` hits; suites need not mirror `src/`; a new drift-unknown
+path changes the type's `getDriftUnknownPaths` pin, `grep -rl
+getDriftUnknownPaths tests/unit | grep '<provider basename>'`), the fixture §8-c
+will extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW
+one, or a `--<flag>` token no `verify.sh` used before, adds `gen:all-matrices`'
+outputs in `docs/`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every file the fix makes FALSE — a comment, doc or rule stating the old invariant
 or calling the issue open, or a `verify.sh` / workflow reading a renamed key
@@ -83,11 +86,14 @@ tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
 SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
-fall as keys get wired and which no basename grep finds (#5611, #5719), and the
+fall as keys get wired and which no basename grep finds (#5611, #5719); a member
+sent off its CFn path (its own command, a renamed field) adds its
+`sdk-wire-member-renames.ts` entry, plus `sdk-wire-call-roots.ts` when that
+command is sent more than once per resource (#5630); and the
 type's `docs/cli-deploy.md` wait-table row plus any `docs/cli-deploy-waits.md`
-section or destroy row for it, as a newly
-sent member may need a wait (providers.md rule 5; #5719, #5780) — a narrower
-list stops the lane mid-run to ask (#1160).
+section or destroy row and `docs/wait-modes.md` `--no-wait` bullet for it, as a
+newly sent member may need a wait (providers.md rule 5; #5719, #5780) — a
+narrower list stops the lane mid-run to ask (#1160).
 
 **Editing a file another contributor's CLAIM holds** (only on the maintainer's
 yes, outside the lines they hold — triage.md §2) owes THEM a comment on their
