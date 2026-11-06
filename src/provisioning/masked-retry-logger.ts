@@ -82,7 +82,7 @@ export function maskerOrIdentity(maskSecrets: MaskerFn | undefined): MaskerFn {
  * `logger` is typed structurally rather than as the concrete `Logger` so this
  * module stays a leaf and a test can pass two spies. That matches the
  * precedent already in the tree (`buildMfaConfigRequest` in
- * `cognito-provider.ts` takes an injected `logger?: { warn }`).
+ * `cognito/mfa-request.ts` takes an injected `logger?: { warn }`).
  */
 export function createMaskedRetryLogger(
   logger: { debug(message: string): void; warn(message: string): void },

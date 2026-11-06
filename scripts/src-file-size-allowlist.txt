@@ -69,7 +69,6 @@ src/provisioning/providers/cloudfront-distribution-provider.ts
 src/provisioning/providers/cloudtrail-provider.ts
 src/provisioning/providers/codebuild-provider.ts
 src/provisioning/providers/codecommit-repository-provider.ts
-src/provisioning/providers/cognito-provider.ts
 src/provisioning/providers/custom-resource-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/provisioning/providers/docdb-provider.ts

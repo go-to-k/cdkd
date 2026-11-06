@@ -95,6 +95,10 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeUserPoolCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetUserPoolMfaConfigCommand);
+    // Both reads address the PHYSICAL id, never the logical id passed beside
+    // it (the class delegates to `cognito/read-state.ts` positionally).
+    expect(mockSend.mock.calls[0]?.[0].input).toEqual({ UserPoolId: 'us-east-1_abcd' });
+    expect(mockSend.mock.calls[1]?.[0].input).toEqual({ UserPoolId: 'us-east-1_abcd' });
     expect(result).toEqual({
       UserPoolName: 'my-pool',
       AutoVerifiedAttributes: ['email'],

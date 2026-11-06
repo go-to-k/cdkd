@@ -88,7 +88,7 @@
  *
  *   **State only what has been measured, per field.** This text used to assert
  *   that Cognito's `UpdateUserPool` "resets every member it is not sent" —
- *   AWS's own blanket wording, which `cognito-provider.ts`'s
+ *   AWS's own blanket wording, which `cognito/mfa-apply.ts`'s
  *   `readLiveMfaConfiguration` ledger shows holds FIELD BY FIELD and is FALSE
  *   for at least two (`MfaConfiguration` and both `Policies` sub-keys survive
  *   omission; `AutoVerifiedAttributes` does not). Issue
