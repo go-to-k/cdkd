@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../../src/provisioning/register-providers.js';
 
 /**
  * Fences for the lists on public docs pages that are DERIVED from source.
@@ -24,7 +29,6 @@ import { dirname, join } from 'node:path';
  * splitters (31 against 16), so that one only asserts nothing is missing.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
 const docs = (name: string): string => readFileSync(join(repoRoot, 'docs', name), 'utf8');
 
 /** Resource types named in a markdown page's `AWS::X::Y` occurrences. */
@@ -81,34 +85,35 @@ function driftTableTypes(): Set<string> {
   return out;
 }
 
-/** Provider class names that define `readCurrentState`. */
-function classesWithReadCurrentState(): Set<string> {
+/**
+ * Provider class names whose instances have a `readCurrentState`.
+ *
+ * Decided at RUNTIME from each registered provider, not by scanning source: a
+ * split provider's method can live in its companion directory as a delegator
+ * target or as a prototype-installed function (`ec2-provider.ts`,
+ * `glue-provider.ts`), where a text scan of the provider file sees only
+ * comments mentioning the name.
+ */
+async function classesWithReadCurrentState(): Promise<Set<string>> {
+  const registry = new ProviderRegistry();
+  registerAllProviders(registry, await loadProviderClasses());
   const out = new Set<string>();
-  for (const file of readdirSync(providersDir)) {
-    if (!file.endsWith('.ts')) continue;
-    const source = readFileSync(join(providersDir, file), 'utf8');
-    for (const m of source.matchAll(/export\s+class\s+(\w+)/g)) {
-      // A class's body runs to the next top-level `export class`, so slice
-      // between declarations rather than scanning the whole file — otherwise
-      // one implementing class vouches for every sibling in the same file.
-      const start = m.index!;
-      const nextMatch = source.slice(start + 1).match(/\nexport\s+class\s+\w+/);
-      const end = nextMatch ? start + 1 + nextMatch.index! : source.length;
-      if (/\breadCurrentState\s*\(/.test(source.slice(start, end))) out.add(m[1]!);
-    }
+  for (const type of registry.getRegisteredTypes()) {
+    const provider = registry.getProvider(type) as { readCurrentState?: unknown };
+    if (typeof provider.readCurrentState === 'function') out.add(provider.constructor.name);
   }
   return out;
 }
 
 describe('docs lists derived from source', () => {
-  it('cli-drift.md names exactly the types whose provider reads current state', () => {
+  it('cli-drift.md names exactly the types whose provider reads current state', async () => {
     const registered = registeredTypes();
     // Anti-vacuity: a parse regression that stops resolving the shared-instance
     // registrations halves this, and a set-equality check would then pass only
     // if the page halved too. Fail loudly instead.
     expect(registered.size).toBeGreaterThanOrEqual(120);
 
-    const implementing = classesWithReadCurrentState();
+    const implementing = await classesWithReadCurrentState();
     expect(implementing.size).toBeGreaterThanOrEqual(60);
 
     const expected = new Set(

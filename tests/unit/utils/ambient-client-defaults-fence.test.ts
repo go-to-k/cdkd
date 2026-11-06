@@ -307,7 +307,7 @@ describe('awsClientDefaults()-only client construction fence (#3588)', () => {
     ];
 
     it('reports a routed REAL site reverted to awsClientDefaults()', () => {
-      const file = 'src/provisioning/providers/glue-provider.ts';
+      const file = 'src/provisioning/providers/glue/names.ts';
       const original = readFileSync(join(repoRoot, file), 'utf8');
       const reverted = original.replace('...ambientClientDefaults(),', '...awsClientDefaults(),');
       expect(reverted, 'the anchor moved — re-point this probe').not.toBe(original);
