@@ -7863,7 +7863,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'and no registered type is a prefix of a registered type',
     ],
     [
-      'src/provisioning/providers/sns-topic-provider.ts',
+      'src/provisioning/providers/sns-topic/shared.ts',
       1,
       '`${protocol}${suffix}`; `normalizeDeliveryStatusProtocol` returns a closed set ' +
         'or the loop continues, and the suffixes are three literals',

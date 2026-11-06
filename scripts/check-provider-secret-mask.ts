@@ -86,7 +86,7 @@
  *    (apigatewayv2, sns-topic), `maskLeaves` (cognito), `maskLeafValue`
  *    (both DynamoDB providers);
  *  - a PARAMETER that every call site hands a masker becomes a masker inside
- *    that function — `sns-topic-provider.ts`'s
+ *    that function — `sns-topic/shared.ts`'s
  *    `normalizeDeliveryStatusProtocolOrThrow(..., maskValue)`, whose single
  *    caller passes `maskLeaf`. EVERY call site must pass one and there must be
  *    at least one; an EXPORTED function is refused outright, since its callers
@@ -1253,7 +1253,7 @@ function enclosingFunction(node: ts.Node): ts.Node | undefined {
  *  - a local function whose every `return` is `<known masker>(<its own first
  *    parameter>, ...)` is a masker. Four files spell the shared walk this way.
  *  - a PARAMETER every call site hands a masker is a masker inside that
- *    function. Required by `sns-topic-provider.ts`'s
+ *    function. Required by `sns-topic/shared.ts`'s
  *    `normalizeDeliveryStatusProtocolOrThrow(input, logicalId, maskValue)`,
  *    whose body stringifies `maskValue(input)` and whose single caller passes
  *    `maskLeaf`. STRICT on purpose: at least one call site, and EVERY call site
