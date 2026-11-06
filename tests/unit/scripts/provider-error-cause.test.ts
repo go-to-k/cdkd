@@ -654,6 +654,27 @@ describe('provider error-cause critic — helper (non-lexical) indirection', () 
     expect(sites.map((s) => s.verdict)).toEqual(['threaded']);
   });
 
+  it.each([
+    ['call', 'return fooImpl.call(this, err);'],
+    ['apply', 'return fooImpl.apply(this, [err]);'],
+  ])(
+    'follows a %s delegator into a target of ANOTHER name (a split provider)',
+    (_label, delegation) => {
+      const sites = analyzeFile(
+        'p.ts',
+        `class P {
+           run() { try { go(); } catch (error) { throw this.foo(error); } }
+           foo(err: unknown): ProvisioningError { ${delegation} }
+         }
+         function fooImpl(this: P, e: unknown): ProvisioningError {
+           return new ProvisioningError('m', 't', 'l', 'p');
+         }`
+      );
+      expect(sites.map((s) => s.verdict)).toEqual(['dropped']);
+      expect(sites[0]?.caughtBinding).toBe('e');
+    }
+  );
+
   it('follows a helper calling a helper (fixpoint)', () => {
     const sites = analyzeFile(
       'p.ts',

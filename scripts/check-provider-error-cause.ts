@@ -764,6 +764,36 @@ function calleeName(call: ts.CallExpression): string | undefined {
 }
 
 /**
+ * The function a call reaches and the arguments its parameters receive. A
+ * `fn.call(thisArg, a, b)` / `fn.apply(thisArg, [a, b])` reaches `fn` with
+ * `[a, b]`: a split provider's delegator (`provider-companion-files.ts`) hands
+ * its arguments on that way, often to a function of ANOTHER name
+ * (`delete` -> `deleteImpl`), which a bare callee name would read as `call`.
+ */
+function resolvedCall(
+  call: ts.CallExpression
+): { readonly name: string | undefined; readonly args: readonly ts.Expression[] } {
+  const callee = unwrap(call.expression);
+  if (
+    ts.isPropertyAccessExpression(callee) &&
+    (callee.name.text === 'call' || callee.name.text === 'apply')
+  ) {
+    const target = unwrap(callee.expression);
+    const name = ts.isIdentifier(target)
+      ? target.text
+      : ts.isPropertyAccessExpression(target)
+        ? target.name.text
+        : undefined;
+    if (name !== undefined) {
+      if (callee.name.text === 'call') return { name, args: call.arguments.slice(1) };
+      const list = call.arguments[1];
+      return { name, args: list && ts.isArrayLiteralExpression(list) ? list.elements : [] };
+    }
+  }
+  return { name: calleeName(call), args: call.arguments };
+}
+
+/**
  * Which parameters of which functions receive a caught value, to a FIXPOINT.
  *
  * Seeded from every call inside a lexical `catch` that passes the binding, then
@@ -802,10 +832,10 @@ function resolveHelperBindings(
       if (ts.isCallExpression(node)) {
         const targets = targetsAt(node);
         if (targets.size > 0) {
-          const name = calleeName(node);
+          const { name, args } = resolvedCall(node);
           const candidates = name ? (functions.get(name) ?? []) : [];
           for (const candidate of candidates) {
-            node.arguments.forEach((argument, index) => {
+            args.forEach((argument, index) => {
               if (!isThreaded(argument, targets, context)) return;
               const parameter = candidate.parameters[index];
               if (!parameter) return;
