@@ -35,7 +35,8 @@ const LISTING_FILES = [
   'src/cli/commands/state-migrate.ts',
   'src/cli/config-loader.ts',
   'src/provisioning/providers/s3-bucket/update-delete.ts',
-  'src/provisioning/providers/s3-directory-bucket-provider.ts',
+  // `emptyBucket`, moved out of `s3-directory-bucket-provider.ts` (go-to-k/cdkd#5835).
+  'src/provisioning/providers/s3-directory-bucket/delete.ts',
   'src/deployment/recreate-targets/probe.ts',
   // `cdkd state info`'s listings, moved out of `state.ts` (go-to-k/cdkd#5835).
   'src/cli/commands/state/info.ts',
