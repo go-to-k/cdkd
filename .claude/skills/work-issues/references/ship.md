@@ -119,7 +119,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   re-run the generator, commit ITS output before the push (#4460). Take it with
   `git show origin/main:<file> > <file>`: mid-rebase `checkout -- <file>` hits
   `dirty-path-restore-gate` on the staged copy. `tests/fixtures/cfn-schemas/_todo-backfill.json`
-  is NOT generated (no generator writes it): merge it by hand (#5829).
+  is no `gen:all-matrices` output, so re-running gen will not restore it: merge
+  it by hand (#5829).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
