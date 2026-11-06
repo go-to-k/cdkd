@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::WAFv2::WebACL",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-06",
   "properties": [
     "ApplicationConfig",
     "Arn",
@@ -47,17 +47,36 @@
     "Scope"
   ],
   "nestedProperties": {
-    "DefaultAction": [
-      "Allow",
-      "Block",
-      "CustomRequestHandling",
-      "CustomResponse",
-      "CustomResponseBodyKey",
-      "InsertHeaders",
-      "Name",
-      "ResponseCode",
-      "ResponseHeaders",
-      "Value"
+    "AssociationConfig": [
+      "ChallengeJavascriptSdkInjection",
+      "DefaultSizeInspectionLimit",
+      "RequestBody"
+    ],
+    "ChallengeConfig": [
+      "ImmunityTime",
+      "ImmunityTimeProperty"
+    ],
+    "DataProtectionConfig": [
+      "Action",
+      "DataProtections",
+      "ExcludeRateBasedDetails",
+      "ExcludeRuleMatchDetails",
+      "Field",
+      "FieldKeys",
+      "FieldType"
+    ],
+    "MonetizationConfig": [
+      "Amount",
+      "Chain",
+      "CryptoConfig",
+      "Currency",
+      "CurrencyMode",
+      "PaymentNetworks",
+      "Prices",
+      "WalletAddress"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
     ],
     "Rules": [
       "ASN",
@@ -210,23 +229,22 @@
       "MetricName",
       "SampledRequestsEnabled"
     ],
-    "DataProtectionConfig": [
-      "Action",
-      "DataProtections",
-      "ExcludeRateBasedDetails",
-      "ExcludeRuleMatchDetails",
-      "Field",
-      "FieldKeys",
-      "FieldType"
+    "DefaultAction": [
+      "Allow",
+      "Block",
+      "CustomRequestHandling",
+      "CustomResponse",
+      "CustomResponseBodyKey",
+      "InsertHeaders",
+      "Name",
+      "ResponseCode",
+      "ResponseHeaders",
+      "Value"
     ],
     "ApplicationConfig": [
       "Attributes",
       "Name",
       "Values"
-    ],
-    "Tags": [
-      "Key",
-      "Value"
     ],
     "CustomResponseBodies": [
       "Content",
@@ -236,42 +254,42 @@
       "ImmunityTime",
       "ImmunityTimeProperty"
     ],
-    "ChallengeConfig": [
-      "ImmunityTime",
-      "ImmunityTimeProperty"
-    ],
-    "AssociationConfig": [
-      "DefaultSizeInspectionLimit",
-      "RequestBody"
-    ],
-    "OnSourceDDoSProtectionConfig": [
-      "ALBLowReputationMode"
-    ],
-    "MonetizationConfig": [
-      "Amount",
-      "Chain",
-      "CryptoConfig",
-      "Currency",
-      "CurrencyMode",
-      "PaymentNetworks",
-      "Prices",
-      "WalletAddress"
+    "Tags": [
+      "Key",
+      "Value"
     ]
   },
   "nestedPropertyPaths": {
-    "DefaultAction": [
-      "Allow",
-      "Allow.CustomRequestHandling",
-      "Allow.CustomRequestHandling.InsertHeaders",
-      "Allow.CustomRequestHandling.InsertHeaders.Name",
-      "Allow.CustomRequestHandling.InsertHeaders.Value",
-      "Block",
-      "Block.CustomResponse",
-      "Block.CustomResponse.CustomResponseBodyKey",
-      "Block.CustomResponse.ResponseCode",
-      "Block.CustomResponse.ResponseHeaders",
-      "Block.CustomResponse.ResponseHeaders.Name",
-      "Block.CustomResponse.ResponseHeaders.Value"
+    "AssociationConfig": [
+      "ChallengeJavascriptSdkInjection",
+      "RequestBody",
+      "RequestBody.DefaultSizeInspectionLimit"
+    ],
+    "ChallengeConfig": [
+      "ImmunityTimeProperty",
+      "ImmunityTimeProperty.ImmunityTime"
+    ],
+    "DataProtectionConfig": [
+      "DataProtections",
+      "DataProtections.Action",
+      "DataProtections.ExcludeRateBasedDetails",
+      "DataProtections.ExcludeRuleMatchDetails",
+      "DataProtections.Field",
+      "DataProtections.Field.FieldKeys",
+      "DataProtections.Field.FieldType"
+    ],
+    "MonetizationConfig": [
+      "CryptoConfig",
+      "CryptoConfig.PaymentNetworks",
+      "CryptoConfig.PaymentNetworks.Chain",
+      "CryptoConfig.PaymentNetworks.Prices",
+      "CryptoConfig.PaymentNetworks.Prices.Amount",
+      "CryptoConfig.PaymentNetworks.Prices.Currency",
+      "CryptoConfig.PaymentNetworks.WalletAddress",
+      "CurrencyMode"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
     ],
     "Rules": [
       "Action",
@@ -833,23 +851,24 @@
       "MetricName",
       "SampledRequestsEnabled"
     ],
-    "DataProtectionConfig": [
-      "DataProtections",
-      "DataProtections.Action",
-      "DataProtections.ExcludeRateBasedDetails",
-      "DataProtections.ExcludeRuleMatchDetails",
-      "DataProtections.Field",
-      "DataProtections.Field.FieldKeys",
-      "DataProtections.Field.FieldType"
+    "DefaultAction": [
+      "Allow",
+      "Allow.CustomRequestHandling",
+      "Allow.CustomRequestHandling.InsertHeaders",
+      "Allow.CustomRequestHandling.InsertHeaders.Name",
+      "Allow.CustomRequestHandling.InsertHeaders.Value",
+      "Block",
+      "Block.CustomResponse",
+      "Block.CustomResponse.CustomResponseBodyKey",
+      "Block.CustomResponse.ResponseCode",
+      "Block.CustomResponse.ResponseHeaders",
+      "Block.CustomResponse.ResponseHeaders.Name",
+      "Block.CustomResponse.ResponseHeaders.Value"
     ],
     "ApplicationConfig": [
       "Attributes",
       "Attributes.Name",
       "Attributes.Values"
-    ],
-    "Tags": [
-      "Key",
-      "Value"
     ],
     "CustomResponseBodies": [
       "Content",
@@ -859,494 +878,478 @@
       "ImmunityTimeProperty",
       "ImmunityTimeProperty.ImmunityTime"
     ],
-    "ChallengeConfig": [
-      "ImmunityTimeProperty",
-      "ImmunityTimeProperty.ImmunityTime"
-    ],
-    "AssociationConfig": [
-      "RequestBody",
-      "RequestBody.DefaultSizeInspectionLimit"
-    ],
-    "OnSourceDDoSProtectionConfig": [
-      "ALBLowReputationMode"
-    ],
-    "MonetizationConfig": [
-      "CryptoConfig",
-      "CryptoConfig.PaymentNetworks",
-      "CryptoConfig.PaymentNetworks.Chain",
-      "CryptoConfig.PaymentNetworks.Prices",
-      "CryptoConfig.PaymentNetworks.Prices.Amount",
-      "CryptoConfig.PaymentNetworks.Prices.Currency",
-      "CryptoConfig.PaymentNetworks.WalletAddress",
-      "CurrencyMode"
+    "Tags": [
+      "Key",
+      "Value"
     ]
   },
   "definitionShapes": {
     "#top": {
-      "Arn": "scalar",
-      "Capacity": "scalar",
-      "DefaultAction": "object",
       "Description": "scalar",
-      "Name": "scalar",
-      "Id": "scalar",
-      "Scope": "scalar",
+      "AssociationConfig": "object",
+      "ChallengeConfig": "object",
+      "DataProtectionConfig": "object",
+      "MonetizationConfig": "object",
+      "OnSourceDDoSProtectionConfig": "object",
       "Rules": "array",
       "VisibilityConfig": "object",
-      "DataProtectionConfig": "object",
-      "ApplicationConfig": "object",
-      "Tags": "array",
       "LabelNamespace": "scalar",
-      "CustomResponseBodies": "object",
-      "CaptchaConfig": "object",
-      "ChallengeConfig": "object",
+      "Name": "scalar",
       "TokenDomains": "array",
-      "AssociationConfig": "object",
-      "OnSourceDDoSProtectionConfig": "object",
-      "MonetizationConfig": "object"
-    },
-    "ApplicationConfig": {
-      "Attributes": "array"
-    },
-    "ApplicationAttribute": {
-      "Name": "scalar",
-      "Values": "array"
-    },
-    "AndStatement": {
-      "Statements": "array"
-    },
-    "Body": {
-      "OversizeHandling": "scalar"
-    },
-    "ByteMatchStatement": {
-      "SearchString": "scalar",
-      "SearchStringBase64": "scalar",
-      "FieldToMatch": "object",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array",
-      "PositionalConstraint": "scalar"
-    },
-    "DefaultAction": {
-      "Allow": "object",
-      "Block": "object"
-    },
-    "ExcludedRule": {
-      "Name": "scalar"
-    },
-    "RuleActionOverride": {
-      "Name": "scalar",
-      "ActionToUse": "object"
-    },
-    "FieldToMatch": {
-      "SingleHeader": "object",
-      "SingleQueryArgument": "object",
-      "AllQueryArguments": "object",
-      "UriPath": "object",
-      "QueryString": "object",
-      "Body": "object",
-      "Method": "object",
-      "JsonBody": "object",
-      "Headers": "object",
-      "Cookies": "object",
-      "JA3Fingerprint": "object",
-      "JA4Fingerprint": "object",
-      "UriFragment": "object",
-      "HeaderOrder": "object"
-    },
-    "JsonBody": {
-      "MatchPattern": "object",
-      "MatchScope": "scalar",
-      "InvalidFallbackBehavior": "scalar",
-      "OversizeHandling": "scalar"
-    },
-    "JsonMatchPattern": {
-      "All": "object",
-      "IncludedPaths": "array"
-    },
-    "GeoMatchStatement": {
-      "CountryCodes": "array",
-      "ForwardedIPConfig": "object"
-    },
-    "IPSetReferenceStatement": {
+      "DefaultAction": "object",
+      "Scope": "scalar",
+      "Capacity": "scalar",
+      "ApplicationConfig": "object",
+      "CustomResponseBodies": "object",
+      "Id": "scalar",
       "Arn": "scalar",
-      "IPSetForwardedIPConfig": "object"
-    },
-    "ManagedRuleGroupStatement": {
-      "Name": "scalar",
-      "VendorName": "scalar",
-      "Version": "scalar",
-      "ExcludedRules": "array",
-      "ScopeDownStatement": "object",
-      "ManagedRuleGroupConfigs": "array",
-      "RuleActionOverrides": "array"
-    },
-    "NotStatement": {
-      "Statement": "object"
-    },
-    "OrStatement": {
-      "Statements": "array"
-    },
-    "OverrideAction": {
-      "Count": "object",
-      "None": "object"
-    },
-    "RateBasedStatement": {
-      "Limit": "scalar",
-      "EvaluationWindowSec": "scalar",
-      "AggregateKeyType": "scalar",
-      "CustomKeys": "array",
-      "ScopeDownStatement": "object",
-      "ForwardedIPConfig": "object"
-    },
-    "RateBasedStatementCustomKey": {
-      "Cookie": "object",
-      "ForwardedIP": "object",
-      "Header": "object",
-      "HTTPMethod": "object",
-      "IP": "object",
-      "LabelNamespace": "object",
-      "QueryArgument": "object",
-      "QueryString": "object",
-      "UriPath": "object",
-      "JA3Fingerprint": "object",
-      "JA4Fingerprint": "object",
-      "ASN": "object"
-    },
-    "RateLimitCookie": {
-      "Name": "scalar",
-      "TextTransformations": "array"
-    },
-    "RateLimitHeader": {
-      "Name": "scalar",
-      "TextTransformations": "array"
-    },
-    "RateLimitLabelNamespace": {
-      "Namespace": "scalar"
-    },
-    "RateLimitQueryArgument": {
-      "Name": "scalar",
-      "TextTransformations": "array"
-    },
-    "RateLimitQueryString": {
-      "TextTransformations": "array"
-    },
-    "RateLimitUriPath": {
-      "TextTransformations": "array"
-    },
-    "RateLimitJA3Fingerprint": {
-      "FallbackBehavior": "scalar"
-    },
-    "RateLimitJA4Fingerprint": {
-      "FallbackBehavior": "scalar"
-    },
-    "RegexPatternSetReferenceStatement": {
-      "Arn": "scalar",
-      "FieldToMatch": "object",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array"
-    },
-    "ForwardedIPConfiguration": {
-      "HeaderName": "scalar",
-      "FallbackBehavior": "scalar"
-    },
-    "IPSetForwardedIPConfiguration": {
-      "HeaderName": "scalar",
-      "FallbackBehavior": "scalar",
-      "Position": "scalar"
-    },
-    "Rule": {
-      "Name": "scalar",
-      "Priority": "scalar",
-      "Statement": "object",
-      "Action": "object",
-      "OverrideAction": "object",
-      "RuleLabels": "array",
-      "VisibilityConfig": "object",
       "CaptchaConfig": "object",
-      "ChallengeConfig": "object"
-    },
-    "RuleAction": {
-      "Allow": "object",
-      "Block": "object",
-      "Count": "object",
-      "Captcha": "object",
-      "Challenge": "object",
-      "Monetize": "object"
-    },
-    "AllowAction": {
-      "CustomRequestHandling": "object"
-    },
-    "CountAction": {
-      "CustomRequestHandling": "object"
-    },
-    "CaptchaAction": {
-      "CustomRequestHandling": "object"
-    },
-    "ChallengeAction": {
-      "CustomRequestHandling": "object"
-    },
-    "BlockAction": {
-      "CustomResponse": "object"
-    },
-    "CustomHTTPHeader": {
-      "Name": "scalar",
-      "Value": "scalar"
-    },
-    "CustomRequestHandling": {
-      "InsertHeaders": "array"
-    },
-    "CustomResponseBody": {
-      "ContentType": "scalar",
-      "Content": "scalar"
-    },
-    "CustomResponse": {
-      "ResponseCode": "scalar",
-      "CustomResponseBodyKey": "scalar",
-      "ResponseHeaders": "array"
-    },
-    "RuleGroupReferenceStatement": {
-      "Arn": "scalar",
-      "ExcludedRules": "array",
-      "RuleActionOverrides": "array"
-    },
-    "SingleHeader": {
-      "Name": "scalar"
-    },
-    "SingleQueryArgument": {
-      "Name": "scalar"
-    },
-    "SizeConstraintStatement": {
-      "FieldToMatch": "object",
-      "ComparisonOperator": "scalar",
-      "Size": "scalar",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array"
-    },
-    "SqliMatchStatement": {
-      "FieldToMatch": "object",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array",
-      "SensitivityLevel": "scalar"
-    },
-    "Statement": {
-      "ByteMatchStatement": "object",
-      "SqliMatchStatement": "object",
-      "XssMatchStatement": "object",
-      "SizeConstraintStatement": "object",
-      "GeoMatchStatement": "object",
-      "RuleGroupReferenceStatement": "object",
-      "IPSetReferenceStatement": "object",
-      "RegexPatternSetReferenceStatement": "object",
-      "ManagedRuleGroupStatement": "object",
-      "RateBasedStatement": "object",
-      "AndStatement": "object",
-      "OrStatement": "object",
-      "NotStatement": "object",
-      "LabelMatchStatement": "object",
-      "RegexMatchStatement": "object",
-      "AsnMatchStatement": "object"
-    },
-    "Tag": {
-      "Key": "scalar",
-      "Value": "scalar"
-    },
-    "TextTransformation": {
-      "Priority": "scalar",
-      "Type": "scalar"
-    },
-    "PreParseTextTransformation": {
-      "Priority": "scalar",
-      "Type": "scalar"
-    },
-    "VisibilityConfig": {
-      "SampledRequestsEnabled": "scalar",
-      "CloudWatchMetricsEnabled": "scalar",
-      "MetricName": "scalar"
-    },
-    "DataProtectionConfig": {
-      "DataProtections": "array"
+      "Tags": "array"
     },
     "DataProtect": {
       "Field": "object",
       "Action": "scalar",
-      "ExcludeRuleMatchDetails": "scalar",
-      "ExcludeRateBasedDetails": "scalar"
-    },
-    "FieldToProtect": {
-      "FieldType": "scalar",
-      "FieldKeys": "array"
-    },
-    "XssMatchStatement": {
-      "FieldToMatch": "object",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array"
-    },
-    "Label": {
-      "Name": "scalar"
-    },
-    "LabelMatchStatement": {
-      "Scope": "scalar",
-      "Key": "scalar"
-    },
-    "RegexMatchStatement": {
-      "RegexString": "scalar",
-      "FieldToMatch": "object",
-      "TextTransformations": "array",
-      "PreParseTextTransformations": "array"
-    },
-    "AsnMatchStatement": {
-      "AsnList": "array",
-      "ForwardedIPConfig": "object"
-    },
-    "CaptchaConfig": {
-      "ImmunityTimeProperty": "object"
-    },
-    "ChallengeConfig": {
-      "ImmunityTimeProperty": "object"
-    },
-    "ImmunityTimeProperty": {
-      "ImmunityTime": "scalar"
-    },
-    "ManagedRuleGroupConfig": {
-      "LoginPath": "scalar",
-      "PayloadType": "scalar",
-      "UsernameField": "object",
-      "PasswordField": "object",
-      "AWSManagedRulesBotControlRuleSet": "object",
-      "AWSManagedRulesATPRuleSet": "object",
-      "AWSManagedRulesACFPRuleSet": "object",
-      "AWSManagedRulesAntiDDoSRuleSet": "object"
-    },
-    "AWSManagedRulesBotControlRuleSet": {
-      "InspectionLevel": "scalar",
-      "EnableMachineLearning": "scalar"
-    },
-    "AWSManagedRulesATPRuleSet": {
-      "LoginPath": "scalar",
-      "EnableRegexInPath": "scalar",
-      "RequestInspection": "object",
-      "ResponseInspection": "object"
-    },
-    "AWSManagedRulesACFPRuleSet": {
-      "CreationPath": "scalar",
-      "RegistrationPagePath": "scalar",
-      "RequestInspection": "object",
-      "ResponseInspection": "object",
-      "EnableRegexInPath": "scalar"
-    },
-    "AWSManagedRulesAntiDDoSRuleSet": {
-      "ClientSideActionConfig": "object",
-      "SensitivityToBlock": "scalar"
-    },
-    "ClientSideActionConfig": {
-      "Challenge": "object"
-    },
-    "ClientSideAction": {
-      "UsageOfAction": "scalar",
-      "Sensitivity": "scalar",
-      "ExemptUriRegularExpressions": "array"
-    },
-    "Regex": {
-      "RegexString": "scalar"
-    },
-    "RequestInspection": {
-      "PayloadType": "scalar",
-      "UsernameField": "object",
-      "PasswordField": "object"
-    },
-    "RequestInspectionACFP": {
-      "PayloadType": "scalar",
-      "UsernameField": "object",
-      "PasswordField": "object",
-      "EmailField": "object",
-      "PhoneNumberFields": "array",
-      "AddressFields": "array"
-    },
-    "ResponseInspection": {
-      "StatusCode": "object",
-      "Header": "object",
-      "BodyContains": "object",
-      "Json": "object"
-    },
-    "ResponseInspectionStatusCode": {
-      "SuccessCodes": "array",
-      "FailureCodes": "array"
-    },
-    "ResponseInspectionHeader": {
-      "Name": "scalar",
-      "SuccessValues": "array",
-      "FailureValues": "array"
-    },
-    "ResponseInspectionBodyContains": {
-      "SuccessStrings": "array",
-      "FailureStrings": "array"
-    },
-    "ResponseInspectionJson": {
-      "Identifier": "scalar",
-      "SuccessValues": "array",
-      "FailureValues": "array"
-    },
-    "AssociationConfig": {
-      "RequestBody": "object"
-    },
-    "RequestBodyAssociatedResourceTypeConfig": {
-      "DefaultSizeInspectionLimit": "scalar"
-    },
-    "FieldIdentifier": {
-      "Identifier": "scalar"
-    },
-    "Headers": {
-      "MatchPattern": "object",
-      "MatchScope": "scalar",
-      "OversizeHandling": "scalar"
-    },
-    "Cookies": {
-      "MatchPattern": "object",
-      "MatchScope": "scalar",
-      "OversizeHandling": "scalar"
+      "ExcludeRateBasedDetails": "scalar",
+      "ExcludeRuleMatchDetails": "scalar"
     },
     "HeaderMatchPattern": {
       "All": "object",
       "IncludedHeaders": "array",
       "ExcludedHeaders": "array"
     },
+    "CustomResponse": {
+      "ResponseCode": "scalar",
+      "CustomResponseBodyKey": "scalar",
+      "ResponseHeaders": "array"
+    },
+    "JA4Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "RegexMatchStatement": {
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "RegexString": "scalar",
+      "FieldToMatch": "object"
+    },
+    "RegexPatternSetReferenceStatement": {
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "Arn": "scalar",
+      "FieldToMatch": "object"
+    },
+    "IPSetReferenceStatement": {
+      "IPSetForwardedIPConfig": "object",
+      "Arn": "scalar"
+    },
+    "RequestBodyAssociatedResourceTypeConfig": {
+      "DefaultSizeInspectionLimit": "scalar"
+    },
+    "RateLimitJA3Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "AssociationConfig": {
+      "ChallengeJavascriptSdkInjection": "object",
+      "RequestBody": "object"
+    },
+    "ClientSideAction": {
+      "UsageOfAction": "scalar",
+      "Sensitivity": "scalar",
+      "ExemptUriRegularExpressions": "array"
+    },
+    "RuleActionOverride": {
+      "ActionToUse": "object",
+      "Name": "scalar"
+    },
+    "ExcludedRule": {
+      "Name": "scalar"
+    },
+    "RateLimitQueryArgument": {
+      "TextTransformations": "array",
+      "Name": "scalar"
+    },
+    "Rule": {
+      "Action": "object",
+      "Priority": "scalar",
+      "Statement": "object",
+      "ChallengeConfig": "object",
+      "OverrideAction": "object",
+      "RuleLabels": "array",
+      "VisibilityConfig": "object",
+      "CaptchaConfig": "object",
+      "Name": "scalar"
+    },
+    "RateLimitHeader": {
+      "TextTransformations": "array",
+      "Name": "scalar"
+    },
+    "IPSetForwardedIPConfiguration": {
+      "FallbackBehavior": "scalar",
+      "HeaderName": "scalar",
+      "Position": "scalar"
+    },
+    "PreParseTextTransformation": {
+      "Type": "scalar",
+      "Priority": "scalar"
+    },
+    "SizeConstraintStatement": {
+      "ComparisonOperator": "scalar",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "Size": "scalar",
+      "FieldToMatch": "object"
+    },
+    "AndStatement": {
+      "Statements": "array"
+    },
+    "JA3Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "NotStatement": {
+      "Statement": "object"
+    },
+    "ResponseInspectionStatusCode": {
+      "SuccessCodes": "array",
+      "FailureCodes": "array"
+    },
+    "RuleAction": {
+      "Monetize": "object",
+      "Captcha": "object",
+      "Block": "object",
+      "Count": "object",
+      "Allow": "object",
+      "Challenge": "object"
+    },
+    "RateLimitUriPath": {
+      "TextTransformations": "array"
+    },
+    "MonetizeAction": {
+      "PriceMultiplier": "scalar"
+    },
+    "ApplicationAttribute": {
+      "Values": "array",
+      "Name": "scalar"
+    },
+    "LabelMatchStatement": {
+      "Scope": "scalar",
+      "Key": "scalar"
+    },
+    "ResponseInspectionBodyContains": {
+      "SuccessStrings": "array",
+      "FailureStrings": "array"
+    },
+    "FieldToMatch": {
+      "AllQueryArguments": "object",
+      "JA3Fingerprint": "object",
+      "SingleQueryArgument": "object",
+      "QueryString": "object",
+      "Headers": "object",
+      "Method": "object",
+      "UriFragment": "object",
+      "JsonBody": "object",
+      "UriPath": "object",
+      "Cookies": "object",
+      "JA4Fingerprint": "object",
+      "HeaderOrder": "object",
+      "Body": "object",
+      "SingleHeader": "object"
+    },
+    "ClientSideActionConfig": {
+      "Challenge": "object"
+    },
+    "Statement": {
+      "SizeConstraintStatement": "object",
+      "AndStatement": "object",
+      "XssMatchStatement": "object",
+      "NotStatement": "object",
+      "ByteMatchStatement": "object",
+      "RateBasedStatement": "object",
+      "GeoMatchStatement": "object",
+      "RuleGroupReferenceStatement": "object",
+      "LabelMatchStatement": "object",
+      "RegexMatchStatement": "object",
+      "SqliMatchStatement": "object",
+      "RegexPatternSetReferenceStatement": "object",
+      "OrStatement": "object",
+      "AsnMatchStatement": "object",
+      "ManagedRuleGroupStatement": "object",
+      "IPSetReferenceStatement": "object"
+    },
+    "ChallengeConfig": {
+      "ImmunityTimeProperty": "object"
+    },
+    "RateBasedStatement": {
+      "AggregateKeyType": "scalar",
+      "CustomKeys": "array",
+      "ForwardedIPConfig": "object",
+      "Limit": "scalar",
+      "EvaluationWindowSec": "scalar",
+      "ScopeDownStatement": "object"
+    },
+    "FieldIdentifier": {
+      "Identifier": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
     "CookieMatchPattern": {
       "All": "object",
       "IncludedCookies": "array",
       "ExcludedCookies": "array"
     },
-    "JA3Fingerprint": {
-      "FallbackBehavior": "scalar"
+    "ResponseInspectionHeader": {
+      "SuccessValues": "array",
+      "FailureValues": "array",
+      "Name": "scalar"
     },
-    "JA4Fingerprint": {
-      "FallbackBehavior": "scalar"
+    "CaptchaAction": {
+      "CustomRequestHandling": "object"
+    },
+    "BlockAction": {
+      "CustomResponse": "object"
+    },
+    "Label": {
+      "Name": "scalar"
+    },
+    "DataProtectionConfig": {
+      "DataProtections": "array"
     },
     "UriFragment": {
       "FallbackBehavior": "scalar"
     },
-    "HeaderOrder": {
+    "ResponseInspectionJson": {
+      "Identifier": "scalar",
+      "SuccessValues": "array",
+      "FailureValues": "array"
+    },
+    "FieldToProtect": {
+      "FieldKeys": "array",
+      "FieldType": "scalar"
+    },
+    "Regex": {
+      "RegexString": "scalar"
+    },
+    "ManagedRuleGroupConfig": {
+      "AWSManagedRulesAntiDDoSRuleSet": "object",
+      "UsernameField": "object",
+      "LoginPath": "scalar",
+      "AWSManagedRulesATPRuleSet": "object",
+      "AWSManagedRulesBotControlRuleSet": "object",
+      "PasswordField": "object",
+      "AWSManagedRulesACFPRuleSet": "object",
+      "PayloadType": "scalar"
+    },
+    "Cookies": {
+      "MatchScope": "scalar",
+      "MatchPattern": "object",
       "OversizeHandling": "scalar"
     },
-    "OnSourceDDoSProtectionConfig": {
-      "ALBLowReputationMode": "scalar"
+    "AllowAction": {
+      "CustomRequestHandling": "object"
     },
-    "MonetizationConfig": {
-      "CryptoConfig": "object",
-      "CurrencyMode": "scalar"
+    "AWSManagedRulesBotControlRuleSet": {
+      "InspectionLevel": "scalar",
+      "EnableMachineLearning": "scalar"
     },
-    "CryptoConfig": {
-      "PaymentNetworks": "array"
+    "SqliMatchStatement": {
+      "SensitivityLevel": "scalar",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "FieldToMatch": "object"
+    },
+    "AsnMatchStatement": {
+      "ForwardedIPConfig": "object",
+      "AsnList": "array"
+    },
+    "ManagedRuleGroupStatement": {
+      "VendorName": "scalar",
+      "Version": "scalar",
+      "RuleActionOverrides": "array",
+      "ManagedRuleGroupConfigs": "array",
+      "ExcludedRules": "array",
+      "Name": "scalar",
+      "ScopeDownStatement": "object"
+    },
+    "RateLimitCookie": {
+      "TextTransformations": "array",
+      "Name": "scalar"
+    },
+    "JsonMatchPattern": {
+      "All": "object",
+      "IncludedPaths": "array"
+    },
+    "ChallengeAction": {
+      "CustomRequestHandling": "object"
+    },
+    "AWSManagedRulesAntiDDoSRuleSet": {
+      "ClientSideActionConfig": "object",
+      "SensitivityToBlock": "scalar"
+    },
+    "CountAction": {
+      "CustomRequestHandling": "object"
     },
     "PaymentNetwork": {
       "Chain": "scalar",
-      "WalletAddress": "scalar",
-      "Prices": "array"
+      "Prices": "array",
+      "WalletAddress": "scalar"
+    },
+    "ByteMatchStatement": {
+      "SearchStringBase64": "scalar",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "PositionalConstraint": "scalar",
+      "SearchString": "scalar",
+      "FieldToMatch": "object"
+    },
+    "CustomRequestHandling": {
+      "InsertHeaders": "array"
+    },
+    "OverrideAction": {
+      "Count": "object",
+      "None": "object"
+    },
+    "GeoMatchStatement": {
+      "ForwardedIPConfig": "object",
+      "CountryCodes": "array"
+    },
+    "VisibilityConfig": {
+      "MetricName": "scalar",
+      "SampledRequestsEnabled": "scalar",
+      "CloudWatchMetricsEnabled": "scalar"
+    },
+    "AWSManagedRulesACFPRuleSet": {
+      "RegistrationPagePath": "scalar",
+      "ResponseInspection": "object",
+      "CreationPath": "scalar",
+      "EnableRegexInPath": "scalar",
+      "RequestInspection": "object"
+    },
+    "RuleGroupReferenceStatement": {
+      "RuleActionOverrides": "array",
+      "Arn": "scalar",
+      "ExcludedRules": "array"
+    },
+    "RateLimitJA4Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "DefaultAction": {
+      "Block": "object",
+      "Allow": "object"
+    },
+    "RateBasedStatementCustomKey": {
+      "Cookie": "object",
+      "ForwardedIP": "object",
+      "QueryArgument": "object",
+      "JA3Fingerprint": "object",
+      "Header": "object",
+      "HTTPMethod": "object",
+      "QueryString": "object",
+      "UriPath": "object",
+      "IP": "object",
+      "JA4Fingerprint": "object",
+      "ASN": "object",
+      "LabelNamespace": "object"
+    },
+    "ApplicationConfig": {
+      "Attributes": "array"
+    },
+    "ResponseInspection": {
+      "Header": "object",
+      "BodyContains": "object",
+      "Json": "object",
+      "StatusCode": "object"
     },
     "Price": {
       "Amount": "scalar",
       "Currency": "scalar"
     },
-    "MonetizeAction": {
-      "PriceMultiplier": "scalar"
+    "RequestInspectionACFP": {
+      "UsernameField": "object",
+      "EmailField": "object",
+      "PasswordField": "object",
+      "AddressFields": "array",
+      "PayloadType": "scalar",
+      "PhoneNumberFields": "array"
+    },
+    "HeaderOrder": {
+      "OversizeHandling": "scalar"
+    },
+    "ImmunityTimeProperty": {
+      "ImmunityTime": "scalar"
+    },
+    "RateLimitLabelNamespace": {
+      "Namespace": "scalar"
+    },
+    "SingleQueryArgument": {
+      "Name": "scalar"
+    },
+    "XssMatchStatement": {
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "FieldToMatch": "object"
+    },
+    "Headers": {
+      "MatchScope": "scalar",
+      "MatchPattern": "object",
+      "OversizeHandling": "scalar"
+    },
+    "AWSManagedRulesATPRuleSet": {
+      "ResponseInspection": "object",
+      "EnableRegexInPath": "scalar",
+      "LoginPath": "scalar",
+      "RequestInspection": "object"
+    },
+    "RequestInspection": {
+      "UsernameField": "object",
+      "PasswordField": "object",
+      "PayloadType": "scalar"
+    },
+    "OnSourceDDoSProtectionConfig": {
+      "ALBLowReputationMode": "scalar"
+    },
+    "JsonBody": {
+      "MatchScope": "scalar",
+      "MatchPattern": "object",
+      "InvalidFallbackBehavior": "scalar",
+      "OversizeHandling": "scalar"
+    },
+    "OrStatement": {
+      "Statements": "array"
+    },
+    "Body": {
+      "OversizeHandling": "scalar"
+    },
+    "CustomHTTPHeader": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "RateLimitQueryString": {
+      "TextTransformations": "array"
+    },
+    "MonetizationConfig": {
+      "CurrencyMode": "scalar",
+      "CryptoConfig": "object"
+    },
+    "TextTransformation": {
+      "Type": "scalar",
+      "Priority": "scalar"
+    },
+    "CustomResponseBody": {
+      "ContentType": "scalar",
+      "Content": "scalar"
+    },
+    "ForwardedIPConfiguration": {
+      "FallbackBehavior": "scalar",
+      "HeaderName": "scalar"
+    },
+    "CaptchaConfig": {
+      "ImmunityTimeProperty": "object"
+    },
+    "SingleHeader": {
+      "Name": "scalar"
+    },
+    "CryptoConfig": {
+      "PaymentNetworks": "array"
     }
   },
   "definitionRequired": {
@@ -1355,89 +1358,48 @@
       "Scope",
       "VisibilityConfig"
     ],
-    "ApplicationConfig": [
-      "Attributes"
+    "DataProtect": [
+      "Action",
+      "Field"
     ],
-    "ApplicationAttribute": [
-      "Name",
-      "Values"
+    "CustomResponse": [
+      "ResponseCode"
     ],
-    "AndStatement": [
-      "Statements"
+    "JA4Fingerprint": [
+      "FallbackBehavior"
     ],
-    "ByteMatchStatement": [
+    "RegexMatchStatement": [
       "FieldToMatch",
-      "PositionalConstraint",
+      "RegexString",
       "TextTransformations"
-    ],
-    "ExcludedRule": [
-      "Name"
-    ],
-    "RuleActionOverride": [
-      "ActionToUse",
-      "Name"
-    ],
-    "JsonBody": [
-      "MatchPattern",
-      "MatchScope"
-    ],
-    "IPSetReferenceStatement": [
-      "Arn"
-    ],
-    "ManagedRuleGroupStatement": [
-      "Name",
-      "VendorName"
-    ],
-    "NotStatement": [
-      "Statement"
-    ],
-    "OrStatement": [
-      "Statements"
-    ],
-    "RateBasedStatement": [
-      "AggregateKeyType",
-      "Limit"
-    ],
-    "RateLimitCookie": [
-      "Name",
-      "TextTransformations"
-    ],
-    "RateLimitHeader": [
-      "Name",
-      "TextTransformations"
-    ],
-    "RateLimitLabelNamespace": [
-      "Namespace"
-    ],
-    "RateLimitQueryArgument": [
-      "Name",
-      "TextTransformations"
-    ],
-    "RateLimitQueryString": [
-      "TextTransformations"
-    ],
-    "RateLimitUriPath": [
-      "TextTransformations"
-    ],
-    "RateLimitJA3Fingerprint": [
-      "FallbackBehavior"
-    ],
-    "RateLimitJA4Fingerprint": [
-      "FallbackBehavior"
     ],
     "RegexPatternSetReferenceStatement": [
       "Arn",
       "FieldToMatch",
       "TextTransformations"
     ],
-    "ForwardedIPConfiguration": [
-      "FallbackBehavior",
-      "HeaderName"
+    "IPSetReferenceStatement": [
+      "Arn"
     ],
-    "IPSetForwardedIPConfiguration": [
-      "FallbackBehavior",
-      "HeaderName",
-      "Position"
+    "RequestBodyAssociatedResourceTypeConfig": [
+      "DefaultSizeInspectionLimit"
+    ],
+    "RateLimitJA3Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "ClientSideAction": [
+      "UsageOfAction"
+    ],
+    "RuleActionOverride": [
+      "ActionToUse",
+      "Name"
+    ],
+    "ExcludedRule": [
+      "Name"
+    ],
+    "RateLimitQueryArgument": [
+      "Name",
+      "TextTransformations"
     ],
     "Rule": [
       "Name",
@@ -1445,22 +1407,18 @@
       "Statement",
       "VisibilityConfig"
     ],
-    "CustomHTTPHeader": [
+    "RateLimitHeader": [
       "Name",
-      "Value"
+      "TextTransformations"
     ],
-    "CustomRequestHandling": [
-      "InsertHeaders"
+    "IPSetForwardedIPConfiguration": [
+      "FallbackBehavior",
+      "HeaderName",
+      "Position"
     ],
-    "CustomResponseBody": [
-      "Content",
-      "ContentType"
-    ],
-    "CustomResponse": [
-      "ResponseCode"
-    ],
-    "RuleGroupReferenceStatement": [
-      "Arn"
+    "PreParseTextTransformation": [
+      "Priority",
+      "Type"
     ],
     "SizeConstraintStatement": [
       "ComparisonOperator",
@@ -1468,137 +1426,182 @@
       "Size",
       "TextTransformations"
     ],
-    "SqliMatchStatement": [
-      "FieldToMatch",
+    "AndStatement": [
+      "Statements"
+    ],
+    "JA3Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "NotStatement": [
+      "Statement"
+    ],
+    "ResponseInspectionStatusCode": [
+      "FailureCodes",
+      "SuccessCodes"
+    ],
+    "RateLimitUriPath": [
       "TextTransformations"
     ],
-    "TextTransformation": [
-      "Priority",
-      "Type"
-    ],
-    "PreParseTextTransformation": [
-      "Priority",
-      "Type"
-    ],
-    "VisibilityConfig": [
-      "CloudWatchMetricsEnabled",
-      "MetricName",
-      "SampledRequestsEnabled"
-    ],
-    "DataProtectionConfig": [
-      "DataProtections"
-    ],
-    "DataProtect": [
-      "Action",
-      "Field"
-    ],
-    "FieldToProtect": [
-      "FieldType"
-    ],
-    "XssMatchStatement": [
-      "FieldToMatch",
-      "TextTransformations"
-    ],
-    "Label": [
-      "Name"
+    "ApplicationAttribute": [
+      "Name",
+      "Values"
     ],
     "LabelMatchStatement": [
       "Key",
       "Scope"
     ],
-    "RegexMatchStatement": [
-      "FieldToMatch",
-      "RegexString",
-      "TextTransformations"
-    ],
-    "ImmunityTimeProperty": [
-      "ImmunityTime"
-    ],
-    "AWSManagedRulesBotControlRuleSet": [
-      "InspectionLevel"
-    ],
-    "AWSManagedRulesATPRuleSet": [
-      "LoginPath"
-    ],
-    "AWSManagedRulesACFPRuleSet": [
-      "CreationPath",
-      "RegistrationPagePath",
-      "RequestInspection"
-    ],
-    "AWSManagedRulesAntiDDoSRuleSet": [
-      "ClientSideActionConfig"
+    "ResponseInspectionBodyContains": [
+      "FailureStrings",
+      "SuccessStrings"
     ],
     "ClientSideActionConfig": [
       "Challenge"
     ],
-    "ClientSideAction": [
-      "UsageOfAction"
+    "RateBasedStatement": [
+      "AggregateKeyType",
+      "Limit"
     ],
-    "RequestInspection": [
-      "PasswordField",
-      "PayloadType",
-      "UsernameField"
-    ],
-    "RequestInspectionACFP": [
-      "PayloadType"
-    ],
-    "ResponseInspectionStatusCode": [
-      "FailureCodes",
-      "SuccessCodes"
+    "FieldIdentifier": [
+      "Identifier"
     ],
     "ResponseInspectionHeader": [
       "FailureValues",
       "Name",
       "SuccessValues"
     ],
-    "ResponseInspectionBodyContains": [
-      "FailureStrings",
-      "SuccessStrings"
+    "Label": [
+      "Name"
+    ],
+    "DataProtectionConfig": [
+      "DataProtections"
     ],
     "ResponseInspectionJson": [
       "FailureValues",
       "Identifier",
       "SuccessValues"
     ],
-    "RequestBodyAssociatedResourceTypeConfig": [
-      "DefaultSizeInspectionLimit"
-    ],
-    "FieldIdentifier": [
-      "Identifier"
-    ],
-    "Headers": [
-      "MatchPattern",
-      "MatchScope",
-      "OversizeHandling"
+    "FieldToProtect": [
+      "FieldType"
     ],
     "Cookies": [
       "MatchPattern",
       "MatchScope",
       "OversizeHandling"
     ],
-    "JA3Fingerprint": [
-      "FallbackBehavior"
+    "AWSManagedRulesBotControlRuleSet": [
+      "InspectionLevel"
     ],
-    "JA4Fingerprint": [
-      "FallbackBehavior"
+    "SqliMatchStatement": [
+      "FieldToMatch",
+      "TextTransformations"
     ],
-    "HeaderOrder": [
-      "OversizeHandling"
+    "ManagedRuleGroupStatement": [
+      "Name",
+      "VendorName"
     ],
-    "OnSourceDDoSProtectionConfig": [
-      "ALBLowReputationMode"
+    "RateLimitCookie": [
+      "Name",
+      "TextTransformations"
     ],
-    "CryptoConfig": [
-      "PaymentNetworks"
+    "AWSManagedRulesAntiDDoSRuleSet": [
+      "ClientSideActionConfig"
     ],
     "PaymentNetwork": [
       "Chain",
       "Prices",
       "WalletAddress"
     ],
+    "ByteMatchStatement": [
+      "FieldToMatch",
+      "PositionalConstraint",
+      "TextTransformations"
+    ],
+    "CustomRequestHandling": [
+      "InsertHeaders"
+    ],
+    "VisibilityConfig": [
+      "CloudWatchMetricsEnabled",
+      "MetricName",
+      "SampledRequestsEnabled"
+    ],
+    "AWSManagedRulesACFPRuleSet": [
+      "CreationPath",
+      "RegistrationPagePath",
+      "RequestInspection"
+    ],
+    "RuleGroupReferenceStatement": [
+      "Arn"
+    ],
+    "RateLimitJA4Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "ApplicationConfig": [
+      "Attributes"
+    ],
     "Price": [
       "Amount",
       "Currency"
+    ],
+    "RequestInspectionACFP": [
+      "PayloadType"
+    ],
+    "HeaderOrder": [
+      "OversizeHandling"
+    ],
+    "ImmunityTimeProperty": [
+      "ImmunityTime"
+    ],
+    "RateLimitLabelNamespace": [
+      "Namespace"
+    ],
+    "XssMatchStatement": [
+      "FieldToMatch",
+      "TextTransformations"
+    ],
+    "Headers": [
+      "MatchPattern",
+      "MatchScope",
+      "OversizeHandling"
+    ],
+    "AWSManagedRulesATPRuleSet": [
+      "LoginPath"
+    ],
+    "RequestInspection": [
+      "PasswordField",
+      "PayloadType",
+      "UsernameField"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
+    ],
+    "JsonBody": [
+      "MatchPattern",
+      "MatchScope"
+    ],
+    "OrStatement": [
+      "Statements"
+    ],
+    "CustomHTTPHeader": [
+      "Name",
+      "Value"
+    ],
+    "RateLimitQueryString": [
+      "TextTransformations"
+    ],
+    "TextTransformation": [
+      "Priority",
+      "Type"
+    ],
+    "CustomResponseBody": [
+      "Content",
+      "ContentType"
+    ],
+    "ForwardedIPConfiguration": [
+      "FallbackBehavior",
+      "HeaderName"
+    ],
+    "CryptoConfig": [
+      "PaymentNetworks"
     ]
   },
   "nestedRequired": {
@@ -2238,6 +2241,7 @@
     "ApplicationConfig.Attributes[]": "object",
     "ApplicationConfig.Attributes[].Values": "array",
     "AssociationConfig": "object",
+    "AssociationConfig.ChallengeJavascriptSdkInjection": "object",
     "AssociationConfig.RequestBody": "object",
     "CaptchaConfig": "object",
     "CaptchaConfig.ImmunityTimeProperty": "object",
@@ -2643,6 +2647,7 @@
     "ApplicationConfig.Attributes[].Values[]": "string",
     "Arn": "string",
     "AssociationConfig": "object",
+    "AssociationConfig.ChallengeJavascriptSdkInjection": "object",
     "AssociationConfig.RequestBody": "object",
     "Capacity": "integer",
     "CaptchaConfig": "object",
