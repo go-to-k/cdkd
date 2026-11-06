@@ -274,9 +274,10 @@
  *      A per-value wrap still buys two things over the sink, stated in
  *      `.claude/rules/provider-masking.md`: a secret shorter than
  *      `BASE_MASKER_SUBSTRING_FLOOR` (4), and a line emitted where the
- *      resolved-secret bag is not bound — today that is `drift --revert`'s
- *      provider `update()` path, which binds only secret-NAME needles
- *      (#5848). Neither is fenced HERE; a site whose wrap matters is pinned by
+ *      resolved-secret bag is not bound. No such create / update path is
+ *      known: `drift --revert`'s provider `update()` path bound only
+ *      secret-NAME needles until #5848 bound the resolved bag around it as
+ *      well. Neither is fenced HERE; a site whose wrap matters is pinned by
  *      a RUNTIME twin instead — `dynamodb-table/update-billing.ts`'s
  *      `${unspecified.map((n) => maskSecrets(n)).join(', ')}` by
  *      `tests/unit/provisioning/dynamodb-table-provider-masked-warn.test.ts`
