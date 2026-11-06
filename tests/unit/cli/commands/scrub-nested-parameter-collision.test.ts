@@ -304,3 +304,92 @@ describe('cdkd scrub re-reads a leaf naming a pseudo parameter the child resolve
     }
   }
 });
+
+describe('cdkd scrub positions an EMBEDDED parameter by its own association (issue #2291)', () => {
+  /**
+   * Two row parameters resolving to ONE plaintext. The plaintext-keyed slot
+   * holds one expression; a `{Ref}` EMBEDDED in `Fn::Join` / `Fn::Sub` is
+   * positioned by the per-parameter `Ref` association, which reaches a child
+   * resource bag only through the copy `newBag` makes (`scrubStack` hands it
+   * to its resolve pass, go-to-k/cdkd#5835) — the resolver writes no
+   * `Ref`-keyed association. Without it the embedded leaf takes the slot's
+   * SIBLING expression, and the next diff reports a perpetual UPDATE
+   * (#2087 / #2291).
+   */
+  function twoParameterRow(): RecordedSecretValues {
+    const parent: RecordedSecretValues = new Map();
+    for (const expression of [EXPR_A, EXPR_B]) {
+      parent.set(SHARED, expression);
+      recordResolvedPair(parent, expression, SHARED);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { SecretA: SHARED, SecretB: SHARED } },
+      { Parameters: { SecretA: EXPR_A, SecretB: EXPR_B } }
+    );
+    return parent;
+  }
+
+  it.each([
+    ['Fn::Join', { 'Fn::Join': ['', ['x-', { Ref: 'SecretA' }]] }],
+    ['Fn::Sub', { 'Fn::Sub': 'x-${SecretA}' }],
+  ])('%s over SecretA keeps SecretA\'s expression beside a bare SecretB', async (_label, value) => {
+    const parent = twoParameterRow();
+    const template = {
+      Parameters: { SecretA: { Type: 'String' }, SecretB: { Type: 'String' } },
+      Resources: {
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Value: value, Description: { Ref: 'SecretB' } },
+        },
+      },
+      Outputs: {},
+    } as unknown as CloudFormationTemplate;
+    const state = {
+      version: 9,
+      region: 'us-east-1',
+      stackName: 'MyStack~Child',
+      resources: {
+        R: {
+          physicalId: 'r',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: `x-${SHARED}`, Description: SHARED },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const saveState = vi.fn().mockResolvedValue('etag-2');
+    await scrubStack(
+      { stackName: 'MyStack~Child', template } as never,
+      'us-east-1',
+      {
+        getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
+        saveState,
+        purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+        listStacks: vi.fn().mockResolvedValue([]),
+      } as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        dryRun: false,
+        logger,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'MyStack~Child',
+          input: { parameters: { SecretA: SHARED, SecretB: SHARED }, inheritedSecrets: parent },
+        },
+      } as never
+    );
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['R']!.properties).toEqual({
+      Value: `x-${EXPR_A}`,
+      Description: EXPR_B,
+    });
+  });
+});

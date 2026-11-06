@@ -199,7 +199,7 @@ export async function resolveGetAtt(
     // SDK error surfacing out of `reresolveCrossStackValue` below must stay
     // retryable, which is why the mark is here and not in the `Fn::Sub` catch.
     // THIS MESSAGE IS RE-PARSED, which makes sanitizing it a GATE decision and not only a display one
-    // (go-to-k/cdkd#3432). `src/cli/commands/scrub.ts`'s `TEMPLATE_SHAPE_FAILURE_PATTERNS` holds
+    // (go-to-k/cdkd#3432). `src/cli/commands/scrub/abandoned-scan.ts`'s `TEMPLATE_SHAPE_FAILURE_PATTERNS` holds
     // `/^Resource \S+ not found for Fn::GetAtt$/`, and a unit whose scan this error abandoned is
     // classified by whether that pattern matches: matching makes it a `warn`, missing makes it a `count`
     // that `cdkd scrub --dry-run --fail` gates on. The builder STRIPS and TRIMS, so an id carrying a CR

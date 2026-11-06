@@ -134,6 +134,7 @@ import { fileURLToPath } from 'node:url';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 import { readResolverFamily } from '../../_resolver-family.js';
+import { readScrubSource } from '../_scrub-source.js';
 
 const REGION = 'us-east-1';
 const CONSUMER = 'Consumer';
@@ -816,7 +817,8 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
       `${here}../../../../src/deployment/intrinsic-function-resolver.ts`,
       'utf8'
     );
-    const scrubSrc = readFileSync(`${here}../../../../src/cli/commands/scrub.ts`, 'utf8');
+    // Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+    const scrubSrc = readScrubSource();
 
     // Modifier-agnostic: the split resolver (#4337) relaxes `private` members a
     // mixin reads to `@internal`.
@@ -1993,6 +1995,25 @@ describe('a CONDITION-SUPPRESSED output cannot refuse the stack (issue #2133 rev
     expect(stateBackend.listStacks).toHaveBeenCalled();
   });
 
+  it('POSITIVE CONTROL: the same output under a Condition that HOLDS still refuses', async () => {
+    // The verdict comes from the conditions the stack evaluated before the
+    // resolve pass, which hands them over (go-to-k/cdkd#5835): an output whose
+    // condition holds is deployed, so its declined read refuses.
+    useProducerOutputs(undefined);
+
+    const err = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      {
+        conditions: { IsProd: { 'Fn::Equals': ['a', 'a'] } },
+        outputs: {
+          DbUrl: { Condition: 'IsProd', Value: { 'Fn::ImportValue': 'ProdOnlyExport' } },
+        },
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
+
   it('POSITIVE CONTROL: the same output WITHOUT a Condition still refuses', async () => {
     useProducerOutputs(undefined);
 
@@ -2149,8 +2170,8 @@ describe("a resource's secret map is registered BEFORE anything can throw (issue
     // `formatError`'s `Caused by:` and the top-level `console.error`'s
     // `util.inspect` walk the whole cause chain and every link's `stack`, which
     // a per-site mask provably cannot reach.
-    const here = fileURLToPath(new URL('.', import.meta.url));
-    const src = readFileSync(`${here}../../../../src/cli/commands/scrub.ts`, 'utf8');
+    // Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+    const src = readScrubSource();
     // The anchor deliberately stops before the closing paren: the loop header
     // gained a `?? {}` malformed-bag guard (go-to-k/cdkd#3018) and the exact
     // spelling took this assertion to `-1` vs `-1`, i.e. GREEN-shaped inputs

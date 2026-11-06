@@ -44,7 +44,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
 import { scrubStack } from '../../../../src/cli/commands/scrub.js';
 import { STATE_RESOURCES_MALFORMED } from '../../../../src/state/malformed-resources-bag.js';
 import type { LockRecoveryContext } from '../../../../src/state/lock-contention-message.js';
-import { readFileSync } from 'node:fs';
+import { readScrubSource } from '../_scrub-source.js';
 
 const REGION = 'us-east-1';
 const STACK = 'MyStack';
@@ -170,10 +170,8 @@ describe('cdkd scrub carries the account flags on its malformed-record pointers 
   }
 
   it('scrubCommand builds the context from --profile, the RESOLVED bucket and --state-prefix, and hands it over', () => {
-    const source = readFileSync(
-      new URL('../../../../src/cli/commands/scrub.ts', import.meta.url),
-      'utf8'
-    );
+    // Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+    const source = readScrubSource();
     expect(source).toMatch(
       /const refusalRecovery: LockRecoveryContext = \{\s*profile: options\.profile,\s*stateBucket,\s*statePrefix: options\.statePrefix,\s*\};/
     );

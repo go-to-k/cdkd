@@ -26,17 +26,14 @@
  * false-clean population the issue is about.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { readResolverFamily } from '../_resolver-family.js';
+import { readScrubSource } from './_scrub-source.js';
 
-const scrubSource = readFileSync(
-  fileURLToPath(new URL('../../../src/cli/commands/scrub.ts', import.meta.url)),
-  'utf8'
-);
+// Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+const scrubSource = readScrubSource();
 const resolverSource = readResolverFamily();
 
 /**
