@@ -17,6 +17,7 @@ import {
   unreadableResourceAttributeBags,
 } from '../../../src/state/malformed-resources-bag.js';
 import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
+import { malformedBagSourceFiles } from './_malformed-resources-bag-source.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -319,7 +320,12 @@ describe('cdkd orphan wires every load refusal (source fence)', () => {
 
 describe('ONE exactness spelling in the module (go-to-k/cdkd#3388)', () => {
   it('no comparison of a safe* rendering against its input outside rendersExactly', () => {
-    const src = code('src/state/malformed-resources-bag.ts');
+    // Every file of the module's family, each stripped on its own: the
+    // exactness test lives in a companion module, and an inline copy in any
+    // sibling is what this fence refuses.
+    const files = malformedBagSourceFiles();
+    expect(files.length, 'the family listing lost its companion directory').toBeGreaterThanOrEqual(12);
+    const src = files.map(code).join('\n');
     const start = src.indexOf('function rendersExactly(');
     expect(start, 'rendersExactly was renamed; this fence reads nothing').toBeGreaterThan(-1);
     const end = src.indexOf('\n}', start);

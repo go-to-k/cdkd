@@ -2,12 +2,15 @@
 description: The per-container REFUSE / REPAIR guards over a state record whose resources or outputs bag, or orphans list, a hand edit left unreadable
 paths:
   - 'src/state/malformed-resources-bag.ts'
+  - 'src/state/malformed-resources-bag/**'
 ---
 
 # Malformed state containers (`src/state/malformed-resources-bag.ts`)
 
 Index of every area: [code-layout.md](code-layout.md). Each function's own JSDoc
 is the authority for WHY; what follows is what a later edit must not undo.
+The code lives in `src/state/malformed-resources-bag/*.ts`; the top file only
+re-exports, so importers name it and nothing else.
 
 ## What the module owns
 
@@ -27,7 +30,7 @@ so no two can disagree about whether a record is damaged. A destroy CLEARS the
 outputs bag rather than rebuilding it, and a nested child's damage is written
 into the PARENT's record, so a shared sentence would state a mechanism that does
 not happen at either site. Enumerate them with
-`grep -n "^export function refuseMalformed" src/state/malformed-resources-bag.ts`;
+`grep -rn "^export function refuseMalformed" src/state/malformed-resources-bag/`;
 `tests/unit/state/malformed-resources-bag.test.ts` derives the same list.
 
 Three sets live with their READERS: the `resources` gate-scoped pair in
