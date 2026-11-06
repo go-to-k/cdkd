@@ -26,6 +26,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 export const CR_S3_ENDPOINT_ENV = 'CDKD_CR_S3_ENDPOINT_URL';
 
@@ -34,6 +35,13 @@ export interface CustomResourceS3Endpoint {
   readonly url: string;
   /** `scheme://host[:port]` — the only part of it that is ever logged. */
   readonly origin: string;
+  /**
+   * `https:` on the default port. CDK's Node.js custom-resource handlers can
+   * deliver a response only to such an endpoint (issue
+   * [#5871](https://github.com/go-to-k/cdkd/issues/5871)): see
+   * `warnIfNodeHandlersCannotRespond`.
+   */
+  readonly httpsOnDefaultPort: boolean;
 }
 
 function refuse(reason: string): never {
@@ -69,7 +77,51 @@ export function customResourceS3Endpoint(
   // would also be a credential cdkd is then holding in a log-adjacent value.
   if (parsed.username !== '' || parsed.password !== '') refuse('must not carry user info');
   if (parsed.search !== '' || parsed.hash !== '') refuse('must not carry a query or fragment');
-  return { url: value, origin: parsed.origin };
+  // WHATWG `URL` empties `port` for the scheme's default, so `https://h:443`
+  // reads as `''` here.
+  return {
+    url: value,
+    origin: parsed.origin,
+    httpsOnDefaultPort: parsed.protocol === 'https:' && parsed.port === '',
+  };
+}
+
+let warnedNodeHandlersCannotRespond = false;
+
+/**
+ * Warn, ONCE per process, when the endpoint is not `https:` on port 443.
+ *
+ * CDK's Node.js custom-resource handlers (the `CustomResourceProvider` ones
+ * such as S3 `autoDeleteObjects`, `AwsCustomResource`, and the `Provider`
+ * framework) send the response with `https.request({ hostname, path })`: the
+ * ResponseURL's scheme and port are DROPPED, so the PUT goes to
+ * `https://<host>:443` whatever cdkd signed. Python `cfnresponse` PUTs the
+ * full URL and is unaffected. cdkd never alters the handler asset the template
+ * declares, so this is a warning, not a refusal: the endpoint can be right for
+ * the handlers a stack actually has.
+ */
+export function warnIfNodeHandlersCannotRespond(
+  endpoint: CustomResourceS3Endpoint,
+  logger: { warn(message: string): void }
+): void {
+  if (endpoint.httpsOnDefaultPort || warnedNodeHandlersCannotRespond) return;
+  warnedNodeHandlersCannotRespond = true;
+  // The origin only: the variable is never logged beyond it.
+  logger.warn(
+    safeMsg`${CR_S3_ENDPOINT_ENV} (${endpoint.origin}) is not https on port 443. ` +
+      `CDK's Node.js custom-resource handlers (e.g. S3 autoDeleteObjects, AwsCustomResource, ` +
+      `the Provider framework) send their response to https on port 443 whatever the ` +
+      `ResponseURL's scheme and port, so they cannot respond to this endpoint and the custom ` +
+      `resource waits until it times out. Serve the emulator's S3 over TLS on port 443 ` +
+      `(e.g. behind a TLS-terminating proxy), with a certificate the Lambda runtime trusts, ` +
+      safeMsg`and set ${CR_S3_ENDPOINT_ENV}=https://<host>. ` +
+      `Python cfnresponse handlers are unaffected.`
+  );
+}
+
+/** Test seam: re-arm the once-per-process warning. */
+export function resetNodeHandlerResponseWarning(): void {
+  warnedNodeHandlersCannotRespond = false;
 }
 
 /**

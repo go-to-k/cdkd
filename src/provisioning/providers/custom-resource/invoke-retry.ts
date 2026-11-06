@@ -8,6 +8,7 @@ import {
   CR_S3_ENDPOINT_ENV,
   customResourceS3Endpoint,
   responsePresignClient,
+  warnIfNodeHandlersCannotRespond,
   type CustomResourceS3Endpoint,
 } from '../custom-resource-response-endpoint.js';
 import {
@@ -616,6 +617,7 @@ export async function generateResponseURL(
   let signer = this.s3Client;
   if (signingEndpoint !== undefined) {
     signer = await responsePresignClient(this.s3Client, signingEndpoint);
+    warnIfNodeHandlersCannotRespond(signingEndpoint, this.logger);
     // The origin only: the URL itself is a bearer credential.
     this.logger.debug(
       safeMsg`Signing the custom resource ResponseURL for ${CR_S3_ENDPOINT_ENV} (${signingEndpoint.origin})`

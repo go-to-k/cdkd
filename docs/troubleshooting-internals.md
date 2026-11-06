@@ -351,6 +351,18 @@ CDKD_CR_S3_ENDPOINT_URL=http://s3:4566 \
 The URL is signed for that host rather than rewritten afterwards, because the
 host is part of the signature.
 
+> [!WARNING]
+> CDK's Node.js custom-resource handlers (for example S3 `autoDeleteObjects`,
+> `AwsCustomResource` and the `Provider` framework) send their response over
+> https to port 443, whatever scheme and port the response URL carries. Against
+> an endpoint such as `http://s3:4566` or `https://s3:8443` they cannot respond,
+> and the custom resource waits until it times out. Python `cfnresponse`
+> handlers use the full URL and are unaffected. cdkd warns once per run when
+> `CDKD_CR_S3_ENDPOINT_URL` is not https on port 443. For Node.js handlers,
+> serve the emulator's S3 over TLS on port 443 (for example behind a
+> TLS-terminating proxy), with a certificate the Lambda runtime trusts, and
+> set `CDKD_CR_S3_ENDPOINT_URL=https://<host>`.
+
 ## Related
 
 - [Troubleshooting](troubleshooting.md)

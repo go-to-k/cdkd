@@ -56,7 +56,9 @@ import { CustomResourceProvider } from '../../../src/provisioning/providers/cust
 import {
   CR_S3_ENDPOINT_ENV,
   customResourceS3Endpoint,
+  resetNodeHandlerResponseWarning,
   responsePresignClient,
+  warnIfNodeHandlersCannotRespond,
 } from '../../../src/provisioning/providers/custom-resource-response-endpoint.js';
 import {
   resetS3ClientDefaults,
@@ -107,6 +109,7 @@ beforeEach(() => {
   process.env['AWS_SHARED_CREDENTIALS_FILE'] = '/dev/null';
   process.env['HOME'] = '/nonexistent-home-5745';
   resetS3ClientDefaults();
+  resetNodeHandlerResponseWarning();
   clearReplicationProbeCache();
   debugLines.length = 0;
   mockLambdaSend.mockReset();
@@ -210,7 +213,7 @@ describe('CDKD_CR_S3_ENDPOINT_URL (issue #5745)', () => {
     // control: the URL the Lambda got DOES carry the signature, so its absence
     // from every log line is a real negative.
     expect(url.searchParams.get('X-Amz-Signature')).toBeTruthy();
-    const line = debugLines.find((l) => l.includes(CR_S3_ENDPOINT_ENV));
+    const line = debugLines.find((l) => l.includes('Signing the custom resource ResponseURL'));
     expect(line).toContain('http://s3:4566');
     expect(debugLines.join('\n')).not.toContain('X-Amz-Signature');
     expect(debugLines.join('\n')).not.toContain('X-Amz-Credential');
@@ -225,7 +228,7 @@ describe('CDKD_CR_S3_ENDPOINT_URL (issue #5745)', () => {
     provider.setResponseBucket(BUCKET);
     const url = new URL(await responseUrlOfOneCreate(provider));
     expect(url.pathname.startsWith(`/secret-prefix/${BUCKET}/`)).toBe(true);
-    const line = debugLines.find((l) => l.includes(CR_S3_ENDPOINT_ENV));
+    const line = debugLines.find((l) => l.includes('Signing the custom resource ResponseURL'));
     expect(line).toContain('(http://s3:4566)');
     expect(debugLines.join('\n')).not.toContain('secret-prefix');
   });
@@ -392,6 +395,7 @@ describe('CDKD_CR_S3_ENDPOINT_URL (issue #5745)', () => {
     expect(customResourceS3Endpoint({ [CR_S3_ENDPOINT_ENV]: ' https://s3.emu:4566/pre ' })).toEqual({
       url: 'https://s3.emu:4566/pre',
       origin: 'https://s3.emu:4566',
+      httpsOnDefaultPort: false,
     });
   });
 
@@ -419,5 +423,82 @@ describe('CDKD_CR_S3_ENDPOINT_URL (issue #5745)', () => {
       .mocked(S3Client.prototype.send)
       .mock.calls.some(([command]) => command instanceof PutObjectCommand);
     expect(sentPut).toBe(false);
+  });
+});
+
+/**
+ * Issue #5871: CDK's Node.js custom-resource handlers PUT the response with
+ * `https.request({ hostname, path })`, dropping the ResponseURL's scheme and
+ * port, so an endpoint other than https:443 is unreachable for them. cdkd
+ * warns once per process; it never alters the handler.
+ */
+describe('CDKD_CR_S3_ENDPOINT_URL off https:443 warns once (issue #5871)', () => {
+  const NEEDLE = 'is not https on port 443';
+
+  function warningsFor(value: string): string[] {
+    const warned: string[] = [];
+    const endpoint = customResourceS3Endpoint({ [CR_S3_ENDPOINT_ENV]: value });
+    warnIfNodeHandlersCannotRespond(endpoint!, { warn: (m) => warned.push(m) });
+    return warned;
+  }
+
+  it.each(['http://h:9000', 'http://h', 'http://h:443', 'https://h:8443', 'https://h:9000/pre'])(
+    'warns for %s, naming the variable, the origin and the remedy',
+    (value) => {
+      const warned = warningsFor(value);
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain(NEEDLE);
+      expect(warned[0]).toContain(`${CR_S3_ENDPOINT_ENV} (${new URL(value).origin})`);
+      expect(warned[0]).toContain(`${CR_S3_ENDPOINT_ENV}=https://<host>`);
+      expect(warned[0]).toContain('a certificate the Lambda runtime trusts');
+      expect(warned[0]).toContain('Python cfnresponse handlers are unaffected');
+      // The origin only, never a path.
+      expect(warned[0]).not.toContain('/pre');
+    }
+  );
+
+  it.each(['https://h', 'https://h:443', 'https://h/pre', 'HTTPS://h:443/'])(
+    'does not warn for %s',
+    (value) => {
+      expect(warningsFor(value)).toEqual([]);
+    }
+  );
+
+  it('warns only ONCE per process, and a reset re-arms it', () => {
+    expect(warningsFor('http://h:9000')).toHaveLength(1);
+    expect(warningsFor('http://h:9000')).toEqual([]);
+    expect(warningsFor('https://h:8443')).toEqual([]);
+    resetNodeHandlerResponseWarning();
+    expect(warningsFor('https://h:8443')).toHaveLength(1);
+  });
+
+  it('fires from the provider when the override signs a ResponseURL, once across invocations', async () => {
+    process.env[CR_S3_ENDPOINT_ENV] = 'http://s3:9000';
+    await resolveS3ClientDefaults();
+    holder.s3 = realS3Client('us-east-1');
+    mockResolveBucketRegion.mockResolvedValue('us-east-1');
+    const provider = new CustomResourceProvider();
+    provider.setResponseBucket(BUCKET);
+    const url = new URL(await responseUrlOfOneCreate(provider));
+    // The URL is still signed for the configured endpoint, port kept.
+    expect(url.origin).toBe('http://s3:9000');
+    expect(debugLines.filter((l) => l.includes(NEEDLE))).toHaveLength(1);
+    await responseUrlOfOneCreate(provider);
+    expect(debugLines.filter((l) => l.includes(NEEDLE))).toHaveLength(1);
+    // The warning never carries the signed URL's credential parts.
+    expect(debugLines.join('\n')).not.toContain('X-Amz-Signature');
+  });
+
+  it('stays silent from the provider for an https:443 override and without one', async () => {
+    process.env[CR_S3_ENDPOINT_ENV] = 'https://s3.emu';
+    await resolveS3ClientDefaults();
+    holder.s3 = realS3Client('us-east-1');
+    mockResolveBucketRegion.mockResolvedValue('us-east-1');
+    const provider = new CustomResourceProvider();
+    provider.setResponseBucket(BUCKET);
+    expect(new URL(await responseUrlOfOneCreate(provider)).origin).toBe('https://s3.emu');
+    delete process.env[CR_S3_ENDPOINT_ENV];
+    await responseUrlOfOneCreate(provider);
+    expect(debugLines.filter((l) => l.includes(NEEDLE))).toEqual([]);
   });
 });
