@@ -87,7 +87,8 @@
 # entry attached by the --no-wait Phase 0 create; Phase 1h swaps the entry for
 # another volume at another device, on the same instance, and Phase 1i moves
 # that volume to a third device. Phase 1k removes the Volumes property and
-# volume B in one deploy (both volumes detached, B deleted).
+# volume B in one deploy (B detached and deleted; neither volume remains
+# attached).
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -1949,6 +1950,7 @@ if [ "${P1K_LT}" != "${P1_LT_INSTANCE_ID}|sdk|false|false" ]; then
   echo "FAIL: issue #5630 -- after Phase 1k LtInstanceId|provisionedBy|records Volumes|records LtVolumeB5630 is '${P1K_LT}', expected '${P1_LT_INSTANCE_ID}|sdk|false|false'" >&2
   exit 1
 fi
+# Regression net: A was detached in Phase 1h; nothing in 1k may re-attach it.
 P1K_VOL_A=$(lt_volume_attachment "${LT_VOLUME_A_ID}") || P1K_VOL_A="<describe-failed>"
 if [ "${P1K_VOL_A}" != "available|None|None|None" ]; then
   echo "FAIL: issue #5630 -- volume A ${LT_VOLUME_A_ID} reads '${P1K_VOL_A}' after Phase 1k, expected available|None|None|None" >&2
@@ -1984,7 +1986,7 @@ if [ "${P1K_CLEAN}" != "1" ] || [ -n "${P1K_DRIFTED}" ]; then
   exit 1
 fi
 rm -f "${DRIFT_JSON}"
-echo "    OK: #5630 Phase 1k detached both volumes from ${LT_INSTANCE_ID} (same instance, SDK route), deleted volume ${LT_VOLUME_B_ID}, and drift is clean"
+echo "    OK: #5630 Phase 1k detached volume ${LT_VOLUME_B_ID} from ${LT_INSTANCE_ID} and deleted it (same instance, SDK route); neither volume remains attached, and drift is clean"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"

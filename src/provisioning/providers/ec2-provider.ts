@@ -298,6 +298,13 @@ const INSTANCE_STATE_POLL_MS = 5000;
  */
 const VOLUME_ATTACHMENT_WAIT_CAP_MS = 10 * 60 * 1000;
 const VOLUME_ATTACHMENT_POLL_MS = 2000;
+/**
+ * go-to-k/cdkd#5630: reads the failed-create termination wait still makes
+ * once the resource deadline is exhausted, one per {@link INSTANCE_STATE_POLL_MS}:
+ * about a minute, the order a t3 takes to terminate, and far under
+ * {@link INSTANCE_STATE_WAIT_CAP_MS}, so a deadline overrun stays bounded.
+ */
+const FAILED_LAUNCH_TERMINATION_GRACE_READS = 12;
 /** Consecutive reads with no attachment after AttachVolume that fail the wait. */
 const VOLUME_ATTACHMENT_NONE_READS = 15;
 /** `DescribeVolumes`'s answer for a volume id EC2 no longer lists. */
@@ -10712,7 +10719,15 @@ export class EC2Provider implements ResourceProvider {
       );
     } catch (error) {
       const state = await this.readVolumeAttachment(instanceId, volume).catch(() => 'none');
-      if (state !== 'attaching' && state !== 'attached') throw error;
+      if (state !== 'attaching' && state !== 'attached') {
+        // Only an AWS refusal (a 4xx answer) proves the attach did not
+        // happen. Anything else (a timeout, a reset, a 5xx) may have attached
+        // it with the read lagging, so it counts as accepted.
+        const status = (error as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
+          ?.httpStatusCode;
+        if (!(typeof status === 'number' && status >= 400 && status < 500)) onAccepted?.();
+        throw error;
+      }
     }
     onAccepted?.();
     await this.waitForVolumeAttachment(logicalId, instanceId, resourceType, volume, 'attached');
@@ -10821,10 +10836,16 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<string> {
     const watch = startInterruptWatch(`EC2 Instance ${logicalId} termination wait`);
     const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
+    // Reads allowed past an exhausted resource deadline (the create may have
+    // failed BY reaching it): without them the wait would read nothing, and
+    // the rollback's DeleteVolume would meet the volume still in use.
+    let graceReads = 0;
     try {
       for (;;) {
         if (watch.isInterrupted()) return 'interrupted';
-        if (Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now()) <= 0) {
+        if (capAt - Date.now() <= 0) return 'timed out';
+        const pastDeadline = enclosingDeadlineRemainingMs() <= 0;
+        if (pastDeadline && ++graceReads > FAILED_LAUNCH_TERMINATION_GRACE_READS) {
           return 'timed out';
         }
         let state: string | undefined;
@@ -10837,7 +10858,9 @@ export class EC2Provider implements ResourceProvider {
         if (state === 'terminated' || state === undefined) return 'terminated';
         if (watch.isInterrupted()) return 'interrupted';
         await this.sleep(
-          Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
+          pastDeadline
+            ? INSTANCE_STATE_POLL_MS
+            : Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
         );
       }
     } finally {

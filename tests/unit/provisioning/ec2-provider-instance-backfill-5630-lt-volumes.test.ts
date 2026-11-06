@@ -95,6 +95,14 @@ function sent<T>(ctor: new (...a: never[]) => T): Array<Record<string, unknown>>
     .map((c) => (c[0] as { input: Record<string, unknown> }).input);
 }
 
+/** DescribeInstances sent after the TerminateInstances (the termination wait's reads). */
+function describesAfterTerminate(): number {
+  const start = mockSend.mock.calls.findIndex((c) => c[0] instanceof TerminateInstancesCommand);
+  if (start < 0) return 0;
+  return mockSend.mock.calls.slice(start).filter((c) => c[0] instanceof DescribeInstancesCommand)
+    .length;
+}
+
 /** The volume writes, in order, as `<Attach|Detach> <volume> <device>`. */
 function volumeWrites(): string[] {
   return mockSend.mock.calls
@@ -346,9 +354,60 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
     ).rejects.toThrow(/not attached at \/dev\/sdf/);
     expect(sent(TerminateInstancesCommand)).toEqual([{ InstanceIds: ['i-new'] }]);
-    // Polled DescribeInstances until `terminated` (shutting-down first).
-    expect(sent(DescribeInstancesCommand).length).toBeGreaterThan(0);
+    // Polled DescribeInstances after the terminate until `terminated`.
+    expect(describesAfterTerminate()).toBeGreaterThan(0);
     expect(warn.mock.calls.flat().join('\n')).not.toMatch(/not seen terminated/);
+  });
+
+  it('still reads, a bounded number of times, when the create failed past the resource deadline', async () => {
+    attachInvisible = true;
+    terminateStates = ['shutting-down', 'shutting-down', 'terminated'];
+    deadlineRemaining.mockImplementation(() =>
+      powerState === 'terminating' ? 0 : Number.POSITIVE_INFINITY
+    );
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/not attached at \/dev\/sdf/);
+    expect(describesAfterTerminate()).toBe(3);
+    expect(warn.mock.calls.flat().join('\n')).not.toMatch(/not seen terminated/);
+  });
+
+  it('waits for termination after an ambiguous AttachVolume failure whose read lags to no attachment', async () => {
+    failAttach = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/socket hang up/);
+    expect(describesAfterTerminate()).toBeGreaterThan(0);
+  });
+
+  it('warns "interrupted", and still throws the attach error, when Ctrl-C lands in the termination wait', async () => {
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    const baseline = process.listeners('SIGINT');
+    try {
+      attachInvisible = true;
+      terminateStates = ['shutting-down'];
+      const base = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeInstancesCommand && powerState === 'terminating') {
+          for (const l of process.listeners('SIGINT').filter((x) => !baseline.includes(x))) {
+            (l as unknown as () => void)();
+          }
+        }
+        return base(cmd);
+      });
+      const error = await new EC2Provider()
+        .create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/not attached at \/dev\/sdf/);
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toMatch(/was not seen terminated after its failed create \(interrupted\)/);
+      expect(warned).not.toMatch(/STILL RUNNING/);
+      expect(describesAfterTerminate()).toBe(1);
+    } finally {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    }
   });
 
   it('warns, and still throws the attach error, when the instance is not seen terminated before the deadline', async () => {
@@ -365,6 +424,8 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toMatch(/Instance i-new of Inst was not seen terminated after its failed create \(timed out\)/);
     expect(warned).not.toMatch(/STILL RUNNING/);
+    // Past the deadline it still read, a bounded number of times.
+    expect(describesAfterTerminate()).toBe(12);
   });
 
   it('warns, and still throws the attach error, when the termination read fails', async () => {
@@ -384,20 +445,17 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     expect(warned).not.toMatch(/STILL RUNNING/);
   });
 
-  it('does not wait for termination when the only AttachVolume was refused outright', async () => {
+  it('does not wait for termination when the only AttachVolume was refused outright (a 4xx)', async () => {
     attachments.set('vol-1', { InstanceId: 'i-old', Device: '/dev/sdf', State: 'attached' });
     failAttach = Object.assign(new Error('vol-1 is already attached to an instance'), {
       name: 'VolumeInUse',
+      $metadata: { httpStatusCode: 400 },
     });
     await expect(
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
-    ).rejects.toThrow(/already attached to an instance/);
+    ).rejects.toThrow(/VolumeInUse/);
     expect(sent(TerminateInstancesCommand)).toHaveLength(1);
-    const describesAfterTerminate = mockSend.mock.calls
-      .map((c) => c[0] as object)
-      .slice(mockSend.mock.calls.findIndex((c) => c[0] instanceof TerminateInstancesCommand))
-      .filter((cmd) => cmd instanceof DescribeInstancesCommand);
-    expect(describesAfterTerminate).toHaveLength(0);
+    expect(describesAfterTerminate()).toBe(0);
   });
 
   it('does not wait for termination when the create failed before any AttachVolume', async () => {
