@@ -113,8 +113,8 @@ the background. Until then, you may see these:
   does not flow yet.
 - An EC2 instance is still `pending`. cdkd cannot check that the instance
   profile attached, so it prints a warning that names the instance. An
-  instance that declares `Volumes` waits for `running` to attach them, and
-  gets that check.
+  instance that declares `Volumes` or `SsmAssociations` waits for `running`
+  to attach the volumes or associate the document, and gets that check.
 - An ACM certificate is still in `PENDING_VALIDATION`.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start

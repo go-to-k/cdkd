@@ -46,7 +46,10 @@ import {
   VOLUME_ATTACHMENT_POLL_MS,
   VOLUME_ATTACHMENT_WAIT_CAP_MS,
   VOLUME_NOT_FOUND_NAMES,
+  instanceSsmAssociationEntries,
+  instanceSsmAssociationsRefusal,
   refusedBeforeApplying,
+  staleSsmAssociationRemedy,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -385,8 +388,22 @@ export async function deleteInstance(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  context?: DeleteContext
+  context?: DeleteContext,
+  properties?: Record<string, unknown>
 ): Promise<void> {
+  // go-to-k/cdkd#5630: the recorded documents. The association cleanup
+  // touches only their associations, and a record declaring none (or an
+  // unreadable one) pays no Systems Manager call.
+  const ssm = properties?.['SsmAssociations'];
+  const ssmReadable = instanceSsmAssociationsRefusal(ssm, resourceType) === undefined;
+  const ssmDocumentNames = ssmReadable
+    ? instanceSsmAssociationEntries(ssm).map((e) => e.DocumentName)
+    : [];
+  if (!ssmReadable) {
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and skips the association cleanup. ${staleSsmAssociationRemedy(physicalId, await this.ssmRemedyRegion(context?.expectedRegion), context?.maskSecrets)}.`
+    );
+  }
   // The region the compensation's commands name: the state's, else the
   // client's own (a pre-v2 state record carries none), so a pasted command
   // never falls back to the operator's default region. Resolved only under
@@ -403,7 +420,8 @@ export async function deleteInstance(
   await deleteWithProtectionCompensation({
     registry: this.protectionFlips,
     key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-    run: (flip) => this.terminateInstance(logicalId, physicalId, resourceType, context, flip),
+    run: (flip) =>
+      this.terminateInstance(logicalId, physicalId, resourceType, context, flip, ssmDocumentNames),
     compensation: {
       logicalId,
       physicalId,
@@ -421,7 +439,8 @@ export async function terminateInstance(
   physicalId: string,
   resourceType: string,
   context: DeleteContext | undefined,
-  flip: ProtectionFlipRecord
+  flip: ProtectionFlipRecord,
+  ssmDocumentNames: readonly string[] = []
 ): Promise<void> {
   this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
@@ -453,6 +472,19 @@ export async function terminateInstance(
       // must not re-enable the guard.
       flip.deleteAccepted = true;
       this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
+
+      // go-to-k/cdkd#5630: once AWS took the terminate (a refused one keeps
+      // the instance and its association), delete the instance's SSM
+      // association, best effort. CloudFormation leaves it on the terminated
+      // instance; a warning here never blocks the delete.
+      if (ssmDocumentNames.length > 0) {
+        await this.deleteInstanceSsmAssociationsBestEffort(
+          logicalId,
+          physicalId,
+          ssmDocumentNames,
+          maskerOrIdentity(context?.maskSecrets)
+        );
+      }
 
       // Wait for instance to reach terminated state so ENIs are released
       await waitUntilInstanceTerminated(

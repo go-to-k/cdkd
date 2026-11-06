@@ -2343,7 +2343,7 @@ describe('EC2Provider.readCurrentState', () => {
       expect(provider.getDriftUnknownPaths('AWS::EC2::VPC')).toEqual(['Ipv4IpamPoolId']);
     });
 
-    it('Instance declares only NetworkInterfaces (issue #1281), PropagateTagsToVolumeOnCreation, the write-only launch inputs and LaunchTemplate (#5630) unreadable', () => {
+    it('Instance declares only NetworkInterfaces (issue #1281), PropagateTagsToVolumeOnCreation, the write-only launch inputs, LaunchTemplate and LicenseSpecifications (#5630) unreadable', () => {
       // AssociatePublicIpAddress is launch-time-only input DescribeInstances
       // never returns, and the drift comparator compares arrays wholesale --
       // any reconstruction would phantom-drift every associatePublicIpAddress
@@ -2351,9 +2351,11 @@ describe('EC2Provider.readCurrentState', () => {
       // switch with no EC2 attribute; AdditionalInfo / Ipv6AddressCount /
       // Ipv6Addresses are launch inputs the schema declares write-only;
       // LaunchTemplate surfaces only as `aws:ec2launchtemplate:*` tags (an id
-      // and a resolved version, never a name or `$Latest`). Everything else
-      // the Instance reverse-mapper emits IS faithful, so the list stays
-      // exactly these six.
+      // and a resolved version, never a name or `$Latest`); DescribeInstances
+      // reports no `Licenses` for a licensed instance (measured), so
+      // LicenseSpecifications is readable only through License Manager.
+      // Everything else the Instance reverse-mapper emits IS faithful, so the
+      // list stays exactly these seven.
       expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).toEqual([
         'NetworkInterfaces',
         'PropagateTagsToVolumeOnCreation',
@@ -2361,6 +2363,7 @@ describe('EC2Provider.readCurrentState', () => {
         'Ipv6AddressCount',
         'Ipv6Addresses',
         'LaunchTemplate',
+        'LicenseSpecifications',
       ]);
     });
   });
