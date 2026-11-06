@@ -15,7 +15,7 @@ Every area: [code-layout.md](code-layout.md).
 
 - **scripts/gen-sdk-attr-coverage.ts** + **docs/_generated/sdk-attr-coverage.{json,md}** - SDK-provider ARN/URL attribute-coverage matrix + critic (`gen:sdk-attr-coverage` / `audit:sdk-attr-coverage:check`) for the GetAtt-key class, an ARN recorded under a non-CFn key. Detail: [sdk-attr-coverage-critic.md](sdk-attr-coverage-critic.md).
 
-- **scripts/gen-update-wrap-coverage.ts** + **docs/_generated/update-wrap-coverage.{json,md}** - SDK-provider `update()` error-wrapping matrix + critic (`gen:update-wrap-coverage` / `audit:update-wrap-coverage:check`), BLOCKING on `gap` and `unguarded-wrap`. A wrapping `catch` that can capture a control-flow typed error MUST re-throw the CAUGHT BINDING; throwing anything else is the defect.
+- **scripts/gen-update-wrap-coverage.ts** + **docs/_generated/update-wrap-coverage.{json,md}** - SDK-provider `update()` error-wrapping matrix + critic (`gen:update-wrap-coverage` / `audit:update-wrap-coverage:check`), BLOCKING on `gap`, `unguarded-wrap`, `unresolved-callee`. A `catch` that can capture a control-flow typed error MUST re-throw the CAUGHT BINDING, nothing else.
 
 - **scripts/gen-nested-key-coverage.ts** + **docs/_generated/nested-key-coverage.{json,md}** - Nested CFn -> SDK SHAPE-divergence matrix + critic (`gen:nested-key-coverage` / `audit:nested-key-coverage:check`), BLOCKING on `array-vs-wrapper` and `definition-member-missing`. Its write-side hand-off walk only decides which paths a generic converter delivers whole (PR #4324); a nested member sent misspelled, misplaced or not at all is caught by the sdk-wire harness (`tests/unit/provisioning/sdk-wire-*.ts`).
 

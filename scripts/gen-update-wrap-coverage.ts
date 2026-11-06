@@ -55,11 +55,14 @@
  *     A provider whose bodies moved to its companion directory
  *     (scripts/provider-companion-files.ts) is walked through them: a method
  *     that is `return fn.call(this, ...)` is followed into `fn`, and so is a
- *     `fn.call(this, ...)` inside one. KNOWN LIMITATION: only these forms
- *     are tracked. Delegation to any other module-level free function or to `this.someField.method()` is invisible
- *     rather than `unresolved-callee`, so the `unresolvedCallees === 0`
- *     assertion is narrower than it looks. Neither shape reaches a send from
- *     `update()` in the tree today; widening it needs real call-graph
+ *     `fn.call(this, ...)` inside one. A `fn.call(this, ...)` whose `fn` is
+ *     NOT a `this:` function of the companion files (a companion file not
+ *     read, or a signature not recognised) is an UNRESOLVED edge too (#5882),
+ *     so a split provider fails closed rather than reading as `no-aws`.
+ *     KNOWN LIMITATION: delegation to a module-level free function called
+ *     WITHOUT `.call(this, ...)`, or to `this.someField.method()`, is
+ *     invisible rather than `unresolved-callee`. Neither shape reaches a send
+ *     from `update()` in the tree today; widening it needs real call-graph
  *     resolution, which is out of proportion to the risk.
  * Recursion is cycle-guarded and bounded to the class's own members.
  *
@@ -86,8 +89,9 @@
  *                         has no pass-through re-throw. BLOCKS CI.
  *   - allow-listed      — a real offender with an `UPDATE_WRAP_ALLOW_LIST`
  *                         entry: still VISIBLE in the matrix, does not block.
- *   - unresolved-callee — the walk hit a `this.x()` it could not resolve, so
- *                         the verdict is not trustworthy. Visible, not blocking.
+ *   - unresolved-callee — the walk hit a `this.x()` or `fn.call(this, ...)` it
+ *                         could not resolve, so the verdict is not
+ *                         trustworthy. BLOCKS CI (#5882).
  *
  * Usage:
  *   node --experimental-strip-types scripts/gen-update-wrap-coverage.ts          # write the matrix
@@ -786,6 +790,14 @@ export function analyzeClass(
         // unobservable, so silently treating the class as send-free would be
         // a false "clean".
         else unresolvedCallees.add(callee);
+      } else {
+        // `fn.call(this, ...)` whose `fn` is not a companion function of this
+        // class: a delegate whose companion file was not read, or one whose
+        // signature `companionFunctions` does not recognise (#5882). The body
+        // moved out of the class is invisible, so the walk must not fall
+        // through to a confident `no-aws`.
+        const delegate = callThisTarget(node);
+        if (delegate !== null) unresolvedCallees.add(delegate);
       }
 
       ts.forEachChild(node, (child) => walk(child, isProtected));
@@ -840,7 +852,7 @@ export function classifySource(
         // known gap, it just must not fail CI.
         // Ahead of `allow-listed`: a lost edge means the verdict is not
         // trustworthy, and burying it under an allow-list entry would also hide
-        // it from the `unresolved-callee === 0` assertion.
+        // it from `--check` and the `unresolved-callee === 0` assertion.
         else if (unresolved.length > 0) bucket = 'unresolved-callee';
         else if (allowedHits.length > 0) bucket = 'allow-listed';
         else if (!result.sawAnySend) bucket = 'no-aws';
@@ -895,7 +907,9 @@ export function buildReport(classes: readonly ClassClassification[]): UpdateWrap
 }
 
 export function findGaps(report: UpdateWrapCoverageReport): readonly ClassClassification[] {
-  return report.classes.filter((c) => c.bucket === 'gap' || c.bucket === 'unguarded-wrap');
+  return report.classes.filter(
+    (c) => c.bucket === 'gap' || c.bucket === 'unguarded-wrap' || c.bucket === 'unresolved-callee'
+  );
 }
 
 function renderMarkdown(report: UpdateWrapCoverageReport): string {
@@ -929,7 +943,7 @@ function renderMarkdown(report: UpdateWrapCoverageReport): string {
   lines.push(`- **Unguarded wraps (blocks CI): ${report.summary.unguardedWrap}**`);
   lines.push(`- Allow-listed known gaps (does NOT block CI): **${report.summary.allowListed}**`);
   lines.push(
-    `- Unresolved-callee (verdict not trustworthy): **${report.summary.unresolvedCallee}**`
+    `- **Unresolved callees (verdict not trustworthy, blocks CI): ${report.summary.unresolvedCallee}**`
   );
   lines.push('');
 
@@ -1057,13 +1071,18 @@ function main(): void {
           'swallow a typed control-flow error the deploy engine matches by class.\n' +
           'Wrap the call like the same provider create(), keep the typed pass-through,\n' +
           'OR add an UPDATE_WRAP_ALLOW_LIST entry with a rationale in\n' +
-          'scripts/gen-update-wrap-coverage.ts.\n\n'
+          'scripts/gen-update-wrap-coverage.ts.\n' +
+          'An unresolved callee means the walk could not see a body update() reaches\n' +
+          '(an inherited method, or a `fn.call(this, ...)` delegate whose `this:` function\n' +
+          'is not in the provider companion directory): make it resolvable instead.\n\n'
       );
       for (const c of gaps) {
         const detail =
           c.bucket === 'gap'
             ? `unwrapped send in ${c.unwrappedSendMethods.join(', ')}`
-            : `unguarded wrap in ${c.unguardedWrapMethods.join(', ')}`;
+            : c.bucket === 'unguarded-wrap'
+              ? `unguarded wrap in ${c.unguardedWrapMethods.join(', ')}`
+              : `unresolved callee ${c.unresolvedCallees.join(', ')}`;
         process.stderr.write(`  ${c.className} (${c.file}): ${detail}\n`);
       }
       process.exit(1);
@@ -1074,9 +1093,6 @@ function main(): void {
         `${report.summary.noAws} no-aws` +
         (report.summary.allowListed > 0
           ? `, ${report.summary.allowListed} allow-listed KNOWN gaps still open`
-          : '') +
-        (report.summary.unresolvedCallee > 0
-          ? `, ${report.summary.unresolvedCallee} unresolved-callee`
           : '') +
         ').\n'
     );

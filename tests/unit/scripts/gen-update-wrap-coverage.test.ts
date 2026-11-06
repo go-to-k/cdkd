@@ -114,9 +114,10 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.unwrappedSendMethods).toEqual(['sendIt']);
     });
 
-    it('reads no-aws without the companion sources, which is why the generator passes them', () => {
+    it('fails closed without the companion sources, which is why the generator passes them', () => {
       const [c] = classifySource(delegating, 'fake-provider.ts', new Map());
-      expect(c?.bucket).toBe('no-aws');
+      expect(c?.bucket).toBe('unresolved-callee');
+      expect(c?.unresolvedCallees).toEqual(['update']);
     });
   });
 
