@@ -257,7 +257,7 @@ describe('GlueCrawlerProvider', () => {
     });
   });
 
-  // #3515 — glue/shared.ts applyGlueTagDiff (called from GlueCrawlerProvider.update) removal loop
+  // #3515 — glue-provider.ts GlueCrawlerProvider.applyTagDiff (~L4374) removal loop
   it('update() removes a dropped tag keyed `constructor` via UntagResource (own-key membership, #3515)', async () => {
     mockSend.mockImplementation((cmd) => {
       return Promise.resolve({});

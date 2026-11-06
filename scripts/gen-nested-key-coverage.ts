@@ -98,7 +98,7 @@
  *     FILTERING (`if (DROP.has(k)) continue; out[k] = v`), RENAME-MAP
  *     (`out[MAP[k] ?? k] = v`) or PICK (`for (const k of KEEP) out[k] = blob[k]`)
  *     converter names nothing and is credited as a generic hand-off.
- *     `glue/crawler-targets.ts`'s `renameRecordKeys` is the rename-map shape. Closing
+ *     `glue-provider.ts`'s `renameRecordKeys` is the rename-map shape. Closing
  *     it needs the walk to model the converter's KEY SET.
  * (6) THE PARENT CHAIN IS MATCHED CASE-INSENSITIVELY, THE TERMINAL MEMBER IS
  *     NOT ({@link normalizeWritePath}); a genuine RENAME needs
@@ -282,8 +282,7 @@ const API_GATEWAY_V2_FLOORS = {
 } as const;
 
 /**
- * Every Glue provider class lives in the single `glue-provider.ts` (their
- * method bodies in its companion directory `glue/`, read with it), so the
+ * Every Glue provider class lives in the single `glue-provider.ts`, so the
  * seven `AWS::Glue::*` targets share one file and client.
  *
  * KNOWN BOUND on all seven: sharing one `providerFile` also shares the

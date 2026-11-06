@@ -451,15 +451,13 @@ describe('findDeclarationCandidates', () => {
     // that could not. `ConnectionInput` occurs only inside this type's own
     // block, so scoped, unscoped and file-wide were the same answer and BOTH
     // window bounds could be deleted with every case still green (measured).
-    // `Tags` occurs before the block, inside it, and after it, so deleting the
+    // `Name` occurs before the block, inside it, and after it, so deleting the
     // START bound and deleting the END bound each fail a different assertion
-    // below. (`Name` did too until the method bodies moved to `glue/`; the
-    // file now holds the `handledProperties` maps, and Connection's names no
-    // `Name`.)
+    // below.
     const type = 'AWS::Glue::Connection';
     const file = 'src/provisioning/providers/glue-provider.ts';
-    const scoped = findDeclarationCandidates('Tags', file, type, REPO_ROOT);
-    const unscoped = findDeclarationCandidates('Tags', file, undefined, REPO_ROOT);
+    const scoped = findDeclarationCandidates('Name', file, type, REPO_ROOT);
+    const unscoped = findDeclarationCandidates('Name', file, undefined, REPO_ROOT);
     expect(scoped.length, 'the type block yielded nothing — scoping window is wrong').toBeGreaterThan(0);
     // Strictly wider, not merely no narrower: an equal count means the property
     // is confined to the block and the case cannot see a missing bound at all.

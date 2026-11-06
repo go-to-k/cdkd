@@ -106,7 +106,7 @@
  *    chain since go-to-k/cdkd#4318),
  *    `apigateway-provider.ts`'s `isIamPropagationError` (top-level message,
  *    matches `not authorized` -- exactly the substring this helper withholds),
- *    `EC2Provider`'s `isDependencyViolationError` (`ec2/tags-errors.ts`), and
+ *    `ec2-provider.ts`'s `isDependencyViolationError`, and
  *    `custom-resource-provider.ts`'s `isTransientAuthzThrow`.
  *
  *    The remedy is `markRedactedCause` (`src/deployment/retryable-errors.ts`),

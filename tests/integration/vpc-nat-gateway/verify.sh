@@ -885,11 +885,7 @@ fi
 # The provider's wait announces itself on a --verbose debug line; the needles
 # below are copied from its source, and the sentinel fails the run when that
 # source wording drifts, so a missing line cannot read as "no wait happened".
-NAT_SRC="${PWD}/../../../src/provisioning/providers/ec2/nat-gateway.ts"
-if [ ! -f "${NAT_SRC}" ]; then
-  echo "FAIL: ${NAT_SRC} does not exist: point NAT_SRC at the file holding the NatGateway wait" >&2
-  exit 1
-fi
+NAT_SRC="${PWD}/../../../src/provisioning/providers/ec2-provider.ts"
 for needle in 'Waiting for NatGateway ${physicalId}: ${what}...' \
   'before releasing it`' 'the release of ${plan.awaitingRelease' \
   'an address the template keeps to associate before releasing the last associated one' \

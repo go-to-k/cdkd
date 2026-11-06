@@ -5,6 +5,7 @@ import type { MaskerFn } from '../../masked-retry-logger.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { AmbiguousCreateLatch, RecentIdSet } from '../ambiguous-create.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { APPSYNC_APIKEY_ARN_RESOURCE_PATH, maskedSecretSegment } from '../../secret-physical-id.js';
 
 /**
  * Retry-safety state for `CreateGraphqlApi`, which has no idempotency token
@@ -63,7 +64,8 @@ export const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
  * uses, enough to find the key in `list-api-keys` output.
  */
 export function maskedApiKeyId(apiKeyId: string): string {
-  return `****${apiKeyId.slice(-4)}`;
+  // The engine's declaration of secret ids (go-to-k/cdkd#5868) owns the form.
+  return maskedSecretSegment(apiKeyId);
 }
 
 /**
@@ -106,8 +108,8 @@ export const CFN_APPSYNC_ARN_RESOURCE_PATHS: Readonly<Record<string, RegExp>> = 
   'AWS::AppSync::DataSource': /^apis\/([^/|]+)\/datasources\/([^/|]+)$/,
   'AWS::AppSync::Resolver': /^apis\/([^/|]+)\/types\/([^/|]+)\/resolvers\/([^/|]+)$/,
   // CloudFormation writes `apikeys/` (as cdkd builds since #5540); the ARN
-  // AppSync documents says `apikey/`.
-  'AWS::AppSync::ApiKey': /^apis\/([^/|]+)\/apikeys?\/([^/|]+)$/,
+  // AppSync documents says `apikey/`. Shared with the secret-id declaration.
+  'AWS::AppSync::ApiKey': APPSYNC_APIKEY_ARN_RESOURCE_PATH,
 };
 
 /**

@@ -330,7 +330,7 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
 
   it('matches the provider destination list EXACTLY, order and membership', () => {
     // The schema-fixture check below catches a RENAME but not a REORDER or an
-    // ADDITION in `ROUTE_DESTINATION_KEYS` (ec2/network-support.ts, module-private) —
+    // ADDITION in `ROUTE_DESTINATION_KEYS` (ec2-provider.ts, module-private) —
     // either of which silently invalidates `firstDeclaredWins`, since the
     // winner is defined by the provider's `||` chain order.
     //
@@ -351,7 +351,7 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     // A rule keyed on a misspelled or removed property is DEAD — it can never
     // fire, and nothing else would notice. This is the fence for the fact that
     // the Route key list is duplicated from `ROUTE_DESTINATION_KEYS` in
-    // ec2/network-support.ts (module-private there).
+    // ec2-provider.ts (module-private there).
     for (const [resourceType, rules] of MUTUALLY_EXCLUSIVE_PROPERTIES) {
       const schema = loadSchema(resourceType);
       for (const rule of rules) {
