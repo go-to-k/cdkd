@@ -9,6 +9,7 @@ import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js
 import { withoutServerErrorRetries } from '../ambiguous-create.js';
 import { s3ClientDefaults } from '../../../utils/s3-client-defaults.js';
 import type { AppSyncProvider } from '../appsync-provider.js';
+import { displayAppSyncPhysicalId } from './shared.js';
 
 export function getClient(this: AppSyncProvider): AppSyncClient {
   if (!this.client) {
@@ -187,6 +188,8 @@ export async function childRefAttributes(
   omitArnOnFailure = false
 ): Promise<Record<string, unknown> | undefined> {
   const parts = physicalId.split('|');
+  // An ApiKey id's key segment is the credential (go-to-k/cdkd#5860).
+  const shownId = displayAppSyncPhysicalId(resourceType, physicalId);
   // Resolves to the ARN, or to `undefined` when the build refused AND the
   // caller opted into omitting it. A refusal with the flag unset propagates.
   const arn = async (suffix: string): Promise<string | undefined> => {
@@ -195,7 +198,7 @@ export async function childRefAttributes(
     } catch (error) {
       if (!omitArnOnFailure) throw error;
       this.logger.warn(
-        `Imported ${resourceType} (${physicalId}) but its ARN attribute was NOT ` +
+        `Imported ${resourceType} (${shownId}) but its ARN attribute was NOT ` +
           `recorded: ${describeAwsFailure(error).detail}. ` +
           `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN ` +
           `will fail, until the resource's next update — or a later deploy that needs the ` +
@@ -248,7 +251,7 @@ export async function childUpdateResult(
   } catch (error) {
     this.logger.warn(
       mask(
-        `Updated ${resourceType} (${physicalId}) but could not rebuild its ARN attribute: ` +
+        `Updated ${resourceType} (${displayAppSyncPhysicalId(resourceType, physicalId)}) but could not rebuild its ARN attribute: ` +
           `${describeAwsFailure(error).detail}. ` +
           `The previously recorded attributes are kept.`
       )
@@ -304,7 +307,8 @@ export async function childImportAttributes(
     return (await this.childRefAttributes(resourceType, physicalId, region, true)) ?? {};
   } catch (error) {
     this.logger.warn(
-      `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
+      `Imported ${resourceType} (${displayAppSyncPhysicalId(resourceType, physicalId)}) ` +
+        `but could not build its ARN attribute: ` +
         `${describeAwsFailure(error).detail}. ` +
         `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN will ` +
         `fail, until the resource's next update — or a later deploy that needs the ` +

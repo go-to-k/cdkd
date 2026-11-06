@@ -35,6 +35,9 @@ import {
   createApiKeyLatch,
   apiKeysCreatedByThisProcess,
   APPSYNC_APIKEY_ID_FORMAT,
+  displayApiKeyPhysicalId,
+  maskedApiKeyId,
+  withApiKeyMasked,
 } from './shared.js';
 import type { AppSyncProvider } from '../appsync-provider.js';
 
@@ -102,7 +105,7 @@ export async function createApiKey(
         createMaskedLogSinks(this.logger, context?.maskSecrets)
       );
     }
-    this.logger.debug(`Successfully created ApiKey ${logicalId}: ${apiKeyId}`);
+    this.logger.debug(`Successfully created ApiKey ${logicalId}: ${maskedApiKeyId(apiKeyId)}`);
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
@@ -140,8 +143,9 @@ export async function createApiKey(
       // Issue #2176: the refusal QUOTES the offending segment value, on the
       // thrown arm (durable) and the warn arm (terminal) alike, so the masker
       // goes through unconditionally -- it is absent on the paths that have no
-      // context, where it degrades to identity.
-      maskSecrets: context?.maskSecrets,
+      // context, where it degrades to identity. The key segment is masked on
+      // top: it is the credential itself (go-to-k/cdkd#5860).
+      maskSecrets: withApiKeyMasked(maskerOrIdentity(context?.maskSecrets), apiKeyId),
       ...(context?.replayingState === true && {
         onRefusal: (message: string) => this.logger.warn(message),
       }),
@@ -153,7 +157,9 @@ export async function createApiKey(
   const apiKeyArn = await this.buildAppSyncArnOrWarn(
     `apis/${apiId}/apikeys/${apiKeyId}`,
     logicalId,
-    physicalId
+    // The warn this may emit names the id, whose key segment is the
+    // credential (go-to-k/cdkd#5860).
+    displayApiKeyPhysicalId(physicalId)
   );
 
   return {
@@ -221,7 +227,7 @@ export async function reportPossibleOrphanApiKeys(
           key.id &&
           (key.description ?? '') === description &&
           !apiKeysCreatedByThisProcess.has(injectiveKey(apiId, key.id))
-            ? `****${key.id.slice(-4)}${
+            ? `${maskedApiKeyId(key.id)}${
                 key.expires === undefined || !Number.isFinite(key.expires)
                   ? ''
                   : ` (expires ${new Date(key.expires * 1000).toISOString()})`
@@ -239,14 +245,17 @@ export async function deleteApiKey(
   resourceType: string,
   context?: DeleteContext
 ): Promise<void | ResourceDeleteResult> {
-  this.logger.debug(`Deleting ApiKey ${logicalId}: ${physicalId}`);
+  this.logger.debug(`Deleting ApiKey ${logicalId}: ${displayApiKeyPhysicalId(physicalId)}`);
 
   const [apiId, apiKeyId] = physicalId.split('|');
   if (!apiId || !apiKeyId) {
     this.logger.warn(
-      compositeIdFormatMessage(APPSYNC_APIKEY_ID_FORMAT, logicalId, physicalId, {
-        skipping: true,
-      })
+      compositeIdFormatMessage(
+        APPSYNC_APIKEY_ID_FORMAT,
+        logicalId,
+        displayApiKeyPhysicalId(physicalId),
+        { skipping: true }
+      )
     );
     // Issue #1752: report the SKIP rather than returning void — a bare
     // `return` was counted as a successful delete by the destroy summary.
@@ -260,12 +269,15 @@ export async function deleteApiKey(
     if (this.isNotFoundError(error)) {
       const clientRegion = await this.getClient().config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
-      this.logger.debug(`ApiKey ${physicalId} does not exist, skipping deletion`);
+      this.logger.debug(
+        `ApiKey ${displayApiKeyPhysicalId(physicalId)} does not exist, skipping deletion`
+      );
       return;
     }
     const cause = error instanceof Error ? error : undefined;
     const thrown = this.wrapCaughtError(
-      maskerOrIdentity(context?.maskSecrets),
+      // AWS's own text, which goes to `debug`, may quote the key back.
+      withApiKeyMasked(maskerOrIdentity(context?.maskSecrets), apiKeyId),
       error,
       (text) =>
         new ProvisioningError(

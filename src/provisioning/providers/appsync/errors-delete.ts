@@ -16,6 +16,7 @@ import {
   wrapMaskedAwsError,
 } from '../../../deployment/retryable-errors.js';
 import type { AppSyncProvider } from '../appsync-provider.js';
+import { displayAppSyncPhysicalId } from './shared.js';
 
 /**
  * Apply a Tags diff to a GraphqlApi via TagResource / UntagResource.
@@ -218,7 +219,9 @@ export function getAttribute(
   resourceType: string,
   attributeName: string
 ): Promise<unknown> {
-  this.logger.debug(`getAttribute for ${resourceType} ${physicalId}: ${attributeName}`);
+  this.logger.debug(
+    `getAttribute for ${resourceType} ${displayAppSyncPhysicalId(resourceType, physicalId)}: ${attributeName}`
+  );
   return Promise.resolve(undefined);
 }
 

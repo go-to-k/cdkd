@@ -20,7 +20,9 @@ import {
   APPSYNC_DATASOURCE_ID_FORMAT,
   APPSYNC_RESOLVER_ID_FORMAT,
   APPSYNC_APIKEY_ID_FORMAT,
+  displayApiKeyPhysicalId,
   graphQLSchemaApiId,
+  withApiKeyMasked,
 } from './shared.js';
 import type { AppSyncProvider } from '../appsync-provider.js';
 
@@ -370,7 +372,12 @@ export async function updateApiKey(
   const [apiId, apiKeyId] = physicalId.split('|');
   if (!apiId || !apiKeyId) {
     throw new ProvisioningError(
-      compositeIdFormatMessage(APPSYNC_APIKEY_ID_FORMAT, logicalId, physicalId),
+      compositeIdFormatMessage(
+        APPSYNC_APIKEY_ID_FORMAT,
+        logicalId,
+        // The key segment is the credential (go-to-k/cdkd#5860).
+        displayApiKeyPhysicalId(physicalId)
+      ),
       resourceType,
       logicalId,
       physicalId
@@ -396,7 +403,15 @@ export async function updateApiKey(
   try {
     await this.getClient().send(new UpdateApiKeyCommand(input));
   } catch (error) {
-    throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey', mask);
+    // AWS's text may quote the key back (go-to-k/cdkd#5860).
+    throw this.wrapUpdateError(
+      error,
+      resourceType,
+      logicalId,
+      physicalId,
+      'ApiKey',
+      withApiKeyMasked(mask, apiKeyId)
+    );
   }
 
   return this.childUpdateResult(resourceType, physicalId, mask);

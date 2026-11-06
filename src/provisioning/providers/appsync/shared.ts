@@ -1,6 +1,7 @@
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import type { CompositeIdFormat } from '../../composite-id.js';
+import type { MaskerFn } from '../../masked-retry-logger.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { AmbiguousCreateLatch, RecentIdSet } from '../ambiguous-create.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -56,6 +57,45 @@ export const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
 };
 
 /**
+ * An `AWS::AppSync::ApiKey` id as a log line or message may print it. The id
+ * IS the credential a client sends as `x-api-key`, so only its last four
+ * characters are shown (go-to-k/cdkd#5860) — the spelling the orphan report
+ * uses, enough to find the key in `list-api-keys` output.
+ */
+export function maskedApiKeyId(apiKeyId: string): string {
+  return `****${apiKeyId.slice(-4)}`;
+}
+
+/**
+ * An ApiKey physical id (`<apiId>|<apiKeyId>`) with its key segment masked by
+ * {@link maskedApiKeyId}. Any other shape is masked WHOLE: which part of a
+ * malformed id is the key cannot be told, so it errs toward over-masking.
+ */
+export function displayApiKeyPhysicalId(physicalId: string): string {
+  const parts = physicalId.split('|');
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return `${parts[0]}|${maskedApiKeyId(parts[1])}`;
+  }
+  return maskedApiKeyId(physicalId);
+}
+
+/** `physicalId` as a message may print it: masked for an ApiKey, unchanged for every other AppSync type. */
+export function displayAppSyncPhysicalId(resourceType: string, physicalId: string): string {
+  return resourceType === 'AWS::AppSync::ApiKey' ? displayApiKeyPhysicalId(physicalId) : physicalId;
+}
+
+/**
+ * `mask`, followed by replacing every occurrence of `apiKeyId` with
+ * {@link maskedApiKeyId} — for a message that may quote the key back (an AWS
+ * failure's text, a composite-id refusal). No key means `mask` unchanged.
+ */
+export function withApiKeyMasked(mask: MaskerFn, apiKeyId: string | undefined): MaskerFn {
+  if (!apiKeyId) return mask;
+  const masked = maskedApiKeyId(apiKeyId);
+  return (text: string) => mask(text).split(apiKeyId).join(masked);
+}
+
+/**
  * The resource path of an AppSync ARN as CloudFormation records it for each
  * type (measured with `DescribeStackResources`, go-to-k/cdkd#5364), mapped to
  * the segments of cdkd's physical id. No segment may hold `/` or `|`, so an ARN
@@ -106,9 +146,14 @@ export function appSyncPhysicalIdFromCfn(
   const segments = pathPattern && arn ? pathPattern.exec(arn[2]!) : null;
   if (!arn || !segments) return physicalId;
   if (canonicalizeRegion(arn[1]!) !== canonicalizeRegion(region)) {
+    // An ApiKey ARN ends in the key itself (go-to-k/cdkd#5860).
+    const shown =
+      resourceType === 'AWS::AppSync::ApiKey'
+        ? physicalId.split(segments[2]!).join(maskedApiKeyId(segments[2]!))
+        : physicalId;
     throw markNonRetryable(
       new ProvisioningError(
-        safeMsg`${resourceType} ${physicalId} is in region ${arn[1]}, not the import region ${region}`,
+        safeMsg`${resourceType} ${shown} is in region ${arn[1]}, not the import region ${region}`,
         resourceType,
         logicalId,
         physicalId
