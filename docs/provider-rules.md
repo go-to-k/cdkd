@@ -481,7 +481,8 @@ implementation. Three details are worth copying:
     (`scripts/check-provider-secret-mask.ts`, a CI step) fails on any
     `${JSON.stringify(X)}` interpolated into a message under
     `src/provisioning/providers/**` (plus `composite-id.ts` and the Cloud
-    Control provider, `cloud-control-provider.ts` and/or `cloud-control/**`;
+    Control provider, `cloud-control-provider.ts` and `cloud-control/**`, both
+    required;
     issue [#5880](https://github.com/go-to-k/cdkd/issues/5880)) where `X` reaches
     no masker. It is DATAFLOW-aware, so the mask may sit anywhere upstream —
     through a `const` binding, a `?:` / `??` arm, an array or object literal, a

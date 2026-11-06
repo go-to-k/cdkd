@@ -337,13 +337,15 @@ const EXTRA_FILES: readonly string[] = ['composite-id.ts'];
  *
  * It sits outside `providers/**` yet is the fallback for every type without an
  * SDK provider, so it handles arbitrary properties and readback attributes —
- * the values this critic exists to fence. BOTH layouts are listed: the single
- * `cloud-control-provider.ts` and its `cloud-control/**` companion directory
- * (the `<stem>-provider.ts` + `<stem>/` split `companionFiles` already pairs),
- * so a split moving code between them stays scanned whichever lands first. An
- * ABSENT entry is skipped, but the family as a whole is not optional: a run
- * that finds neither FAILS, and {@link MIN_CLOUD_CONTROL_FILES} /
- * {@link MIN_CLOUD_CONTROL_SITES} fail a run that stopped reading it.
+ * the values this critic exists to fence. It is the `<stem>-provider.ts` +
+ * `<stem>/` split `companionFiles` already pairs: the class file
+ * `cloud-control-provider.ts` and its `cloud-control/**` method modules. BOTH
+ * are REQUIRED (issue #5894): either one missing is a scan failure, so a rename
+ * of the file or the directory turns the run red instead of silently dropping
+ * that half — the directory alone would otherwise satisfy every floor. If the
+ * class file is ever retired, drop {@link CLOUD_CONTROL_FILE} here in the same
+ * change. {@link MIN_CLOUD_CONTROL_FILES} / {@link MIN_CLOUD_CONTROL_SITES} fail
+ * a run that stopped reading the family.
  */
 const CLOUD_CONTROL_FILE = 'cloud-control-provider.ts';
 const CLOUD_CONTROL_DIR = 'cloud-control';
@@ -395,14 +397,6 @@ const MASK_PRESERVING_METHODS: ReadonlySet<string> = new Set([
 export interface Exemption {
   /** Repo-relative path of the file carrying the site. */
   readonly file: string;
-  /**
-   * The repo-relative path the SAME site lives at in the other layout of a
-   * split family (the Cloud Control provider and its `cloud-control/**`
-   * companion directory, issue #5880). Matched in addition to `file`, and
-   * `count` stays exact across BOTH, so the entry holds whichever layout is on
-   * the tree without letting a same-spelled sibling in the other file through.
-   */
-  readonly splitFile?: string;
   /** The stringified expression, whitespace-normalized exactly as reported. */
   readonly expression: string;
   /** How many RAW sites in that file carry that expression. Exact, not a floor. */
@@ -428,7 +422,7 @@ export interface Exemption {
  * nobody re-checks goes inert exactly when it stops being needed, and then
  * hides the next real entry.
  *
- * THREE categories, and they retire differently. A FOURTH is gone: nine OTHER-LANE
+ * TWO categories, and they retire differently. Two more are gone: nine OTHER-LANE
  * rows recorded raw sites in `dynamodb-table-provider.ts`,
  * `dynamodb-globaltable-provider.ts` and `s3-bucket-provider.ts` while issue
  * #2177's per-family lanes owned those files. Both lanes merged (PRs #2248 and
@@ -436,7 +430,9 @@ export interface Exemption {
  * is the retirement this mechanism exists to force, and it is the case the
  * verdict check below had to be added for: those sites now read `masked`, and
  * an audit that never looked at a verdict would have kept reporting them
- * exempt.
+ * exempt. The other, two value-free Cloud Control debug lines (issue #5880),
+ * retired the same way once both were routed through the caller's masker
+ * (issue #5894).
  *
  * The remaining categories:
  *
@@ -454,11 +450,6 @@ export interface Exemption {
  *    handed a `maskerOrIdentity(undefined)` that would count toward the
  *    masked total while protecting nothing, so the unmasked arm is COUNTED and
  *    re-audited every run instead of hiding inside the green number.
- *  - VALUE-FREE PROJECTION (issue #5880). The stringified expression renders
- *    property KEYS or patch op / path pairs and never a property VALUE, so a
- *    resolved dynamic reference — which CloudFormation allows only in a value
- *    — cannot reach it. These retire if the line ever renders a value, which
- *    turns the expression text and so fails the audit.
  */
 const EXEMPT: readonly Exemption[] = [
   // --- IMPORT PATH -------------------------------------------------------
@@ -497,33 +488,7 @@ const EXEMPT: readonly Exemption[] = [
       'pass no `maskSecrets` (every cdkd delete site passes one since issue #2007) — see ' +
       'deletePathMasker; every arm with a masker IS masked',
   },
-  // --- VALUE-FREE PROJECTION ---------------------------------------------
-  {
-    file: 'src/provisioning/cloud-control-provider.ts',
-    splitFile: 'src/provisioning/cloud-control/create.ts',
-    expression: 'Object.keys(ccProperties)',
-    count: 1,
-    reason:
-      'value-free projection: the CREATE debug line renders the top-level property KEYS only, ' +
-      'and a dynamic reference resolves only in a value',
-  },
-  {
-    file: 'src/provisioning/cloud-control-provider.ts',
-    splitFile: 'src/provisioning/cloud-control/update.ts',
-    expression:
-      'patch.map((op) => { const anyOp = op as { op?: unknown; path?: unknown }; ' +
-      'return { op: anyOp.op, path: anyOp.path }; })',
-    count: 1,
-    reason:
-      'value-free projection: the UPDATE debug line renders each patch operation as its `op` ' +
-      'and JSON-pointer `path` only, never its `value`',
-  },
 ];
-
-/** Does `entry` cover a site in `file`, under either layout? */
-function exemptionFileMatches(entry: Exemption, file: string): boolean {
-  return file === entry.file || (entry.splitFile !== undefined && file === entry.splitFile);
-}
 
 // ---------------------------------------------------------------------------
 // FLOORS — "found nothing" must never read as "everything is masked"
@@ -545,7 +510,7 @@ const MIN_SITES = 30;
  *
  * WHAT THIS FLOOR CAN AND CANNOT FIRE ON, because 20 looks live and is not.
  * On a run that is otherwise PASSING, `masked === sites - exempt` (raw is zero
- * by definition of passing), so with `exempt` at 6 and MIN_SITES at 30 this
+ * by definition of passing), so with `exempt` at 4 and MIN_SITES at 30 this
  * floor cannot be the first thing to break: the site floor gets there first.
  * It fires only on a run that is ALREADY failing for another reason — a
  * derivation collapse reports every site `raw`, which is a hard failure per
@@ -564,15 +529,15 @@ const MIN_MASKED_SITES = 20;
 /** Minimum distinct files carrying at least one site. Measured 18. */
 const MIN_FILES_WITH_SITES = 12;
 /**
- * Minimum Cloud Control family files scanned (issue #5880). One, because the
- * family is a single file until its split lands and a directory after it; the
- * floor's job is the input-list collapse, which reads zero.
+ * Minimum Cloud Control family files scanned (issue #5880). Two: the class file
+ * plus at least one `cloud-control/**` module, both required by
+ * {@link cloudControlFamily}; the floor's job is the input-list collapse.
  */
-const MIN_CLOUD_CONTROL_FILES = 1;
+const MIN_CLOUD_CONTROL_FILES = 2;
 /**
  * Minimum interpolated `JSON.stringify` sites found in the Cloud Control family
  * (issue #5880) — the proof its files are PARSED, not merely listed. Measured 2:
- * the CREATE keys-only and UPDATE op/path-only debug lines.
+ * the CREATE keys and UPDATE op/path debug lines, both masked (issue #5894).
  */
 const MIN_CLOUD_CONTROL_SITES = 1;
 /**
@@ -3233,7 +3198,7 @@ export function auditExemptions(sites: readonly StringifySite[]): string[] {
   const failures: string[] = [];
   for (const entry of EXEMPT) {
     const matches = sites.filter(
-      (site) => exemptionFileMatches(entry, site.file) && site.expression === entry.expression
+      (site) => site.file === entry.file && site.expression === entry.expression
     );
     if (matches.length === 0) {
       failures.push(
@@ -3269,7 +3234,7 @@ export function auditExemptions(sites: readonly StringifySite[]): string[] {
 
 function exemptionFor(site: StringifySite): Exemption | undefined {
   return EXEMPT.find(
-    (entry) => exemptionFileMatches(entry, site.file) && entry.expression === site.expression
+    (entry) => entry.file === site.file && entry.expression === site.expression
   );
 }
 
@@ -3382,17 +3347,16 @@ export function companionImportedMaskers(input: readonly string[]): Map<string, 
 }
 
 /**
- * The Cloud Control family's files next to `providersDir`: the single provider
- * file and / or its companion directory, whichever exist. Neither existing is a
- * {@link ScanFailure} — a moved or renamed family must update the constants,
- * never drop out of the scan.
+ * The Cloud Control family's files next to `providersDir`: the class file AND
+ * its companion directory. EITHER missing is a {@link ScanFailure} (issue
+ * #5894) — a moved or renamed half must update the constants, never drop out
+ * of the scan while the other half keeps the floors green.
  */
 function cloudControlFamily(providersDir: string): string[] {
   const file = resolve(providersDir, '..', CLOUD_CONTROL_FILE);
   const dir = resolve(providersDir, '..', CLOUD_CONTROL_DIR);
-  const out: string[] = [];
-  // Only ENOENT reads as "this layout is absent"; any other stat error (EACCES,
-  // ELOOP) is a broken tree, and swallowing it would drop half the family.
+  // Only ENOENT reads as "this half is absent"; any other stat error (EACCES,
+  // ELOOP) is a broken tree, reported as such rather than as a rename.
   const statOrAbsent = (path: string): ReturnType<typeof statSync> | undefined => {
     try {
       return statSync(path);
@@ -3403,16 +3367,15 @@ function cloudControlFamily(providersDir: string): string[] {
       );
     }
   };
-  if (statOrAbsent(file)?.isFile()) out.push(file);
-  if (statOrAbsent(dir)?.isDirectory()) out.push(...listSourceFiles(dir));
-  if (out.length === 0) {
-    throw new ScanFailure(
-      `the Cloud Control provider family (${CLOUD_CONTROL_FILE} and/or ${CLOUD_CONTROL_DIR}/) is ` +
-        `missing next to ${providersDir} — it is in scope for issue #5880; if it moved, update ` +
-        `CLOUD_CONTROL_FILE / CLOUD_CONTROL_DIR rather than dropping the coverage`
+  const missing = (what: string): ScanFailure =>
+    new ScanFailure(
+      `the Cloud Control provider family's ${what} is missing next to ${providersDir} — it is ` +
+        `in scope for issue #5880; if it moved, update CLOUD_CONTROL_FILE / CLOUD_CONTROL_DIR ` +
+        `rather than dropping the coverage`
     );
-  }
-  return out;
+  if (!statOrAbsent(file)?.isFile()) throw missing(`class file ${CLOUD_CONTROL_FILE}`);
+  if (!statOrAbsent(dir)?.isDirectory()) throw missing(`directory ${CLOUD_CONTROL_DIR}/`);
+  return [file, ...listSourceFiles(dir)];
 }
 
 export function buildReport(providersDir: string): MaskReport {
