@@ -8,7 +8,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  GetConnectionCommand,
+  GetCrawlerCommand,
+  GetJobCommand,
   GetSecurityConfigurationCommand,
+  GetTriggerCommand,
   GetWorkflowCommand,
 } from '@aws-sdk/client-glue';
 
@@ -147,40 +151,47 @@ const FAMILY: ReadonlyArray<{
   /** The request key the physical id travels in. */
   nameKey: string;
   readsState: boolean;
+  /** The class's own `Get*` command: a delegator wired to a sibling class's body sends another. */
+  command: abstract new (...args: never[]) => unknown;
 }> = [
   {
     type: 'AWS::Glue::SecurityConfiguration',
     make: () => new GlueSecurityConfigurationProvider() as unknown as AnyProvider,
     nameKey: 'Name',
     readsState: false, // pinned above
+    command: GetSecurityConfigurationCommand,
   },
   {
     type: 'AWS::Glue::Job',
     make: () => new GlueJobProvider() as unknown as AnyProvider,
     nameKey: 'JobName',
     readsState: true,
+    command: GetJobCommand,
   },
   {
     type: 'AWS::Glue::Crawler',
     make: () => new GlueCrawlerProvider() as unknown as AnyProvider,
     nameKey: 'Name',
     readsState: true,
+    command: GetCrawlerCommand,
   },
   {
     type: 'AWS::Glue::Connection',
     make: () => new GlueConnectionProvider() as unknown as AnyProvider,
     nameKey: 'Name',
     readsState: false,
+    command: GetConnectionCommand,
   },
   {
     type: 'AWS::Glue::Trigger',
     make: () => new GlueTriggerProvider() as unknown as AnyProvider,
     nameKey: 'Name',
     readsState: true,
+    command: GetTriggerCommand,
   },
 ];
 
-describe.each(FAMILY)('$type delegators hand every argument on', ({ type, make, nameKey, readsState }) => {
+describe.each(FAMILY)('$type delegators hand every argument on', ({ type, make, nameKey, readsState, command: expectedCommand }) => {
   beforeEach(() => {
     mockSend.mockReset();
   });
@@ -196,6 +207,7 @@ describe.each(FAMILY)('$type delegators hand every argument on', ({ type, make, 
     mockSend.mockResolvedValue({});
     await make().readCurrentState('res-1', 'R', type);
     const command = mockSend.mock.calls[0]![0] as { input: Record<string, unknown> };
+    expect(command).toBeInstanceOf(expectedCommand);
     expect(command.input).toEqual({ [nameKey]: 'res-1' });
   });
 
@@ -211,6 +223,7 @@ describe.each(FAMILY)('$type delegators hand every argument on', ({ type, make, 
     });
     expect(result).toEqual({ physicalId: 'res-1', attributes: {} });
     const command = mockSend.mock.calls[0]![0] as { input: Record<string, unknown> };
+    expect(command).toBeInstanceOf(expectedCommand);
     expect(command.input).toEqual({ [nameKey]: 'res-1' });
   });
 });
