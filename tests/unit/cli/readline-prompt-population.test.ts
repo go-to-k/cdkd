@@ -169,7 +169,7 @@ const FOLDED_FILES: readonly string[] = [
   'src/cli/commands/orphan.ts',
   'src/cli/commands/import.ts',
   'src/cli/commands/export.ts',
-  'src/cli/commands/drift.ts',
+  'src/cli/commands/drift/plan.ts',
   'src/cli/commands/retire-cfn-stack.ts',
   'src/cli/commands/state-migrate.ts',
 ];
@@ -247,8 +247,10 @@ describe('readline interface population (issue #2275)', () => {
     // routed, which the counts alone read as an improvement.
     for (const path of [...FOLDED_FILES, 'src/cli/commands/state.ts']) {
       const text = readFileSync(join(REPO_ROOT, path), 'utf-8');
+      // `drift/plan.ts` sits one directory below its siblings.
+      const spec = path.startsWith('src/cli/commands/drift/') ? '../confirm-prompt.js' : './confirm-prompt.js';
       expect(text, `${path} no longer routes through confirmOrRefuse`).toContain(
-        "import { confirmOrRefuse } from './confirm-prompt.js';"
+        `import { confirmOrRefuse } from '${spec}';`
       );
     }
   });

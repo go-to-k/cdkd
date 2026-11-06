@@ -4852,7 +4852,7 @@ describe('every repair the module exports is classified and has its read-only ca
    * The files calling each repair, derived from the tree's AST. Every
    * one of them is READ-ONLY on the path that calls it: `diff-recursive.ts`,
    * `state.ts` (`state resources` and `state show`'s text modes) and
-   * `s3-local-state-provider.ts` write no `state.json`; `drift.ts` repairs only
+   * `s3-local-state-provider.ts` write no `state.json`; `drift/detect.ts` repairs only
    * outside `--accept` / `--revert`; `scrub.ts` only under `--dry-run`, which
    * the REFUSE loop above pins. A file joining a list is a new caller whose
    * write path has to be checked before it is added here.
@@ -4860,7 +4860,7 @@ describe('every repair the module exports is classified and has its read-only ca
   const REPAIR_CALLERS: Record<string, readonly string[]> = {
     repairMalformedResourcesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
-      'src/cli/commands/drift.ts',
+      'src/cli/commands/drift/detect.ts',
       'src/cli/commands/scrub.ts',
       'src/cli/commands/state.ts',
       'src/local/s3-local-state-provider.ts',
@@ -4879,11 +4879,11 @@ describe('every repair the module exports is classified and has its read-only ca
     repairMalformedOrphanRecordsForReadOnly: ['src/cli/commands/scrub.ts'],
     repairMalformedResourcePropertiesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
-      'src/cli/commands/drift.ts',
+      'src/cli/commands/drift/detect.ts',
     ],
     repairMalformedResourceEntriesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
-      'src/cli/commands/drift.ts',
+      'src/cli/commands/drift/detect.ts',
       'src/cli/commands/scrub.ts',
       'src/local/s3-local-state-provider.ts',
     ],
@@ -7518,7 +7518,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
   const TEMPLATE_KEY_EXPRESSIONS: ReadonlyArray<readonly [string, number, string]> = [
     // --- arm A: a template literal passed straight to .get/.set/.has/.add ---
     [
-      'src/cli/commands/drift.ts',
+      'src/cli/commands/drift/revert-merge.ts',
       2,
       'sets of RENDERED report paths; nothing is SERVED by these, they only ' +
         'deduplicate what is printed',
@@ -7814,7 +7814,16 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
   });
 
   it('src/cli/commands/drift.ts — the mode decides, and the decision is made beside the flags', () => {
-    const src = code('src/cli/commands/drift.ts');
+    // The command module and every module split out of it under `drift/`.
+    const src = [
+      'src/cli/commands/drift.ts',
+      ...readdirSync(join(repoRoot, 'src/cli/commands/drift'))
+        .filter((f) => f.endsWith('.ts'))
+        .sort()
+        .map((f) => `src/cli/commands/drift/${f}`),
+    ]
+      .map(code)
+      .join('\n');
     const body = flow(src, 'async function runDriftForStack(');
 
     // Both arms present in the one flow: this is the file where the module's

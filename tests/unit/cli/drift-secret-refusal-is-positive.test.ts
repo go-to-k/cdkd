@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 
@@ -24,7 +24,15 @@ import { describe, expect, it } from 'vite-plus/test';
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-const DRIFT_SOURCE = `${REPO_ROOT}src/cli/commands/drift.ts`;
+// The command module and every module split out of it under `drift/`.
+const DRIFT_DIR = `${REPO_ROOT}src/cli/commands/drift/`;
+const DRIFT_SOURCES = [
+  `${REPO_ROOT}src/cli/commands/drift.ts`,
+  ...readdirSync(DRIFT_DIR)
+    .filter((f) => f.endsWith('.ts'))
+    .sort()
+    .map((f) => `${DRIFT_DIR}${f}`),
+];
 
 /** Every refusal code the module raises. Both must be raised the SAME way. */
 const REFUSAL_CODES = [
@@ -35,7 +43,7 @@ const REFUSAL_CODES = [
 ];
 
 function driftSource(): string {
-  return readFileSync(DRIFT_SOURCE, 'utf8');
+  return DRIFT_SOURCES.map((f) => readFileSync(f, 'utf8')).join('\n');
 }
 
 /**

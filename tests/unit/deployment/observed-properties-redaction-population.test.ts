@@ -177,15 +177,19 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       '— the one ASSIGNMENT site that legitimately does NOT redact at the call ' +
       'site; see UNREDACTED_AT_SITE below.',
   },
-  'src/cli/commands/drift.ts': {
-    sites: 3,
+  'src/cli/commands/drift/accept.ts': {
+    sites: 1,
     why:
-      "Two `:`-form WRITES — `--accept`'s new baseline (redacted into " +
-      '`redactedBaseline` one statement earlier) and the issue #1644 revert ' +
-      'narrowing (redacted into `delta` before it reaches `newBaseline`) — plus ' +
-      'one `:`-form READ, the ternary picking the revert baseline, which the ' +
-      'pattern cannot tell from a key and which is listed rather than excused by ' +
-      'a cleverer regex.',
+      "A `:`-form WRITE — `--accept`'s new baseline (redacted into " +
+      '`redactedBaseline` one statement earlier).',
+  },
+  'src/cli/commands/drift/revert.ts': {
+    sites: 2,
+    why:
+      'A `:`-form WRITE — the issue #1644 revert narrowing (redacted into ' +
+      '`delta` before it reaches `newBaseline`) — plus one `:`-form READ, the ' +
+      'ternary picking the revert baseline, which the pattern cannot tell from a ' +
+      'key and which is listed rather than excused by a cleverer regex.',
   },
   'src/cli/commands/scrub.ts': {
     sites: 2,
@@ -303,9 +307,11 @@ describe('observedProperties write population (issue #2828)', () => {
     // record's `observedProperties` reaching the needle-learning resolve — for
     // 12 across 8; go-to-k/cdkd#4043 added the NoEcho mask over the scrubbed
     // record, for 13 across 9; its Phase C added scrub's twin of it, for 14.
+    // Splitting `drift.ts` into `drift/*.ts` moved its 3 into two files: 14
+    // across 10.
     const actual = scanPopulation();
     expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(14);
-    expect(Object.keys(EXPECTED)).toHaveLength(9);
+    expect(Object.keys(EXPECTED)).toHaveLength(10);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

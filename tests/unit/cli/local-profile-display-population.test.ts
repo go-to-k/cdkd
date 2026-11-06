@@ -1019,7 +1019,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     const arnFiles = new Set(roleArn.map((s) => s.file.replace(/\\/g, '/')));
     for (const file of [
       'src/cli/options.ts',
-      'src/cli/commands/drift.ts',
+      'src/cli/commands/drift/command.ts',
       'src/cli/commands/rollback.ts',
       'src/utils/role-arn.ts',
       'src/deployment/intrinsic-resolver/stack-output.ts',
@@ -1312,7 +1312,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     // Most of what the ARN arm GAINED is deliberately still out of the mixed
     // arm -- go-to-k/cdkd#3405 owns those surfaces.
     expect(inMixedScope('src/cli/options.ts')).toBe(false);
-    expect(inMixedScope('src/cli/commands/drift.ts')).toBe(false);
+    expect(inMixedScope('src/cli/commands/drift/command.ts')).toBe(false);
     expect(inMixedScope('src/deployment/intrinsic-function-resolver.ts')).toBe(false);
     // ...with ONE exception, and it is asserted as a POSITIVE so the admission
     // cannot be reverted silently: go-to-k/cdkd#3397's fix puts a sanitized STS
