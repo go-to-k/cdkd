@@ -747,12 +747,12 @@ const TARGET_GROUP_CASE: TypeCase = {
       },
       expectedSilent: {
         // The declared value is the one cdkd sends for an absent name
-        // (rds-dbproxy-targetgroup-provider.ts:256-261).
+        // (rds-dbproxy-targetgroup/create.ts:37-42).
         'create:TargetGroupName': DECLARED_DEFAULT,
       },
       expectedRemovalThrows: {
         'create:DBProxyName': REQUIRED(
-          'DBProxyName is required: create() refuses a target group without its proxy before any call (rds-dbproxy-targetgroup-provider.ts:248-255)',
+          'DBProxyName is required: create() refuses a target group without its proxy before any call (rds-dbproxy-targetgroup/create.ts:29-36)',
           /DBProxyName is required/
         ),
         ...RDS_TAG_KEY_THROWS,

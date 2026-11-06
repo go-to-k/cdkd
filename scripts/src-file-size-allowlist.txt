@@ -71,7 +71,6 @@ src/provisioning/providers/kms-provider.ts
 src/provisioning/providers/nested-stack-provider.ts
 src/provisioning/providers/pipes-provider.ts
 src/provisioning/providers/rds-dbproxy-provider.ts
-src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts
 src/provisioning/providers/secretsmanager-secret-provider.ts
 src/provisioning/providers/ssm-parameter-provider.ts
