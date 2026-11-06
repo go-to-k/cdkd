@@ -87,6 +87,7 @@ describe('src file size cap', () => {
 
   it('the allowlist has no duplicate entries', () => {
     const entries = allowlist();
-    expect(entries.length).toBe(new Set(entries).size);
+    const duplicates = entries.filter((entry, i) => entries.indexOf(entry) !== i);
+    expect(duplicates, 'remove the duplicate allowlist entries').toEqual([]);
   });
 });
