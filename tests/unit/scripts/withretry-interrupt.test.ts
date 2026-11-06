@@ -368,6 +368,13 @@ describe('withRetry interrupt critic — failure probes', () => {
     expect(status).toBe(1);
     expect(stderr).toContain('providers/elbv2-provider.ts');
     expect(stderr).toContain('is not interruptible');
+    // The remedy names a file that still holds the reference shape: a split
+    // moved it once (custom-resource-provider.ts -> custom-resource/).
+    const reference = 'src/provisioning/providers/custom-resource/invoke-retry.ts';
+    expect(stderr).toContain(`Reference: ${reference}.`);
+    const shape = readFileSync(join(REPO_ROOT, reference), 'utf8');
+    expect(shape).toContain('const watch = startInterruptWatch(');
+    expect(shape).toContain('watch.dispose()');
   }, SPAWN_TIMEOUT_MS);
 
   it('FAILS when only HALF the pair is dropped (issue #1952 site)', () => {

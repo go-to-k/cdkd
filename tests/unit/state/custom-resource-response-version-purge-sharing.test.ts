@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
 // compiler API only under `typescript/unstable/*`. Same import every other
 // AST-based critic in this repo uses (`scripts/check-provider-error-cause.ts`,
 // `scripts/check-withretry-interrupt.ts`, ...).
 import ts from 'typescript-v6';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * Issue [#2340](https://github.com/go-to-k/cdkd/issues/2340) — the paths that
@@ -219,13 +220,28 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
   const files = sourceFiles();
   const parsed = new Map(files.map((rel) => [rel, ast(rel)]));
   const EXCLUDED = new Set([DEFINITION_SITE, REEXPORT_SITE, IMPLEMENTATION_SITE]);
-  const candidates = files.filter((rel) => {
-    const src = parsed.get(rel)!;
-    return namesIdentifier(src, PREFIX_SYMBOL) || hasScopedVersionListing(src);
-  });
-  const deleters = candidates.filter(
-    (rel) => !EXCLUDED.has(rel) && deletesObjects(parsed.get(rel)!)
+  // A provider split into `<stem>-provider.ts` plus its companion directory
+  // (scripts/provider-companion-files.ts) is ONE unit: the file naming the
+  // prefix and the file deleting the object can be different files of it
+  // (custom-resource-provider.ts names it, custom-resource/response.ts
+  // deletes). Its companion files are judged through it, never alone.
+  const companionsOf = new Map(
+    files.map((rel) => [
+      rel,
+      companionFiles(join(REPO_ROOT, rel)).map((abs) => relative(REPO_ROOT, abs)),
+    ])
   );
+  const folded = new Set([...companionsOf.values()].flat());
+  const unit = (rel: string): ts.SourceFile[] =>
+    [rel, ...companionsOf.get(rel)!].map((r) => parsed.get(r) ?? ast(r));
+  const anyOf = (rel: string, pred: (src: ts.SourceFile) => boolean): boolean =>
+    unit(rel).some(pred);
+  const candidates = files.filter(
+    (rel) =>
+      !folded.has(rel) &&
+      anyOf(rel, (src) => namesIdentifier(src, PREFIX_SYMBOL) || hasScopedVersionListing(src))
+  );
+  const deleters = candidates.filter((rel) => !EXCLUDED.has(rel) && anyOf(rel, deletesObjects));
 
   describe('guard-the-guard: the classifier sees CODE and not comments', () => {
     const src = (text: string): ts.SourceFile => parseSource('probe.ts', text);
@@ -345,15 +361,24 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
     expect(deleters).toContain('src/provisioning/providers/custom-resource-provider.ts');
     expect(deleters).toContain('src/cli/commands/gc.ts');
     expect(deleters.length).toBeGreaterThanOrEqual(2);
+    // The custom-resource unit spans files: the prefix is named in one and the
+    // delete is in another, so a per-file scan would drop it from the
+    // population. Folding is what keeps it in.
+    expect(companionsOf.get('src/provisioning/providers/custom-resource-provider.ts')).toContain(
+      'src/provisioning/providers/custom-resource/response.ts'
+    );
+    expect(folded.has('src/provisioning/providers/custom-resource/response.ts')).toBe(true);
   });
 
   it('every in-population deleter CALLS the shared purge', () => {
-    const missing = deleters.filter((rel) => !callsPurge(parsed.get(rel)!));
+    const missing = deleters.filter((rel) => !anyOf(rel, callsPurge));
     expect(missing).toEqual([]);
   });
 
   it('no in-population deleter so much as NAMES the version-listing command', () => {
-    const copies = deleters.filter((rel) => namesIdentifier(parsed.get(rel)!, LISTING_COMMAND));
+    const copies = deleters.filter((rel) =>
+      anyOf(rel, (src) => namesIdentifier(src, LISTING_COMMAND))
+    );
     expect(copies).toEqual([]);
   });
 
