@@ -1,50 +1,15 @@
 import {
   AutoScalingClient,
-  CreateAutoScalingGroupCommand,
-  UpdateAutoScalingGroupCommand,
-  DeleteAutoScalingGroupCommand,
   DescribeAutoScalingGroupsCommand,
   type DescribeAutoScalingGroupsCommandOutput,
-  DescribeLifecycleHooksCommand,
-  DescribeTrafficSourcesCommand,
-  DescribeNotificationConfigurationsCommand,
-  EnableMetricsCollectionCommand,
-  DisableMetricsCollectionCommand,
-  PutLifecycleHookCommand,
-  DeleteLifecycleHookCommand,
-  AttachTrafficSourcesCommand,
-  DetachTrafficSourcesCommand,
-  PutNotificationConfigurationCommand,
-  DeleteNotificationConfigurationCommand,
-  CreateOrUpdateTagsCommand,
-  DeleteTagsCommand,
-  AttachLoadBalancersCommand,
-  DetachLoadBalancersCommand,
-  AttachLoadBalancerTargetGroupsCommand,
-  DetachLoadBalancerTargetGroupsCommand,
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
-  type AvailabilityZoneDistribution,
-  type AvailabilityZoneImpairmentPolicy,
-  type CapacityReservationSpecification,
-  type DeletionProtection,
-  type InstanceLifecyclePolicy,
-  type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
-import { DescribeInstancesCommand, EC2Client } from '@aws-sdk/client-ec2';
+import { EC2Client } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { markNotGone } from '../not-gone.js';
-import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  disableInstanceApiTermination,
-  ec2InstanceProtectionSite,
-  observeThenDisableInstanceApiTermination,
-  reEnableInstanceApiTermination,
-} from '../ec2-termination-protection.js';
-import { generatedNameFor } from '../resource-name.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -54,600 +19,88 @@ import type {
   SecretMasker,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
-import {
-  protectedReplacementAdvice,
-  pasteableAwsCommand,
-  WITHHELD_AWS_COMMAND,
-} from '../replacement-protection-advice.js';
-import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
-  markNonRetryable,
-  markRedactedCause,
-  relayedNameCollision,
-  wrapMaskedAwsError,
-} from '../../deployment/retryable-errors.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
-import {
-  PROTECTION_FLIP_REUSE_WINDOW_MS,
   ProtectionFlipRegistry,
-  deleteWithProtectionCompensation,
-  observeThenDisableProtection,
-  protectionFlipKey,
-  settleProtectionFlip,
   type ProtectionFlipRecord,
-  type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import {
-  createMaskedLogSinks,
-  maskerOrIdentity,
-  withDerivedNameMasks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
-
-// ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
-//
-// Every sub-shape diff helper derives its REMOVALS (Detach*, Delete*,
-// Disable*) from the gap between the desired and the recorded list. Reading a
-// present-but-malformed value as an empty list therefore removes everything the
-// other side holds: on a rollback or `drift --revert`, where the desired side
-// is a recorded bag, `TargetGroupARNs: {}` detached every target group. So
-// `undefined` / `null` is ABSENT (an empty list), and anything else that is not
-// a list of well-formed entries is MALFORMED, refused on BOTH sides before any
-// call. A refusal names only the property and side, never record content.
-
-/** The two attachment lists: entries are bare names / ARNs. */
-type AttachmentKind = 'LoadBalancerNames' | 'TargetGroupARNs';
-/** The entry lists: each entry is an object keyed by one identity member. */
-type EntryKind =
-  | 'Tags'
-  | 'MetricsCollection'
-  | 'LifecycleHookSpecificationList'
-  | 'TrafficSources'
-  | 'NotificationConfigurations';
-type ListKind = AttachmentKind | EntryKind;
-
-/**
- * API length caps (`XmlStringMaxLen255` / `XmlStringMaxLen511`). A classic load
- * balancer name or a target-group ARN never holds whitespace.
- */
-const ATTACHMENT_MAX_LENGTH: Record<AttachmentKind, number> = {
-  LoadBalancerNames: 255,
-  TargetGroupARNs: 511,
-};
-const ATTACHMENT_WHAT: Record<AttachmentKind, string> = {
-  LoadBalancerNames: 'load balancer names',
-  TargetGroupARNs: 'target group ARNs',
-};
-
-/** The member each diff helper keys an entry by, and any string-list member it forwards. */
-const ENTRY_SHAPE: Record<EntryKind, { identity: string; stringList?: string; what: string }> = {
-  Tags: { identity: 'Key', what: 'tags with a Key' },
-  MetricsCollection: {
-    identity: 'Granularity',
-    stringList: 'Metrics',
-    what: 'entries with a Granularity',
-  },
-  LifecycleHookSpecificationList: {
-    identity: 'LifecycleHookName',
-    what: 'entries with a LifecycleHookName',
-  },
-  TrafficSources: { identity: 'Identifier', what: 'entries with an Identifier' },
-  NotificationConfigurations: {
-    identity: 'TopicARN',
-    stringList: 'NotificationTypes',
-    what: 'entries with a TopicARN',
-  },
-};
-
-const LIST_KINDS: readonly ListKind[] = [
-  'Tags',
-  'LoadBalancerNames',
-  'TargetGroupARNs',
-  'MetricsCollection',
-  'LifecycleHookSpecificationList',
-  'TrafficSources',
-  'NotificationConfigurations',
-];
-
-type ListRead =
-  | { kind: 'list'; items: unknown[] }
-  // `onlySecret`: the list is well-shaped, and refused ONLY because a member
-  // holds a dynamic reference or its mask.
-  | { kind: 'malformed'; secretDerived: boolean; onlySecret: boolean };
-
-function isAttachmentKind(kind: ListKind): kind is AttachmentKind {
-  return kind === 'LoadBalancerNames' || kind === 'TargetGroupARNs';
-}
-
-/**
- * `side` matters for an entry list's IDENTITY only. A desired identity holding a
- * dynamic reference or its mask names nothing AWS holds, so it is malformed. A
- * RECORDED one is what cdkd writes for a template whose identity came from a
- * secret (cdkd keeps the reference in state), so refusing it would refuse every
- * later update of that group: it is read, and `removableRecorded` then keeps it
- * out of the removal set (go-to-k/cdkd#3948).
- */
-type ListSide = 'desired' | 'recorded';
-
-function isWellFormedEntry(
-  kind: ListKind,
-  entry: unknown,
-  side: ListSide,
-  // Ask the SHAPE question alone, as if no member held a secret: used to tell
-  // a list refused only for a dynamic reference from a malformed one.
-  ignoreSecrets = false
-): boolean {
-  if (isAttachmentKind(kind)) {
-    return (
-      typeof entry === 'string' &&
-      entry.length > 0 &&
-      entry.length <= ATTACHMENT_MAX_LENGTH[kind] &&
-      !/\s/.test(entry) &&
-      // A dynamic reference is a well-formed STRING but not a name AWS holds:
-      // sending it would Detach / Attach a literal `{{resolve:...}}`.
-      (ignoreSecrets || !holdsSecretDerivedEntry(entry))
-    );
-  }
-  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
-  const { identity, stringList } = ENTRY_SHAPE[kind];
-  const record = entry as Record<string, unknown>;
-  const id = record[identity];
-  if (typeof id !== 'string' || id.length === 0) return false;
-  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
-  if (stringList !== undefined) {
-    const list = record[stringList];
-    if (list != null && !(Array.isArray(list) && list.every((v) => typeof v === 'string'))) {
-      return false;
-    }
-    // A desired metric / notification type holding a dynamic reference names
-    // nothing AWS accepts; a RECORDED one is filtered by `removableRecorded`.
-    if (
-      side === 'desired' &&
-      !ignoreSecrets &&
-      Array.isArray(list) &&
-      list.some((v) => holdsSecretDerivedEntry(v))
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Read one list property; ABSENT (`undefined` / `null`) reads as the empty list. */
-function readList(kind: ListKind, value: unknown, side: ListSide): ListRead {
-  if (value === undefined || value === null) return { kind: 'list', items: [] };
-  if (Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side))) {
-    return { kind: 'list', items: value };
-  }
-  return {
-    kind: 'malformed',
-    secretDerived: holdsSecretDerivedEntry(value),
-    onlySecret:
-      Array.isArray(value) && value.every((entry) => isWellFormedEntry(kind, entry, side, true)),
-  };
-}
-
-/**
- * The cause clause for DESIRED lists refused because a member holds a dynamic
- * reference or its mask: "not a list of ..." alone reads as a shape error. It
- * names the property only, never the value.
- */
-function secretDerivedCause(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
-  const secret = kinds.filter((k) => {
-    const r = read[k];
-    return r.kind === 'malformed' && r.onlySecret;
-  });
-  return secret.length === 0
-    ? ''
-    : ` (${secret.join(' / ')} holds a dynamic reference or its mask where a name belongs, ` +
-        `which names nothing Auto Scaling accepts)`;
-}
-
-function listWhat(kind: ListKind): string {
-  return isAttachmentKind(kind) ? ATTACHMENT_WHAT[kind] : ENTRY_SHAPE[kind].what;
-}
-
-/**
- * Every list property of one bag, keyed by kind. The caller passes its own
- * literal read of each property (`{ Tags: properties['Tags'], ... }`) so the
- * call site shows (and a grep finds) which property feeds the calls.
- */
-function readLists(values: Record<ListKind, unknown>, side: ListSide): Record<ListKind, ListRead> {
-  const out = {} as Record<ListKind, ListRead>;
-  for (const kind of LIST_KINDS) out[kind] = readList(kind, values[kind], side);
-  return out;
-}
-
-function malformedKinds(read: Record<ListKind, ListRead>): ListKind[] {
-  return LIST_KINDS.filter((k) => read[k].kind === 'malformed');
-}
-
-/**
- * A recorded entry list minus every entry whose identity is secret-derived: the
- * diff helpers would otherwise Delete / Detach a literal `{{resolve:...}}` key.
- * Dropping it only misses that one removal, the safe direction; the desired
- * side's plaintext identity is still upserted.
- */
-function removableRecorded(kind: ListKind, items: unknown[]): unknown[] {
-  if (isAttachmentKind(kind)) return items;
-  const { identity, stringList } = ENTRY_SHAPE[kind];
-  return items
-    .filter((e) => !holdsSecretDerivedEntry((e as Record<string, unknown>)[identity]))
-    .flatMap((e) => {
-      // A secret-derived MEMBER of a recorded string list (a metric name, a
-      // notification type) is dropped too, so no call names the literal
-      // reference. Only for `MetricsCollection` is an entry left with no
-      // members dropped whole: there an empty list means ALL. A notification
-      // entry is KEPT (its TopicARN alone addresses the Delete).
-      if (stringList === undefined) return [e];
-      const record = e as Record<string, unknown>;
-      const list = record[stringList];
-      if (!Array.isArray(list) || !list.some((v) => holdsSecretDerivedEntry(v))) return [e];
-      const kept = list.filter((v) => !holdsSecretDerivedEntry(v));
-      if (kept.length === 0 && kind === 'MetricsCollection') return [];
-      return [{ ...record, [stringList]: kept }];
-    });
-}
-
-function itemsOf(read: ListRead): unknown[] {
-  return read.kind === 'list' ? read.items : [];
-}
-
-type ZoneMembers = { AvailabilityZones?: string[]; AvailabilityZoneIds?: string[] };
-
-/** A subnet list the group launches into: a non-empty list or comma-joined string. */
-function declaresSubnets(value: unknown): boolean {
-  return Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value !== '';
-}
-
-/**
- * The zone members a create or update sends (go-to-k/cdkd#2762).
- *
- * AWS refuses `AvailabilityZones` and `AvailabilityZoneIds` in one request, and
- * `readCurrentState` reports BOTH (AWS answers both whichever member created
- * the group). So a bag built from a readback (`drift --revert`) or a state
- * record (a rollback replay, where an imported record can hold the readback)
- * that carries both sends at most one:
- *   - none when it also carries subnets: the zones follow `VPCZoneIdentifier`,
- *     and subnets beside zone ids are an unmeasured combination there;
- *   - else on update the one that changed against the previous side, the zone
- *     ids first, and neither when neither changed; on create (`previous`
- *     absent) the zone ids, or the names when the id list is empty.
- * An empty zone-id list (an unreported member) is never sent from such a bag.
- * A template bag is passed through as declared: AWS refuses a template
- * declaring both, as it refuses CloudFormation's request.
- */
-function zoneMembers(
-  properties: Record<string, unknown>,
-  stateBorne: boolean,
-  previousProperties?: Record<string, unknown>
-): ZoneMembers {
-  const names = properties['AvailabilityZones'] as string[] | undefined;
-  const ids = properties['AvailabilityZoneIds'] as string[] | undefined;
-  if (!stateBorne || names === undefined || ids === undefined) {
-    return {
-      ...(names !== undefined && { AvailabilityZones: names }),
-      ...(ids !== undefined && { AvailabilityZoneIds: ids }),
-    };
-  }
-  if (declaresSubnets(properties['VPCZoneIdentifier'])) return {};
-  const changed = (key: string): boolean =>
-    previousProperties === undefined ||
-    JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
-  if (Array.isArray(ids) && ids.length > 0 && changed('AvailabilityZoneIds')) {
-    return { AvailabilityZoneIds: ids };
-  }
-  if (changed('AvailabilityZones')) return { AvailabilityZones: names };
-  return {};
-}
-
-/**
- * AWS Auto Scaling Provider
- *
- * Implements resource provisioning for `AWS::AutoScaling::AutoScalingGroup`.
- *
- * WHY a dedicated SDK provider (instead of CC API fallback):
- *   1. Owns the `--remove-protection` flip-off: ASG protection has three
- *      levels (`none` / `prevent-force-deletion` / `prevent-all-deletion`)
- *      and the destroy path needs to (a) clear it via `UpdateAutoScalingGroup
- *      ({DeletionProtection: 'none'})` before the actual delete and (b) set
- *      `ForceDelete: true` on `DeleteAutoScalingGroup` so AWS terminates any
- *      running instances as part of the delete (matches the user's "I know
- *      what I'm doing" intent).
- *   2. Faster than CC API for the common case — direct Create/Update calls
- *      with no eventual-consistency polling beyond what `DescribeAutoScaling
- *      Groups` already provides.
- *
- * Update has narrower coverage than create: AWS does not support modifying
- * `AutoScalingGroupName` (immutable) — that diff still surfaces
- * `ResourceUpdateNotSupportedError` so the caller can `cdkd deploy
- * --replace`. The mutable fields handled in-place via
- * `UpdateAutoScalingGroup` include MinSize / MaxSize / DesiredCapacity /
- * VPCZoneIdentifier / HealthCheckType / HealthCheckGracePeriod /
- * DefaultCooldown / Cooldown / NewInstancesProtectedFromScaleIn /
- * MaxInstanceLifetime / TerminationPolicies / CapacityRebalance /
- * ServiceLinkedRoleARN / Context / DesiredCapacityType /
- * DefaultInstanceWarmup / AvailabilityZones / AvailabilityZoneIds /
- * AvailabilityZoneDistribution / AvailabilityZoneImpairmentPolicy /
- * SkipZonalShiftValidation / CapacityReservationSpecification /
- * InstanceMaintenancePolicy / DeletionProtection / MixedInstancesPolicy /
- * LaunchTemplate / PlacementGroup / InstanceLifecyclePolicy.
- *
- * `UpdateAutoScalingGroup` has merge semantics (absent input field = "no
- * change"). Per the real CloudFormation A/B in go-to-k/cdkd#5004, a property
- * REMOVED from the template is reset by CloudFormation for only four members
- * (InstanceMaintenancePolicy, MaxInstanceLifetime,
- * CapacityReservationSpecification, AvailabilityZoneDistribution), plus
- * AvailabilityZoneImpairmentPolicy per the #1160 A/B and PlacementGroup per
- * the #2762 A/B — those get a removal reset here, declared in
- * `removalDefaults` or a local `clearOnUpdateRemoval`. Every other optional
- * member (HealthCheckType, HealthCheckGracePeriod, Cooldown,
- * TerminationPolicies, NewInstancesProtectedFromScaleIn, CapacityRebalance,
- * DesiredCapacityType, DefaultInstanceWarmup, DeletionProtection,
- * InstanceLifecyclePolicy) is KEPT at its live value by CloudFormation, so a
- * removal sends nothing for it (issues #1160, #5004, #2762).
- *
- * Sub-shape diffs are applied via dedicated AWS APIs before the main
- * `UpdateAutoScalingGroup` call:
- *   - `Tags` → `CreateOrUpdateTags` / `DeleteTags` (#475)
- *   - `LoadBalancerNames` → `AttachLoadBalancers` /
- *     `DetachLoadBalancers` (#476)
- *   - `TargetGroupARNs` → `AttachLoadBalancerTargetGroups` /
- *     `DetachLoadBalancerTargetGroups` (#476)
- *   - `MetricsCollection` → `EnableMetricsCollection` /
- *     `DisableMetricsCollection`
- *   - `LifecycleHookSpecificationList` → per-entry `PutLifecycleHook` /
- *     `DeleteLifecycleHook`
- *   - `TrafficSources` → `AttachTrafficSources` /
- *     `DetachTrafficSources`
- *   - `NotificationConfigurations` → per-topic
- *     `PutNotificationConfiguration` /
- *     `DeleteNotificationConfiguration`
- *
- * Each helper is a no-op when the before/after JSON is identical.
- */
-/** An entry `foldMetricsCollection` reads faithfully (string Granularity, string-list or absent Metrics). */
-function isFoldableMetricsEntry(entry: unknown): boolean {
-  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
-  const { Granularity, Metrics } = entry as { Granularity?: unknown; Metrics?: unknown };
-  return (
-    typeof Granularity === 'string' &&
-    Granularity.length > 0 &&
-    (Metrics == null || (Array.isArray(Metrics) && Metrics.every((m) => typeof m === 'string')))
-  );
-}
-
-/**
- * The metrics `EnableMetricsCollection` is KNOWN to enable when it is sent a
- * `Granularity` and no `Metrics` (go-to-k/cdkd#4021), sorted. Primary source:
- * observed on real AWS on 2026-09-28 in us-east-1 — a fresh group with no warm
- * pool, enabled with no `Metrics`, reported these 25 in `EnabledMetrics`.
- * Secondary source: the `EnableMetricsCollectionType.Metrics` documentation of
- * `@aws-sdk/client-auto-scaling` 3.1140.0 ("If you specify Granularity and
- * don't specify any metrics, all metrics are enabled"), which lists 20 and
- * omits the four `*Retained*` names and `WarmPoolMinSize`. AWS can add more, so
- * this is a LOWER bound: `canonicalizeDriftPair` treats a readback holding all
- * of these (and possibly more) as ALL.
- */
-export const ALL_GROUP_METRICS: readonly string[] = [
-  'GroupAndWarmPoolDesiredCapacity',
-  'GroupAndWarmPoolTotalCapacity',
-  'GroupDesiredCapacity',
-  'GroupInServiceCapacity',
-  'GroupInServiceInstances',
-  'GroupMaxSize',
-  'GroupMinSize',
-  'GroupPendingCapacity',
-  'GroupPendingInstances',
-  'GroupStandbyCapacity',
-  'GroupStandbyInstances',
-  'GroupTerminatingCapacity',
-  'GroupTerminatingInstances',
-  'GroupTerminatingRetainedCapacity',
-  'GroupTerminatingRetainedInstances',
-  'GroupTotalCapacity',
-  'GroupTotalInstances',
-  'WarmPoolDesiredCapacity',
-  'WarmPoolMinSize',
-  'WarmPoolPendingCapacity',
-  'WarmPoolPendingRetainedCapacity',
-  'WarmPoolTerminatingCapacity',
-  'WarmPoolTerminatingRetainedCapacity',
-  'WarmPoolTotalCapacity',
-  'WarmPoolWarmedCapacity',
-];
-
-/**
- * A metric list naming every {@link ALL_GROUP_METRICS} entry, which create and
- * update send AS ALL (no `Metrics`) rather than as that list (#4021): several
- * of those names are observed, not documented as accepted by the API, and "no
- * metrics" is AWS's own spelling of all. This applies to a template that
- * lists all of them too, which then also enables any metric AWS adds later.
- */
-function holdsAllKnownMetrics(metrics: readonly string[]): boolean {
-  return ALL_GROUP_METRICS.every((m) => metrics.includes(m));
-}
-
-/** One granularity of a folded `MetricsCollection`; `Metrics` absent = ALL. */
-type FoldedMetrics = { Granularity: string; Metrics?: string[] };
-
-/**
- * Fold a `MetricsCollection` list to the shape AWS holds (go-to-k/cdkd#4013):
- * ONE entry per granularity, its `Metrics` the sorted UNION of every entry's
- * metrics at that granularity, or absent (ALL) when any entry there omits
- * `Metrics` or lists none — AWS's "no metrics means all metrics". Sorted by
- * granularity, so two lists enabling the same metrics fold equal whatever
- * their entry split or order. Entries with no string `Granularity` are skipped
- * (the update path refuses them before this runs); a non-array folds to `[]`.
- * Pure: shared by the update diff and the drift canonicalization.
- */
-export function foldMetricsCollection(value: unknown): FoldedMetrics[] {
-  if (!Array.isArray(value)) return [];
-  const byGranularity = new Map<string, Set<string> | 'ALL'>();
-  for (const raw of value) {
-    if (raw === null || typeof raw !== 'object') continue;
-    const entry = raw as { Granularity?: unknown; Metrics?: unknown };
-    if (typeof entry.Granularity !== 'string' || entry.Granularity.length === 0) continue;
-    const metrics = Array.isArray(entry.Metrics)
-      ? entry.Metrics.filter((m): m is string => typeof m === 'string')
-      : [];
-    const current = byGranularity.get(entry.Granularity);
-    if (metrics.length === 0 || current === 'ALL') {
-      byGranularity.set(entry.Granularity, 'ALL');
-      continue;
-    }
-    const set = current ?? new Set<string>();
-    for (const m of metrics) set.add(m);
-    byGranularity.set(entry.Granularity, set);
-  }
-  return [...byGranularity.keys()].sort().map((granularity) => {
-    const metrics = byGranularity.get(granularity)!;
-    return metrics === 'ALL'
-      ? { Granularity: granularity }
-      : { Granularity: granularity, Metrics: [...metrics].sort() };
-  });
-}
-
-/**
- * The {@link ProtectionGuardSite} for an `AWS::AutoScaling::AutoScalingGroup`
- * whose `--remove-protection` delete failed terminally (issue #2204).
- *
- * `removedLevel` answers the `DeletionProtection` value the flip removed,
- * read when a line is rendered: the restore command must put back THAT level,
- * and a command that cannot name it is withheld rather than guessed.
- * `--region` is rendered whenever the state records one, for the reason
- * `rdsFamilyProtectionSite` gives.
- */
-export function autoScalingGroupProtectionSite(
-  groupName: string,
-  region: string | undefined,
-  removedLevel: () => string | undefined
-): ProtectionGuardSite {
-  return {
-    subject: 'AutoScalingGroup',
-    guardName: 'DeletionProtection',
-    noun: 'group',
-    // Auto Scaling has no typed not-found error: a missing group is a
-    // `ValidationError` whose message says so.
-    isNotFound: (error) => {
-      if (typeof error !== 'object' || error === null) return false;
-      const { name, message } = error as { name?: unknown; message?: unknown };
-      return (
-        name === 'ValidationError' &&
-        typeof message === 'string' &&
-        /not found|does not exist/i.test(message)
-      );
-    },
-    notFoundMeaning:
-      'Auto Scaling answered that the group was not found. That most commonly means the ' +
-      'group is gone, and it can also mean it is not in this region or account.',
-    commands: () => {
-      const aws = pasteableAwsCommand();
-      const regionArg = region ? aws` --region ${region}` : aws``;
-      const level = removedLevel();
-      const restore =
-        level === undefined
-          ? WITHHELD_AWS_COMMAND
-          : aws`aws autoscaling update-auto-scaling-group --auto-scaling-group-name ${groupName}${regionArg} --deletion-protection ${level}`.render();
-      return {
-        check:
-          aws`aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${groupName}${regionArg}`.render(),
-        restoreAfterNotFound: restore,
-        restoreLive: restore,
-      };
-    },
-  };
-}
-
-/**
- * The re-enable of a group-launched instance failed and a readback found the
- * instance `shutting-down` or `terminated`. Raised by the ASG instance site's
- * `reEnable` so the compensation takes its "gone" arm (a WARN with the check
- * command) instead of the ERROR that claims the instance is LIVE.
- */
-export class LaunchedInstanceGoneError extends Error {
-  override readonly name = 'LaunchedInstanceGone';
-  constructor(instanceId: string, state: string) {
-    super(`instance ${instanceId} is ${state}`);
-  }
-}
-
-/** EC2 instance states from which an instance never comes back. */
-const GONE_INSTANCE_STATES: ReadonlySet<string> = new Set(['shutting-down', 'terminated']);
-
-/**
- * The {@link ProtectionGuardSite} for an EC2 instance an Auto Scaling group
- * launched, whose `DisableApiTermination` the group's `--remove-protection`
- * delete turned off (issue #796) before that delete failed terminally (issue
- * #2204). The EC2 instance site's commands, led by a subject naming the group:
- * the logical id on each line is the GROUP's, since the instance has none of
- * its own in the template.
- *
- * Its "gone" arm is wider than the EC2 site's. The group's flip is what lets it
- * terminate an instance (a scale-in, a health replacement) between the flip and
- * the terminal attempt, and a write to a terminated-but-describable instance
- * fails with an error other than `InvalidInstanceID.NotFound`. So the site's
- * `reEnable` reads the instance's state back after a failed write and raises
- * {@link LaunchedInstanceGoneError} for a dead one, keyed on the documented
- * state name rather than on an error code.
- */
-export function autoScalingGroupInstanceProtectionSite(
-  instanceId: string,
-  region: string | undefined
-): ProtectionGuardSite {
-  const ec2Site = ec2InstanceProtectionSite(instanceId, region);
-  return {
-    ...ec2Site,
-    subject: 'EC2 Instance launched by AutoScalingGroup',
-    isNotFound: (error) =>
-      ec2Site.isNotFound(error) ||
-      (typeof error === 'object' &&
-        error !== null &&
-        (error as { name?: unknown }).name === 'LaunchedInstanceGone'),
-    notFoundMeaning:
-      'EC2 answered that the instance was not found, or reports it shutting-down or terminated ' +
-      '(the group may have replaced it). That most commonly means the instance is gone, and a ' +
-      'not-found answer can also mean it is not in this region or account.',
-  };
-}
-
-/** The registry key type for a group-launched instance's flip record. */
-const EC2_INSTANCE_TYPE = 'AWS::EC2::Instance';
+  getClient,
+  getCreateClient,
+  getEc2Client,
+  wrapCaughtError,
+  wrapUpdateError,
+  buildLaunchTemplate,
+  buildTags,
+  joinVpcZoneIdentifier,
+  describeGroup,
+  fetchArn,
+  isNotFoundError,
+  sleep,
+} from './asg/core.js';
+import { create, retireFailedCreate } from './asg/create.js';
+import { update } from './asg/update.js';
+import {
+  deleteImpl,
+  settleInstanceFlips,
+  reEnableLaunchedInstance,
+  releaseInstanceFlips,
+  deleteGroupUnderCompensation,
+  deleteOnce,
+  removeInstanceTerminationProtection,
+  removeInstanceTerminationProtectionForDelete,
+  listGroupInstanceIds,
+  waitForGroupDeleted,
+} from './asg/delete.js';
+import {
+  canonicalizeDriftProperties,
+  canonicalizeDriftPair,
+  getAttribute,
+  readCurrentState,
+} from './asg/read-state.js';
+import {
+  readUpdateLists,
+  recordedListRepair,
+  applyTagsDiff,
+  applyLoadBalancerNamesDiff,
+  applyTargetGroupArnsDiff,
+  applyMetricsCollectionDiff,
+  applyLifecycleHooksDiff,
+  applyTrafficSourcesDiff,
+  applyNotificationConfigurationsDiff,
+} from './asg/update-lists.js';
+import type { AttachmentKind, ListKind, ListRead } from './asg/shared.js';
+export {
+  ALL_GROUP_METRICS,
+  foldMetricsCollection,
+  autoScalingGroupProtectionSite,
+  LaunchedInstanceGoneError,
+  autoScalingGroupInstanceProtectionSite,
+} from './asg/shared.js';
 
 export class ASGProvider implements ResourceProvider {
-  private asgClient?: AutoScalingClient;
-  private createClient?: AutoScalingClient;
-  private ec2Client?: EC2Client;
-  private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('ASGProvider');
+  asgClient?: AutoScalingClient;
+  createClient?: AutoScalingClient;
+  ec2Client?: EC2Client;
+  readonly providerRegion = ambientRegion();
+  logger: ConsoleLogger = getLogger().child('ASGProvider');
   /** `--remove-protection` flips per group, kept across `delete()` re-entry (#2204). */
-  private readonly protectionFlips = new ProtectionFlipRegistry();
+  readonly protectionFlips = new ProtectionFlipRegistry();
   /**
    * The `DeletionProtection` level each flip record's flip removed. Keyed by
    * the RECORD, not the group, so it lives and dies with it: the registry
    * hands a re-entered `delete()` the same record (and so this level), and a
    * released or aged-out record takes its level with it.
    */
-  private readonly removedProtection = new WeakMap<ProtectionFlipRecord, string>();
+  readonly removedProtection = new WeakMap<ProtectionFlipRecord, string>();
   /**
    * `--remove-protection` flips of `DisableApiTermination` on the instances a
    * group launched (issues #796 / #2204), one record per INSTANCE, so each
    * latches across `delete()` re-entry like the group's own record, and a
    * failed re-enable keeps its record for a later delete to retry.
    */
-  private readonly instanceProtectionFlips = new ProtectionFlipRegistry();
+  readonly instanceProtectionFlips = new ProtectionFlipRegistry();
   /**
    * The instances whose flip records each GROUP record's attempts acquired,
    * keyed by that record for the reason {@link removedProtection} is: a
@@ -655,7 +108,7 @@ export class ASGProvider implements ResourceProvider {
    * an EARLIER attempt flipped, even when the later describe no longer lists
    * it.
    */
-  private readonly groupInstanceFlips = new WeakMap<
+  readonly groupInstanceFlips = new WeakMap<
     ProtectionFlipRecord,
     Map<string, ProtectionFlipRecord>
   >();
@@ -753,511 +206,52 @@ export class ASGProvider implements ResourceProvider {
       ]),
     ],
   ]);
-
-  /**
-   * Fold `MetricsCollection` on BOTH drift sides (go-to-k/cdkd#4013):
-   * `readCurrentState` reports one entry per granularity, while a template-
-   * shaped baseline (a record deployed before observed-capture) carries one
-   * entry per CDK `GroupMetrics`, so the same enabled set would otherwise
-   * drift forever. Same helper as the update diff, so the two cannot disagree.
-   */
   canonicalizeDriftProperties(
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return properties;
-    const key = 'MetricsCollection';
-    const metrics = properties[key];
-    // Fold only a list every entry of which is readable: the fold would read
-    // an unreadable `Metrics` as ALL and hide the difference (and `--accept`
-    // would persist that ALL).
-    if (!Array.isArray(metrics) || !metrics.every(isFoldableMetricsEntry)) return properties;
-    const folded = foldMetricsCollection(metrics);
-    if (JSON.stringify(folded) === JSON.stringify(metrics)) return properties;
-    return { ...properties, [key]: folded };
+    return canonicalizeDriftProperties.call(this, resourceType, properties);
   }
 
-  /**
-   * Compare an ALL `MetricsCollection` baseline against the per-metric readback
-   * (go-to-k/cdkd#4021). An entry with no `Metrics` enables every metric, but
-   * `EnabledMetrics` lists them one by one, so a template-shaped ALL baseline
-   * (a record deployed before observed-capture) never matched.
-   *
-   * The rule is a SUPERSET test, keyed on the BASELINE saying ALL: that
-   * granularity's baseline becomes the readback's metrics UNION
-   * {@link ALL_GROUP_METRICS}. A readback holding every known metric therefore
-   * compares clean (a metric AWS adds later included), and one missing a known
-   * metric differs by exactly the missing ones. Residual: an out-of-band
-   * disable of a metric cdkd does not yet list is NOT reported.
-   *
-   * Only the baseline is rewritten, and only by ADDING metrics, so `--accept`
-   * (which writes the readback side) persists nothing new, and `--revert`
-   * (which sends this baseline as its desired side) can only Enable, never
-   * Disable a metric the readback holds; `applyMetricsCollectionDiff` sends
-   * that Enable as ALL (no `Metrics`), not as the expanded list.
-   */
-  async canonicalizeDriftPair(
+  canonicalizeDriftPair(
     resourceType: string,
     baseline: Record<string, unknown>,
     aws: Record<string, unknown>
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
-    const key = 'MetricsCollection';
-    const unchanged = { baseline, aws };
-    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return unchanged;
-    const recorded = baseline[key];
-    if (!Array.isArray(recorded) || !recorded.every(isFoldableMetricsEntry)) return unchanged;
-    const folded = foldMetricsCollection(recorded);
-    if (folded.every((e) => e.Metrics !== undefined)) return unchanged;
-    const live = aws[key];
-    const liveBy = new Map<string, string[]>();
-    if (Array.isArray(live) && live.every(isFoldableMetricsEntry)) {
-      for (const e of foldMetricsCollection(live)) liveBy.set(e.Granularity, e.Metrics ?? []);
-    }
-    const expanded = folded.map((e) =>
-      e.Metrics !== undefined
-        ? e
-        : {
-            Granularity: e.Granularity,
-            Metrics: [
-              ...new Set([...ALL_GROUP_METRICS, ...(liveBy.get(e.Granularity) ?? [])]),
-            ].sort(),
-          }
-    );
-    return { baseline: { ...baseline, [key]: expanded }, aws };
+    return canonicalizeDriftPair.call(this, resourceType, baseline, aws);
   }
 
-  private getClient(): AutoScalingClient {
-    if (!this.asgClient) {
-      // Built together with the create client, so both capture the identity
-      // active at this ONE call (issue #4639).
-      this.asgClient = new AutoScalingClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-      this.createClient = withoutServerErrorRetries(
-        new AutoScalingClient({
-          ...ambientClientDefaults(),
-          ...(this.providerRegion ? { region: this.providerRegion } : {}),
-        })
-      );
-    }
-    return this.asgClient;
+  getClient(): AutoScalingClient {
+    return getClient.call(this);
   }
 
-  /**
-   * The client `CreateAutoScalingGroup` goes through: SDK retries on, except
-   * a 5xx (`withoutServerErrorRetries`, issue #4639). Separate so every other
-   * call keeps the full SDK retry.
-   *
-   * `CreateAutoScalingGroup` carries no idempotency token and a group name is
-   * unique per account and region, so the SDK's own replay of a 5xx whose
-   * request had succeeded collides with the group the first send made, and
-   * that `AlreadyExists` fault surfaced from the engine's FIRST attempt as a
-   * name somebody else holds. Refused here, the 5xx reaches the deploy
-   * engine's retry, which marks the create as possibly replayed (`withRetry`,
-   * #3978). Nothing is adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
-   */
-  private getCreateClient(): AutoScalingClient {
-    this.getClient();
-    return this.createClient as AutoScalingClient;
+  getCreateClient(): AutoScalingClient {
+    return getCreateClient.call(this);
   }
 
-  private getEc2Client(): EC2Client {
-    if (!this.ec2Client) {
-      this.ec2Client = new EC2Client({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-    }
-    return this.ec2Client;
+  getEc2Client(): EC2Client {
+    return getEc2Client.call(this);
   }
 
-  // ─── Dispatch ─────────────────────────────────────────────────────
-
-  /**
-   * The `context` parameter is read for ONE thing: `maskSecrets` (issue #1932
-   * item 3, adopted here by issue #1997).
-   *
-   * An earlier revision of this comment claimed the create path had no site to
-   * mask, on the grounds that it names "only the logical id and the generated
-   * group name". Both halves were wrong: `groupName` falls back to a generated
-   * name only when `AutoScalingGroupName` is ABSENT, so when the template
-   * DECLARES it the value is a resolved property value — and it IS logged, on
-   * the line below. Debug level is not an exemption; the contract's rule is any
-   * log line that interpolates a value from the `properties` bag, and this
-   * provider already masks its convergence-poll debug line for that reason.
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
-      throw new ProvisioningError(
-        `Unsupported resource type: ${resourceType}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    const groupName =
-      (properties['AutoScalingGroupName'] as string | undefined) ||
-      generatedNameFor('AWS::AutoScaling::AutoScalingGroup', logicalId);
-
-    // ONE masked sink for this method's own lines (issue #1997).
-    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
-    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    debug(`Creating AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
-
-    // A malformed list would otherwise reach the SDK cast as `string[]`, whose
-    // serializer walks a string character by character (go-to-k/cdkd#3948).
-    const lists = readLists(
-      {
-        Tags: properties['Tags'],
-        LoadBalancerNames: properties['LoadBalancerNames'],
-        TargetGroupARNs: properties['TargetGroupARNs'],
-        MetricsCollection: properties['MetricsCollection'],
-        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
-        TrafficSources: properties['TrafficSources'],
-        NotificationConfigurations: properties['NotificationConfigurations'],
-      },
-      'desired'
-    );
-    const malformedOnCreate = malformedKinds(lists);
-    if (malformedOnCreate.length > 0) {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `${malformedOnCreate.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
-            `${malformedOnCreate.map(listWhat).join(' / ')}` +
-            `${secretDerivedCause(malformedOnCreate, lists)} — the group was not created`,
-          resourceType,
-          logicalId
-        )
-      );
-    }
-
-    // Set only when a failed create-time wiring could not be fully retired.
-    let survivorNote: string | undefined;
-    try {
-      const launchTemplate = this.buildLaunchTemplate(properties);
-      const tags = this.buildTags(groupName, properties);
-      const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
-      // A rollback re-create from a record holding both zone members (#2762).
-      const createZones = zoneMembers(properties, context?.replayingState === true);
-
-      const minSize = properties['MinSize'] != null ? Number(properties['MinSize']) : 0;
-      const maxSize = properties['MaxSize'] != null ? Number(properties['MaxSize']) : minSize;
-
-      await this.getCreateClient().send(
-        new CreateAutoScalingGroupCommand({
-          AutoScalingGroupName: groupName,
-          MinSize: minSize,
-          MaxSize: maxSize,
-          ...(properties['DesiredCapacity'] != null && {
-            DesiredCapacity: Number(properties['DesiredCapacity']),
-          }),
-          ...(launchTemplate && { LaunchTemplate: launchTemplate }),
-          ...(properties['MixedInstancesPolicy'] !== undefined && {
-            MixedInstancesPolicy: properties['MixedInstancesPolicy'] as never,
-          }),
-          ...(vpcZoneIdentifier !== undefined && { VPCZoneIdentifier: vpcZoneIdentifier }),
-          ...(createZones.AvailabilityZones !== undefined && {
-            AvailabilityZones: createZones.AvailabilityZones,
-          }),
-          ...(createZones.AvailabilityZoneIds !== undefined && {
-            AvailabilityZoneIds: createZones.AvailabilityZoneIds,
-          }),
-          ...(properties['PlacementGroup'] !== undefined && {
-            PlacementGroup: properties['PlacementGroup'] as string,
-          }),
-          ...(properties['InstanceLifecyclePolicy'] !== undefined && {
-            InstanceLifecyclePolicy: properties[
-              'InstanceLifecyclePolicy'
-            ] as InstanceLifecyclePolicy,
-          }),
-          ...(properties['HealthCheckType'] !== undefined && {
-            HealthCheckType: properties['HealthCheckType'] as string,
-          }),
-          ...(properties['HealthCheckGracePeriod'] != null && {
-            HealthCheckGracePeriod: Number(properties['HealthCheckGracePeriod']),
-          }),
-          ...(properties['Cooldown'] != null && {
-            DefaultCooldown: Number(properties['Cooldown']),
-          }),
-          ...(properties['DefaultCooldown'] != null && {
-            DefaultCooldown: Number(properties['DefaultCooldown']),
-          }),
-          ...(properties['TerminationPolicies'] !== undefined && {
-            TerminationPolicies: properties['TerminationPolicies'] as string[],
-          }),
-          ...(properties['NewInstancesProtectedFromScaleIn'] !== undefined && {
-            NewInstancesProtectedFromScaleIn: properties[
-              'NewInstancesProtectedFromScaleIn'
-            ] as boolean,
-          }),
-          ...(properties['CapacityRebalance'] !== undefined && {
-            CapacityRebalance: properties['CapacityRebalance'] as boolean,
-          }),
-          ...(properties['ServiceLinkedRoleARN'] !== undefined && {
-            ServiceLinkedRoleARN: properties['ServiceLinkedRoleARN'] as string,
-          }),
-          ...(properties['MaxInstanceLifetime'] != null && {
-            MaxInstanceLifetime: Number(properties['MaxInstanceLifetime']),
-          }),
-          ...(properties['LoadBalancerNames'] != null && {
-            LoadBalancerNames: itemsOf(lists.LoadBalancerNames) as string[],
-          }),
-          ...(properties['TargetGroupARNs'] != null && {
-            TargetGroupARNs: itemsOf(lists.TargetGroupARNs) as string[],
-          }),
-          ...(properties['Context'] !== undefined && {
-            Context: properties['Context'] as string,
-          }),
-          ...(properties['DesiredCapacityType'] !== undefined && {
-            DesiredCapacityType: properties['DesiredCapacityType'] as string,
-          }),
-          ...(properties['DefaultInstanceWarmup'] != null && {
-            DefaultInstanceWarmup: Number(properties['DefaultInstanceWarmup']),
-          }),
-          ...(properties['LifecycleHookSpecificationList'] != null && {
-            LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'] as never,
-          }),
-          ...(properties['TrafficSources'] != null && {
-            TrafficSources: properties['TrafficSources'] as never,
-          }),
-          ...(properties['AvailabilityZoneDistribution'] !== undefined && {
-            AvailabilityZoneDistribution: properties['AvailabilityZoneDistribution'] as never,
-          }),
-          ...(properties['AvailabilityZoneImpairmentPolicy'] !== undefined && {
-            AvailabilityZoneImpairmentPolicy: properties[
-              'AvailabilityZoneImpairmentPolicy'
-            ] as never,
-          }),
-          ...(properties['SkipZonalShiftValidation'] !== undefined && {
-            SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,
-          }),
-          ...(properties['CapacityReservationSpecification'] !== undefined && {
-            CapacityReservationSpecification: properties[
-              'CapacityReservationSpecification'
-            ] as never,
-          }),
-          ...(properties['InstanceMaintenancePolicy'] !== undefined && {
-            InstanceMaintenancePolicy: properties['InstanceMaintenancePolicy'] as never,
-          }),
-          ...(properties['DeletionProtection'] !== undefined && {
-            DeletionProtection: properties['DeletionProtection'] as never,
-          }),
-          ...(tags.length > 0 && { Tags: tags }),
-        })
-      );
-      // go-to-k/cdkd#5511: report before the wiring calls.
-      reportCreatedResource(logicalId, resourceType, groupName);
-
-      // `CreateAutoScalingGroup` takes neither `MetricsCollection` nor
-      // `NotificationConfigurations`: each rides its own API, which only the
-      // update diff helpers used to send, so a first deploy silently lacked both
-      // (go-to-k/cdkd#3995). One call PER ENTRY, from the lists `readLists`
-      // validated above: CDK renders one `MetricsCollection` entry per
-      // `GroupMetrics`, all at `1Minute`, and each must be enabled (the update
-      // helper's per-granularity map would keep only the last). CloudFormation
-      // reports CREATE_FAILED and rolls the group back when either fails, so a
-      // failure here retires the group before re-throwing.
-      try {
-        for (const entry of itemsOf(lists.MetricsCollection) as Array<{
-          Granularity: string;
-          Metrics?: string[] | null;
-        }>) {
-          await this.getClient().send(
-            new EnableMetricsCollectionCommand({
-              AutoScalingGroupName: groupName,
-              Granularity: entry.Granularity,
-              ...(entry.Metrics && entry.Metrics.length > 0 && !holdsAllKnownMetrics(entry.Metrics)
-                ? { Metrics: entry.Metrics }
-                : {}),
-            })
-          );
-        }
-        for (const entry of itemsOf(lists.NotificationConfigurations) as Array<{
-          TopicARN: string;
-          NotificationTypes?: string[] | null;
-        }>) {
-          await this.getClient().send(
-            new PutNotificationConfigurationCommand({
-              AutoScalingGroupName: groupName,
-              TopicARN: entry.TopicARN,
-              NotificationTypes: entry.NotificationTypes ?? [],
-            })
-          );
-        }
-      } catch (wiringError) {
-        survivorNote = await this.retireFailedCreate(groupName, logicalId, properties, maskSecrets);
-        if (survivorNote === undefined) retractCreatedResource(logicalId, resourceType, groupName);
-        // The group itself was created: an error from its wiring is an
-        // auxiliary object's, never this group's name collision (#3826).
-        throw markAuxiliaryFailure(wiringError, logicalId);
-      }
-
-      debug(`Successfully created AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
-
-      const arn = await this.fetchArn(groupName, maskSecrets);
-      const attributes: Record<string, unknown> = {};
-      if (arn) attributes['Arn'] = arn;
-      if (launchTemplate?.LaunchTemplateId) {
-        attributes['LaunchTemplateID'] = launchTemplate.LaunchTemplateId;
-      }
-      return { physicalId: groupName, attributes };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // A retire that could not finish is APPENDED, never swapped in: the
-      // user needs the wiring failure AND the survivor (#2169's rule). That
-      // error is also NON-RETRYABLE: a replayed create can only meet the
-      // surviving group ("already exists"), and the retry would throw THAT,
-      // dropping the survivor note — while the note's own AWS text (a missing
-      // `autoscaling:DeleteAutoScalingGroup` grant reads as IAM propagation)
-      // would otherwise classify as retryable.
-      // The AWS text goes through the operation's masker: a 5xx or a refusal
-      // can quote a resolved secret-derived value (issue #2176).
-      const failure = this.wrapCaughtError(
-        maskSecrets,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create AutoScalingGroup ${logicalId}: ${text}` +
-              (survivorNote === undefined ? '' : ` ${survivorNote}`),
-            resourceType,
-            logicalId,
-            groupName,
-            cause
-          )
-      );
-      if (survivorNote === undefined) throw failure;
-      // go-to-k/cdkd#4583: the retire could not remove the group this call
-      // created, so name it for the failed-CREATE journal.
-      markCreatedBeforeFailure(markNonRetryable(failure), logicalId, resourceType, groupName);
-      throw failure;
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Retire a group whose create-time wiring failed, as CloudFormation's
-   * CREATE_FAILED rollback does (go-to-k/cdkd#3995). The group was created by
-   * THIS call under the name it was sent, so every call below can only reach
-   * it. In order:
-   *
-   * 1. ONE `UpdateAutoScalingGroup` scales it to zero (and clears a
-   *    template-set `DeletionProtection`), so no launch STARTS after step 2
-   *    has listed the instances. Non-fatal, as in `delete()`: when it fails, a
-   *    protection-only update is sent on its own, and the delete is attempted
-   *    either way, reporting its own refusal.
-   * 2. EC2 termination protection is flipped off on every instance listed,
-   *    in two passes — once after the scale-down and again right before the
-   *    delete — which NARROWS the window for a launch in flight at the first
-   *    read (#796: a `ForceDelete` cannot terminate a protected instance,
-   *    which orphans), and retries a flip the first pass could not make.
-   * 3. `ForceDelete`, then the wait for the group to be gone.
-   *
-   * Returns `undefined` when the group is gone, or the note naming the
-   * survivor and its manual retire command. Never throws: the wiring error is
-   * what the caller re-throws, with this note APPENDED to the thrown message
-   * (`.claude/rules/provider-diff-record-folds.md`) rather than logged, so the
-   * survivor reaches every surface that reports the failure.
-   */
-  private async retireFailedCreate(
+  retireFailedCreate(
     groupName: string,
     logicalId: string,
     properties: Record<string, unknown>,
     maskSecrets: SecretMasker
   ): Promise<string | undefined> {
-    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    let deleteAccepted = false;
-    try {
-      const protection = properties['DeletionProtection'];
-      try {
-        await this.getClient().send(
-          new UpdateAutoScalingGroupCommand({
-            AutoScalingGroupName: groupName,
-            MinSize: 0,
-            MaxSize: 0,
-            DesiredCapacity: 0,
-            ...(protection != null &&
-              protection !== 'none' && { DeletionProtection: 'none' as never }),
-          })
-        );
-      } catch (scaleError) {
-        debug(
-          `Could not scale AutoScalingGroup ${logicalId} to zero before retiring it: ` +
-            describeAwsFailure(scaleError).detail
-        );
-        // The combined call can be refused TRANSIENTLY on a group still
-        // launching (`ResourceContention`, `ScalingActivityInProgress`), which
-        // would leave the template's protection on and the delete refused:
-        // lift the protection on its own.
-        if (protection != null && protection !== 'none') {
-          try {
-            await this.getClient().send(
-              new UpdateAutoScalingGroupCommand({
-                AutoScalingGroupName: groupName,
-                DeletionProtection: 'none' as never,
-              })
-            );
-          } catch (liftError) {
-            debug(
-              `Could not clear DeletionProtection on AutoScalingGroup ${logicalId} before ` +
-                `retiring it: ${describeAwsFailure(liftError).detail}`
-            );
-          }
-        }
-      }
-      const flipped = new Set<string>();
-      await this.removeInstanceTerminationProtection(groupName, logicalId, maskSecrets, flipped);
-      await this.removeInstanceTerminationProtection(groupName, logicalId, maskSecrets, flipped);
-      await this.getClient().send(
-        new DeleteAutoScalingGroupCommand({ AutoScalingGroupName: groupName, ForceDelete: true })
-      );
-      deleteAccepted = true;
-      await this.waitForGroupDeleted(groupName);
-      debug(`Retired AutoScalingGroup ${logicalId} after its create-time wiring failed`);
-      return undefined;
-    } catch (cleanupError) {
-      const outcome = deleteAccepted
-        ? `cdkd started deleting it but could not confirm it is gone`
-        : `cdkd could not delete it`;
-      // The note joins the THROWN (persisted) message, so an AWS-authored
-      // cleanup failure is named by its class there, and AWS's text goes to
-      // debug (go-to-k/cdkd#2319): a denied DeleteAutoScalingGroup names the
-      // caller's assumed-role ARN.
-      const cleanupFailure = describeAwsFailure(cleanupError);
-      if (cleanupFailure.redacted) {
-        debug(
-          `Retiring AutoScalingGroup ${logicalId} after its create-time wiring failed did not ` +
-            `finish: ${cleanupFailure.detail}`
-        );
-      }
-      return maskSecrets(
-        `The group was created, and ${outcome} (` +
-          `${cleanupFailure.summary}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
-          `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
-          pasteableAwsCommand(
-            maskSecrets
-          )`aws autoscaling delete-auto-scaling-group --auto-scaling-group-name ${groupName} --force-delete`.render()
-      );
-    }
+    return retireFailedCreate.call(this, groupName, logicalId, properties, maskSecrets);
   }
 
-  /**
-   * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
-   * #1932 item 3, adopted here by issue #1997). It is paired with the RECORDED
-   * group name (go-to-k/cdkd#4339) into one masker, `mask`, which every reader
-   * of the name or a resolved value in this method uses: the updating line, the
-   * immutable-name refusal's pasted command, `applyTargetGroupArnsDiff`'s
-   * convergence warning, `fetchArn`'s failure line and `wrapUpdateError`.
-   *
-   * `create()` takes the masker too — see its own doc for why the original
-   * "nothing to mask there" reading was wrong.
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1265,604 +259,64 @@ export class ASGProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
       resourceType,
       properties,
       previousProperties,
       context
     );
-    if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
-      throw new ProvisioningError(
-        `Unsupported resource type: ${resourceType}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-    // The physical id is the group name, which can be secret-derived. Paired
-    // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
-    // physical id is the PRE-rotation value, which this deploy's masker never
-    // resolved, and a previous side still spelling `{{resolve:` makes it a
-    // needle. (An unrotated secret-derived name IS the resolved value, which
-    // the deploy's masker already holds.) Every line, the refusal's pasted
-    // command, and the failure wrap of this update read this one masker.
-    const { mask } = withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [[previousProperties['AutoScalingGroupName'], physicalId]]
-    );
-    this.logger.debug(`Updating AutoScalingGroup ${logicalId}: ${mask(physicalId)}`);
-
-    // Reject diffs on fields AWS does not support modifying via
-    // UpdateAutoScalingGroup. The replacement-detection layer typically
-    // catches AutoScalingGroupName changes earlier; this is defense-in-
-    // depth + the only place to surface the equivalent error for
-    // sub-resource fields the caller may reasonably expect to round-trip.
-    // A secret-derived name is recorded as its `{{resolve:...}}` reference
-    // and handed here resolved, which is no change: the physical id, which IS
-    // the group name, decides instead (go-to-k/cdkd#4275).
-    const stringEq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-    if (
-      !stringEq(properties['AutoScalingGroupName'], previousProperties['AutoScalingGroupName']) &&
-      !(await unchangedBehindSecretReference({
-        resourceType,
-        key: 'AutoScalingGroupName',
-        desired: properties['AutoScalingGroupName'],
-        previous: previousProperties['AutoScalingGroupName'],
-        physicalName: physicalId,
-      }))
-    ) {
-      // Issue [#2610] site 8. `--replace` alone cannot succeed on a group whose
-      // recorded `DeletionProtection` is `'prevent-all-deletion'` (see the
-      // level analysis below for why that is the ONLY blocking level): the
-      // replacement's DELETE runs from the deploy engine, which never sets
-      // `DeleteContext.removeProtection` — `delete()` below gates BOTH its
-      // flip-off and its `ForceDelete: true` on exactly that field. See
-      // `../replacement-protection-advice.ts`.
-      //
-      // Read the RECORDED bag: this guard fires before any
-      // `UpdateAutoScalingGroup` in this method, so AWS still holds what
-      // `previousProperties` records.
-      //
-      // The value is a THREE-level string enum, and only the strictest level
-      // blocks a deploy-side replacement. AWS's own wording: the setting
-      // controls whether `DeleteAutoScalingGroup` is allowed "according to the
-      // specified protection level" -- `prevent-force-deletion` withholds only
-      // the FORCE delete, and the deploy engine's replacement issues
-      // `ForceDelete: false` (see `delete()` below, where the flag rides
-      // `context?.removeProtection`). So on `prevent-force-deletion` the delete
-      // is not refused BECAUSE of protection, and telling the user to clear it
-      // would name a remedy that fixes nothing -- the exact defect issue
-      // [#2610] is about, reintroduced by an over-wide predicate. An ABSENT
-      // value is the AWS-side default, which `readCurrentState` writes back as
-      // the explicit `'none'` placeholder.
-      const recordedProtection = previousProperties['DeletionProtection'];
-      const remedy =
-        recordedProtection === 'prevent-all-deletion'
-          ? protectedReplacementAdvice({
-              evidence:
-                "cdkd's recorded properties for this group carry " +
-                'DeletionProtection: prevent-all-deletion',
-              replaceFlags: 'cdkd deploy --replace',
-              disable: {
-                before: 'aws autoscaling update-auto-scaling-group --auto-scaling-group-name',
-                identifier: physicalId,
-                after: '--deletion-protection none',
-                // A secret-derived name (the pre-rotation one included)
-                // withholds the command (go-to-k/cdkd#4339).
-                maskSecrets: mask,
-              },
-            })
-          : 'Use cdkd deploy --replace to replace the group.';
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. ' +
-          remedy
-      );
-    }
-    // BOTH sides before any call (go-to-k/cdkd#3948): a rollback replays this
-    // method with a recorded bag as the DESIRED side, and the previous side is
-    // always the state record.
-    const { next, prev, retained } = await this.readUpdateLists(
-      logicalId,
-      physicalId,
-      resourceType,
-      {
-        Tags: properties['Tags'],
-        LoadBalancerNames: properties['LoadBalancerNames'],
-        TargetGroupARNs: properties['TargetGroupARNs'],
-        MetricsCollection: properties['MetricsCollection'],
-        LifecycleHookSpecificationList: properties['LifecycleHookSpecificationList'],
-        TrafficSources: properties['TrafficSources'],
-        NotificationConfigurations: properties['NotificationConfigurations'],
-      },
-      {
-        Tags: previousProperties['Tags'],
-        LoadBalancerNames: previousProperties['LoadBalancerNames'],
-        TargetGroupARNs: previousProperties['TargetGroupARNs'],
-        MetricsCollection: previousProperties['MetricsCollection'],
-        LifecycleHookSpecificationList: previousProperties['LifecycleHookSpecificationList'],
-        TrafficSources: previousProperties['TrafficSources'],
-        NotificationConfigurations: previousProperties['NotificationConfigurations'],
-      }
-    );
-    try {
-      // Sub-shape diffs are applied via separate per-shape SDK calls
-      // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
-      // fields on UpdateAutoScalingGroup, so each one rides its own
-      // dedicated API. Each per-shape helper is a no-op when the
-      // before/after JSON is identical.
-      await this.applyTagsDiff(physicalId, next.Tags, prev.Tags);
-      await this.applyLoadBalancerNamesDiff(
-        physicalId,
-        next.LoadBalancerNames as string[],
-        prev.LoadBalancerNames as string[]
-      );
-      await this.applyTargetGroupArnsDiff(
-        physicalId,
-        next.TargetGroupARNs as string[],
-        prev.TargetGroupARNs as string[],
-        mask,
-        retained.TargetGroupARNs
-      );
-      await this.applyMetricsCollectionDiff(
-        physicalId,
-        next.MetricsCollection,
-        prev.MetricsCollection
-      );
-      await this.applyLifecycleHooksDiff(
-        physicalId,
-        next.LifecycleHookSpecificationList,
-        prev.LifecycleHookSpecificationList
-      );
-      await this.applyTrafficSourcesDiff(physicalId, next.TrafficSources, prev.TrafficSources);
-      await this.applyNotificationConfigurationsDiff(
-        physicalId,
-        next.NotificationConfigurations,
-        prev.NotificationConfigurations
-      );
-
-      const launchTemplate = this.buildLaunchTemplate(properties);
-      const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
-
-      // issue #1160: `UpdateAutoScalingGroup` has merge semantics — an absent
-      // input field means "no change". Per the #5004 CloudFormation A/B,
-      // CloudFormation resets only InstanceMaintenancePolicy, MaxInstanceLifetime,
-      // CapacityReservationSpecification and AvailabilityZoneDistribution when
-      // removed, plus AvailabilityZoneImpairmentPolicy per the #1160 A/B and
-      // PlacementGroup per the #2762 A/B (the rest keep the live value; see
-      // below). A constant reset arrives in
-      // `properties` from `removalDefaults` (see its declaration for each
-      // value's doc basis); the coerced / aliased fields below resolve theirs
-      // locally through `clearOnUpdateRemoval`.
-      //
-      // go-to-k/cdkd#1160 (real CloudFormation A/B, us-east-1, with the
-      // UpdateAutoScalingGroup input CloudFormation sent read from CloudTrail):
-      //   - AvailabilityZoneImpairmentPolicy: RESET. CloudFormation sends
-      //     `ZonalShiftEnabled: false` with the PREVIOUS
-      //     `ImpairedZoneHealthCheckBehavior`, and AWS then reports no policy.
-      //     cdkd sends the same shape (below).
-      //   - DesiredCapacity, ServiceLinkedRoleARN (a custom-suffix role):
-      //     KEPT — CloudFormation sends nothing and the live value stays, so
-      //     cdkd sends nothing either. MinSize / MaxSize are required.
-      //   - LaunchTemplate <-> MixedInstancesPolicy and VPCZoneIdentifier ->
-      //     AvailabilityZones: CloudFormation sends only the member the
-      //     template now declares, exactly as cdkd does. AWS then drops the
-      //     other launch member, but KEEPS the subnets on a switch to
-      //     AvailabilityZones — parity either way.
-      //   - AvailabilityZoneIds <-> AvailabilityZones (go-to-k/cdkd#2762 A/B):
-      //     CloudFormation sends only the zone member the template now
-      //     declares (AWS refuses both in one request), exactly as cdkd does.
-      //   - SkipZonalShiftValidation: write-only in the CloudFormation schema
-      //     (a per-request flag, never read back) — nothing to reset.
-      //   - Context: "Reserved." AWS refuses any value an account sets ("is
-      //     not allowed to access Context"), so no deployable template can
-      //     remove one.
-      //
-      // Sub-field removal inside a KEPT config object (issue #1225 — the
-      // #1160 bug class one level down) is deliberately passed through
-      // verbatim here:
-      //   - InstanceMaintenancePolicy: a kept-but-partial object (one of the
-      //     two percentages dropped) is REJECTED by AWS — the SDK doc requires
-      //     "Both MinHealthyPercentage and MaxHealthyPercentage must be
-      //     specified". CloudFormation submits the same partial object, so the
-      //     loud failure IS the CFn-parity behavior; there is no silent drop
-      //     to normalize away.
-      //   - CapacityReservationSpecification: whether AWS keeps or clears a
-      //     previously-set CapacityReservationTarget when only the preference
-      //     is re-sent is UNPROBED (a live probe needs a billed Capacity
-      //     Reservation); the kept-partial object passes through unchanged.
-      //   - AvailabilityZoneDistribution: single sub-field — no partial shape
-      //     exists.
-      // go-to-k/cdkd#5004: HealthCheckType, HealthCheckGracePeriod, Cooldown,
-      // TerminationPolicies, NewInstancesProtectedFromScaleIn,
-      // CapacityRebalance, DesiredCapacityType, DefaultInstanceWarmup and
-      // DeletionProtection are KEPT by CloudFormation when removed from the
-      // template (real A/B), so a removal sends nothing for them and the live
-      // value stays. `Cooldown` / `DefaultCooldown` are one logical field.
-      const healthCheckTypeInput = properties['HealthCheckType'] as string | undefined;
-      const healthCheckGracePeriodInput =
-        properties['HealthCheckGracePeriod'] != null
-          ? Number(properties['HealthCheckGracePeriod'])
-          : undefined;
-      const cooldownRaw = properties['Cooldown'] ?? properties['DefaultCooldown'];
-      const defaultCooldownInput = cooldownRaw != null ? Number(cooldownRaw) : undefined;
-      const terminationPoliciesInput = properties['TerminationPolicies'] as string[] | undefined;
-      const newInstancesProtectedInput = properties['NewInstancesProtectedFromScaleIn'] as
-        | boolean
-        | undefined;
-      const capacityRebalanceInput = properties['CapacityRebalance'] as boolean | undefined;
-      // RESET by CloudFormation (#5004 A/B): SDK doc "To clear a previously
-      // set value, specify a new value of 0."
-      const maxInstanceLifetimeInput = clearOnUpdateRemoval(
-        properties['MaxInstanceLifetime'] != null
-          ? Number(properties['MaxInstanceLifetime'])
-          : undefined,
-        previousProperties['MaxInstanceLifetime'] != null
-          ? Number(previousProperties['MaxInstanceLifetime'])
-          : undefined,
-        0
-      );
-      const desiredCapacityTypeInput = properties['DesiredCapacityType'] as string | undefined;
-      const defaultInstanceWarmupInput =
-        properties['DefaultInstanceWarmup'] != null
-          ? Number(properties['DefaultInstanceWarmup'])
-          : undefined;
-      const instanceMaintenancePolicyInput = properties['InstanceMaintenancePolicy'] as
-        | InstanceMaintenancePolicy
-        | undefined;
-      const capacityReservationSpecInput = properties['CapacityReservationSpecification'] as
-        | CapacityReservationSpecification
-        | undefined;
-      const availabilityZoneDistributionInput = properties['AvailabilityZoneDistribution'] as
-        | AvailabilityZoneDistribution
-        | undefined;
-      const deletionProtectionInput = properties['DeletionProtection'] as
-        | DeletionProtection
-        | undefined;
-      // go-to-k/cdkd#2762 (real CloudFormation A/B, us-east-1, the
-      // UpdateAutoScalingGroup input read from CloudTrail): a removed
-      // PlacementGroup is RESET — CloudFormation sends `PlacementGroup: ""` and
-      // AWS then reports no placement group — while a removed
-      // InstanceLifecyclePolicy is KEPT: CloudFormation sends nothing and the
-      // live retention trigger stays.
-      const placementGroupInput = clearOnUpdateRemoval(
-        properties['PlacementGroup'] as string | undefined,
-        previousProperties['PlacementGroup'] as string | undefined,
-        ''
-      );
-      const instanceLifecyclePolicyInput = properties['InstanceLifecyclePolicy'] as
-        | InstanceLifecyclePolicy
-        | undefined;
-      const zones = zoneMembers(
-        properties,
-        context?.desiredFromAwsReadback === true || context?.replayingState === true,
-        previousProperties
-      );
-      // RESET by CloudFormation (#1160 A/B): zonal shift off, the previous
-      // health-check behavior re-sent (the CloudFormation schema requires
-      // both members; AWS then reports no policy).
-      const previousImpairmentPolicy = previousProperties['AvailabilityZoneImpairmentPolicy'];
-      const previousImpairedBehavior =
-        typeof previousImpairmentPolicy === 'object' && previousImpairmentPolicy !== null
-          ? (previousImpairmentPolicy as Record<string, unknown>)['ImpairedZoneHealthCheckBehavior']
-          : undefined;
-      const availabilityZoneImpairmentPolicyInput =
-        clearOnUpdateRemoval<AvailabilityZoneImpairmentPolicy>(
-          properties['AvailabilityZoneImpairmentPolicy'] as
-            | AvailabilityZoneImpairmentPolicy
-            | undefined,
-          previousImpairmentPolicy as AvailabilityZoneImpairmentPolicy | undefined,
-          {
-            ZonalShiftEnabled: false,
-            ...(typeof previousImpairedBehavior === 'string' && {
-              ImpairedZoneHealthCheckBehavior:
-                previousImpairedBehavior as AvailabilityZoneImpairmentPolicy['ImpairedZoneHealthCheckBehavior'],
-            }),
-          }
-        );
-
-      await this.getClient().send(
-        new UpdateAutoScalingGroupCommand({
-          AutoScalingGroupName: physicalId,
-          ...(properties['MinSize'] != null && { MinSize: Number(properties['MinSize']) }),
-          ...(properties['MaxSize'] != null && { MaxSize: Number(properties['MaxSize']) }),
-          ...(properties['DesiredCapacity'] != null && {
-            DesiredCapacity: Number(properties['DesiredCapacity']),
-          }),
-          ...(launchTemplate && { LaunchTemplate: launchTemplate }),
-          ...(properties['MixedInstancesPolicy'] !== undefined && {
-            MixedInstancesPolicy: properties['MixedInstancesPolicy'] as never,
-          }),
-          ...(vpcZoneIdentifier !== undefined && { VPCZoneIdentifier: vpcZoneIdentifier }),
-          ...(zones.AvailabilityZones !== undefined && {
-            AvailabilityZones: zones.AvailabilityZones,
-          }),
-          ...(zones.AvailabilityZoneIds !== undefined && {
-            AvailabilityZoneIds: zones.AvailabilityZoneIds,
-          }),
-          ...(placementGroupInput !== undefined && { PlacementGroup: placementGroupInput }),
-          ...(instanceLifecyclePolicyInput !== undefined && {
-            InstanceLifecyclePolicy: instanceLifecyclePolicyInput,
-          }),
-          ...(healthCheckTypeInput !== undefined && {
-            HealthCheckType: healthCheckTypeInput,
-          }),
-          ...(healthCheckGracePeriodInput !== undefined && {
-            HealthCheckGracePeriod: healthCheckGracePeriodInput,
-          }),
-          ...(defaultCooldownInput !== undefined && {
-            DefaultCooldown: defaultCooldownInput,
-          }),
-          ...(terminationPoliciesInput !== undefined && {
-            TerminationPolicies: terminationPoliciesInput,
-          }),
-          ...(newInstancesProtectedInput !== undefined && {
-            NewInstancesProtectedFromScaleIn: newInstancesProtectedInput,
-          }),
-          ...(capacityRebalanceInput !== undefined && {
-            CapacityRebalance: capacityRebalanceInput,
-          }),
-          ...(properties['ServiceLinkedRoleARN'] !== undefined && {
-            ServiceLinkedRoleARN: properties['ServiceLinkedRoleARN'] as string,
-          }),
-          ...(maxInstanceLifetimeInput !== undefined && {
-            MaxInstanceLifetime: maxInstanceLifetimeInput,
-          }),
-          ...(properties['Context'] !== undefined && {
-            Context: properties['Context'] as string,
-          }),
-          ...(desiredCapacityTypeInput !== undefined && {
-            DesiredCapacityType: desiredCapacityTypeInput,
-          }),
-          ...(defaultInstanceWarmupInput !== undefined && {
-            DefaultInstanceWarmup: defaultInstanceWarmupInput,
-          }),
-          ...(availabilityZoneDistributionInput !== undefined && {
-            AvailabilityZoneDistribution: availabilityZoneDistributionInput,
-          }),
-          ...(availabilityZoneImpairmentPolicyInput !== undefined && {
-            AvailabilityZoneImpairmentPolicy: availabilityZoneImpairmentPolicyInput,
-          }),
-          ...(properties['SkipZonalShiftValidation'] !== undefined && {
-            SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,
-          }),
-          ...(capacityReservationSpecInput !== undefined && {
-            CapacityReservationSpecification: capacityReservationSpecInput,
-          }),
-          ...(instanceMaintenancePolicyInput !== undefined && {
-            InstanceMaintenancePolicy: instanceMaintenancePolicyInput,
-          }),
-          ...(deletionProtectionInput !== undefined && {
-            DeletionProtection: deletionProtectionInput,
-          }),
-        })
-      );
-
-      this.logger.debug(`Successfully updated AutoScalingGroup ${logicalId}`);
-
-      const arn = await this.fetchArn(physicalId, mask);
-      const attributes: Record<string, unknown> = {};
-      if (arn) attributes['Arn'] = arn;
-      if (launchTemplate?.LaunchTemplateId) {
-        attributes['LaunchTemplateID'] = launchTemplate.LaunchTemplateId;
-      }
-      return { physicalId, wasReplaced: false, attributes };
-    } catch (error) {
-      if (error instanceof ResourceUpdateNotSupportedError) throw error;
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, mask);
-    }
   }
 
-  /**
-   * The failure wrap the create / update / delete catches throw.
-   *
-   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
-   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
-   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
-   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
-   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
-   * withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}), except from a create-time wiring call's
-   * failure ({@link markAuxiliaryFailure}), where "it" would read as the
-   * group. A non-`Error` throw is withheld the same way, unstamped: it has no
-   * chain to read.
-   *
-   * A cdkd-authored or transport error keeps its text masked (AWS's SDK and
-   * cdkd's own refusals can quote the group name, which can be secret-derived,
-   * go-to-k/cdkd#4275), stamped exactly when the mask changed it
-   * (`wrapMaskedAwsError`). The delete checks its not-found by type and
-   * message on the RAW error before it wraps, so no "already gone" reading
-   * depends on the wrapped text.
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call.
-   */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
-    this.logger.debug(mask(build(mask(failure.detail)).message));
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    const wrapped = build(`${mask(failure.summary)}${relay}`);
-    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+    return wrapCaughtError.call(this, mask, error, build);
   }
 
-  /**
-   * The `update()` failure wrap ({@link wrapCaughtError}), through the masker
-   * paired with the recorded group name. A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
-   */
-  private wrapUpdateError(
+  wrapUpdateError(
     error: unknown,
     resourceType: string,
     logicalId: string,
     physicalId: string,
     maskSecrets: MaskerFn | undefined
   ): ProvisioningError {
-    const cause = error instanceof Error ? error : undefined;
-    return this.wrapCaughtError(
-      maskerOrIdentity(maskSecrets),
-      error,
-      (text) =>
-        new ProvisioningError(
-          `Failed to update AutoScalingGroup ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
-    );
+    return wrapUpdateError.call(this, error, resourceType, logicalId, physicalId, maskSecrets);
   }
 
-  /**
-   * Delete an Auto Scaling group.
-   *
-   * The compensation boundary (issue #2204): a `--remove-protection` flip of
-   * `DeletionProtection` to `none` whose delete then fails terminally is undone
-   * here — back to the value the pre-flip readback saw — so a destroy that did
-   * not happen does not leave a live group with its guard stripped.
-   *
-   * The same holds for each launched instance's `DisableApiTermination`, which
-   * the flag also turns off (issue #796): each instance this run turned off is
-   * turned back on against the same group delete failure, from its own record
-   * (`settleInstanceFlips`).
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    // The record `run` was handed, so the re-enable and the site's commands
-    // can read the value this record's flip removed.
-    let current: ProtectionFlipRecord | undefined;
-    const removedValue = (): string | undefined =>
-      current ? this.removedProtection.get(current) : undefined;
-    try {
-      await this.deleteGroupUnderCompensation(
-        logicalId,
-        physicalId,
-        resourceType,
-        context,
-        removedValue,
-        (flip) => {
-          current = flip;
-        }
-      );
-    } catch (error) {
-      if (current) {
-        await this.settleInstanceFlips(
-          logicalId,
-          current,
-          error,
-          context?.expectedRegion,
-          context?.maskSecrets
-        );
-      }
-      throw error;
-    }
-    if (current) this.releaseInstanceFlips(current, context?.expectedRegion);
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, _properties, context);
   }
 
-  /**
-   * Compensate every instance flip `groupFlip`'s attempts recorded, against
-   * the group delete's `error` (issue #2204). Each instance is settled on its
-   * own record: restored, released, or kept, by the same rules as the group's.
-   *
-   * Once AWS accepted `DeleteAutoScalingGroup(ForceDelete)` the instances are
-   * being terminated with the group, so nothing is put back: the instance
-   * record inherits the group's `deleteAccepted` latch.
-   *
-   * ONE residual, named because it is not reached here (the same shape as the
-   * one `ProtectionCompensationOutcome` states): an instance DETACHED from the
-   * group out of band between attempts. If the group is then gone, the delete
-   * ends on the not-found path, where {@link releaseInstanceFlips} drops every
-   * instance record WITHOUT restoring, so that live, detached instance keeps
-   * its guard stripped. Restoring on that path would need a readback of each
-   * instance (gone with the group, or detached and live?) on what is
-   * otherwise a successful delete.
-   */
-  private async settleInstanceFlips(
+  settleInstanceFlips(
     logicalId: string,
     groupFlip: ProtectionFlipRecord,
     error: unknown,
     region: string | undefined,
     mask: MaskerFn | undefined
   ): Promise<void> {
-    const instances = this.groupInstanceFlips.get(groupFlip);
-    if (!instances) return;
-    for (const [instanceId, flip] of instances) {
-      if (groupFlip.deleteAccepted) flip.deleteAccepted = true;
-      const released = await settleProtectionFlip({
-        registry: this.instanceProtectionFlips,
-        key: protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region),
-        flip,
-        error,
-        compensation: {
-          logicalId,
-          physicalId: instanceId,
-          logger: this.logger,
-          mask,
-          site: autoScalingGroupInstanceProtectionSite(instanceId, region),
-          reEnable: () => this.reEnableLaunchedInstance(instanceId),
-        },
-      });
-      // A released record is settled for good: forget it here too, or a later
-      // delete reusing the group record (kept when the GROUP's re-enable
-      // failed) would settle it again and re-write a guard already restored.
-      if (released) instances.delete(instanceId);
-    }
+    return settleInstanceFlips.call(this, logicalId, groupFlip, error, region, mask);
   }
 
-  /**
-   * Turn a group-launched instance's `DisableApiTermination` back on. When the
-   * write fails, read the instance's state: one `shutting-down` or `terminated`
-   * raises {@link LaunchedInstanceGoneError} (the compensation's "gone" arm);
-   * anything else, the readback failing included, re-throws the write's own
-   * error, keeping the loud "LIVE with its deletion protection still off" line.
-   */
-  private async reEnableLaunchedInstance(instanceId: string): Promise<void> {
-    try {
-      await reEnableInstanceApiTermination(this.getEc2Client(), instanceId);
-    } catch (writeError) {
-      let state: string | undefined;
-      try {
-        const response = await this.getEc2Client().send(
-          new DescribeInstancesCommand({ InstanceIds: [instanceId] })
-        );
-        state = response.Reservations?.[0]?.Instances?.[0]?.State?.Name;
-      } catch {
-        // Unknown state: keep the write's own error.
-      }
-      if (state !== undefined && GONE_INSTANCE_STATES.has(state)) {
-        throw new LaunchedInstanceGoneError(instanceId, state);
-      }
-      throw writeError;
-    }
+  reEnableLaunchedInstance(instanceId: string): Promise<void> {
+    return reEnableLaunchedInstance.call(this, instanceId);
   }
 
-  /**
-   * The group is gone (deleted, or already absent): drop its instances'
-   * records, restoring nothing. See {@link settleInstanceFlips} for the one
-   * residual this leaves: an instance detached out of band between attempts.
-   */
-  private releaseInstanceFlips(groupFlip: ProtectionFlipRecord, region: string | undefined): void {
-    for (const instanceId of this.groupInstanceFlips.get(groupFlip)?.keys() ?? []) {
-      this.instanceProtectionFlips.release(
-        protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region)
-      );
-    }
-    this.groupInstanceFlips.delete(groupFlip);
+  releaseInstanceFlips(groupFlip: ProtectionFlipRecord, region: string | undefined): void {
+    return releaseInstanceFlips.call(this, groupFlip, region);
   }
 
-  private async deleteGroupUnderCompensation(
+  deleteGroupUnderCompensation(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1870,511 +324,63 @@ export class ASGProvider implements ResourceProvider {
     removedValue: () => string | undefined,
     onFlip: (flip: ProtectionFlipRecord) => void
   ): Promise<void> {
-    await deleteWithProtectionCompensation({
-      registry: this.protectionFlips,
-      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-      run: (flip) => {
-        onFlip(flip);
-        return this.deleteOnce(logicalId, physicalId, resourceType, context, flip);
-      },
-      compensation: {
-        logicalId,
-        physicalId,
-        logger: this.logger,
-        mask: context?.maskSecrets,
-        site: autoScalingGroupProtectionSite(physicalId, context?.expectedRegion, removedValue),
-        reEnable: async () => {
-          const value = removedValue();
-          // Unreachable while the record is only ever set together with the
-          // value (`deleteOnce`); throwing keeps the LOUD "could NOT
-          // re-enable" line rather than guessing a level the user never had.
-          if (value === undefined) {
-            throw new Error('the DeletionProtection value removed by this run was not recorded');
-          }
-          await this.getClient().send(
-            new UpdateAutoScalingGroupCommand({
-              AutoScalingGroupName: physicalId,
-              DeletionProtection: value as DeletionProtection,
-            })
-          );
-        },
-      },
-    });
+    return deleteGroupUnderCompensation.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      context,
+      removedValue,
+      onFlip
+    );
   }
 
-  private async deleteOnce(
+  deleteOnce(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting AutoScalingGroup ${logicalId}: ${physicalId}`);
-
-    // `--remove-protection`: clear DeletionProtection in-place before the
-    // actual delete, then set ForceDelete=true so AWS terminates running
-    // instances as part of the delete (matches the "I know what I'm doing"
-    // intent of the flag). Without `removeProtection`, ForceDelete stays
-    // false and AWS rejects the delete on a group with running instances
-    // or DeletionProtection set, surfacing as ProvisioningError. The
-    // flip-off is idempotent — AWS accepts UpdateAutoScalingGroup
-    // (DeletionProtection: 'none') even when protection is already
-    // disabled, so we always issue it under the flag. The pre-flip readback is
-    // what lets a terminal failure restore ONLY a guard this run turned off,
-    // and to the level it had: `prevent-force-deletion` and
-    // `prevent-all-deletion` are both "on", and putting back the wrong one
-    // would be a configuration change of cdkd's own.
-    if (context?.removeProtection === true) {
-      try {
-        let observed: string | undefined;
-        await observeThenDisableProtection({
-          flip,
-          logger: this.logger,
-          physicalId,
-          mask: context?.maskSecrets,
-          guardName: 'DeletionProtection',
-          observe: async () => {
-            const group = await this.describeGroup(physicalId);
-            const value = group?.DeletionProtection;
-            observed = typeof value === 'string' && value !== 'none' ? value : undefined;
-            return observed !== undefined;
-          },
-          disable: async () => {
-            await this.getClient().send(
-              new UpdateAutoScalingGroupCommand({
-                AutoScalingGroupName: physicalId,
-                DeletionProtection: 'none' as never,
-              })
-            );
-          },
-        });
-        // Recorded only once AWS accepted the flip (a rejected one threw out of
-        // `observeThenDisableProtection` above), and never CLEARED here: a
-        // re-entered attempt observes `none` because the previous one turned it
-        // off, so overwriting would lose the level the latch still owes.
-        if (observed !== undefined) this.removedProtection.set(flip, observed);
-        this.logger.debug(
-          `Disabled DeletionProtection on AutoScalingGroup ${logicalId} before delete`
-        );
-      } catch (flipError) {
-        // Non-fatal: log and proceed. The actual delete below surfaces
-        // any real error.
-        this.logger.debug(
-          maskerOrIdentity(context?.maskSecrets)(
-            `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
-          )
-        );
-      }
-
-      // ASG-level DeletionProtection + ForceDelete only governs the GROUP and
-      // its scale-in protection. If the group's launch template sets
-      // EC2-level termination protection (DisableApiTermination), the
-      // ForceDelete below still cannot terminate those instances and they
-      // ORPHAN after the group is gone (issue #796). Enumerate the group's
-      // current instances and flip each one's DisableApiTermination off first,
-      // mirroring the EC2Provider `--remove-protection` path. Each flip is
-      // recorded for the compensation in `delete()` (issue #2204).
-      await this.removeInstanceTerminationProtectionForDelete(
-        physicalId,
-        logicalId,
-        flip,
-        context.expectedRegion
-      );
-    }
-
-    try {
-      await this.getClient().send(
-        new DeleteAutoScalingGroupCommand({
-          AutoScalingGroupName: physicalId,
-          ForceDelete: context?.removeProtection === true,
-        })
-      );
-      // AWS took the delete, so a throw from the wait below is a WAIT failing,
-      // not the delete: the group is going and its guard must not be put back.
-      flip.deleteAccepted = true;
-
-      this.logger.debug(`Successfully initiated deletion of AutoScalingGroup ${logicalId}`);
-
-      // Wait for the group to be fully gone. ASG delete is asynchronous —
-      // returning immediately would leave dependent EC2 / IAM / SG
-      // resources blocked on the lingering group.
-      await this.waitForGroupDeleted(physicalId);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`AutoScalingGroup ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete AutoScalingGroup ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, and the delete classifiers
-      // read `NotFoundException` in a message as "already deleted": only the
-      // not-found check above means this group is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteOnce.call(this, logicalId, physicalId, resourceType, context, flip);
   }
 
-  async getAttribute(
+  getAttribute(
     physicalId: string,
     _resourceType: string,
     attributeName: string,
     logicalId: string
   ): Promise<unknown> {
-    const group = await this.describeGroup(physicalId);
-    if (!group) {
-      throw new ProvisioningError(
-        `AutoScalingGroup ${physicalId} not found while resolving attribute ${attributeName}`,
-        'AWS::AutoScaling::AutoScalingGroup',
-        logicalId,
-        physicalId
-      );
-    }
-    switch (attributeName) {
-      case 'Arn':
-      case 'AutoScalingGroupARN':
-        return group.AutoScalingGroupARN ?? '';
-      case 'LaunchConfigurationName':
-        return group.LaunchConfigurationName ?? '';
-      case 'LaunchTemplateID':
-      case 'LaunchTemplateId':
-        return group.LaunchTemplate?.LaunchTemplateId ?? '';
-      default:
-        return '';
-    }
+    return getAttribute.call(this, physicalId, _resourceType, attributeName, logicalId);
   }
 
-  /**
-   * Read the AWS-current AutoScalingGroup configuration in CFn-property shape.
-   *
-   * Surfaces the user-controllable subset of `DescribeAutoScalingGroups`,
-   * with always-emit placeholders on user-controllable top-level keys per
-   * the cdkd PR #145 always-emit convention so that v3 `observedProperties`
-   * baseline catches console-side ADDs to fields a clean deploy did not
-   * template (e.g. a console-set `DeletionProtection: 'prevent-force-deletion'`
-   * on a group originally created without it).
-   *
-   * Sub-shapes (LifecycleHookSpecificationList / TrafficSources /
-   * NotificationConfigurations) are surfaced via three parallel Describe
-   * calls fired alongside the primary `DescribeAutoScalingGroups`. Each is
-   * best-effort: a per-call failure (e.g. permissions gap on
-   * `autoscaling:DescribeLifecycleHooks`) is logged at debug and the
-   * matching key falls back to its always-emit `[]` placeholder rather
-   * than aborting the whole drift read.
-   *
-   * `MetricsCollection` is reverse-mapped from `EnabledMetrics` (already
-   * present on the primary `DescribeAutoScalingGroups` response, so no
-   * extra call is needed).
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the group is gone.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    // Fire the four reads in parallel. Sub-shape failures are best-effort
-    // so a single permission gap does not break the whole drift read.
-    const groupPromise = (async () => {
-      try {
-        return await this.describeGroup(physicalId);
-      } catch (err) {
-        // `null`, not the gone sentinel: this predicate is a generic
-        // `ValidationError` plus message text, which proves nothing
-        // (go-to-k/cdkd#4283). The empty describe list below is the answer.
-        if (this.isNotFoundError(err)) return null;
-        throw err;
-      }
-    })();
-
-    const lifecycleHooksPromise = this.getClient()
-      .send(new DescribeLifecycleHooksCommand({ AutoScalingGroupName: physicalId }))
-      .then((r) => r.LifecycleHooks ?? [])
-      .catch((err) => {
-        this.logger.debug(
-          `DescribeLifecycleHooks(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-        );
-        return [];
-      });
-
-    const trafficSourcesPromise = this.getClient()
-      .send(new DescribeTrafficSourcesCommand({ AutoScalingGroupName: physicalId }))
-      .then((r) => r.TrafficSources ?? [])
-      .catch((err) => {
-        this.logger.debug(
-          `DescribeTrafficSources(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-        );
-        return [];
-      });
-
-    const notificationsPromise = this.getClient()
-      .send(new DescribeNotificationConfigurationsCommand({ AutoScalingGroupNames: [physicalId] }))
-      .then((r) => r.NotificationConfigurations ?? [])
-      .catch((err) => {
-        this.logger.debug(
-          `DescribeNotificationConfigurations(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-        );
-        return [];
-      });
-
-    const [group, lifecycleHooks, trafficSources, notifications] = await Promise.all([
-      groupPromise,
-      lifecycleHooksPromise,
-      trafficSourcesPromise,
-      notificationsPromise,
-    ]);
-
-    if (group === null) return undefined;
-    if (!group) return RESOURCE_NOT_FOUND;
-
-    const result: Record<string, unknown> = {};
-    if (group.AutoScalingGroupName !== undefined) {
-      result['AutoScalingGroupName'] = group.AutoScalingGroupName;
-    }
-    if (group.LaunchTemplate) {
-      const lt: Record<string, unknown> = {};
-      if (group.LaunchTemplate.LaunchTemplateId !== undefined) {
-        lt['LaunchTemplateId'] = group.LaunchTemplate.LaunchTemplateId;
-      }
-      if (group.LaunchTemplate.LaunchTemplateName !== undefined) {
-        lt['LaunchTemplateName'] = group.LaunchTemplate.LaunchTemplateName;
-      }
-      if (group.LaunchTemplate.Version !== undefined) {
-        lt['Version'] = group.LaunchTemplate.Version;
-      }
-      result['LaunchTemplate'] = lt;
-    }
-    result['MinSize'] = group.MinSize ?? 0;
-    result['MaxSize'] = group.MaxSize ?? 0;
-    if (group.DesiredCapacity !== undefined) result['DesiredCapacity'] = group.DesiredCapacity;
-    // VPCZoneIdentifier round-trips back to the CFn list shape so the
-    // comparator sees the same array the template emitted, not the
-    // SDK-side comma-joined string.
-    if (group.VPCZoneIdentifier !== undefined && group.VPCZoneIdentifier !== '') {
-      result['VPCZoneIdentifier'] = group.VPCZoneIdentifier.split(',').map((s) => s.trim());
-    } else {
-      result['VPCZoneIdentifier'] = [];
-    }
-    result['AvailabilityZones'] = group.AvailabilityZones ?? [];
-    // AWS reports the zone ids beside the names whichever member the group
-    // was created with; drift compares only the keys the baseline holds.
-    result['AvailabilityZoneIds'] = group.AvailabilityZoneIds ?? [];
-    if (group.PlacementGroup !== undefined && group.PlacementGroup !== '') {
-      result['PlacementGroup'] = group.PlacementGroup;
-    }
-    if (group.InstanceLifecyclePolicy !== undefined) {
-      result['InstanceLifecyclePolicy'] = group.InstanceLifecyclePolicy;
-    }
-    if (group.HealthCheckType !== undefined) result['HealthCheckType'] = group.HealthCheckType;
-    if (group.HealthCheckGracePeriod !== undefined) {
-      result['HealthCheckGracePeriod'] = group.HealthCheckGracePeriod;
-    }
-    if (group.DefaultCooldown !== undefined) {
-      // CFn template field is `Cooldown`; SDK / Describe response calls it
-      // `DefaultCooldown`. Surface under the CFn name so the comparator
-      // matches state directly.
-      result['Cooldown'] = group.DefaultCooldown;
-    }
-    result['NewInstancesProtectedFromScaleIn'] = group.NewInstancesProtectedFromScaleIn ?? false;
-    result['TerminationPolicies'] = group.TerminationPolicies ?? [];
-    result['CapacityRebalance'] = group.CapacityRebalance ?? false;
-    if (group.ServiceLinkedRoleARN !== undefined) {
-      result['ServiceLinkedRoleARN'] = group.ServiceLinkedRoleARN;
-    }
-    if (group.MaxInstanceLifetime !== undefined) {
-      result['MaxInstanceLifetime'] = group.MaxInstanceLifetime;
-    }
-    result['LoadBalancerNames'] = group.LoadBalancerNames ?? [];
-    result['TargetGroupARNs'] = group.TargetGroupARNs ?? [];
-    if (group.Context !== undefined) result['Context'] = group.Context;
-    if (group.DesiredCapacityType !== undefined) {
-      result['DesiredCapacityType'] = group.DesiredCapacityType;
-    }
-    if (group.DefaultInstanceWarmup !== undefined) {
-      result['DefaultInstanceWarmup'] = group.DefaultInstanceWarmup;
-    }
-    if (group.MixedInstancesPolicy !== undefined) {
-      result['MixedInstancesPolicy'] = group.MixedInstancesPolicy;
-    }
-    if (group.AvailabilityZoneDistribution !== undefined) {
-      result['AvailabilityZoneDistribution'] = group.AvailabilityZoneDistribution;
-    }
-    if (group.AvailabilityZoneImpairmentPolicy !== undefined) {
-      result['AvailabilityZoneImpairmentPolicy'] = group.AvailabilityZoneImpairmentPolicy;
-    }
-    if (group.CapacityReservationSpecification !== undefined) {
-      result['CapacityReservationSpecification'] = group.CapacityReservationSpecification;
-    }
-    if (group.InstanceMaintenancePolicy !== undefined) {
-      result['InstanceMaintenancePolicy'] = group.InstanceMaintenancePolicy;
-    }
-    if (group.DeletionProtection !== undefined) {
-      result['DeletionProtection'] = group.DeletionProtection;
-    } else {
-      // AWS reports `undefined` when the group has the AWS-side default
-      // (`'none'`). Always-emit placeholder so the v3 `observedProperties`
-      // baseline catches a console-side flip to `prevent-force-deletion`
-      // / `prevent-all-deletion`.
-      result['DeletionProtection'] = 'none';
-    }
-    // Tags: filter aws:* prefix and normalize to CFn shape sorted by Key.
-    // ASG returns Tags inside the AutoScalingGroup record (already populated
-    // by DescribeAutoScalingGroups — no separate ListTagsForResource call).
-    result['Tags'] = normalizeAwsTagsToCfn(group.Tags);
-
-    // Sub-shapes — reverse-map AWS responses to CFn template shape and
-    // always-emit `[]` placeholders so the v3 `observedProperties` baseline
-    // catches console-side ADDs to a previously-empty list.
-    result['MetricsCollection'] = mapEnabledMetricsToCfn(group.EnabledMetrics);
-    result['LifecycleHookSpecificationList'] = mapLifecycleHooksToCfn(lifecycleHooks);
-    // Strip ALL elbv2 / elb entries from TrafficSources — the canonical
-    // attachment state for these types lives in TargetGroupARNs /
-    // LoadBalancerNames. TrafficSources is meant for attachment types
-    // without a dedicated CFn property (VPC Lattice, VPC Endpoint
-    // Service). Filtering unconditionally avoids two failure modes
-    // surfaced by tests/integration/drift-revert-vpc (PR #547):
-    // double-attach/detach on revert, and stale TS entries from AWS's
-    // eventual-consistency window after Attach/Detach surfacing as
-    // false drift on the next read.
-    const dedupedTrafficSources = trafficSources.filter((t) => {
-      if (t.Identifier === undefined) return false;
-      if (t.Type === 'elbv2' || t.Type === 'elb') return false;
-      return true;
-    });
-    result['TrafficSources'] = mapTrafficSourcesToCfn(dedupedTrafficSources);
-    result['NotificationConfigurations'] = mapNotificationsToCfn(notifications);
-
-    return result;
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
   }
 
-  // ─── Helpers ──────────────────────────────────────────────────────
-
-  private buildLaunchTemplate(
+  buildLaunchTemplate(
     properties: Record<string, unknown>
   ): LaunchTemplateSpecification | undefined {
-    const lt = properties['LaunchTemplate'] as
-      | { LaunchTemplateId?: string; LaunchTemplateName?: string; Version?: string | number }
-      | undefined;
-    if (!lt) return undefined;
-    const out: LaunchTemplateSpecification = {};
-    // AWS UpdateAutoScalingGroup rejects when both LaunchTemplateId and
-    // LaunchTemplateName are present in the same LaunchTemplate object
-    // ("Valid requests must contain either launchTemplateId or
-    // LaunchTemplateName"). DescribeAutoScalingGroups returns both, so
-    // a straight readCurrentState → update round-trip on `drift --revert`
-    // would hit this. Prefer the ID (canonical, doesn't change on LT
-    // rename) and only fall back to Name when ID is absent.
-    if (lt.LaunchTemplateId !== undefined) {
-      out.LaunchTemplateId = lt.LaunchTemplateId;
-      if (lt.LaunchTemplateName !== undefined) {
-        // User templated BOTH — AWS would reject the resulting Create /
-        // Update otherwise; we silently prefer the ID. Surface the
-        // choice in --verbose so a user wondering why their Name didn't
-        // take effect has an auditable signal.
-        this.logger.debug(
-          `buildLaunchTemplate: both LaunchTemplateId (${lt.LaunchTemplateId}) and LaunchTemplateName (${lt.LaunchTemplateName}) templated; dropping Name`
-        );
-      }
-    } else if (lt.LaunchTemplateName !== undefined) {
-      out.LaunchTemplateName = lt.LaunchTemplateName;
-    }
-    if (lt.Version !== undefined) {
-      // Defensive coercion: AWS SDK `LaunchTemplateSpecification.Version`
-      // is `string` and AWS rejects non-string forms with `Invalid
-      // launch template version: either '$Default', '$Latest', or a
-      // numeric version are allowed.`. cdkd's `IntrinsicResolver`
-      // resolves `Fn::GetAtt <LaunchTemplate>.LatestVersionNumber`
-      // through a per-type lookup; intermediate cases could surface
-      // numeric values, so we coerce defensively.
-      out.Version = String(lt.Version);
-    }
-    if (out.LaunchTemplateId === undefined && out.LaunchTemplateName === undefined) {
-      return undefined;
-    }
-    return out;
+    return buildLaunchTemplate.call(this, properties);
   }
 
-  /**
-   * CFn `Tags` is `[{Key, Value, PropagateAtLaunch?}]`. AWS expects each
-   * tag to also carry `ResourceId: <groupName>` and `ResourceType:
-   * 'auto-scaling-group'`. We tack those on at create time so the SDK
-   * input shape matches without forcing the user to template them.
-   */
-  private buildTags(groupName: string, properties: Record<string, unknown>): ASGTag[] {
-    const raw = properties['Tags'] as
-      | Array<{ Key?: string; Value?: string; PropagateAtLaunch?: boolean }>
-      | undefined;
-    if (!raw) return [];
-    return raw
-      .filter((t) => t.Key !== undefined)
-      .map((t) => ({
-        ResourceId: groupName,
-        ResourceType: 'auto-scaling-group',
-        Key: t.Key as string,
-        Value: t.Value ?? '',
-        PropagateAtLaunch: t.PropagateAtLaunch ?? false,
-      }));
+  buildTags(groupName: string, properties: Record<string, unknown>): ASGTag[] {
+    return buildTags.call(this, groupName, properties);
   }
 
-  /**
-   * CFn `VPCZoneIdentifier` is a list of subnet ids; the AWS SDK input
-   * field is a comma-joined string.
-   */
-  private joinVpcZoneIdentifier(value: unknown): string | undefined {
-    if (value === undefined || value === null) return undefined;
-    if (Array.isArray(value)) {
-      const cleaned = value.map((v) => String(v).trim()).filter((v) => v.length > 0);
-      if (cleaned.length === 0) return undefined;
-      return cleaned.join(',');
-    }
-    if (typeof value === 'string') return value;
-    return undefined;
+  joinVpcZoneIdentifier(value: unknown): string | undefined {
+    return joinVpcZoneIdentifier.call(this, value);
   }
 
-  private async describeGroup(groupName: string) {
-    const response = await this.getClient().send(
-      new DescribeAutoScalingGroupsCommand({
-        AutoScalingGroupNames: [groupName],
-      })
-    );
-    return response.AutoScalingGroups?.[0];
+  describeGroup(groupName: string) {
+    return describeGroup.call(this, groupName);
   }
 
-  /**
-   * Flip EC2-level termination protection (`DisableApiTermination`) off on
-   * every instance currently launched by the group, so the subsequent
-   * `DeleteAutoScalingGroup(ForceDelete: true)` can actually terminate them
-   * instead of orphaning the protected instances (issue #796). Best-effort:
-   * a Describe failure or a per-instance flip failure is logged at debug and
-   * does not block the delete (the modify WRITE lags the terminate READ, so
-   * the shared helper swallows propagation errors the same way the EC2 path
-   * does — the orphan, if any, surfaces as a leftover instance the caller
-   * can clean up rather than a hard delete failure).
-   *
-   * This is the create path's retire of a group cdkd itself just created, so
-   * nothing is recorded for compensation; the `--remove-protection` delete
-   * uses {@link removeInstanceTerminationProtectionForDelete}.
-   */
-  private async removeInstanceTerminationProtection(
+  removeInstanceTerminationProtection(
     groupName: string,
     logicalId: string,
     // AWS's describe error can echo the group name, which may be a resolved
@@ -2383,164 +389,59 @@ export class ASGProvider implements ResourceProvider {
     // Instances already flipped by an earlier pass of the same retire.
     alreadyFlipped: Set<string>
   ): Promise<void> {
-    const instanceIds = (
-      await this.listGroupInstanceIds(groupName, logicalId, maskSecrets)
-    )?.filter((id) => !alreadyFlipped.has(id));
-    if (!instanceIds || instanceIds.length === 0) return;
-
-    this.logger.debug(
-      `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
+    return removeInstanceTerminationProtection.call(
+      this,
+      groupName,
+      logicalId,
+      maskSecrets,
+      alreadyFlipped
     );
-    for (const instanceId of instanceIds) {
-      // Only an ACCEPTED flip is recorded, so a later pass retries a failed one.
-      if (await disableInstanceApiTermination(this.getEc2Client(), instanceId, this.logger)) {
-        alreadyFlipped.add(instanceId);
-      }
-    }
   }
 
-  /**
-   * The `--remove-protection` delete's instance flip (issue #796), recorded
-   * for compensation (issue #2204): each instance's `DisableApiTermination` is
-   * read first and turned off, and its own flip record latches only when the
-   * read saw it ON and EC2 accepted the flip. The record is acquired from the
-   * per-instance registry, so a re-entered attempt that reads the guard OFF
-   * (because the earlier attempt turned it off) keeps what that attempt
-   * recorded, and is remembered on `groupFlip` for `delete()` to settle.
-   *
-   * Best-effort exactly like the unrecorded path: a describe failure or a
-   * refused flip is logged at debug and the delete proceeds.
-   */
-  private async removeInstanceTerminationProtectionForDelete(
+  removeInstanceTerminationProtectionForDelete(
     groupName: string,
     logicalId: string,
     groupFlip: ProtectionFlipRecord,
     region: string | undefined
   ): Promise<void> {
-    const instanceIds = await this.listGroupInstanceIds(groupName, logicalId, (text) => text);
-    if (!instanceIds || instanceIds.length === 0) return;
-
-    let flips = this.groupInstanceFlips.get(groupFlip);
-    if (!flips) {
-      flips = new Map();
-      this.groupInstanceFlips.set(groupFlip, flips);
-    }
-    this.logger.debug(
-      `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
+    return removeInstanceTerminationProtectionForDelete.call(
+      this,
+      groupName,
+      logicalId,
+      groupFlip,
+      region
     );
-    for (const instanceId of instanceIds) {
-      const flip = this.instanceProtectionFlips.acquire(
-        protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region),
-        PROTECTION_FLIP_REUSE_WINDOW_MS
-      );
-      flips.set(instanceId, flip);
-      await observeThenDisableInstanceApiTermination(
-        this.getEc2Client(),
-        instanceId,
-        flip,
-        this.logger
-      );
-    }
   }
 
-  /**
-   * The ids of the instances the group currently holds, or `undefined` when
-   * the describe failed (logged at debug: the caller proceeds without them).
-   */
-  private async listGroupInstanceIds(
+  listGroupInstanceIds(
     groupName: string,
     logicalId: string,
     maskSecrets: SecretMasker
   ): Promise<string[] | undefined> {
-    try {
-      const group = await this.describeGroup(groupName);
-      return (group?.Instances ?? [])
-        .map((i) => i.InstanceId)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-    } catch (describeError) {
-      this.logger.debug(
-        maskSecrets(
-          `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
-        )
-      );
-      return undefined;
-    }
+    return listGroupInstanceIds.call(this, groupName, logicalId, maskSecrets);
   }
 
-  private async fetchArn(
+  fetchArn(
     groupName: string,
     // The create path passes its masker: the name may be a resolved secret.
     maskSecrets: SecretMasker = (text) => text
   ): Promise<string | undefined> {
-    try {
-      const group = await this.describeGroup(groupName);
-      return group?.AutoScalingGroupARN;
-    } catch (err) {
-      this.logger.debug(
-        maskSecrets(
-          `DescribeAutoScalingGroups(${groupName}) failed: ${describeAwsFailure(err).detail}`
-        )
-      );
-      return undefined;
-    }
+    return fetchArn.call(this, groupName, maskSecrets);
   }
 
-  private isNotFoundError(error: unknown): boolean {
-    if (!(error instanceof Error)) return false;
-    const name = (error as { name?: string }).name ?? '';
-    const message = error.message.toLowerCase();
-    // ASG returns ValidationError with message "AutoScalingGroup name not
-    // found" rather than a typed NotFound exception; cover both shapes.
-    return (
-      name === 'ValidationError' &&
-      (message.includes('autoscalinggroup name not found') ||
-        message.includes('not found') ||
-        message.includes('does not exist'))
-    );
+  isNotFoundError(error: unknown): boolean {
+    return isNotFoundError.call(this, error);
   }
 
-  private async waitForGroupDeleted(groupName: string, maxWaitMs = 900_000): Promise<void> {
-    const startTime = Date.now();
-    let delay = 5_000;
-
-    while (Date.now() - startTime < maxWaitMs) {
-      try {
-        const group = await this.describeGroup(groupName);
-        if (!group) return;
-      } catch (error) {
-        if (this.isNotFoundError(error)) return;
-        throw error;
-      }
-
-      await this.sleep(delay);
-      delay = Math.min(delay * 2, 10_000);
-    }
-
-    throw new Error(
-      `Timed out waiting for AutoScalingGroup ${groupName} to be deleted (15 minute cap)`
-    );
+  waitForGroupDeleted(groupName: string, maxWaitMs = 900_000): Promise<void> {
+    return waitForGroupDeleted.call(this, groupName, maxWaitMs);
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  sleep(ms: number): Promise<void> {
+    return sleep.call(this, ms);
   }
 
-  /**
-   * Read every list property of both sides, refusing a malformed one before
-   * any call (go-to-k/cdkd#3948). ABSENT reads as the empty list.
-   *
-   * One exception keeps a deploy moving: a malformed RECORDED
-   * `LoadBalancerNames` / `TargetGroupARNs` is read from the live group
-   * instead, once every desired list and every other recorded list is
-   * well-formed. That covers a dynamic reference or its mask (cdkd keeps
-   * `{{resolve:...}}` in state by design) and a record `cdkd import` left with
-   * an unresolved intrinsic (`[{ Ref: 'MyTG' }]`), which used to self-heal on
-   * the next deploy. Only the live entries the desired side also names are
-   * taken, so the read is ADD-only: nothing is detached on the strength of a
-   * record cdkd could not read, and a live entry the desired side omits stays
-   * attached, with a warning.
-   */
-  private async readUpdateLists(
+  readUpdateLists(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -2552,241 +453,26 @@ export class ASGProvider implements ResourceProvider {
     /** Live entries an unreadable record hid, left attached on purpose. */
     retained: Record<AttachmentKind, string[]>;
   }> {
-    const nextRead = readLists(desired, 'desired');
-    const prevRead = readLists(recorded, 'recorded');
-    const badNext = malformedKinds(nextRead);
-    let badPrev = malformedKinds(prevRead);
-    const retained: Record<AttachmentKind, string[]> = {
-      LoadBalancerNames: [],
-      TargetGroupARNs: [],
-    };
-    const readLive = (k: ListKind): boolean => {
-      const read = prevRead[k];
-      return isAttachmentKind(k) && read.kind === 'malformed';
-    };
-
-    if (badNext.length === 0 && badPrev.length > 0 && badPrev.every(readLive)) {
-      const kinds = badPrev.join(' / ');
-      let group: Awaited<ReturnType<ASGProvider['describeGroup']>>;
-      try {
-        group = await this.describeGroup(physicalId);
-      } catch (error) {
-        // Not marked non-retryable: a throttled read is worth the retry, which
-        // classifies through `cause`.
-        throw new ProvisioningError(
-          `the recorded ${kinds} of AutoScalingGroup ${logicalId} is not a list cdkd can read, ` +
-            `and the live group could not be read from Auto Scaling instead — nothing was ` +
-            `attached or detached`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
-        );
-      }
-      for (const kind of badPrev as AttachmentKind[]) {
-        const live = (group?.[kind] ?? []).filter((v): v is string => typeof v === 'string');
-        const wanted = itemsOf(nextRead[kind]);
-        prevRead[kind] = { kind: 'list', items: live.filter((v) => wanted.includes(v)) };
-        retained[kind] = live.filter((v) => !wanted.includes(v));
-        if (retained[kind].length > 0) {
-          this.logger.warn(
-            safeMsg`The recorded ${kind} of AutoScalingGroup ${logicalId} is not a list cdkd can read, so cdkd read it from Auto Scaling; the group holds ${kind} entries the desired list does not name, and cdkd left them attached. Detach them yourself if they are no longer wanted.`
-          );
-        }
-      }
-      badPrev = [];
-    }
-
-    if (badNext.length > 0 || badPrev.length > 0) {
-      const which = [...badNext.map((k) => `desired ${k}`), ...badPrev.map((k) => `recorded ${k}`)];
-      const what = [...new Set([...badNext, ...badPrev].map(listWhat))];
-      throw markNonRetryable(
-        new ProvisioningError(
-          `${which.join(' / ')} of AutoScalingGroup ${logicalId} is not a list of ` +
-            `${what.join(' / ')}${secretDerivedCause(badNext, nextRead)} — nothing was attached, ` +
-            `detached or removed` +
-            (badPrev.length > 0 ? `: ${this.recordedListRepair(badPrev, prevRead)}` : ''),
-          resourceType,
-          logicalId,
-          physicalId
-        )
-      );
-    }
-
-    const next = {} as Record<ListKind, unknown[]>;
-    const prev = {} as Record<ListKind, unknown[]>;
-    for (const kind of LIST_KINDS) {
-      next[kind] = itemsOf(nextRead[kind]);
-      prev[kind] = removableRecorded(kind, itemsOf(prevRead[kind]));
-    }
-    return { next, prev, retained };
+    return readUpdateLists.call(this, logicalId, physicalId, resourceType, desired, recorded);
   }
 
-  /**
-   * The repair sentence for malformed RECORDED lists, echoing no record
-   * content. An attachment list needs no repair: it is read from the live group
-   * once the desired side is well-formed. A secret-derived entry list must never
-   * be answered with "write the value into state.json"; setting it to `[]` is
-   * always safe, since an empty recorded list removes nothing and re-applies
-   * what the desired side names.
-   */
-  private recordedListRepair(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
-    const live = kinds.filter(isAttachmentKind);
-    const entry = kinds.filter((k) => !isAttachmentKind(k));
-    const secret = entry.filter((k) => {
-      const r = read[k];
-      return r.kind === 'malformed' && r.secretDerived;
-    });
-    const plain = entry.filter((k) => !secret.includes(k));
-    const parts: string[] = [];
-    if (plain.length > 0) {
-      parts.push(
-        `repair the recorded ${plain.join(' / ')} in state.json to a list of ` +
-          `${[...new Set(plain.map(listWhat))].join(' / ')} and re-run`
-      );
-    }
-    if (secret.length > 0) {
-      parts.push(
-        `the recorded ${secret.join(' / ')} is secret-derived (cdkd keeps the dynamic reference ` +
-          `or its mask in state), so do not write the value into state.json; set it to [] in ` +
-          `state.json and re-run, which removes nothing`
-      );
-    }
-    if (live.length > 0) {
-      parts.push(
-        `the recorded ${live.join(' / ')} needs no repair: cdkd reads it from Auto Scaling ` +
-          `instead once every desired list and every other recorded list is well-formed`
-      );
-    }
-    return parts.join('; ');
+  recordedListRepair(kinds: ListKind[], read: Record<ListKind, ListRead>): string {
+    return recordedListRepair.call(this, kinds, read);
   }
 
-  // ─── Sub-shape diff helpers ───────────────────────────────────────
-  // Each helper is a no-op when before/after JSON is identical (the cheap
-  // structural-equality check happens first; we only build SDK calls for
-  // genuine diffs). Identity is positional within the array per CFn shape:
-  // `MetricsCollection` keyed on `Granularity`, `LifecycleHookSpecification
-  // List` on `LifecycleHookName`, `TrafficSources` on `Identifier`,
-  // `NotificationConfigurations` on `TopicARN`.
-
-  /**
-   * Diff and apply changes to the ASG's `Tags` property via the
-   * `CreateOrUpdateTags` / `DeleteTags` AWS APIs (#475). CFn Tags shape is
-   * `[{Key, Value, PropagateAtLaunch}]`; AWS Tag input adds `ResourceId`
-   * (= the ASG name) and `ResourceType: 'auto-scaling-group'`.
-   *
-   * Diff semantics:
-   *   - Removed keys → `DeleteTags`.
-   *   - Added keys → `CreateOrUpdateTags`.
-   *   - Modified value or `PropagateAtLaunch` flag → `CreateOrUpdateTags`
-   *     (the AWS API upserts by `(ResourceId, ResourceType, Key)` tuple, so
-   *     a single upsert call replaces the old value).
-   *
-   * No-op when before/after JSON is identical.
-   */
-  private async applyTagsDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    type CfnTag = { Key?: string; Value?: string; PropagateAtLaunch?: boolean };
-    const nextEntries = next as CfnTag[];
-    const prevEntries = prev as CfnTag[];
-    const nextByKey = new Map<string, CfnTag>();
-    for (const t of nextEntries) {
-      if (t.Key) nextByKey.set(t.Key, t);
-    }
-    const prevByKey = new Map<string, CfnTag>();
-    for (const t of prevEntries) {
-      if (t.Key) prevByKey.set(t.Key, t);
-    }
-    // Delete keys removed from `next`.
-    const toDelete: CfnTag[] = [];
-    for (const [key, tag] of prevByKey) {
-      if (!nextByKey.has(key)) toDelete.push(tag);
-    }
-    if (toDelete.length > 0) {
-      await this.getClient().send(
-        new DeleteTagsCommand({
-          // DeleteTags is keyed only by (ResourceId, ResourceType, Key).
-          // Intentionally omit `Value` / `PropagateAtLaunch`: AWS treats
-          // those as additional match constraints, so passing the
-          // cdkd-recorded values would silently no-op when a console-side
-          // edit drifted them between deploys. cdkd owns the tag, so
-          // delete-by-key matches the "we own the resource" intent.
-          Tags: toDelete.map((t) => ({
-            ResourceId: physicalId,
-            ResourceType: 'auto-scaling-group',
-            Key: t.Key as string,
-          })),
-        })
-      );
-    }
-    // Upsert keys whose value / propagate-flag differs.
-    const toUpsert: CfnTag[] = [];
-    for (const [key, tag] of nextByKey) {
-      const before = prevByKey.get(key);
-      if (JSON.stringify(before) === JSON.stringify(tag)) continue;
-      toUpsert.push(tag);
-    }
-    if (toUpsert.length > 0) {
-      await this.getClient().send(
-        new CreateOrUpdateTagsCommand({
-          Tags: toUpsert.map((t) => ({
-            ResourceId: physicalId,
-            ResourceType: 'auto-scaling-group',
-            Key: t.Key as string,
-            ...(t.Value !== undefined && { Value: t.Value }),
-            ...(t.PropagateAtLaunch !== undefined && {
-              PropagateAtLaunch: t.PropagateAtLaunch,
-            }),
-          })),
-        })
-      );
-    }
+  applyTagsDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    return applyTagsDiff.call(this, physicalId, next, prev);
   }
 
-  /**
-   * Diff `LoadBalancerNames` (Classic Load Balancers) and issue
-   * `AttachLoadBalancers` / `DetachLoadBalancers` for the delta (#476).
-   * Names are opaque strings; AWS allows N attached LBs per ASG so this
-   * helper batches every add into one Attach call and every remove into
-   * one Detach call. No-op when before/after JSON is identical.
-   */
-  private async applyLoadBalancerNamesDiff(
+  applyLoadBalancerNamesDiff(
     physicalId: string,
     nextNames: string[],
     prevNames: string[]
   ): Promise<void> {
-    if (JSON.stringify(nextNames) === JSON.stringify(prevNames)) return;
-    const nextSet = new Set(nextNames);
-    const prevSet = new Set(prevNames);
-    const toAttach = nextNames.filter((n) => !prevSet.has(n));
-    const toDetach = prevNames.filter((n) => !nextSet.has(n));
-    if (toDetach.length > 0) {
-      await this.getClient().send(
-        new DetachLoadBalancersCommand({
-          AutoScalingGroupName: physicalId,
-          LoadBalancerNames: toDetach,
-        })
-      );
-    }
-    if (toAttach.length > 0) {
-      await this.getClient().send(
-        new AttachLoadBalancersCommand({
-          AutoScalingGroupName: physicalId,
-          LoadBalancerNames: toAttach,
-        })
-      );
-    }
+    return applyLoadBalancerNamesDiff.call(this, physicalId, nextNames, prevNames);
   }
 
-  /**
-   * Diff `TargetGroupARNs` (ALB / NLB target groups) and issue
-   * `AttachLoadBalancerTargetGroups` /
-   * `DetachLoadBalancerTargetGroups` for the delta (#476). Target-group
-   * ARNs are opaque strings; same per-call batching pattern as
-   * `applyLoadBalancerNamesDiff`. No-op when before/after JSON is
-   * identical.
-   */
-  private async applyTargetGroupArnsDiff(
+  applyTargetGroupArnsDiff(
     physicalId: string,
     nextArns: string[],
     prevArns: string[],
@@ -2795,43 +481,14 @@ export class ASGProvider implements ResourceProvider {
     // attached: the convergence poll must expect them too (go-to-k/cdkd#3948).
     retainedArns: string[] = []
   ): Promise<void> {
-    if (JSON.stringify(nextArns) === JSON.stringify(prevArns)) return;
-    const nextSet = new Set(nextArns);
-    const prevSet = new Set(prevArns);
-    const toAttach = nextArns.filter((a) => !prevSet.has(a));
-    const toDetach = prevArns.filter((a) => !nextSet.has(a));
-    if (toDetach.length > 0) {
-      await this.getClient().send(
-        new DetachLoadBalancerTargetGroupsCommand({
-          AutoScalingGroupName: physicalId,
-          TargetGroupARNs: toDetach,
-        })
-      );
-    }
-    if (toAttach.length > 0) {
-      await this.getClient().send(
-        new AttachLoadBalancerTargetGroupsCommand({
-          AutoScalingGroupName: physicalId,
-          TargetGroupARNs: toAttach,
-        })
-      );
-    }
-    // AttachLoadBalancerTargetGroups is async — the target group starts in
-    // 'Adding' state and only becomes visible in
-    // DescribeAutoScalingGroups.TargetGroupARNs after AWS internal
-    // propagation. A subsequent `cdkd drift` read right after the call
-    // returns can otherwise see a stale snapshot and report drift
-    // against the AWS-side empty list (surfaced by tests/integration/
-    // drift-revert-vpc's step-6 "drift again" check). Bounded poll to
-    // confirm the post-state matches the intent before returning so the
-    // caller's next read is consistent.
-    if (toDetach.length > 0 || toAttach.length > 0) {
-      await this.waitForTargetGroupArnsConvergence(
-        physicalId,
-        new Set([...nextArns, ...retainedArns]),
-        maskSecrets
-      );
-    }
+    return applyTargetGroupArnsDiff.call(
+      this,
+      physicalId,
+      nextArns,
+      prevArns,
+      maskSecrets,
+      retainedArns
+    );
   }
 
   private static readonly TG_CONVERGENCE_TIMEOUT_MS = 30_000;
@@ -2845,7 +502,7 @@ export class ASGProvider implements ResourceProvider {
    * already plaintext by the time this method names it. It defaults to IDENTITY
    * so every existing caller and unit test keeps working unchanged.
    */
-  private async waitForTargetGroupArnsConvergence(
+  async waitForTargetGroupArnsConvergence(
     physicalId: string,
     expected: Set<string>,
     maskSecrets: SecretMasker = (text) => text
@@ -2906,373 +563,23 @@ export class ASGProvider implements ResourceProvider {
       `applyTargetGroupArnsDiff: TG set did not converge within ${ASGProvider.TG_CONVERGENCE_TIMEOUT_MS}ms for ASG ${physicalId}. expected=${JSON.stringify(expectedSorted)} observed=${JSON.stringify(observedSorted)}`
     );
   }
+  applyMetricsCollectionDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    return applyMetricsCollectionDiff.call(this, physicalId, next, prev);
+  }
 
-  /**
-   * Diff `MetricsCollection` as AWS holds it (go-to-k/cdkd#4013): a SET of
-   * enabled metrics per granularity, where CDK renders one entry per
-   * `GroupMetrics`, all at `1Minute`. Both sides are folded with
-   * {@link foldMetricsCollection} first; keying the raw entries by granularity
-   * kept only the LAST entry on each side, so several `GroupMetrics` enabled
-   * only one group's metrics on update and never disabled the others' removals.
-   *
-   * Per granularity: dropped entirely -> Disable its metrics (all of them when
-   * it was ALL); now ALL -> one Enable without `Metrics`; now a set -> Disable
-   * what left the set (every metric first, when it was ALL) and Enable the
-   * whole set (Enable is additive and idempotent, so re-sending the kept
-   * members also re-applies anything changed out of band). No-op when the
-   * folded sides are equal.
-   */
-  private async applyMetricsCollectionDiff(
+  applyLifecycleHooksDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    return applyLifecycleHooksDiff.call(this, physicalId, next, prev);
+  }
+
+  applyTrafficSourcesDiff(physicalId: string, next: unknown[], prev: unknown[]): Promise<void> {
+    return applyTrafficSourcesDiff.call(this, physicalId, next, prev);
+  }
+
+  applyNotificationConfigurationsDiff(
     physicalId: string,
     next: unknown[],
     prev: unknown[]
   ): Promise<void> {
-    const nextFold = foldMetricsCollection(next);
-    const prevFold = foldMetricsCollection(prev);
-    if (JSON.stringify(nextFold) === JSON.stringify(prevFold)) return;
-    const toMap = (fold: FoldedMetrics[]): Map<string, string[] | undefined> =>
-      new Map(fold.map((e) => [e.Granularity, e.Metrics]));
-    const prevBy = toMap(prevFold);
-    const nextBy = toMap(nextFold);
-    const disable = async (metrics: string[] | undefined): Promise<void> => {
-      await this.getClient().send(
-        new DisableMetricsCollectionCommand({
-          AutoScalingGroupName: physicalId,
-          ...(metrics !== undefined ? { Metrics: metrics } : {}),
-        })
-      );
-    };
-    const enable = async (granularity: string, metrics: string[] | undefined): Promise<void> => {
-      // Never as ALL once this call has sent a Disable: ALL would re-enable what
-      // that Disable just removed (a metric beyond the known list included).
-      const asAll =
-        metrics === undefined || (disables.length === 0 && holdsAllKnownMetrics(metrics));
-      await this.getClient().send(
-        new EnableMetricsCollectionCommand({
-          AutoScalingGroupName: physicalId,
-          Granularity: granularity,
-          ...(asAll ? {} : { Metrics: metrics }),
-        })
-      );
-    };
-    // DisableMetricsCollection takes no Granularity, so a Disable for one
-    // granularity also turns a metric off at another. Every Disable therefore
-    // goes out FIRST, and once any has, every desired granularity is enabled
-    // again (Enable is additive and idempotent); otherwise only the changed ones.
-    const disables: Array<string[] | undefined> = [];
-    const changed = new Set<string>();
-    for (const [granularity, metrics] of prevBy) {
-      if (!nextBy.has(granularity)) disables.push(metrics);
-    }
-    for (const [granularity, metrics] of nextBy) {
-      const had = prevBy.has(granularity);
-      const before = prevBy.get(granularity);
-      if (had && JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
-      changed.add(granularity);
-      if (metrics !== undefined && had) {
-        // ALL -> a subset: clear everything, then enable the subset. A subset
-        // that shrank: disable only what left it.
-        if (before === undefined) {
-          disables.push(undefined);
-        } else {
-          const removed = before.filter((m) => !metrics.includes(m));
-          if (removed.length > 0) disables.push(removed);
-        }
-      }
-    }
-    for (const metrics of disables) await disable(metrics);
-    for (const [granularity, metrics] of nextBy) {
-      if (disables.length > 0 || changed.has(granularity)) await enable(granularity, metrics);
-    }
+    return applyNotificationConfigurationsDiff.call(this, physicalId, next, prev);
   }
-
-  private async applyLifecycleHooksDiff(
-    physicalId: string,
-    next: unknown[],
-    prev: unknown[]
-  ): Promise<void> {
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    const nextEntries = next as Array<{
-      LifecycleHookName?: string;
-      LifecycleTransition?: string;
-      RoleARN?: string;
-      NotificationTargetARN?: string;
-      NotificationMetadata?: string;
-      HeartbeatTimeout?: number;
-      DefaultResult?: string;
-    }>;
-    const prevEntries = prev as Array<{
-      LifecycleHookName?: string;
-    }>;
-    const nextNames = new Set(
-      nextEntries.map((e) => e.LifecycleHookName).filter((n): n is string => !!n)
-    );
-    // Delete hooks no longer in `next`.
-    for (const e of prevEntries) {
-      if (e.LifecycleHookName && !nextNames.has(e.LifecycleHookName)) {
-        await this.getClient().send(
-          new DeleteLifecycleHookCommand({
-            AutoScalingGroupName: physicalId,
-            LifecycleHookName: e.LifecycleHookName,
-          })
-        );
-      }
-    }
-    // PutLifecycleHook is upsert — issue for every hook in `next` whose
-    // shape differs from the matching `prev` entry.
-    const prevByName = new Map<string, unknown>();
-    for (const e of prevEntries) {
-      if (e.LifecycleHookName) prevByName.set(e.LifecycleHookName, e);
-    }
-    for (const e of nextEntries) {
-      if (!e.LifecycleHookName) continue;
-      const prevHook = prevByName.get(e.LifecycleHookName);
-      if (JSON.stringify(prevHook) === JSON.stringify(e)) continue;
-      await this.getClient().send(
-        new PutLifecycleHookCommand({
-          AutoScalingGroupName: physicalId,
-          LifecycleHookName: e.LifecycleHookName,
-          ...(e.LifecycleTransition !== undefined && {
-            LifecycleTransition: e.LifecycleTransition,
-          }),
-          ...(e.RoleARN !== undefined && { RoleARN: e.RoleARN }),
-          ...(e.NotificationTargetARN !== undefined && {
-            NotificationTargetARN: e.NotificationTargetARN,
-          }),
-          ...(e.NotificationMetadata !== undefined && {
-            NotificationMetadata: e.NotificationMetadata,
-          }),
-          ...(e.HeartbeatTimeout !== undefined && { HeartbeatTimeout: e.HeartbeatTimeout }),
-          ...(e.DefaultResult !== undefined && { DefaultResult: e.DefaultResult }),
-        })
-      );
-    }
-  }
-
-  private async applyTrafficSourcesDiff(
-    physicalId: string,
-    next: unknown[],
-    prev: unknown[]
-  ): Promise<void> {
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    const nextEntries = next as Array<{
-      Identifier?: string;
-      Type?: string;
-    }>;
-    const prevEntries = prev as Array<{
-      Identifier?: string;
-      Type?: string;
-    }>;
-    const nextIds = new Set(nextEntries.map((e) => e.Identifier).filter((i): i is string => !!i));
-    const prevIds = new Set(prevEntries.map((e) => e.Identifier).filter((i): i is string => !!i));
-    const toDetach = prevEntries.filter((e) => e.Identifier && !nextIds.has(e.Identifier));
-    const toAttach = nextEntries.filter((e) => e.Identifier && !prevIds.has(e.Identifier));
-    if (toDetach.length > 0) {
-      await this.getClient().send(
-        new DetachTrafficSourcesCommand({
-          AutoScalingGroupName: physicalId,
-          TrafficSources: toDetach.map((e) => ({
-            Identifier: e.Identifier as string,
-            ...(e.Type !== undefined && { Type: e.Type }),
-          })),
-        })
-      );
-    }
-    if (toAttach.length > 0) {
-      await this.getClient().send(
-        new AttachTrafficSourcesCommand({
-          AutoScalingGroupName: physicalId,
-          TrafficSources: toAttach.map((e) => ({
-            Identifier: e.Identifier as string,
-            ...(e.Type !== undefined && { Type: e.Type }),
-          })),
-        })
-      );
-    }
-  }
-
-  private async applyNotificationConfigurationsDiff(
-    physicalId: string,
-    next: unknown[],
-    prev: unknown[]
-  ): Promise<void> {
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    // CFn `NotificationConfigurations` is an array of `{TopicARN,
-    // NotificationTypes[]}`; AWS `PutNotificationConfiguration` is keyed
-    // by TopicARN — one call per topic. AWS reports each notification
-    // type as a separate response entry (one row per `(asgName, topicArn,
-    // notificationType)` triple), but cdkd state stores the CFn shape, so
-    // both sides of the diff share the per-topic key.
-    const nextEntries = next as Array<{
-      TopicARN?: string;
-      NotificationTypes?: string[];
-    }>;
-    const prevEntries = prev as Array<{
-      TopicARN?: string;
-      NotificationTypes?: string[];
-    }>;
-    const nextByTopic = new Map<string, string[] | undefined>();
-    for (const e of nextEntries) {
-      if (e.TopicARN) nextByTopic.set(e.TopicARN, e.NotificationTypes);
-    }
-    const prevByTopic = new Map<string, string[] | undefined>();
-    for (const e of prevEntries) {
-      if (e.TopicARN) prevByTopic.set(e.TopicARN, e.NotificationTypes);
-    }
-    for (const topic of prevByTopic.keys()) {
-      if (!nextByTopic.has(topic)) {
-        await this.getClient().send(
-          new DeleteNotificationConfigurationCommand({
-            AutoScalingGroupName: physicalId,
-            TopicARN: topic,
-          })
-        );
-      }
-    }
-    for (const [topic, types] of nextByTopic) {
-      const before = prevByTopic.get(topic);
-      if (JSON.stringify(before ?? null) === JSON.stringify(types ?? null)) continue;
-      await this.getClient().send(
-        new PutNotificationConfigurationCommand({
-          AutoScalingGroupName: physicalId,
-          TopicARN: topic,
-          NotificationTypes: types ?? [],
-        })
-      );
-    }
-  }
-}
-
-// ─── File-level reverse-mappers (CFn template shape) ────────────────
-
-/**
- * Reverse-map AWS `EnabledMetrics: [{Metric, Granularity}]` (flat list,
- * one row per enabled metric) back to the CFn array shape
- * `[{Granularity, Metrics?[]}]`. Metrics with the same Granularity are
- * grouped together; the resulting Metrics list is sorted alphabetically
- * for stable positional compare in the drift comparator.
- *
- * Always returns a placeholder `[]` per the cdkd PR #145 always-emit
- * convention so a console-side EnableMetricsCollection on a previously-
- * empty group surfaces as drift on the v3 `observedProperties` baseline.
- */
-function mapEnabledMetricsToCfn(
-  enabledMetrics:
-    | Array<{ Metric?: string | undefined; Granularity?: string | undefined }>
-    | undefined
-): Array<{ Granularity: string; Metrics?: string[] }> {
-  if (!enabledMetrics || enabledMetrics.length === 0) return [];
-  const byGranularity = new Map<string, Set<string>>();
-  for (const e of enabledMetrics) {
-    const g = e.Granularity;
-    if (!g) continue;
-    let set = byGranularity.get(g);
-    if (!set) {
-      set = new Set();
-      byGranularity.set(g, set);
-    }
-    if (e.Metric) set.add(e.Metric);
-  }
-  const result: Array<{ Granularity: string; Metrics?: string[] }> = [];
-  // Sort by Granularity for stable positional compare.
-  for (const granularity of Array.from(byGranularity.keys()).sort()) {
-    const metrics = Array.from(byGranularity.get(granularity) ?? []).sort();
-    result.push(
-      metrics.length > 0
-        ? { Granularity: granularity, Metrics: metrics }
-        : { Granularity: granularity }
-    );
-  }
-  return result;
-}
-
-/**
- * Reverse-map AWS `DescribeLifecycleHooks` response to the CFn
- * `LifecycleHookSpecificationList` shape. Each hook is surfaced under the
- * exact CFn property name. AWS-side fields cdkd state never carried
- * (`AutoScalingGroupName` — duplicated on every hook by AWS,
- * `GlobalTimeout` — AWS-derived) are filtered out. Sorted by
- * LifecycleHookName for stable positional compare.
- */
-function mapLifecycleHooksToCfn(
-  hooks: Array<{
-    LifecycleHookName?: string | undefined;
-    LifecycleTransition?: string | undefined;
-    NotificationTargetARN?: string | undefined;
-    RoleARN?: string | undefined;
-    NotificationMetadata?: string | undefined;
-    HeartbeatTimeout?: number | undefined;
-    DefaultResult?: string | undefined;
-  }>
-): Array<Record<string, unknown>> {
-  if (!hooks || hooks.length === 0) return [];
-  const result: Array<Record<string, unknown>> = [];
-  for (const h of hooks) {
-    if (!h.LifecycleHookName) continue;
-    const entry: Record<string, unknown> = { LifecycleHookName: h.LifecycleHookName };
-    if (h.LifecycleTransition !== undefined) entry['LifecycleTransition'] = h.LifecycleTransition;
-    if (h.RoleARN !== undefined) entry['RoleARN'] = h.RoleARN;
-    if (h.NotificationTargetARN !== undefined) {
-      entry['NotificationTargetARN'] = h.NotificationTargetARN;
-    }
-    if (h.NotificationMetadata !== undefined) {
-      entry['NotificationMetadata'] = h.NotificationMetadata;
-    }
-    if (h.HeartbeatTimeout !== undefined) entry['HeartbeatTimeout'] = h.HeartbeatTimeout;
-    if (h.DefaultResult !== undefined) entry['DefaultResult'] = h.DefaultResult;
-    result.push(entry);
-  }
-  result.sort((a, b) =>
-    String(a['LifecycleHookName']).localeCompare(String(b['LifecycleHookName']))
-  );
-  return result;
-}
-
-/**
- * Reverse-map AWS `DescribeTrafficSources` response to the CFn
- * `TrafficSources` shape `[{Identifier, Type?}]`. AWS-side runtime fields
- * (`State`, the deprecated `TrafficSource` alias) are filtered out.
- * Sorted by Identifier for stable positional compare.
- */
-function mapTrafficSourcesToCfn(
-  trafficSources: Array<{ Identifier?: string | undefined; Type?: string | undefined }>
-): Array<Record<string, unknown>> {
-  if (!trafficSources || trafficSources.length === 0) return [];
-  const result: Array<Record<string, unknown>> = [];
-  for (const t of trafficSources) {
-    if (!t.Identifier) continue;
-    const entry: Record<string, unknown> = { Identifier: t.Identifier };
-    if (t.Type !== undefined) entry['Type'] = t.Type;
-    result.push(entry);
-  }
-  result.sort((a, b) => String(a['Identifier']).localeCompare(String(b['Identifier'])));
-  return result;
-}
-
-/**
- * Reverse-map AWS `DescribeNotificationConfigurations` (a flat list, one
- * row per `(topicArn, notificationType)`) into the CFn shape
- * `[{TopicARN, NotificationTypes[]}]`. NotificationTypes are grouped per
- * TopicARN and sorted alphabetically for stable positional compare.
- */
-function mapNotificationsToCfn(
-  configurations: Array<{ TopicARN?: string | undefined; NotificationType?: string | undefined }>
-): Array<Record<string, unknown>> {
-  if (!configurations || configurations.length === 0) return [];
-  const byTopic = new Map<string, Set<string>>();
-  for (const c of configurations) {
-    if (!c.TopicARN) continue;
-    let set = byTopic.get(c.TopicARN);
-    if (!set) {
-      set = new Set();
-      byTopic.set(c.TopicARN, set);
-    }
-    if (c.NotificationType) set.add(c.NotificationType);
-  }
-  const result: Array<Record<string, unknown>> = [];
-  for (const topic of Array.from(byTopic.keys()).sort()) {
-    const types = Array.from(byTopic.get(topic) ?? []).sort();
-    result.push({ TopicARN: topic, NotificationTypes: types });
-  }
-  return result;
 }

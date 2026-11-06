@@ -81,7 +81,7 @@ ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 # Issue #4021: the ASG enables ALL group metrics. Check the live set right after
 # the first deploy, BEFORE anything reads it: the deploy-time observed capture
 # and step 5's revert both depend on it. KNOWN_METRICS mirrors
-# ALL_GROUP_METRICS in src/provisioning/providers/asg-provider.ts, a LOWER
+# ALL_GROUP_METRICS in src/provisioning/providers/asg/shared.ts, a LOWER
 # bound (observed live on 2026-09-28): AWS may enable more, so the live set
 # must be a SUPERSET of it, not equal to it.
 KNOWN_METRICS="GroupAndWarmPoolDesiredCapacity GroupAndWarmPoolTotalCapacity GroupDesiredCapacity GroupInServiceCapacity GroupInServiceInstances GroupMaxSize GroupMinSize GroupPendingCapacity GroupPendingInstances GroupStandbyCapacity GroupStandbyInstances GroupTerminatingCapacity GroupTerminatingInstances GroupTerminatingRetainedCapacity GroupTerminatingRetainedInstances GroupTotalCapacity GroupTotalInstances WarmPoolDesiredCapacity WarmPoolMinSize WarmPoolPendingCapacity WarmPoolPendingRetainedCapacity WarmPoolTerminatingCapacity WarmPoolTerminatingRetainedCapacity WarmPoolTotalCapacity WarmPoolWarmedCapacity"

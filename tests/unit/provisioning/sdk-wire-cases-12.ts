@@ -2096,8 +2096,9 @@ const ASG_ROLE = (name: string): string => `arn:aws:iam::${ACCOUNT}:role/${name}
 /**
  * The live target groups: the previous bag's, as the last deploy attached
  * them, with every Attach / Detach this run already sent applied. Update's
- * convergence poll (asg-provider.ts:2714-2794) reads them back until they
- * match the desired set, so a fixed answer would spin it for 30s.
+ * convergence poll (waitForTargetGroupArnsConvergence in asg-provider.ts)
+ * reads them back until they match the desired set, so a fixed answer would
+ * spin it for 30s.
  */
 function asgLiveTargetGroups(bag: Bag): string[] {
   const live = new Set(
@@ -2137,33 +2138,33 @@ function armAsg(physicalId: string, bag: Bag): void {
 /**
  * Removed from the template, CloudFormation sends nothing and KEEPS the live
  * value (real CloudFormation A/Bs, go-to-k/cdkd#5004 and #1160), so cdkd sends
- * nothing either (asg-provider.ts:611-628, 1365-1405).
+ * nothing either (removalDefaults in asg-provider.ts, and asg/update.ts).
  */
 const ASG_KEPT: Record<string, string> = {
   MinSize:
-    'MinSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg-provider.ts:1372-1373)',
+    'MinSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg/update.ts)',
   MaxSize:
-    'MaxSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg-provider.ts:1372-1373)',
+    'MaxSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg/update.ts)',
   DesiredCapacity:
-    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg-provider.ts:1371-1373)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg/update.ts)',
   ServiceLinkedRoleARN:
-    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg-provider.ts:1371-1373)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg/update.ts)',
   LaunchTemplate:
-    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   MixedInstancesPolicy:
-    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   VPCZoneIdentifier:
-    'CloudFormation sends only the member the template now declares and AWS keeps the subnets, parity (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the member the template now declares and AWS keeps the subnets, parity (#1160 A/B, asg/update.ts)',
   AvailabilityZones:
-    'CloudFormation sends only the member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   AvailabilityZoneIds:
-    'CloudFormation sends only the zone member the template now declares, as cdkd does (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
+    'CloudFormation sends only the zone member the template now declares, as cdkd does (#2762 A/B, asg/update.ts UpdateAutoScalingGroup removal notes)',
   InstanceLifecyclePolicy:
-    'KEPT by CloudFormation on removal: it sends nothing and the live retention trigger stays (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live retention trigger stays (#2762 A/B, asg/update.ts UpdateAutoScalingGroup removal notes)',
   SkipZonalShiftValidation:
-    'write-only per-request flag in the CloudFormation schema, never read back: nothing to reset (asg-provider.ts:1379-1380)',
+    'write-only per-request flag in the CloudFormation schema, never read back: nothing to reset (asg/update.ts)',
   Context:
-    '"Reserved": AWS refuses any value an account sets, so no deployable template removes one (asg-provider.ts:1381-1383)',
+    '"Reserved": AWS refuses any value an account sets, so no deployable template removes one (asg/update.ts)',
   ...Object.fromEntries(
     [
       'HealthCheckType',
@@ -2178,39 +2179,39 @@ const ASG_KEPT: Record<string, string> = {
       'DeletionProtection',
     ].map((key) => [
       key,
-      'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#5004 A/B, asg-provider.ts:619-628, 1400-1405; DefaultCooldown is the Cooldown alias)',
+      'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#5004 A/B, removalDefaults in asg-provider.ts, and asg/update.ts; DefaultCooldown is the Cooldown alias)',
     ])
   ),
 };
 
 /**
  * A member inside a value `UpdateAutoScalingGroup` re-sends WHOLE from the
- * desired bag (asg-provider.ts:1469-1536): removing it leaves `next` equal on
+ * desired bag (asg/update.ts): removing it leaves `next` equal on
  * both sides, and its `update-add` probe observes the delivery.
  */
 const ASG_NESTED: Record<string, string> = {
   LaunchTemplate:
-    'the launch template specification is re-sent whole from the desired bag (asg-provider.ts:1352, 1477, 2157-2200); Version is CloudFormation-required (nestedRequired LaunchTemplate)',
+    'the launch template specification is re-sent whole from the desired bag (asg/update.ts, and buildLaunchTemplate in asg/core.ts); Version is CloudFormation-required (nestedRequired LaunchTemplate)',
   MixedInstancesPolicy:
-    'the policy is re-sent whole from the desired bag (asg-provider.ts:1478-1480); its update-add probe observes delivery',
+    'the policy is re-sent whole from the desired bag (asg/update.ts); its update-add probe observes delivery',
   VPCZoneIdentifier:
-    'the subnet list is re-sent whole, comma-joined, from the desired bag (asg-provider.ts:1353, 1481, 2228-2237)',
+    'the subnet list is re-sent whole, comma-joined, from the desired bag (asg/update.ts, and joinVpcZoneIdentifier in asg/core.ts)',
   AvailabilityZones:
-    'the zone list is re-sent whole from the desired bag (asg-provider.ts:1482-1484)',
+    'the zone list is re-sent whole from the desired bag (asg/update.ts)',
   AvailabilityZoneIds:
     'the zone-id list is re-sent whole from the desired bag, as AvailabilityZones is',
   InstanceLifecyclePolicy:
     'the policy is re-sent whole from the desired bag, never read from the previous side; its update-add probe observes delivery',
   TerminationPolicies:
-    'the policy list is re-sent whole from the desired bag (asg-provider.ts:1494-1496)',
+    'the policy list is re-sent whole from the desired bag (asg/update.ts)',
   InstanceMaintenancePolicy:
-    'a kept-but-partial policy is passed through: AWS refuses one percentage alone, and CloudFormation submits the same partial object (asg-provider.ts:1385-1393)',
+    'a kept-but-partial policy is passed through: AWS refuses one percentage alone, and CloudFormation submits the same partial object (asg/update.ts)',
   CapacityReservationSpecification:
-    'a kept-but-partial specification is passed through verbatim; whether AWS keeps a previous CapacityReservationTarget is unprobed (asg-provider.ts:1385-1387, 1394-1397), and CapacityReservationPreference is CloudFormation-required',
+    'a kept-but-partial specification is passed through verbatim; whether AWS keeps a previous CapacityReservationTarget is unprobed (asg/update.ts), and CapacityReservationPreference is CloudFormation-required',
   AvailabilityZoneDistribution:
-    'its single member is passed through inside the kept object (asg-provider.ts:1385-1387, 1398)',
+    'its single member is passed through inside the kept object (asg/update.ts)',
   AvailabilityZoneImpairmentPolicy:
-    'both members are CloudFormation-required (nestedRequired AvailabilityZoneImpairmentPolicy), so only a whole-policy removal is deployable, which resets (asg-provider.ts:1446-1467)',
+    'both members are CloudFormation-required (nestedRequired AvailabilityZoneImpairmentPolicy), so only a whole-policy removal is deployable, which resets (asg/update.ts)',
 };
 
 /** The `update-remove` silences of `bag`: each kept top-level, and every path under a re-sent value. */
@@ -2232,7 +2233,7 @@ function asgEntryThrows(key: string, member: string, count: number, says: RegExp
       Array.from({ length: count }, (_, i) => [
         `${d}:${key}.${i}.${member}`,
         ASG_REQUIRED(
-          `an entry without its ${member} is refused on either side before any call (asg-provider.ts:133-150, 182-238, 857-880, 2486-2500); CloudFormation requires it too`,
+          `an entry without its ${member} is refused on either side before any call (asg/shared.ts, and readUpdateLists in asg/update-lists.ts); CloudFormation requires it too`,
           says
         ),
       ])
@@ -2254,7 +2255,7 @@ const ASG_EVERY: Bag = {
   HealthCheckGracePeriod: 300,
   Cooldown: '120',
   // Both `true`: an absent PropagateAtLaunch is sent as `false` on create
-  // (asg-provider.ts:2220), so only `true` differs from its removal.
+  // (buildTags in asg/core.ts), so only `true` differs from its removal.
   Tags: [
     { Key: 'k1', Value: 'v1', PropagateAtLaunch: true },
     { Key: 'k2', Value: 'v2', PropagateAtLaunch: true },
@@ -2320,7 +2321,7 @@ const ASG_EVERY: Bag = {
 };
 
 const ASG_TRAFFIC_TYPE =
-  'Type is CloudFormation-required (nestedRequired TrafficSources) and an Identifier names exactly one source kind, so no deployable template drops or changes it on a kept Identifier; the diff attaches and detaches by Identifier (asg-provider.ts:2952-2977)';
+  'Type is CloudFormation-required (nestedRequired TrafficSources) and an Identifier names exactly one source kind, so no deployable template drops or changes it on a kept Identifier; the diff attaches and detaches by Identifier (asg/update-lists.ts)';
 
 const ASG_MIXED: Bag = {
   AutoScalingGroupName: ASG_NAME,
