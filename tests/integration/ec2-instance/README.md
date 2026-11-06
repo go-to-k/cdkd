@@ -50,7 +50,8 @@ Minimal EC2 Instance deployment example for cdkd.
   type of its own and must carry the template's instance tag. The `--no-wait` Phase 0 create attaches
   its volume at `/dev/sdf` (it waits for `running`, which attaching needs), and Phase 1h swaps the
   entry for the second volume at `/dev/sdg`, which, as in CloudFormation, detaches and attaches on
-  the same instance.
+  the same instance. Phase 1i then moves that volume to `/dev/sdh` (a `Device` change: the same
+  volume detached and re-attached).
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.

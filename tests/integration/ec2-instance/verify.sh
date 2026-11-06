@@ -85,7 +85,8 @@
 # The fourth #5630 slice: an instance launched from a launch template (the
 # template's tag and `aws:ec2launchtemplate:id` must be on it) with a Volumes
 # entry attached by the --no-wait Phase 0 create; Phase 1h swaps the entry for
-# another volume at another device, on the same instance.
+# another volume at another device, on the same instance, and Phase 1i moves
+# that volume to a third device.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -1855,6 +1856,18 @@ if [ -z "${P1I_T_BEFORE}" ] || [ "${P1I_T_AFTER}" != "${P1I_T_BEFORE}" ]; then
   exit 1
 fi
 echo "    OK: #5630 EnableResourceNameDnsARecord turned on in place on ${INSTANCE_ID} (no stop, LaunchTime ${P1I_T_AFTER})"
+
+# Issue #5630 (fourth slice): Phase 1i also moved volume B from /dev/sdg to
+# /dev/sdh on LtInstance5630. The same volume must be detached and then
+# re-attached (EC2 refuses the attach while the detach is still running), on
+# the same instance.
+P1I_LT_INSTANCE_ID=$(echo "${P1I_STATE}" | jq -r '.outputs.LtInstanceId // ""')
+P1I_VOL_B=$(lt_volume_attachment "${LT_VOLUME_B_ID}") || P1I_VOL_B="<describe-failed>"
+if [ "${P1I_LT_INSTANCE_ID}" != "${P1_LT_INSTANCE_ID}" ] || [ "${P1I_VOL_B}" != "in-use|${LT_INSTANCE_ID}|/dev/sdh|attached" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1i LtInstanceId is '${P1I_LT_INSTANCE_ID}' (expected ${P1_LT_INSTANCE_ID}) and volume B ${LT_VOLUME_B_ID} reads '${P1I_VOL_B}' (expected in-use|${LT_INSTANCE_ID}|/dev/sdh|attached); the Device change was not applied" >&2
+  exit 1
+fi
+echo "    OK: #5630 volume ${LT_VOLUME_B_ID} moved /dev/sdg -> /dev/sdh on the same instance ${LT_INSTANCE_ID}"
 
 # Phase 1j (issue #5630, third slice): ONLY HostnameType changes
 # (ip-name -> resource-name, the flag stays true), so PrivateDnsNameOptions

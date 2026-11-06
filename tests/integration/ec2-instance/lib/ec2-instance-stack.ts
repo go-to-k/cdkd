@@ -394,7 +394,9 @@ export class Ec2InstanceStack extends cdk.Stack {
     // proves RunInstances took it), with an attached `Volumes` entry. Phase 1h
     // swaps the entry: volume A at /dev/sdf -> volume B at /dev/sdg, which
     // CloudFormation applies to the SAME instance (measured: a DetachVolume
-    // and an AttachVolume). Volume A stays declared so it is not deleted.
+    // and an AttachVolume), and Phase 1i moves B to /dev/sdh (a Device change:
+    // the same volume detached, then re-attached once the detach finished).
+    // Volume A stays declared so it is not deleted.
     const launchTemplate = new ec2.CfnLaunchTemplate(this, 'LaunchTemplate5630', {
       launchTemplateData: {
         imageId: ami,
@@ -423,9 +425,13 @@ export class Ec2InstanceStack extends cdk.Stack {
         version: launchTemplate.attrLatestVersionNumber,
       },
       subnetId: vpc.publicSubnets[0].subnetId,
-      volumes: isUpdate5446
-        ? [{ device: '/dev/sdg', volumeId: volumeB.ref }]
-        : [{ device: '/dev/sdf', volumeId: volumeA.ref }],
+      // Phases 1i-1j (dnsMode set) move volume B to /dev/sdh: the same
+      // volume detached and re-attached at the new device.
+      volumes: !isUpdate5446
+        ? [{ device: '/dev/sdf', volumeId: volumeA.ref }]
+        : dnsMode !== undefined
+          ? [{ device: '/dev/sdh', volumeId: volumeB.ref }]
+          : [{ device: '/dev/sdg', volumeId: volumeB.ref }],
     });
     // Destroyed after the instance: a volume still attached refuses DeleteVolume.
     ltInstance.addDependency(volumeA);
