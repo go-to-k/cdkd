@@ -56,7 +56,6 @@ src/local/ecs-task-runner.ts
 src/local/lambda-resolver.ts
 src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
-src/provisioning/providers/acm-certificate-provider.ts
 src/provisioning/providers/agentcore-runtime-provider.ts
 src/provisioning/providers/cloudtrail-provider.ts
 src/provisioning/providers/codebuild-provider.ts
