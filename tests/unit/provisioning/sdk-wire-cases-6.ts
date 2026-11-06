@@ -373,7 +373,10 @@ const ACL_FULL: Bag = {
   CaptchaConfig: { ImmunityTimeProperty: { ImmunityTime: 300 } },
   ChallengeConfig: { ImmunityTimeProperty: { ImmunityTime: 600 } },
   TokenDomains: ['a.example.com', 'b.example.com'],
-  AssociationConfig: { RequestBody: { CLOUDFRONT: { DefaultSizeInspectionLimit: 'KB_16' } } },
+  AssociationConfig: {
+    RequestBody: { CLOUDFRONT: { DefaultSizeInspectionLimit: 'KB_16' } },
+    ChallengeJavascriptSdkInjection: { CLOUDFRONT: {} },
+  },
   // Issue #2762.
   DataProtectionConfig: {
     DataProtections: [
