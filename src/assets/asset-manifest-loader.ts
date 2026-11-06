@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises';
-import { isAbsolute, resolve } from 'path';
+import { basename, dirname, isAbsolute, resolve } from 'path';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
 import { displayStackName, safeMsg } from '../utils/display-safe.js';
 import {
@@ -256,18 +256,50 @@ export class AssetManifestLoader {
   private logger = getLogger().child('AssetManifestLoader');
 
   /**
+   * Load a stack's asset manifest from the file its assembly names
+   * (`StackInfo.assetManifestPath`), falling back to
+   * `<fallbackDir>/<stackName>.assets.json` for a record that carries none.
+   *
+   * The fallback name is WRONG for every stack under a `cdk.Stage`: CDK names
+   * that manifest after the artifact id (`devlocalApi6B226F7F.assets.json`),
+   * not the stack name (`dev-local-Api`), so a reader that rebuilds the name
+   * from `stackName` finds nothing and every container / code asset in a Stage
+   * looks absent (go-to-k/cdkd#5872).
+   */
+  async loadStackManifest(
+    stack: { stackName: string; assetManifestPath?: string | undefined },
+    fallbackDir: string
+  ): Promise<AssetManifest | null> {
+    if (stack.assetManifestPath) {
+      return this.loadManifest(
+        dirname(stack.assetManifestPath),
+        stack.stackName,
+        basename(stack.assetManifestPath)
+      );
+    }
+    return this.loadManifest(fallbackDir, stack.stackName);
+  }
+
+  /**
    * Load asset manifest from CDK output directory
    *
    * @param cdkOutputDir CDK output directory (e.g., "cdk.out")
    * @param stackName Stack name
+   * @param fileName The manifest's file name; `<stackName>.assets.json` by
+   *   default, which is right only for a top-level stack — prefer
+   *   {@link loadStackManifest} when the stack record is at hand
    * @returns Asset manifest or null if not found
    */
-  async loadManifest(cdkOutputDir: string, stackName: string): Promise<AssetManifest | null> {
+  async loadManifest(
+    cdkOutputDir: string,
+    stackName: string,
+    fileName = `${stackName}.assets.json`
+  ): Promise<AssetManifest | null> {
     // `stackName` is the manifest's own `properties.stackName` (falling back to
     // the artifact id), so it is assembly-supplied and becomes a FILENAME here
     // (issue go-to-k/cdkd#3489). A `../../..`-bearing one would read a
     // `.assets.json` from outside the assembly and publish whatever it lists.
-    const resolved = resolveAssemblyPath(cdkOutputDir, `${stackName}.assets.json`);
+    const resolved = resolveAssemblyPath(cdkOutputDir, fileName);
     if (!resolved.contained) {
       throw new Error(
         `Asset manifest for stack ${displayStackName(stackName)} ` +

@@ -46,7 +46,7 @@ function stageAssembly(sourcePath: string): { assemblyDir: string; manifestDir: 
   mkdirSync(manifestDir, { recursive: true });
   mkdirSync(join(outer, 'victim'));
   writeFileSync(
-    join(manifestDir, 'StageStack.assets.json'),
+    join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
     JSON.stringify({
       version: '54.0.0',
       files: {
@@ -65,7 +65,7 @@ const resolved = (manifestDir: string): ResolvedRuntime =>
   ({
     logicalId: 'AgentRuntime',
     codeArtifact: { codeAssetHash: HASH, runtime: 'PYTHON_3_12', entryPoint: ['app.py'] },
-    stack: { stackName: 'StageStack', assetManifestPath: join(manifestDir, 'x.assets.json') },
+    stack: { stackName: 'StageStack', assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json') },
   }) as unknown as ResolvedRuntime;
 
 // `build: false` never matters — both arms throw before the build — but it is
@@ -129,7 +129,7 @@ describe('local invoke-agentcore fromCodeAsset containment', () => {
     const runtime = {
       logicalId: 'Agent\u009bRuntime',
       codeArtifact: { codeAssetHash: 'b\u2028ogus', runtime: 'PYTHON_3_12', entryPoint: ['app.py'] },
-      stack: { stackName: 'StageStack', assetManifestPath: join(manifestDir, 'x.assets.json') },
+      stack: { stackName: 'StageStack', assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json') },
     } as unknown as ResolvedRuntime;
 
     const message = await resolveAgentCoreImage(runtime, options(assemblyDir), assemblyDir).then(

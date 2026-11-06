@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import * as path from 'node:path';
 import type {
   ResolvedEcsContainer,
   ResolvedEcsTask,
@@ -262,7 +263,8 @@ const manifestStubs = vi.hoisted(() => ({
   loadManifest: vi.fn(
     async (
       _cdkOut: string,
-      _stack: string
+      _stack: string,
+      _fileName?: string
     ): Promise<{
       dockerImages: Record<string, { source: { directory: string } }>;
     } | null> => ({
@@ -275,8 +277,19 @@ const manifestStubs = vi.hoisted(() => ({
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   AssetManifestLoader: class {
-    async loadManifest(cdkOut: string, stack: string): Promise<unknown> {
-      return manifestStubs.loadManifest(cdkOut, stack);
+    // The real lookup: the file the stack record names, so a Stage manifest
+    // (named after the artifact id, not the stack) is found (cdkd#5872).
+    async loadStackManifest(
+      stack: { stackName: string; assetManifestPath?: string },
+      fallbackDir: string
+    ): Promise<unknown> {
+      return stack.assetManifestPath
+        ? manifestStubs.loadManifest(
+            path.dirname(stack.assetManifestPath),
+            stack.stackName,
+            path.basename(stack.assetManifestPath)
+          )
+        : manifestStubs.loadManifest(fallbackDir, stack.stackName);
     }
   },
 }));
@@ -539,7 +552,11 @@ describe('runEcsTask — image preparation (G1)', () => {
     });
     const state = createEcsRunState();
     await runEcsTask(task, baseOptions(), state);
-    expect(manifestStubs.loadManifest).toHaveBeenCalledWith('/tmp/cdk.out', 'S1');
+    expect(manifestStubs.loadManifest).toHaveBeenCalledWith(
+      '/tmp/cdk.out',
+      'S1',
+      'S1.assets.json'
+    );
     expect(dockerBuildStubs.buildDockerImage).toHaveBeenCalledTimes(1);
     // Post-PR signature: `buildDockerImage(asset, cdkOutDir, options)` where
     // `options.tag` carries the deterministic local tag (was the 3rd positional
@@ -569,13 +586,21 @@ describe('runEcsTask — image preparation (G1)', () => {
         artifactId: 'S1',
         template: { Resources: {} },
         dependencyNames: [],
-        assetManifestPath: '/tmp/cdk.out/assembly-MyStage/S1.assets.json',
+        // A Stage manifest is named after the artifact id, not the stack.
+        assetManifestPath: '/tmp/cdk.out/assembly-MyStage/MyStageS1A1B2C3D4.assets.json',
         assetOutdir: '/tmp/cdk.out',
       },
     });
     const state = createEcsRunState();
     await runEcsTask(task, baseOptions(), state);
 
+    // The manifest is read from the file the assembly names, never rebuilt
+    // from `stackName` (cdkd#5872).
+    expect(manifestStubs.loadManifest).toHaveBeenCalledWith(
+      '/tmp/cdk.out/assembly-MyStage',
+      'S1',
+      'MyStageS1A1B2C3D4.assets.json'
+    );
     const [, ctx, opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
     // Resolved against the MANIFEST's directory...
     expect(ctx).toBe('/tmp/cdk.out/assembly-MyStage');

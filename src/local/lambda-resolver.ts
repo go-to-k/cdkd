@@ -940,8 +940,9 @@ export function resolveAssetCodeDirectory(opts: AssetCodeResolveOptions): string
  * see.
  *
  * Asset paths are relative to the manifest's own directory: the stack's
- * `assetManifestPath` is `<cdk.out>/<stack>.assets.json`, so stripping the
- * filename gives the base.
+ * `assetManifestPath` is `<cdk.out>/<stack>.assets.json` (for a Stage stack,
+ * `<assembly-dir>/<artifactId>.assets.json`), so stripping the filename gives
+ * the base.
  *
  * `assetOutdir` is the app's outdir and is the CONTAINMENT bound. An ABSENT one
  * falls back to the base, which is correct for a top-level stack and NARROWS
