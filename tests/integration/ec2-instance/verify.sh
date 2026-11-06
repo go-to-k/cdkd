@@ -2103,6 +2103,7 @@ licenses_of() {
       rm -f "${err}"
       return 0
     fi
+    echo "NOTE: issue #5630 -- list-license-specifications-for-resource failed for $1: $(sanitize_aws_output "$(tail -n 3 "${err}")")" >&2
     rm -f "${err}"
     return 1
   fi
