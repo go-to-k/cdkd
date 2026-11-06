@@ -278,7 +278,7 @@ run_cdkd_json() { # <label> <binary> <args...>
 }
 
 # `cdkd state show --json` reserializes the parsed record and withholds the
-# stack instance id (`withStackInstanceIdWithheld`, src/cli/commands/state.ts:
+# stack instance id (`withStackInstanceIdWithheld`, src/cli/commands/state/show.ts:
 # a present id prints as "<withheld>"); nothing else in the record is
 # rewritten. A comparison against S3 masks the id on BOTH sides and sorts
 # keys; byte-level checks read the raw S3 object instead.

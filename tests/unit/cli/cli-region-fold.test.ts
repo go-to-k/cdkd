@@ -7,9 +7,19 @@ import {
   namedCliRegion,
   rawCliRegion,
 } from '../../../src/cli/region-options.js';
+import { readStateSource } from './_state-source.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const COMMANDS_DIR = join(REPO_ROOT, 'src', 'cli', 'commands');
+
+/**
+ * One command file's source. `state.ts` keeps only the command factory since
+ * its handlers moved into `state/` (go-to-k/cdkd#5835), so its row reads the
+ * whole `cdkd state` family -- `state.ts` plus `state/**` -- and every count
+ * and order fence below keeps the population it had as one file.
+ */
+const readCommandSource = (file: string): string =>
+  file === 'state.ts' ? readStateSource() : readFileSync(join(COMMANDS_DIR, file), 'utf8');
 
 describe('foldRegionOption', () => {
   const saved = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
@@ -240,7 +250,7 @@ describe('no CLI command resolves a region without folding it', () => {
   };
 
   const files = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'));
-  const sources = new Map(files.map((f) => [f, readFileSync(join(COMMANDS_DIR, f), 'utf8')]));
+  const sources = new Map(files.map((f) => [f, readCommandSource(f)]));
   const totals = [...sources.values()].reduce(
     (acc, src) => {
       const r = scan(src);
@@ -338,7 +348,7 @@ const stripComments = (source: string): string =>
 
 describe('every handler that accepts --region folds it', () => {
   const files = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'));
-  const sources = new Map(files.map((f) => [f, readFileSync(join(COMMANDS_DIR, f), 'utf8')]));
+  const sources = new Map(files.map((f) => [f, readCommandSource(f)]));
 
   /** Files that actually take a `--region` flag from the user. */
   const regionTaking = files.filter((f) => {
@@ -428,7 +438,7 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
   it.each(readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts')))(
     '%s folds before every AWS call it makes',
     (file) => {
-      const source = readFileSync(join(COMMANDS_DIR, file), 'utf8');
+      const source = readCommandSource(file);
       const folds = offsets(source, 'foldRegionOption(options)');
       if (folds.length === 0) return; // covered by the coverage fence above
       const roleArns = offsets(source, 'await applyRoleArnIfSet(');

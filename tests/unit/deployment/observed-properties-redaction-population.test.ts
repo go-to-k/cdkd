@@ -160,7 +160,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'import call sites (the root walk and the recursive ' +
       '`--migrate-from-cloudformation` child walk), which is why one row covers two.',
   },
-  'src/cli/commands/state.ts': {
+  'src/cli/commands/state/refresh-observed-stack.ts': {
     sites: 1,
     why: '`cdkd state refresh-observed` — the issue #1926 site, the first of this class.',
   },

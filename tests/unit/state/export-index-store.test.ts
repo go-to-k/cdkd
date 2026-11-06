@@ -367,7 +367,8 @@ describe('ExportIndexStore', () => {
         ['src/cli/commands/deploy.ts', 'options.profile'],
         ['src/cli/commands/destroy.ts', 'options.profile'],
         ['src/cli/commands/scrub.ts', 'options.profile'],
-        ['src/cli/commands/state.ts', 'options.profile'],
+        // `setupStateBackend`, moved out of `state.ts` (go-to-k/cdkd#5835).
+        ['src/cli/commands/state/setup.ts', 'options.profile'],
         ['src/cli/commands/local-state-loader.ts', 'opts.profile'],
       ];
       for (const [file, profile] of sites) {

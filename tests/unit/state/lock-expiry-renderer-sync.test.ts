@@ -30,7 +30,9 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 const OWNER = 'src/state/lock-contention-message.ts';
 /** The consumers that MUST call the helper (each rendered its own copy once). */
-const CONSUMERS = ['src/cli/commands/state.ts', 'src/state/lock-manager.ts'];
+// `formatLockSummary` moved from `state.ts` into `state/resources.ts` with the
+// split (go-to-k/cdkd#5835).
+const CONSUMERS = ['src/cli/commands/state/resources.ts', 'src/state/lock-manager.ts'];
 
 /**
  * The phrases only the owner may spell. `expired` is matched with any of the
