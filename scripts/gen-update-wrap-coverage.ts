@@ -601,7 +601,7 @@ function catchGuardedClasses(
  * that raises internally.
  *
  * KNOWN LIMITATION: capture-then-rethrow (`catch { captured = err; }` … later
- * `throw captured;`) reads as a swallow here. Real at `glue-provider.ts`, where
+ * `throw captured;`) reads as a swallow here. Real at `glue/trigger.ts`, where
  * an outer wrap covers it. Widening to a dataflow analysis is not worth it;
  * the outer-wrap check is what protects those sites.
  */

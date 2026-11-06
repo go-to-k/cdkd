@@ -195,8 +195,8 @@ export interface WiringEvidence {
  *
  * A PROPERTY ACCESS (`recordSet.X`) is deliberately NOT counted, though an
  * earlier revision did. It cannot tell sending from reading back: a drift
- * comparator walking the SDK's response (`glue-provider.ts`'s
- * `readJobCurrentState`) accesses exactly the same names, and it was the sole
+ * comparator walking the SDK's response (`glue/job.ts`'s
+ * `jobReadCurrentState`) accesses exactly the same names, and it was the sole
  * evidence for fifteen Glue Job properties. Evidence for "cdkd sends this" has
  * to come from the SENDING direction, and a template read is that direction.
  *
