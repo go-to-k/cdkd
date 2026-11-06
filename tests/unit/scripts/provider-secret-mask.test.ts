@@ -1133,6 +1133,17 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     expect(stderr).toContain('is missing');
   }, SPAWN_TIMEOUT_MS);
 
+  it('FAILS on a Cloud Control stat error other than ENOENT rather than skipping that half', () => {
+    // A self-referencing symlink stats as ELOOP: a broken tree, not an absent layout.
+    const dir = copyTree();
+    const root = join(dir, '..');
+    rmSync(join(root, 'cloud-control'), { recursive: true, force: true });
+    symlinkSync(join(root, 'cloud-control'), join(root, 'cloud-control'));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain(`cannot stat ${join(root, 'cloud-control')}`);
+  }, SPAWN_TIMEOUT_MS);
+
   it('FAILS a raw site injected into the REAL Cloud Control provider (issue #5880)', () => {
     // Real-code probe: the site must be found AND classified raw, naming the
     // file — the shape an unmasked properties-derived message would take.

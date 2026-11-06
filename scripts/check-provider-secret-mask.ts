@@ -3391,20 +3391,20 @@ function cloudControlFamily(providersDir: string): string[] {
   const file = resolve(providersDir, '..', CLOUD_CONTROL_FILE);
   const dir = resolve(providersDir, '..', CLOUD_CONTROL_DIR);
   const out: string[] = [];
-  let isFile = false;
-  try {
-    isFile = statSync(file).isFile();
-  } catch {
-    // Absent: the split moved it into the directory below.
-  }
-  if (isFile) out.push(file);
-  let isDir = false;
-  try {
-    isDir = statSync(dir).isDirectory();
-  } catch {
-    // Absent: the split has not landed.
-  }
-  if (isDir) out.push(...listSourceFiles(dir));
+  // Only ENOENT reads as "this layout is absent"; any other stat error (EACCES,
+  // ELOOP) is a broken tree, and swallowing it would drop half the family.
+  const statOrAbsent = (path: string): ReturnType<typeof statSync> | undefined => {
+    try {
+      return statSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw new ScanFailure(
+        `cannot stat ${path}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
+  if (statOrAbsent(file)?.isFile()) out.push(file);
+  if (statOrAbsent(dir)?.isDirectory()) out.push(...listSourceFiles(dir));
   if (out.length === 0) {
     throw new ScanFailure(
       `the Cloud Control provider family (${CLOUD_CONTROL_FILE} and/or ${CLOUD_CONTROL_DIR}/) is ` +
