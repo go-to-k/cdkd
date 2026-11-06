@@ -98,19 +98,30 @@ import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
-function stateWith(password: string): { state: StackState; etag: string } {
+// The physical name of a user named from a secret: its record spells `***`,
+// and `secretNamePrintingBag` gives the reader (`Db`) this name as a needle.
+const USER_ID = 'team-secret-db-user';
+
+function stateWith(password: string, userName: string): { state: StackState; etag: string } {
   return {
     state: {
       version: 2,
       stackName: 'TestStack',
       region: 'us-east-1',
       resources: {
+        User: {
+          physicalId: USER_ID,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+        },
         Db: {
           physicalId: 'db-1',
           resourceType: 'AWS::Test::Database',
-          properties: { Password: password, Description: 'desired' },
+          properties: { Password: password, MasterUsername: USER_ID, Description: 'desired' },
           attributes: {},
-          dependencies: [],
+          dependencies: ['User'],
         },
       },
       outputs: {},
@@ -127,13 +138,18 @@ interface RevertRun {
   line: string | undefined;
 }
 
-async function revert(password: string, fail = false): Promise<RevertRun> {
+async function revert(
+  password: string,
+  fail = false,
+  userName = 'plain-user-name'
+): Promise<RevertRun> {
   const run: RevertRun = { received: undefined, line: undefined };
   logLines.length = 0;
   const provider = {
     // Only `Description` drifted; the revert pushes the re-resolved baseline back.
     readCurrentState: vi.fn(async () => ({
       Password: password === SECRET_EXPR ? SECRET_PLAINTEXT : password,
+      MasterUsername: USER_ID,
       Description: 'changed',
     })),
     update: vi.fn(
@@ -151,14 +167,19 @@ async function revert(password: string, fail = false): Promise<RevertRun> {
         }
         // A provider `this.logger.*` line that skipped `context.maskSecrets`:
         // the only masker it meets is the sink's.
-        const text = `Applying password ${String(properties['Password'])}`;
+        const text =
+          `Applying password ${String(properties['Password'])} ` +
+          `for user ${String(properties['MasterUsername'])}`;
         run.line = currentLogLineMasker()?.(text) ?? text;
         return { physicalId: 'db-1', wasReplaced: false };
       }
     ),
   };
-  mockGetProvider.mockImplementation(() => provider);
-  mockGetState.mockResolvedValue(stateWith(password));
+  const userProvider = { readCurrentState: vi.fn(async () => undefined) };
+  mockGetProvider.mockImplementation((type: string) =>
+    type === 'AWS::IAM::User' ? userProvider : provider
+  );
+  mockGetState.mockResolvedValue(stateWith(password, userName));
   const original = process.stdout.write.bind(process.stdout);
   process.stdout.write = (() => true) as typeof process.stdout.write;
   try {
@@ -195,13 +216,21 @@ describe('cdkd drift --revert masks a resolved secret in a provider log line (go
     const run = await revert(SECRET_EXPR);
     // Premise: the provider was handed the PLAINTEXT, not the expression.
     expect(run.received).toBe(SECRET_PLAINTEXT);
-    expect(run.line).toBe('Applying password ***');
+    expect(run.line).toBe(`Applying password *** for user ${USER_ID}`);
+  });
+
+  // Both bags stay bound on the same line: the resolved plaintext (this
+  // binding) AND the secret-derived name `revert.ts` binds (#3869).
+  it('masks the plaintext and a secret-derived name on the same line', async () => {
+    const run = await revert(SECRET_EXPR, false, '***');
+    expect(run.received).toBe(SECRET_PLAINTEXT);
+    expect(run.line).toBe('Applying password *** for user ***');
   });
 
   it('negative control: a literal value prints as it is', async () => {
     const run = await revert(LITERAL);
     expect(run.received).toBe(LITERAL);
-    expect(run.line).toBe(`Applying password ${LITERAL}`);
+    expect(run.line).toBe(`Applying password ${LITERAL} for user ${USER_ID}`);
   });
 
   it('keeps the plaintext masked when the update throws it', async () => {
