@@ -132,7 +132,6 @@ const STREAM_CASE: TypeCase = {
 
 // --- AWS::CodeBuild::Project ---------------------------------------------------
 
-const CODEBUILD_SRC = 'codebuild-provider.ts';
 const PROJECT = 'project';
 const PROJECT_ARN = `arn:aws:codebuild:us-east-1:${ACCOUNT}:project/${PROJECT}`;
 const ROLE = `arn:aws:iam::${ACCOUNT}:role/cb`;
@@ -278,7 +277,7 @@ const PROJECT_CASE: TypeCase = {
             beneath(
               PROJECT_BAG,
               Object.keys(PROJECT_BAG).filter((k) => k !== 'Name' && k !== 'Triggers'),
-              `UpdateProject carries every block whole from the desired bag (${CODEBUILD_SRC}, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
+              `UpdateProject carries every block whole from the desired bag (codebuild/map-properties.ts, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
             )
           )
         ),
@@ -287,7 +286,7 @@ const PROJECT_CASE: TypeCase = {
             beneath(
               PROJECT_BAG,
               ['Triggers'],
-              `UpdateWebhook is built whole from the desired bag (${CODEBUILD_SRC}, reconcileWebhook), so a member removed under a still-present Triggers is absent from next alone; its update-add probe observes the delivery`
+              `UpdateWebhook is built whole from the desired bag (codebuild/update.ts, reconcileWebhook), so a member removed under a still-present Triggers is absent from next alone; its update-add probe observes the delivery`
             )
           ).filter(([label]) => label !== 'update-remove:Triggers.Webhook')
         ),
@@ -309,7 +308,7 @@ const PROJECT_CASE: TypeCase = {
             'SourceVersion',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, ${CODEBUILD_SRC}:941-952, 978-988)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, codebuild/update.ts, update)`,
           ])
         ),
         'create-vary:Triggers.Webhook': WEBHOOK_SELECTS,
@@ -325,7 +324,7 @@ const PROJECT_CASE: TypeCase = {
             'BadgeEnabled',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, ${CODEBUILD_SRC}:1000-1007)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, codebuild/update.ts, update)`,
           ])
         ),
       },
