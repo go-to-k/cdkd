@@ -713,7 +713,7 @@ describe('cdkd gc', () => {
         if (k === MARKER_KEY) return MARKER_BODY;
         if (k === key) return corruptBody;
         // `null`, not a body: that is what the real backend answers for a key
-        // it does not hold, and `gc.ts` branches on it.
+        // it does not hold, and `gc/scan.ts` branches on it.
         return null;
       });
       try {
@@ -866,7 +866,7 @@ describe('cdkd gc', () => {
     });
 
     it('sanitises the KEY it names when no command can be offered', async () => {
-      // `gc.ts` renders the key through `displayIdent` in this message too.
+      // `gc/scan.ts` renders the key through `displayIdent` in this message too.
       // Every other case here plants a control-free segment, so that call was
       // unwatched: interpolating the key raw kept them all green.
       const message = await messageFor(`Prod${String.fromCharCode(27)}[2K${String.fromCharCode(13)}Safe`);

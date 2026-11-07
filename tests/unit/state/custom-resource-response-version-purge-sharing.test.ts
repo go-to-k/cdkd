@@ -225,10 +225,15 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
   // prefix and the file deleting the object can be different files of it
   // (custom-resource-provider.ts names it, custom-resource/response.ts
   // deletes). Its companion files are judged through it, never alone.
+  // `cdkd gc` is the same kind of unit (go-to-k/cdkd#5835): `gc.ts` plus
+  // `gc/`, where `gc/candidates.ts` deletes and `gc/command.ts` purges.
+  const SPLIT_COMMANDS: Record<string, string> = { 'src/cli/commands/gc.ts': 'src/cli/commands/gc/' };
   const companionsOf = new Map(
     files.map((rel) => [
       rel,
-      companionFiles(join(REPO_ROOT, rel)).map((abs) => relative(REPO_ROOT, abs)),
+      SPLIT_COMMANDS[rel] !== undefined
+        ? files.filter((f) => f.startsWith(SPLIT_COMMANDS[rel]!))
+        : companionFiles(join(REPO_ROOT, rel)).map((abs) => relative(REPO_ROOT, abs)),
     ])
   );
   const folded = new Set([...companionsOf.values()].flat());
@@ -368,6 +373,9 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
       'src/provisioning/providers/custom-resource/response.ts'
     );
     expect(folded.has('src/provisioning/providers/custom-resource/response.ts')).toBe(true);
+    expect(companionsOf.get('src/cli/commands/gc.ts')).toEqual(
+      expect.arrayContaining(['src/cli/commands/gc/candidates.ts', 'src/cli/commands/gc/command.ts'])
+    );
   });
 
   it('every in-population deleter CALLS the shared purge', () => {

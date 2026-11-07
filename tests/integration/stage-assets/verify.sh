@@ -597,7 +597,7 @@ assert_gone "image Lambda ${IMAGE_FN} still exists after destroy" \
 # The image lands in the SHARED container-assets repo, which cdkd does not own
 # and must not delete: other stacks reference images there by content hash.
 # `destroy` therefore leaves it BY DESIGN -- pruning published assets is
-# `cdkd gc`'s job, and `gc.ts` is the only `BatchDeleteImage` caller in `src/`.
+# `cdkd gc`'s job, and `gc/candidates.ts` is the only `BatchDeleteImage` caller in `src/`.
 # So sweep OUR tag ourselves and then assert gone, exactly as `multi-asset` and
 # `docker-image-asset` do; asserting that destroy removed it would accuse cdkd
 # of a leak for doing the right thing.

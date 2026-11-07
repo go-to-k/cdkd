@@ -4,6 +4,7 @@ paths:
   - 'src/utils/display-safe.ts'
   - 'src/cli/commands/state-file-keys.ts'
   - 'src/cli/commands/gc.ts'
+  - 'src/cli/commands/gc/**'
 ---
 
 # A value cdkd tells an operator to PASTE
@@ -30,7 +31,7 @@ form.
 `displayIdent` is not enough for a value going into a COMMAND. Every character
 of `--state-bucket=attacker` is a plain identifier character, so it renders
 BARE and is still an option once the operator strips the advisory quotes. Nor
-is quoting the alternative: quoting answers the shell-metacharacter question
+is quoting: it answers the shell-metacharacter question
 and none of the option case. The answer for a value failing the test is
 REFUSAL — name the value, withhold the command.
 
@@ -62,4 +63,4 @@ medial `~` / `_` / `.` / `-` admitted, a LEADING one refused, because the
 leading position is where the option and tilde-expansion shapes live.
 
 Do not unify the two. The narrower rule is right where it applies, and the
-wider one is right where cdkd's acceptance is wider than CloudFormation's.
+wider one where cdkd's acceptance is wider than CloudFormation's.

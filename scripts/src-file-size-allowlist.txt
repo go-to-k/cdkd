@@ -11,7 +11,6 @@ src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/gc.ts
 src/cli/commands/refactor.ts
 src/cli/commands/retire-cfn-stack.ts
 src/cli/commands/rollback.ts
