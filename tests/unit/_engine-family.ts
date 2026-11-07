@@ -59,6 +59,8 @@ for (const rel of ['masking/remedy.ts', 'masking/noecho-attributes.ts']) {
 const NESTED_FLOORS: Readonly<Record<string, number>> = {
   // `executeDeployment`'s body (#5835): entry `execute.ts` plus six modules.
   execute: 6,
+  // `provisionUpdateInPlace`'s body (#5835): entry `update-in-place.ts` plus 1 modules.
+  'update-in-place': 1,
   // `update.ts`'s split body (#5835): 6 nested modules.
   'update': 6,
 };

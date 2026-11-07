@@ -230,7 +230,9 @@ describe('DestroyRunnerResult.interrupted write sites are enumerated mechanicall
     // derivation collapses to: measured 2026-08-26, replacing the pathspec
     // with the literal `destroy-runner.ts` left the fence 4/4 GREEN. These two
     // are what a collapse drops first, so they are what the floor must name.
-    expect(files).toContain('src/cli/commands/destroy.ts');
+    // `cdkd destroy`'s `runDestroyForStack` call lives in its handler module
+    // (go-to-k/cdkd#5835).
+    expect(files).toContain('src/cli/commands/destroy/command.ts');
     // The nested-stack provider's `runDestroyForStack` call lives in its
     // companion `delete.ts` (go-to-k/cdkd#5835).
     expect(files).toContain('src/provisioning/providers/nested-stack/delete.ts');

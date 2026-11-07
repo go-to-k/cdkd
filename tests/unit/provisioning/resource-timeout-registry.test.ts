@@ -97,8 +97,9 @@ describe('resource-timeout registry seeding (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   // `cdkd state destroy`'s handler moved from `state.ts` into `state/destroy.ts`
   // with the split (go-to-k/cdkd#5835), and `cdkd deploy`'s from `deploy.ts`
-  // into `deploy/command.ts`.
-  const seedingCommands = ['deploy/command.ts', 'destroy.ts', 'state/destroy.ts'];
+  // into `deploy/command.ts`, and `cdkd destroy`'s from `destroy.ts` into
+  // `destroy/command.ts`.
+  const seedingCommands = ['deploy/command.ts', 'destroy/command.ts', 'state/destroy.ts'];
 
   it.each(seedingCommands)(
     '%s seeds the registry right after validateResourceTimeouts',
