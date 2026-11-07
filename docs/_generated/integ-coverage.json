@@ -2902,6 +2902,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "orphan-getatt-takeover",
         "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
@@ -3105,6 +3106,10 @@
         ],
         "nlb-source-nat": [
           "l2"
+        ],
+        "orphan-getatt-takeover": [
+          "l1",
+          "literal"
         ],
         "partial-create-handback": [
           "l1",
@@ -3506,6 +3511,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "orphan-getatt-takeover",
         "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
@@ -3726,6 +3732,10 @@
         ],
         "nlb-source-nat": [
           "l2"
+        ],
+        "orphan-getatt-takeover": [
+          "l1",
+          "literal"
         ],
         "partial-create-handback": [
           "l1",
