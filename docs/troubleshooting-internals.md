@@ -360,8 +360,31 @@ host is part of the signature.
 > handlers use the full URL and are unaffected. cdkd warns once per run when
 > `CDKD_CR_S3_ENDPOINT_URL` is not https on port 443. For Node.js handlers,
 > serve the emulator's S3 over TLS on port 443 (for example behind a
-> TLS-terminating proxy), with a certificate the Lambda runtime trusts, and
-> set `CDKD_CR_S3_ENDPOINT_URL=https://<host>`.
+> TLS-terminating proxy), and set `CDKD_CR_S3_ENDPOINT_URL=https://<host>`.
+> The handlers verify the certificate with Node's default TLS settings, so the
+> Lambda runtime must trust it: either provide the CA through
+> `NODE_EXTRA_CA_CERTS`, or, against the emulator only, turn verification off
+> with `NODE_TLS_REJECT_UNAUTHORIZED=0` so a self-signed certificate works.
+
+If the emulator cannot set environment variables on every Lambda container,
+set `NODE_TLS_REJECT_UNAUTHORIZED` from the CDK app with an aspect that applies
+only when you deploy to the emulator. Never apply it to a deployment to real
+AWS:
+
+```ts
+import { Aspects, CfnResource, IAspect } from 'aws-cdk-lib';
+import { IConstruct } from 'constructs';
+
+class InsecureCrTlsForEmulator implements IAspect {
+  visit(node: IConstruct) {
+    if (node instanceof CfnResource && node.cfnResourceType === 'AWS::Lambda::Function') {
+      node.addPropertyOverride('Environment.Variables.NODE_TLS_REJECT_UNAUTHORIZED', '0');
+    }
+  }
+}
+
+if (process.env.LOCAL_EMULATOR) Aspects.of(app).add(new InsecureCrTlsForEmulator());
+```
 
 ## Related
 
