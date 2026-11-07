@@ -1,41 +1,39 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-  NoSuchKey,
-  S3ServiceException,
-} from '@aws-sdk/client-s3';
+import { S3Client, NoSuchKey, S3ServiceException } from '@aws-sdk/client-s3';
 import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
-import { getLogger } from '../utils/logger.js';
+import { getLogger, type ConsoleLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
-import {
-  displayIdent,
-  displaySafe,
-  safeMsg,
-  STACK_REF_MAX_CODE_POINTS,
-} from '../utils/display-safe.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { markRedactedCause } from '../deployment/retryable-errors/marks.js';
 import { currentLogLineMasker } from '../utils/log-line-masker.js';
-import {
-  describeJsonParseFailure,
-  parseFailureDebugDetail,
-  utf8ByteLength,
-} from '../utils/json-parse-failure.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
-import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
-import {
-  UNRENDERABLE,
-  UNREPRODUCIBLE_LOCK_CLAUSE,
-  buildForceUnlockCommand,
-  formatLockExpiry,
-  formatLockOperation,
-  formatLockOwner,
-} from './lock-contention-message.js';
+import { UNRENDERABLE } from './lock-contention-message.js';
 import { hostname } from 'os';
+import {
+  renewalIntervalFor,
+  type LockPurgePath,
+  type HeldLock,
+  stackRef,
+  errorDetail,
+  isLockInfoExpired,
+} from './lock-manager/shared.js';
+import { acquireLock, putLockObject, acquireLockWithRetry } from './lock-manager/acquire.js';
+import { getLockRecord } from './lock-manager/read.js';
+import {
+  doReleaseLock,
+  stillOursByBody,
+  forceReleaseLock,
+  deleteLock,
+  purgeLockVersions,
+} from './lock-manager/release.js';
+import { trackHeldLock, doRenewLock, adoptOwnWrite } from './lock-manager/renewal.js';
+export {
+  abandonedRunHorizon,
+  isLockInfoExpired,
+  RELEASED_LOCK_REACQUIRE_LIMIT,
+} from './lock-manager/shared.js';
 
 /**
  * Options for LockManager constructor
@@ -63,212 +61,6 @@ export interface LockManagerOptions {
 }
 
 /**
- * Upper bound on the gap between lock renewals.
- *
- * Deliberately a fixed wall-clock ceiling rather than a pure fraction of the
- * TTL. A fraction alone (TTL/4 = 7.5 min at the default) makes renewal
- * unobservable in any deploy shorter than that, so nothing short of a
- * multi-hour fixture could ever prove the loop runs -- and an untestable
- * heartbeat is one that goes dead silently. At 2 min the default 30 min TTL
- * tolerates FOURTEEN consecutive missed renewals before it lapses, and an
- * ordinary broad-set integ (~8 min) performs three.
- */
-const MAX_RENEWAL_INTERVAL_MS = 2 * 60 * 1000;
-
-/**
- * Renew after at most a quarter of the TTL, so a short TTL still gets three
- * chances to renew before it lapses. This is what binds the two numbers
- * together for a caller that shortens `ttlMinutes`.
- */
-const RENEWAL_TTL_FRACTION = 4;
-
-/** Floor, so a pathologically small TTL cannot spin the event loop. */
-const MIN_RENEWAL_INTERVAL_MS = 1000;
-
-/** How often a lock of `ttlMs` is renewed. */
-function renewalIntervalFor(ttlMs: number): number {
-  return Math.max(
-    MIN_RENEWAL_INTERVAL_MS,
-    Math.min(MAX_RENEWAL_INTERVAL_MS, Math.floor(ttlMs / RENEWAL_TTL_FRACTION))
-  );
-}
-
-/**
- * go-to-k/cdkd#4705 review B1: the latest moment an abandoned run can have
- * been alive while its lock was renewed -- a run whose renewals kept failing
- * may have outlived it, and what it created after it is refused (the
- * `cdkd import` remedy), never adopted -- read off the lock it left: its last
- * renewal (the object's
- * LastModified, S3's clock) plus that lock's renewal interval -- the run kept
- * creating between renewals. The interval comes from the lock's own TTL
- * (`expiresAt` minus the renewal that set it), with the manager's formula; a
- * lock that does not say falls back to the longest interval. `undefined` when
- * S3 reported no LastModified.
- */
-export function abandonedRunHorizon(record: {
-  info: { expiresAt?: unknown };
-  lastModified?: number;
-}): number | undefined {
-  if (record.lastModified === undefined) return undefined;
-  const expiresAt = Number(record.info.expiresAt);
-  const ttlMs = expiresAt - record.lastModified;
-  const interval =
-    Number.isFinite(ttlMs) && ttlMs > 0 ? renewalIntervalFor(ttlMs) : MAX_RENEWAL_INTERVAL_MS;
-  return record.lastModified + interval;
-}
-
-/**
- * How many times one `acquireLockWithRetry` call re-attempts at once, without
- * spending a retry, after a failed acquire is followed by an empty lock read
- * (issue #4055). The bound is what keeps a flapping lock -- or a lock.json
- * that reads as absent but is never replaceable -- from looping forever.
- */
-export const RELEASED_LOCK_REACQUIRE_LIMIT = 3;
-
-/**
- * Which kind of path landed the delete marker the purge is cleaning up after
- * (issue [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5).
- *
- * It exists to pick the LOG LEVEL, and the level is the one place where site 5
- * genuinely differs from the four sites already purging. It is spelled as the
- * PATH rather than as the level so the mapping — and its reason — lives in one
- * place instead of at each call site.
- *
- * - `'release'` — `releaseLock`, i.e. the tail of every mutating cdkd command.
- * - `'reap'` — `acquireLock`'s expired-lock takeover and `forceReleaseLock`
- *   (`cdkd force-unlock`, and `cdkd state orphan`). Rare, operator-visible.
- */
-type LockPurgePath = 'release' | 'reap';
-
-/**
- * What a surviving `lock.json` version holds, for the purge warning's
- * parenthetical.
- *
- * The helper makes this per-caller precisely so a reader chasing the warning is
- * told which object to go and inspect; `lock.json` is the one call site whose
- * content is NOT a secret, and saying so is more useful than a vague phrase.
- */
-const LOCK_OBJECT_DESCRIPTION =
-  'a stack lock heartbeat, which records the lock owner, its acquisition ' +
-  'timestamp, its deadline and the operation name — no secret, but one row ' +
-  'per renewal';
-
-/**
- * A lock this process currently believes it holds.
- *
- * `etag` is the S3 ETag of the lock object as this process last wrote it, and
- * it is what makes both renewal and release CONDITIONAL: every subsequent
- * write carries `IfMatch: etag`, so a process that has already lost the lock
- * can neither resurrect its own expiry nor delete the new owner's lock.
- */
-interface HeldLock {
-  stackName: string;
-  region: string;
-  key: string;
-  info: LockInfo;
-  etag: string | undefined;
-  timer: NodeJS.Timeout | undefined;
-  /**
-   * The renewal currently in flight, if any.
-   *
-   * `releaseLock` awaits it before reading `etag`. Without that, a renewal
-   * that lands between `stopRenewal()` and the DELETE leaves the caller
-   * holding the PREVIOUS ETag, S3 answers 412, and this process refuses to
-   * release its OWN lock -- stranding it for a full TTL behind a warning that
-   * blames a process that does not exist.
-   */
-  renewing: Promise<void> | undefined;
-  /** Set once S3 has told us the object is no longer the one we wrote. */
-  lost: boolean;
-  /**
-   * The release in flight, or the settled result of the one that already ran.
-   *
-   * A PROMISE rather than a boolean, claimed SYNCHRONOUSLY, because both
-   * failure modes matter. Claimed late (after an `await`) it does not close
-   * the race it exists for: the force-quit paths in `destroy-runner` fire an
-   * un-awaited `void releaseLock(...)` while the main `finally` may be
-   * mid-release, and a boolean set after the awaits lets both through. And a
-   * boolean set BEFORE the delete records a FAILED release as done, so a later
-   * caller returns success having deleted nothing. Returning the same promise
-   * gives the second caller the first one's actual outcome.
-   */
-  releasing: Promise<void> | undefined;
-  /**
-   * Set when `etag` is no longer known to match the stored object.
-   *
-   * Only the no-ETag renewal path sets it. It exists so the eventual 412 is
-   * reported truthfully -- without it the release blames "another cdkd
-   * process" for a conflict with this process's OWN write.
-   */
-  etagUncertain: boolean;
-  /** Whether the "renewals are failing past the deadline" warning already fired. */
-  warnedPastExpiry: boolean;
-}
-
-/**
- * One spelling of "this value came from an S3 key or a lock record, and is
- * about to be interpolated into a message a terminal will render". A stack
- * name and an AWS region both have a known charset, so the ASCII allowlist is
- * a no-op on every legitimate input while an S3 key admits any UTF-8.
- *
- * Call it for a stack name or a region. Not every value in this file goes
- * through it, and this comment does not say which do: three revisions of that
- * sentence carried a count or a scope claim and each was wrong.
- * `grep safeSegment` answers it exactly.
- */
-function safeSegment(value: string | undefined): string {
-  // `displayIdent` IS the allowlist-plus-floor this used to spell, and adds a
-  // boundary: bare when plain, otherwise one JSON string, so a call site writes
-  // NO quotes of its own around it (go-to-k/cdkd#3617). The stack cap, since a
-  // nested `Parent~Child` name legitimately runs past the 255 default.
-  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
-}
-
-/**
- * The `stack (region)` descriptor every lock message renders, with both halves
- * through {@link safeSegment}. A stack name reaches this module from a CLI
- * argument, a nested-stack child's minted name, or an S3 key segment
- * `listStacks` returned (`cdkd state destroy`, `cdkd state orphan`), and the
- * lock paths cannot tell which -- so every render takes the guard rather than
- * a per-caller judgement that the next caller would not inherit (issue #3027).
- */
-function stackRef(stackName: string, region: string | undefined): string {
-  return region === undefined
-    ? safeSegment(stackName)
-    : `${safeSegment(stackName)} (${safeSegment(region)})`;
-}
-
-/**
- * An error's text for a lock message. S3's error text ECHOES the key, which
- * embeds the stack name, so a message whose stack name went through
- * {@link stackRef} would otherwise let the same bytes back in through its last
- * interpolation. The ASCII allowlist, for the same reason the name takes it.
- */
-function errorDetail(error: unknown): string {
-  return (
-    displaySafe(error instanceof Error ? error.message : error, { asciiOnly: true }) || UNRENDERABLE
-  );
-}
-
-/**
- * Whether a lock has EXPIRED, by its `expiresAt` field — the one predicate the
- * lock manager acquires by, exported so a reader deciding "is a live lock held"
- * (issue #3754's nested-record judgement in `cdkd rollback`) cannot diverge.
- *
- * `expiresAt` reaches here through an unvalidated `as LockInfo`, so anyone who
- * can write the state bucket chooses it. `undefined`, `'soon'`, `NaN` and
- * `Infinity` all make a naive `Date.now() >= x` false FOREVER, which pins the
- * stack: no acquire ever succeeds and only `force-unlock` clears it. Treating a
- * non-finite deadline as already expired is the recoverable direction and
- * grants no new power -- someone who can write that value could equally have
- * deleted the object.
- */
-export function isLockInfoExpired(lockInfo: LockInfo): boolean {
-  if (!Number.isFinite(lockInfo.expiresAt)) return true;
-  return Date.now() >= lockInfo.expiresAt;
-}
-
-/**
  * S3-based lock manager using conditional writes (If-None-Match)
  *
  * Implements distributed locking using S3's If-None-Match: "*" condition
@@ -286,7 +78,7 @@ export function isLockInfoExpired(lockInfo: LockInfo): boolean {
  * S3's 301 PermanentRedirect while state reads/writes succeeded).
  */
 export class LockManager {
-  private logger = getLogger().child('LockManager');
+  logger: ConsoleLogger = getLogger().child('LockManager');
 
   /**
    * The `LockError` a failed S3 lock call throws, with the failure named by
@@ -301,7 +93,7 @@ export class LockManager {
    * must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor.
    */
-  private wrapS3Failure(error: unknown, build: (text: string) => LockError): LockError {
+  wrapS3Failure(error: unknown, build: (text: string) => LockError): LockError {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return build(errorDetail(error));
     this.logger.debug(
@@ -312,20 +104,20 @@ export class LockManager {
     const wrapped = build(displaySafe(summary, { asciiOnly: true }) || UNRENDERABLE);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
-  private s3Client: S3Client;
-  private config: StateBackendConfig;
-  private readonly ttlMs: number;
+  s3Client: S3Client;
+  config: StateBackendConfig;
+  readonly ttlMs: number;
   private readonly renewalIntervalMs: number;
-  private readonly renewalDisabled: boolean;
+  readonly renewalDisabled: boolean;
   /** Locks held by THIS process, keyed by S3 lock key. */
-  private readonly heldLocks = new Map<string, HeldLock>();
+  readonly heldLocks = new Map<string, HeldLock>();
   /** By lock key: an expired lock this process took over, and its lease horizon (G-1/B1). */
-  private readonly abandonedLocks = new Map<string, number>();
+  readonly abandonedLocks = new Map<string, number>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
-  private readonly deferReleasePurge: boolean;
+  readonly deferReleasePurge: boolean;
   /** Release purges still running under `deferReleasePurge`. */
-  private readonly deferredPurges = new Set<Promise<void>>();
+  readonly deferredPurges = new Set<Promise<void>>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, options?: LockManagerOptions) {
     this.s3Client = s3Client;
@@ -377,11 +169,11 @@ export class LockManager {
    * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
    * resolves to an empty object for non-standard clients (test doubles).
    */
-  private async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+  async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
     return expectedOwnerParam(this.s3Client);
   }
 
-  private async ensureClientForBucket(): Promise<void> {
+  async ensureClientForBucket(): Promise<void> {
     if (this.clientResolved) return;
     if (this.resolveInFlight) return this.resolveInFlight;
 
@@ -425,7 +217,7 @@ export class LockManager {
    * key — that mode is purely for legacy lock cleanup and is NOT used by
    * deploy / destroy / diff anymore.
    */
-  private getLockKey(stackName: string, region: string | undefined): string {
+  getLockKey(stackName: string, region: string | undefined): string {
     if (region === undefined) {
       return `${this.config.prefix}/${stackName}/lock.json`;
     }
@@ -435,7 +227,7 @@ export class LockManager {
   /**
    * Get default lock owner identifier
    */
-  private getDefaultOwner(): string {
+  getDefaultOwner(): string {
     try {
       const host = hostname();
       const user = process.env['USER'] || process.env['USERNAME'] || 'unknown';
@@ -449,14 +241,14 @@ export class LockManager {
   /**
    * Check if a lock is expired based on its expiresAt field
    */
-  private isLockExpired(lockInfo: LockInfo): boolean {
+  isLockExpired(lockInfo: LockInfo): boolean {
     return isLockInfoExpired(lockInfo);
   }
 
   /**
    * Format a human-readable duration from milliseconds
    */
-  private formatDuration(ms: number): string {
+  formatDuration(ms: number): string {
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
@@ -464,227 +256,21 @@ export class LockManager {
     return `${minutes}m${remainingSeconds}s`;
   }
 
-  /**
-   * Try to acquire a lock for a stack
-   *
-   * Uses If-None-Match: "*" to ensure atomic lock acquisition.
-   * If an expired lock exists, it will be cleaned up and re-acquired.
-   *
-   * @param stackName Stack name
-   * @param region Target region (lock key is region-scoped)
-   * @param owner Lock owner identifier (defaults to user@hostname:pid)
-   * @param operation Operation being performed (e.g., "deploy", "destroy")
-   */
-  async acquireLock(
+  acquireLock(
     stackName: string,
     region: string,
     owner?: string,
     operation?: string
   ): Promise<boolean> {
-    await this.ensureClientForBucket();
-
-    const key = this.getLockKey(stackName, region);
-    const lockOwner = owner || this.getDefaultOwner();
-    const now = Date.now();
-
-    const lockInfo: LockInfo = {
-      owner: lockOwner,
-      timestamp: now,
-      expiresAt: now + this.ttlMs,
-      ...(operation && { operation }),
-    };
-
-    try {
-      this.logger.debug(`Attempting to acquire lock for stack: ${stackRef(stackName, region)}`);
-
-      const etag = await this.putLockObject(key, lockInfo);
-
-      this.logger.debug(
-        `Lock acquired for stack: ${stackRef(stackName, region)}, owner: ${displaySafe(lockOwner)}`
-      );
-      this.trackHeldLock({ stackName, region, key, info: lockInfo, etag });
-      return true;
-    } catch (error) {
-      // Check for PreconditionFailed error (S3 condition not met - lock already exists)
-      if (this.isForeignLockError(error)) {
-        this.logger.debug(`Lock already exists for stack: ${stackRef(stackName, region)}`);
-
-        // Check if the existing lock is expired.
-        //
-        // Read the ETag alongside the body: it is what makes the takeover
-        // DELETE below conditional. Since issue #2168 a live holder renews its
-        // lock, so "expired" now means the owner has been silent for a whole
-        // TTL -- but a renewal that merely lost a race with this read is
-        // indistinguishable from a dead owner, and an unconditional delete
-        // here would discard that renewed lock. `IfMatch` on the exact bytes
-        // we just judged expired closes the window.
-        const existing = await this.getLockRecord(stackName, region);
-        if (existing && this.isLockExpired(existing.info)) {
-          if (existing.etag === undefined) {
-            // Without an ETag `deleteLock` is UNCONDITIONAL, which is exactly
-            // what the refusal below exists to prevent -- and it would happen
-            // silently, with none of that reasoning applied. `trackHeldLock`
-            // guards the analogous case for renewal; this site did not.
-            this.logger.warn(
-              `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: its current ` +
-                `version could not be identified, so removing it could delete a lock another process ` +
-                `has since taken. Clear it with cdkd force-unlock.`
-            );
-            return false;
-          }
-
-          // Delete the expired lock and retry acquisition. The announcement
-          // comes AFTER it succeeds: every branch below can refuse, and a
-          // banner saying "both processes will now be writing to the same
-          // stack" printed ahead of a refusal that took nothing over is the
-          // same log-untruthfulness this change fixes elsewhere.
-          try {
-            await this.deleteLock(stackName, region, existing.etag);
-          } catch (deleteError) {
-            if (this.isConditionUnsupportedError(deleteError)) {
-              // Do NOT retry unconditionally here, even though `releaseLock`
-              // has an escape hatch for the same error class. The `IfMatch` is
-              // what makes concurrent REAPING safe: two processes that judge
-              // the same lock expired both try to delete it, the first wins
-              // and the second gets a 412 and reports contention. Drop the
-              // condition and both win -- each deletes whatever is present,
-              // then each `IfNoneMatch: '*'` PUT succeeds against the key it
-              // just emptied, and the stack has two holders with nothing to
-              // say so. The owner's own renewal landing between our read and
-              // this call is the second way to reach it, and the renewal loop
-              // deliberately keeps retrying past expiry. Refusing costs an
-              // unreclaimable expired lock under one specific policy, which
-              // `force-unlock` clears; the alternative costs mutual exclusion.
-              this.logger.warn(
-                `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: this endpoint ` +
-                  `or policy will not evaluate a conditional delete, and removing it unconditionally ` +
-                  `could delete a lock another process has since taken. Clear it with cdkd force-unlock.`
-              );
-              return false;
-            } else if (this.isNotOursError(deleteError)) {
-              // The lock changed between our read and our delete -- either the
-              // owner renewed it or a third process took it over first. Either
-              // way it is NOT ours to remove, and it is NOT free.
-              this.logger.debug(
-                `Expired lock for stack ${stackRef(stackName, region)} changed before takeover; treating as contended`
-              );
-              return false;
-            } else {
-              throw deleteError;
-            }
-          }
-
-          // Two explanations, because `isLockExpired` reaches "expired" two
-          // ways: a deadline in the past, or one that is not a finite number
-          // (issue #3083). The crashed-owner story is only evidence for the
-          // first; for the second the honest cause is the record itself.
-          const why = Number.isFinite(existing.info.expiresAt)
-            ? `A live cdkd process renews its lock well inside the TTL, so this normally means the ` +
-              `previous owner crashed or was suspended`
-            : `Its expiresAt is not a finite number, which cdkd treats as already expired`;
-          this.logger.warn(
-            `Took over an EXPIRED lock for stack: ${safeSegment(stackName)} (${safeSegment(region)}, owner: ${formatLockOwner(existing.info.owner)}, ` +
-              `${formatLockExpiry(existing.info.expiresAt)}). ${why} -- ` +
-              `if it is in fact still running, both processes are now writing to the same stack.`
-          );
-
-          // go-to-k/cdkd#4705 review G-1/B1: the abandoned run's lease
-          // horizon -- its last renewal plus that lock's renewal interval.
-          // It kept creating between renewals, so nothing it created is
-          // later than this.
-          const abandonedAt = abandonedRunHorizon(existing);
-          if (abandonedAt !== undefined) this.abandonedLocks.set(key, abandonedAt);
-
-          // Retry once after cleaning up expired lock
-          try {
-            const retryEtag = await this.putLockObject(key, lockInfo);
-
-            this.logger.debug(
-              `Lock acquired for stack: ${stackRef(stackName, region)} after expired lock cleanup, owner: ${displaySafe(lockOwner)}`
-            );
-            this.trackHeldLock({ stackName, region, key, info: lockInfo, etag: retryEtag });
-            return true;
-          } catch (retryError) {
-            if (this.isForeignLockError(retryError)) {
-              // Another process acquired the lock between our delete and retry
-              this.logger.debug(
-                `Lock was acquired by another process during expired lock cleanup for stack: ${stackRef(stackName, region)}`
-              );
-              return false;
-            }
-            throw retryError;
-          } finally {
-            // Issue #2346 site 5, and the ORDER is the whole point: this runs
-            // AFTER the re-acquisition PUT, never between the delete above and
-            // this retry. Two extra round trips inside that window would widen
-            // the delete-then-reacquire race the `isForeignLockError(retryError)`
-            // arm below reports ("another process acquired the lock between our
-            // delete and retry"); after the PUT they widen nothing, and by then the
-            // takeover's own delete marker has gone noncurrent so the purge
-            // collects it too.
-            //
-            // This is the path that reclaims a CRASHED run's chain: the dead
-            // owner never released, so its renewal versions are collected by
-            // whoever reaps its lock. `IfMatch` on the delete is still the only
-            // thing serializing concurrent reapers -- the purge only ever
-            // touches `IsLatest === false` rows, so it can neither take the new
-            // current lock nor stand in for the condition.
-            //
-            // WARN level here, unlike the release path: a takeover is rare and
-            // already prints a warning of its own.
-            await this.purgeLockVersions(key, 'reap');
-          }
-        }
-
-        return false;
-      }
-
-      // Sanitized for the same reason as `acquireLockWithRetry`'s own throw
-      // (issue [#2610] review): this LockError is raised from `acquireLock`,
-      // which `acquireLockWithRetry` calls UNCAUGHT — so it reaches the same
-      // terminal and the same persisted events store through the very path
-      // that fix covers, and leaving it raw would make that fix conditional on
-      // which of the two threw.
-      throw this.wrapS3Failure(
-        error,
-        (text) =>
-          new LockError(
-            `Failed to acquire lock for stack ` +
-              `${safeSegment(stackName)} ` +
-              `(${safeSegment(region)}): ` +
-              // Two-of-three is the exact shape `custom-resource-provider.ts`'s
-              // cleanup line argues against; `errorDetail` says why.
-              text,
-            error instanceof Error ? error : undefined
-          )
-      );
-    }
+    return acquireLock.call(this, stackName, region, owner, operation);
   }
 
-  /**
-   * Write the lock object and return the ETag S3 assigned it.
-   *
-   * `condition` defaults to `IfNoneMatch: '*'` (acquisition -- succeed only if
-   * no current version exists). Renewal passes `IfMatch: <etag>` instead.
-   */
-  private async putLockObject(
+  putLockObject(
     key: string,
     lockInfo: LockInfo,
     condition: { IfNoneMatch: string } | { IfMatch: string } = { IfNoneMatch: '*' }
   ): Promise<string | undefined> {
-    const body = JSON.stringify(lockInfo, null, 2);
-    const response = await this.s3Client.send(
-      new PutObjectCommand({
-        Bucket: this.config.bucket,
-        ...(await this.ownerParam()),
-        Key: key,
-        Body: body,
-        ContentLength: Buffer.byteLength(body),
-        ContentType: 'application/json',
-        ...condition,
-      })
-    );
-    return response.ETag;
+    return putLockObject.call(this, key, lockInfo, condition);
   }
 
   /**
@@ -699,135 +285,11 @@ export class LockManager {
     return record ? record.info : null;
   }
 
-  /**
-   * `getLockInfo` plus the S3 ETag of the object the info came from.
-   *
-   * Internal because the ETag is only meaningful to code that then issues a
-   * CONDITIONAL write or delete against the exact bytes it read (issue #2168):
-   * the expired-lock takeover in `acquireLock`. Every public reader wants the
-   * body alone.
-   */
-  private async getLockRecord(
+  getLockRecord(
     stackName: string,
     region: string | undefined
   ): Promise<{ info: LockInfo; etag: string | undefined; lastModified?: number } | null> {
-    await this.ensureClientForBucket();
-
-    const key = this.getLockKey(stackName, region);
-
-    // Debug is quieter than warn, not a different terminal (issue #3003).
-    // Above the `try` because the catch logs it too.
-    const shownStack = safeSegment(stackName);
-
-    try {
-      this.logger.debug(`Getting lock info for stack: ${shownStack}`);
-
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-
-      if (!response.Body) {
-        // A `LockError` is rethrown UNCHANGED by the catch below, so this one
-        // does not reach the guard there — it needs its own (issue #3003).
-        throw new LockError(`Lock file for stack ${shownStack} has no body`);
-      }
-
-      const bodyString = await response.Body.transformToString();
-      // A body that parses to `null` (or to any non-object) is NOT a lock.
-      // Reading `.owner` off it threw inside this `try` and the catch rewrapped
-      // it as a `LockError`, turning "no lock" into a hard failure for
-      // `isLocked`, `state orphan`, `state list` and `acquireLock`'s
-      // PreconditionFailed branch. Returning `null` — rather than an empty
-      // `LockInfo`, which a first cut did — is what actually restores the
-      // pre-existing behaviour: `isLocked` is `lockInfo !== null`, so an empty
-      // object would report the stack as LOCKED and make `state orphan` refuse
-      // to remove a record whose lock.json is `null`.
-      let raw: unknown;
-      try {
-        raw = JSON.parse(bodyString);
-      } catch (parseError) {
-        // V8's `SyntaxError` quotes a window of `lock.json`, so the refusal
-        // names only the failure's offset and size and attaches NO cause,
-        // which `formatError` would print on its `Caused by:` line (issue
-        // #5254). No reader keys on this cause. A `LockError` is rethrown
-        // unchanged by the catch below. V8's text goes to `debug` only.
-        this.logger.debug(
-          safeMsg`Lock file for stack ${shownStack} failed to parse: ${parseFailureDebugDetail(parseError)}`
-        );
-        throw new LockError(
-          `Failed to get lock info for stack ${shownStack}: ` +
-            `${describeJsonParseFailure(parseError, utf8ByteLength(bodyString))}`
-        );
-      }
-      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-        this.logger.debug(`Lock file for stack ${shownStack} is not an object; treating as absent`);
-        return null;
-      }
-      const parsed = raw as LockInfo;
-      // Sanitize the DISPLAY fields HERE, at the single point every reader
-      // goes through (issue #2170). `owner` and `operation` are attacker-
-      // influenced for anyone who can write the state bucket, and they reach a
-      // TTY, a thrown `LockError`, and the persisted deployment-events store —
-      // five readers, of which the first pass at this fix sanitized ONE.
-      // Doing it per-reader is how the next reader inherits nothing.
-      //
-      // The parse is an unvalidated `as LockInfo`, so `displaySafe` also
-      // absorbs a non-string / absent value rather than letting `.replace`
-      // throw further downstream.
-      const lockInfo: LockInfo = {
-        ...parsed,
-        owner: displaySafe(parsed.owner),
-        ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
-        // Normalised HERE for the same reason `owner` is: an object whose
-        // `toString` is not callable made every reader that subtracted from
-        // `expiresAt` throw — five of them at the time, the expired-lock
-        // takeover's warning AFTER it had deleted the lock, leaving the stack
-        // unlocked (issue #2947). Since issue #3083 four of those test
-        // `Number.isFinite` first, which never coerces, so the one reader this
-        // still protects is `lock-contention-message.ts`'s subtraction; it
-        // stays load-bearing for that one and for any reader added later. Only a
-        // value whose coercion THROWS is replaced; every other value passes
-        // through untouched, because `isLockExpired` decides on the RAW value:
-        // a numeric string is non-finite there and therefore expired, and
-        // converting it would move a future string deadline to "live" — the
-        // direction only `force-unlock` recovers from.
-        expiresAt: nanIfUncoercible(parsed.expiresAt),
-      };
-
-      this.logger.debug(`Lock info for stack: ${shownStack}:`, lockInfo);
-
-      return {
-        info: lockInfo,
-        etag: response.ETag,
-        ...(response.LastModified instanceof Date && {
-          lastModified: response.LastModified.getTime(),
-        }),
-      };
-    } catch (error) {
-      if (error instanceof NoSuchKey) {
-        this.logger.debug(`No lock exists for stack: ${shownStack}`);
-        return null;
-      }
-
-      if (error instanceof LockError) {
-        throw error;
-      }
-
-      // `cdkd state show` surfaces this message as its fatal error (issue
-      // #3003).
-      throw this.wrapS3Failure(
-        error,
-        (text) =>
-          new LockError(
-            `Failed to get lock info for stack ${shownStack}: ${text}`,
-            error instanceof Error ? error : undefined
-          )
-      );
-    }
+    return getLockRecord.call(this, stackName, region);
   }
 
   /**
@@ -897,189 +359,12 @@ export class LockManager {
     return releasing;
   }
 
-  private async doReleaseLock(
-    stackName: string,
-    region: string,
-    held: HeldLock | undefined
-  ): Promise<void> {
-    await this.ensureClientForBucket();
-
-    if (held) {
-      // Settle any renewal already in flight FIRST: it is what decides both
-      // `etag` and `lost` below, and reading them past it is the race this
-      // await exists to close.
-      await held.renewing?.catch(() => undefined);
-    }
-
-    // The two refusals below return WITHOUT purging, and deliberately (issue
-    // #2346 site 5). No delete marker is landed on either arm, so there is
-    // nothing this release added to the chain; the versions already there are
-    // collected by whichever actor next reaps or releases this lock, since the
-    // purge is key-scoped rather than scoped to what this process minted. The
-    // purge attaches to the DELETE, not to the method.
-    if (held?.lost) {
-      this.logger.warn(
-        `Not releasing the lock for stack ${stackRef(stackName, region)}: this process lost it while the ` +
-          `operation was still running, so the lock present now belongs to someone else.`
-      );
-      return;
-    }
-
-    if (held && held.etag === undefined && !(await this.stillOursByBody(held))) {
-      // No ETag means the DELETE below would be UNCONDITIONAL -- the
-      // owner-blind delete this whole change removes, arriving by omission
-      // rather than by decision. Confirm ownership by body first, or leave it.
-      this.logger.warn(
-        `Not releasing the lock for stack ${stackRef(stackName, region)}: this process never learned which ` +
-          `version of the lock it wrote, and could not confirm the one present is its own. It expires ` +
-          `on its own, or clear it with cdkd force-unlock.`
-      );
-      return;
-    }
-
-    try {
-      this.logger.debug(`Releasing lock for stack: ${stackRef(stackName, region)}`);
-
-      await this.deleteLock(stackName, region, held?.etag);
-
-      this.logger.debug(`Lock released for stack: ${stackRef(stackName, region)}`);
-    } catch (error) {
-      if (this.isForeignLockError(error)) {
-        this.logger.warn(
-          held?.etagUncertain
-            ? `Not releasing the lock for stack ${stackRef(stackName, region)}: this process could not ` +
-                `confirm which version of the lock it last wrote, so it will not delete one it may not ` +
-                `own. The lock clears on its own at ${new Date(held.info.expiresAt).toISOString()}, or ` +
-                `immediately with cdkd force-unlock.`
-            : `Not releasing the lock for stack ${stackRef(stackName, region)}: it has been replaced since ` +
-                `this process acquired it, so another cdkd process now holds it. Leaving it in place.`
-        );
-        return;
-      }
-
-      if (this.isGoneError(error)) {
-        this.logger.debug(`Lock for stack ${stackRef(stackName, region)} was already gone`);
-        return;
-      }
-
-      if (held?.etag !== undefined && this.isConditionUnsupportedError(error)) {
-        // The condition could not be EVALUATED here -- a policy granting only
-        // `s3:DeleteObject`, or an endpoint without the header. Dropping it is
-        // the anti-strand escape hatch, but S3 authorizes BEFORE it evaluates
-        // a precondition, so a policy that scopes `s3:GetObject` away from
-        // lock.json turns a genuine 412 into this 403 -- and then the
-        // unconditional retry deletes the lock of whoever took over. So
-        // establish ownership by hand first; only a POSITIVE mismatch refuses,
-        // since an unreadable lock is the very case this branch is for.
-        if (!(await this.stillOursByBody(held))) {
-          this.logger.warn(
-            `Not releasing the lock for stack ${stackRef(stackName, region)}: the conditional delete could ` +
-              `not be evaluated here, and this process could not confirm the lock is still its own. ` +
-              `Leaving it in place rather than risk deleting another process's lock. It expires on its ` +
-              `own, or clear it with cdkd force-unlock. If this repeats, grant s3:GetObject on the lock ` +
-              `key -- a delete conditioned on an ETag requires it.`
-          );
-          return;
-        }
-        this.logger.debug(
-          `Conditional lock release for stack ${stackRef(stackName, region)} is not supported here ` +
-            `(${errorDetail(error)}); retrying unconditionally`
-        );
-        try {
-          await this.deleteLock(stackName, region);
-          this.logger.debug(`Lock released for stack: ${stackRef(stackName, region)}`);
-          return;
-        } catch (fallbackError) {
-          throw this.wrapS3Failure(
-            fallbackError,
-            (text) =>
-              new LockError(
-                `Failed to release lock for stack ${stackRef(stackName, region)}: ${text}`,
-                fallbackError instanceof Error ? fallbackError : undefined
-              )
-          );
-        }
-      }
-
-      throw this.wrapS3Failure(
-        error,
-        (text) =>
-          new LockError(
-            `Failed to release lock for stack ${stackRef(stackName, region)}: ${text}`,
-            error instanceof Error ? error : undefined
-          )
-      );
-    } finally {
-      // Issue #2346 site 5. ONE purge covers BOTH deletes above -- the
-      // conditional one and the unconditional escape hatch -- because it is
-      // key-scoped rather than scoped to a version this process named.
-      //
-      // In a `finally` rather than after the successful delete, for the reason
-      // `deleteRollbackJournal` gives: skipping the purge whenever the delete
-      // failed would leave every readable body behind with nothing said about
-      // it, and the `IsLatest` filter makes it safe on every arm -- a key whose
-      // delete failed keeps its current version and loses only its history.
-      // That includes the two refusal arms reached from the `catch`. On the
-      // `etagUncertain` / no-longer-ours arm the current version is ANOTHER
-      // process's live lock rather than ours -- which the filter protects
-      // exactly the same way, since it excludes whatever is current without
-      // caring who wrote it.
-      //
-      // It cannot mask the `LockError` this block may be throwing:
-      // `purgeLockVersions` never throws. Deferred, it still starts here, after
-      // the delete; only the wait moves to `settleDeferredPurges`.
-      const purge = this.purgeLockVersions(this.getLockKey(stackName, region), 'release');
-      if (this.deferReleasePurge) {
-        this.deferredPurges.add(purge);
-        void purge.finally(() => this.deferredPurges.delete(purge));
-      } else {
-        await purge;
-      }
-    }
+  doReleaseLock(stackName: string, region: string, held: HeldLock | undefined): Promise<void> {
+    return doReleaseLock.call(this, stackName, region, held);
   }
 
-  /**
-   * Is the stored lock still the one this process acquired?
-   *
-   * Used only where the ETag condition could not be EVALUATED, to decide
-   * whether dropping it is safe. Two earlier cuts of this were wrong in
-   * opposite directions and both are worth stating, because the shape recurs:
-   *
-   * - It short-circuited on `Date.now() < held.info.expiresAt`, reasoning that
-   *   nobody could have taken over while our own deadline was ahead. But
-   *   `forceReleaseLock` deletes regardless of expiry -- that is its whole
-   *   contract -- so a user running `cdkd force-unlock` mid-operation is a
-   *   LEGITIMATE takeover the shortcut cannot see. Cross-machine clock skew
-   *   reaches the same state without anyone running anything. The shortcut is
-   *   gone; the read costs one GetObject on an already-failed path.
-   *
-   * - It answered TRUE when the read FAILED, to avoid stranding a lock. That
-   *   made it inert in exactly the case it exists for: the documented trigger
-   *   for the 403 is a policy granting `s3:DeleteObject` without the
-   *   `s3:GetObject` a conditional delete needs -- under which this read fails
-   *   too. So the guard would wave through precisely the situation it was
-   *   added to catch. A failed read now REFUSES.
-   *
-   * The remaining asymmetry is deliberate and is this method's stated rule: a
-   * stranded lock is bounded by the TTL and clearable with `force-unlock`,
-   * while a lock deleted out from under a live writer is neither.
-   */
-  private async stillOursByBody(held: HeldLock): Promise<boolean> {
-    let record: { info: LockInfo; etag: string | undefined } | null;
-    try {
-      record = await this.getLockRecord(held.stackName, held.region);
-    } catch {
-      return false;
-    }
-    // NOT "nothing is there". `getLockRecord` also answers `null` for a body
-    // that parses to `42` / `[]` / `null`: the object EXISTS -- it still fails
-    // every `IfNoneMatch: '*'` acquire, which is the whole reason
-    // `forceReleaseLock` deletes unconditionally -- and it is not this
-    // process's. And even for a genuine absence, the gap between this read and
-    // the delete is a window in which another process acquires. There is
-    // nothing to release in either state, so refuse.
-    if (!record) return false;
-    return this.sameLockIdentity(record.info, held.info);
+  stillOursByBody(held: HeldLock): Promise<boolean> {
+    return stillOursByBody.call(this, held);
   }
 
   /**
@@ -1091,22 +376,10 @@ export class LockManager {
    * `$USER` or hostname containing a stripped codepoint -- and the process
    * would then disown its own lock.
    */
-  private sameLockIdentity(a: LockInfo, b: LockInfo): boolean {
+  sameLockIdentity(a: LockInfo, b: LockInfo): boolean {
     return displaySafe(a.owner) === displaySafe(b.owner) && a.timestamp === b.timestamp;
   }
 
-  /**
-   * Force release a lock regardless of owner or expiry status
-   *
-   * This is intended for CLI usage -- it is what the `cdkd force-unlock
-   * <stack>` SUBCOMMAND calls -- when a lock is stuck and needs manual
-   * intervention. There is no `--force-unlock` FLAG anywhere in `src/`; this
-   * comment said there was, and issue [#2610] site 14 records that the message
-   * `acquireLockWithRetry` used to raise had inherited the same mistake.
-   *
-   * Pass `region: undefined` to operate on a legacy
-   * `{prefix}/{stackName}/lock.json` file.
-   */
   /**
    * go-to-k/cdkd#4705 review G-1/B1: when this process took over an EXPIRED
    * lock of `stackName`, the abandoned run's lease horizon
@@ -1117,297 +390,33 @@ export class LockManager {
     return this.abandonedLocks.get(this.getLockKey(stackName, region));
   }
 
-  /**
-   * Remove the stack's lock whoever holds it. Resolves the removed lock's
-   * lease horizon ({@link abandonedRunHorizon}) when one was read
-   * (go-to-k/cdkd#4705 review G-1/B1: the caller records it as the latest
-   * moment the abandoned run can have created anything).
-   */
-  async forceReleaseLock(
+  forceReleaseLock(
     stackName: string,
     region: string | undefined,
-    /**
-     * go-to-k/cdkd#4705 review (d): handed the removed lock's lease horizon
-     * BEFORE the delete, so the caller can record it while the lock still
-     * fences the stack. Whatever it does -- a rejection included -- the
-     * delete follows: it is never gated on this.
-     */
     beforeDelete?: (horizon: number) => Promise<void>
   ): Promise<number | undefined> {
-    // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
-    // stuck lock must never make a state record unremovable. `getLockInfo` is
-    // consulted for the LOG LINE only. Gating the delete on it (which a
-    // previous revision did, once `getLockInfo` began returning `null` for an
-    // unreadable body) breaks the contract in the other direction -- a
-    // lock.json holding `42` or `[]` reads as absent while still failing every
-    // `IfNoneMatch: '*'` acquire, so `cdkd force-unlock` would report "no lock"
-    // and delete nothing, forever. A DELETE against a key that genuinely is
-    // not there is an idempotent no-op, so the cost of always issuing it is one
-    // API call on a command the user ran explicitly.
-    //
-    // For the same reason it is unconditional with respect to issue #2168's
-    // ETag too: `force-unlock` exists precisely to remove a lock this process
-    // does NOT own.
-    // Keyed on `=== undefined` like `getLockKey`, so an empty region shows as
-    // the stand-in rather than as absent while the key names `//lock.json`.
-    const where = stackRef(stackName, region);
-    const record = await this.getLockRecord(stackName, region).catch(() => null);
-    const lockInfo = record?.info ?? null;
-
-    this.logger.warn(
-      lockInfo
-        ? `Force releasing lock for stack: ${where}, ` +
-            `owner: ${formatLockOwner(lockInfo.owner)}` +
-            `${lockInfo.operation ? `, operation: ${formatLockOperation(lockInfo.operation)}` : ''}` +
-            `, expired: ${this.isLockExpired(lockInfo)}`
-        : `Force releasing lock for stack: ${where} (no lock body read — ` +
-            `absent or unparseable; deleting the object either way, since a ` +
-            `lock cdkd cannot read is a lock nothing else can clear)`
-    );
-
-    // If this process happens to be the holder, stop renewing before the
-    // delete -- otherwise the next tick would re-create the very lock the user
-    // asked to remove.
-    const key = this.getLockKey(stackName, region);
-    const held = this.heldLocks.get(key);
-    if (held) {
-      this.stopRenewal(held);
-      // Mark it released so a later `releaseLock` for the same key does not
-      // delete whichever lock has appeared since the user force-unlocked.
-      held.releasing = Promise.resolve();
-    }
-
-    const horizon = record ? abandonedRunHorizon(record) : undefined;
-    if (horizon !== undefined && beforeDelete !== undefined) {
-      await beforeDelete(horizon).catch(() => undefined);
-    }
-
-    try {
-      await this.deleteLock(stackName, region);
-    } finally {
-      // Issue #2346 site 5. A REAP, like the takeover above: this is
-      // `cdkd force-unlock` (and `cdkd state orphan`), an explicit operator
-      // action on a lock this process usually does not own -- so clearing the
-      // history of whoever left it behind is the point rather than a side
-      // effect, and a failure is worth a warning on a command the user ran on
-      // purpose. In a `finally` so a delete that failed still gets the history
-      // swept; the `IsLatest` filter keeps whatever is current intact.
-      await this.purgeLockVersions(key, 'reap');
-    }
-    return horizon;
+    return forceReleaseLock.call(this, stackName, region, beforeDelete);
   }
 
-  /**
-   * Internal method to delete the lock file from S3.
-   *
-   * When `etag` is supplied the delete is conditional (`IfMatch`), so it
-   * removes the object ONLY while it is still byte-identical to the one the
-   * caller read or wrote. S3 evaluates the condition against the CURRENT
-   * version, which is the right unit here even on the versioned state bucket:
-   * the current version IS the live lock.
-   *
-   * EVERY CALLER MUST PAIR THIS WITH {@link purgeLockVersions} (issue
-   * [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5). The delete
-   * writes a DELETE MARKER on the versioned state bucket and leaves every
-   * prior body readable, so a delete on its own grows the key forever. The
-   * purge is NOT folded in here, for two reasons that are both per-call-site:
-   * the log level differs (see {@link LockPurgePath}), and the takeover path
-   * must purge AFTER its re-acquisition PUT rather than immediately after the
-   * delete. `tests/unit/state/lock-noncurrent-version-purge.test.ts` parses
-   * this file and fails if a caller of this method does not also call the
-   * purge, so a fifth call site cannot quietly skip it.
-   */
-  private async deleteLock(
-    stackName: string,
-    region: string | undefined,
-    etag?: string
-  ): Promise<void> {
-    await this.ensureClientForBucket();
-
-    const key = this.getLockKey(stackName, region);
-
-    await this.s3Client.send(
-      new DeleteObjectCommand({
-        Bucket: this.config.bucket,
-        ...(await this.ownerParam()),
-        Key: key,
-        ...(etag !== undefined && { IfMatch: etag }),
-      })
-    );
+  deleteLock(stackName: string, region: string | undefined, etag?: string): Promise<void> {
+    return deleteLock.call(this, stackName, region, etag);
   }
 
-  /**
-   * Delete the lock key's NONCURRENT versions after a delete marker has been
-   * landed on it (issue [#2346](https://github.com/go-to-k/cdkd/issues/2346)
-   * site 5).
-   *
-   * ## Why the lock key needs this at all
-   *
-   * `cdkd bootstrap` turns VERSIONING ON for the state bucket, so
-   * {@link deleteLock} writes a delete marker and every earlier body stays
-   * readable through `GetObject` with a `VersionId`. Renewal writes one version
-   * every {@link MAX_RENEWAL_INTERVAL_MS} (2 minutes at the default 30-minute
-   * TTL, so a 30-minute deploy mints about fifteen), `deleteState` never
-   * sweeps the lock key, and nothing else ever did — so the chain was
-   * monotonic in stacks EVER deployed. 452 versions were measured on a single
-   * key. Nothing in a `LockInfo` is a secret, so this is bucket cost and
-   * listing noise rather than disclosure; it is still unbounded.
-   *
-   * ## Why the SHARED helper, and why that is safe on a lock
-   *
-   * A per-`VersionId` scheme (remember what this process minted, delete
-   * exactly that) was designed and REJECTED on review. Its hazards were all
-   * created by the mechanism: deleting one's OWN delete marker resurrects a
-   * stale lock whenever a batch partially fails, a per-id delete has no
-   * `IsLatest` guard so it can remove the CURRENT version on a refusal branch,
-   * a `"null"` version id under suspended versioning is a legal delete target,
-   * and the 1000-entry `DeleteObjects` cap forces a re-implementation of the
-   * shared helper's batching. The shared helper's `IsLatest` filter removes
-   * every one of them: it can never touch what is current, which is exactly
-   * the live lock — ours or anyone else's.
-   *
-   * That filter is also what makes it correct to run this from a `finally`,
-   * including on the arms where the delete was REFUSED. Purging noncurrent
-   * versions while our own lock is still the current one is harmless.
-   *
-   * ## Level, and the one UX regression this avoids
-   *
-   * The four sites already purging (rollback journal, bootstrap marker,
-   * transient template, custom-resource response) all warn, because what
-   * survives there may be a secret and they fire on rare paths. `lock.json` is
-   * neither: it holds no secret and `'release'` fires at the tail of EVERY
-   * mutating command. Inheriting WARN would mean a user on the pre-#2340
-   * four-action IAM policy starts seeing a warning after every single command,
-   * about bucket tidiness. Be precise about WHICH user that is: a principal
-   * missing `s3:ListBucketVersions` already gets a warn on every successful
-   * deploy from `deleteRollbackJournal`'s purge, so nothing changes for them.
-   * The one this split protects is the principal who HAS `ListBucketVersions`
-   * but lacks `s3:DeleteObjectVersion` — silent today, and newly noisy without
-   * it. So
-   * release-path failures go to `debug` and only the rare `'reap'` paths warn,
-   * which is the cost profile `docs/state-management.md` means by "only the
-   * cleanup paths that need them".
-   *
-   * A warn-once-per-process dedupe was the other option and is not taken, for
-   * the reason `s3-noncurrent-version-purge.ts` gives for rejecting one: it
-   * needs module-global state, which this repo has been bitten by under
-   * `--stack-concurrency > 1`.
-   *
-   * NEVER THROWS. The helper guarantees that for itself, but
-   * `ensureClientForBucket()` and `ownerParam()` sit outside it, so the wrap
-   * below is what makes the contract true. Only `ensureClientForBucket()` is a
-   * known rejector (`GetBucketLocation`); `ownerParam()` is NOT — an earlier
-   * revision claimed it reached STS, and `src/cli/upload-cfn-template.ts`
-   * records that as false, since `resolveExpectedBucketOwner` wraps every
-   * await and degrades to `undefined`. Naming an unproved mechanism is worse
-   * than naming none. The wrap stays because a caller-supplied logger can
-   * throw and because a future edit can add an awaited call here — the same
-   * reasoning as
-   * `S3StateBackend.purgeNoncurrentVersions`. It matters more here than there:
-   * every call site is a `finally`, and a throw from a `finally` REPLACES the
-   * `LockError` the release was raising. Nothing on this path is
-   * interrupt-aware (`LockManager` starts no interrupt watch and issues no
-   * `withRetry`), so there is no `InterruptedWaitError` for the swallow below
-   * to hide.
-   */
-  private async purgeLockVersions(key: string, path: LockPurgePath): Promise<void> {
-    // TOTAL BY CONSTRUCTION, and that is what makes the never-throw claim above
-    // true rather than merely intended. `report` is handed to the shared helper
-    // as its `logger.warn` SINK, and the helper calls that sink outside any
-    // `try` -- so a sink that throws makes the never-throwing helper throw.
-    // `logger.debug` reaches `console.debug` on stdout, which this repo has
-    // measured throwing EPIPE SYNCHRONOUSLY under `--verbose | head` (see
-    // `releaseLock`'s JSDoc, which exists for that measurement). Every call
-    // site of this method is a `finally`, so such a throw would REPLACE the
-    // `LockError` the release was raising -- turning a diagnosable lock failure
-    // into a broken pipe. Losing a log line is the only safe direction.
-    const report = (message: string): void => {
-      try {
-        if (path === 'reap') this.logger.warn(message);
-        else this.logger.debug(message);
-      } catch {
-        // Deliberately empty: the message is the least important thing on a
-        // path whose whole contract is not to disturb its caller.
-      }
-    };
-    try {
-      await this.ensureClientForBucket();
-      await purgeNoncurrentKeyVersions(this.s3Client, this.config.bucket, [key], {
-        requestFields: await this.ownerParam(),
-        // The helper's `logger` option is typed as a bare `warn` sink, which
-        // is the documented seam for exactly this: the release path routes the
-        // helper's own warning to `debug` without the helper knowing.
-        logger: { warn: report },
-        objectDescription: LOCK_OBJECT_DESCRIPTION,
-      });
-    } catch (error) {
-      report(
-        // The key through `displayIdent` AND the error through `errorDetail`,
-        // because the key embeds the stack name and -- on the reap paths -- a
-        // region this process read out of a lock/state object BODY, and S3's
-        // error text echoes that key back (issue #3027).
-        `Could not purge noncurrent versions of the lock key ${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} in bucket ` +
-          `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
-          `survive and remain readable via GetObject with a VersionId (${LOCK_OBJECT_DESCRIPTION}). ` +
-          `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge ` +
-          `the key by hand. Underlying error: ${errorDetail(error)}`
-      );
-    }
+  purgeLockVersions(key: string, path: LockPurgePath): Promise<void> {
+    return purgeLockVersions.call(this, key, path);
   }
 
-  /**
-   * Record a lock this process now holds and start renewing it.
-   */
-  private trackHeldLock(args: {
+  trackHeldLock(args: {
     stackName: string;
     region: string;
     key: string;
     info: LockInfo;
     etag: string | undefined;
   }): void {
-    const previous = this.heldLocks.get(args.key);
-    if (previous) this.stopRenewal(previous);
-
-    const held: HeldLock = {
-      stackName: args.stackName,
-      region: args.region,
-      key: args.key,
-      info: args.info,
-      etag: args.etag,
-      timer: undefined,
-      renewing: undefined,
-      lost: false,
-      releasing: undefined,
-      etagUncertain: false,
-      warnedPastExpiry: false,
-    };
-    this.heldLocks.set(args.key, held);
-
-    if (this.renewalDisabled) {
-      this.logger.debug(
-        `Lock renewal is disabled; the lock for ${stackRef(args.stackName, args.region)} will lapse at its TTL`
-      );
-      return;
-    }
-
-    if (args.etag === undefined) {
-      // Every real S3 PutObject response carries an ETag; only a test double
-      // omits it. Renewing without one would mean an UNCONDITIONAL overwrite,
-      // which is the one thing renewal must never do -- a process that has
-      // already lost the lock would resurrect its own expiry on top of the new
-      // owner's lock. Degrading to the pre-#2168 behaviour (lapse at the TTL)
-      // is the safe direction.
-      this.logger.debug(
-        `No ETag returned when acquiring the lock for ${stackRef(args.stackName, args.region)}; ` +
-          `renewal disabled for this lock`
-      );
-      return;
-    }
-
-    this.startRenewal(held);
+    return trackHeldLock.call(this, args);
   }
 
-  private startRenewal(held: HeldLock): void {
+  startRenewal(held: HeldLock): void {
     const timer = setInterval(() => {
       void this.renewLock(held);
     }, this.renewalIntervalMs);
@@ -1416,7 +425,7 @@ export class LockManager {
     held.timer = timer;
   }
 
-  private stopRenewal(held: HeldLock): void {
+  stopRenewal(held: HeldLock): void {
     if (held.timer !== undefined) {
       clearInterval(held.timer);
       held.timer = undefined;
@@ -1444,134 +453,12 @@ export class LockManager {
     return inFlight;
   }
 
-  private async doRenewLock(held: HeldLock): Promise<void> {
-    const currentEtag = held.etag;
-    // Re-asserted rather than inherited from `renewLock`'s guard: this method
-    // is what performs the UNCONDITIONAL-write-forbidding decision, so the
-    // condition it depends on has to be visible here.
-    if (currentEtag === undefined) return;
-    // Declared outside the `try` because the catch needs the exact body this
-    // attempt wrote, to tell a lost RESPONSE from a lost LOCK.
-    const renewed: LockInfo = { ...held.info, expiresAt: Date.now() + this.ttlMs };
-    try {
-      const etag = await this.putLockObject(held.key, renewed, { IfMatch: currentEtag });
-      if (etag === undefined) {
-        // The write landed but we have no handle for the next conditional one.
-        // Try to recover it by reading; `adoptOwnWrite` accepts the object only
-        // when it is byte-for-byte the body we just wrote.
-        if (await this.adoptOwnWrite(held, renewed)) return;
-        // Failing that, stop -- but KEEP the last known-good ETag rather than
-        // clearing it. Clearing would make the next `releaseLock` silently
-        // UNCONDITIONAL, which is precisely the owner-blind delete this change
-        // exists to remove. A stale ETag instead makes that release refuse,
-        // which strands the lock until its TTL: recoverable, and the safe
-        // direction of the two.
-        // The PUT succeeded -- only its ETag is missing -- so the stored
-        // object IS `renewed`. Recording that keeps the eventual "it clears at
-        // ..." message truthful; leaving `held.info` behind made it name a
-        // deadline earlier than the real one, so a user who waited it out
-        // found the lock still there.
-        held.info = renewed;
-        held.etagUncertain = true;
-        this.stopRenewal(held);
-        this.logger.debug(
-          `Lock renewal for ${stackRef(held.stackName, held.region)} returned no ETag and the object could ` +
-            `not be re-read; stopping renewal and keeping the previous ETag`
-        );
-        return;
-      }
-      held.info = renewed;
-      held.etag = etag;
-      // Re-arm: a later expiry episode is a NEW event and must not be silent
-      // because an earlier one already reported itself.
-      held.warnedPastExpiry = false;
-      this.logger.debug(
-        `Renewed lock for stack: ${stackRef(held.stackName, held.region)} until ` +
-          `${new Date(renewed.expiresAt).toISOString()}`
-      );
-    } catch (error) {
-      if (this.isForeignLockError(error) && (await this.adoptOwnWrite(held, renewed))) {
-        return;
-      }
-      if (this.isNotOursError(error)) {
-        held.lost = true;
-        this.stopRenewal(held);
-        this.logger.warn(
-          `Lost the lock for stack ${stackRef(held.stackName, held.region)} while the operation was still ` +
-            `running: the lock object has been replaced or removed. Another cdkd process may now be ` +
-            `writing to this stack concurrently. This process will not delete the current lock when it ` +
-            `finishes.`
-        );
-        return;
-      }
-      // Transient (throttling, network, 409 on a concurrent request). Keep the
-      // interval running -- the TTL tolerates many consecutive misses, and
-      // giving up on the first one would re-open the very window this closes.
-      this.logger.debug(
-        `Lock renewal for stack ${stackRef(held.stackName, held.region)} failed, will retry: ` +
-          `${errorDetail(error)}`
-      );
-      // Once enough of them have failed that the deadline has actually passed,
-      // say so ONCE at warn. Without this, fourteen consecutive failures --
-      // about 28 minutes at the default TTL -- produce output byte-identical
-      // to a healthy run while the process keeps deleting AWS resources past
-      // its own expiry, and another process is now free to take the lock.
-      if (!held.warnedPastExpiry && Date.now() >= held.info.expiresAt) {
-        held.warnedPastExpiry = true;
-        this.logger.warn(
-          `Lock renewal for stack ${stackRef(held.stackName, held.region)} has been failing long enough ` +
-            `that the lock expired at ${new Date(held.info.expiresAt).toISOString()}. Another cdkd ` +
-            `process can now take it while this operation is still running. Renewal keeps retrying.`
-        );
-      }
-    }
+  doRenewLock(held: HeldLock): Promise<void> {
+    return doRenewLock.call(this, held);
   }
 
-  /**
-   * Recover from a 412 that this process itself caused.
-   *
-   * A conditional PUT that S3 APPLIED but whose response never arrived -- a
-   * dropped connection, or an SDK-internal retry of the same request -- leaves
-   * `held.etag` pointing at the PREVIOUS version while the object already
-   * holds the renewal. The retry then carries the stale `IfMatch` and S3
-   * correctly answers 412. Reading that as "someone took my lock" is wrong in
-   * both directions: it stops the heartbeat on a lock this process still owns,
-   * it prints a warning naming a concurrent writer that does not exist, and
-   * `releaseLock` then refuses to remove the process's OWN lock -- stranding
-   * the stack for up to a full TTL, which is strictly worse than the
-   * unconditional delete this change replaced.
-   *
-   * So a 412 is disambiguated by READING the object once. `renewed` is a body
-   * only this process could have produced: its `owner` identifies the process
-   * and its `expiresAt` is a millisecond timestamp this specific PUT chose. An
-   * exact match on both (plus `timestamp`, which is fixed at acquisition) means
-   * the write landed and only the answer was lost, so the renewal is adopted
-   * rather than mourned.
-   *
-   * The read is on the 412 path only, which is rare. If it fails, the caller
-   * falls through to the pessimistic branch -- an unreadable lock is not
-   * evidence of ownership.
-   */
-  private async adoptOwnWrite(held: HeldLock, renewed: LockInfo): Promise<boolean> {
-    const record = await this.getLockRecord(held.stackName, held.region).catch(() => null);
-    if (
-      !record ||
-      record.etag === undefined ||
-      record.info.expiresAt !== renewed.expiresAt ||
-      !this.sameLockIdentity(record.info, renewed)
-    ) {
-      return false;
-    }
-    held.info = renewed;
-    held.etag = record.etag;
-    // An adopted renewal is a successful one: re-arm, or a later expiry
-    // episode after an adopt would be silent.
-    held.warnedPastExpiry = false;
-    this.logger.debug(
-      `Lock renewal for stack ${stackRef(held.stackName, held.region)} reported a conflict, but the object ` +
-        `holds this process's own renewal -- adopting it and continuing`
-    );
-    return true;
+  adoptOwnWrite(held: HeldLock, renewed: LockInfo): Promise<boolean> {
+    return adoptOwnWrite.call(this, held, renewed);
   }
 
   /**
@@ -1581,7 +468,7 @@ export class LockManager {
    * `S3ServiceException`, or under a renamed code, would otherwise skip the
    * "leave it alone" branch and reach the destructive fallback below it.
    */
-  private isForeignLockError(error: unknown): boolean {
+  isForeignLockError(error: unknown): boolean {
     return (
       error instanceof S3ServiceException &&
       (error.name === 'PreconditionFailed' || error.$metadata.httpStatusCode === 412)
@@ -1597,7 +484,7 @@ export class LockManager {
    * `lost`, killing the heartbeat and refusing to release a lock this process
    * still holds.
    */
-  private isGoneError(error: unknown): boolean {
+  isGoneError(error: unknown): boolean {
     if (error instanceof NoSuchKey) return true;
     if (!(error instanceof S3ServiceException)) return false;
     if (error.name === 'NoSuchBucket') return false;
@@ -1615,7 +502,7 @@ export class LockManager {
    * not implemented the header answers 501. Neither says anything about who
    * owns the lock, whereas 409 / 412 / 5xx all do.
    */
-  private isConditionUnsupportedError(error: unknown): boolean {
+  isConditionUnsupportedError(error: unknown): boolean {
     if (!(error instanceof S3ServiceException)) return false;
     const status = error.$metadata.httpStatusCode;
     return (
@@ -1632,32 +519,11 @@ export class LockManager {
    * longer ours: replaced by someone else (412) or deleted outright (404, e.g.
    * by `cdkd force-unlock`). Both mean stop renewing and do not delete.
    */
-  private isNotOursError(error: unknown): boolean {
+  isNotOursError(error: unknown): boolean {
     return this.isForeignLockError(error) || this.isGoneError(error);
   }
 
-  /**
-   * Acquire lock with retry logic
-   *
-   * Retries up to maxRetries times with retryDelay between attempts.
-   * If lock is expired, cleans it up automatically.
-   * On failure, provides helpful message with lock owner and expiry information.
-   *
-   * A failed acquire followed by a read that finds NO lock means the holder
-   * released it in between (issue #4055), so that read re-attempts at once
-   * without spending a retry -- up to `RELEASED_LOCK_REACQUIRE_LIMIT` times per
-   * call, so a lock that keeps flapping cannot loop forever. `getLockInfo`
-   * also returns null for a lock.json whose body is not an object, which
-   * `acquireLock` can never replace; the limit is what ends that case too, and
-   * after it an empty read waits `retryDelay` like a held lock.
-   *
-   * @param stackName Stack name
-   * @param owner Lock owner identifier
-   * @param operation Operation being performed
-   * @param maxRetries Maximum number of retries (default: 3)
-   * @param retryDelay Delay between retries in milliseconds (default: 2000)
-   */
-  async acquireLockWithRetry(
+  acquireLockWithRetry(
     stackName: string,
     region: string,
     owner?: string,
@@ -1665,133 +531,14 @@ export class LockManager {
     maxRetries = 3,
     retryDelay = 2000
   ): Promise<void> {
-    let attempts = 0;
-    let releasedReacquires = 0;
-    // The read taken right after the LAST failed acquire. The refusal below
-    // renders THIS rather than re-reading: a second read is one more window for
-    // the holder to release, and a release there is exactly how the pre-#4055
-    // message came to claim a lock that no longer existed.
-    let lockInfo: LockInfo | null = null;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      attempts++;
-      const acquired = await this.acquireLock(stackName, region, owner, operation);
-
-      if (acquired) {
-        return;
-      }
-
-      lockInfo = await this.getLockInfo(stackName, region);
-
-      if (!lockInfo && releasedReacquires < RELEASED_LOCK_REACQUIRE_LIMIT) {
-        // Released between the failed PUT and this read: try again NOW, and do
-        // not count it as a retry -- on the final attempt this is the whole
-        // fix, since the loop would otherwise end on a lock that is gone.
-        releasedReacquires++;
-        this.logger.debug(
-          safeMsg`Lock for stack ${stackRef(stackName, region)} could not be acquired, yet no readable lock was found -- most likely released in between; re-attempting (${releasedReacquires}/${RELEASED_LOCK_REACQUIRE_LIMIT})`
-        );
-        attempt--;
-        continue;
-      }
-
-      if (attempt < maxRetries) {
-        // The retry line is the SIBLING of the throw below and renders the
-        // same two values, so it takes the same sanitization -- as does every
-        // other stack-name render in this module since issue #3027.
-        // `owner` / `operation` go through `formatLockOwner` /
-        // `formatLockOperation`, like every lock render (go-to-k/cdkd#4115).
-        const holder = lockInfo
-          ? `is locked by ${formatLockOwner(lockInfo.owner)}` +
-            `${lockInfo.operation ? ` (operation: ${formatLockOperation(lockInfo.operation)})` : ''}` +
-            `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.`
-          : `could not be locked, and no readable lock was found.`;
-        this.logger.info(
-          `Stack ${safeSegment(stackName)} ` +
-            `(${safeSegment(region)}) ${holder}` +
-            ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
-        );
-        await new Promise((resolve) => setTimeout(resolve, retryDelay));
-      }
-    }
-
-    // Failed to acquire lock after all retries
-    const expiry = lockInfo ? formatLockExpiry(lockInfo.expiresAt) : undefined;
-
-    // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
-    // release the lock", and NO `--force-unlock` Option is registered anywhere
-    // in `src/` -- `force-unlock` is a SUBCOMMAND (`cdkd force-unlock
-    // <stack>`), and `./lock-contention-message.ts` exists precisely to build
-    // that line with the `--stack-region` qualifier that decides WHICH lock
-    // object it resolves to. Six sibling contention sites already went through
-    // that builder; this one bypassed it.
-    //
-    // `buildForceUnlockCommand` returns '' when ANY value it would name has
-    // nothing that can be reproduced safely on a command line -- five of them
-    // since go-to-k/cdkd#3377 widened the guard to the profile, state bucket and
-    // state prefix, so `UNREPRODUCIBLE_LOCK_VALUES` is the list rather than this
-    // sentence (go-to-k/cdkd#3390 round 3 found this copy still saying two) --
-    // in which case
-    // the advice degrades rather than naming a command that would address a
-    // DIFFERENT lock -- see that module for why suggesting none is the honest
-    // answer there.
-    //
-    // No `LockRecoveryContext` is threaded: `acquireLockWithRetry` is handed a
-    // stack name and a region and holds neither the caller's `--profile` nor
-    // the resolved state bucket. The command is therefore region-qualified but
-    // not account-qualified, which is strictly better than the flag that does
-    // not exist; widening it means threading the context through all four
-    // callers and is left to issue [#2610].
-    const forceUnlockCommand = buildForceUnlockCommand(stackName, region);
-    // The suppression sentence is the SHARED one, not a third spelling of it
-    // (issue [#2610] review): `forceQuitRecoveryClause` emits the same clause,
-    // and `lock-contention-message.ts`'s header records that copies are how the
-    // next one drifts.
-    const recovery = forceUnlockCommand
-      ? `If you are certain no other process is active, run: ${forceUnlockCommand}`
-      : `If you are certain no other process is active, ` +
-        `${UNREPRODUCIBLE_LOCK_CLAUSE.charAt(0).toLowerCase()}${UNREPRODUCIBLE_LOCK_CLAUSE.slice(1)}`;
-    // Sanitize the HEAD too (issue [#2610] review). Suppressing the COMMAND for
-    // an unreproducible name while printing that same name raw one sentence
-    // earlier closes nothing: a `stackName` carrying a newline plus an ESC
-    // sequence forges the very `run:` line the suppression exists to prevent,
-    // and this message is not display-only -- it reaches the terminal AND the
-    // persisted `deployments/*.jsonl`. `buildLockContentionMessage` already
-    // renders its own head this way; this site had adopted only the
-    // suppression half of that precedent.
-    const safeStack = safeSegment(stackName);
-    const safeRegion = safeSegment(region);
-    // The no-lock arm must not claim a lock exists (issue #4055): the last read
-    // found none. It is either a lock released and re-taken faster than the
-    // re-attempts above, or a lock.json that is not a readable lock -- only the
-    // second needs `force-unlock`, so the command is conditioned on a repeat.
-    // No apostrophe anywhere before the command: one flips the quote parity of
-    // a pasted sentence (lock-contention-message.md).
-    throw new LockError(
-      `Failed to acquire lock for stack ${safeStack} (${safeRegion}) after ${attempts} attempt${attempts === 1 ? '' : 's'}. ` +
-        (lockInfo
-          ? `Locked by: ${formatLockOwner(lockInfo.owner)}` +
-            `${lockInfo.operation ? `, operation: ${formatLockOperation(lockInfo.operation)}` : ''}` +
-            `, ${expiry}. ` +
-            recovery
-          : `No lock could be read after the last failed attempt, so it was most likely released ` +
-            `just now: re-run the command. If this repeats, lock.json may hold a body that is not ` +
-            `a readable lock. ${recovery}`)
+    return acquireLockWithRetry.call(
+      this,
+      stackName,
+      region,
+      owner,
+      operation,
+      maxRetries,
+      retryDelay
     );
-  }
-}
-
-/**
- * `value` itself, unless coercing it to a number THROWS — then `NaN`.
- *
- * Deliberately not a conversion: see the `expiresAt` note in `getLockRecord`.
- * The call is the probe — `Number` throws on exactly the values the readers'
- * arithmetic would throw on, and on nothing else.
- */
-function nanIfUncoercible(value: unknown): number {
-  try {
-    Number(value);
-    return value as number;
-  } catch {
-    return Number.NaN;
   }
 }

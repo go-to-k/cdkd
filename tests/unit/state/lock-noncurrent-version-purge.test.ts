@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
 // compiler API only under `typescript/unstable/*`. Same import every other
 // AST-based critic in this repo uses.
@@ -773,7 +773,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
   });
 
   /**
-   * The fence. `deleteLock` is private with four call sites today, and a fifth
+   * The fence. `deleteLock` has four call sites today, and a fifth
    * that forgot the purge would reintroduce this issue silently — the delete
    * still succeeds, and only a version listing months later shows the growth.
    *
@@ -786,6 +786,19 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
    */
   describe('every deleteLock caller is paired with a purge (fence)', () => {
     const SRC = join(process.cwd(), 'src/state/lock-manager.ts');
+    /**
+     * The class file plus every companion module its method bodies moved into
+     * (go-to-k/cdkd#5835). Listed from the directory rather than named, so a
+     * caller moved into a new companion module cannot sit outside the walk.
+     */
+    const COMPANION_DIR = join(process.cwd(), 'src/state/lock-manager');
+    const SOURCES = [
+      SRC,
+      ...readdirSync(COMPANION_DIR)
+        .filter((f) => f.endsWith('.ts'))
+        .sort()
+        .map((f) => join(COMPANION_DIR, f)),
+    ];
 
     /**
      * Members of `LockManager` that call `this.<name>(...)`, by member name.
@@ -815,7 +828,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
      * - **An ALIASED `this`** (`const self = this; self.deleteLock(...)`) is
      *   invisible — the walk matches on a `this.` receiver. That is a
      *   fail-OPEN, so it is REFUSED rather than modelled: `assertNoThisAlias`
-     *   below fails if `lock-manager.ts` ever introduces one. Refusing an
+     *   below fails if `lock-manager.ts` or a companion module ever introduces one. Refusing an
      *   unmodelled construct is stricter than adding a fifth pattern for it.
      * - **A nested class or object literal** attributes to ITS OWN member name
      *   (`innerM`, `om`), not to the enclosing one. Not a fail-open: such a
@@ -851,11 +864,20 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
     const COMPUTED = '<computed member name>';
     const UNATTRIBUTED_PREFIX = '<unattributed call at line ';
     const unattributed = (source: ts.SourceFile, node: ts.Node): string =>
-      `${UNATTRIBUTED_PREFIX}${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}>`;
+      `${UNATTRIBUTED_PREFIX}${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} of ${basename(source.fileName)}>`;
 
+    /** `text` drives the walk with one synthetic source; without it, every file in SOURCES. */
     const methodsCalling = (name: string, text?: string): Set<string> => {
-      const body = text ?? readFileSync(SRC, 'utf8');
-      const source = ts.createSourceFile(SRC, body, ts.ScriptTarget.Latest, true);
+      if (text !== undefined) return methodsCallingIn(name, SRC, text);
+      const found = new Set<string>();
+      for (const file of SOURCES) {
+        for (const m of methodsCallingIn(name, file, readFileSync(file, 'utf8'))) found.add(m);
+      }
+      return found;
+    };
+
+    const methodsCallingIn = (name: string, file: string, body: string): Set<string> => {
+      const source = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true);
       const diagnostics =
         (source as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ??
         [];
@@ -863,12 +885,23 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       // with no violations.
       if (diagnostics.length > 0) {
         throw new Error(
-          `${SRC} failed to parse (${diagnostics.length} errors): ` +
+          `${file} failed to parse (${diagnostics.length} errors): ` +
             ts.flattenDiagnosticMessageText(diagnostics[0]!.messageText, ' ')
         );
       }
       const memberName = (node: ts.Node): string | undefined => {
         if (ts.isConstructorDeclaration(node)) return 'constructor';
+        // A companion-module function a `LockManager` method delegates to
+        // (go-to-k/cdkd#5835) declares `this` as its first parameter, which is
+        // what makes its `this` the instance. One that does not is NOT a
+        // member: its `this.deleteLock` stays unattributed (fail-closed).
+        if (ts.isFunctionDeclaration(node)) {
+          const first = node.parameters[0];
+          if (first && ts.isIdentifier(first.name) && first.name.text === 'this') {
+            return node.name ? node.name.text : COMPUTED;
+          }
+          return undefined;
+        }
         if (
           ts.isMethodDeclaration(node) ||
           ts.isPropertyDeclaration(node) ||
@@ -934,9 +967,9 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
     it('refuses a `this` alias, which the walk cannot follow', () => {
       // Fail CLOSED on the fence's own blind spot rather than pretend it does
       // not exist. If this ever reddens, the fix is to remove the alias from
-      // `lock-manager.ts` or to teach the walk to follow it — not to delete
+      // that file or to teach the walk to follow it — not to delete
       // this case.
-      expect(thisAliases(readFileSync(SRC, 'utf8'))).toBe(0);
+      for (const file of SOURCES) expect(thisAliases(readFileSync(file, 'utf8')), file).toBe(0);
       // ...and the detector is not vacuous.
       expect(thisAliases('class A { m(): void { const self = this; self.deleteLock(); } }')).toBe(1);
       expect(thisAliases('class A { m(): void { let s; s = this; s.deleteLock(); } }')).toBe(1);
@@ -1039,6 +1072,24 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         // which is what makes the pairing assertion red on this input.
         expect([...deleters][0]).not.toEqual([...purgers][0]);
         expect([...deleters].filter((m) => !purgers.has(m))).toHaveLength(1);
+      });
+
+      it('attributes a companion function declaring `this` to its own name', () => {
+        expect([
+          ...methodsCalling(
+            'deleteLock',
+            'export async function reap(this: LockManager): Promise<void> { await this.deleteLock(1, 2); }'
+          ),
+        ]).toEqual(['reap']);
+      });
+
+      it('walks the companion modules, not only the class file', () => {
+        // The three deleters live in `lock-manager/acquire.ts` and
+        // `lock-manager/release.ts` since go-to-k/cdkd#5835; a walk of the
+        // class file alone finds none of them.
+        expect(SOURCES.length).toBeGreaterThan(1);
+        const inClassFile = methodsCallingIn('deleteLock', SRC, readFileSync(SRC, 'utf8'));
+        expect([...inClassFile]).toEqual([]);
       });
 
       it('attributes a #private member to its own name', () => {
