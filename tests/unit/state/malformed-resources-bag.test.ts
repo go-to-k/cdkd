@@ -7296,7 +7296,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
  * reads below it.
  */
 describe('the properties-container guards dominate their reads (issue go-to-k/cdkd#3191)', () => {
-  const CALCULATOR = 'src/analyzer/diff-calculator.ts';
+  const CALCULATOR = 'src/analyzer/diff-calculator/calculate-diff.ts';
   const DIFF_LOAD = 'src/cli/commands/diff-recursive.ts';
 
   it(`${CALCULATOR} REFUSES, above its first properties read`, () => {
