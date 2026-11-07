@@ -73,8 +73,8 @@ function stripComments(source: string): string {
  * the allow-list.
  */
 const SUCCESS_PATH_WRITES: readonly string[] = [
-  // In FILE order — the scan reports writers top to bottom, and the assertion
-  // below compares the two lists positionally.
+  // Order is not load-bearing: the assertion below compares sorted lists (see
+  // ENTITLED_WRITES).
   //
   // `exportNames` (issue #2193) has THREE writers that are not a carry: the
   // in-memory placeholder for a stack with no record yet (first in the file
@@ -110,8 +110,8 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
  * Listing the spellings keeps an edit to the redaction re-opening this test.
  */
 const REDACTION_WRITES: readonly string[] = [
-  // In FILE order. These sit ABOVE the success-path writes (see ENTITLED_WRITES),
-  // which is the order the two lists are concatenated in.
+  // Order is not load-bearing: the assertion below compares sorted lists (see
+  // ENTITLED_WRITES).
   //
   // TWO, not four. A first cut also listed an empty-bag early return spelling
   // both fields verbatim; review measured that branch BEHAVIOURALLY DEAD (the
@@ -158,19 +158,23 @@ function collectWriters(): Writer[] {
 }
 
 /**
- * FILE ORDER, which the assertion below compares positionally: the redaction
- * lives in `redactStateForPersist` (~2300) and every success-path write is
- * further down (~2870 onwards), so redaction comes FIRST. Stated from a
- * measurement rather than from where the change was written — the first draft
- * of this line said the opposite and the positional compare caught it.
+ * Compared as a SORTED multiset, not positionally (#5835): the family is the
+ * class file plus its split modules in NAME order, so the order the scan
+ * reports writers in is an artifact of file names. The redaction moved to
+ * `deploy-engine/state-persist.ts`, which sorts after the modules holding the
+ * success-path writes; a positional compare would red on a file name rather
+ * than on a writer. Sorting keeps every count: a missing, extra or edited
+ * writer still fails.
  */
 const ENTITLED_WRITES: readonly string[] = [...REDACTION_WRITES, ...SUCCESS_PATH_WRITES];
 
 describe('every cross-stack-read writer in the engine is accounted for (#2057)', () => {
   it('finds ONLY the entitled writes — every other save spreads the helper', () => {
     const writers = collectWriters();
+    const byText = (a: string, b: string): number =>
+      a.slice(a.indexOf('  ')).localeCompare(b.slice(b.indexOf('  ')));
     expect(
-      writers.map((w) => `${familyLocation(w.line)}  ${w.text}`),
+      writers.map((w) => `${familyLocation(w.line)}  ${w.text}`).sort(byText),
       'these write imports/outputReads directly. Every save EXCEPT the success ' +
         'path must spread `crossStackReadsForPartialSave(currentState, ' +
         'engine.recordedImports, engine.recordedOutputReads)` instead — see that ' +
@@ -184,7 +188,7 @@ describe('every cross-stack-read writer in the engine is accounted for (#2057)',
           const line = writers.find((w) => w.text === text)?.line;
           return `${line === undefined ? 'MISSING' : familyLocation(line)}  ${text}`;
         }
-      )
+      ).sort(byText)
     );
   });
 
