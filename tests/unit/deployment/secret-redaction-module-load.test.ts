@@ -12,13 +12,20 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
-const MODULES = readdirSync(DIR)
+/**
+ * Recursive: a module split into a nested companion directory (e.g.
+ * `redact-state.ts` + `redact-state/`, go-to-k/cdkd#5835) is imported by its
+ * entry, so the copy must carry the nested files for the entry to load, and
+ * each nested module must load first in a fresh graph too.
+ */
+const MODULES = (readdirSync(DIR, { recursive: true }) as string[])
+  .map((f) => f.split(sep).join('/'))
   .filter((f) => f.endsWith('.ts'))
   .sort();
 
@@ -53,7 +60,11 @@ beforeAll(() => {
   writeFileSync(join(root, 'package.json'), '{"type":"module"}');
   out = join(root, 'deployment', 'secret-redaction');
   mkdirSync(out, { recursive: true });
-  for (const file of MODULES) transpileTo(join(DIR, file), join(out, file.replace(/\.ts$/, '.js')));
+  for (const file of MODULES) {
+    const target = join(out, file.replace(/\.ts$/, '.js'));
+    mkdirSync(dirname(target), { recursive: true });
+    transpileTo(join(DIR, file), target);
+  }
   for (const dep of LEAF_DEPENDENCIES) {
     const target = join(root, dep.replace(/\.ts$/, '.js'));
     mkdirSync(dirname(target), { recursive: true });
@@ -80,6 +91,7 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
+    expect(MODULES).toContain('redact-state/scrub-record.ts');
   });
 
   // Each case spawns a Node process, so it declares its own timeout.
