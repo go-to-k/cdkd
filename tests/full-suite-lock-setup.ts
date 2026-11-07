@@ -35,7 +35,10 @@ const POLL_MS = 5_000;
 const OWNERLESS_STALE_MS = 60_000;
 /** Boot times computed from `uptime()` drift by a little; a reboot moves them by far more. */
 const BOOT_TOLERANCE_MS = 60_000;
-/** Above any targeted run's file count, below every `tests/unit/<area>` directory with a paste-harness caller. */
+/**
+ * Above any targeted run's file count, below every `tests/unit/<area>` directory with more than one
+ * paste-harness caller; an area under it (`assets`, `local`, `synthesis`) holds one caller and runs unlocked.
+ */
 export const LARGE_RUN_FILES = 50;
 
 export interface LockOwner {

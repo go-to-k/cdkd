@@ -22,6 +22,7 @@ function fakeProject(opts: {
   watch?: boolean;
   changed?: boolean;
   related?: string[];
+  /** Unread by the file-count rule; it makes a share-of-suite rule (the pre-#6029 one) fail these cases. */
   all?: number;
 }): TestProject {
   const all = opts.all ?? 100;
