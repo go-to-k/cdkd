@@ -63,6 +63,8 @@ const NESTED_FLOORS: Readonly<Record<string, number>> = {
   'update-in-place': 1,
   // `update.ts`'s split body (#5835): 6 nested modules.
   'update': 6,
+  // `replacement.ts`'s split body (#5835): 7 nested modules.
+  replacement: 7,
 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
   const held = ENGINE_FAMILY.filter((rel) =>
