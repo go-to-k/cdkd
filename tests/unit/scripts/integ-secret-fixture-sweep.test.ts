@@ -194,7 +194,7 @@ const SECRET_MATERIAL: readonly Pattern[] = [
     what: 'an AppSync ApiKey — for AppSync the key ID *is* the credential, and it is the physical id',
     // `AppSyncProvider.createApiKey` persists `response.apiKey.id` as the
     // physical id and repeats it in `attributes.ApiKey` plus an `Arn` built
-    // from it (appsync-provider.ts:431-434). Nothing in the fixture's source
+    // from it (`createApiKey` in appsync/api-key.ts). Nothing in the fixture's source
     // looks like a secret; the credential is service-generated.
     re: /appsync\.CfnApiKey|AWS::AppSync::ApiKey/,
     floor: 1,

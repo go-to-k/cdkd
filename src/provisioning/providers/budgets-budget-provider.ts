@@ -408,7 +408,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
   /**
    * Map well-formed `NotificationsWithSubscribers` entries (see
-   * {@link readBudgetList}) to the SDK shape.
+   * `readBudgetList` in budgets-budget/shared.ts) to the SDK shape.
    */
   toSdkNotificationsWithSubscribers(
     items: Record<string, unknown>[]
@@ -445,7 +445,10 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     return JSON.stringify([s.SubscriptionType, s.Address]);
   }
 
-  /** Map well-formed `ResourceTags` entries (see {@link readBudgetList}) to the SDK shape. */
+  /**
+   * Map well-formed `ResourceTags` entries (see `readBudgetList` in
+   * budgets-budget/shared.ts) to the SDK shape.
+   */
   toSdkResourceTags(items: Record<string, unknown>[]): ResourceTag[] {
     return items.map((tag) => {
       const value = tag['Value'];

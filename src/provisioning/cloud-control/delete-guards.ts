@@ -90,7 +90,7 @@ export const CC_DELETE_REGION_IDENTITY_GUARD = 'cc-delete-region-identity';
  * THREE copies of this fold exist and neither of the other two is reusable
  * here:
  *
- *  - `providers/s3-bucket-provider.ts`'s private twin is the SDK route's
+ *  - `providers/s3-bucket/adopt.ts`'s `resolveOwnedBucketRegion` is the SDK route's
  *    guard, reached by a different routing decision, and it additionally
  *    reads `x-amz-bucket-region` off a `CreateBucket` 409 -- a signal that
  *    does not exist on this path, where the probe is a PRE-flight with no

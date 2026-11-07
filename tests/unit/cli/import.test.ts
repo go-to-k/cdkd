@@ -4262,8 +4262,8 @@ describe('cdkd import', () => {
       mockHasProvider.mockReturnValue(true);
       // Provider returns an EXPLICIT empty map — the realistic shape. Almost
       // every shipped provider spells it `attributes: {}` rather than
-      // omitting the field (ssm-parameter-provider.ts:495 / :516,
-      // s3-bucket-provider.ts, lambda-function-provider.ts, ...), so a stub
+      // omitting the field (s3-bucket/update-delete.ts's `importImpl`,
+      // lambda-function/identity.ts, s3-bucket-policy-provider.ts, ...), so a stub
       // returning `{ physicalId }` alone would exercise a path no real
       // provider reaches. `{}` is not `undefined`, which is why
       // buildStackState normalizes empty-to-absent before the coalesce.

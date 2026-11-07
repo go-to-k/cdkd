@@ -513,7 +513,7 @@ export function isRetryableTransientError(error: unknown, message: string): bool
  * {@link markRedactedCause} -- which is every wrapper on `main` outside
  * #2302's redacting sites. An earlier revision justified itself with a wider
  * claim, that every wrapper on `main` COPIES its cause's message; that claim is
- * false (`custom-resource-provider.ts`'s `describeWaiterFailure` already
+ * false (`custom-resource/lambda-waiter.ts`'s `describeWaiterFailure` already
  * withholds the raw waiter payload, and it is not the only wrapper that does),
  * and it does not need to be true. The opt-in stamp makes the no-op a property
  * of the mechanism rather than of a survey.

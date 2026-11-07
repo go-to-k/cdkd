@@ -1486,7 +1486,8 @@ const S3_CASES: TypeCase[] = [BUCKET_CASE];
 // The provider makes no SDK call of its own: `create()` / `update()` read the
 // child template from `ctx.nestedTemplates[logicalId]` and deploy it through a
 // child `DeployEngine` (`create` / `update` in nested-stack/create-update.ts), handing it
-// `Parameters` as `DeployEngineOptions.parameters` (:954). So the wire a
+// `Parameters` as `DeployEngineOptions.parameters` (`runChildDeploy` in
+// nested-stack/child-deploy.ts). So the wire a
 // `Parameters` member reaches is the CHILD's resources' SDK calls. The case runs
 // the REAL child engine (real `DagBuilder` / `DiffCalculator`, an in-memory
 // state backend) over a one-topic child template whose `DisplayName` and tag

@@ -50,8 +50,10 @@
  * [#3136](https://github.com/go-to-k/cdkd/issues/3136) found the same
  * hand-quoted `'${value}'` shape at four more sites that are NOT protected-arm
  * remedies at all — two partial-create cleanup warnings
- * (`ssm-parameter-provider.ts`, `s3-bucket-provider.ts`, the latter sharing one
- * clause between its two arms) and one import refusal
+ * (`ssm-parameter-provider.ts`'s — since removed: the tags ride on PutParameter
+ * (go-to-k/cdkd#4971), so no call follows it whose failure needs a cleanup —
+ * and `s3-bucket/shared.ts`'s, one clause shared by its two arms) and one
+ * import refusal
  * (`ssm-parameter/import.ts`'s `refuseUnwritableParameterId`) — so the right
  * question for a NEW caller is not "can it use
  * {@link protectedReplacementAdvice} instead" but "is the value it pastes

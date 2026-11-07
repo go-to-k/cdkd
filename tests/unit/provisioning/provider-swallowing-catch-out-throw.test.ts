@@ -261,7 +261,7 @@ function containsNonThrowingExit(stmt: ts.Statement): boolean {
  *   - It scanned only the handler's TOP-LEVEL statements for a `throw`, so a
  *     handler ending in a rethrow read as "throwing" even when an earlier
  *     `continue` nested in an `if` left it first. That mislabelled ~15 sites,
- *     `ec2-provider.ts`'s `deleteVpc` among them, whose `DependencyViolation`
+ *     `ec2/vpc.ts`'s `deleteVpc` among them, whose `DependencyViolation`
  *     -> `continue` retry is exactly what this fence protects. It also
  *     contradicted this file's own `silentReturn` fixture: the same `return`
  *     nested one level deeper flipped the verdict.
@@ -292,7 +292,7 @@ function occurrenceCanDegrade(block: ts.Block, occurrence: ts.Node): boolean {
   // substring and rethrows otherwise, so a trailing `throw` sits AFTER the
   // `continue` that carries the degradation. Asking `suffix.some(alwaysThrows)`
   // finds that throw and calls the site "throwing" -- which is how the shallow
-  // predicate lost `ec2-provider.ts`'s `deleteVpc`.
+  // predicate lost `ec2/vpc.ts`'s `deleteVpc`.
   for (const stmt of block.statements.slice(index + 1)) {
     if (containsNonThrowingExit(stmt)) return true;
     if (alwaysThrows(stmt)) return false;
@@ -572,7 +572,7 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
       // --- the shapes classifier 3 got wrong, one per exit kind, each NESTED
       // ahead of a trailing rethrow. The shallow predicate saw only the
       // trailing `throw` and called all four "throwing". `nestedContinue` is
-      // `ec2-provider.ts`'s `deleteVpc` reduced to its essentials.
+      // `ec2/vpc.ts`'s `deleteVpc` reduced to its essentials.
       nestedContinue:
         'for (;;) {\n  try { a(); } catch (e) {\n    if (String(e).includes("x")) { continue; }\n    throw e;\n  }\n}',
       nestedBreak:
@@ -583,7 +583,7 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
       ifOnlyThenThrows: 'try { a(); } catch (e) {\n  if (x) { throw e; }\n  else { log(String(e)); }\n}',
       // THE SHAPE THE ROUND-3 DEFECT WAS, and the one no fixture covered: the
       // `String` is computed in ONE statement, the exit is in a LATER one, and
-      // a `throw` follows it. Reduced from `ec2-provider.ts`'s `deleteVpc`.
+      // a `throw` follows it. Reduced from `ec2/vpc.ts`'s `deleteVpc`.
       // Without this, replacing the in-order suffix walk with
       // `suffix.some(alwaysThrows)` passes the whole suite -- measured.
       suffixExitBeforeThrow:

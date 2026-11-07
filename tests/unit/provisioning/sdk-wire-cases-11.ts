@@ -288,14 +288,14 @@ const RUNTIME_TOP = {
 
 const RUNTIME_REQUIRED: Record<string, Throw> = {
   'create:AgentRuntimeName': REQUIRED(
-    'AgentRuntimeName is required: create() refuses a runtime without it before any call (agentcore-runtime-provider.ts:127-134)',
+    'AgentRuntimeName is required: create() refuses a runtime without it before any call (`create` in agentcore-runtime-provider.ts)',
     /AgentRuntimeName is required/
   ),
   ...Object.fromEntries(
     ALL_DIRECTIONS.map((d) => [
       `${d}:RoleArn`,
       REQUIRED(
-        'RoleArn is required: create() and update() refuse a runtime without it before any call (agentcore-runtime-provider.ts:136-139, 245-253)',
+        'RoleArn is required: create() and update() refuse a runtime without it before any call (`create` and `update` in agentcore-runtime-provider.ts)',
         /RoleArn is required/
       ),
     ])

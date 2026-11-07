@@ -522,7 +522,7 @@ behind under the same logical id.
 A `List*` walk is still correct when it matches on a **name** the template
 supplies (rather than on a tag) and the service has no direct
 `Get<Name>` lookup — see `s3-tables/import.ts`'s `TableBucketName` walk
-and `servicediscovery-provider.ts`'s namespace `Name` walk. Guard it with an
+and `servicediscovery/import.ts`'s namespace `Name` walk. Guard it with an
 early `return null` when the template carries no name, so the walk never
 pages an account's entire inventory just to fail.
 

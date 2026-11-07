@@ -78,7 +78,7 @@ export function requireContext(this: NestedStackProvider): NestedStackProviderCo
     // Issue #1849: the OTHER deterministic refusal `delete()` can raise, and
     // the one whose terminality is a matter of IMPOSSIBILITY rather than of
     // policy — which is what distinguishes it from the interrupted arm marked
-    // above. There the retry COULD run; it is marked because re-entering a
+    // in `deleteImpl` (nested-stack/delete.ts). There the retry COULD run; it is marked because re-entering a
     // destroy the user just aborted is the wrong thing to do. Here it could
     // not succeed at all — the store is read
     // from AsyncLocalStorage, and a retry runs inside the SAME async
@@ -90,7 +90,7 @@ export function requireContext(this: NestedStackProvider): NestedStackProviderCo
     // interpolates nothing user-controlled and therefore cannot pick up a
     // retryable substring today: the marker is a DECLARATION by the raiser,
     // which is what the mechanism exists for — message discipline is what
-    // failed at the `errorCount` throw above.
+    // failed at the `errorCount` throw in `deleteImpl` (nested-stack/delete.ts).
     throw markNonRetryable(
       new Error(
         'NestedStackProvider invoked outside withNestedStackContext() scope. ' +
