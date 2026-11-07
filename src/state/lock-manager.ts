@@ -146,6 +146,15 @@ export class LockManager {
   }
 
   /**
+   * `ExpectedBucketOwner` spread for every state-bucket S3 call (squatting
+   * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
+   * resolves to an empty object for non-standard clients (test doubles).
+   */
+  async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+    return expectedOwnerParam(this.s3Client);
+  }
+
+  /**
    * Resolve the state bucket's actual region and, if it differs from the
    * supplied client's configured region, replace the client reference with
    * a new S3Client pointed at the bucket's region.
@@ -164,15 +173,6 @@ export class LockManager {
    * so when the state backend has already resolved the same bucket this
    * incurs no additional `GetBucketLocation` call.
    */
-  /**
-   * `ExpectedBucketOwner` spread for every state-bucket S3 call (squatting
-   * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
-   * resolves to an empty object for non-standard clients (test doubles).
-   */
-  async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
-    return expectedOwnerParam(this.s3Client);
-  }
-
   async ensureClientForBucket(): Promise<void> {
     if (this.clientResolved) return;
     if (this.resolveInFlight) return this.resolveInFlight;
