@@ -15,6 +15,7 @@ import {
   type ShutdownBehavior,
   type PrivateDnsNameOptionsRequest,
   type LaunchTemplateSpecification,
+  type Placement,
 } from '@aws-sdk/client-ec2';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import {
@@ -26,6 +27,9 @@ import {
 } from '../../config-shape.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import {
+  enclaveOptionsRefusal,
+  enclaveOptionsRequest,
+  instanceIdMemberRefusal,
   instanceIpv6AddressesRefusal,
   instanceLaunchTemplateRefusal,
   instanceLicenseSpecificationsRefusal,
@@ -195,21 +199,27 @@ export function buildMetadataOptions(
  * go-to-k/cdkd#5630 adds the top-level CFn `Tenancy` and
  * `PlacementGroupName` (`Placement.Tenancy` / `.GroupName`); a malformed
  * one is refused by `buildLaunchOnlyInstanceOptions` before this runs.
- * HostId and Affinity (Dedicated Host) stay unhandled; adding one means
- * adding it to `handledProperties` too, or the #614 routing rule will keep
- * sending the resource to Cloud Control.
+ * The final slice adds the Dedicated Host members `Affinity`, `HostId` and
+ * `HostResourceGroupArn` (`Placement.Affinity` / `.HostId` /
+ * `.HostResourceGroupArn`, the same names), refused there too.
  */
 export function buildPlacement(
   this: EC2Provider,
   properties: Record<string, unknown>
-): { AvailabilityZone?: string; Tenancy?: Tenancy; GroupName?: string } | undefined {
-  const out: { AvailabilityZone?: string; Tenancy?: Tenancy; GroupName?: string } = {};
+): Placement | undefined {
+  const out: Placement = {};
   const az = properties['AvailabilityZone'];
   if (typeof az === 'string' && az !== '') out.AvailabilityZone = az;
   const tenancy = properties['Tenancy'];
   if (typeof tenancy === 'string' && tenancy !== '') out.Tenancy = tenancy as Tenancy;
   const group = properties['PlacementGroupName'];
   if (typeof group === 'string' && group !== '') out.GroupName = group;
+  const affinity = properties['Affinity'];
+  if (typeof affinity === 'string' && affinity !== '') out.Affinity = affinity;
+  const hostId = properties['HostId'];
+  if (typeof hostId === 'string' && hostId !== '') out.HostId = hostId;
+  const hostGroup = properties['HostResourceGroupArn'];
+  if (typeof hostGroup === 'string' && hostGroup !== '') out.HostResourceGroupArn = hostGroup;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -334,7 +344,11 @@ export function readCpuCredits(this: EC2Provider, spec: unknown): string | undef
  * place; `AdditionalInfo` is reserved by EC2, which refuses the launch
  * (`InvalidParameterValue: Bad property set`, measured), as it fails a
  * CloudFormation stack. `LaunchTemplate` is create-only; a malformed
- * `Volumes` (attached after the launch) is refused here too. Member names
+ * `Volumes` (attached after the launch) is refused here too. `EnclaveOptions`
+ * is create-only; `KernelId` / `RamdiskId` also change in place with a stop
+ * and a start (`planInstanceMemberUpdates`), as do `Affinity` / `HostId`,
+ * whose malformed values (and `HostResourceGroupArn`'s) are refused here for
+ * `buildPlacement`. Member names
  * match on both sides. A malformed value is refused before RunInstances, on a
  * rollback replay too: RunInstances rejects it every time, so the replay
  * could not succeed, and dropping it would launch an instance with CPU,
@@ -356,6 +370,9 @@ export function buildLaunchOnlyInstanceOptions(
   PrivateDnsNameOptions?: PrivateDnsNameOptionsRequest;
   LaunchTemplate?: LaunchTemplateSpecification;
   LicenseSpecifications?: Array<{ LicenseConfigurationArn: string }>;
+  KernelId?: string;
+  RamdiskId?: string;
+  EnclaveOptions?: { Enabled?: boolean };
 } {
   const cpu = properties['CpuOptions'];
   const hibernation = properties['HibernationOptions'];
@@ -388,7 +405,15 @@ export function buildLaunchOnlyInstanceOptions(
     // before RunInstances, measured).
     instanceLicenseSpecificationsRefusal(properties['LicenseSpecifications'], resourceType) ??
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], resourceType) ??
-    ssmAssociationsAwsRefusal(properties, resourceType);
+    ssmAssociationsAwsRefusal(properties, resourceType) ??
+    // go-to-k/cdkd#5630: Dedicated Host placement, a PV kernel / RAM disk and
+    // Nitro Enclaves the launch would otherwise silently drop.
+    instanceIdMemberRefusal(properties, 'Affinity', resourceType) ??
+    instanceIdMemberRefusal(properties, 'HostId', resourceType) ??
+    instanceIdMemberRefusal(properties, 'HostResourceGroupArn', resourceType) ??
+    instanceIdMemberRefusal(properties, 'KernelId', resourceType) ??
+    instanceIdMemberRefusal(properties, 'RamdiskId', resourceType) ??
+    enclaveOptionsRefusal(properties['EnclaveOptions'], resourceType);
   if (refusal !== undefined) {
     throw markNonRetryable(
       new ProvisioningError(
@@ -436,6 +461,12 @@ export function buildLaunchOnlyInstanceOptions(
   if (launchTemplate !== undefined) out.LaunchTemplate = launchTemplate;
   const licenses = licenseSpecificationsRequest(properties['LicenseSpecifications']);
   if (licenses !== undefined) out.LicenseSpecifications = licenses;
+  const kernelId = properties['KernelId'];
+  if (typeof kernelId === 'string' && kernelId !== '') out.KernelId = kernelId;
+  const ramdiskId = properties['RamdiskId'];
+  if (typeof ramdiskId === 'string' && ramdiskId !== '') out.RamdiskId = ramdiskId;
+  const enclave = enclaveOptionsRequest(properties['EnclaveOptions']);
+  if (enclave !== undefined) out.EnclaveOptions = enclave;
   return out;
 }
 

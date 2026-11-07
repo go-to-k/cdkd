@@ -298,6 +298,16 @@ export class EC2Provider implements ResourceProvider {
         // on update (instance-ssm.ts).
         'LicenseSpecifications',
         'SsmAssociations',
+        // go-to-k/cdkd#5630: RunInstances inputs. `EnclaveOptions` and
+        // `HostResourceGroupArn` are create-only; `Affinity` / `HostId`
+        // (ModifyInstancePlacement) and `KernelId` / `RamdiskId`
+        // (ModifyInstanceAttribute) change in place with a stop and a start.
+        'Affinity',
+        'EnclaveOptions',
+        'HostId',
+        'HostResourceGroupArn',
+        'KernelId',
+        'RamdiskId',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],

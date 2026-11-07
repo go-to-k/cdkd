@@ -282,9 +282,9 @@ model the member, so it would be dropped from the CreateNetworkConnector request
 Remove ElasticIpConfiguration from Configuration.VpcEgressConfiguration to deploy the connector without it.
 ```
 
-The CloudFormation schema declares `ElasticIpConfiguration` on a Lambda
-network connector's VPC egress configuration. The Lambda Core SDK that cdkd
-calls has no such member yet. cdkd refuses a create that declares it, and an
+Neither the CloudFormation schema nor the Lambda Core SDK that cdkd calls
+declares `ElasticIpConfiguration` on a Lambda network connector's VPC egress
+configuration. cdkd refuses a create that declares it, and an
 update that adds or changes it, rather than deploy a connector without the
 setting you asked for.
 

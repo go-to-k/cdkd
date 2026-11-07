@@ -7,10 +7,8 @@
 #   - a listed file that drops to the cap or below must be removed from this
 #     list in the same change (a stale entry fails the test).
 # Never add a line here; split the file instead.
-src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/rollback.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
 src/deployment/deploy-engine/execute.ts
@@ -21,19 +19,12 @@ src/deployment/deploy-engine/rollback.ts
 src/deployment/deploy-engine/update-in-place.ts
 src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
-src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
-src/deployment/masked-property-fingerprints.ts
 src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
 src/deployment/rollback-executor/replay-reverse-replacement.ts
-src/deployment/secret-redaction/nested-stack.ts
 src/deployment/secret-redaction/positions.ts
-src/deployment/secret-redaction/redact-path.ts
-src/deployment/secret-redaction/redact-state.ts
-src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/types/resource.ts
 src/types/state.ts

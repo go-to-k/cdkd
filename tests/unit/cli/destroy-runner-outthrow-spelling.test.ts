@@ -33,7 +33,8 @@ const RUNNER = join(process.cwd(), 'src/cli/commands/destroy-runner.ts');
 // The runner's lock + SIGINT catches moved here (go-to-k/cdkd#2174); they are
 // still on the destroy path, so the bare-String() sweep below reads both.
 const LOCK_GUARD = join(process.cwd(), 'src/cli/commands/stack-lock-guard.ts');
-const FINAL_SNAPSHOT = join(process.cwd(), 'src/provisioning/final-snapshot.ts');
+// `errMsg` moved with the shared final-snapshot helpers (go-to-k/cdkd#5835).
+const FINAL_SNAPSHOT = join(process.cwd(), 'src/provisioning/final-snapshot/shared.ts');
 
 /**
  * Comments are stripped before any scan. `final-snapshot.ts`'s guard now

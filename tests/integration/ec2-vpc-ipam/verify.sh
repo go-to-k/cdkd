@@ -465,14 +465,40 @@ echo "    OK: ${SUBNET_ID} updated in place and still records CidrBlock ${SUBNET
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
 DESTROY_LOG="$(mktemp -t cdkd-ec2-vpc-ipam-destroy.XXXXXX)"
+# go-to-k/cdkd#5975: the per-type 10m timeout caps the VPC's release wait at
+# half of it, 300s, well under any measured release (18+ minutes), so the
+# pool CIDR delete deterministically meets "The CIDR has one or more
+# allocations." and must wait the release out itself. Per-type ONLY: a global
+# value would halve the pool CIDR's own budget too. 10m, not less: the VPC
+# delete's DependencyViolation retries take up to 225s on top of the wait.
+DESTROY_RC=0
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes 2>&1 | tee "${DESTROY_LOG}"
-# go-to-k/cdkd#5632: the subnet delete waited on its pool. The VPC's line is
-# the sentinel: present while the subnet's is absent means the wording moved.
+  --resource-timeout 'AWS::EC2::VPC=10m' \
+  --yes 2>&1 | tee "${DESTROY_LOG}" || DESTROY_RC=$?
 DESTROY_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' "${DESTROY_LOG}")
 rm -f "${DESTROY_LOG}"
+# go-to-k/cdkd#5975, three verdicts. (1) The destroy finished.
+if [ "${DESTROY_RC}" != 0 ] || grep -qF "partially destroyed" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: destroy rc ${DESTROY_RC} or partially destroyed (issue #5975):" >&2
+  grep -F "Failed to delete PoolCidr" <<<"${DESTROY_PLAIN}" >&2 || true
+  exit 1
+fi
+# (3) Checked before (2): the VPC-side wait really stopped at 300s, or the
+# release finished inside it and the arm below proves nothing.
+if ! grep -qE "allocation of VPC ${VPC_ID}: the delete was ACCEPTED by AWS, but cdkd stopped waiting for it to disappear after 300s" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: no 300s stop of the VPC's IPAM release wait; --resource-timeout AWS::EC2::VPC=10m had no effect, so the #5975 arm is vacuous" >&2
+  exit 1
+fi
+# (2) The pool CIDR delete waited for the deleted VPC's allocation.
+if ! grep -qE "IPAM pool ipam-pool-[0-9a-z]+ still holds the allocations of deleted .*${VPC_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: the pool CIDR delete printed no wait for ${VPC_ID}'s allocation (issue #5975)" >&2
+  exit 1
+fi
+echo "    OK: the pool CIDR delete waited out ${VPC_ID}'s allocation release (issue #5975)"
+# go-to-k/cdkd#5632: the subnet delete waited on its pool. The VPC's line is
+# the sentinel: present while the subnet's is absent means the wording moved.
 if ! grep -qF "release the allocation of deleted subnet ${SUBNET_ID}" <<<"${DESTROY_PLAIN}"; then
   if grep -qF "release the allocation of deleted VPC ${VPC_ID}" <<<"${DESTROY_PLAIN}"; then
     echo "FAIL: the destroy waited on the VPC's pool but printed no wait for subnet ${SUBNET_ID}'s (issue #5632)" >&2

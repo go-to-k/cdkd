@@ -83,9 +83,24 @@ describe('a split command is read with its directory', () => {
   // its family holds the wrapped read instead (go-to-k/cdkd#5835).
   const FOLDS_PER_READ: Record<string, string> = { 'gc.ts': 'namedCliRegion(options.region)' };
 
+  // `cdkd rollback` neither folds nor assumes a role in its own family: it
+  // takes `--region` only through `deprecatedRegionOption` and hands the
+  // options bag to `setupStateBackend`, which makes its first AWS call
+  // (`applyRoleArnIfSet`). Its family read holds that hand-off instead, and no
+  // role assumption of its own (go-to-k/cdkd#5835).
+  const HANDS_OFF_TO_SETUP: Record<string, string> = {
+    'rollback.ts': 'await setupStateBackend(options)',
+  };
+
   it.each(families)('%s: the family read holds its fold and its first AWS call', (file) => {
     // Per command: a family read that lost its directory would hold neither.
     const source = commandSource(file);
+    const handOff = HANDS_OFF_TO_SETUP[file];
+    if (handOff !== undefined) {
+      expect(source).toContain(handOff);
+      expect(stripComments(source)).not.toContain(firstAwsCall(file));
+      return;
+    }
     expect(source).toContain(FOLDS_PER_READ[file] ?? 'foldRegionOption(options)');
     expect(source).toContain(firstAwsCall(file));
   });
@@ -492,7 +507,9 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
     return out;
   };
 
-  it.each(['deploy.ts', 'publish-assets.ts', 'bootstrap.ts'])(
+  // `deploy/command.ts`: `cdkd deploy`'s handler, where both now live
+  // (go-to-k/cdkd#5835). Read on its own, so the order is the order it runs in.
+  it.each(['deploy/command.ts', 'publish-assets.ts', 'bootstrap.ts'])(
     '%s captures the raw spelling before folding',
     (file) => {
       const source = readFileSync(join(COMMANDS_DIR, file), 'utf8');

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  type Affinity,
   DescribeInstancesCommand,
   ModifyInstanceAttributeCommand,
   ModifyInstanceMetadataOptionsCommand,
@@ -25,9 +26,10 @@ import type { UpdateContext, ResourceUpdateResult } from '../../../types/resourc
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { isInterruptedWaitError } from '../../interrupt-watch.js';
-import { sameCreateOnlySent } from './common.js';
 import {
   INSTANCE_CREATE_ONLY_SENT,
+  INSTANCE_STOPPED_MEMBERS,
+  instanceIdMemberRefusal,
   type InstanceMemberPlan,
   type InstanceVolume,
   describedInstanceAttributes,
@@ -39,6 +41,7 @@ import {
   instanceSsmAssociationsRefusal,
   isRecordedStandIn,
   refusedBeforeApplying,
+  sameInstanceCreateOnlySent,
   sameSsmAssociations,
   sameStringSet,
   ssmAssociationsAwsRefusal,
@@ -350,6 +353,11 @@ export async function updateInstanceSecurityProps(
  *    creates a new instance.
  *  - `SsmAssociations` (go-to-k/cdkd#5630): deleted and re-created in
  *    place; see `planInstanceSsmAssociations`.
+ *  - `EnclaveOptions`, `HostResourceGroupArn` (go-to-k/cdkd#5630):
+ *    create-only in the schema, unmeasured.
+ *  - `Affinity`, `HostId`, `KernelId`, `RamdiskId` (go-to-k/cdkd#5630,
+ *    unmeasured): a stop and a start, as CloudFormation documents; see
+ *    `planInstanceStoppedMembers`.
  *
  * A member is CHANGED per the engine's `changedProperties` when it is set
  * (a redacted state value cannot be compared to a resolved one), else per
@@ -448,13 +456,13 @@ export function planInstanceMemberUpdates(
     }
   }
 
-  // CpuOptions / HibernationOptions / PlacementGroupName / PrivateIpAddress /
-  // Tenancy (go-to-k/cdkd#5630): the engine replaces the instance on a
+  // INSTANCE_CREATE_ONLY_SENT (CpuOptions, HibernationOptions,
+  // PlacementGroupName, PrivateIpAddress, ...; go-to-k/cdkd#5630): the engine replaces the instance on a
   // change, as CloudFormation does, and only `cdkd drift --revert` brings
   // one here. None changes on a running instance, so the update is refused
   // before any call rather than reported as reverted.
   const createOnlyChanged = INSTANCE_CREATE_ONLY_SENT.filter((key) =>
-    changed(key, (a, b) => sameCreateOnlySent(key, a, b))
+    changed(key, (a, b) => sameInstanceCreateOnlySent(key, a, b))
   );
   if (createOnlyChanged.length > 0) {
     throw refusedBeforeApplying(
@@ -532,6 +540,17 @@ export function planInstanceMemberUpdates(
       );
     }
   }
+
+  this.planInstanceStoppedMembers(
+    logicalId,
+    physicalId,
+    resourceType,
+    properties,
+    context,
+    plan,
+    changed,
+    standInSkips
+  );
 
   // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation
   // changes it in place with no interruption, both ways, and FAILS an update
@@ -733,6 +752,80 @@ export function planInstanceMemberUpdates(
 }
 
 /**
+ * go-to-k/cdkd#5630: plan an `Affinity`, `HostId`, `KernelId` or `RamdiskId`
+ * change. The schema leaves all four mutable, and CloudFormation's
+ * documentation marks each "Update requires: Some interruptions": EC2 changes
+ * them only on a stopped instance, so they go out in the stop -> modify ->
+ * start window an InstanceType change takes (ModifyInstancePlacement for
+ * Affinity / HostId, ModifyInstanceAttribute Kernel / Ramdisk for the
+ * others).
+ *
+ * UNMEASURED against CloudFormation: Affinity and HostId need a Dedicated
+ * Host, and KernelId / RamdiskId a paravirtual AMI, which current instance
+ * types cannot launch. cdkd follows the documented update behavior.
+ *
+ * A removal is refused before any call (a rollback revert keeps the live
+ * value and warns): EC2 has no call that clears a kernel, a RAM disk or a
+ * host, and what CloudFormation does on a removal is not documented.
+ */
+export function planInstanceStoppedMembers(
+  this: EC2Provider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  context: UpdateContext | undefined,
+  plan: InstanceMemberPlan,
+  changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean,
+  standInSkips: (key: string) => boolean
+): void {
+  for (const key of INSTANCE_STOPPED_MEMBERS) {
+    if (!changed(key, (a, b) => a === b)) continue;
+    const after = properties[key];
+    if (after === undefined) {
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored does not declare ${key}; the rollback leaves it at its current AWS value.`
+        );
+        continue;
+      }
+      throw refusedBeforeApplying(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): ${key} was removed from the template. EC2 has no call that clears it on an existing instance, and CloudFormation does not document what a removal does, so cdkd does not guess a value. Keep it declared (its current value leaves the instance unchanged), or replace the instance with cdkd deploy --replace. The instance was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    if (standInSkips(key)) continue;
+    const refusal = instanceIdMemberRefusal(properties, key, resourceType);
+    if (refusal !== undefined) {
+      // A rollback revert keeps the live value, as for every member.
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): ${refusal}; the rollback leaves ${key} at its current AWS value.`
+        );
+        continue;
+      }
+      throw refusedBeforeApplying(
+        new ProvisioningError(
+          `${refusal}. The instance ${logicalId} was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const value = requireConfigString(after, '', `${resourceType} ${key}`);
+    if (key === 'Affinity') plan.placement = { ...plan.placement, Affinity: value as Affinity };
+    else if (key === 'HostId') plan.placement = { ...plan.placement, HostId: value };
+    else if (key === 'KernelId') plan.kernelId = value;
+    else plan.ramdiskId = value;
+  }
+}
+
+/**
  * go-to-k/cdkd#5630: plan an `SsmAssociations` change. CloudFormation
  * (measured us-east-1) completes only "absent -> one entry" in place; a
  * parameter change, a document change and a removal all fail the update
@@ -853,4 +946,5 @@ export const instanceUpdateMethods = {
   planInstanceMemberUpdates,
   planInstanceVolumes,
   planInstanceSsmAssociations,
+  planInstanceStoppedMembers,
 };

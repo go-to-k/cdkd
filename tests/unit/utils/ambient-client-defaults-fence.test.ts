@@ -52,7 +52,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
  * gone) both fail, so this list can only shrink.
  */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'src/cli/commands/deploy.ts':
+  'src/cli/commands/deploy/prep.ts':
     'CLI-only: the command handler builds these clients, and no library entry point reaches it ' +
     '(won\'t-do in #3588)',
   'src/cli/commands/export/pre-delete.ts':

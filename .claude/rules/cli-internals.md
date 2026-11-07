@@ -95,8 +95,9 @@ which throws `CdkdError` with code `NON_INTERACTIVE_CONFIRM` (exit 1) BEFORE
 `readline.createInterface`. Each call site sits INSIDE its command's `--yes` /
 `--force` short-circuit, so a flagged run never consults stdin, and supplies its
 own refusal message naming that command's flag. `promptYesNo` in the same module
-is the deliberate default-YES carve-out (`deploy.ts` short-circuits on a non-TTY
-before reaching it); `destroy-runner.ts` keeps its own inline guard.
+is the deliberate default-YES carve-out (`cli/commands/deploy/command.ts`
+short-circuits on a non-TTY before reaching it); `destroy-runner.ts` keeps its
+own inline guard.
 `tests/unit/cli/readline-prompt-population.test.ts` fences the POPULATION:
 every `readline.createInterface` in `src/` must be listed with a reason, so a
 new unguarded copy cannot be written.
