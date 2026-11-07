@@ -301,7 +301,7 @@ describe('the store a destroy hands down also clears the OTHER candidate file (r
     runDestroyForStack.mockImplementation(
       async (stack: string, state: { region?: string }, ctx: { exportIndexStore: { removeStack: (s: string, r: string) => Promise<void> } }) => {
         // The parent, then a nested child the provider destroys through the
-        // same store (`nested-stack-provider.ts` hands `ctx.exportIndexStore` down).
+        // same store (`nested-stack/delete.ts` hands `ctx.exportIndexStore` down).
         await ctx.exportIndexStore.removeStack(stack, state.region!);
         await ctx.exportIndexStore.removeStack(`${stack}~Child`, state.region!);
         return {

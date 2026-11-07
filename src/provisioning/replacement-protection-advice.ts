@@ -52,7 +52,7 @@
  * remedies at all — two partial-create cleanup warnings
  * (`ssm-parameter-provider.ts`, `s3-bucket-provider.ts`, the latter sharing one
  * clause between its two arms) and one import refusal
- * (`ssm-parameter-provider.ts`'s `refuseUnwritableParameterId`) — so the right
+ * (`ssm-parameter/import.ts`'s `refuseUnwritableParameterId`) — so the right
  * question for a NEW caller is not "can it use
  * {@link protectedReplacementAdvice} instead" but "is the value it pastes
  * cdkd-MINTED with a proven charset". Where it is not, it belongs here — through

@@ -231,7 +231,9 @@ describe('DestroyRunnerResult.interrupted write sites are enumerated mechanicall
     // with the literal `destroy-runner.ts` left the fence 4/4 GREEN. These two
     // are what a collapse drops first, so they are what the floor must name.
     expect(files).toContain('src/cli/commands/destroy.ts');
-    expect(files).toContain('src/provisioning/providers/nested-stack-provider.ts');
+    // The nested-stack provider's `runDestroyForStack` call lives in its
+    // companion `delete.ts` (go-to-k/cdkd#5835).
+    expect(files).toContain('src/provisioning/providers/nested-stack/delete.ts');
 
     const found = files.flatMap((rel) =>
       writeSites(rel).map((s) => ({ ...s, rel }))

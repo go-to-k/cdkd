@@ -1,36 +1,10 @@
-import {
-  EMRClient,
-  AddInstanceFleetCommand,
-  ModifyInstanceFleetCommand,
-  ListInstanceFleetsCommand,
-  InvalidRequestException,
-  type InstanceFleet,
-  type InstanceFleetConfig,
-  type InstanceFleetModifyConfig,
-  type InstanceFleetState,
-  type InstanceFleetType,
-  type AddInstanceFleetCommandOutput,
-} from '@aws-sdk/client-emr';
-import { getLogger } from '../../utils/logger.js';
+import { EMRClient, type InstanceFleet, type InstanceFleetConfig } from '@aws-sdk/client-emr';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { toSdkInstanceTypeConfigs } from '../emr-configuration.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import {
-  collectOrphanIds,
-  orphanCommandRegionArg,
-  reportPossibleOrphans,
-} from './orphan-report.js';
-import {
-  AmbiguousCreateLatch,
-  RecentIdSet,
-  isInsideWindow,
-  replayedSendWindow,
-  withoutServerErrorRetries,
-  type AmbiguousCreateWindow,
-} from './ambiguous-create.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeleteContext } from '../region-check.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -40,102 +14,22 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { isRedactedRecordedValue } from '../redacted-delete-address.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { reportCreatedResource } from '../created-resource-sink.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import {
-  markNonRetryable,
-  markRedactedCause,
-  relayedNameCollision,
-} from '../../deployment/retryable-errors.js';
-
-/**
- * Default polling budget for an instance fleet reaching RUNNING. Adding a
- * fleet to an already-WAITING cluster provisions + bootstraps its EC2
- * instances (typically 2-6 minutes); a resize settles faster. Reuse the
- * EMR Cluster provider's 1-hour ceiling so the slowest realistic add still
- * fits inside the per-resource deadline.
- */
-const DEFAULT_MAX_WAIT_MS = 60 * 60 * 1000;
-const DEFAULT_POLL_INTERVAL_MS = 15_000;
-
-/** Instance-fleet state that means "the fleet is up and idle/serving". */
-const READY_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>(['RUNNING']);
-
-/**
- * Instance-fleet states that mean "the fleet will never reach the requested
- * capacity" — a hard error during a create/resize wait.
- *
- * `TERMINATED` means the fleet is gone. `SUSPENDED` means a resize could not
- * complete: the existing instances keep running but AWS can no longer add or
- * remove any, so the wait would poll to the full `maxWaitMs` timeout instead of
- * failing fast with the service's own state-change reason (issue #1092 item 2).
- *
- * This is the fleet-state ANALOGUE of the instance-group provider's failed set,
- * not a copy of it: the two enums differ. `ARRESTED` and `ENDED` are
- * `InstanceGroupState` members that do not exist for fleets, so `TERMINATED` is
- * the only state the two sets share.
- */
-const FAILED_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>([
-  'SUSPENDED',
-  'TERMINATED',
-]);
-
-const toNumber = (v: unknown): number | undefined => {
-  if (v === undefined) return undefined;
-  const n = Number(v);
-  return Number.isNaN(n) ? undefined : n;
-};
-
-const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
-/**
- * Mutable properties whose REMOVAL from the template cdkd leaves in place
- * (issue #1160). `ModifyInstanceFleet` keeps a field it is not sent, and
- * cdkd sends no reset, because CloudFormation keeps both too (CFn A/B
- * us-east-1 2026-10-20 on a running TASK fleet: `ResizeSpecifications`
- * removed alone and beside an `InstanceTypeConfigs` change, and
- * `InstanceTypeConfigs` removed alone, each left the live value in place, and
- * no update failed). Neither has a constant reset anyway: a fleet provisions
- * nothing without instance types, and the resize specification's defaults
- * are per-strategy AWS choices. `update()` names the removal in its own
- * warning rather than the shared caller's, whose line claims a CloudFormation
- * reset.
- */
-const LEFT_IN_PLACE_ON_REMOVAL = ['ResizeSpecifications', 'InstanceTypeConfigs'] as const;
-
-/**
- * The ONE warning line for {@link LEFT_IN_PLACE_ON_REMOVAL} removals. Names
- * are template-borne, so they go through `safeMsg`. The deploy line says
- * CloudFormation keeps the value too (the CFn A/B above). A rollback revert
- * restores an earlier state record, so there the property is one the failed
- * deploy ADDED, and the line says that instead.
- */
-const leftInPlaceWarning = (
-  logicalId: string,
-  names: readonly string[],
-  caller: 'deploy' | 'rollback'
-): string => {
-  const one = names.length === 1;
-  const subject = one ? 'property' : 'properties';
-  const verb = one ? 'is' : 'are';
-  return caller === 'rollback'
-    ? safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; ModifyInstanceFleet keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyInstanceFleet keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
-};
-
-/**
- * Retry-safety state for `AddInstanceFleet`, which mints the instance fleet id and
- * carries no idempotency token (issue
- * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
- * `orphan-report.ts`. Module-scoped: a provider instance is per
- * registry, and one process can build several.
- */
-const addInstanceFleetLatch = new AmbiguousCreateLatch('emr:AddInstanceFleet');
-/** Instance fleets this process created and recorded, never reported as orphan candidates. */
-const fleetsCreatedByThisProcess = new RecentIdSet();
+  DEFAULT_MAX_WAIT_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  LEFT_IN_PLACE_ON_REMOVAL,
+  addInstanceFleetLatch,
+  fleetsCreatedByThisProcess,
+} from './emr-instance-fleet-config/shared.js';
+import { create, toInstanceFleetConfig } from './emr-instance-fleet-config/create.js';
+import { update } from './emr-instance-fleet-config/update.js';
+import { deleteImpl } from './emr-instance-fleet-config/delete.js';
+import {
+  targetCapacities,
+  waitForFleetReady,
+  findFleetForPoll,
+} from './emr-instance-fleet-config/wait.js';
 
 /** Reset the module-scoped retry-safety state. TEST-ONLY. */
 export function resetEMRInstanceFleetCreateRetryStateForTests(): void {
@@ -201,10 +95,10 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
   private client: EMRClient | undefined;
   private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('EMRInstanceFleetConfigProvider');
+  logger: ConsoleLogger = getLogger().child('EMRInstanceFleetConfigProvider');
 
-  private readonly pollIntervalMs: number;
-  private readonly maxWaitMs: number;
+  readonly pollIntervalMs: number;
+  readonly maxWaitMs: number;
 
   constructor(options?: { pollIntervalMs?: number; maxWaitMs?: number }) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -241,7 +135,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
    * `build` runs twice, so it must stay a side-effect-free constructor call
    * threading `cause`.
    */
-  private wrapStatusReasonError(
+  wrapStatusReasonError(
     mask: MaskerFn | undefined,
     reason: { code?: string | undefined; message?: string | undefined } | undefined,
     fallback: string,
@@ -255,7 +149,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     return markRedactedCause(build(m(text.summary), cause));
   }
 
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn | undefined,
     error: unknown,
     build: (text: string) => ProvisioningError
@@ -274,7 +168,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
    * text goes to `debug` under the same `head`, masked. A cdkd-authored or
    * transport error keeps its text, masked.
    */
-  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+  cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
     const m = maskerOrIdentity(mask);
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return m(failure.detail);
@@ -322,7 +216,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): EMRClient {
+  getClient(): EMRClient {
     if (!this.client) {
       this.client = new EMRClient({
         ...ambientClientDefaults(),
@@ -337,7 +231,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
    * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
    * keeps the full SDK retry.
    */
-  private getCreateClient(): EMRClient {
+  getCreateClient(): EMRClient {
     if (!this.createClient) {
       this.createClient = withoutServerErrorRetries(
         new EMRClient({
@@ -357,178 +251,22 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
   // ─── CREATE ────────────────────────────────────────────────────────
 
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    if (resourceType !== 'AWS::EMR::InstanceFleetConfig') {
-      throw new ProvisioningError(
-        `Unsupported resource type: ${resourceType}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    const clusterId = properties['ClusterId'] as string | undefined;
-    if (!clusterId) {
-      throw new ProvisioningError(
-        `EMR InstanceFleetConfig ${logicalId} is missing ClusterId (the parent cluster id)`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    this.logger.debug(`Adding EMR instance fleet ${logicalId} to cluster ${clusterId}`);
-
-    let createdFleetId: string | undefined;
-    try {
-      const fleet = this.toInstanceFleetConfig(properties);
-      // Issue #2080: after an earlier ambiguous attempt, name the instance fleet
-      // it may have added before a second AddInstanceFleet is sent. Detection
-      // only -- see `orphan-report.ts`. Only a TASK instance fleet can
-      // be duplicated: a cluster holds at most one MASTER and one CORE, so a
-      // replay of either cannot add a second one.
-      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
-        const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-        const aws = pasteableAwsCommand(log.mask);
-        const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
-        const name = fleet.Name;
-        await reportPossibleOrphans(logicalId, lookupWindow, log, {
-          action: 'AddInstanceFleet',
-          service: 'EMR',
-          listAction: 'ListInstanceFleets',
-          subject: `a TASK instance fleet${name !== undefined ? ` named ${log.value(name)}` : ''} in cluster ${log.value(clusterId)}`,
-          noun: 'TASK instance fleet(s)',
-          list: () =>
-            collectOrphanIds(
-              async (marker) => {
-                const page = await this.getClient().send(
-                  new ListInstanceFleetsCommand({
-                    ClusterId: clusterId,
-                    ...(marker && { Marker: marker }),
-                  })
-                );
-                return { items: page.InstanceFleets ?? [], next: page.Marker };
-              },
-              (item) =>
-                item.Id &&
-                item.InstanceFleetType === 'TASK' &&
-                (name === undefined || item.Name === name) &&
-                isInsideWindow(item.Status?.Timeline?.CreationDateTime, lookupWindow) &&
-                !fleetsCreatedByThisProcess.has(item.Id)
-                  ? item.Id
-                  : undefined
-            ),
-          // No call reads one instance fleet by id: list the cluster's.
-          inspect: () =>
-            aws`aws emr list-instance-fleets --cluster-id ${clusterId}${regionArg}`.render(),
-          remove: (id) =>
-            aws`aws emr modify-instance-fleet --cluster-id ${clusterId} --instance-fleet InstanceFleetId=${id},TargetOnDemandCapacity=0,TargetSpotCapacity=0${regionArg}`.render(),
-          removeVerb:
-            'scale it to zero, which releases its instances (EMR has no call that removes an instance fleet; it ends with its cluster)',
-        });
-      };
-      const orphanWindow = addInstanceFleetLatch.take(logicalId);
-      if (orphanWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
-        await reportOrphans(orphanWindow);
-      }
-      const attemptStartMs = Date.now();
-      let response: AddInstanceFleetCommandOutput;
-      try {
-        response = await this.getCreateClient().send(
-          new AddInstanceFleetCommand({
-            ClusterId: clusterId,
-            InstanceFleet: fleet,
-          })
-        );
-      } catch (error) {
-        addInstanceFleetLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
-        throw error;
-      }
-      const fleetId = response.InstanceFleetId;
-      if (fleetId) fleetsCreatedByThisProcess.add(fleetId);
-      // Before the lookup below, so a throw in it still marks the fleet created.
-      createdFleetId = fleetId;
-      reportCreatedResource(logicalId, resourceType, fleetId ?? ''); // go-to-k/cdkd#5511
-      // Issue #4687: the SDK replayed this AddInstanceFleet inside its `send`, so
-      // an earlier attempt may have made one too. Detection only.
-      const replayWindow = replayedSendWindow(response, attemptStartMs);
-      if (replayWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
-        await reportOrphans(replayWindow);
-      }
-      if (!fleetId) {
-        throw new ProvisioningError(
-          `EMR AddInstanceFleet for ${logicalId} returned no instance fleet id`,
-          resourceType,
-          logicalId
-        );
-      }
-
-      // create always ramps capacity UP from 0, so the previous side is {0, 0}
-      // and every dimension settles on `provisioned >= target`.
-      await this.waitForFleetReady(
-        clusterId,
-        fleetId,
-        logicalId,
-        resourceType,
-        this.targetCapacities(properties),
-        { onDemand: 0, spot: 0 },
-        false,
-        context?.maskSecrets
-      );
-
-      this.logger.debug(`Successfully added EMR instance fleet ${logicalId}: ${fleetId}`);
-      return { physicalId: fleetId, attributes: { Id: fleetId, InstanceFleetId: fleetId } };
-    } catch (error) {
-      const thrown =
-        error instanceof ProvisioningError
-          ? error
-          : this.wrapCaughtError(
-              context?.maskSecrets,
-              error,
-              (text) =>
-                new ProvisioningError(
-                  `Failed to add EMR instance fleet ${logicalId}: ${text}`,
-                  resourceType,
-                  logicalId,
-                  undefined,
-                  error instanceof Error ? error : undefined
-                )
-            );
-      // go-to-k/cdkd#4583: the fleet exists once AddInstanceFleet returned its
-      // id (the id delete() takes); name it for --revert-failed.
-      if (createdFleetId) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFleetId);
-        // go-to-k/cdkd#4945: terminal. A cluster holds one fleet per type, so a
-        // replayed AddInstanceFleet can only collide with this one, and the
-        // engine's retry would replace this error with that collision.
-        markNonRetryable(thrown);
-      }
-      throw thrown;
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  private toInstanceFleetConfig(properties: Record<string, unknown>): InstanceFleetConfig {
-    return {
-      InstanceFleetType: properties['InstanceFleetType'] as InstanceFleetType,
-      Name: properties['Name'] as string | undefined,
-      TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']),
-      TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']),
-      InstanceTypeConfigs: toSdkInstanceTypeConfigs(properties['InstanceTypeConfigs']),
-      LaunchSpecifications: properties['LaunchSpecifications'] as
-        | import('@aws-sdk/client-emr').InstanceFleetProvisioningSpecifications
-        | undefined,
-      ResizeSpecifications: properties['ResizeSpecifications'] as
-        | import('@aws-sdk/client-emr').InstanceFleetResizingSpecifications
-        | undefined,
-    };
+  toInstanceFleetConfig(properties: Record<string, unknown>): InstanceFleetConfig {
+    return toInstanceFleetConfig.call(this, properties);
   }
 
   // ─── UPDATE ────────────────────────────────────────────────────────
 
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -536,259 +274,27 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const changed = (key: string): boolean => !jsonEqual(properties[key], previousProperties[key]);
-
-    // Only the ModifyInstanceFleet surface is mutable on AWS. Every other
-    // property is registry-createOnly (routed through DELETE+CREATE before
-    // reaching here); a createOnly change that arrives anyway means the
-    // replacement layer was bypassed — refuse it with a --replace pointer.
-    // A secret-derived `Name` is recorded as its `{{resolve:...}}` reference
-    // and handed here resolved, which is no change (go-to-k/cdkd#4275).
-    const MUTABLE = new Set([
-      'TargetOnDemandCapacity',
-      'TargetSpotCapacity',
-      'ResizeSpecifications',
-      'InstanceTypeConfigs',
-    ]);
-    for (const key of Object.keys({ ...properties, ...previousProperties })) {
-      if (!changed(key)) continue;
-      if (
-        !MUTABLE.has(key) &&
-        // `ClusterId` ADDRESSES the calls below by its desired value, so a secret
-        // rotated under an unchanged reference would reach another cluster:
-        // never exempted.
-        (key === 'ClusterId' ||
-          !(await unchangedBehindSecretReference({
-            resourceType,
-            key,
-            desired: properties[key],
-            previous: previousProperties[key],
-            maskSecrets: context?.maskSecrets,
-          })))
-      ) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `AWS EMR InstanceFleetConfig ${key} is immutable on AWS — it is fixed when the instance fleet is created. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
-        );
-      }
-    }
-
-    // Issue #1160: a LEFT_IN_PLACE_ON_REMOVAL property removed from the
-    // desired side has nothing to send — ModifyInstanceFleet keeps a field it
-    // is not sent, and cdkd sends no reset, as CloudFormation leaves it
-    // (LEFT_IN_PLACE_ON_REMOVAL). Counting it as a change only
-    // issued a ModifyInstanceFleet (and a resize wait) changing nothing. Named
-    // once, and only after the update SUCCEEDED (the shared caller's warning
-    // has the same timing): a retried attempt would repeat it. Not on
-    // `drift --revert`: its previous side is an AWS readback, so a key the
-    // desired side lacks was never removed from a template.
-    const removed = context?.removedProperties;
-    const leftInPlaceNames = LEFT_IN_PLACE_ON_REMOVAL.filter((key) =>
-      removed !== undefined
-        ? removed.has(key)
-        : properties[key] === undefined && previousProperties[key] !== undefined
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
     );
-    const warnLeftInPlace = (): void => {
-      if (leftInPlaceNames.length === 0 || context?.desiredFromAwsReadback) return;
-      this.logger.warn(
-        leftInPlaceWarning(
-          logicalId,
-          leftInPlaceNames,
-          context?.replayingState ? 'rollback' : 'deploy'
-        )
-      );
-    };
-    const leftInPlace = new Set<string>(LEFT_IN_PLACE_ON_REMOVAL);
-    const anyMutableChanged = [...MUTABLE].some(
-      (k) => changed(k) && !(leftInPlace.has(k) && properties[k] === undefined)
-    );
-    if (!anyMutableChanged) {
-      this.logger.debug(`No mutable diff for EMR instance fleet ${logicalId}, skipping update`);
-      warnLeftInPlace();
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: { Id: physicalId, InstanceFleetId: physicalId },
-      };
-    }
-
-    const clusterId = properties['ClusterId'] as string | undefined;
-    if (!clusterId) {
-      throw new ProvisioningError(
-        `EMR InstanceFleetConfig ${logicalId} update needs ClusterId (the cluster id), which is absent`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    this.logger.debug(`Updating EMR instance fleet ${logicalId}: ${physicalId}`);
-
-    try {
-      const modify: InstanceFleetModifyConfig = {
-        InstanceFleetId: physicalId,
-        // BOTH capacities must be present, even when the template declares only
-        // one. `AddInstanceFleet` tolerates an absent capacity (AWS defaults it
-        // to 0), but `ModifyInstanceFleet` rejects the same payload with
-        //   "The instance fleet (if-...) should have both
-        //    targetOnDemandCapacity and targetSpotCapacity specified."
-        // The AWS SDK v3 serializer omits `undefined` members, so forwarding the
-        // template verbatim made EVERY resize of the ordinary
-        // On-Demand-only / Spot-only fleet fail (found by the
-        // `emr-instance-fleets` integ, issue #1400). Defaulting the absent side
-        // to 0 also matches CFn desired-state semantics — an omitted capacity
-        // means zero, not "leave whatever AWS has" — and matches this provider's
-        // own `targetCapacity()` helper and its delete-path scale-to-0, which
-        // already send both members explicitly.
-        //
-        // A template declaring NEITHER capacity while changing another mutable
-        // field therefore scales the fleet to 0. That is the desired-state
-        // reading (absent = zero) and is barely reachable — AWS requires at
-        // least one capacity > 0 at create, so such a template could never have
-        // produced this fleet — and it is only reachable for a TASK fleet at
-        // all, since AWS refuses to scale MASTER/CORE to 0.
-        TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']) ?? 0,
-        TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']) ?? 0,
-        ResizeSpecifications: properties['ResizeSpecifications'] as
-          | import('@aws-sdk/client-emr').InstanceFleetResizingSpecifications
-          | undefined,
-        InstanceTypeConfigs: toSdkInstanceTypeConfigs(properties['InstanceTypeConfigs']),
-      };
-      await this.getClient().send(
-        new ModifyInstanceFleetCommand({ ClusterId: clusterId, InstanceFleet: modify })
-      );
-      // The resize is async; poll until the fleet has actually reached the new
-      // target capacity. Waiting on fleet State alone is NOT enough: right
-      // after ModifyInstanceFleet the fleet is still in the PRE-resize RUNNING
-      // state, so a State-only wait returns instantly. Wait on provisioned
-      // capacity meeting the target instead — and on a scale-DOWN wait for
-      // provisioned to DRAIN to the target (a State-only or `>=`-only wait would
-      // return immediately because the stale pre-resize provisioned capacity is
-      // still ABOVE the new lower target). Direction is derived PER DIMENSION
-      // from prev vs new target inside waitForFleetReady — a swap between
-      // On-Demand and Spot at a constant total would make a summed check
-      // vacuous (see its docstring).
-      await this.waitForFleetReady(
-        clusterId,
-        physicalId,
-        logicalId,
-        resourceType,
-        this.targetCapacities(properties),
-        this.targetCapacities(previousProperties),
-        // Resize path: tolerate a stale pre-modify failed state so a deploy
-        // that RECOVERS a SUSPENDED fleet is not aborted by the read lag.
-        // See waitForFleetReady's docstring.
-        true,
-        context?.maskSecrets
-      );
-
-      this.logger.debug(`Successfully updated EMR instance fleet ${logicalId}`);
-      warnLeftInPlace();
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: { Id: physicalId, InstanceFleetId: physicalId },
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError || error instanceof ResourceUpdateNotSupportedError) {
-        throw error;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        context?.maskSecrets,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update EMR instance fleet ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
   // ─── DELETE ────────────────────────────────────────────────────────
 
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    // There is NO standalone "delete instance fleet" API in EMR. An instance
-    // fleet's only lifecycle end is cluster termination — the parent
-    // AWS::EMR::Cluster's delete (TerminateJobFlows) releases every fleet and
-    // its EC2 instances. In the normal destroy this delete therefore just
-    // drops cdkd state and leaves zero orphans.
-    //
-    // Best effort for the "delete only the fleet, keep the cluster" case: a
-    // TASK fleet is scaled to 0 target capacity to release its instances
-    // (MASTER/CORE cannot be scaled to 0). Warn-and-continue — never block the
-    // destroy.
-    const fleetType = properties?.['InstanceFleetType'] as string | undefined;
-    const clusterId = properties?.['ClusterId'] as string | undefined;
-
-    // go-to-k/cdkd#3952: a redacted ClusterId names no cluster. The scale-to-0
-    // is best-effort either way (there is no delete API; the instances go when
-    // the cluster terminates), so it is not attempted, and said so.
-    if (fleetType === 'TASK' && clusterId && isRedactedRecordedValue(clusterId)) {
-      this.logger.warn(
-        safeMsg`EMR instance fleet ${logicalId}: ClusterId is redacted in state, so the ` +
-          `best-effort scale-to-0 was not attempted — its instances are released when the ` +
-          `parent cluster terminates`
-      );
-    } else if (fleetType === 'TASK' && clusterId) {
-      try {
-        await this.getClient().send(
-          new ModifyInstanceFleetCommand({
-            ClusterId: clusterId,
-            InstanceFleet: {
-              InstanceFleetId: physicalId,
-              TargetOnDemandCapacity: 0,
-              TargetSpotCapacity: 0,
-            },
-          })
-        );
-        this.logger.debug(
-          `Scaled EMR TASK instance fleet ${physicalId} to 0 to release its instances (no standalone delete API exists)`
-        );
-      } catch (error) {
-        if (error instanceof InvalidRequestException) {
-          // The cluster / fleet id is not valid in this region — either the
-          // cluster is already terminating/gone, or the client points at the
-          // wrong region. Guard with the state region before treating it as
-          // already-cleaned-up.
-          const clientRegion = await this.getClient().config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            physicalId
-          );
-          this.logger.debug(
-            `EMR instance fleet ${physicalId} scale-to-0 skipped (cluster/fleet gone): ${error.message}`
-          );
-        } else {
-          const head = `Best-effort scale-to-0 of EMR instance fleet ${physicalId} failed: `;
-          this.logger.warn(
-            maskerOrIdentity(context?.maskSecrets)(
-              `${head}${this.cleanupFailureText(head, error, context?.maskSecrets)} — its instances are released when the parent cluster terminates`
-            )
-          );
-        }
-      }
-      return;
-    }
-
-    this.logger.debug(
-      `EMR instance fleet ${physicalId} (type ${fleetType ?? 'unknown'}) has no standalone delete API; ` +
-        `its instances are released when the parent cluster terminates. Removing cdkd state only.`
-    );
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
   // ─── Attributes ────────────────────────────────────────────────────
@@ -808,203 +314,39 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
   // ─── Lifecycle polling ─────────────────────────────────────────────
 
-  /**
-   * Per-dimension target capacities.
-   *
-   * Deliberately NOT summed into a single total: the settle check must compare
-   * EACH dimension against its own provisioned counterpart. A template that
-   * swaps 2 Spot units for 2 On-Demand units leaves the TOTAL unchanged, so a
-   * summed comparison is satisfied by the stale pre-resize reading on the very
-   * first poll and the deploy reports success while EMR is still swapping
-   * instances.
-   */
-  private targetCapacities(properties: Record<string, unknown>): {
-    onDemand: number;
-    spot: number;
-  } {
-    return {
-      onDemand: toNumber(properties['TargetOnDemandCapacity']) ?? 0,
-      spot: toNumber(properties['TargetSpotCapacity']) ?? 0,
-    };
+  targetCapacities(properties: Record<string, unknown>): { onDemand: number; spot: number } {
+    return targetCapacities.call(this, properties);
   }
 
-  /**
-   * Poll until the fleet is `RUNNING` AND its provisioned capacity
-   * (On-Demand + Spot) has settled at `targetCapacity`. The capacity check is
-   * load-bearing on a resize: right after `ModifyInstanceFleet` the fleet is
-   * still in the PRE-resize `RUNNING` state, so a State-only wait would return
-   * before the resize even starts.
-   *
-   * Both dimensions are compared SEPARATELY against their own provisioned
-   * counterpart, with their own direction derived from `previous` -> `target`:
-   *  - scale-UP (`target >= previous`, and every create, whose `previous` is
-   *    `{0, 0}`): ready when `provisioned >= target` (`>=`, not `==`, because a
-   *    weighted-capacity allocation may overshoot).
-   *  - scale-DOWN: ready when `provisioned <= target` — the stale pre-resize
-   *    provisioned capacity is ABOVE the new lower target, so a `>=` check
-   *    would return instantly before instances drain.
-   *
-   * Summing the two dimensions instead would make the check vacuous whenever a
-   * template swaps capacity between them at a constant total (`{Spot: 2}` ->
-   * `{OnDemand: 2}`): the summed target equals the summed previous, so the
-   * direction reads as UP and the stale pre-resize sum satisfies it on the very
-   * first poll, reporting success while EMR is still swapping instances. That
-   * shape only became reachable once `update()` started sending both members
-   * (it previously died at `ModifyInstanceFleet`), so the per-dimension
-   * comparison ships with it.
-   *
-   * A target of 0 on the up path (never valid for a real create — at least one
-   * target must be > 0) is trivially satisfied, degrading to a State-only wait.
-   *
-   * `toleratesStaleFailedState` MUST be true on the resize path and false on
-   * create. It exists for the RECOVERY case: `SUSPENDED` (a resize that could
-   * not complete) is precisely the state a user re-runs `cdkd deploy` to fix,
-   * but the same pre-resize read lag documented above means the first poll
-   * after `ModifyInstanceFleet` still reports `SUSPENDED`. Enforcing
-   * {@link FAILED_STATES} on that stale read would abort the very resize that
-   * recovers the fleet, on every attempt, making the state permanently
-   * unrecoverable through cdkd.
-   *
-   * So on a resize the failed-state check is suppressed until the fleet is
-   * observed LEAVING whatever state it started in; from then on it is enforced
-   * normally (a resize that transitions RUNNING -> RESIZING -> SUSPENDED still
-   * fails fast, which is the case #1092 item 2 is about). A fleet that never
-   * leaves its initial state falls through to the `maxWaitMs` timeout — the
-   * pre-fix behavior, and strictly better than an unrecoverable resource.
-   *
-   * Note the asymmetry that makes this specific to failed states: a stale
-   * pre-resize `RUNNING` is harmless because the capacity check keeps the loop
-   * polling. A stale `SUSPENDED` is terminal.
-   */
-  private async waitForFleetReady(
+  waitForFleetReady(
     clusterId: string,
     fleetId: string,
     logicalId: string,
     resourceType: string,
     target: { onDemand: number; spot: number },
     previous: { onDemand: number; spot: number },
-    toleratesStaleFailedState = false,
+    toleratesStaleFailedState?: boolean,
     mask?: MaskerFn
   ): Promise<void> {
-    const startTime = Date.now();
-    const transientState = { count: 0 };
-    let initialState: InstanceFleetState | undefined;
-    let hasLeftInitialState = false;
-
-    const settled = (provisioned: number, want: number, had: number): boolean =>
-      want >= had ? provisioned >= want : provisioned <= want;
-
-    while (Date.now() - startTime < this.maxWaitMs) {
-      const fleet = await this.findFleetForPoll(clusterId, fleetId, transientState);
-      const state = fleet?.Status?.State;
-      const onDemand = fleet?.ProvisionedOnDemandCapacity ?? 0;
-      const spot = fleet?.ProvisionedSpotCapacity ?? 0;
-      const provisioned = onDemand + spot;
-      const capacityReady =
-        settled(onDemand, target.onDemand, previous.onDemand) &&
-        settled(spot, target.spot, previous.spot);
-
-      if (state) {
-        if (initialState === undefined) initialState = state;
-        else if (state !== initialState) hasLeftInitialState = true;
-      }
-
-      if (state && READY_STATES.has(state) && capacityReady) return;
-
-      const enforceFailedStates = !toleratesStaleFailedState || hasLeftInitialState;
-      if (state && enforceFailedStates && FAILED_STATES.has(state)) {
-        const reason = fleet?.Status?.StateChangeReason;
-        throw this.wrapStatusReasonError(
-          mask,
-          { code: reason?.Code, message: reason?.Message },
-          'no state-change reason reported',
-          (text, cause) =>
-            new ProvisioningError(
-              `EMR instance fleet ${fleetId} entered failed state ${state}: ${text}`,
-              resourceType,
-              logicalId,
-              fleetId,
-              cause
-            )
-        );
-      }
-
-      if (state && !enforceFailedStates && FAILED_STATES.has(state)) {
-        this.logger.debug(
-          `EMR instance fleet ${fleetId} still reads ${state} from before the resize; ` +
-            `waiting for it to leave that state before treating it as failed`
-        );
-      }
-
-      this.logger.debug(
-        `EMR instance fleet ${fleetId} state: ${state ?? 'unknown'}, provisioned ` +
-          `${onDemand}/${target.onDemand} on-demand + ${spot}/${target.spot} spot ` +
-          `(${provisioned} total), waiting...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-
-    throw new ProvisioningError(
-      `Timed out waiting for EMR instance fleet ${fleetId} to reach RUNNING with capacity ` +
-        `${target.onDemand} on-demand / ${target.spot} spot (${Math.round(this.maxWaitMs / 60000)} min)`,
-      resourceType,
+    return waitForFleetReady.call(
+      this,
+      clusterId,
+      fleetId,
       logicalId,
-      fleetId
+      resourceType,
+      target,
+      previous,
+      toleratesStaleFailedState,
+      mask
     );
   }
 
-  /**
-   * `ListInstanceFleets` (paginated) for the cluster, returning the single
-   * fleet whose `Id` matches. Absorbs up to `maxConsecutiveTransient`
-   * consecutive transient errors (throttle / 5xx / reset) so a single blip
-   * during a 10-minute poll does not spuriously fail the create.
-   */
-  private async findFleetForPoll(
+  findFleetForPoll(
     clusterId: string,
     fleetId: string,
     transientState: { count: number },
-    maxConsecutiveTransient = 5
+    maxConsecutiveTransient?: number
   ): Promise<InstanceFleet | undefined> {
-    try {
-      let marker: string | undefined;
-      do {
-        const resp = await this.getClient().send(
-          new ListInstanceFleetsCommand({
-            ClusterId: clusterId,
-            ...(marker && { Marker: marker }),
-          })
-        );
-        const found = (resp.InstanceFleets ?? []).find((f) => f.Id === fleetId);
-        if (found) {
-          transientState.count = 0;
-          return found;
-        }
-        marker = resp.Marker;
-      } while (marker);
-      transientState.count = 0;
-      return undefined;
-    } catch (error) {
-      const name = error instanceof Error ? error.name : '';
-      // `.detail`, never `.summary`: the substring test below is what keeps this
-      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
-      // the ternary it replaced, minus that ternary's throw.
-      const msg = describeAwsFailure(error).detail;
-      const transient =
-        name === 'ThrottlingException' ||
-        name === 'InternalServerException' ||
-        name === 'InternalServerError' ||
-        name === 'TimeoutError' ||
-        /rate exceeded|too many requests|throttl|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(
-          msg
-        );
-      if (transient && transientState.count < maxConsecutiveTransient) {
-        transientState.count += 1;
-        this.logger.debug(
-          `Transient ListInstanceFleets error while polling ${fleetId} (${transientState.count}/${maxConsecutiveTransient}): ${msg} — retrying`
-        );
-        return undefined;
-      }
-      throw error;
-    }
+    return findFleetForPoll.call(this, clusterId, fleetId, transientState, maxConsecutiveTransient);
   }
 }
