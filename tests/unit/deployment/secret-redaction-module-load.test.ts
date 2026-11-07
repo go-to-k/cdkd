@@ -92,6 +92,8 @@ describe('secret-redaction module load order', () => {
     expect(MODULES).toContain('rules.ts');
     // Per-directory floors: the recursion reaches each companion directory.
     expect(MODULES.filter((f) => f.startsWith('nested-stack/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES.filter((f) => f.startsWith('redact-path/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES).toContain('redact-path/reference-tokens.ts');
     expect(MODULES.filter((f) => f.startsWith('positions/')).length).toBeGreaterThanOrEqual(2);
     expect(MODULES).toContain('positions/skeleton.ts');
     expect(MODULES).toContain('positions/spans.ts');

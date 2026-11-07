@@ -8,6 +8,7 @@ import {
 } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { readScrubSource } from '../cli/_scrub-source.js';
+import { readDeploySource } from '../cli/_deploy-source.js';
 
 // Mock the S3Client constructor so the region-rebuild suite can assert that a
 // replacement client is constructed for the bucket's actual region. The
@@ -366,8 +367,11 @@ describe('ExportIndexStore', () => {
       const { readFileSync } = await import('node:fs');
       const { readStateSource } = await import('../cli/_state-source.js');
       const STATE_FAMILY = 'src/cli/commands/state.ts + state/**';
+      const DEPLOY_FAMILY = 'src/cli/commands/deploy.ts + deploy/**';
       const sites: Array<[string, string]> = [
-        ['src/cli/commands/deploy.ts', 'options.profile'],
+        // `cdkd deploy` is `deploy.ts` plus every module under `deploy/`
+        // (go-to-k/cdkd#5835), read as ONE source for the same reason.
+        [DEPLOY_FAMILY, 'options.profile'],
         ['src/cli/commands/destroy.ts', 'options.profile'],
         // `cdkd scrub` is `scrub.ts` plus `scrub/**`: the whole set is read, so a
         // second store built in any module counts.
@@ -383,9 +387,11 @@ describe('ExportIndexStore', () => {
         const source =
           file === STATE_FAMILY
             ? readStateSource()
-            : file === 'src/cli/commands/scrub{,/**}.ts'
-              ? readScrubSource()
-              : readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
+            : file === DEPLOY_FAMILY
+              ? readDeploySource()
+              : file === 'src/cli/commands/scrub{,/**}.ts'
+                ? readScrubSource()
+                : readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
         const calls = source.split('new ExportIndexStore(').slice(1);
         expect(calls, file).toHaveLength(1);
         const args = calls[0]!.slice(0, calls[0]!.indexOf(');'));

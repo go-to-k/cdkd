@@ -122,6 +122,7 @@ import {
 import { IDENT_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { deploySourceFiles } from '../cli/_deploy-source.js';
 
 const CONFIG: StateBackendConfig = { bucket: 'state-bucket', prefix: 'cdkd' };
 const STACK = 'MyStack';
@@ -758,8 +759,11 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
    * hard-coded `true`.
    */
   it('the deploy stateful-recreate probe is wired from the same divergence report', () => {
-    const deployTs = fileURLToPath(new URL('../../../src/cli/commands/deploy.ts', import.meta.url));
-    const source = readFileSync(deployTs, 'utf-8');
+    // `cdkd deploy` is `deploy.ts` plus every module under `deploy/`
+    // (go-to-k/cdkd#5835). Each file is windowed ON ITS OWN, so a window never
+    // straddles two modules joined end to end.
+    const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const files = deploySourceFiles().map((file) => readFileSync(`${repoRoot}${file}`, 'utf-8'));
 
     // PROXIMITY rather than one spelling: the conditional spread and a direct
     // `expectedRegionDiverged: x.divergentBodyRegion !== undefined` mean the
@@ -772,15 +776,19 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // line above a hard-coded `true` satisfied the window otherwise (review
     // round 5), which is the same "a comment is not code" defect the caller
     // fence carried.
-    const code = source
-      .split('\n')
-      .map((line) => line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, ''))
-      .join('\n');
+    const codes = files.map((source) =>
+      source
+        .split('\n')
+        .map((line) => line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, ''))
+        .join('\n')
+    );
     // EVERY site, not the first: a second one added later would otherwise be
     // unwatched (review round 4).
-    const sites = [...code.matchAll(/expectedRegionDiverged:/g)].map((m) => m.index);
-    expect(sites.length, '`deploy.ts` sets no expectedRegionDiverged at all').toBeGreaterThan(0);
-    for (const at of sites) {
+    const sites = codes.flatMap((code) =>
+      [...code.matchAll(/expectedRegionDiverged:/g)].map((m) => ({ code, at: m.index }))
+    );
+    expect(sites.length, '`cdkd deploy` sets no expectedRegionDiverged at all').toBeGreaterThan(0);
+    for (const { code, at } of sites) {
       const window = code.slice(Math.max(0, at - 200), at + 200);
       // The DERIVATION, and its POLARITY: `=== undefined` is the inverted
       // wiring — it would set the flag on every healthy record and clear it on

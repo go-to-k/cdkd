@@ -72,7 +72,8 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     // reached the stack from one the guard should have refused. Unpinned it
     // drifts into a permanent false FAIL — the safe direction, but a loud one.
     expect(
-      readFileSync(join(REPO_ROOT, 'src/cli/commands/deploy.ts'), 'utf8'),
+      // `cdkd deploy`'s handler, split out of `deploy.ts` (go-to-k/cdkd#5835).
+      readFileSync(join(REPO_ROOT, 'src/cli/commands/deploy/command.ts'), 'utf8'),
       "deploy.ts no longer prints `Deploying stack:` — update the first sentinel in " +
         "tests/integration/backup/verify.sh's Phase 1b"
     ).toContain("cyan('Deploying stack:')");

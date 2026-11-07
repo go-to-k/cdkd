@@ -24,9 +24,10 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readDeployModule, readDeploySource } from './_deploy-source.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '../../../src/cli/commands/deploy.ts'), 'utf8');
+const source = readFileSync(join(here, '../../../src/cli/commands/deploy/stack-deploy.ts'), 'utf8');
 
 describe('deploy.ts refuses a malformed record on the pre-lock recreate check (go-to-k/cdkd#3202)', () => {
   const readAt = source.indexOf('const stateForRecreateCheck = await stackStateBackend.getState(');
@@ -135,25 +136,38 @@ describe('deploy.ts refuses a malformed record on the pre-lock recreate check (g
    * `--state-prefix`, which also rides into the engine's options.
    */
   it('carries the same account flags the engine refuses with — one binding for both', () => {
-    expect(source.split('const refusalRecovery: LockRecoveryContext = {').length - 1).toBe(1);
-    expect(source).toMatch(
+    // The binding is built by `cdkd deploy`'s handler and handed to the
+    // per-stack deploy (this file) on its context (go-to-k/cdkd#5835). ONE
+    // across every module of the command.
+    const handler = readDeployModule('command.ts');
+    expect(readDeploySource().split('const refusalRecovery: LockRecoveryContext = {').length - 1).toBe(1);
+    expect(handler).toMatch(
       /const refusalRecovery: LockRecoveryContext = \{\s*profile: options\.profile,\s*stateBucket,\s*statePrefix: options\.statePrefix,\s*\};/
     );
     // The engine's options carry that binding (the load refusals read it).
     const optionsAt = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
     expect(optionsAt).toBeGreaterThan(-1);
-    const optionsBody = source.slice(optionsAt, source.indexOf('\n        };', optionsAt));
+    const optionsBody = source.slice(optionsAt, source.indexOf('\n    };', optionsAt));
     expect(optionsBody).toMatch(/^\s*refusalRecovery,$/m);
-    // Built from the RESOLVED bucket, before either reader.
-    expect(source.indexOf('const refusalRecovery')).toBeLessThan(readAt);
-    expect(source.indexOf('const refusalRecovery')).toBeGreaterThan(
-      source.indexOf('const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;')
+    // Built from the RESOLVED bucket, before either reader: after the state
+    // prep in the handler, and before the per-stack context that hands it to
+    // the pre-lock read and the engine alike.
+    const builtAt = handler.indexOf('const refusalRecovery');
+    expect(builtAt).toBeGreaterThan(
+      handler.indexOf('const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;')
     );
+    const contextAt = handler.indexOf('const stackDeployContext: DeployStackContext = {');
+    expect(contextAt).toBeGreaterThan(builtAt);
+    expect(handler.slice(contextAt, handler.indexOf('\n    };', contextAt))).toMatch(
+      /^\s*refusalRecovery,$/m
+    );
+    // ...and the per-stack deploy reads THAT binding, from its context.
+    expect(source.slice(0, readAt)).toMatch(/const \{[^}]*\brefusalRecovery,[^}]*\} = ctx;/);
   });
 
   it('is the SAME pair the engine raises, imported from the module rather than re-spelled', () => {
     expect(source).toMatch(
-      /import \{\s*refuseMalformedResourceEntriesForDeploy,\s*refuseMalformedResourcesForDeploy,\s*\} from '\.\.\/\.\.\/state\/malformed-resources-bag\.js';/
+      /import \{\s*refuseMalformedResourceEntriesForDeploy,\s*refuseMalformedResourcesForDeploy,\s*\} from '\.\.\/\.\.\/\.\.\/state\/malformed-resources-bag\.js';/
     );
   });
 });

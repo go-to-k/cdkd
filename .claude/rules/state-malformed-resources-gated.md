@@ -17,7 +17,7 @@ Sibling containers:
 `src/provisioning/providers/nested-stack-provider.ts` — that `delete()` counts the
 CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
 runner's guard alone cannot see a `null` or absent child bag — the bare `TypeError`
-fires first — and, since go-to-k/cdkd#3202, `src/cli/commands/deploy.ts`'s
+fires first — and, since go-to-k/cdkd#3202, `src/cli/commands/deploy/stack-deploy.ts`'s
 pre-lock `--recreate-via-*` read, an INDEPENDENT load of the same record the
 engine's guard does not dominate. Same helper, so every refusal reads identically.
 

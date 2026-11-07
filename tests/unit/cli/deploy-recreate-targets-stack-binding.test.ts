@@ -30,7 +30,7 @@ import { dirname, join } from 'node:path';
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const DEPLOY_TS = join(here, '../../../src/cli/commands/deploy.ts');
+const DEPLOY_TS = join(here, '../../../src/cli/commands/deploy/stack-deploy.ts');
 
 describe('deploy.ts binds the recreate target set to the stack it deploys (#2567)', () => {
   const source = readFileSync(DEPLOY_TS, 'utf8');
@@ -81,7 +81,7 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
     // `recreateTargets` mention anywhere else cannot satisfy this.
     const literalStart = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
     expect(literalStart, 'the deployEngineOptions literal was not found').toBeGreaterThan(-1);
-    const literalEnd = source.indexOf('\n        };', literalStart);
+    const literalEnd = source.indexOf('\n    };', literalStart);
     // Guard the END too. `indexOf` returns -1 when the close sentinel moves,
     // and `slice(start, -1)` would silently widen to the rest of the file —
     // defeating the scoping this case exists for, while still passing.
