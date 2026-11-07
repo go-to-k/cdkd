@@ -82,7 +82,7 @@ export function hasReadableOutputs(state: Pick<StackState, 'outputs'>): boolean 
  * therefore the cap the two `--stack-region` values that sit beside such a
  * display are GATED at: {@link inspectCommand} and `cli/commands/export.ts`'s
  * drift-gap report (which is why it is exported) pass it to the shared gate as
- * `maxCodePoints`, rather than the gate's stack-name default. `gc.ts`, which
+ * `maxCodePoints`, rather than the gate's stack-name default. `gc/scan.ts`, which
  * displays the whole S3 key rather than a region, keeps that default.
  */
 export const SHORT_NAME_MAX_CODE_POINTS = 128;
