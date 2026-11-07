@@ -42,7 +42,7 @@ export interface EcrRegistryHostForm {
  * which is exactly what had drifted — while each matcher keeps its own
  * acceptance rule, deliberately: gc matches the suffix against the union over
  * every partition and {@link parseEcrRegistryHost} pairs it WITH the region (see
- * `gc.ts`'s `AWS_URL_SUFFIXES` doc for why the two strictnesses must not merge).
+ * `gc/asset-references.ts`'s `AWS_URL_SUFFIXES` doc for why the two strictnesses must not merge).
  *
  * A THIRD, looser consumer reads only the LABELS column:
  * {@link hasEcrRegistryHostLabels}, the host test behind `cdkd local run-task`'s
@@ -136,7 +136,7 @@ const ECR_HOST_FORM_BY_LABELS = new Map(ECR_REGISTRY_HOST_FORMS.map((form) => [f
  * off the table, so a row added there must work on BOTH sides or the suite reds.
  *
  * Every group this function ADDS is non-capturing, and that is load-bearing
- * rather than stylistic, for the same by-position reason: `gc.ts` reads its ECR
+ * rather than stylistic, for the same by-position reason: `gc/asset-references.ts` reads its ECR
  * tag / digest by GROUP INDEX, and a capturing group here would silently shift
  * them. The caller's own three sub-patterns are interpolated verbatim, so
  * whether THOSE capture is the caller's business.

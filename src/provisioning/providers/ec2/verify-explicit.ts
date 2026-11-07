@@ -56,6 +56,11 @@ export async function verifyExplicit(
               attributes: definedAttributes({
                 SubnetId: physicalId,
                 AvailabilityZone: subnet.AvailabilityZone,
+                // go-to-k/cdkd#5632: the rest of what create() records, which
+                // also heals a record written before it did.
+                AvailabilityZoneId: subnet.AvailabilityZoneId,
+                CidrBlock: subnet.CidrBlock,
+                VpcId: subnet.VpcId,
               }),
             }
           : null;

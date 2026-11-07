@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as efs from 'aws-cdk-lib/aws-efs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
@@ -78,16 +78,18 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *                operation as the arm; the only difference is the recorded
  *                bag, which is what makes the pair a clean A/B.
  *
- *   subnet / subnettag -- go-to-k/cdkd#2790: the log group stays at
- *                `dropagain` (already on Cloud Control, so it no longer
- *                moves), and a VPC + `AWS::EC2::Subnet` join the stack carrying
- *                `AvailabilityZoneId`, which is a CREATE-ONLY SDK-unwired property for
- *                that type (the log group has none). `subnettag` differs from
- *                `subnet` by the subnet's Name tag alone, an ordinary in-place
- *                change. verify.sh deploys them with and without
- *                `--prefer-sdk-route` and with `--recreate-via-cc-api`; the AZ
- *                id comes from `CDKD_TEST_AZ_ID`, resolved from the account's
- *                region.
+ *   ap / aptag -- go-to-k/cdkd#2790: the log group stays at `dropagain`
+ *                (already on Cloud Control, so it no longer moves), and an
+ *                EFS file system + `AWS::EFS::AccessPoint` join the stack, the
+ *                access point carrying `ClientToken`, a CREATE-ONLY SDK-unwired
+ *                property for that type (`unhandledByDesign`: the SDK provider
+ *                sends its own token; the log group has none). `aptag` differs
+ *                from `ap` by the access point's Name tag alone, an ordinary
+ *                in-place change. verify.sh deploys them with and without
+ *                `--prefer-sdk-route` and with `--recreate-via-cc-api`; the
+ *                token comes from `CDKD_TEST_CLIENT_TOKEN`, unique per run.
+ *                go-to-k/cdkd#5632 moved these phases off the subnet's
+ *                `AvailabilityZoneId` once the SDK provider wired it.
  *
  *   badpolicy -- go-to-k/cdkd#4904: `base` plus a ResourcePolicyDocument that
  *                is an object but no valid policy, which the update through
@@ -113,14 +115,14 @@ const RETENTION_BY_PHASE: Record<string, number> = {
   // the policy attribute ALONE, or the property diff it tests is not empty.
   allowmeta: 7,
   dropagain: 14,
-  // The log group is on Cloud Control after `dropagain`; the subnet phases
-  // leave it exactly as that phase did, so only the subnet moves.
-  subnet: 14,
-  subnettag: 14,
+  // The log group is on Cloud Control after `dropagain`; the access point
+  // phases leave it exactly as that phase did, so only the access point moves.
+  ap: 14,
+  aptag: 14,
 };
 
-/** The go-to-k/cdkd#2790 phases, which add the VPC and subnet. */
-const SUBNET_PHASES = new Set(['subnet', 'subnettag']);
+/** The go-to-k/cdkd#2790 phases, which add the file system and access point. */
+const ACCESS_POINT_PHASES = new Set(['ap', 'aptag']);
 
 /** The phases whose template carries the silently-dropped property. */
 const PHASES_WITH_DROP = new Set([
@@ -128,8 +130,8 @@ const PHASES_WITH_DROP = new Set([
   'allowdrop',
   'allowmeta',
   'dropagain',
-  'subnet',
-  'subnettag',
+  'ap',
+  'aptag',
 ]);
 
 /** The `Sid` verify.sh reads back to tell this policy from any other. */
@@ -187,27 +189,30 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'LogGroupName', { value: logGroup.ref });
 
-    if (SUBNET_PHASES.has(phase)) {
-      const azId = process.env.CDKD_TEST_AZ_ID;
-      if (!azId) throw new Error(`phase ${phase} needs CDKD_TEST_AZ_ID (set by verify.sh)`);
+    if (ACCESS_POINT_PHASES.has(phase)) {
+      const clientToken = process.env.CDKD_TEST_CLIENT_TOKEN;
+      if (!clientToken) {
+        throw new Error(`phase ${phase} needs CDKD_TEST_CLIENT_TOKEN (set by verify.sh)`);
+      }
       // The tag is what verify.sh's cleanup sweeps by, should a run die before
       // destroy. The STACK name, not a fixture-wide constant: the sweep must
-      // never reach another stack's VPC, and this stack's state key already
-      // makes one run per stack name per account the unit of ownership.
+      // never reach another stack's file system, and this stack's state key
+      // already makes one run per stack name per account the unit of ownership.
       const fixtureTag = { key: 'cdkd-integ-fixture', value: this.stackName };
-      const vpc = new ec2.CfnVPC(this, 'CreateOnlyVpc', {
-        cidrBlock: '10.42.0.0/16',
-        tags: [fixtureTag],
+      const fileSystem = new efs.CfnFileSystem(this, 'CreateOnlyFileSystem', {
+        encrypted: true,
+        fileSystemTags: [fixtureTag],
       });
-      // `AvailabilityZoneId` is the create-only drop; `AvailabilityZone` is
-      // left out so the SDK route (which drops the id) lets EC2 pick the AZ.
-      const subnet = new ec2.CfnSubnet(this, 'CreateOnlySubnet', {
-        vpcId: vpc.ref,
-        cidrBlock: '10.42.0.0/24',
-        availabilityZoneId: azId,
-        tags: [fixtureTag, { key: 'Name', value: `${this.stackName}-${phase}` }],
+      // An empty file system holds no data; DELETE keeps a run from leaking it.
+      fileSystem.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      // `ClientToken` is the create-only drop: the SDK route sends cdkd's own
+      // token instead, so AWS holds a different one.
+      const accessPoint = new efs.CfnAccessPoint(this, 'CreateOnlyAccessPoint', {
+        fileSystemId: fileSystem.ref,
+        clientToken,
+        accessPointTags: [fixtureTag, { key: 'Name', value: `${this.stackName}-${phase}` }],
       });
-      new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+      new cdk.CfnOutput(this, 'AccessPointId', { value: accessPoint.ref });
     }
   }
 }

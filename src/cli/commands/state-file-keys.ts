@@ -283,7 +283,7 @@ export function describeStateKey(
  * layers already import (`src/utils/display-safe.ts`, beside the `displayIdent`
  * whose identity is half of it) rather than sideways.
  *
- * The re-export keeps every existing importer (`gc.ts`, `local-start-api.ts`,
+ * The re-export keeps every existing importer (`gc/`, `local-start-api.ts`,
  * and this file's own callers) pointing where they always did: this module is
  * where the state-key family reads it from, and layering is not a reason to
  * make five call sites move.

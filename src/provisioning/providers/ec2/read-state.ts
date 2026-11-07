@@ -33,7 +33,7 @@ import {
   stackIngressRuleHolder,
   tagListsMatch,
 } from './sg-support.js';
-import { SUBNET_PRIVATE_DNS_MEMBERS } from './subnet-support.js';
+import { SUBNET_PRIVATE_DNS_MEMBERS, cidrPrefixLength } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 export async function readVpcCurrentState(
@@ -105,7 +105,8 @@ export async function readVpcCurrentState(
 export async function readSubnetCurrentState(
   this: EC2Provider,
   physicalId: string,
-  unsettledNames?: ReadonlySet<string>
+  unsettledNames?: ReadonlySet<string>,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
   const subnet = resp.Subnets?.[0];
@@ -123,6 +124,10 @@ export async function readSubnetCurrentState(
   if (subnet.AvailabilityZone !== undefined) {
     result['AvailabilityZone'] = subnet.AvailabilityZone;
   }
+  // go-to-k/cdkd#5632.
+  if (subnet.AvailabilityZoneId !== undefined) {
+    result['AvailabilityZoneId'] = subnet.AvailabilityZoneId;
+  }
   if (subnet.MapPublicIpOnLaunch !== undefined) {
     result['MapPublicIpOnLaunch'] = subnet.MapPublicIpOnLaunch;
   }
@@ -131,7 +136,17 @@ export async function readSubnetCurrentState(
     (association) => association.Ipv6CidrBlockState?.State === 'associated'
   );
   if (ipv6?.Ipv6CidrBlock !== undefined) result['Ipv6CidrBlock'] = ipv6.Ipv6CidrBlock;
-  // go-to-k/cdkd#5632.
+  // go-to-k/cdkd#5632: an IPAM allocation's netmask is its block's prefix
+  // length, reported only for a bag that declares it, as for the VPC (#5633).
+  // Neither pool id has a readback here (getDriftUnknownPaths).
+  const ipv4Netmask = cidrPrefixLength(subnet.CidrBlock);
+  if (ipv4Netmask !== undefined && properties?.['Ipv4NetmaskLength'] !== undefined) {
+    result['Ipv4NetmaskLength'] = ipv4Netmask;
+  }
+  const ipv6Netmask = cidrPrefixLength(ipv6?.Ipv6CidrBlock);
+  if (ipv6Netmask !== undefined && properties?.['Ipv6NetmaskLength'] !== undefined) {
+    result['Ipv6NetmaskLength'] = ipv6Netmask;
+  }
   if (subnet.AssignIpv6AddressOnCreation !== undefined) {
     result['AssignIpv6AddressOnCreation'] = subnet.AssignIpv6AddressOnCreation;
   }

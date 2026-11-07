@@ -38,19 +38,22 @@
 #                  as unchanged and it never reached AWS. Identical operation to
 #                  phase 2; the only difference is the recorded bag, which is
 #                  what makes the pair a clean A/B.
-#   7 subnet   -- go-to-k/cdkd#2790: a VPC + subnet join the stack, the subnet
-#                  carrying AvailabilityZoneId -- a CREATE-ONLY SDK-unwired property --
-#                  deployed WITH --prefer-sdk-route. The record keeps it.
-#   8 subnettag -- an ordinary in-place change (the Name tag), same flag. The
+#   7 ap       -- go-to-k/cdkd#2790: an EFS file system + access point join
+#                  the stack, the access point carrying ClientToken -- a
+#                  CREATE-ONLY SDK-unwired property (the SDK provider sends its
+#                  own token) -- deployed WITH --prefer-sdk-route. The record
+#                  keeps it. (go-to-k/cdkd#5632 wired the subnet's
+#                  AvailabilityZoneId, these phases' previous premise.)
+#   8 aptag    -- an ordinary in-place change (the Name tag), same flag. The
 #                  NEGATIVE CONTROL: a flag-ful redeploy over that record must
-#                  not replace the subnet.
-#   9 subnettag again with NO flag -- THE #2790 ARM. AWS never held the value,
+#                  not replace the access point.
+#   9 aptag again with NO flag -- THE #2790 ARM. AWS never held the value,
 #                  and applying it needs a replacement, so the deploy must
-#                  REFUSE, leaving the subnet as it was. Before the fix it
-#                  diffed NO_CHANGE and reported success.
-#  10 subnettag with --recreate-via-cc-api <subnet> -- the opt-in the refusal
-#                  names: the subnet is re-created through Cloud Control with
-#                  the AZ id applied.
+#                  REFUSE, leaving the access point as it was. Before the fix
+#                  it diffed NO_CHANGE and reported success.
+#  10 aptag with --recreate-via-cc-api <access point> -- the opt-in the
+#                  refusal names: the access point is re-created through Cloud
+#                  Control with the template's ClientToken applied.
 #   6 destroy (runs last)
 #
 # See lib/sdk-to-cc-autoroute-stack.ts for why AWS::Logs::LogGroup and why
@@ -111,11 +114,15 @@ POLICY_SID="CdkdSdkToCcAutoroute"
 # at the stack root; reading it is what keeps that from being load-bearing.)
 LOGICAL_ID=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
-# The go-to-k/cdkd#2790 subnet, resolved from its phase's synth template.
-SUBNET_LOGICAL_ID=""
-# What verify.sh's cleanup sweeps a VPC by; lib/ tags the VPC and subnet with
-# the stack name, so the sweep reaches only this stack's leftovers.
+# The go-to-k/cdkd#2790 access point, resolved from its phase's synth template.
+AP_LOGICAL_ID=""
+# What verify.sh's cleanup sweeps a file system by; lib/ tags the file system
+# and access point with the stack name, so the sweep reaches only this stack's
+# leftovers.
 FIXTURE_TAG_VALUE="${STACK}"
+# The access point's template ClientToken: unique per run, so a token an
+# earlier run bound can never answer for this one.
+CLIENT_TOKEN="cdkd-autoroute-$(date +%s)-$$"
 
 record() { # usage: record <jq-expression-over-the-resource-object>
   record_of "${LOGICAL_ID}" "$1"
@@ -131,10 +138,10 @@ record_of() { # usage: record_of <logical-id> <jq-expression-over-the-resource-o
   printf '%s' "${json}" | jq -r --arg k "${key}" ".resources[\$k] | $2"
 }
 
-# The live subnet's AZ id, read from EC2 rather than from cdkd's record.
-subnet_az_id() { # usage: subnet_az_id <subnet-id>
-  aws ec2 describe-subnets --subnet-ids "$1" --region "${REGION}" \
-    --query 'Subnets[0].AvailabilityZoneId' --output text
+# The live access point's ClientToken, read from EFS rather than from cdkd's record.
+access_point_token() { # usage: access_point_token <access-point-id>
+  aws efs describe-access-points --access-point-id "$1" --region "${REGION}" \
+    --query 'AccessPoints[0].ClientToken' --output text
 }
 
 # The log group as JSON, EXACTLY this name (`describe-log-groups` matches a
@@ -216,21 +223,21 @@ cleanup() {
   [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   # Deleting the log group takes its log-group-scoped resource policy with it.
   aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  # The go-to-k/cdkd#2790 VPC + subnet, found by the tag lib/ puts on them.
-  local vpc_id subnet_id
-  for vpc_id in $(aws ec2 describe-vpcs --region "${REGION}" \
-    --filters "Name=tag:cdkd-integ-fixture,Values=${FIXTURE_TAG_VALUE}" \
-    --query 'Vpcs[].VpcId' --output text 2>/dev/null); do
-    case "${vpc_id}" in
-      vpc-?*) ;;
-      *) echo "WARN: teardown sweep refused: unexpected VPC id '${vpc_id}'" >&2; continue ;;
+  # The go-to-k/cdkd#2790 file system + access point, found by the tag lib/
+  # puts on the file system.
+  local fs_id ap_id
+  for fs_id in $(aws efs describe-file-systems --region "${REGION}" \
+    --query "FileSystems[?Tags[?Key=='cdkd-integ-fixture' && Value=='${FIXTURE_TAG_VALUE}']].FileSystemId" \
+    --output text 2>/dev/null); do
+    case "${fs_id}" in
+      fs-?*) ;;
+      *) echo "WARN: teardown sweep refused: unexpected file system id '${fs_id}'" >&2; continue ;;
     esac
-    for subnet_id in $(aws ec2 describe-subnets --region "${REGION}" \
-      --filters "Name=vpc-id,Values=${vpc_id}" \
-      --query 'Subnets[].SubnetId' --output text 2>/dev/null); do
-      aws ec2 delete-subnet --region "${REGION}" --subnet-id "${subnet_id}" >/dev/null 2>&1
+    for ap_id in $(aws efs describe-access-points --region "${REGION}" --file-system-id "${fs_id}" \
+      --query 'AccessPoints[].AccessPointId' --output text 2>/dev/null); do
+      aws efs delete-access-point --region "${REGION}" --access-point-id "${ap_id}" >/dev/null 2>&1
     done
-    aws ec2 delete-vpc --region "${REGION}" --vpc-id "${vpc_id}" >/dev/null 2>&1
+    aws efs delete-file-system --region "${REGION}" --file-system-id "${fs_id}" >/dev/null 2>&1
   done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -269,29 +276,22 @@ if (!cov.createOnlyDrops || cov.createOnlyDrops.has('ResourcePolicyDocument')) p
   exit 1
 fi
 echo "    OK: ResourcePolicyDocument is still SDK-unwired (premise holds)"
-# go-to-k/cdkd#2790's phases rest on AvailabilityZoneId being a CREATE-ONLY
-# SDK-unwired property for AWS::EC2::Subnet. A provider wiring it ends that premise.
+# go-to-k/cdkd#2790's phases rest on ClientToken being a CREATE-ONLY
+# SDK-unwired property for AWS::EFS::AccessPoint. A provider wiring it ends
+# that premise (go-to-k/cdkd#5632 ended the previous one, the subnet's
+# AvailabilityZoneId).
 if ! (cd "${REPO_ROOT}" && node --input-type=module -e "
 const mod = await import('./src/provisioning/property-coverage.generated.ts');
 const table = Object.values(mod).find((v) => v instanceof Map);
-const cov = table && table.get('AWS::EC2::Subnet');
-if (!cov || !cov.createOnlyDrops || !cov.createOnlyDrops.has('AvailabilityZoneId')) process.exit(1);
+const cov = table && table.get('AWS::EFS::AccessPoint');
+if (!cov || !cov.createOnlyDrops || !cov.createOnlyDrops.has('ClientToken')) process.exit(1);
 "); then
-  echo "FAIL: AWS::EC2::Subnet.AvailabilityZoneId is no longer a create-only SDK-unwired property --" >&2
+  echo "FAIL: AWS::EFS::AccessPoint.ClientToken is no longer a create-only SDK-unwired property --" >&2
   echo "      phases 7-10 would test nothing. Move them to another type's create-only drop." >&2
   exit 1
 fi
-echo "    OK: AvailabilityZoneId is still a create-only SDK-unwired property (premise holds)"
-
-# Any available AZ of the region: the SDK route drops the id and lets EC2 pick,
-# so phase 10's readback is the only place the value is checked against AWS.
-AZ_ID=$(aws ec2 describe-availability-zones --region "${REGION}" \
-  --filters "Name=state,Values=available" "Name=zone-type,Values=availability-zone" \
-  --query 'AvailabilityZones[-1].ZoneId' --output text)
-case "${AZ_ID}" in
-  ""|None) echo "FAIL: could not resolve an AZ id in ${REGION}" >&2; exit 1 ;;
-esac
-echo "    OK: phases 7-10 use AZ id ${AZ_ID}"
+echo "    OK: ClientToken is still a create-only SDK-unwired property (premise holds)"
+echo "    OK: phases 7-10 use ClientToken ${CLIENT_TOKEN}"
 
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
@@ -354,27 +354,27 @@ jq -e --arg sid "${POLICY_SID}" '[.Properties.ResourcePolicyDocument.Statement[]
   echo "FAIL: the allowmeta template does not carry ResourcePolicyDocument; phase 4b would not exercise the allow-listed drop" >&2; exit 1; }
 echo "    OK: allowmeta differs from allowdrop by UpdateReplacePolicy alone"
 
-# Phases 7-10's premise: the subnet carries the AZ id, and `subnettag` differs
-# from `subnet` in the subnet's Tags alone.
-if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=subnet CDKD_TEST_AZ_ID="${AZ_ID}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+# Phases 7-10's premise: the access point carries the token, and `aptag`
+# differs from `ap` in the access point's tags alone.
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=ap CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
   printf '%s\n' "${SYNTH_OUT}" >&2
-  echo "FAIL: subnet-phase synth failed" >&2
+  echo "FAIL: ap-phase synth failed" >&2
   exit 1
 fi
-SUBNET_LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::EC2::Subnet") | .key' "${TEMPLATE}" | head -1)
-[ -n "${SUBNET_LOGICAL_ID}" ] || { echo "FAIL: no AWS::EC2::Subnet in the subnet-phase template" >&2; exit 1; }
-jq -e --arg k "${SUBNET_LOGICAL_ID}" --arg az "${AZ_ID}" '.Resources[$k].Properties.AvailabilityZoneId == $az' "${TEMPLATE}" >/dev/null || {
-  echo "FAIL: the subnet does not carry AvailabilityZoneId ${AZ_ID}; phases 7-10 would test nothing" >&2; exit 1; }
-SUBNET_REST=$(jq -cS --arg k "${SUBNET_LOGICAL_ID}" '.Resources[$k] | del(.Properties.Tags)' "${TEMPLATE}")
-if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+AP_LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::EFS::AccessPoint") | .key' "${TEMPLATE}" | head -1)
+[ -n "${AP_LOGICAL_ID}" ] || { echo "FAIL: no AWS::EFS::AccessPoint in the ap-phase template" >&2; exit 1; }
+jq -e --arg k "${AP_LOGICAL_ID}" --arg t "${CLIENT_TOKEN}" '.Resources[$k].Properties.ClientToken == $t' "${TEMPLATE}" >/dev/null || {
+  echo "FAIL: the access point does not carry ClientToken ${CLIENT_TOKEN}; phases 7-10 would test nothing" >&2; exit 1; }
+AP_REST=$(jq -cS --arg k "${AP_LOGICAL_ID}" '.Resources[$k] | del(.Properties.AccessPointTags)' "${TEMPLATE}")
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=aptag CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
   printf '%s\n' "${SYNTH_OUT}" >&2
-  echo "FAIL: subnettag-phase synth failed" >&2
+  echo "FAIL: aptag-phase synth failed" >&2
   exit 1
 fi
-SUBNETTAG_REST=$(jq -cS --arg k "${SUBNET_LOGICAL_ID}" '.Resources[$k] | del(.Properties.Tags)' "${TEMPLATE}")
-[ "${SUBNET_REST}" = "${SUBNETTAG_REST}" ] || {
-  echo "FAIL: subnet and subnettag differ in more than the subnet's Tags; phase 8 would not be an ordinary in-place change" >&2; exit 1; }
-echo "==> #2790 resource under test: ${SUBNET_LOGICAL_ID}"
+APTAG_REST=$(jq -cS --arg k "${AP_LOGICAL_ID}" '.Resources[$k] | del(.Properties.AccessPointTags)' "${TEMPLATE}")
+[ "${AP_REST}" = "${APTAG_REST}" ] || {
+  echo "FAIL: ap and aptag differ in more than the access point's tags; phase 8 would not be an ordinary in-place change" >&2; exit 1; }
+echo "==> #2790 resource under test: ${AP_LOGICAL_ID}"
 
 echo "==> Phase 1: Deploy with handled properties only (SDK route expected)"
 env CDKD_TEST_PHASE=base \
@@ -693,103 +693,106 @@ WITNESS_AGAIN=$(witness_count "${ARN_AGAIN}")
 echo "    OK: re-routed to Cloud Control, the property landed, and the log group was not replaced"
 
 echo "==> Phase 7: go-to-k/cdkd#2790 -- a create-only drop accepted with --prefer-sdk-route"
-env CDKD_TEST_PHASE=subnet CDKD_TEST_AZ_ID="${AZ_ID}" \
+env CDKD_TEST_PHASE=ap CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --prefer-sdk-route "AWS::EC2::Subnet:AvailabilityZoneId" --yes
-SUBNET_P0=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
-case "${SUBNET_P0}" in
-  subnet-?*) ;;
-  *) echo "FAIL: the subnet record has no subnet id (physicalId=${SUBNET_P0})" >&2; exit 1 ;;
+    --prefer-sdk-route "AWS::EFS::AccessPoint:ClientToken" --yes
+AP_P0=$(record_of "${AP_LOGICAL_ID}" '.physicalId')
+case "${AP_P0}" in
+  fsap-?*) ;;
+  *) echo "FAIL: the access point record has no access point id (physicalId=${AP_P0})" >&2; exit 1 ;;
 esac
-VPC_ID=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
-  --query 'Subnets[0].VpcId' --output text)
-case "${VPC_ID}" in
-  vpc-?*) ;;
-  *) echo "FAIL: could not read the subnet's VPC (VpcId=${VPC_ID})" >&2; exit 1 ;;
+FS_ID=$(aws efs describe-access-points --access-point-id "${AP_P0}" --region "${REGION}" \
+  --query 'AccessPoints[0].FileSystemId' --output text)
+case "${FS_ID}" in
+  fs-?*) ;;
+  *) echo "FAIL: could not read the access point's file system (FileSystemId=${FS_ID})" >&2; exit 1 ;;
 esac
-SUBNET_LAYER0=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
-[ "${SUBNET_LAYER0}" = "sdk" ] || { echo "FAIL: --prefer-sdk-route did not keep the subnet on its SDK provider (provisionedBy=${SUBNET_LAYER0}); the record below is not the one #2790 is about" >&2; exit 1; }
+AP_LAYER0=$(record_of "${AP_LOGICAL_ID}" '.provisionedBy')
+[ "${AP_LAYER0}" = "sdk" ] || { echo "FAIL: --prefer-sdk-route did not keep the access point on its SDK provider (provisionedBy=${AP_LAYER0}); the record below is not the one #2790 is about" >&2; exit 1; }
 # The PREMISE of the arm: the record keeps the create-only drop it never wrote.
-SUBNET_REC_AZ=$(record_of "${SUBNET_LOGICAL_ID}" '.properties.AvailabilityZoneId // "ABSENT"')
-[ "${SUBNET_REC_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the record holds AvailabilityZoneId=${SUBNET_REC_AZ}, expected ${AZ_ID}; a create-only drop is no longer kept in the record and phase 9 tests nothing" >&2; exit 1; }
+AP_REC_TOKEN=$(record_of "${AP_LOGICAL_ID}" '.properties.ClientToken // "ABSENT"')
+[ "${AP_REC_TOKEN}" = "${CLIENT_TOKEN}" ] || { echo "FAIL: the record holds ClientToken=${AP_REC_TOKEN}, expected ${CLIENT_TOKEN}; a create-only drop is no longer kept in the record and phase 9 tests nothing" >&2; exit 1; }
 # ...and names it as EVIDENCE that it was never sent: only a named key is
 # refused, so without this phase 9 would see NO_CHANGE.
-SUBNET_EVIDENCE=$(record_of "${SUBNET_LOGICAL_ID}" '(.acceptedCreateOnlyDrops // []) | any(.[]?; . == "AvailabilityZoneId")')
-[ "${SUBNET_EVIDENCE}" = "true" ] || { echo "FAIL: the record does not name AvailabilityZoneId in acceptedCreateOnlyDrops; the SDK-route create wrote no #2790 evidence" >&2; exit 1; }
-# Where EC2 put the SDK-created subnet. The SDK route drops the AZ id, so EC2
-# picks; when it happens to pick ${AZ_ID}, phase 10's AZ readback cannot tell
-# a written id from a coincidence, and says so rather than passing silently.
-SUBNET_P0_AZ=$(subnet_az_id "${SUBNET_P0}")
-case "${SUBNET_P0_AZ}" in
-  ""|None) echo "FAIL: could not read subnet ${SUBNET_P0}'s AZ id" >&2; exit 1 ;;
+AP_EVIDENCE=$(record_of "${AP_LOGICAL_ID}" '(.acceptedCreateOnlyDrops // []) | any(.[]?; . == "ClientToken")')
+[ "${AP_EVIDENCE}" = "true" ] || { echo "FAIL: the record does not name ClientToken in acceptedCreateOnlyDrops; the SDK-route create wrote no #2790 evidence" >&2; exit 1; }
+# What EFS holds: the SDK provider's own token, never the template's, which is
+# what makes phase 10's readback discriminate on every run.
+AP_P0_TOKEN=$(access_point_token "${AP_P0}")
+case "${AP_P0_TOKEN}" in
+  ""|None) echo "FAIL: could not read access point ${AP_P0}'s ClientToken" >&2; exit 1 ;;
 esac
-echo "    OK: subnet ${SUBNET_P0} on the SDK route (in ${SUBNET_P0_AZ}), record keeps AvailabilityZoneId"
+[ "${AP_P0_TOKEN}" != "${CLIENT_TOKEN}" ] || { echo "FAIL: the SDK-created access point already holds the template's ClientToken; the drop this fixture rests on did not happen" >&2; exit 1; }
+echo "    OK: access point ${AP_P0} on the SDK route (token ${AP_P0_TOKEN}), record keeps ClientToken"
 
 echo "==> Phase 8: NEGATIVE CONTROL -- a flag-ful redeploy over that record does not replace"
-env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+env CDKD_TEST_PHASE=aptag CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --prefer-sdk-route "AWS::EC2::Subnet:AvailabilityZoneId" --yes
-SUBNET_P1=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
-[ "${SUBNET_P1}" = "${SUBNET_P0}" ] || { echo "FAIL: the flag-ful redeploy REPLACED the subnet (${SUBNET_P0} -> ${SUBNET_P1}); keeping the drop on both sides of the diff is what must prevent that" >&2; exit 1; }
-NAME_TAG=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
-  --query "Subnets[0].Tags[?Key=='Name'].Value | [0]" --output text)
-[ "${NAME_TAG}" = "${STACK}-subnettag" ] || { echo "FAIL: the tag change did not reach AWS (Name=${NAME_TAG}); the phase changed nothing and proves nothing" >&2; exit 1; }
-echo "    OK: tag updated in place, subnet not replaced"
+    --prefer-sdk-route "AWS::EFS::AccessPoint:ClientToken" --yes
+AP_P1=$(record_of "${AP_LOGICAL_ID}" '.physicalId')
+[ "${AP_P1}" = "${AP_P0}" ] || { echo "FAIL: the flag-ful redeploy REPLACED the access point (${AP_P0} -> ${AP_P1}); keeping the drop on both sides of the diff is what must prevent that" >&2; exit 1; }
+NAME_TAG=$(aws efs describe-access-points --access-point-id "${AP_P0}" --region "${REGION}" \
+  --query "AccessPoints[0].Tags[?Key=='Name'].Value | [0]" --output text)
+[ "${NAME_TAG}" = "${STACK}-aptag" ] || { echo "FAIL: the tag change did not reach AWS (Name=${NAME_TAG}); the phase changed nothing and proves nothing" >&2; exit 1; }
+echo "    OK: tag updated in place, access point not replaced"
 
 echo "==> Phase 9: THE #2790 ARM -- the same template with NO flag must refuse"
-# Before the fix the record and the template held the same AvailabilityZoneId,
-# the diff called it NO_CHANGE, and the deploy reported success with the
-# property never written. `if` rather than `!`: the deploy is EXPECTED to fail.
-if REFUSE_OUT=$(env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+# Before the fix the record and the template held the same ClientToken, the
+# diff called it NO_CHANGE, and the deploy reported success with the property
+# never written. `if` rather than `!`: the deploy is EXPECTED to fail.
+if REFUSE_OUT=$(env CDKD_TEST_PHASE=aptag CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1); then
   printf '%s\n' "${REFUSE_OUT}" >&2
-  echo "FAIL: the flag-less deploy SUCCEEDED. go-to-k/cdkd#2790: AvailabilityZoneId was never written, applying it needs a replacement, and the deploy must refuse rather than report success." >&2
+  echo "FAIL: the flag-less deploy SUCCEEDED. go-to-k/cdkd#2790: ClientToken was never written, applying it needs a replacement, and the deploy must refuse rather than report success." >&2
   exit 1
 fi
 printf '%s\n' "${REFUSE_OUT}" >&2
 REFUSE_PLAIN=$(printf '%s' "${REFUSE_OUT}" | sed $'s/\033\[[0-9;]*m//g')
-grep -qF "${SUBNET_LOGICAL_ID} (AWS::EC2::Subnet): AvailabilityZoneId is create-only, and the state record holds it" <<<"${REFUSE_PLAIN}" || {
+grep -qF "${AP_LOGICAL_ID} (AWS::EFS::AccessPoint): ClientToken is create-only, and the state record holds it" <<<"${REFUSE_PLAIN}" || {
   echo "FAIL: the deploy failed, but not with the #2790 refusal; read the output above" >&2; exit 1; }
-grep -qF -- "--prefer-sdk-route does not cover AvailabilityZoneId" <<<"${REFUSE_PLAIN}" || {
-  echo "FAIL: the refusal does not name AvailabilityZoneId as the key routing the subnet to Cloud Control" >&2; exit 1; }
-grep -qF -- "--recreate-via-cc-api ${SUBNET_LOGICAL_ID}" <<<"${REFUSE_PLAIN}" || {
-  echo "FAIL: the refusal does not name --recreate-via-cc-api ${SUBNET_LOGICAL_ID}, the opt-in phase 10 takes" >&2; exit 1; }
-SUBNET_P2=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
-[ "${SUBNET_P2}" = "${SUBNET_P0}" ] || { echo "FAIL: the refused deploy changed the subnet's record (${SUBNET_P0} -> ${SUBNET_P2})" >&2; exit 1; }
-SUBNET_LAYER2=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
-[ "${SUBNET_LAYER2}" = "sdk" ] || { echo "FAIL: the refused deploy moved the subnet's record to ${SUBNET_LAYER2}" >&2; exit 1; }
-LIVE_AFTER_REFUSAL=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
-  --query 'Subnets[0].SubnetId' --output text)
-[ "${LIVE_AFTER_REFUSAL}" = "${SUBNET_P0}" ] || { echo "FAIL: subnet ${SUBNET_P0} is gone after the refusal (${LIVE_AFTER_REFUSAL}); the refusal must come before the delete" >&2; exit 1; }
-echo "    OK: refused, naming AvailabilityZoneId and the opt-in; the subnet is untouched"
+grep -qF -- "--prefer-sdk-route does not cover ClientToken" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the refusal does not name ClientToken as the key routing the access point to Cloud Control" >&2; exit 1; }
+grep -qF -- "--recreate-via-cc-api ${AP_LOGICAL_ID}" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the refusal does not name --recreate-via-cc-api ${AP_LOGICAL_ID}, the opt-in phase 10 takes" >&2; exit 1; }
+AP_P2=$(record_of "${AP_LOGICAL_ID}" '.physicalId')
+[ "${AP_P2}" = "${AP_P0}" ] || { echo "FAIL: the refused deploy changed the access point's record (${AP_P0} -> ${AP_P2})" >&2; exit 1; }
+AP_LAYER2=$(record_of "${AP_LOGICAL_ID}" '.provisionedBy')
+[ "${AP_LAYER2}" = "sdk" ] || { echo "FAIL: the refused deploy moved the access point's record to ${AP_LAYER2}" >&2; exit 1; }
+LIVE_AFTER_REFUSAL=$(aws efs describe-access-points --access-point-id "${AP_P0}" --region "${REGION}" \
+  --query 'AccessPoints[0].AccessPointId' --output text)
+[ "${LIVE_AFTER_REFUSAL}" = "${AP_P0}" ] || { echo "FAIL: access point ${AP_P0} is gone after the refusal (${LIVE_AFTER_REFUSAL}); the refusal must come before the delete" >&2; exit 1; }
+echo "    OK: refused, naming ClientToken and the opt-in; the access point is untouched"
 
 echo "==> Phase 10: the opt-in -- --recreate-via-cc-api applies the property"
-env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+env CDKD_TEST_PHASE=aptag CDKD_TEST_CLIENT_TOKEN="${CLIENT_TOKEN}" \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --recreate-via-cc-api "${SUBNET_LOGICAL_ID}" --yes
-SUBNET_P3=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
-case "${SUBNET_P3}" in
-  subnet-?*) ;;
-  *) echo "FAIL: the recreated subnet's record has no subnet id (physicalId=${SUBNET_P3})" >&2; exit 1 ;;
+    --recreate-via-cc-api "${AP_LOGICAL_ID}" --yes
+AP_P3=$(record_of "${AP_LOGICAL_ID}" '.physicalId')
+case "${AP_P3}" in
+  fsap-?*) ;;
+  *) echo "FAIL: the recreated access point's record has no access point id (physicalId=${AP_P3})" >&2; exit 1 ;;
 esac
-[ "${SUBNET_P3}" != "${SUBNET_P0}" ] || { echo "FAIL: --recreate-via-cc-api kept subnet ${SUBNET_P0}; nothing was re-created" >&2; exit 1; }
-SUBNET_LAYER3=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
-[ "${SUBNET_LAYER3}" = "cc-api" ] || { echo "FAIL: the recreate did not land on Cloud Control (provisionedBy=${SUBNET_LAYER3})" >&2; exit 1; }
-LIVE_AZ=$(subnet_az_id "${SUBNET_P3}")
-[ "${LIVE_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the recreated subnet is in ${LIVE_AZ}, expected ${AZ_ID}: AvailabilityZoneId did not reach AWS" >&2; exit 1; }
-if [ "${SUBNET_P0_AZ}" = "${AZ_ID}" ]; then
-  echo "    NOTE: EC2 placed the SDK-created subnet in ${AZ_ID} already, so this AZ readback does not discriminate on this run (phase 9's refusal still does)"
-fi
-assert_gone "the old subnet ${SUBNET_P0} survived the recreate" \
-  aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}"
-echo "    OK: re-created on Cloud Control in ${AZ_ID}; the old subnet is gone"
+[ "${AP_P3}" != "${AP_P0}" ] || { echo "FAIL: --recreate-via-cc-api kept access point ${AP_P0}; nothing was re-created" >&2; exit 1; }
+AP_LAYER3=$(record_of "${AP_LOGICAL_ID}" '.provisionedBy')
+[ "${AP_LAYER3}" = "cc-api" ] || { echo "FAIL: the recreate did not land on Cloud Control (provisionedBy=${AP_LAYER3})" >&2; exit 1; }
+LIVE_TOKEN=$(access_point_token "${AP_P3}")
+[ "${LIVE_TOKEN}" = "${CLIENT_TOKEN}" ] || { echo "FAIL: the recreated access point holds ClientToken ${LIVE_TOKEN}, expected ${CLIENT_TOKEN}: ClientToken did not reach AWS" >&2; exit 1; }
+assert_gone "the old access point ${AP_P0} survived the recreate" \
+  aws efs describe-access-points --access-point-id "${AP_P0}" --region "${REGION}"
+echo "    OK: re-created on Cloud Control with ClientToken ${CLIENT_TOKEN}; the old access point is gone"
 
 echo "==> Phase 6: Destroy + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "subnet ${SUBNET_P3} survived destroy" \
-  aws ec2 describe-subnets --subnet-ids "${SUBNET_P3}" --region "${REGION}"
-assert_gone "VPC ${VPC_ID} survived destroy" \
-  aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
+assert_gone "access point ${AP_P3} survived destroy" \
+  aws efs describe-access-points --access-point-id "${AP_P3}" --region "${REGION}"
+# EFS lists a file system as `deleting` for a while after DeleteFileSystem
+# returns, so give it up to two minutes to stop being described.
+for _ in $(seq 1 24); do
+  gone_probe aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "file system ${FS_ID} survived destroy" \
+  aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}"
 LG_GONE=$(log_group_json)
 [ "${LG_GONE}" = "null" ] || { echo "FAIL: log group ${LOG_GROUP_NAME} survived destroy (${LG_GONE})" >&2; exit 1; }
 echo "    OK: destroyed clean"

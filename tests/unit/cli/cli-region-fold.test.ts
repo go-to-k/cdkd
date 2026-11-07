@@ -63,7 +63,7 @@ describe('a split command is read with its directory', () => {
 
   it('finds the split commands — floor, so a derivation that matched nothing cannot pass', () => {
     expect(families).toEqual(
-      expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'local-start-api.ts', 'state.ts'])
+      expect.arrayContaining(['drift.ts', 'export.ts', 'gc.ts', 'import.ts', 'local-start-api.ts', 'state.ts'])
     );
   });
 
@@ -79,10 +79,14 @@ describe('a split command is read with its directory', () => {
     expect(source).not.toContain('applyRoleArnIfSet(');
   });
 
+  // `cdkd gc` folds per READ rather than in place (its handler says why), so
+  // its family holds the wrapped read instead (go-to-k/cdkd#5835).
+  const FOLDS_PER_READ: Record<string, string> = { 'gc.ts': 'namedCliRegion(options.region)' };
+
   it.each(families)('%s: the family read holds its fold and its first AWS call', (file) => {
     // Per command: a family read that lost its directory would hold neither.
     const source = commandSource(file);
-    expect(source).toContain('foldRegionOption(options)');
+    expect(source).toContain(FOLDS_PER_READ[file] ?? 'foldRegionOption(options)');
     expect(source).toContain(firstAwsCall(file));
   });
 });
