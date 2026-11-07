@@ -975,6 +975,75 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       expect(thisAliases('class A { m(): void { let s; s = this; s.deleteLock(); } }')).toBe(1);
     });
 
+    /**
+     * Refuse the second construct the walk cannot follow, which the split
+     * (go-to-k/cdkd#5835) opened: `deleteLock` and `purgeLockVersions` are now
+     * also module functions, so `deleteLock.call(this, ...)` from a companion
+     * function, or a kept class method, deletes with no `this.deleteLock` for
+     * the walk to see. Every reference to either NAME that is not a property
+     * name (`this.deleteLock`), a declaration, an import specifier, or the
+     * class delegator's own `name.call(this, ...)` inside the member of that
+     * name is counted, and the real sources must hold none.
+     */
+    const bareReferences = (name: string, text: string): number => {
+      const source = ts.createSourceFile(SRC, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const walk = (node: ts.Node, member: string | undefined): void => {
+        const here =
+          ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) ? node.name.text : member;
+        if (ts.isIdentifier(node) && node.text === name) {
+          const p = node.parent;
+          const allowed =
+            (ts.isPropertyAccessExpression(p) && p.name === node) ||
+            ((ts.isMethodDeclaration(p) || ts.isFunctionDeclaration(p)) && p.name === node) ||
+            ts.isImportSpecifier(p) ||
+            (here === name &&
+              ts.isPropertyAccessExpression(p) &&
+              p.expression === node &&
+              p.name.text === 'call' &&
+              ts.isCallExpression(p.parent) &&
+              p.parent.expression === p &&
+              p.parent.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword);
+          if (!allowed) n += 1;
+        }
+        node.forEachChild((child) => walk(child, here));
+      };
+      walk(source, undefined);
+      return n;
+    };
+
+    it('refuses a direct call of the module function, which the walk cannot follow', () => {
+      for (const file of SOURCES) {
+        for (const name of ['deleteLock', 'purgeLockVersions']) {
+          expect(bareReferences(name, readFileSync(file, 'utf8')), `${file} ${name}`).toBe(0);
+        }
+      }
+      // ...and the detector is not vacuous: a companion function's direct
+      // call, a kept method's, and an alias are each counted.
+      expect(
+        bareReferences(
+          'deleteLock',
+          'export async function reap(this: LockManager): Promise<void> { await deleteLock.call(this, 1); }'
+        )
+      ).toBe(1);
+      expect(
+        bareReferences(
+          'deleteLock',
+          'class A { releaseLock(): Promise<void> { return deleteLock.call(this, 1); } }'
+        )
+      ).toBe(1);
+      expect(
+        bareReferences('deleteLock', 'class A { m(): void { const f = deleteLock; void f(1); } }')
+      ).toBe(1);
+      // The delegator shape it allows is exactly the class's own.
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import { deleteLock } from './x.js';\nclass A { deleteLock(a: number): Promise<void> { return deleteLock.call(this, a); } }"
+        )
+      ).toBe(0);
+    });
+
     it('derives a population the fence can actually see', () => {
       // A floor written as a LITERAL, not recomputed from the same walk: a
       // query that silently stopped matching would otherwise satisfy itself.

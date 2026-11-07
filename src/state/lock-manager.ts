@@ -78,6 +78,7 @@ export interface LockManagerOptions {
  * S3's 301 PermanentRedirect while state reads/writes succeeded).
  */
 export class LockManager {
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   logger: ConsoleLogger = getLogger().child('LockManager');
 
   /**
@@ -92,6 +93,8 @@ export class LockManager {
    * `markRedactedCause`. Anything else keeps its text (`errorDetail`). `build`
    * must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   wrapS3Failure(error: unknown, build: (text: string) => LockError): LockError {
     const failure = describeAwsFailure(error);
@@ -104,19 +107,27 @@ export class LockManager {
     const wrapped = build(displaySafe(summary, { asciiOnly: true }) || UNRENDERABLE);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   s3Client: S3Client;
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   config: StateBackendConfig;
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly ttlMs: number;
   private readonly renewalIntervalMs: number;
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly renewalDisabled: boolean;
   /** Locks held by THIS process, keyed by S3 lock key. */
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly heldLocks = new Map<string, HeldLock>();
   /** By lock key: an expired lock this process took over, and its lease horizon (G-1/B1). */
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly abandonedLocks = new Map<string, number>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly deferReleasePurge: boolean;
   /** Release purges still running under `deferReleasePurge`. */
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly deferredPurges = new Set<Promise<void>>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, options?: LockManagerOptions) {
@@ -149,6 +160,8 @@ export class LockManager {
    * `ExpectedBucketOwner` spread for every state-bucket S3 call (squatting
    * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
    * resolves to an empty object for non-standard clients (test doubles).
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
     return expectedOwnerParam(this.s3Client);
@@ -172,6 +185,8 @@ export class LockManager {
    * `resolveBucketRegion` caches per bucket name for the process lifetime,
    * so when the state backend has already resolved the same bucket this
    * incurs no additional `GetBucketLocation` call.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   async ensureClientForBucket(): Promise<void> {
     if (this.clientResolved) return;
@@ -216,6 +231,8 @@ export class LockManager {
    * passing `undefined` falls back to the legacy `{prefix}/{stackName}/lock.json`
    * key — that mode is purely for legacy lock cleanup and is NOT used by
    * deploy / destroy / diff anymore.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   getLockKey(stackName: string, region: string | undefined): string {
     if (region === undefined) {
@@ -226,6 +243,8 @@ export class LockManager {
 
   /**
    * Get default lock owner identifier
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   getDefaultOwner(): string {
     try {
@@ -240,6 +259,8 @@ export class LockManager {
 
   /**
    * Check if a lock is expired based on its expiresAt field
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   isLockExpired(lockInfo: LockInfo): boolean {
     return isLockInfoExpired(lockInfo);
@@ -247,6 +268,8 @@ export class LockManager {
 
   /**
    * Format a human-readable duration from milliseconds
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   formatDuration(ms: number): string {
     const seconds = Math.floor(ms / 1000);
@@ -265,6 +288,7 @@ export class LockManager {
     return acquireLock.call(this, stackName, region, owner, operation);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   putLockObject(
     key: string,
     lockInfo: LockInfo,
@@ -285,6 +309,7 @@ export class LockManager {
     return record ? record.info : null;
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   getLockRecord(
     stackName: string,
     region: string | undefined
@@ -359,10 +384,12 @@ export class LockManager {
     return releasing;
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   doReleaseLock(stackName: string, region: string, held: HeldLock | undefined): Promise<void> {
     return doReleaseLock.call(this, stackName, region, held);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   stillOursByBody(held: HeldLock): Promise<boolean> {
     return stillOursByBody.call(this, held);
   }
@@ -375,6 +402,8 @@ export class LockManager {
    * constructed has not, so an unsanitized comparison would never match for a
    * `$USER` or hostname containing a stripped codepoint -- and the process
    * would then disown its own lock.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   sameLockIdentity(a: LockInfo, b: LockInfo): boolean {
     return displaySafe(a.owner) === displaySafe(b.owner) && a.timestamp === b.timestamp;
@@ -398,14 +427,17 @@ export class LockManager {
     return forceReleaseLock.call(this, stackName, region, beforeDelete);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   deleteLock(stackName: string, region: string | undefined, etag?: string): Promise<void> {
     return deleteLock.call(this, stackName, region, etag);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   purgeLockVersions(key: string, path: LockPurgePath): Promise<void> {
     return purgeLockVersions.call(this, key, path);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   trackHeldLock(args: {
     stackName: string;
     region: string;
@@ -416,6 +448,7 @@ export class LockManager {
     return trackHeldLock.call(this, args);
   }
 
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   startRenewal(held: HeldLock): void {
     const timer = setInterval(() => {
       void this.renewLock(held);
@@ -425,6 +458,7 @@ export class LockManager {
     held.timer = timer;
   }
 
+  /** @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835). */
   stopRenewal(held: HeldLock): void {
     if (held.timer !== undefined) {
       clearInterval(held.timer);
@@ -453,10 +487,12 @@ export class LockManager {
     return inFlight;
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   doRenewLock(held: HeldLock): Promise<void> {
     return doRenewLock.call(this, held);
   }
 
+  /** @internal Body in `./lock-manager/`; formerly `private` (go-to-k/cdkd#5835). */
   adoptOwnWrite(held: HeldLock, renewed: LockInfo): Promise<boolean> {
     return adoptOwnWrite.call(this, held, renewed);
   }
@@ -467,6 +503,8 @@ export class LockManager {
    * Matched on the status as well as the name: a 412 arriving as a bare
    * `S3ServiceException`, or under a renamed code, would otherwise skip the
    * "leave it alone" branch and reach the destructive fallback below it.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   isForeignLockError(error: unknown): boolean {
     return (
@@ -483,6 +521,8 @@ export class LockManager {
    * raise, and -- worse -- make one bucket-level 404 during renewal set
    * `lost`, killing the heartbeat and refusing to release a lock this process
    * still holds.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   isGoneError(error: unknown): boolean {
     if (error instanceof NoSuchKey) return true;
@@ -501,6 +541,8 @@ export class LockManager {
    * `s3:DeleteObject` answers 403 -- and an S3-compatible endpoint that has
    * not implemented the header answers 501. Neither says anything about who
    * owns the lock, whereas 409 / 412 / 5xx all do.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   isConditionUnsupportedError(error: unknown): boolean {
     if (!(error instanceof S3ServiceException)) return false;
@@ -518,6 +560,8 @@ export class LockManager {
    * Either of the two ways S3 can tell us the lock we thought we held is no
    * longer ours: replaced by someone else (412) or deleted outright (404, e.g.
    * by `cdkd force-unlock`). Both mean stop renewing and do not delete.
+   *
+   * @internal Not `private` only because `./lock-manager/*.ts` reads it (go-to-k/cdkd#5835).
    */
   isNotOursError(error: unknown): boolean {
     return this.isForeignLockError(error) || this.isGoneError(error);
