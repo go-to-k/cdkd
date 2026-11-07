@@ -361,21 +361,25 @@ host is part of the signature.
 > `CDKD_CR_S3_ENDPOINT_URL` is not https on port 443. For Node.js handlers,
 > serve the emulator's S3 over TLS on port 443 (for example behind a
 > TLS-terminating proxy), and set `CDKD_CR_S3_ENDPOINT_URL=https://<host>`.
-> The handlers verify the certificate with Node's default TLS settings, so the
-> Lambda runtime must trust it: either provide the CA through
-> `NODE_EXTRA_CA_CERTS`, or, against the emulator only, turn verification off
-> with `NODE_TLS_REJECT_UNAUTHORIZED=0` so a self-signed certificate works.
+
+The handlers verify the proxy's certificate with Node's default TLS settings,
+so the Lambda runtime must trust it. Either point `NODE_EXTRA_CA_CERTS` at a
+PEM file of the CA inside the Lambda container, or, against the emulator only,
+turn verification off with `NODE_TLS_REJECT_UNAUTHORIZED=0` so a self-signed
+certificate works.
 
 If the emulator cannot set environment variables on every Lambda container,
-set `NODE_TLS_REJECT_UNAUTHORIZED` from the CDK app with an aspect that applies
-only when you deploy to the emulator. Never apply it to a deployment to real
-AWS:
+set `NODE_TLS_REJECT_UNAUTHORIZED` from the CDK app with an aspect. The aspect
+below turns verification off for every Lambda function in the app, not only
+the custom-resource handlers, so apply it only when you deploy to the
+emulator, never to real AWS. `LOCAL_EMULATOR` is a variable you set yourself
+for emulator deployments:
 
 ```ts
 import { Aspects, CfnResource, IAspect } from 'aws-cdk-lib';
 import { IConstruct } from 'constructs';
 
-class InsecureCrTlsForEmulator implements IAspect {
+class InsecureTlsForEmulator implements IAspect {
   visit(node: IConstruct) {
     if (node instanceof CfnResource && node.cfnResourceType === 'AWS::Lambda::Function') {
       node.addPropertyOverride('Environment.Variables.NODE_TLS_REJECT_UNAUTHORIZED', '0');
@@ -383,7 +387,7 @@ class InsecureCrTlsForEmulator implements IAspect {
   }
 }
 
-if (process.env.LOCAL_EMULATOR) Aspects.of(app).add(new InsecureCrTlsForEmulator());
+if (process.env.LOCAL_EMULATOR) Aspects.of(app).add(new InsecureTlsForEmulator());
 ```
 
 ## Related
