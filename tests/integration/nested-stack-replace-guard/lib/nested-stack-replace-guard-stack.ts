@@ -30,6 +30,12 @@ class ChildNestedStack extends cdk.NestedStack {
  *
  * `CDKD_TEST_UPDATE=stackname` adds the `StackName` override.
  *
+ * Issue #3866 / go-to-k/cdkd#6012 (verify.sh phase 0):
+ * `CDKD_TEST_UPDATE=notificationarns` adds `NotificationARNs`, an SDK-unwired
+ * property on a type whose provider opts out of the Cloud Control fallback
+ * (`disableCcApiFallback`), so the deploy must be refused pre-flight. Never
+ * set on a deploy that succeeds.
+ *
  * covers: AWS::CloudFormation::Stack
  * covers: AWS::SSM::Parameter
  */
@@ -37,7 +43,13 @@ export class NestedStackReplaceGuardStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const child = new ChildNestedStack(this, 'Child');
-    if ((process.env.CDKD_TEST_UPDATE ?? '').split(',').includes('stackname')) {
+    const updates = (process.env.CDKD_TEST_UPDATE ?? '').split(',');
+    if (updates.includes('notificationarns')) {
+      (child.nestedStackResource as cdk.CfnResource).addPropertyOverride('NotificationARNs', [
+        this.formatArn({ service: 'sns', resource: 'cdkd-integ-never-created' }),
+      ]);
+    }
+    if (updates.includes('stackname')) {
       (child.nestedStackResource as cdk.CfnResource).addPropertyOverride(
         'StackName',
         'cdkd-integ-renamed-child'
