@@ -141,7 +141,7 @@ LOG_DIR="$(mktemp -d)"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 # The provider's identity token, the role's `RoleId`
-# (iam-role-provider.ts, `roleIdentityToken`). Fails the call on a read that
+# (iam-role/shared.ts, `roleIdentityToken`). Fails the call on a read that
 # answers none.
 role_id() { # usage: role_id <role>
   local id

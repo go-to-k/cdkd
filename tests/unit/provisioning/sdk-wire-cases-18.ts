@@ -132,7 +132,6 @@ const STREAM_CASE: TypeCase = {
 
 // --- AWS::CodeBuild::Project ---------------------------------------------------
 
-const CODEBUILD_SRC = 'codebuild-provider.ts';
 const PROJECT = 'project';
 const PROJECT_ARN = `arn:aws:codebuild:us-east-1:${ACCOUNT}:project/${PROJECT}`;
 const ROLE = `arn:aws:iam::${ACCOUNT}:role/cb`;
@@ -278,7 +277,7 @@ const PROJECT_CASE: TypeCase = {
             beneath(
               PROJECT_BAG,
               Object.keys(PROJECT_BAG).filter((k) => k !== 'Name' && k !== 'Triggers'),
-              `UpdateProject carries every block whole from the desired bag (${CODEBUILD_SRC}, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
+              `UpdateProject carries every block whole from the desired bag (codebuild/map-properties.ts, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
             )
           )
         ),
@@ -287,7 +286,7 @@ const PROJECT_CASE: TypeCase = {
             beneath(
               PROJECT_BAG,
               ['Triggers'],
-              `UpdateWebhook is built whole from the desired bag (${CODEBUILD_SRC}, reconcileWebhook), so a member removed under a still-present Triggers is absent from next alone; its update-add probe observes the delivery`
+              `UpdateWebhook is built whole from the desired bag (codebuild/update.ts, reconcileWebhook), so a member removed under a still-present Triggers is absent from next alone; its update-add probe observes the delivery`
             )
           ).filter(([label]) => label !== 'update-remove:Triggers.Webhook')
         ),
@@ -309,7 +308,7 @@ const PROJECT_CASE: TypeCase = {
             'SourceVersion',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, ${CODEBUILD_SRC}:941-952, 978-988)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, codebuild/update.ts, update)`,
           ])
         ),
         'create-vary:Triggers.Webhook': WEBHOOK_SELECTS,
@@ -325,7 +324,7 @@ const PROJECT_CASE: TypeCase = {
             'BadgeEnabled',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, ${CODEBUILD_SRC}:1000-1007)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, codebuild/update.ts, update)`,
           ])
         ),
       },
@@ -340,7 +339,6 @@ const PROJECT_CASE: TypeCase = {
 
 // --- AWS::ElastiCache::SubnetGroup / CacheCluster -------------------------------
 
-const ELASTICACHE_SRC = 'elasticache-provider.ts';
 const CLUSTER = 'cluster';
 const CLUSTER_ARN = `arn:aws:elasticache:us-east-1:${ACCOUNT}:cluster:${CLUSTER}`;
 const TOPIC_ARN = `arn:aws:sns:us-east-1:${ACCOUNT}:t`;
@@ -402,7 +400,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
 
 const SUBNET_IDS_REQUIRED =
   'SubnetIds is required by the CloudFormation schema, so no deployable template removes it';
-const SUBNET_IDS_FROM_NEXT = `ModifyCacheSubnetGroup carries the desired SubnetIds whole and never reads the previous list (${ELASTICACHE_SRC}, updateSubnetGroup); its update-add probe observes the delivery`;
+const SUBNET_IDS_FROM_NEXT = `ModifyCacheSubnetGroup carries the desired SubnetIds whole and never reads the previous list (elasticache/subnet-group.ts, updateSubnetGroup); its update-add probe observes the delivery`;
 
 const SUBNET_GROUP_CASE: TypeCase = {
   resourceType: 'AWS::ElastiCache::SubnetGroup',
@@ -511,11 +509,11 @@ const NOT_IN_MODIFY = (key: string): Record<string, string> =>
   Object.fromEntries(
     ['update-add', 'update-remove', 'update-vary'].map((d) => [
       `${d}:${key}`,
-      `ModifyCacheCluster has no ${key} member (beside nodes to add, for AZMode): a change is warned about and not applied, as CloudFormation leaves the cluster unchanged too (measured, issue #5438; ${ELASTICACHE_SRC})`,
+      `ModifyCacheCluster has no ${key} member (beside nodes to add, for AZMode): a change is warned about and not applied, as CloudFormation leaves the cluster unchanged too (measured, issue #5438; elasticache/cache-cluster-update.ts)`,
     ])
   );
 const MODIFY_FROM_NEXT = (what: string): string =>
-  `ModifyCacheCluster carries the desired ${what} whole from next (${ELASTICACHE_SRC}, updateCacheCluster); its update-add probe observes the delivery`;
+  `ModifyCacheCluster carries the desired ${what} whole from next (elasticache/cache-cluster-update.ts, updateCacheCluster); its update-add probe observes the delivery`;
 const REQUIRED_KEPT: Record<string, string> = Object.fromEntries(
   ['CacheNodeType', 'NumCacheNodes'].map((k) => [
     `update-remove:${k}`,
@@ -553,7 +551,7 @@ const CLUSTER_CASE: TypeCase = {
         ...Object.fromEntries(
           ['SnapshotRetentionLimit', 'AutoMinorVersionUpgrade', 'NotificationTopicArn'].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5004, ${ELASTICACHE_SRC}, updateCacheCluster)`,
+            `a removed ${k} sends nothing, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5004, elasticache/cache-cluster-update.ts, updateCacheCluster)`,
           ])
         ),
         ...Object.fromEntries(
@@ -565,10 +563,10 @@ const CLUSTER_CASE: TypeCase = {
             'IpDiscovery',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} is deliberately not reset: its default is engine-, version- or AWS-assigned, with no reset value cdkd can name (${ELASTICACHE_SRC}, updateCacheCluster's #1160 note); CFn unmeasured`,
+            `a removed ${k} is deliberately not reset: its default is engine-, version- or AWS-assigned, with no reset value cdkd can name (elasticache/cache-cluster-update.ts, updateCacheCluster's #1160 note); CFn unmeasured`,
           ])
         ),
-        'update-remove:VpcSecurityGroupIds': `a removed (or empty) VpcSecurityGroupIds sends no SecurityGroupIds, so the live groups stay: the same outcome CloudFormation reaches, the group is kept (CFn A/B on go-to-k/cdkd#5491: removal sent no securityGroupIds, [] sent securityGroupIds: [], and in both the cluster kept its group; ${ELASTICACHE_SRC}, updateCacheCluster)`,
+        'update-remove:VpcSecurityGroupIds': `a removed (or empty) VpcSecurityGroupIds sends no SecurityGroupIds, so the live groups stay: the same outcome CloudFormation reaches, the group is kept (CFn A/B on go-to-k/cdkd#5491: removal sent no securityGroupIds, [] sent securityGroupIds: [], and in both the cluster kept its group; elasticache/cache-cluster-update.ts, updateCacheCluster)`,
         ...beneath(REDIS_CLUSTER, ['VpcSecurityGroupIds'], MODIFY_FROM_NEXT('SecurityGroupIds')),
         // Every member of a still-present entry but its LogType: the entry is
         // sent from next, and prev only names the log types to disable.
@@ -592,7 +590,7 @@ const CLUSTER_CASE: TypeCase = {
           ['PreferredAvailabilityZones', 'PreferredAvailabilityZones.0', 'PreferredAvailabilityZones.1'].map(
             (l) => [
               `update-remove:${l}`,
-              `a zone list that shrinks (or goes) with every node kept adds no node, so ModifyCacheCluster carries no NewAvailabilityZones: CloudFormation sent none for [1c, 1b] -> absent or [1a, 1b, 1c] -> [1a, 1c] (measured, issue #5438; ${ELASTICACHE_SRC}, planNodeChanges)`,
+              `a zone list that shrinks (or goes) with every node kept adds no node, so ModifyCacheCluster carries no NewAvailabilityZones: CloudFormation sent none for [1c, 1b] -> absent or [1a, 1b, 1c] -> [1a, 1c] (measured, issue #5438; elasticache/cache-cluster-update.ts, planNodeChanges)`,
             ]
           )
         ),

@@ -99,9 +99,10 @@ The walkthrough has eight steps. Steps 1 to 6 make a working provider. Step 7
 adds two optional methods, and step 8 is the tests and the bookkeeping a pull
 request needs.
 
-For a larger provider that manages sub-resources, read `iam-role-provider.ts`.
-It attaches managed policies and writes inline policies on create, diffs them
-on update, and removes them before it deletes the role.
+For a larger provider that manages sub-resources, read `iam-role-provider.ts`
+and its companion directory `iam-role/`. It attaches managed policies and
+writes inline policies on create, diffs them on update, and removes them
+before it deletes the role.
 
 ### 1. Create the file and the client
 
