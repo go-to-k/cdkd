@@ -46,7 +46,7 @@ integ flips it without exercising the broad deploy/destroy paths a cross-cutting
 change touches. When the diff touches any of `src/deployment/{deploy-engine,deploy-engine/*,deploy-engine/*/*,deploy-value-equality,label-routing,intrinsic-function-resolver,intrinsic-resolver/*,retry,retryable-errors,retryable-errors/*,rollback-executor,rollback-executor/*}.ts`,
 `src/cli/commands/{destroy-runner,destroy,deploy}.ts`,
 `src/analyzer/{dag-builder,template-parser}.ts` or
-`src/provisioning/{register-providers,provider-registry}.ts`,
+`src/provisioning/{register-providers,provider-registry,provider-registry/*}.ts`,
 ...run a **broad integ** in addition to the feature integ. Cross-cutting code
 affects every user's deploy/destroy, and a broad fixture is the only defense
 against a regression that surfaces on stacks unlike your fixture. Keep the set
@@ -64,7 +64,7 @@ below in step with `/run-integ`'s "Choosing the fixture" section and
 - `export`
 
 ```bash
-if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|deploy-engine/[a-z-]+|deploy-value-equality|label-routing|intrinsic-function-resolver|intrinsic-resolver/[a-z-]+|retry|retryable-errors|retryable-errors/[a-z-]+|rollback-executor|rollback-executor/[a-z-]+)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'; then
+if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|deploy-engine/[a-z-]+|deploy-value-equality|label-routing|intrinsic-function-resolver|intrinsic-resolver/[a-z-]+|retry|retryable-errors|retryable-errors/[a-z-]+|rollback-executor|rollback-executor/[a-z-]+)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|provider-registry/[a-z-]+|register-providers)\.ts$'; then
   echo "Cross-cutting code touched — broad integ required."
 fi
 ```

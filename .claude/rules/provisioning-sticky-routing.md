@@ -2,6 +2,7 @@
 description: The sticky cc-api routing rule and the SDK flip-back
 paths:
   - 'src/provisioning/provider-registry.ts'
+  - 'src/provisioning/provider-registry/**'
 ---
 
 # The sticky `provisionedBy: 'cc-api'` rule

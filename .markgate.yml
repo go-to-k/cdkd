@@ -172,6 +172,7 @@ gates:
       # Hunk-filtering it would have been a fail-open for exactly the changes
       # it was added for (issue #2720).
       - "src/provisioning/provider-registry.ts"
+      - "src/provisioning/provider-registry/**"
 
   integ-schema-migration:
     # Records the last cdkd state-schema migration integ run. cdkd's
