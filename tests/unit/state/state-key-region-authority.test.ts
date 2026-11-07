@@ -720,7 +720,8 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // The SET, not a count: when a fourth caller appears the failure names it,
     // where a bare length would say only "expected 3".
     expect(files).toEqual([
-      'cli/commands/destroy.ts',
+      // `cdkd destroy`'s handler, moved out of `destroy.ts` (go-to-k/cdkd#5835).
+      'cli/commands/destroy/command.ts',
       // `cdkd state destroy`, moved out of `state.ts` (go-to-k/cdkd#5835).
       'cli/commands/state/destroy.ts',
       // `NestedStackProvider.delete`, in its companion directory (go-to-k/cdkd#5835).

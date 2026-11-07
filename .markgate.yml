@@ -125,6 +125,8 @@ gates:
       # tests/unit/scripts/cross-cutting-list-sync.test.ts.
       - "src/provisioning/region-check.ts"
       - "src/cli/commands/destroy.ts"
+      # `cdkd destroy`'s handler and stack selection, split out of it (#5835).
+      - "src/cli/commands/destroy/**"
       - "src/cli/commands/destroy-runner.ts"
       # Its bodies, split out of it (#5835); moving code must not take it out
       # of scope.
