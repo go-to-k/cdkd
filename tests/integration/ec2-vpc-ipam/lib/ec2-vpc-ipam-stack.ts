@@ -40,7 +40,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * covers: AWS::EC2::IPAMPool
  * covers: AWS::EC2::IPAMPoolCidr
  */
-/** go-to-k/cdkd#5945: the IPv6 pool's ULA range, outside the fd00::/16 EC2 refuses. */
+/** go-to-k/cdkd#5945: the IPv6 pool's ULA range (a value EC2 accepted live; see below). */
 const IPV6_POOL_CIDR = 'fd12:cd:5945::/48';
 /** go-to-k/cdkd#5945: SubnetVpc's IPv6 block, the second /56 of that range. */
 const IPV6_VPC_CIDR = 'fd12:cd:5945:100::/56';
@@ -96,10 +96,10 @@ export class Ec2VpcIpamStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SubnetVpcId', { value: subnetVpc.ref });
 
     // go-to-k/cdkd#5945: the IPv6 arm. SubnetVpc's IPv6 block comes from an
-    // IPv6 pool in the private scope holding a ULA range. EC2 refuses one
-    // inside fd00::/16 ("The CIDR specified : fd00:cd:5945::/48 is not valid
-    // for use in pool."; fd00:1234:5678::/48 too) and takes one elsewhere in
-    // fd00::/8 (measured, us-east-1). The block is named
+    // IPv6 pool in the private scope holding a ULA range. EC2 refused
+    // fd00:cd:5945::/48 and fd00:1234:5678::/48 ("The CIDR specified : ... is
+    // not valid for use in pool.") and accepted fd12:3456:7890::/48 and
+    // fd12:cd:5945::/48 (measured, us-east-1). The block is named
     // explicitly inside the pool, so the planning pool below can hold it
     // without reading it back.
     const ipv6Pool = new ec2.CfnIPAMPool(this, 'Ipv6Pool', {
