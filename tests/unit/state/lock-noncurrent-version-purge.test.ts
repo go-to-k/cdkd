@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
 // compiler API only under `typescript/unstable/*`. Same import every other
 // AST-based critic in this repo uses.
@@ -773,7 +773,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
   });
 
   /**
-   * The fence. `deleteLock` is private with four call sites today, and a fifth
+   * The fence. `deleteLock` has four call sites today, and a fifth
    * that forgot the purge would reintroduce this issue silently — the delete
    * still succeeds, and only a version listing months later shows the growth.
    *
@@ -786,6 +786,19 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
    */
   describe('every deleteLock caller is paired with a purge (fence)', () => {
     const SRC = join(process.cwd(), 'src/state/lock-manager.ts');
+    /**
+     * The class file plus every companion module its method bodies moved into
+     * (go-to-k/cdkd#5835). Listed from the directory rather than named, so a
+     * caller moved into a new companion module cannot sit outside the walk.
+     */
+    const COMPANION_DIR = join(process.cwd(), 'src/state/lock-manager');
+    const SOURCES = [
+      SRC,
+      ...readdirSync(COMPANION_DIR)
+        .filter((f) => f.endsWith('.ts'))
+        .sort()
+        .map((f) => join(COMPANION_DIR, f)),
+    ];
 
     /**
      * Members of `LockManager` that call `this.<name>(...)`, by member name.
@@ -815,7 +828,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
      * - **An ALIASED `this`** (`const self = this; self.deleteLock(...)`) is
      *   invisible — the walk matches on a `this.` receiver. That is a
      *   fail-OPEN, so it is REFUSED rather than modelled: `assertNoThisAlias`
-     *   below fails if `lock-manager.ts` ever introduces one. Refusing an
+     *   below fails if `lock-manager.ts` or a companion module ever introduces one. Refusing an
      *   unmodelled construct is stricter than adding a fifth pattern for it.
      * - **A nested class or object literal** attributes to ITS OWN member name
      *   (`innerM`, `om`), not to the enclosing one. Not a fail-open: such a
@@ -851,11 +864,20 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
     const COMPUTED = '<computed member name>';
     const UNATTRIBUTED_PREFIX = '<unattributed call at line ';
     const unattributed = (source: ts.SourceFile, node: ts.Node): string =>
-      `${UNATTRIBUTED_PREFIX}${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}>`;
+      `${UNATTRIBUTED_PREFIX}${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} of ${basename(source.fileName)}>`;
 
+    /** `text` drives the walk with one synthetic source; without it, every file in SOURCES. */
     const methodsCalling = (name: string, text?: string): Set<string> => {
-      const body = text ?? readFileSync(SRC, 'utf8');
-      const source = ts.createSourceFile(SRC, body, ts.ScriptTarget.Latest, true);
+      if (text !== undefined) return methodsCallingIn(name, SRC, text);
+      const found = new Set<string>();
+      for (const file of SOURCES) {
+        for (const m of methodsCallingIn(name, file, readFileSync(file, 'utf8'))) found.add(m);
+      }
+      return found;
+    };
+
+    const methodsCallingIn = (name: string, file: string, body: string): Set<string> => {
+      const source = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true);
       const diagnostics =
         (source as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ??
         [];
@@ -863,12 +885,23 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       // with no violations.
       if (diagnostics.length > 0) {
         throw new Error(
-          `${SRC} failed to parse (${diagnostics.length} errors): ` +
+          `${file} failed to parse (${diagnostics.length} errors): ` +
             ts.flattenDiagnosticMessageText(diagnostics[0]!.messageText, ' ')
         );
       }
       const memberName = (node: ts.Node): string | undefined => {
         if (ts.isConstructorDeclaration(node)) return 'constructor';
+        // A companion-module function a `LockManager` method delegates to
+        // (go-to-k/cdkd#5835) declares `this` as its first parameter, which is
+        // what makes its `this` the instance. One that does not is NOT a
+        // member: its `this.deleteLock` stays unattributed (fail-closed).
+        if (ts.isFunctionDeclaration(node)) {
+          const first = node.parameters[0];
+          if (first && ts.isIdentifier(first.name) && first.name.text === 'this') {
+            return node.name ? node.name.text : COMPUTED;
+          }
+          return undefined;
+        }
         if (
           ts.isMethodDeclaration(node) ||
           ts.isPropertyDeclaration(node) ||
@@ -934,12 +967,234 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
     it('refuses a `this` alias, which the walk cannot follow', () => {
       // Fail CLOSED on the fence's own blind spot rather than pretend it does
       // not exist. If this ever reddens, the fix is to remove the alias from
-      // `lock-manager.ts` or to teach the walk to follow it — not to delete
+      // that file or to teach the walk to follow it — not to delete
       // this case.
-      expect(thisAliases(readFileSync(SRC, 'utf8'))).toBe(0);
+      for (const file of SOURCES) expect(thisAliases(readFileSync(file, 'utf8')), file).toBe(0);
       // ...and the detector is not vacuous.
       expect(thisAliases('class A { m(): void { const self = this; self.deleteLock(); } }')).toBe(1);
       expect(thisAliases('class A { m(): void { let s; s = this; s.deleteLock(); } }')).toBe(1);
+    });
+
+    /**
+     * Refuse the second construct the walk cannot follow, which the split
+     * (go-to-k/cdkd#5835) opened: `deleteLock` and `purgeLockVersions` are now
+     * also module functions, so `deleteLock.call(this, ...)` from a companion
+     * function, or a kept class method, deletes with no `this.deleteLock` for
+     * the walk to see. Every reference to either NAME that is not a property
+     * name on `this` (`this.deleteLock`), a declaration, an un-renamed import
+     * specifier, or the class delegator's own `name.call(this, ...)` inside
+     * the member of that name is counted, and so are a namespace import and an
+     * element access spelling either name; the real sources must hold none.
+     */
+    const bareReferences = (name: string, text: string): number => {
+      const source = ts.createSourceFile(SRC, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const walk = (node: ts.Node, member: string | undefined): void => {
+        const here =
+          ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) ? node.name.text : member;
+        // A namespace import reaches the function as `ns.deleteLock` or
+        // `ns['deleteLock']`, neither of which names a `this` receiver: refused
+        // whole rather than followed.
+        if (ts.isNamespaceImport(node)) n += 1;
+        if (
+          ts.isStringLiteralLike(node) &&
+          node.text === name &&
+          ts.isElementAccessExpression(node.parent)
+        ) {
+          n += 1;
+        }
+        if (ts.isIdentifier(node) && node.text === name) {
+          const p = node.parent;
+          const allowed =
+            // `this.deleteLock` only: `rel.deleteLock` is the module function.
+            (ts.isPropertyAccessExpression(p) &&
+              p.name === node &&
+              p.expression.kind === ts.SyntaxKind.ThisKeyword) ||
+            ((ts.isMethodDeclaration(p) || ts.isFunctionDeclaration(p)) && p.name === node) ||
+            // An un-renamed import only: `{ deleteLock as dl }` hides every later use.
+            (ts.isImportSpecifier(p) && p.propertyName === undefined) ||
+            (here === name &&
+              ts.isPropertyAccessExpression(p) &&
+              p.expression === node &&
+              p.name.text === 'call' &&
+              ts.isCallExpression(p.parent) &&
+              p.parent.expression === p &&
+              p.parent.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword);
+          if (!allowed) n += 1;
+        }
+        node.forEachChild((child) => walk(child, here));
+      };
+      walk(source, undefined);
+      return n;
+    };
+
+    /**
+     * The refusal above reads SOURCES only, so a file elsewhere under `src/`
+     * could import `deleteLock` and hand it back renamed (`export { deleteLock
+     * as zap }`). Nothing outside the class file reaches a companion module:
+     * count every static import / export, `import x = require()` and dynamic
+     * `import()` whose relative specifier resolves into the companion
+     * directory, outside SOURCES.
+     */
+    const companionImports = (file: string, text: string): number => {
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const hits = (spec: ts.Node | undefined): boolean =>
+        spec !== undefined &&
+        ts.isStringLiteralLike(spec) &&
+        spec.text.startsWith('.') &&
+        resolve(dirname(file), spec.text).startsWith(COMPANION_DIR + sep);
+      const walk = (node: ts.Node): void => {
+        if (
+          ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+            hits(node.moduleSpecifier)) ||
+          (ts.isCallExpression(node) &&
+            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+            hits(node.arguments[0])) ||
+          (ts.isImportEqualsDeclaration(node) &&
+            ts.isExternalModuleReference(node.moduleReference) &&
+            hits(node.moduleReference.expression))
+        ) {
+          n += 1;
+        }
+        node.forEachChild(walk);
+      };
+      walk(source);
+      return n;
+    };
+
+    /** Every `.ts` file under `src/` that is neither the class file nor a companion module. */
+    const outsideSources = (): string[] => {
+      const all: string[] = [];
+      const collect = (dir: string): void => {
+        for (const name of readdirSync(dir)) {
+          const p = join(dir, name);
+          if (statSync(p).isDirectory()) collect(p);
+          else if (p.endsWith('.ts') && !p.endsWith('.d.ts')) all.push(p);
+        }
+      };
+      collect(join(process.cwd(), 'src'));
+      const outside = all.filter((p) => !SOURCES.includes(p));
+      // Floor: the walk saw the tree, and SOURCES is a strict subset of it.
+      expect(outside.length).toBeGreaterThan(100);
+      expect(SOURCES.every((p) => all.includes(p))).toBe(true);
+      return outside;
+    };
+
+    /**
+     * `deleteLock` / `purgeLockVersions` were `private` before the split
+     * (go-to-k/cdkd#5835), so tsc refused `lm.deleteLock(...)` anywhere outside
+     * the class, and the pairing walk, which reads SOURCES only, could rely on
+     * that. They are public now (`@internal`), so the refusal moves here: any
+     * property access, element access or destructuring that names either
+     * method, on any receiver, in a file outside SOURCES.
+     */
+    const LOCK_INTERNALS = new Set(['deleteLock', 'purgeLockVersions']);
+    const instanceAccesses = (text: string): number => {
+      const source = ts.createSourceFile(SRC, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const walk = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node) && LOCK_INTERNALS.has(node.name.text)) n += 1;
+        if (
+          ts.isElementAccessExpression(node) &&
+          ts.isStringLiteralLike(node.argumentExpression) &&
+          LOCK_INTERNALS.has(node.argumentExpression.text)
+        ) {
+          n += 1;
+        }
+        if (ts.isBindingElement(node)) {
+          const key = node.propertyName ?? node.name;
+          if (ts.isIdentifier(key) && LOCK_INTERNALS.has(key.text)) n += 1;
+        }
+        node.forEachChild(walk);
+      };
+      walk(source);
+      return n;
+    };
+
+    it('no file outside the class and its companion modules reaches deleteLock or the purge', () => {
+      const offenders = outsideSources().filter(
+        (p) => instanceAccesses(readFileSync(p, 'utf8')) > 0
+      );
+      expect(offenders).toEqual([]);
+      // ...and the detector is not vacuous, for each shape it counts.
+      expect(instanceAccesses("void lm.deleteLock('s', 'r');")).toBe(1);
+      expect(instanceAccesses("void this.lockManager.purgeLockVersions('k', 'reap');")).toBe(1);
+      expect(instanceAccesses("void lm['deleteLock']('s', 'r');")).toBe(1);
+      expect(instanceAccesses('const { deleteLock: d } = lm; void d;')).toBe(1);
+      expect(instanceAccesses("void lm.releaseLock('s', 'r');")).toBe(0);
+    });
+
+    it('no file outside the class and its companion modules imports a companion module', () => {
+      const outside = outsideSources();
+      const offenders = outside.filter((p) => companionImports(p, readFileSync(p, 'utf8')) > 0);
+      expect(offenders).toEqual([]);
+      // ...and the detector is not vacuous, for each of its three shapes.
+      const elsewhere = join(process.cwd(), 'src/state/elsewhere.ts');
+      expect(
+        companionImports(elsewhere, "import { deleteLock } from './lock-manager/release.js';")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "export { deleteLock as zap } from './lock-manager/release.js';")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "void import('./lock-manager/release.js');")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "import rel = require('./lock-manager/release.js');")
+      ).toBe(1);
+      expect(companionImports(elsewhere, "import { LockManager } from './lock-manager.js';")).toBe(0);
+    });
+
+    it('refuses a direct call of the module function, which the walk cannot follow', () => {
+      for (const file of SOURCES) {
+        for (const name of ['deleteLock', 'purgeLockVersions']) {
+          expect(bareReferences(name, readFileSync(file, 'utf8')), `${file} ${name}`).toBe(0);
+        }
+      }
+      // ...and the detector is not vacuous: a companion function's direct
+      // call, a kept method's, and an alias are each counted.
+      expect(
+        bareReferences(
+          'deleteLock',
+          'export async function reap(this: LockManager): Promise<void> { await deleteLock.call(this, 1); }'
+        )
+      ).toBe(1);
+      expect(
+        bareReferences(
+          'deleteLock',
+          'class A { releaseLock(): Promise<void> { return deleteLock.call(this, 1); } }'
+        )
+      ).toBe(1);
+      expect(
+        bareReferences('deleteLock', 'class A { m(): void { const f = deleteLock; void f(1); } }')
+      ).toBe(1);
+      // A renamed import, a namespace import's property, and its element access.
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import { deleteLock as dl } from './release.js';\nexport async function f(this: LockManager): Promise<void> { await dl.call(this, 1); }"
+        )
+      ).toBeGreaterThan(0);
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import * as rel from './release.js';\nexport async function f(this: LockManager): Promise<void> { await rel.deleteLock.call(this, 1); }"
+        )
+      ).toBeGreaterThan(0);
+      expect(
+        bareReferences(
+          'deleteLock',
+          "export async function f(this: LockManager, rel: Record<string, Function>): Promise<void> { await rel['deleteLock']!.call(this, 1); }"
+        )
+      ).toBe(1);
+      // The delegator shape it allows is exactly the class's own.
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import { deleteLock } from './x.js';\nclass A { deleteLock(a: number): Promise<void> { return deleteLock.call(this, a); } }"
+        )
+      ).toBe(0);
     });
 
     it('derives a population the fence can actually see', () => {
@@ -1039,6 +1294,24 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         // which is what makes the pairing assertion red on this input.
         expect([...deleters][0]).not.toEqual([...purgers][0]);
         expect([...deleters].filter((m) => !purgers.has(m))).toHaveLength(1);
+      });
+
+      it('attributes a companion function declaring `this` to its own name', () => {
+        expect([
+          ...methodsCalling(
+            'deleteLock',
+            'export async function reap(this: LockManager): Promise<void> { await this.deleteLock(1, 2); }'
+          ),
+        ]).toEqual(['reap']);
+      });
+
+      it('walks the companion modules, not only the class file', () => {
+        // The three deleters live in `lock-manager/acquire.ts` and
+        // `lock-manager/release.ts` since go-to-k/cdkd#5835; a walk of the
+        // class file alone finds none of them.
+        expect(SOURCES.length).toBeGreaterThan(1);
+        const inClassFile = methodsCallingIn('deleteLock', SRC, readFileSync(SRC, 'utf8'));
+        expect([...inClassFile]).toEqual([]);
       });
 
       it('attributes a #private member to its own name', () => {

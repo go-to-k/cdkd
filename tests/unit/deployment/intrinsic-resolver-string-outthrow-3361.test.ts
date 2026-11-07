@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
+import { RESOLVER_FAMILY } from '../_resolver-family.js';
 
 /**
  * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361), the
@@ -320,14 +321,8 @@ describe('helpers that render a caught value (#3361)', () => {
  * `String()` or a template-literal interpolation (both run ToString).
  */
 describe('src/deployment/intrinsic-resolver source scan (#3361)', () => {
-  const DIR = join(process.cwd(), 'src/deployment/intrinsic-resolver');
-  const files = [
-    // Recursive: a split module's own sibling directory (`dynamic-refs/`, #5835).
-    ...readdirSync(DIR, { recursive: true, encoding: 'utf8' })
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => join(DIR, f)),
-    join(process.cwd(), 'src/deployment/intrinsic-function-resolver.ts'),
-  ];
+  // The shared family, nested split directories included (#5835).
+  const files = RESOLVER_FAMILY.map((rel) => join(process.cwd(), rel));
 
   /** The parameter name of `node` when it IS a `.catch(...)` callback, scoped to its own body. */
   function catchCallbackParam(node: ts.Node): string | undefined {

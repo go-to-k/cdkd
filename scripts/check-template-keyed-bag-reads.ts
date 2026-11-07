@@ -94,6 +94,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/cross-stack.ts',
   'src/deployment/intrinsic-resolver/cfn-fallback.ts',
   'src/deployment/intrinsic-resolver/stack-output.ts',
+  'src/deployment/intrinsic-resolver/stack-output/name-masks.ts',
   'src/deployment/intrinsic-resolver/stack-state.ts',
   'src/deployment/intrinsic-resolver/cdk-cross-account-ref.ts',
   'src/deployment/intrinsic-resolver/params-conditions.ts',

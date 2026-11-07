@@ -84,6 +84,28 @@ if network.version != 6:
     raise ValueError("expected an IPv6 CIDR")
 print(network)' "$1"
 }
+# go-to-k/cdkd#5944: the SubnetIpv6Blocks output is `blocks:` plus
+# Fn::GetAtt [Subnet, Ipv6CidrBlocks] joined, which must name the block AWS
+# holds after every phase, an in-place change included, since update() records
+# no attributes. It resolved to the subnet ID before the fix.
+check_getatt_blocks() { # state JSON, expected canonical CIDR (or none)
+  local out blocks
+  out=$(printf '%s' "$1" | jq -r '.outputs.SubnetIpv6Blocks') || return 1
+  case "${out}" in
+    blocks:*) blocks="${out#blocks:}" ;;
+    *) echo "FAIL: SubnetIpv6Blocks output is '${out}', expected blocks:<GetAtt Ipv6CidrBlocks>" >&2; exit 1 ;;
+  esac
+  if [ "$2" = none ]; then
+    [ -z "${blocks}" ] || { echo "FAIL: GetAtt Ipv6CidrBlocks is '${blocks}', expected an empty list" >&2; exit 1; }
+  else
+    case "${blocks}" in
+      *,*|'') echo "FAIL: GetAtt Ipv6CidrBlocks is '${blocks}', expected exactly $2" >&2; exit 1 ;;
+    esac
+    blocks=$(canonical_ipv6_cidr "${blocks}") || { echo "FAIL: GetAtt Ipv6CidrBlocks '${out#blocks:}' is not an IPv6 CIDR" >&2; exit 1; }
+    [ "${blocks}" = "$2" ] || { echo "FAIL: GetAtt Ipv6CidrBlocks is ${blocks}, expected $2" >&2; exit 1; }
+  fi
+  echo "    OK: Fn::GetAtt [Subnet, Ipv6CidrBlocks] = [${blocks}]"
+}
 check_live() { # expected DNS64, expected CIDR (or none)
   local state current route cidr dns expected_cidr
   expected_cidr="$2"
@@ -105,6 +127,7 @@ check_live() { # expected DNS64, expected CIDR (or none)
     fi
     if [ "${dns}" = "$1" ] && { [ "${cidr}" = "${expected_cidr}" ] || { [ "${expected_cidr}" = none ] && [ -z "${cidr}" ]; }; }; then
       echo "    OK: same SDK subnet, DNS64=$1, IPv6=$2"
+      check_getatt_blocks "${state}" "${expected_cidr}"
       return 0
     fi
     sleep 5
@@ -237,6 +260,15 @@ case "${DNS_SUBNET_ID}" in subnet-?*) ;; *) echo "FAIL: no DnsSubnet ID" >&2; ex
 case "${NATIVE_SUBNET_ID}" in subnet-?*) ;; *) echo "FAIL: no NativeSubnet ID" >&2; exit 1 ;; esac
 case "${BLOCK_SUBNET_ID}" in subnet-?*) ;; *) echo "FAIL: no BlockSubnet ID" >&2; exit 1 ;; esac
 check_live true "${FIRST_CIDR}"
+# go-to-k/cdkd#5944: two more Subnet return values the SDK record lacks.
+GETATT_VPC=$(printf '%s' "${STATE}" | jq -r '.outputs.SubnetVpcId')
+[ "${GETATT_VPC}" = "${VPC_ID}" ] || { echo "FAIL: GetAtt [Subnet, VpcId] is '${GETATT_VPC}', expected ${VPC_ID}" >&2; exit 1; }
+GETATT_NACL=$(printf '%s' "${STATE}" | jq -r '.outputs.SubnetNaclAssociationId')
+LIVE_NACL=$(aws ec2 describe-network-acls --region "${REGION}" --filters "Name=association.subnet-id,Values=${SUBNET_ID}" \
+  --query "NetworkAcls[].Associations[?SubnetId=='${SUBNET_ID}'].NetworkAclAssociationId | [] | [0]" --output text)
+case "${LIVE_NACL}" in aclassoc-?*) ;; *) echo "FAIL: no live network ACL association for ${SUBNET_ID} (got '${LIVE_NACL}')" >&2; exit 1 ;; esac
+[ "${GETATT_NACL}" = "${LIVE_NACL}" ] || { echo "FAIL: GetAtt [Subnet, NetworkAclAssociationId] is '${GETATT_NACL}', expected ${LIVE_NACL}" >&2; exit 1; }
+echo "    OK: Fn::GetAtt [Subnet, VpcId] = ${GETATT_VPC}, [Subnet, NetworkAclAssociationId] = ${GETATT_NACL}"
 check_dns_subnet true resource-name true true
 check_native_subnet
 check_drift "initial create"

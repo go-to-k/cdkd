@@ -77,7 +77,7 @@ CLI="node ${REPO_ROOT}/dist/cli.js"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 
-# The renewal cap in src/state/lock-manager.ts. The deploy has to outlive it
+# The renewal cap in src/state/lock-manager/shared.ts. The deploy has to outlive it
 # for arm B to observe anything, and the sleep below is what guarantees that.
 RENEWAL_CAP_SECONDS=120
 SLEEP_SECONDS="${CDKD_LOCK_RENEWAL_SLEEP_SECONDS:-150}"
