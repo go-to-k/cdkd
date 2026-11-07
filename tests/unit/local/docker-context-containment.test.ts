@@ -20,6 +20,8 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// The image plan would otherwise run the real docker to mount an RIE (#6018).
+vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: async () => undefined }));
 // Spread the real module so everything else it exports stays live; only the
 // channels are silenced.
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {

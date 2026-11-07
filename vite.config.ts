@@ -103,8 +103,9 @@ export default defineConfig({
     // run` invokes vitest directly. See the file's own header.
     // run-tmpdir-setup points TMPDIR at a per-run directory and removes it at
     // the end, so suites that never clean their mkdtemp dirs leak nothing.
-    // full-suite-lock-setup runs FIRST: a full run waits for any other full
-    // run on the machine (parallel lanes froze the host), and it must read the
+    // full-suite-lock-setup runs FIRST: a large run (more than LARGE_RUN_FILES
+    // files) waits for any other on the machine (parallel lanes crashed the
+    // host), and it must read the
     // shared temp root before run-tmpdir-setup moves TMPDIR.
     globalSetup: [
       './tests/full-suite-lock-setup.ts',

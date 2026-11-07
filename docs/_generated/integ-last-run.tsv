@@ -102,7 +102,7 @@ diff-intrinsic-target-change	2026-11-04T09:11:36Z	PASS	50	verify.sh	rc 0, destro
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docdb-global-cluster	2026-11-06T17:37:57Z	PASS	267	verify.sh	#5898 docdb split head; rc ok, orph clean
-docdb-neptune	2026-11-03T00:01:22Z	PASS	5990	verify.sh	rc ok, destroy 0 errors, 0 orphans (#5682 step 3g kept-dependency lines)
+docdb-neptune	2026-11-07T16:26:30Z	PASS	5343	verify.sh	rc 0, destroy 0 errors, 0 orphans (#6012 step 1b removed, own bucket)
 docdb-restore	2026-11-06T17:43:30Z	PASS	600	verify.sh	#5898 docdb split head; rc ok, orph clean
 docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
@@ -246,7 +246,7 @@ local-invoke	2026-11-05T09:05:23Z	PASS	25	verify.sh	rc=0; docker sweep clean; af
 local-invoke-agentcore	2026-11-05T07:11:59Z	PASS	81	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-buildkit	2026-11-05T06:49:09Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; BuildKit features all fired
-local-invoke-container	2026-11-05T07:09:33Z	PASS	20	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
+local-invoke-container	2026-11-07T15:32:43Z	PASS	50	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-from-cfn-stack	2026-11-05T06:55:50Z	PASS	94	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-from-cfn-stack-multi-stack	2026-11-05T06:54:12Z	PASS	112	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
@@ -266,7 +266,7 @@ local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep
 local-start-alb	2026-11-06T09:11:57Z	PASS	26	verify.sh	rc=0; docker sweep clean; after cdk-local 0.160.0 bump (#5856)
 local-start-alb-from-state	2026-11-05T09:04:33Z	PASS	311	verify.sh	rc=0; own temp state bucket; destroy 0 errors, state+AWS orphan-clean, docker clean; after cdk-local 0.158.2 bump (#5800)
 local-start-api	2026-11-05T09:04:58Z	PASS	25	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
-local-start-api-container	2026-11-05T06:44:58Z	PASS	10	verify.sh	rc ok, docker sweep clean
+local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-05T06:44:46Z	PASS	10	verify.sh	rc ok, docker sweep clean
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean
 local-start-cloudfront	2026-11-06T09:12:11Z	PASS	10	verify.sh	rc=0; docker sweep clean; no AWS; after cdk-local 0.160.0 bump (#5856)
@@ -297,7 +297,7 @@ nested-required-preflight	2026-11-07T00:09:01Z	PASS	55	verify.sh	#5939 nested-st
 nested-stack	2026-11-07T00:10:14Z	PASS	73	verify.sh	#5939 nested-stack split head; rc ok, orph clean
 nested-stack-3level	2026-11-04T18:57:42Z	PASS	466	verify.sh	rc ok, no seeded secret in any version, orph clean (own temp state bucket)
 nested-stack-deep	2026-11-07T00:08:06Z	PASS	84	verify.sh	#5939 nested-stack split head; rc ok, orph clean
-nested-stack-replace-guard	2026-11-05T10:33:52Z	PASS	50	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
+nested-stack-replace-guard	2026-11-07T16:26:30Z	PASS	65	verify.sh	rc 0, Phase 0 pre-flight refusal ok (#6012), destroy 0 errors, orph clean, own bucket
 nested-stack-rollback	2026-11-04T23:33:45Z	PASS	91	verify.sh	rc ok; auto rollback reverted child update, 2b journal rollback, 2c no journal, destroy clean; own temp state bucket; orph clean
 nested-stack-secret	2026-11-04T20:57:58Z	PASS	297	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 nlb-quic-server-id	2026-10-27T14:28:12Z	PASS	236	verify.sh	rc ok, orph clean; probes red at Phase1 create and Phase2 order

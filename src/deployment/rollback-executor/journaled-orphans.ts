@@ -14,14 +14,7 @@
  */
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { type RollbackJournalSegment, splitImportedOps } from '../../types/rollback-journal.js';
-import type { ResourceState, StackState } from '../../types/state.js';
-import type { ResourceIdentityVerdict } from '../../types/resource.js';
-import { askForeignHolder, createdResourceStillThere } from './orphan-identity.js';
-import { physicalIdKey, samePhysicalId } from '../replacement-name-holder/name-keys.js';
-import {
-  hasReadableOrphans,
-  unreadableOrphanRecords,
-} from '../../state/malformed-resources-bag.js';
+import type { ResourceState } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
@@ -40,11 +33,14 @@ import {
   type RollbackExecutorContext,
   demoteSupersededOrphans,
   isJournaledOrphan,
-  isReplacedRecord,
-  markProvenDistinctFromRecord,
   replacementNeverSwapped,
   replayFailedOperations,
 } from '../rollback-executor.js';
+import type { ForeignHolding } from './journaled-orphans/foreign-holder-scan.js';
+import { applySuccessRule } from './journaled-orphans/success-rule.js';
+
+export type { ForeignHolding } from './journaled-orphans/foreign-holder-scan.js';
+export { makeForeignHolderScan } from './journaled-orphans/foreign-holder-scan.js';
 
 /** One journal segment's proven orphans. */
 interface SegmentOrphans {
@@ -402,16 +398,6 @@ export async function deleteJournaledOrphans(
   return total;
 }
 
-/** What another stack's record says about a resource (`makeForeignHolderScan`). */
-export type ForeignHolding =
-  | { kind: 'held'; by: string }
-  /**
-   * `retryable`: the check itself failed (go-to-k/cdkd#4705), so re-running
-   * once it can succeed may settle the answer.
-   */
-  | { kind: 'unreadable'; what: string; retryable?: true }
-  | undefined;
-
 /** The outcome of {@link settleJournaledOrphansOnSuccess}. */
 export interface SuccessSettleOutcome {
   /** Entries left in AWS unacted on: kept, or skipped with a warning. */
@@ -709,284 +695,6 @@ export async function settleJournaledOrphansOnSuccess(args: {
   );
   warnDropFailed(logger, stackName, region, failedDeletes);
   return { unaddressed: kept.length + skipped + leftInPlace, keepJournal: true };
-}
-
-/**
- * The success-path rule (see {@link settleJournaledOrphansOnSuccess}): demote
- * every proven orphan this deploy's outcome may own, and return those whose
- * ownership could not be read (kept, not acted on), those settled without
- * a delete: a record of this stack tracks them, or AWS reports them gone
- * (go-to-k/cdkd#4655), and those it proved deletable (`proven`, which the
- * replay's delete then does not ask again).
- */
-async function applySuccessRule(
-  orphans: JournaledOrphans,
-  stateResources: Record<string, ResourceState>,
-  deployLogicalIds: ReadonlySet<string>,
-  foreignHolder: (resourceType: string, physicalId: string) => Promise<ForeignHolding>,
-  stack: string,
-  logger: Logger,
-  isInterrupted: (() => boolean) | undefined,
-  identityCtx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>
-): Promise<{
-  unreadable: Set<FailedOperation>;
-  tracked: Set<FailedOperation>;
-  proven: Set<FailedOperation>;
-}> {
-  const unreadable = new Set<FailedOperation>();
-  const tracked = new Set<FailedOperation>();
-  const proven = new Set<FailedOperation>();
-  let interrupted = false;
-  for (const { ops } of orphans.segments) {
-    for (const op of ops) {
-      if (op.physicalIdRecoveredFromError !== true || !op.physicalId) continue;
-      // An interrupt stops the scan; what it did not reach is kept untouched.
-      if (interrupted || isInterrupted?.()) {
-        interrupted = true;
-        unreadable.add(op);
-        continue;
-      }
-      // A record of this stack holding this very resource tracks it (an
-      // idempotent create, an adoption): settled here, silently, without the
-      // classifier, whose same-logical-id check would call a record holding
-      // another resource under that id a mismatch. Under the type's case rule
-      // (go-to-k/cdkd#4692): `mycluster` holds the cluster `MyCluster` names.
-      const opId = op.physicalId;
-      if (
-        Object.values(stateResources).some(
-          (r) =>
-            r?.resourceType === op.resourceType &&
-            typeof r.physicalId === 'string' &&
-            samePhysicalId(op.resourceType, r.physicalId, opId)
-        )
-      ) {
-        tracked.add(op);
-        continue;
-      }
-      // go-to-k/cdkd#4604: a replacement's new resource shares its logical
-      // id with the resource it was replacing; a record still naming THAT
-      // resource is not one this deploy or a later one put there.
-      const hasRecord = Object.prototype.hasOwnProperty.call(stateResources, op.logicalId);
-      const record = hasRecord ? stateResources[op.logicalId] : undefined;
-      const recordUnderId = hasRecord && !isReplacedRecord(op, record);
-      if (recordUnderId || deployLogicalIds.has(op.logicalId)) {
-        // go-to-k/cdkd#4606: the fix-forward. A record under the id may hold
-        // a NEW resource; only the provider's live read can tell, and only
-        // its `'different'` lets the orphan on to the delete below.
-        const verdict = recordUnderId
-          ? await recordIdentity(op, record, identityCtx, logger)
-          : 'unknown';
-        if (verdict === 'same') {
-          tracked.add(op);
-          continue;
-        }
-        if (verdict !== 'different') {
-          op.physicalIdRecoveredFromError = false;
-          continue;
-        }
-        markProvenDistinctFromRecord(op, record!);
-      }
-      const holding = await askForeignHolder(foreignHolder, { ...op, physicalId: op.physicalId });
-      if (holding === undefined) {
-        // go-to-k/cdkd#4655: the last check before the delete. A name-keyed
-        // id may now name a resource made after the orphan was removed.
-        const created = await createdResourceStillThere(op, identityCtx);
-        if (created === 'proven') proven.add(op);
-        else if (created === 'gone') {
-          // Settled without a delete: one sent later, after the other
-          // orphans' reads and deletes, could reach a resource created under
-          // the name in between.
-          logger.info(
-            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
-              safeMsg`of stack ${stack} created, is already gone: nothing to delete.`
-          );
-          tracked.add(op);
-        } else if (created === 'mismatch') {
-          logger.warn(
-            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
-              safeMsg`of stack ${stack} created, is not deleted: the resource now under its physical id is another ` +
-              'one (its identity differs from the one that deploy recorded, so its name was reused).'
-          );
-          op.physicalIdRecoveredFromError = false;
-        } else if (created === 'unproven') {
-          logger.warn(
-            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
-              safeMsg`of stack ${stack} created, is not deleted: nothing proves the resource now under its physical ` +
-              'id is the one that deploy created (it may have been deleted and its name reused).'
-          );
-          op.physicalIdRecoveredFromError = false;
-        }
-        continue;
-      }
-      if (holding.kind === 'held') {
-        logger.warn(
-          safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
-            safeMsg`of stack ${stack} created, is not deleted: ${holding.by} holds a resource of that type under ` +
-            'the same physical id.'
-        );
-        op.physicalIdRecoveredFromError = false;
-        continue;
-      }
-      logger.warn(
-        safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
-          safeMsg`of stack ${stack} created, is not deleted: ${holding.what}, so whether another stack holds it is unknown.`
-      );
-      unreadable.add(op);
-    }
-  }
-  return { unreadable, tracked, proven };
-}
-
-/**
- * go-to-k/cdkd#4606: whether the proven orphan `op` is the resource `record`
- * (the record under its logical id) holds, by the provider's live read
- * (`ResourceProvider.isSameResource`), asked through the provider the orphan's
- * delete would take. `'unknown'` for a record of another type or without a
- * physical id, a provider without the method, and any error: the caller then
- * keeps today's warn-and-skip.
- */
-async function recordIdentity(
-  op: FailedOperation,
-  record: ResourceState | undefined,
-  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>,
-  logger: Logger
-): Promise<ResourceIdentityVerdict> {
-  if (
-    typeof record !== 'object' ||
-    record === null ||
-    record.resourceType !== op.resourceType ||
-    typeof record.physicalId !== 'string' ||
-    record.physicalId === '' ||
-    !op.physicalId
-  ) {
-    return 'unknown';
-  }
-  try {
-    const { provider } = ctx.providerRegistry.getProviderFor({
-      resourceType: op.resourceType,
-      provisionedBy: op.provisionedBy,
-    });
-    if (typeof provider.isSameResource !== 'function') return 'unknown';
-    return await provider.isSameResource(
-      op.physicalId,
-      {
-        physicalId: record.physicalId,
-        ...(record.provisionedBy !== undefined && { provisionedBy: record.provisionedBy }),
-      },
-      op.resourceType,
-      { expectedRegion: ctx.region }
-    );
-  } catch (err) {
-    // The error CLASS only: AWS's text may quote the account and role, or a
-    // resource name this line has no masker for (go-to-k/cdkd#3869). The
-    // warn-and-skip that follows names the resource, masked.
-    logger.debug(
-      safeMsg`Could not compare ${logicalIdShown(op.logicalId)}'s journaled resource with its state record (${displaySafe(err instanceof Error ? err.name : typeof err)}).`
-    );
-    return 'unknown';
-  }
-}
-
-/**
- * go-to-k/cdkd#4600: the ownership check a successful deploy runs before
- * deleting a proven orphan, over every resource record of another stack under
- * the same state prefix. A user who removed the orphan by hand may
- * have let ANOTHER stack (a sibling, a nested child of the same tree, or the
- * same stack in another region for a global name) create a resource under the
- * same name, and that stack's record is the only evidence. One `listStacks`
- * and a read of every record, as the exports-index rebuild does, made lazily
- * on the first question and shared by every stack the settle asks about.
- *
- * Reads each record's `resources` and rollback-orphan records; a record that
- * cannot be read, listed or located (a legacy key with no region) makes every
- * answer `unreadable` (fail closed: the entry is kept).
- */
-export function makeForeignHolderScan(
-  stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>
-): (self: {
-  stackName: string;
-  region: string;
-}) => (resourceType: string, physicalId: string) => Promise<ForeignHolding> {
-  type Scan = {
-    holders: Map<string, Array<{ stackName: string; region: string }>>;
-    unreadable?: string;
-  };
-  let scan: Promise<Scan> | undefined;
-  // Under the type's case rule (go-to-k/cdkd#4692): another stack's record
-  // spelling the id `mycluster` holds the cluster a journal names `MyCluster`.
-  const key = (type: string, id: string): string => JSON.stringify([type, physicalIdKey(type, id)]);
-  const run = async (): Promise<Scan> => {
-    const holders: Scan['holders'] = new Map();
-    let refs: Awaited<ReturnType<S3StateBackend['listStacks']>>;
-    try {
-      refs = await stateBackend.listStacks();
-    } catch {
-      return { holders, unreadable: 'the state bucket listing (it could not be read)' };
-    }
-    let unreadable: string | undefined;
-    await Promise.all(
-      refs.map(async (ref) => {
-        const named = (why: string): string =>
-          safeMsg`the state record of stack ${displayIdent(ref.stackName)} (${why})`;
-        // A legacy key whose body names no region: where its resources live
-        // is unknown, so it cannot vouch for anything (fail closed).
-        if (ref.region === undefined) {
-          unreadable ??= named('its region cannot be read');
-          return;
-        }
-        const region = ref.region;
-        let state: StackState | undefined;
-        try {
-          state = (await stateBackend.getState(ref.stackName, region))?.state;
-        } catch {
-          unreadable ??= named('it could not be read');
-          return;
-        }
-        if (state === undefined) return;
-        const resources: unknown = state.resources;
-        if (
-          resources !== undefined &&
-          (typeof resources !== 'object' || resources === null || Array.isArray(resources))
-        ) {
-          unreadable ??= named('its resources cannot be read');
-          return;
-        }
-        // Its rollback-orphan records hold resources too (go-to-k/cdkd#3379's
-        // container and row guards first).
-        if (!hasReadableOrphans(state) || unreadableOrphanRecords(state).length > 0) {
-          unreadable ??= named('its rollback-orphan records cannot be read');
-          return;
-        }
-        const held: unknown[] = [
-          ...Object.values((resources ?? {}) as Record<string, unknown>),
-          ...(state.orphans ?? []).map((record) => record.state),
-        ];
-        for (const record of held) {
-          const r = record as { resourceType?: unknown; physicalId?: unknown } | null;
-          if (typeof r?.resourceType !== 'string' || typeof r.physicalId !== 'string') continue;
-          const k = key(r.resourceType, r.physicalId);
-          const list = holders.get(k) ?? [];
-          list.push({ stackName: ref.stackName, region });
-          holders.set(k, list);
-        }
-      })
-    );
-    return { holders, ...(unreadable !== undefined && { unreadable }) };
-  };
-  return (self) => async (resourceType, physicalId) => {
-    scan ??= run();
-    const { holders, unreadable } = await scan;
-    const other = (holders.get(key(resourceType, physicalId)) ?? []).find(
-      (h) => !(h.stackName === self.stackName && h.region === self.region)
-    );
-    if (other) {
-      return {
-        kind: 'held',
-        by: safeMsg`the state record of stack ${displayIdent(other.stackName)} (${displaySafe(other.region)})`,
-      };
-    }
-    return unreadable === undefined ? undefined : { kind: 'unreadable', what: unreadable };
-  };
 }
 
 async function markSuperseded(
