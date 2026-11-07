@@ -106,10 +106,15 @@ flags.
 
 **A container image built locally.** `--no-build` reuses the
 `cdkd-local-invoke-<hash>` image that an earlier run built. It is an error
-when that image is not in the local registry. `--no-pull` has no effect.
+when that image is not in the local registry. `--no-pull` affects only the
+Runtime Interface Emulator, as below.
 
 **A container image pulled from ECR.** `--no-pull` skips the pull. It is an
 error when the image is not cached. `--no-build` has no effect.
+
+**Either kind of container image.** `--no-pull` also skips pulling the image
+cdkd copies the Runtime Interface Emulator out of. See
+[Images without the Runtime Interface Emulator](#images-without-the-runtime-interface-emulator).
 
 ## Target resolution
 
@@ -218,7 +223,13 @@ runs every container-image Lambda under an RIE of its own:
   entrypoint.
 - It hands the RIE the image's `ENTRYPOINT` followed by its `CMD`, each
   replaced by its `ImageConfig` field when set, as the program to run.
-- It leaves an image alone whose entrypoint already is `aws-lambda-rie`.
+- It leaves an image alone whose program already is an RIE: the first word
+  of that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
+
+An image whose entrypoint is a script that always starts its own RIE cannot
+be recognised, and its emulator then fails to bind port 8080. Start the RIE
+in such a script only when `AWS_LAMBDA_RUNTIME_API` is unset, as the AWS base
+images do.
 
 The RIE comes from `public.ecr.aws/lambda/provided:al2023`. On first use per
 architecture, cdkd pulls that image and copies the binary to

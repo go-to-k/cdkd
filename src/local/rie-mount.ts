@@ -86,16 +86,19 @@ export function rieCacheDirectory(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 const inFlight = new Map<string, Promise<string>>();
-let warned = false;
+/** One warning per process for a binary that cannot be obtained: it hits every function. */
+let warnedNoBinary = false;
 
 /**
  * Resolve how to run `input.image` under a mounted RIE, or `undefined` when
- * the image must run as-is: its effective entrypoint already IS an RIE (two
- * emulators would contend for `:8080`), or the RIE binary or the image's
- * config could not be read (warned once per process).
+ * the image must run as-is: the program it starts already IS an RIE (two
+ * emulators would contend for `:8080`), its config could not be read (warned
+ * for that image), or the RIE binary could not be obtained (warned once per
+ * process, since it then applies to every function).
  */
 export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | undefined> {
   const logger = getLogger().child('rie');
+  let program: string[];
   try {
     const own =
       nonEmpty(input.entryPoint) && nonEmpty(input.command)
@@ -103,21 +106,25 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
         : await inspectImageEntrypointCmd(input.image);
     const entryPoint = nonEmpty(input.entryPoint) ? [...input.entryPoint] : own.entrypoint;
     const cmd = nonEmpty(input.command) ? [...input.command] : own.cmd;
-    if (entryPoint.length > 0 && basename(entryPoint[0]!) === RIE_BASENAME) {
-      logger.debug(
-        safeMsg`Image ${input.image} already starts ${entryPoint[0]}; not mounting another RIE`
-      );
-      return undefined;
-    }
-    const hostPath = await ensureRieBinary(input.platform, input.skipPull === true);
-    return {
-      mount: { hostPath, containerPath: RIE_CONTAINER_PATH, readOnly: true },
-      entryPoint: [RIE_CONTAINER_PATH],
-      cmd: [...entryPoint, ...cmd],
-    };
+    program = [...entryPoint, ...cmd];
   } catch (err) {
-    if (!warned) {
-      warned = true;
+    logger.warn(
+      safeMsg`Could not read the ENTRYPOINT / CMD of image ${input.image} (${messageOf(err)}), so no Lambda Runtime Interface Emulator is mounted into it; it runs as built.`
+    );
+    return undefined;
+  }
+  if (program.length > 0 && isRieExecutable(program[0]!)) {
+    logger.debug(
+      safeMsg`Image ${input.image} already starts ${program[0]}; not mounting another RIE`
+    );
+    return undefined;
+  }
+  let hostPath: string;
+  try {
+    hostPath = await ensureRieBinary(input.platform, input.skipPull === true);
+  } catch (err) {
+    if (!warnedNoBinary) {
+      warnedNoBinary = true;
       logger.warn(
         safeMsg`Could not mount the Lambda Runtime Interface Emulator into container-image functions (${messageOf(err)}). ` +
           'They run as built, so only images that ship their own emulator (the AWS Lambda base images do) can be invoked.'
@@ -127,6 +134,20 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
     }
     return undefined;
   }
+  return {
+    mount: { hostPath, containerPath: RIE_CONTAINER_PATH, readOnly: true },
+    entryPoint: [RIE_CONTAINER_PATH],
+    cmd: program,
+  };
+}
+
+/**
+ * Whether the program an image starts is itself an RIE: `aws-lambda-rie`, or a
+ * release asset name like `aws-lambda-rie-arm64` copied in unrenamed. A
+ * wrapper script that execs one unconditionally cannot be told apart.
+ */
+function isRieExecutable(path: string): boolean {
+  return basename(path).startsWith(RIE_BASENAME);
 }
 
 function messageOf(err: unknown): string {
@@ -178,7 +199,7 @@ export async function ensureRieBinary(platform: string, skipPull: boolean): Prom
   let run = inFlight.get(target);
   if (run === undefined) {
     run = (async (): Promise<string> => {
-      if (await isElfFor(target, machine)) return target;
+      if ((await isRegularFile(target)) && (await isElfFor(target, machine))) return target;
       await extractRie(platform, target, machine, skipPull);
       return target;
     })();
@@ -187,6 +208,15 @@ export async function ensureRieBinary(platform: string, skipPull: boolean): Prom
     run.catch(() => inFlight.delete(target));
   }
   return run;
+}
+
+/** `lstat`, so a symlink (to a host file it would expose, say) is never one. */
+async function isRegularFile(path: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(path)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function isElfFor(path: string, machine: number): Promise<boolean> {
@@ -215,8 +245,13 @@ async function extractRie(
 ): Promise<void> {
   const logger = getLogger().child('rie');
   logger.info(
-    safeMsg`Fetching the Lambda Runtime Interface Emulator for ${platform} from ${RIE_SOURCE_IMAGE} (one time)...`
+    skipPull
+      ? safeMsg`Copying the Lambda Runtime Interface Emulator for ${platform} out of the local ${RIE_SOURCE_IMAGE} image (one time)...`
+      : safeMsg`Fetching the Lambda Runtime Interface Emulator for ${platform} from ${RIE_SOURCE_IMAGE} (one time)...`
   );
+  // Before `docker create`, so a failure here leaves no container behind.
+  const dir = join(target, '..');
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   if (!skipPull) {
     const pullArgs = ['pull', '--platform', platform, RIE_SOURCE_IMAGE];
     try {
@@ -225,15 +260,21 @@ async function extractRie(
       throw new Error(`docker pull failed: ${describeDockerFailure(err, pullArgs)}`);
     }
   }
-  const createArgs = ['create', '--platform', platform, RIE_SOURCE_IMAGE];
+  // `docker create` pulls a missing image itself unless told not to, which
+  // `--no-pull` must not allow.
+  const createArgs = [
+    'create',
+    ...(skipPull ? ['--pull', 'never'] : []),
+    '--platform',
+    platform,
+    RIE_SOURCE_IMAGE,
+  ];
   let containerId: string;
   try {
     containerId = (await runDockerStreaming(createArgs, { streamLive: false })).stdout.trim();
   } catch (err) {
     throw new Error(`docker create failed: ${describeDockerFailure(err, createArgs)}`);
   }
-  const dir = join(target, '..');
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const tmp = join(dir, `.${RIE_BASENAME}.${process.pid}.${randomBytes(4).toString('hex')}`);
   try {
     const cpArgs = ['cp', `${containerId}:${RIE_SOURCE_PATH}`, tmp];
@@ -242,13 +283,15 @@ async function extractRie(
     } catch (err) {
       throw new Error(`docker cp failed: ${describeDockerFailure(err, cpArgs)}`);
     }
-    if (!(await isElfFor(tmp, machine))) {
+    // `docker cp` writes a symlink in the image AS a symlink: never follow one
+    // into a host file with the ELF check, the chmod or the mount.
+    if (!(await isRegularFile(tmp)) || !(await isElfFor(tmp, machine))) {
       throw new Error(`the copied ${RIE_SOURCE_PATH} is not a ${platform} executable`);
     }
     await fs.chmod(tmp, 0o755);
     await fs.rename(tmp, target);
   } finally {
-    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    await fs.rm(tmp, { force: true, recursive: true }).catch(() => undefined);
     await runDockerStreaming(['rm', '-f', containerId], { streamLive: false }).catch(
       () => undefined
     );

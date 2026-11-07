@@ -165,5 +165,18 @@ curl_assert "GET / env var" "http://127.0.0.1:${PORT_HTTP}/" '"greeting":"hello"
 curl_assert "GET /non-aws (non-AWS base image)" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"fromNonAwsBase": true'
 curl_assert "GET /non-aws image CMD" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"args": \["from-image-cmd"\]'
 curl_assert "GET /non-aws env var" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"greeting": "from-non-aws-base"'
+# Every function, the AWS-base GET / one included, ran under the mounted RIE:
+# a failed mount only warns and runs the image as built, which GET / would
+# survive. The fresh cache home above means the RIE was really extracted.
+if grep -qE "Could not (mount the Lambda Runtime Interface Emulator|read the ENTRYPOINT)" "${LOG_FILE}"; then
+  echo "FAIL: cdkd ran a container-image Lambda without the mounted RIE. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! grep -q "Fetching the Lambda Runtime Interface Emulator" "${LOG_FILE}"; then
+  echo "FAIL: the server log does not show the RIE extraction (sentinel for the check above). Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
 
 echo "==> All assertions passed"

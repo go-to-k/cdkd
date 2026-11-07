@@ -281,7 +281,7 @@ describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#6
           Properties: {
             PackageType: 'Image',
             Code: { ImageUri: ecrUri },
-            ImageConfig: { Command: ['h'], WorkingDirectory: '/w' },
+            ImageConfig: { Command: ['h'], EntryPoint: ['/custom', '-x'], WorkingDirectory: '/w' },
           },
         },
       },
@@ -330,7 +330,7 @@ describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#6
     expect(mocks.resolveRieWrapMock).toHaveBeenCalledWith({
       image: ecrUri,
       platform: 'linux/amd64',
-      entryPoint: undefined,
+      entryPoint: ['/custom', '-x'],
       command: ['h'],
       skipPull: true,
     });
@@ -346,8 +346,7 @@ describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#6
   it('keeps the pre-#6018 shape when no wrap resolves', async () => {
     mocks.resolveRieWrapMock.mockResolvedValue(undefined);
     const spec = await build();
-    expect(spec).toMatchObject({ kind: 'image', command: ['h'] });
+    expect(spec).toMatchObject({ kind: 'image', command: ['h'], entryPoint: ['/custom', '-x'] });
     expect(spec).not.toHaveProperty('rieMount');
-    expect(spec).not.toHaveProperty('entryPoint');
   });
 });

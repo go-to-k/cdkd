@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -55,6 +64,8 @@ let savedXdg: string | undefined;
 let imageConfig: unknown;
 /** The ELF machine `docker cp` writes. */
 let copiedMachine: number;
+/** When set, `docker cp` writes a symlink to this path instead of a file. */
+let copiedSymlinkTo: string | undefined;
 
 function verbs(): string[] {
   return h.docker.mock.calls.map((c) => (c[0] as string[]).slice(0, 2).join(' '));
@@ -72,6 +83,7 @@ beforeEach(async () => {
   process.env['XDG_CACHE_HOME'] = cacheHome;
   imageConfig = { Entrypoint: ['/app'], Cmd: ['serve'] };
   copiedMachine = EM_X86_64;
+  copiedSymlinkTo = undefined;
   h.docker.mockImplementation(async (args: string[]) => {
     switch (args[0]) {
       case 'image':
@@ -79,7 +91,8 @@ beforeEach(async () => {
       case 'create':
         return { stdout: 'cid123\n', stderr: '' };
       case 'cp':
-        writeFileSync(args[2]!, fakeElf(copiedMachine));
+        if (copiedSymlinkTo !== undefined) symlinkSync(copiedSymlinkTo, args[2]!);
+        else writeFileSync(args[2]!, fakeElf(copiedMachine));
         return { stdout: '', stderr: '' };
       default:
         return { stdout: '', stderr: '' };
@@ -168,6 +181,18 @@ describe('resolveRieWrap', () => {
     expect(h.warns).toEqual([]);
   });
 
+  it('does not wrap an image whose program is an unrenamed RIE release asset', async () => {
+    imageConfig = { Entrypoint: ['/usr/local/bin/aws-lambda-rie-arm64'], Cmd: ['/app'] };
+    expect(await resolveRieWrap({ image: 'i', platform: 'linux/arm64' })).toBeUndefined();
+    expect(verbs()).not.toContain('create --platform');
+  });
+
+  it('does not wrap an image with no Entrypoint whose CMD starts an RIE', async () => {
+    imageConfig = { Entrypoint: null, Cmd: ['/usr/local/bin/aws-lambda-rie', '/app'] };
+    expect(await resolveRieWrap({ image: 'i', platform: 'linux/amd64' })).toBeUndefined();
+    expect(h.warns).toEqual([]);
+  });
+
   it('wraps an AWS base image too (its entrypoint script is not the RIE)', async () => {
     imageConfig = { Entrypoint: ['/lambda-entrypoint.sh'], Cmd: ['app.handler'] };
     expect((await resolveRieWrap({ image: 'i', platform: 'linux/amd64' }))?.cmd).toEqual([
@@ -188,10 +213,26 @@ describe('resolveRieWrap', () => {
     expect(h.warns[0]).toMatch(/docker pull failed/);
   });
 
-  it('falls back when the image config cannot be inspected', async () => {
+  it('falls back when the image config cannot be inspected, warning per image', async () => {
     h.docker.mockRejectedValue(Object.assign(new Error('no such image'), { exitCode: 1 }));
     expect(await resolveRieWrap({ image: 'gone', platform: 'linux/amd64' })).toBeUndefined();
-    expect(h.warns).toHaveLength(1);
+    expect(await resolveRieWrap({ image: 'other', platform: 'linux/amd64' })).toBeUndefined();
+    expect(h.warns).toHaveLength(2);
+    expect(h.warns[0]).toMatch(/ENTRYPOINT \/ CMD of image gone/);
+    expect(h.warns[1]).toMatch(/ENTRYPOINT \/ CMD of image other/);
+    expect(verbs()).not.toContain('create --platform');
+  });
+
+  it('an inspect failure does not use up the binary-failure warning', async () => {
+    h.docker.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'image' && args[4] === 'gone') throw new Error('no such image');
+      if (args[0] === 'image') return { stdout: JSON.stringify(imageConfig), stderr: '' };
+      throw Object.assign(new Error('pull denied'), { exitCode: 1 });
+    });
+    await resolveRieWrap({ image: 'gone', platform: 'linux/amd64' });
+    await resolveRieWrap({ image: 'ok', platform: 'linux/amd64' });
+    expect(h.warns).toHaveLength(2);
+    expect(h.warns[1]).toMatch(/Could not mount the Lambda Runtime Interface Emulator/);
   });
 });
 
@@ -207,12 +248,18 @@ describe('ensureRieBinary', () => {
       ['rm', '-f', 'cid123'],
     ]);
     expect(statSync(path).mode & 0o777).toBe(0o755);
+    // The directory holding a binary every container executes is the user's alone.
+    expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
     expect(readFileSync(path).readUInt16LE(18)).toBe(EM_AARCH64);
   });
 
-  it('--no-pull skips the pull but still copies from a locally cached base image', async () => {
+  it('--no-pull skips the pull and forbids docker create from pulling', async () => {
     await ensureRieBinary('linux/amd64', true);
-    expect(verbs()).toEqual(['create --platform', 'cp cid123:/usr/local/bin/aws-lambda-rie', 'rm -f']);
+    expect(h.docker.mock.calls.map((c) => c[0])).toEqual([
+      ['create', '--pull', 'never', '--platform', 'linux/amd64', RIE_SOURCE_IMAGE],
+      ['cp', 'cid123:/usr/local/bin/aws-lambda-rie', expect.any(String)],
+      ['rm', '-f', 'cid123'],
+    ]);
   });
 
   it('reuses a cached binary of the right architecture without touching docker', async () => {
@@ -237,6 +284,34 @@ describe('ensureRieBinary', () => {
     );
     expect(() => statSync(cached('linux/amd64'))).toThrow();
     expect(verbs()).toContain('rm -f');
+    // ...and the temp copy is gone too.
+    expect(readdirSync(dirname(cached('linux/amd64')))).toEqual([]);
+  });
+
+  it('refuses a copied SYMLINK, even one to a valid ELF, and never chmods its target', async () => {
+    const hostElf = join(cacheHome, 'host-elf');
+    writeFileSync(hostElf, fakeElf(EM_X86_64), { mode: 0o600 });
+    copiedSymlinkTo = hostElf;
+    await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow(/not a linux\/amd64 executable/);
+    expect(statSync(hostElf).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dirname(cached('linux/amd64')))).toEqual([]);
+  });
+
+  it('replaces a cached SYMLINK instead of mounting what it points at', async () => {
+    const hostElf = join(cacheHome, 'host-elf');
+    writeFileSync(hostElf, fakeElf(EM_X86_64));
+    mkdirSync(dirname(cached('linux/amd64')), { recursive: true });
+    symlinkSync(hostElf, cached('linux/amd64'));
+    await ensureRieBinary('linux/amd64', false);
+    expect(verbs()).toContain('create --platform');
+    expect(statSync(cached('linux/amd64')).isFile()).toBe(true);
+  });
+
+  it('creates no container when the cache directory cannot be made', async () => {
+    // A FILE where the cache root's parent directory should be.
+    writeFileSync(join(cacheHome, 'cdkd'), '');
+    await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow();
+    expect(verbs()).toEqual([]);
   });
 
   it('extracts once for concurrent callers of one platform', async () => {
