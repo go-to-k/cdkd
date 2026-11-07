@@ -335,6 +335,8 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
     const files = new Set(builders.map((b) => b.file));
     for (const file of [
       'src/deployment/deploy-engine/deploy-flow.ts',
+      // The no-change save, split out of the flow (go-to-k/cdkd#5835).
+      'src/deployment/deploy-engine/deploy-flow/no-change.ts',
       'src/deployment/deploy-engine/execute.ts',
       'src/deployment/nested-child-journal.ts',
       'src/cli/commands/import/stack-state.ts',
