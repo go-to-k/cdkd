@@ -131,14 +131,14 @@ describe('local reachability critic — the real tree', () => {
     const VALUE_IMPORTS = '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,';
     const classOf = (sources?: ReadonlyMap<string, string>) =>
       analyze(sources).modules.find((m) => m.file === RUNNER);
-    // LIVE: `cdkd local run-task` imports it directly.
+    // LIVE: `cdkd local run-task`'s handler module imports it directly.
     expect(classOf()?.moduleClass).toBe('live');
     // LOADED-ONLY: the importer keeps only inline `type` bindings, so under
     // `verbatimModuleSyntax` ESM still evaluates the module, yet no exported
     // symbol is ever reached. A rule asking "does this file have a live
     // importer" answers YES here and misses the whole defect (issue #2203).
     const loadedOnly = classOf(
-      withMutation('src/cli/commands/local-run-task.ts', VALUE_IMPORTS, '\n  type EcsRunState,')
+      withMutation('src/cli/commands/local-run-task/command.ts', VALUE_IMPORTS, '\n  type EcsRunState,')
     );
     expect(loadedOnly?.moduleClass).toBe('loaded-only');
     expect(loadedOnly?.loaded).toBe(true);
@@ -146,8 +146,8 @@ describe('local reachability critic — the real tree', () => {
     // UNREFERENCED: nothing in `src/` imports it at all.
     const unreferenced = classOf(
       withMutation(
-        'src/cli/commands/local-run-task.ts',
-        "import {" + VALUE_IMPORTS + "\n  type RunEcsTaskOptions,\n} from '../../local/ecs-task-runner.js';\n",
+        'src/cli/commands/local-run-task/command.ts',
+        "import {" + VALUE_IMPORTS + "\n  type RunEcsTaskOptions,\n} from '../../../local/ecs-task-runner.js';\n",
         ''
       )
     );
@@ -288,9 +288,10 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
 
 describe('local reachability critic — RED probes against real code', () => {
   it('fires when a live module loses its last src/ importer', () => {
-    // `local-run-task.ts` is the only `src/` consumer of the ECS task runner.
+    // `local-run-task/command.ts` is the only `src/` module importing a VALUE
+    // from the ECS task runner (`local-run-task/credentials.ts` imports a type).
     const mutated = withMutation(
-      'src/cli/commands/local-run-task.ts',
+      'src/cli/commands/local-run-task/command.ts',
       '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,',
       '\n  type EcsRunState,'
     );
@@ -306,7 +307,7 @@ describe('local reachability critic — RED probes against real code', () => {
     // The point of a SYMBOL-level walk: dropping the top of a chain must take
     // everything below it with it, including files the mutation never named.
     const mutated = withMutation(
-      'src/cli/commands/local-run-task.ts',
+      'src/cli/commands/local-run-task/command.ts',
       '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,',
       '\n  type EcsRunState,'
     );

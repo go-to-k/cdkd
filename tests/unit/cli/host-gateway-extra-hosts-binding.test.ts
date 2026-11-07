@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
+import { readLocalRunTaskSource } from './_local-run-task-source.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COMMANDS_DIR = path.join(__dirname, '../../../src/cli/commands');
@@ -46,7 +47,8 @@ describe('host.docker.internal reachability wired at every cdkd-owned container 
   });
 
   it('cdkd local run-task resolves the mapping and sets it on the runEcsTask options', () => {
-    const src = readCmd('local-run-task.ts');
+    // The whole command: its handler lives under `local-run-task/` (go-to-k/cdkd#5835).
+    const src = readLocalRunTaskSource();
     expect(src).toMatch(/resolveHostGatewayExtraHosts\(\)/);
     expect(src).toMatch(/runOpts\.hostGatewayExtraHosts\s*=/);
     // ...and the option is threaded into the run, not resolved-then-dropped.

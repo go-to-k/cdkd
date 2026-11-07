@@ -19,7 +19,7 @@ holds:
 
 - Any path matches the **security / process-launch surface**:
   - `src/utils/role-arn.ts`
-  - `src/utils/docker-cmd.ts`
+  - `src/utils/docker-cmd.ts` + `docker-cmd/**`
   - `src/local/cognito-jwt.ts`
   - `src/local/authorizer-resolver.ts`
   - `src/local/authorizer-cache.ts`
@@ -45,8 +45,8 @@ holds:
 - The PR is a **security fix** (secrets / credentials, redaction / masking /
   escaping, sensitive-value persistence, GHSA-tied), whatever it touches.
 
-The security reviewer is a DEPTH concern a tiny PR can carry; a standing security
-lens catches that class in round one rather than on a second, prompted round.
+The security reviewer is a DEPTH concern a tiny PR can carry; a standing lens
+catches that class in round one, not a prompted second round.
 
 ## All three axes
 

@@ -232,7 +232,7 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
    *
    * Widening the claim regex made it fire on four lines that are not about the
    * ECR pull at all: the cross-stack "same-region filter" in
-   * `local-run-task.ts`, "across same-region stacks" in `local-start-api/command.ts`,
+   * `local-run-task/image-context.ts`, "across same-region stacks" in `local-start-api/command.ts`,
    * and the two `NOT same-region-only` sentences this PR wrote as the FIX. So a
    * line offends only when it makes the claim, sits in ECR context, and is not
    * negating it.
@@ -350,11 +350,11 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
   const EXPECTED_RAW_MATCHES: Record<string, number> = {
     // `NOT same-region-only: pullEcrImage authenticates ...` — the fix's own wording.
     'src/cli/commands/local-invoke.ts': 1,
-    // The cross-stack index scan's `same-region filter` — unrelated to ECR.
-    'src/cli/commands/local-run-task.ts': 1,
     // The fix's `NOT same-region-only`. Since the start-api split
     // (go-to-k/cdkd#5835) the unrelated `across same-region stacks` sits in
     // `local-start-api/command.ts`, which names no ECR pull, so it left the population.
+    // Likewise, since the run-task split the cross-stack index scan's unrelated
+    // `same-region filter` sits in `local-run-task/image-context.ts`, which names no ECR pull.
     'src/cli/commands/local-start-api/container-spec.ts': 1,
     // The true fast-path description exempted by TRUE_STATEMENTS.
     'src/local/ecr-puller.ts': 1,
