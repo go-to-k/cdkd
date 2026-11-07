@@ -16,7 +16,8 @@ AGENTS.md's "cost is not a tiebreaker" is what settles it.
 
 ## Deletion-touching PRs
 
-Changes under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`,
+Changes under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`
+(and `destroy/**`),
 `src/analyzer/dag-builder.ts` and the rest of the `include:` list in
 `.markgate.yml`: `gh pr merge` is blocked while the `integ-destroy` marker is
 stale. Check it here so a failure surfaces early rather than at the merge:
@@ -42,7 +43,7 @@ CI is necessary but not sufficient — it does not exercise real-AWS destroy.
 
 The `integ-destroy` marker accepts ANY clean real-AWS destroy — a narrow feature
 integ flips it without exercising the broad deploy/destroy paths a cross-cutting
-change touches. When the diff touches any of `src/deployment/{deploy-engine,deploy-engine/*,deploy-engine/deploy-flow/*,deploy-value-equality,label-routing,intrinsic-function-resolver,intrinsic-resolver/*,retry,retryable-errors,retryable-errors/*,rollback-executor,rollback-executor/*}.ts`,
+change touches. When the diff touches any of `src/deployment/{deploy-engine,deploy-engine/*,deploy-engine/*/*,deploy-value-equality,label-routing,intrinsic-function-resolver,intrinsic-resolver/*,retry,retryable-errors,retryable-errors/*,rollback-executor,rollback-executor/*}.ts`,
 `src/cli/commands/{destroy-runner,destroy,deploy}.ts`,
 `src/analyzer/{dag-builder,template-parser}.ts` or
 `src/provisioning/{register-providers,provider-registry}.ts`,

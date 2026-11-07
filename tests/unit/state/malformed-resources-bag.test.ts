@@ -3450,6 +3450,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // flow's single `executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
+      // `executeDeployment`'s failure path, split out of `execute.ts`
+      // (go-to-k/cdkd#5835): read only inside `rollbackFailedDeploy`, whose
+      // only caller is `executeDeployment`'s catch. Pinned below.
+      if (file === 'src/deployment/deploy-engine/execute/rollback-after-failure.ts') return false;
       // `logical-id-rename.ts` is a pure rewrite whose only caller is
       // `cdkd refactor`, which guards the container and its rows first.
       // Pinned below.
@@ -3645,6 +3649,38 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'deploy-engine/execute.ts reads the orphans container outside executeDeployment / ' +
         'persistStateAfterOutputFailure: give that path its own ANCHORS entry.'
     ).toBe(reads(executeFnBody('executeDeployment')) + reads(executeFnBody('persistStateAfterOutputFailure')));
+    // go-to-k/cdkd#5835: the post-rollback saves moved to
+    // `execute/rollback-after-failure.ts`. Every read there sits inside
+    // `rollbackFailedDeploy`, called once, from inside `executeDeployment`.
+    const failure = code('src/deployment/deploy-engine/execute/rollback-after-failure.ts');
+    const failureAt = failure.indexOf('export async function rollbackFailedDeploy(');
+    expect(failureAt, 'rollbackFailedDeploy moved or was renamed').toBeGreaterThan(-1);
+    const failureBody = failure.slice(failureAt, failure.indexOf('\n}\n', failureAt));
+    expect(reads(failure), 'execute/rollback-after-failure.ts no longer reads the container').toBeGreaterThan(0);
+    expect(
+      reads(failure),
+      'execute/rollback-after-failure.ts reads the orphans container outside rollbackFailedDeploy: ' +
+        'give that path its own ANCHORS entry.'
+    ).toBe(reads(failureBody));
+    const failureCallers = spawnSync('git', ['grep', '-l', '-e', 'rollbackFailedDeploy(', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(failureCallers, 'rollbackFailedDeploy gained a caller').toEqual([
+      'src/deployment/deploy-engine/execute.ts',
+      'src/deployment/deploy-engine/execute/rollback-after-failure.ts',
+    ]);
+    expect(
+      executeFnBody('executeDeployment').split('rollbackFailedDeploy(').length - 1,
+      'executeDeployment no longer calls rollbackFailedDeploy exactly once'
+    ).toBe(1);
+    expect(
+      execute.split('rollbackFailedDeploy(').length - 1,
+      'execute.ts calls rollbackFailedDeploy outside executeDeployment'
+    ).toBe(1);
     // `deploy-engine/rollback.ts` is excluded because every container read it
     // holds is inside `adoptRollbackOrphans`, whose only caller is the deploy
     // flow's ROW-anchored `await adoptRollbackOrphans(`. A read anywhere else in that
