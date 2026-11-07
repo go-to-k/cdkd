@@ -9,7 +9,7 @@ import type { ResourceChange, ResourceState } from '../../../src/types/state.js'
  */
 describe('findUnwrittenCreateOnlyRefusals', () => {
   const TYPE = 'AWS::EC2::Subnet';
-  const DECLARED = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+  const DECLARED = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
 
   function change(replacing: Array<[string, unknown]>): ResourceChange {
     return {
@@ -33,12 +33,12 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
       resourceType: TYPE,
       properties: DECLARED,
       provisionedBy: 'sdk',
-      acceptedCreateOnlyDrops: ['AvailabilityZoneId'],
+      acceptedCreateOnlyDrops: ['OutpostArn'],
       ...extra,
     };
   }
 
-  const ROW = change([['AvailabilityZoneId', 'use1-az1']]);
+  const ROW = change([['OutpostArn', 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1']]);
 
   it('labels a row whose only replacement driver is a named, unchanged key', () => {
     const reasons = findUnwrittenCreateOnlyRefusals(new Map([['MySubnet', ROW]]), {
@@ -47,7 +47,7 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain('MySubnet (AWS::EC2::Subnet)');
     expect(reasons[0]).toContain('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
-    expect(reasons[0]).toContain('AvailabilityZoneId');
+    expect(reasons[0]).toContain('OutpostArn');
   });
 
   it.each([
@@ -74,13 +74,13 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
     });
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain(
-      '--prefer-sdk-route AWS::EC2::Subnet:AvailabilityZoneId,AWS::EC2::Subnet:EnableLniAtDeviceIndex changes nothing'
+      '--prefer-sdk-route AWS::EC2::Subnet:EnableLniAtDeviceIndex,AWS::EC2::Subnet:OutpostArn changes nothing'
     );
   });
 
   it('does not label a row another property also replaces', () => {
     const row = change([
-      ['AvailabilityZoneId', 'use1-az1'],
+      ['OutpostArn', 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1'],
       ['CidrBlock', '10.0.1.0/24'],
     ]);
     expect(
@@ -89,7 +89,7 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
   });
 
   it('does not label a row whose value the template changed', () => {
-    const row = change([['AvailabilityZoneId', 'use1-az2']]);
+    const row = change([['OutpostArn', 'arn:aws:outposts:us-east-1:123456789012:outpost/op-2']]);
     expect(
       findUnwrittenCreateOnlyRefusals(new Map([['MySubnet', row]]), { MySubnet: record() })
     ).toEqual([]);

@@ -31,13 +31,6 @@
       "KernelId",
       "RamdiskId"
     ],
-    "AWS::EC2::Subnet": [
-      "AvailabilityZoneId",
-      "Ipv4IpamPoolId",
-      "Ipv4NetmaskLength",
-      "Ipv6IpamPoolId",
-      "Ipv6NetmaskLength"
-    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ],
