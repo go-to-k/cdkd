@@ -147,7 +147,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     sites: 1,
     why: 'Pre-existing guarded prompt (`process.stdin.isTTY`, throws a bare Error).',
   },
-  'src/cli/commands/local-invoke-agentcore.ts': {
+  // Moved with the invoke-agentcore split (go-to-k/cdkd#5835): `readStdinLines`.
+  'src/cli/commands/local-invoke-agentcore/event-input.ts': {
     sites: 1,
     why:
       'NOT a confirmation prompt: a line reader over stdin for the interactive ' +

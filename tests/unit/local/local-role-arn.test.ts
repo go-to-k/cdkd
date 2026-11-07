@@ -29,6 +29,7 @@ import {
 } from '../../../src/utils/aws-client-defaults.js';
 import { readLocalStartApiSource } from '../cli/_local-start-api-source.js';
 import { readLocalRunTaskSource } from '../cli/_local-run-task-source.js';
+import { readLocalInvokeAgentCoreSource } from '../cli/_local-invoke-agentcore-source.js';
 
 /**
  * go-to-k/cdkd#3240: the four cdkd-owned `local` commands assume `--role-arn`
@@ -115,13 +116,15 @@ describe('the four cdkd-owned local commands publish through applyRoleArnForLoca
     'local-run-task.ts',
     'local-invoke-agentcore.ts',
   ])('%s', (file) => {
-    // `local-start-api` and `local-run-task` are read whole: each handler sits
-    // under its `<cmd>/` directory.
+    // `local-start-api`, `local-run-task` and `local-invoke-agentcore` are read
+    // whole: each handler sits under its `<cmd>/` directory.
     const source =
       file === 'local-start-api.ts'
         ? readLocalStartApiSource()
         : file === 'local-run-task.ts'
           ? readLocalRunTaskSource()
+          : file === 'local-invoke-agentcore.ts'
+            ? readLocalInvokeAgentCoreSource()
           : readFileSync(join(__dirname, '../../../src/cli/commands', file), 'utf8');
     const lines = strip(source);
     expect(lines.filter((l) => l.includes('await applyRoleArnForLocal('))).toHaveLength(1);
