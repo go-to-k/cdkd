@@ -4,6 +4,7 @@ paths:
   - 'src/utils/display-safe.ts'
   - 'src/cli/commands/state-file-keys.ts'
   - 'src/cli/commands/gc.ts'
+  - 'src/cli/commands/gc/**'
 ---
 
 # A value cdkd tells an operator to PASTE
@@ -55,7 +56,7 @@ own logical-id charset, which admits nothing a shell treats specially.
 **That rule is WRONG for the import remedy.** cdkd validates no logical-id
 charset and never hands the template to CloudFormation, so a HYPHENATED id
 (`My-Table`) is legitimate and the command must still be emitted for it
-([#2847](https://github.com/go-to-k/cdkd/issues/2847); pinned by
+(#2847; pinned by
 `masked-record-remedy-shapes.test.ts`). `isPasteableIdent`'s allow-list
 (`[A-Za-z0-9][A-Za-z0-9~_.-]*`) is the one calibrated for cdkd's own id space:
 medial `~` / `_` / `.` / `-` admitted, a LEADING one refused, because the

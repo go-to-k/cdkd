@@ -5,13 +5,14 @@ paths:
   - 'src/cli/commands/bootstrap.ts'
   - 'src/cli/commands/bootstrap-destroy.ts'
   - 'src/cli/commands/gc.ts'
+  - 'src/cli/commands/gc/**'
 ---
 
 # The owned-but-elsewhere bucket
 
 `BucketAlreadyOwnedByYou` (409) and a cross-region `HeadBucket` redirect are
 ACCOUNT-global signals while a bucket is REGIONAL
-([#2240](https://github.com/go-to-k/cdkd/issues/2240)). Only the 409 proves
+(#2240). Only the 409 proves
 ownership: a redirect fires before `ExpectedBucketOwner` is evaluated, so the
 refusal says "resolves to a bucket in X", not that cdkd owns it. Reachable
 because `--asset-bucket` takes a region-free name.

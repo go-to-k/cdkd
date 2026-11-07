@@ -30,7 +30,8 @@ const LISTING_FILES = [
   'src/state/s3-state-backend.ts',
   'src/state/s3-noncurrent-version-purge.ts',
   'src/state/earlier-state-versions.ts',
-  'src/cli/commands/gc.ts',
+  // `cdkd gc`'s listings, moved out of `gc.ts` (go-to-k/cdkd#5835).
+  'src/cli/commands/gc/candidates.ts',
   'src/cli/commands/bootstrap-destroy.ts',
   'src/cli/commands/state-migrate.ts',
   'src/cli/config-loader.ts',

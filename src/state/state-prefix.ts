@@ -20,7 +20,7 @@ export const DEFAULT_STATE_PREFIX = 'cdkd';
  *
  * Homed here for the same layering reason as {@link DEFAULT_STATE_PREFIX}: the
  * PRODUCER is `src/provisioning/providers/custom-resource-provider.ts` and the
- * COLLECTOR is `src/cli/commands/gc.ts`, so a copy in either would be a copy
+ * COLLECTOR is `src/cli/commands/gc/candidates.ts`, so a copy in either would be a copy
  * the other could drift from — and the two spellings would then disagree about
  * which objects exist, which is the only way a sweeper can miss the family it
  * was written for (issue #2052). `src/cli/commands/state-file-keys.ts`

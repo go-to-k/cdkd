@@ -135,14 +135,14 @@ Index of every area: [code-layout.md](code-layout.md).
   one confirmed exception, drops one orphan entry; never AWS.
 - **src/cli/commands/refused-baseline-remedy.ts** - a refused import baseline's
   remedy text; see [state-schema.md](state-schema.md).
-- **src/cli/commands/gc.ts** - `cdkd gc` garbage-collects unreferenced objects /
+- **src/cli/commands/gc.ts** (+ `gc/`) - `cdkd gc` garbage-collects unreferenced objects /
   images from ONE region's cdkd-owned asset storage, with names read from the
-  bootstrap marker rather than the naming convention (CDK bootstrap storage is
+  bootstrap marker, not the naming convention (CDK bootstrap storage is
   never touched). It scans EVERY state file in the bucket for asset references;
   guards are a lock.json abort, a malformed-state abort, the `--older-than` age
   guard (default 30d, inclusive-KEEP at the boundary) and `ExpectedBucketOwner`
   on every S3 call. It shares `state-file-keys.ts` with `bootstrap-destroy.ts` so
-  the two commands' state discovery cannot drift. It also sweeps abandoned
+  the two commands' discovery cannot drift. It also sweeps abandoned
   `custom-resource-responses/{requestId}.json` placeholders; that arm runs BEFORE
   the bootstrap-marker check, because the placeholders live in the STATE bucket,
   which exists whether or not the region opted in to asset storage. The prefix is
