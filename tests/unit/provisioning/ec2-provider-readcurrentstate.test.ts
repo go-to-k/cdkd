@@ -2327,7 +2327,6 @@ describe('EC2Provider.readCurrentState', () => {
 
     it('returns [] for tag-bearing parent resource types (VPC / Subnet / SG / etc.)', () => {
       const TAG_BEARING_TYPES = [
-        'AWS::EC2::Subnet',
         'AWS::EC2::InternetGateway',
         'AWS::EC2::NatGateway',
         'AWS::EC2::RouteTable',
@@ -2337,6 +2336,13 @@ describe('EC2Provider.readCurrentState', () => {
       for (const t of TAG_BEARING_TYPES) {
         expect(provider.getDriftUnknownPaths(t)).toEqual([]);
       }
+    });
+
+    it('Subnet declares only its two IPAM pool ids unreadable: DescribeSubnets names no pool (go-to-k/cdkd#5632)', () => {
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Subnet')).toEqual([
+        'Ipv4IpamPoolId',
+        'Ipv6IpamPoolId',
+      ]);
     });
 
     it('VPC declares only Ipv4IpamPoolId unreadable: DescribeVpcs names no pool (go-to-k/cdkd#5633)', () => {

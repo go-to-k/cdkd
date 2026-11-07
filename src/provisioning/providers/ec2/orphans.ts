@@ -27,6 +27,7 @@ import {
 } from '../../replacement-protection-advice.js';
 import {
   ORPHAN_LIST_PAGE_SIZE,
+  type SubnetOrphanMatch,
   type VpcOrphanMatch,
   ec2IdsCreatedByThisProcess,
   lostCreateNoun,
@@ -180,60 +181,89 @@ export async function reportPossibleOrphanVpcs(
  * Subnets of the same VPC with the same CIDR, untagged or carrying exactly
  * the tags the create sent. A CIDR cannot repeat in one VPC, so at most one
  * matches, and its existence is what makes the replayed `CreateSubnet` fail
- * with `InvalidSubnet.Conflict`.
+ * with `InvalidSubnet.Conflict`. A pool-allocated subnet (go-to-k/cdkd#5632)
+ * declares no CIDR and collides with nothing: its candidates are the VPC's
+ * subnets the pool itself allocates to (`GetIpamPoolAllocations`), under the
+ * same tag filter.
  */
 export async function reportPossibleOrphanSubnets(
   this: EC2Provider,
   logicalId: string,
   vpcId: string,
-  key: { cidr: string; family: 'ipv4' | 'ipv6' },
+  key: SubnetOrphanMatch,
   sent: CfnTagEntry[],
   window: AmbiguousCreateWindow,
   context: CreateContext | undefined
 ): Promise<void> {
   const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-  const cidrBlock = key.cidr;
+  const byCidr = 'cidr' in key ? key : undefined;
+  const poolId = 'ipamPoolId' in key ? key.ipamPoolId : '';
   const canonical = (cidr: string): string =>
-    (key.family === 'ipv4' ? canonicalizeIpv4Cidr(cidr) : canonicalizeIpv6Cidr(cidr)) ?? cidr;
-  const wanted = canonical(cidrBlock);
+    (byCidr?.family === 'ipv6' ? canonicalizeIpv6Cidr(cidr) : canonicalizeIpv4Cidr(cidr)) ?? cidr;
+  const wanted = byCidr !== undefined ? canonical(byCidr.cidr) : undefined;
   // go-to-k/cdkd#5632: an IPv6-only subnet is keyed on its IPv6 block, held
   // only in the two states a lost create's association can be in.
   const holdsWanted = (subnet: Subnet): boolean =>
-    key.family === 'ipv4'
-      ? subnet.CidrBlock !== undefined && canonical(subnet.CidrBlock) === wanted
-      : (subnet.Ipv6CidrBlockAssociationSet ?? []).some(
-          (association) =>
-            association.Ipv6CidrBlock !== undefined &&
-            ['associating', 'associated'].includes(association.Ipv6CidrBlockState?.State ?? '') &&
-            canonical(association.Ipv6CidrBlock) === wanted
+    byCidr === undefined
+      ? false
+      : byCidr.family === 'ipv4'
+        ? subnet.CidrBlock !== undefined && canonical(subnet.CidrBlock) === wanted
+        : (subnet.Ipv6CidrBlockAssociationSet ?? []).some(
+            (association) =>
+              association.Ipv6CidrBlock !== undefined &&
+              ['associating', 'associated'].includes(association.Ipv6CidrBlockState?.State ?? '') &&
+              canonical(association.Ipv6CidrBlock) === wanted
+          );
+  const listSubnets = (inPool: ReadonlySet<string> | undefined): Promise<OrphanIds> =>
+    collectOrphanIds(
+      async (token) => {
+        const page = await this.ec2Client.send(
+          new DescribeSubnetsCommand({
+            Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
+            MaxResults: ORPHAN_LIST_PAGE_SIZE,
+            NextToken: token,
+          })
         );
+        return { items: page.Subnets ?? [], next: page.NextToken };
+      },
+      (subnet) =>
+        subnet.SubnetId !== undefined &&
+        mayBeLostCreate(subnet.Tags, sent) &&
+        (inPool !== undefined ? inPool.has(subnet.SubnetId) : holdsWanted(subnet)) &&
+        !ec2IdsCreatedByThisProcess.has(subnet.SubnetId)
+          ? subnet.SubnetId
+          : undefined
+    );
   await this.reportPossibleEc2Orphans(logicalId, window, log, {
     action: 'CreateSubnet',
-    listAction: 'DescribeSubnets',
-    subject: `a subnet with CIDR ${log.value(cidrBlock)} in VPC ${log.value(vpcId)}`,
+    listAction:
+      byCidr !== undefined ? 'DescribeSubnets' : 'GetIpamPoolAllocations + DescribeSubnets',
+    subject:
+      byCidr !== undefined
+        ? `a subnet with CIDR ${log.value(byCidr.cidr)} in VPC ${log.value(vpcId)}`
+        : `a subnet allocated from IPAM pool ${log.value(poolId)} in VPC ${log.value(vpcId)}`,
     noun: lostCreateNoun('subnet(s)', sent),
-    afterward:
-      'Creating it again, which fails with InvalidSubnet.Conflict while that subnet exists.',
-    list: () =>
-      collectOrphanIds(
+    ...(byCidr !== undefined && {
+      afterward:
+        'Creating it again, which fails with InvalidSubnet.Conflict while that subnet exists.',
+    }),
+    list: async () => {
+      if (byCidr !== undefined) return listSubnets(undefined);
+      const allocated = await collectOrphanIds(
         async (token) => {
           const page = await this.ec2Client.send(
-            new DescribeSubnetsCommand({
-              Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
-              MaxResults: ORPHAN_LIST_PAGE_SIZE,
-              NextToken: token,
-            })
+            new GetIpamPoolAllocationsCommand({ IpamPoolId: poolId, NextToken: token })
           );
-          return { items: page.Subnets ?? [], next: page.NextToken };
+          return { items: page.IpamPoolAllocations ?? [], next: page.NextToken };
         },
-        (subnet) =>
-          subnet.SubnetId !== undefined &&
-          mayBeLostCreate(subnet.Tags, sent) &&
-          holdsWanted(subnet) &&
-          !ec2IdsCreatedByThisProcess.has(subnet.SubnetId)
-            ? subnet.SubnetId
+        (allocation) =>
+          allocation.ResourceType === 'subnet' && allocation.ResourceId !== undefined
+            ? allocation.ResourceId
             : undefined
-      ),
+      );
+      const subnets = await listSubnets(new Set(allocated.ids));
+      return { ids: subnets.ids, truncated: allocated.truncated || subnets.truncated };
+    },
     inspect: (aws, id, regionArg) =>
       aws`aws ec2 describe-subnets --subnet-ids ${id}${regionArg}`.render(),
   });

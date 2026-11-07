@@ -47,8 +47,8 @@ replace the resource. A deploy WITHOUT the flag does see one: AWS never held
 the value, and an added create-only property is a replacement. cdkd refuses
 that replacement rather than doing it on its own — see
 [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety-recreate.md#create-only-drop-needs-replacement).
-The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EC2::Subnet`'s
-`AvailabilityZoneId`.
+The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EFS::AccessPoint`'s
+`ClientToken`.
 
 The flag is for the cases the auto-routed update cannot deliver:
 

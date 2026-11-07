@@ -27,14 +27,29 @@ import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
-import { createSubnetLatch, ec2IdsCreatedByThisProcess } from './common.js';
+import { definedAttributes } from '../../attribute-map.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import {
+  SUBNET_CREATE_ONLY_SENT,
+  SUBNET_NOT_FOUND_NAMES,
+  type SubnetOrphanMatch,
+  createSubnetLatch,
+  ec2IdsCreatedByThisProcess,
+  isNamedError,
+  replayedRecordNote,
+  sameCreateOnlySent,
+} from './common.js';
 import {
   AAAA_MEMBER,
   type SubnetDetachAttribute,
+  readSubnetCreateInputs,
   subnetPrivateDnsMemberValue,
   subnetPrivateDnsOptionsRefusal,
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+
+/** go-to-k/cdkd#5632: reads of a pool-allocated subnet for its IPv6 association (~20 s). */
+const SUBNET_POOL_ASSOCIATION_READS = 10;
 
 // ─── AWS::EC2::Subnet ─────────────────────────────────────────────
 
@@ -110,20 +125,40 @@ export async function createSubnet(
   const cidrBlock = properties['CidrBlock'] as string | undefined;
   // go-to-k/cdkd#5632: an IPv6-only subnet has no IPv4 block.
   const ipv6Native = coerceCfnBoolean(prepared['Ipv6Native']);
+  // go-to-k/cdkd#5632: the zone by id and the IPAM allocations. A malformed
+  // value is refused before any call, on a rollback replay too: dropping it
+  // would place or allocate the subnet somewhere the record never named.
+  const read = readSubnetCreateInputs(properties, resourceType);
+  if ('refusal' in read) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${read.refusal}. The Subnet ${logicalId} was not created.${replayedRecordNote(context)}`,
+        resourceType,
+        logicalId
+      )
+    );
+  }
+  const inputs = read.inputs;
 
-  if (!vpcId || (!cidrBlock && ipv6Native !== true)) {
+  if (!vpcId || (!cidrBlock && inputs.ipv4PoolId === undefined && ipv6Native !== true)) {
     throw new ProvisioningError(
-      `VpcId and CidrBlock are required for Subnet ${logicalId} (CidrBlock may be omitted only when Ipv6Native is true)`,
+      `VpcId and CidrBlock are required for Subnet ${logicalId} (CidrBlock may be omitted only when Ipv6Native is true or Ipv4IpamPoolId is set)`,
       resourceType,
       logicalId
     );
   }
   // The orphan lookup's key: a CIDR cannot repeat in one VPC, IPv4 or IPv6.
-  const orphanCidr = cidrBlock
+  // go-to-k/cdkd#5632: a pool-allocated subnet has no CIDR to match before
+  // the create, so it is matched on the pool's own allocations.
+  const orphanCidr: SubnetOrphanMatch | undefined = cidrBlock
     ? { cidr: cidrBlock, family: 'ipv4' as const }
-    : typeof prepared['Ipv6CidrBlock'] === 'string'
-      ? { cidr: prepared['Ipv6CidrBlock'], family: 'ipv6' as const }
-      : undefined;
+    : inputs.ipv4PoolId !== undefined
+      ? { ipamPoolId: inputs.ipv4PoolId }
+      : typeof prepared['Ipv6CidrBlock'] === 'string'
+        ? { cidr: prepared['Ipv6CidrBlock'], family: 'ipv6' as const }
+        : inputs.ipv6PoolId !== undefined
+          ? { ipamPoolId: inputs.ipv6PoolId }
+          : undefined;
 
   // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
   // delete the subnet this call created.
@@ -160,6 +195,17 @@ export async function createSubnet(
               Ipv6CidrBlock: prepared['Ipv6CidrBlock'] as string | undefined,
               Ipv6Native: ipv6Native,
               AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
+              ...(inputs.availabilityZoneId !== undefined && {
+                AvailabilityZoneId: inputs.availabilityZoneId,
+              }),
+              ...(inputs.ipv4PoolId !== undefined && { Ipv4IpamPoolId: inputs.ipv4PoolId }),
+              ...(inputs.ipv4NetmaskLength !== undefined && {
+                Ipv4NetmaskLength: inputs.ipv4NetmaskLength,
+              }),
+              ...(inputs.ipv6PoolId !== undefined && { Ipv6IpamPoolId: inputs.ipv6PoolId }),
+              ...(inputs.ipv6NetmaskLength !== undefined && {
+                Ipv6NetmaskLength: inputs.ipv6NetmaskLength,
+              }),
               ...(TagSpecifications && { TagSpecifications }),
             })
           )
@@ -209,8 +255,29 @@ export async function createSubnet(
 
       // The observed-state capture must not record an associating block as
       // absent, and DNS64 wiring needs the IPv6 association ready (#5778).
-      if (prepared['Ipv6CidrBlock'] !== undefined) {
-        const associationId = response.Subnet?.Ipv6CidrBlockAssociationSet?.[0]?.AssociationId;
+      // go-to-k/cdkd#5632: so does a block allocated from an IPv6 pool.
+      if (prepared['Ipv6CidrBlock'] !== undefined || inputs.ipv6PoolId !== undefined) {
+        let associationId = response.Subnet?.Ipv6CidrBlockAssociationSet?.[0]?.AssociationId;
+        // go-to-k/cdkd#5632: whether CreateSubnet names a pool-allocated
+        // block's association is not measured, so a missing one is looked
+        // up before the create is called failed.
+        for (
+          let attempt = 1;
+          !associationId &&
+          inputs.ipv6PoolId !== undefined &&
+          attempt <= SUBNET_POOL_ASSOCIATION_READS;
+          attempt++
+        ) {
+          if (attempt > 1) await this.sleep(2000);
+          // A read this soon after the create can miss the subnet itself.
+          const live = await this.ec2Client
+            .send(new DescribeSubnetsCommand({ SubnetIds: [subnetId] }))
+            .catch((error: unknown) => {
+              if (isNamedError(error, SUBNET_NOT_FOUND_NAMES)) return undefined;
+              throw error;
+            });
+          associationId = live?.Subnets?.[0]?.Ipv6CidrBlockAssociationSet?.[0]?.AssociationId;
+        }
         if (!associationId) {
           throw new ProvisioningError(
             `CreateSubnet returned no IPv6 association ID for ${logicalId}`,
@@ -292,10 +359,18 @@ export async function createSubnet(
     return {
       physicalId: subnetId,
       ...(prepared !== properties && { effectiveProperties: prepared }),
-      attributes: {
+      // go-to-k/cdkd#5632: the create-only members `Fn::GetAtt` reads. An
+      // IPAM-allocated CIDR is known only from the CreateSubnet response, and
+      // the resolver's Subnet arm builds none of them from the subnet id. The
+      // response's CIDR is EC2's canonical form, which is what CloudFormation
+      // returns for a declared one too.
+      attributes: definedAttributes({
         SubnetId: subnetId,
         AvailabilityZone: availabilityZone,
-      },
+        AvailabilityZoneId: response.Subnet?.AvailabilityZoneId,
+        CidrBlock: response.Subnet?.CidrBlock ?? (cidrBlock || undefined),
+        VpcId: response.Subnet?.VpcId ?? vpcId,
+      }),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
@@ -313,6 +388,9 @@ export async function createSubnet(
     );
     if (leftBehindId !== undefined) {
       markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+      // go-to-k/cdkd#5632: terminal for a pool-allocated subnet, as for an
+      // IPAM VPC (#4945): no CIDR collides, so a retry makes another subnet.
+      if (orphanCidr !== undefined && 'ipamPoolId' in orphanCidr) markNonRetryable(thrown);
     }
     throw thrown;
   }
@@ -340,15 +418,17 @@ export async function updateSubnet(
   );
 
   try {
-    // VpcId / CidrBlock / AvailabilityZone are CREATE-only. The diff layer
-    // normally routes a change on them to replacement (hand rule in
-    // `replacement-rules.ts` + the registry-schema createOnly fallback),
-    // but `cdkd drift --revert` calls `update()` without that
-    // classification, so guard here too rather than silently no-op'ing.
-    for (const createOnly of ['VpcId', 'CidrBlock', 'AvailabilityZone']) {
+    // VpcId / CidrBlock / AvailabilityZone and (go-to-k/cdkd#5632) the zone
+    // id and IPAM inputs are CREATE-only. The diff layer normally routes a
+    // change on them to replacement (hand rule in `replacement-rules.ts` +
+    // the registry-schema createOnly fallback), but `cdkd drift --revert`
+    // calls `update()` without that classification, so guard here too
+    // rather than silently no-op'ing. Compared only when both sides carry
+    // the key: neither pool id has a readback.
+    for (const createOnly of SUBNET_CREATE_ONLY_SENT) {
       const next = properties[createOnly];
       const prev = previousProperties[createOnly];
-      if (next !== undefined && prev !== undefined && next !== prev) {
+      if (next !== undefined && prev !== undefined && !sameCreateOnlySent(createOnly, next, prev)) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,

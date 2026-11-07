@@ -2867,6 +2867,7 @@
         "ec2-route-targets",
         "ec2-subnet-dns64",
         "ec2-vpc",
+        "ec2-vpc-ipam",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -2912,7 +2913,6 @@
         "remove-protection-journaled-orphan",
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
-        "sdk-to-cc-autoroute",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
         "tags-propagation",
@@ -2997,6 +2997,9 @@
         ],
         "ec2-vpc": [
           "l2"
+        ],
+        "ec2-vpc-ipam": [
+          "l1"
         ],
         "ecs-bluegreen": [
           "l2"
@@ -3138,10 +3141,6 @@
         ],
         "rollback-failure-injection": [
           "l2"
-        ],
-        "sdk-to-cc-autoroute": [
-          "l1",
-          "literal"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -3519,7 +3518,6 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
-        "sdk-to-cc-autoroute",
         "servicediscovery",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
@@ -3766,9 +3764,6 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
-          "l1"
-        ],
-        "sdk-to-cc-autoroute": [
           "l1"
         ],
         "servicediscovery": [
@@ -4395,7 +4390,8 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
-        "import-attribute-readback-network"
+        "import-attribute-readback-network",
+        "sdk-to-cc-autoroute"
       ],
       "signals": {
         "ecs-fargate": [
@@ -4409,6 +4405,10 @@
         ],
         "import-attribute-readback-network": [
           "l1"
+        ],
+        "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -4422,6 +4422,7 @@
         "efs-lambda",
         "efs-standalone",
         "import-attribute-readback-network",
+        "sdk-to-cc-autoroute",
         "stack-copy-create-tokens"
       ],
       "signals": {
@@ -4448,6 +4449,9 @@
           "literal"
         ],
         "import-attribute-readback-network": [
+          "l1"
+        ],
+        "sdk-to-cc-autoroute": [
           "l1"
         ],
         "stack-copy-create-tokens": [
