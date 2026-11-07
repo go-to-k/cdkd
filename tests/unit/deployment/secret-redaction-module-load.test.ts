@@ -12,14 +12,18 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
-const MODULES = readdirSync(DIR)
+// RECURSIVE: a split module's own companion directory (`redact-path/`,
+// #5835) is part of the family and must load first too, and the entry that
+// imports it cannot load at all unless the copy below carries it.
+const MODULES = readdirSync(DIR, { recursive: true, encoding: 'utf8' })
   .filter((f) => f.endsWith('.ts'))
+  .map((f) => f.split(sep).join('/'))
   .sort();
 
 /** Vitest cannot interrupt a synchronous spawn, so the spawn carries the case's timeout too. */
@@ -53,7 +57,11 @@ beforeAll(() => {
   writeFileSync(join(root, 'package.json'), '{"type":"module"}');
   out = join(root, 'deployment', 'secret-redaction');
   mkdirSync(out, { recursive: true });
-  for (const file of MODULES) transpileTo(join(DIR, file), join(out, file.replace(/\.ts$/, '.js')));
+  for (const file of MODULES) {
+    const target = join(out, file.replace(/\.ts$/, '.js'));
+    mkdirSync(dirname(target), { recursive: true });
+    transpileTo(join(DIR, file), target);
+  }
   for (const dep of LEAF_DEPENDENCIES) {
     const target = join(root, dep.replace(/\.ts$/, '.js'));
     mkdirSync(dirname(target), { recursive: true });
@@ -80,6 +88,8 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
+    // A floor on the nested companion directory, so a non-recursive listing reds.
+    expect(MODULES).toContain('redact-path/reference-tokens.ts');
   });
 
   // Each case spawns a Node process, so it declares its own timeout.
