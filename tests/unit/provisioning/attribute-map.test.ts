@@ -170,7 +170,7 @@ interface Scan {
  * a property value's own expression is not RESOLVED to its callee's body (a
  * fallback spelled inline in that expression IS seen, since the property's
  * whole subtree is scanned); a per-member arrow helper declared as a
- * `const` (`ec2-provider.ts`'s `publicMember` is that shape, and its
+ * `const` (`ec2/instance-support.ts`'s `publicMember` is that shape, and its
  * `?? ''` is the deliberate known-empty of a settled instance -- invisible
  * to this walk rather than allow-listed, so a wrong site spelled that way
  * would pass too); a helper resolved by BARE NAME (`findCallee` takes the first

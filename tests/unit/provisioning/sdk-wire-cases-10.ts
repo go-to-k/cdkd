@@ -417,7 +417,7 @@ const FLEET_CASE: TypeCase = {
       expectedSilent: Object.fromEntries(
         ['InstanceTypeConfigs', 'ResizeSpecifications'].map((key) => [
           `update-remove:${key}`,
-          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config/shared.ts:48-60)',
+          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config/shared.ts:48-61)',
         ])
       ),
       expectedRemovalThrows: {

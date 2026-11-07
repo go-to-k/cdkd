@@ -99,7 +99,7 @@ export function createMaskedRetryLogger(
  * The masked sinks ONE provider operation routes every log line through
  * (issue [#2177](https://github.com/go-to-k/cdkd/issues/2177)).
  *
- * This is the `ssm-parameter-provider.ts` shape — one masked sink per
+ * This is the `ssm-parameter/create.ts` shape — one masked sink per
  * operation, so a line added later is masked by construction — shared rather
  * than re-spelled per file, for the reason this module's header gives for
  * {@link createMaskedRetryLogger}: per-file copies of a security contract

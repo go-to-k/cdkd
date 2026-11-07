@@ -1,15 +1,10 @@
 import {
   IAMClient,
-  CreatePolicyCommand,
   GetPolicyCommand,
-  DeletePolicyCommand,
-  CreatePolicyVersionCommand,
   DeletePolicyVersionCommand,
-  GetPolicyVersionCommand,
   ListPolicyVersionsCommand,
   ListEntitiesForPolicyCommand,
   ListPoliciesCommand,
-  ListPolicyTagsCommand,
   TagPolicyCommand,
   UntagPolicyCommand,
   AttachGroupPolicyCommand,
@@ -19,25 +14,15 @@ import {
   AttachUserPolicyCommand,
   DetachUserPolicyCommand,
   NoSuchEntityException,
-  type Policy,
 } from '@aws-sdk/client-iam';
-import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
-import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { markNotGone } from '../not-gone.js';
-import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import {
-  createMaskedLogSinks,
-  maskerOrIdentity,
-  withDerivedNameMasks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
+import { planTagDiff, tagPlanWarning } from '../tag-list.js';
+import { type MaskedLogSinks, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -52,56 +37,18 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { isAuxiliaryFailure } from '../auxiliary-failure.js';
+import { type DeleteProgress } from '../delete-started.js';
 import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
-import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import {
-  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import {
-  onlySecretDerived,
-  readPrincipalLists,
-  recordedPrincipalsRepair,
-  SECRET_DERIVED_READ_LIVE,
-} from '../iam-policy-targets.js';
-
-/** A bag's three principal lists, read by literal key (see `readPrincipalLists`). */
-const principalsOf = (bag: Record<string, unknown>) =>
-  readPrincipalLists({ Groups: bag['Groups'], Roles: bag['Roles'], Users: bag['Users'] });
-const PRINCIPAL_NAMES = 'group / role / user names';
-
-/**
- * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
- *
- * AWS-managed policies are the ones whose ACCOUNT segment is the literal
- * `aws` — `arn:<partition>:iam::aws:policy/<path><name>` — as opposed to a
- * customer-managed policy, which carries a 12-digit account id. They exist
- * under every partition (`arn:aws-us-gov:iam::aws:policy/AdministratorAccess`
- * is a real, attachable ARN in GovCloud), so pinning the PARTITION segment to
- * the commercial `aws` recognised only a third of them.
- *
- * The partition is read OFF THE ARN rather than derived from a region through
- * `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`): that helper
- * answers "given a region, which partition am I in", which is the right
- * question when BUILDING an ARN (the seven sites PR #1834 fixed) and the wrong
- * one when CLASSIFYING an ARN the caller already holds. The loose
- * `aws[a-z0-9-]*` partition segment matches `IAM_ROLE_ARN_RE` in
- * `src/utils/role-arn.ts`; a closed partition list is precisely what goes
- * stale when AWS adds a partition, and here staleness fails DANGEROUS (see the
- * refusal's own comment — an unrecognised AWS-managed policy gets adopted, and
- * destroy then detaches it from every principal in the account).
- */
-const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
+import { create } from './iam-managed-policy/create.js';
+import { update } from './iam-managed-policy/update.js';
+import { deleteImpl } from './iam-managed-policy/delete.js';
+import { readCurrentState, importImpl } from './iam-managed-policy/read-state.js';
+import { policyIdentityToken } from './iam-managed-policy/shared.js';
 
 const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
 
@@ -114,19 +61,6 @@ const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
  */
 const CUSTOMER_POLICY_ARN_RE =
   /^(arn:aws[a-z0-9-]*:iam::\d{12}):policy\/(?:[!-~]{0,510}\/)?([\w+=,.@-]{1,128})$/;
-
-/**
- * go-to-k/cdkd#4606 / #4655: a managed policy's identity token is its
- * `PolicyId` (`ANPA…`). IAM assigns it at `CreatePolicy` and never changes
- * it; one deleted and re-created under the same name gets another (IAM User
- * Guide, "IAM identifiers" → "Unique identifiers"; the
- * `iam-profile-policy-fix-forward-orphan` fixture measures the re-create).
- * The attach calls a CREATE makes afterwards do not touch it. `undefined` for
- * a missing or empty one.
- */
-function policyIdentityToken(id: string | undefined): string | undefined {
-  return typeof id === 'string' && id !== '' ? id : undefined;
-}
 
 /**
  * AWS IAM Managed Policy Provider
@@ -145,10 +79,10 @@ function policyIdentityToken(id: string | undefined): string | undefined {
  * different paths are distinct.
  */
 export class IAMManagedPolicyProvider implements ResourceProvider {
-  private iamClient: IAMClient;
+  iamClient: IAMClient;
   /** `CreatePolicy` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
-  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
-  private logger = getLogger().child('IAMManagedPolicyProvider');
+  readonly createClient = new IamCreateClientCache(() => this.iamClient);
+  logger: ConsoleLogger = getLogger().child('IAMManagedPolicyProvider');
 
   /**
    * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
@@ -166,7 +100,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
    * sees the catch that throws it as a wrap.
    */
-  private wrapMaskedError(
+  wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
@@ -202,226 +136,16 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     this.iamClient = awsClients.iam;
   }
 
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
-    // shape), and every bag-derived value masked RAW as well. The ARN is
-    // AWS-minted but EMBEDS the template-chosen name and path, so it is masked
-    // like one. Absent context means identity.
-    const policyName = generateResourceNameWithFallback(
-      properties['ManagedPolicyName'] as string | undefined,
-      logicalId,
-      { maxLength: 128 }
-    );
-    // The physical name is REWRITTEN from the template value (stack prefix,
-    // charset folding, truncation), so the masker cannot recognise it by
-    // itself: add it as a needle when the value it came from is a secret.
-    // The needle also matches the name INSIDE the policy ARN.
-    const log = withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [[properties['ManagedPolicyName'], policyName]]
-    );
-    const { value: v } = log;
-    log.debug(`Creating IAM managed policy ${logicalId}`);
-    const policyDocument = properties['PolicyDocument'];
-
-    if (!policyDocument) {
-      throw new ProvisioningError(
-        `PolicyDocument is required for IAM managed policy ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // Read before any call (go-to-k/cdkd#3906): a cast iterated a string by
-    // character, attaching the policy to one-letter principals. A replacement
-    // inside `update()` and a rollback's reverse-replacement create both pass
-    // a recorded bag here, so this is not only a template-side check.
-    const principals = principalsOf(properties);
-    if ('malformed' in principals) {
-      throw new ProvisioningError(
-        `${principals.malformed.join(' / ')} of IAM managed policy ${logicalId} is not a list ` +
-          `of IAM names — no managed policy was created or attached`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    const policyDoc =
-      typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
-
-    // go-to-k/cdkd#4583: the ARN CreatePolicy returned (the id `delete()` takes),
-    // or that a replay adopted (#5660), cleared when the partial-create cleanup
-    // deleted the policy.
-    let leftBehindArn: string | undefined;
-    // go-to-k/cdkd#4606: the PolicyId CreatePolicy answered with, carried on
-    // the mark so the journal needs no read of a policy whose failure may fail
-    // that read too.
-    let createdPolicyIdentity: string | undefined;
-    try {
-      const createParams: {
-        PolicyName: string;
-        PolicyDocument: string;
-        Description?: string;
-        Path?: string;
-        Tags?: Array<{ Key: string; Value: string }>;
-      } = {
-        PolicyName: policyName,
-        PolicyDocument: policyDoc,
-      };
-
-      if (properties['Description']) {
-        createParams.Description = properties['Description'] as string;
-      }
-      if (properties['Path']) {
-        createParams.Path = properties['Path'] as string;
-      }
-      if (tags.length > 0) {
-        createParams.Tags = tags;
-      }
-
-      const createClient = await this.createClient.get();
-      let policy: Policy | undefined;
-      let adopted = false;
-      try {
-        policy = (await createClient.send(new CreatePolicyCommand(createParams))).Policy;
-      } catch (createError) {
-        // go-to-k/cdkd#5660: a replay colliding with the policy its own earlier
-        // attempt left behind finishes that policy; anything else fails as
-        // before. The ARN a same-name re-create reuses proves nothing, so the
-        // proof is the PolicyId. The wiring is `attachToPrincipals` alone, whose
-        // three calls each succeeded on an attached policy when measured on real
-        // IAM (2026-11-03); `CreatePolicyVersion` belongs to `update()`, and the
-        // document came with `CreatePolicy`.
-        const expectedArnTail = `:policy${createParams.Path ?? '/'}${policyName}`;
-        policy = await iamEntityLeftByThisCreate({
-          logicalId,
-          resourceType,
-          noun: 'managed policy',
-          displayName: policyName,
-          createError,
-          namesThisEntity: (reported) => reported.endsWith(expectedArnTail),
-          read: async (reportedArn) =>
-            (await this.iamClient.send(new GetPolicyCommand({ PolicyArn: reportedArn }))).Policy,
-          identityOf: (live) => policyIdentityToken(live?.PolicyId),
-          log,
-        });
-        if (policy === undefined) throw createError;
-        adopted = true;
-      }
-      const policyArn = policy?.Arn;
-      if (!policyArn) {
-        throw new ProvisioningError(
-          `${adopted ? 'GetPolicy' : 'CreatePolicy'} succeeded but no Arn returned for ${logicalId}`,
-          resourceType,
-          logicalId,
-          policyName
-        );
-      }
-      leftBehindArn = policyArn;
-      createdPolicyIdentity = policyIdentityToken(policy?.PolicyId);
-      if (!adopted) {
-        reportCreatedResource(logicalId, resourceType, policyArn, createdPolicyIdentity); // go-to-k/cdkd#5511
-        log.debug(`Created IAM managed policy: ${v(policyArn)}`);
-      }
-
-      // CreatePolicy has succeeded — AWS has committed the policy. Wire up
-      // attachments next; if any fail, AWS-side cleanup mirrors `delete()`
-      // (detach principals + delete non-default versions + DeletePolicy) so
-      // the next redeploy doesn't trip over `EntityAlreadyExists`; an adopted
-      // policy skips this cleanup (see the catch).
-      try {
-        await this.attachToPrincipals(
-          policyArn,
-          principals.lists.Groups,
-          principals.lists.Roles,
-          principals.lists.Users,
-          log
-        );
-      } catch (innerError) {
-        // go-to-k/cdkd#5660: an adopted policy is not stripped or deleted, see
-        // `iamEntityLeftByThisCreate`.
-        if (!adopted) {
-          try {
-            await this.detachAllPrincipals(policyArn);
-            await this.deleteAllNonDefaultVersions(policyArn);
-            await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
-            retractCreatedResource(logicalId, resourceType, policyArn);
-            leftBehindArn = undefined;
-            log.debug(
-              `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
-            );
-          } catch (cleanupError) {
-            // The ARN is AWS-minted but embeds the TEMPLATE-chosen name and path,
-            // so every command below renders through `pasteableAwsCommand`
-            // (issue #3136): withheld when it cannot be printed exactly.
-            // The masker is handed over too (issue #2177), so a secret-bearing
-            // name withholds the command rather than printing it.
-            const aws = pasteableAwsCommand(log.mask);
-            // An AWS-authored failure is named by its class at warn, and AWS's
-            // text (a denied `DeletePolicy` names the caller) goes to `debug`
-            // under the same head (go-to-k/cdkd#2319).
-            const cleanupFailure = describeAwsFailure(cleanupError);
-            const cleanupHead = `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): `;
-            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
-            log.warn(
-              `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
-            );
-          }
-        }
-        // The resource itself was created: an "already exists" from its wiring
-        // is an auxiliary object's, not this resource's name collision (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
-
-      return {
-        physicalId: policyArn,
-        attributes: {
-          PolicyArn: policyArn,
-        },
-      };
-    } catch (error) {
-      // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
-      // ProvisioningError replaces its precise message with this outer one.
-      // The mark carries the PolicyId (go-to-k/cdkd#4606), which a later
-      // settle compares before deleting the policy by ARN.
-      const markLeftBehind = <E>(e: E): E =>
-        leftBehindArn !== undefined
-          ? markCreatedBeforeFailure(
-              e,
-              logicalId,
-              resourceType,
-              leftBehindArn,
-              createdPolicyIdentity
-            )
-          : e;
-      if (error instanceof CdkdError) {
-        markLeftBehind(error);
-        throw error;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(log.mask, error, (text) =>
-        markLeftBehind(
-          new ProvisioningError(
-            `Failed to create IAM managed policy ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            policyName,
-            cause
-          )
-        )
-      );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -429,407 +153,25 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const derivedPolicyName = generateResourceNameWithFallback(
-      properties['ManagedPolicyName'] as string | undefined,
+    return update.call(
+      this,
       logicalId,
-      { maxLength: 128 }
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
     );
-    const oldPolicyName = derivePolicyNameFromArn(physicalId);
-    // Issue #2177 -- see `create()`, including the derived-name needles. The
-    // recorded ARN's name is paired with the PREVIOUS value it was derived from,
-    // and with the DESIRED one too, for the reason `IAMRoleProvider.update`
-    // gives (issue #4023).
-    const log = withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [
-        [properties['ManagedPolicyName'], derivedPolicyName],
-        [previousProperties['ManagedPolicyName'], oldPolicyName],
-        // Only on a revert: on a template-path rename the recorded name is
-        // NOT derived from the desired value, and masking it would hide the
-        // old name for no reason.
-        ...(context?.desiredFromAwsReadback === true
-          ? [[properties['ManagedPolicyName'], oldPolicyName] as [unknown, string]]
-          : []),
-        // The ARN carries the PATH too (go-to-k/cdkd#4339): after a secret
-        // rotation it names the pre-rotation path, which this deploy's masker
-        // never resolved. The root path names nothing secret, and as a needle
-        // it would hide every `/`.
-        [previousProperties['Path'], recordedNonRootPath(physicalId)],
-      ]
-    );
-    const { value: v } = log;
-    log.debug(`Updating IAM managed policy ${logicalId}: ${v(physicalId)}`);
-    // Issue #4023: `cdkd drift --revert` keeps the recorded name, as
-    // `IAMRoleProvider.update` does and for the same reason — the derivation
-    // runs outside the deploy's stack-name / prefix scope, and a policy's name
-    // cannot change in place, so a mismatch would REPLACE the live policy.
-    const revertKeepsName =
-      context?.desiredFromAwsReadback === true && derivedPolicyName !== oldPolicyName;
-    if (revertKeepsName) {
-      log.warn(
-        `IAM managed policy ${logicalId}: ManagedPolicyName is not reverted — the policy ` +
-          `${v(oldPolicyName)} keeps its name (the reverted properties derive ` +
-          `${v(derivedPolicyName)}), since a drift revert never replaces a policy. 'cdkd drift' ` +
-          `keeps reporting the name until 'cdkd drift --accept' records the live one; only a ` +
-          `deploy renames the policy.`
-      );
-    }
-    // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
-    // the derivation only by the naming scheme keeps it, never a replacement.
-    const generatedNameKept = recordedGeneratedNameKept({
-      recorded: oldPolicyName,
-      derived: derivedPolicyName,
-      declaredName: properties['ManagedPolicyName'],
-      previousDeclaredName: previousProperties['ManagedPolicyName'],
-      logicalId,
-      options: { maxLength: 128 },
-    });
-    if (generatedNameKept) {
-      log.debug(
-        `IAM managed policy ${logicalId}: keeping its generated name ${v(oldPolicyName)} (the template names no policy)`
-      );
-    }
-    const newPolicyName = revertKeepsName || generatedNameKept ? oldPolicyName : derivedPolicyName;
-    // BOTH sides before any call (go-to-k/cdkd#3906). The previous side is the
-    // state record, and a rollback revert or `drift --revert` replays this
-    // method with a recorded bag as the DESIRED side: a string there was
-    // walked by character, ATTACHING the policy to one-letter principals.
-    const newPrincipals = principalsOf(properties);
-    const oldPrincipals = principalsOf(previousProperties);
-    // A recorded list cdkd redacted (a dynamic reference or its mask) cannot be
-    // repaired in state. With a well-formed desired side it is not refused:
-    // the in-place arm below reads that kind from IAM, ADD-only
-    // (go-to-k/cdkd#3906).
-    const liveKinds =
-      !('malformed' in newPrincipals) && onlySecretDerived(oldPrincipals)
-        ? oldPrincipals.malformed
-        : [];
-    if (liveKinds.length === 0 && ('malformed' in newPrincipals || 'malformed' in oldPrincipals)) {
-      const which = [
-        ...('malformed' in newPrincipals ? newPrincipals.malformed.map((k) => `desired ${k}`) : []),
-        ...('malformed' in oldPrincipals
-          ? oldPrincipals.malformed.map((k) => `recorded ${k}`)
-          : []),
-      ];
-      throw new ProvisioningError(
-        `${which.join(' / ')} of IAM managed policy ${logicalId} is not a list of IAM names — ` +
-          `no managed policy was attached, detached or replaced` +
-          ('malformed' in oldPrincipals
-            ? `: ${recordedPrincipalsRepair(
-                oldPrincipals.malformed,
-                oldPrincipals.secretDerived,
-                PRINCIPAL_NAMES,
-                SECRET_DERIVED_READ_LIVE
-              )}`
-            : ''),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-    const newPath = (properties['Path'] as string | undefined) || '/';
-    const oldPath = (previousProperties['Path'] as string | undefined) || '/';
-    const newDescription = properties['Description'] as string | undefined;
-    const oldDescription = previousProperties['Description'] as string | undefined;
-
-    // ManagedPolicyName, Path, and Description are all immutable on AWS. A
-    // secret-derived Path / Description is recorded as its `{{resolve:...}}`
-    // reference and handed here resolved, which is no change, so it must not
-    // REPLACE the policy (go-to-k/cdkd#4275). The name is already compared with
-    // the one the ARN carries; the ARN carries the path too. The description
-    // has no non-secret identity, so it takes the masker arm.
-    const pathChanged =
-      newPath !== oldPath &&
-      !(await unchangedBehindSecretReference({
-        resourceType,
-        key: 'Path',
-        desired: newPath,
-        previous: previousProperties['Path'],
-        physicalName: derivePolicyPathFromArn(physicalId),
-      }));
-    const descriptionChanged =
-      (newDescription ?? '') !== (oldDescription ?? '') &&
-      !(await unchangedBehindSecretReference({
-        resourceType,
-        key: 'Description',
-        desired: newDescription,
-        previous: oldDescription,
-        maskSecrets: context?.maskSecrets,
-      }));
-    const needsReplacement = newPolicyName !== oldPolicyName || pathChanged || descriptionChanged;
-
-    // Issue #4023: the replacement arm re-derives the name inside `create()`,
-    // so on a revert it would still create under the derived name and delete
-    // the recorded policy. A revert never replaces: refuse before any call.
-    if (needsReplacement && context?.desiredFromAwsReadback === true) {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `IAM managed policy ${logicalId}: ${pathChanged ? 'Path' : 'Description'} ` +
-            `cannot be reverted — it cannot change in place, and a drift revert never replaces ` +
-            `the policy ${v(physicalId)}. Nothing was changed; deploy the stack to replace it.`,
-          resourceType,
-          logicalId,
-          physicalId
-        )
-      );
-    }
-
-    if (needsReplacement) {
-      const reason =
-        newPolicyName !== oldPolicyName
-          ? 'ManagedPolicyName'
-          : pathChanged
-            ? 'Path'
-            : 'Description';
-      log.debug(
-        `${reason} changed, replacing managed policy: ${v(physicalId)} (${reason} mutation)`
-      );
-
-      // The masker is forwarded (issue #2177) and NOTHING else: this context
-      // never carries `replayingState`, so a create-side pre-flight refusal
-      // would still fire on a rollback replay (see `CreateContext`).
-      const createResult = await this.create(logicalId, resourceType, properties, {
-        maskSecrets: log.mask,
-      });
-      // What the inner delete left behind, if anything (issue #1819). The new
-      // policy already exists, so the replacement cannot be aborted — the
-      // honest outcome is "updated, and the old policy survives", which is what
-      // the update's `'partial'` arm says. Before that channel existed this was
-      // a `logger.warn` and the deploy exited 0 with the old policy alive and
-      // no longer in cdkd state.
-      let orphanReason: string | undefined;
-      try {
-        // This operation's masker reaches the delete's own lines too
-        // (go-to-k/cdkd#4339): they name the OLD policy ARN.
-        const deleteResult = await this.delete(
-          logicalId,
-          physicalId,
-          resourceType,
-          previousProperties,
-          { maskSecrets: log.mask }
-        );
-        // Issue #1778: a SKIP is a non-throwing "I did not address this
-        // resource", so it sails straight past the catch below — the one path
-        // that would have told the user the old policy is still there.
-        if (deleteResult?.outcome === 'skipped') {
-          orphanReason = log.mask(
-            `old managed policy ${v(physicalId)} was not deleted: ${deleteResult.reason}`
-          );
-          log.warn(
-            `Skipped deleting old managed policy ${v(physicalId)} during replacement: ${deleteResult.reason}. ` +
-              `The old policy may be orphaned and require manual cleanup.`
-          );
-        }
-      } catch (error) {
-        // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
-        // detaches the policy before `DeletePolicy` refuses, so it is not whole.
-        // `error` is `delete()`'s wrap, which names an AWS failure by its class
-        // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
-        orphanReason = log.mask(
-          `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
-        );
-        log.warn(
-          `Failed to delete old managed policy ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
-            `The old policy may be orphaned and require manual cleanup.`
-        );
-      }
-
-      const base = {
-        physicalId: createResult.physicalId,
-        wasReplaced: true as const,
-        ...(createResult.attributes ? { attributes: createResult.attributes } : {}),
-      };
-      // The old physical id travels in the reason: state now points at the NEW
-      // policy and nothing else downstream still knows the one that survived.
-      return orphanReason !== undefined
-        ? { ...base, outcome: 'partial' as const, reason: orphanReason }
-        : base;
-    }
-
-    // The secret-derived recorded kinds come from IAM, and only to decide what
-    // to ADD: IAM's list also holds attachments made elsewhere (a Role's
-    // `ManagedPolicyArns`, another stack, the console), so nothing is detached
-    // on its evidence. The well-formed recorded kinds keep the record.
-    const oldLists = { ...oldPrincipals.lists };
-    if (liveKinds.length > 0) {
-      let live: Record<'Groups' | 'Roles' | 'Users', string[]>;
-      try {
-        live = await this.readLivePrincipals(physicalId);
-      } catch (error) {
-        throw new ProvisioningError(
-          `the recorded ${liveKinds.join(' / ')} of IAM managed policy ${logicalId} is ` +
-            `secret-derived and the policy's attachments could not be read from IAM — no ` +
-            `managed policy was attached or detached`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
-        );
-      }
-      // Warned only where IAM holds a name the template does not: the one case
-      // the ADD-only diff leaves something the user may need to detach.
-      const unmatched: string[] = [];
-      for (const kind of liveKinds) {
-        const desired = newPrincipals.lists[kind] ?? [];
-        oldLists[kind] = live[kind].filter((name) => desired.includes(name));
-        if (live[kind].some((name) => !desired.includes(name))) unmatched.push(kind);
-      }
-      if (unmatched.length > 0) {
-        log.warn(
-          `The recorded ${unmatched.join(' / ')} of IAM managed policy ${logicalId} is ` +
-            `secret-derived, and IAM lists attachments the template does not name: cdkd ` +
-            `detaches none of them, since IAM's list includes attachments made elsewhere. Detach ` +
-            `by hand any that this list used to name.`
-        );
-      }
-    }
-
-    try {
-      // Update PolicyDocument by creating a new version + setting as default.
-      // AWS caps managed policies at 5 versions; prune the oldest non-default
-      // before creating a new one when already at the cap.
-      const newDocument = properties['PolicyDocument'];
-      const oldDocument = previousProperties['PolicyDocument'];
-      if (newDocument) {
-        const newDocStr =
-          typeof newDocument === 'string' ? newDocument : JSON.stringify(newDocument);
-        const oldDocStr = oldDocument
-          ? typeof oldDocument === 'string'
-            ? oldDocument
-            : JSON.stringify(oldDocument)
-          : '';
-        if (newDocStr !== oldDocStr) {
-          await this.ensureVersionCapacity(physicalId, log);
-          await this.iamClient.send(
-            new CreatePolicyVersionCommand({
-              PolicyArn: physicalId,
-              PolicyDocument: newDocStr,
-              SetAsDefault: true,
-            })
-          );
-          log.debug(`Updated PolicyDocument for ${v(physicalId)}`);
-        }
-      }
-
-      // Diff principal attachments.
-      await this.updatePrincipals(
-        physicalId,
-        newPrincipals.lists.Groups,
-        oldLists.Groups,
-        newPrincipals.lists.Roles,
-        oldLists.Roles,
-        newPrincipals.lists.Users,
-        oldLists.Users,
-        log
-      );
-
-      // Diff tags.
-      await this.updateTags(
-        physicalId,
-        resourceType,
-        logicalId,
-        properties['Tags'],
-        previousProperties['Tags'],
-        log
-      );
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          PolicyArn: physicalId,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update IAM managed policy ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    // The caller's masker (go-to-k/cdkd#2007); `update()`'s replacement arm
-    // hands its operation masker, which pairs the recorded name and path with
-    // the ARN (go-to-k/cdkd#4339).
-    const mask = maskerOrIdentity(context?.maskSecrets);
-    this.logger.debug(mask(`Deleting IAM managed policy ${logicalId}: ${physicalId}`));
-    // go-to-k/cdkd#4946: set once a principal is detached, so a refused
-    // `DeletePolicy` is never read as a whole survivor. Deleting non-default
-    // versions is not a strip: the record describes only the default one.
-    const progress: DeleteProgress = { stripped: false };
-
-    try {
-      try {
-        await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
-      } catch (error) {
-        if (error instanceof NoSuchEntityException) {
-          await this.goneOnDelete(logicalId, physicalId, resourceType, context, mask);
-          return;
-        }
-        throw error;
-      }
-
-      // 1. Detach from every group / role / user (AWS refuses to delete an
-      //    attached managed policy). Use ListEntitiesForPolicy as the source
-      //    of truth rather than state's Groups/Roles/Users so a console-side
-      //    attach made after deploy is also cleaned up.
-      await this.detachAllPrincipals(physicalId, progress);
-
-      // 2. Delete every non-default policy version (AWS refuses to delete a
-      //    policy with non-default versions).
-      await this.deleteAllNonDefaultVersions(physicalId);
-
-      // 3. Delete the policy itself.
-      await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: physicalId }));
-
-      this.logger.debug(`Successfully deleted IAM managed policy ${logicalId}`);
-    } catch (error) {
-      // Read back above but gone by `DeletePolicy` (a concurrent delete): the
-      // same not-found arm as the read's.
-      if (error instanceof NoSuchEntityException) {
-        await this.goneOnDelete(logicalId, physicalId, resourceType, context, mask);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
-        mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete IAM managed policy ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
-      // `NoSuchEntity` is not such a class.
-      const marked =
-        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
-      throw progress.stripped ? markDeleteStarted(marked) : marked;
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
   /**
@@ -838,7 +180,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * so it is said once at info; the ARN is interpolated verbatim for the
    * caller's printing bag to mask.
    */
-  private async goneOnDelete(
+  async goneOnDelete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -869,167 +211,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return undefined;
   }
 
-  /**
-   * Read the AWS-current managed policy configuration in CFn-property shape.
-   *
-   * Coverage:
-   *  - `ManagedPolicyName`, `Description`, `Path` — straight from `GetPolicy`.
-   *  - `PolicyDocument` — fetched via `GetPolicyVersion` on the default
-   *    version, URL-decoded + JSON-parsed.
-   *  - `Groups` / `Roles` / `Users` — string arrays from
-   *    `ListEntitiesForPolicy`.
-   *  - `Tags` — via `ListPolicyTags`, with the `aws:cdk:path` etc. filtered
-   *    out by `normalizeAwsTagsToCfn`.
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the policy is gone (`NoSuchEntityException`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string,
-    _properties?: Record<string, unknown>
+    logicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let policy;
-    try {
-      const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
-      policy = resp.Policy;
-    } catch (err) {
-      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!policy) return undefined;
-
-    const result: Record<string, unknown> = {};
-    if (policy.PolicyName !== undefined) result['ManagedPolicyName'] = policy.PolicyName;
-    result['Description'] = policy.Description ?? '';
-    if (policy.Path !== undefined) result['Path'] = policy.Path;
-
-    if (policy.DefaultVersionId) {
-      try {
-        const versionResp = await this.iamClient.send(
-          new GetPolicyVersionCommand({
-            PolicyArn: physicalId,
-            VersionId: policy.DefaultVersionId,
-          })
-        );
-        const doc = versionResp.PolicyVersion?.Document;
-        if (typeof doc === 'string') {
-          try {
-            result['PolicyDocument'] = JSON.parse(decodeURIComponent(doc));
-          } catch {
-            result['PolicyDocument'] = doc;
-          }
-        }
-      } catch (err) {
-        if (!(err instanceof NoSuchEntityException)) throw err;
-      }
-    }
-
-    try {
-      const groups: string[] = [];
-      const roles: string[] = [];
-      const users: string[] = [];
-      let marker: string | undefined;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const resp = await this.iamClient.send(
-          new ListEntitiesForPolicyCommand({
-            PolicyArn: physicalId,
-            ...(marker ? { Marker: marker } : {}),
-          })
-        );
-        for (const g of resp.PolicyGroups ?? []) if (g.GroupName) groups.push(g.GroupName);
-        for (const r of resp.PolicyRoles ?? []) if (r.RoleName) roles.push(r.RoleName);
-        for (const u of resp.PolicyUsers ?? []) if (u.UserName) users.push(u.UserName);
-        if (!resp.IsTruncated) break;
-        marker = resp.Marker;
-      }
-      result['Groups'] = groups;
-      result['Roles'] = roles;
-      result['Users'] = users;
-    } catch (err) {
-      if (!(err instanceof NoSuchEntityException)) throw err;
-    }
-
-    try {
-      const collected: Array<{ Key?: string | undefined; Value?: string | undefined }> = [];
-      let marker: string | undefined;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const tagsResp = await this.iamClient.send(
-          new ListPolicyTagsCommand({
-            PolicyArn: physicalId,
-            ...(marker ? { Marker: marker } : {}),
-          })
-        );
-        for (const t of tagsResp.Tags ?? []) {
-          collected.push({ Key: t.Key, Value: t.Value });
-        }
-        if (!tagsResp.IsTruncated) break;
-        marker = tagsResp.Marker;
-      }
-      result['Tags'] = normalizeAwsTagsToCfn(collected);
-    } catch (err) {
-      if (!(err instanceof NoSuchEntityException)) throw err;
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
   }
 
-  /**
-   * Adopt an existing IAM managed policy into cdkd state.
-   *
-   * Lookup order:
-   *  1. `--resource` override or `Properties.ManagedPolicyName` → walk
-   *     `ListPolicies(Scope: 'Local')` to find the matching ARN.
-   *
-   * Scope is forced to `'Local'` (customer-managed policies) — adopting an
-   * AWS-managed policy would let cdkd delete it on next destroy, which would
-   * be a major footgun.
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'ManagedPolicyName');
-    if (explicit) {
-      // If the override is already an ARN, trust it (verify exists). But
-      // refuse AWS-managed policies (`arn:<partition>:iam::aws:policy/...`)
-      // outright — adopting one would let cdkd's destroy path attempt
-      // `DeletePolicy` (always rejected by IAM) but only AFTER
-      // `detachAllPrincipals` has forcibly detached the policy from every
-      // user / role / group in the account. That's a major foot-gun (think
-      // `AdministratorAccess`); the tag-based fallback path is already guarded
-      // by `Scope: 'Local'`, and the explicit-ARN path needs the same guard.
-      // The partition segment is matched across ALL partitions (issue #1815):
-      // this predicate's miss direction is the dangerous one, so a GovCloud /
-      // China `AdministratorAccess` ARN must trip it too.
-      if (explicit.startsWith('arn:')) {
-        if (AWS_MANAGED_POLICY_ARN_RE.test(explicit)) {
-          throw new Error(
-            `Refusing to import AWS-managed policy ${explicit}: cdkd only adopts customer-managed policies. ` +
-              `If you need to attach an AWS-managed policy to a role / user / group, reference it via ManagedPolicyArns on the principal instead.`
-          );
-        }
-        try {
-          await this.iamClient.send(new GetPolicyCommand({ PolicyArn: explicit }));
-          return { physicalId: explicit, attributes: { PolicyArn: explicit } };
-        } catch (err) {
-          if (err instanceof NoSuchEntityException) return null;
-          throw err;
-        }
-      }
-      // Otherwise treat as a policy name + walk customer-managed policies.
-      const arnByName = await this.findPolicyArnByName(explicit);
-      if (arnByName) {
-        return { physicalId: arnByName, attributes: { PolicyArn: arnByName } };
-      }
-      return null;
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
-    // tag never exists on a real resource and the walk could not match (issue
-    // #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a managed
-    // policy reaching here needs an explicit `--resource` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 
   // ── identity (go-to-k/cdkd#4606) ──────────────────────────────────
@@ -1131,7 +323,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
 
   // ── helpers ───────────────────────────────────────────────────────
 
-  private async attachToPrincipals(
+  async attachToPrincipals(
     policyArn: string,
     groups: string[] | undefined,
     roles: string[] | undefined,
@@ -1165,7 +357,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
   }
 
-  private async updatePrincipals(
+  async updatePrincipals(
     policyArn: string,
     newGroups: string[] | undefined,
     oldGroups: string[] | undefined,
@@ -1247,7 +439,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   }
 
   /** Every group, role and user the policy is attached to, read from IAM. */
-  private async readLivePrincipals(
+  async readLivePrincipals(
     policyArn: string
   ): Promise<{ Groups: string[]; Roles: string[]; Users: string[] }> {
     const live = { Groups: [] as string[], Roles: [] as string[], Users: [] as string[] };
@@ -1267,7 +459,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return live;
   }
 
-  private async detachAllPrincipals(policyArn: string, progress?: DeleteProgress): Promise<void> {
+  async detachAllPrincipals(policyArn: string, progress?: DeleteProgress): Promise<void> {
     try {
       let marker: string | undefined;
       // eslint-disable-next-line no-constant-condition
@@ -1325,7 +517,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * `DeletePolicy` — AWS refuses to delete a policy that still has
    * non-default versions.
    */
-  private async deleteAllNonDefaultVersions(policyArn: string): Promise<void> {
+  async deleteAllNonDefaultVersions(policyArn: string): Promise<void> {
     try {
       let marker: string | undefined;
       // eslint-disable-next-line no-constant-condition
@@ -1360,7 +552,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * AWS caps managed policies at 5 versions. Before creating a new version,
    * prune the oldest non-default version if at the cap.
    */
-  private async ensureVersionCapacity(policyArn: string, log: MaskedLogSinks): Promise<void> {
+  async ensureVersionCapacity(policyArn: string, log: MaskedLogSinks): Promise<void> {
     const { value: v } = log;
     const resp = await this.iamClient.send(new ListPolicyVersionsCommand({ PolicyArn: policyArn }));
     const versions = resp.Versions ?? [];
@@ -1381,7 +573,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * Diff the policy's tags. Both sides are read through `planTagDiff`
    * (go-to-k/cdkd#3994): an unreadable record untags nothing.
    */
-  private async updateTags(
+  async updateTags(
     policyArn: string,
     resourceType: string,
     logicalId: string,
@@ -1407,7 +599,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
   }
 
-  private async findPolicyArnByName(policyName: string): Promise<string | undefined> {
+  async findPolicyArnByName(policyName: string): Promise<string | undefined> {
     let marker: string | undefined;
     do {
       const resp = await this.iamClient.send(
@@ -1420,42 +612,4 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     } while (marker);
     return undefined;
   }
-}
-
-/**
- * Recover the policy name from `arn:<partition>:iam::<account>:policy/<path><name>`.
- * Used to decide whether `ManagedPolicyName` was mutated relative to the
- * physical id we recorded — name + path are immutable on AWS, so any
- * difference is a replacement signal.
- */
-function derivePolicyNameFromArn(arn: string): string {
-  // ARN shape: arn:<partition>:iam::<account>:policy/<path-may-contain-slashes>/<name>
-  // The final '/'-delimited segment is the name; path is everything between
-  // the leading 'policy/' and the name. Partition-agnostic already: the parse
-  // never looks left of the last '/', so no partition literal is involved.
-  const ix = arn.lastIndexOf('/');
-  return ix >= 0 ? arn.slice(ix + 1) : arn;
-}
-
-/**
- * The `Path` a policy ARN carries (`policy/team/a/Name` -> `/team/a/`, a bare
- * `policy/Name` -> `/`), or `undefined` when the physical id is not a policy
- * ARN, so the caller keeps its own comparison (go-to-k/cdkd#4275).
- */
-function derivePolicyPathFromArn(arn: string): string | undefined {
-  const marker = ':policy/';
-  const at = arn.indexOf(marker);
-  if (at < 0) return undefined;
-  const resource = arn.slice(at + marker.length - 1);
-  return resource.slice(0, resource.lastIndexOf('/') + 1);
-}
-
-/**
- * The recorded path the policy ARN carries, as a mask needle: `undefined` for
- * the root `/`, which names nothing secret and would hide every `/`
- * (go-to-k/cdkd#4339).
- */
-function recordedNonRootPath(arn: string): string | undefined {
-  const path = derivePolicyPathFromArn(arn);
-  return path === '/' ? undefined : path;
 }

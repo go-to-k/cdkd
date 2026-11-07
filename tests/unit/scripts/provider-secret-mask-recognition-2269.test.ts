@@ -975,9 +975,9 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     // `JSON.parse(JSON.stringify(...))` round-trips feeding an in-memory
     // comparison whose result is compared and dropped, never logged or thrown
     // (`asJson` in `secretsmanager-secret/shared.ts`, issue #2472,
-    // `sameJsonValue` in `dynamodb-table-provider.ts`, issue #1812, and
-    // `deepEqual` in `dynamodb-globaltable-provider.ts`, issue #3775); and
-    // `describeValue` in `s3-bucket-provider.ts`, whose
+    // `sameJsonValue` in `dynamodb-table/indexes.ts`, issue #1812, and
+    // `deepEqual` in `dynamodb-globaltable/gsi-diff.ts`, issue #3775); and
+    // `describeValue` in `s3-bucket/shared.ts`, whose
     // `displaySafe(JSON.stringify(maskDeep(...)))` only sanitizes a value that
     // is still INTERPOLATED, so the site stays a counted, masked sink (issue
     // #3269). Re-derived here rather than quoted, so the bound's "measured
