@@ -514,6 +514,8 @@ describe('the local --from-cfn-stack surface names the API that actually runs (#
   const MUST_NAME_THE_API = [
     'src/cli/commands/local-invoke-agentcore.ts',
     'src/cli/commands/local-invoke.ts',
+    // The `fromCfnStack` option's JSDoc, since the invoke split (go-to-k/cdkd#5835).
+    'src/cli/commands/local-invoke/types.ts',
     'src/cli/commands/local-run-task.ts',
     'src/cli/commands/local-start-api.ts',
     // The `fromCfnStack` option's JSDoc, since the start-api split (go-to-k/cdkd#5835).

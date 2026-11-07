@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
+import { readLocalInvokeSource } from './_local-invoke-source.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COMMANDS_DIR = path.join(__dirname, '../../../src/cli/commands');
@@ -40,7 +41,8 @@ describe('host.docker.internal reachability wired at every cdkd-owned container 
   });
 
   it('cdkd local invoke resolves the mapping and passes it to runDetached as extraHosts', () => {
-    const src = readCmd('local-invoke.ts');
+    // The whole command: the handler sits under `local-invoke/` (go-to-k/cdkd#5835).
+    const src = readLocalInvokeSource();
     expect(src).toMatch(/resolveHostGatewayExtraHosts\(\)/);
     expect(src).toMatch(/extraHosts:\s*hostGatewayExtraHosts/);
   });

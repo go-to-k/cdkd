@@ -1,10 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import type { StackState } from '../../../src/types/state.js';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { getLogger } from '../../../src/utils/logger.js';
+import { readLocalInvokeSource } from './_local-invoke-source.js';
 import {
   createLocalCommand,
   maybeSuggestAssumeRole,
@@ -64,7 +62,6 @@ const NEGATABLE = [
   'start-web-function',
 ] as const;
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = 'MyStack/MyThing';
 const EXPLICIT_ARN = 'arn:aws:iam::111111111111:role/Explicit';
 
@@ -275,10 +272,11 @@ describe('--no-assume-role is DISTINGUISHABLE from an absent flag (#2523)', () =
    * still makes exactly that call, and that no second arm re-decides.
    */
   it('the handler delegates the whole decision to the helper', () => {
-    const source = readFileSync(
-      join(REPO_ROOT, 'src', 'cli', 'commands', 'local-invoke.ts'),
-      'utf8'
-    );
+    // The whole command: the handler and the helper sit in modules under
+    // `local-invoke/` (go-to-k/cdkd#5835). The split's imports and re-exports
+    // name both helpers without a `(`, so the call-site counts below are
+    // unchanged by the module wiring.
+    const source = readLocalInvokeSource();
     // The arm SHAPE, not just the call's presence. Counting call sites was the
     // first cut and its comment was false: wrapping the call in
     // `if (stateForRoleHint && options.fromState) { ... }` — the exact defect
