@@ -295,7 +295,6 @@ describe('no handler in the slice stringifies its caught value with String() (#3
   const FILES: Readonly<Record<string, Readonly<Partial<Record<Shape, number>>>>> = {
     'src/deployment/deploy-engine/create.ts': { catchClause: 3 },
     'src/deployment/deploy-engine/delete.ts': { catchClause: 1 },
-    'src/deployment/deploy-engine/deploy-flow.ts': { catchClause: 8 },
     'src/deployment/deploy-engine/execute.ts': { catchClause: 10 },
     'src/deployment/deploy-engine/observed-capture.ts': { thenRejection: 1 },
     'src/deployment/deploy-engine/outputs.ts': { catchClause: 2 },
@@ -419,5 +418,24 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(4);
+  });
+
+  it('the deploy flow and every module of src/deployment/deploy-engine/deploy-flow/ (read recursively)', () => {
+    // `doDeployWithPrefetch`'s phases, split into `deploy-flow/`
+    // (go-to-k/cdkd#5835): every file of the flow is scanned. The floor is the
+    // family's total on the pre-split file.
+    const dir = 'src/deployment/deploy-engine/deploy-flow/';
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThan(2);
+    const files = ['src/deployment/deploy-engine/deploy-flow.ts', ...modules];
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(8);
   });
 });

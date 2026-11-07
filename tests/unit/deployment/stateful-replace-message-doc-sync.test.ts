@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readEngineFamily } from '../_engine-family.js';
 
 /**
  * `docs/cli-deploy-safety.md` quotes the stateful-replace refusals' text
@@ -173,17 +174,9 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     ])
   ) as Record<keyof typeof SOURCE_PATHS, string>;
   // `engine` is `DeployEngine`'s whole source: the class file plus the
-  // modules split out of it (#4200), where the provisioning arms now live.
-  const mixinDir = join(repoRoot, 'src', 'deployment', 'deploy-engine');
-  sources.engine = flattenWhitespace(
-    [
-      readFileSync(SOURCE_PATHS.engine, 'utf8'),
-      ...readdirSync(mixinDir)
-        .filter((f) => f.endsWith('.ts'))
-        .sort()
-        .map((f) => readFileSync(join(mixinDir, f), 'utf8')),
-    ].join('\n')
-  );
+  // modules split out of it (#4200), where the provisioning arms now live,
+  // nested directories included (go-to-k/cdkd#5835).
+  sources.engine = flattenWhitespace(readEngineFamily());
   const doc = readFileSync(docPath, 'utf8');
   const docBlocks = fencedTextBlocks(doc).map(flattenWhitespace);
   /**
