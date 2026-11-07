@@ -98,6 +98,29 @@ describe('invokeRie', () => {
   it('throws a friendly error when the server is unreachable', async () => {
     await expect(invokeRie('127.0.0.1', 1, {}, 200)).rejects.toThrow();
   });
+
+  // #6018: a 404 / 405 on the invoke path is some other server (the RIE
+  // registers that path for every method), never the function's result.
+  it.each([404, 405])('refuses an HTTP %i answer as not coming from the RIE', async (status) => {
+    nextResponse = () => ({ status, body: '{"error":{"code":"not_found"}}' });
+    await expect(invokeRie('127.0.0.1', port, {}, 5000)).rejects.toThrow(
+      new RegExp(`HTTP ${status}, which the Lambda Runtime Interface Emulator never sends`)
+    );
+  });
+
+  // The statuses the real RIE does send stay the caller's to interpret: 200
+  // for a result, a handler error or a timeout; 502 (with the runtime's error
+  // body) for a crashed init / invoke; 400 / 500 / 504 for its own states.
+  it.each([
+    [200, 'Task timed out after 3.00 seconds'],
+    [502, '{"errorMessage":"exit status 1","errorType":"Runtime.ExitError"}'],
+    [500, ''],
+    [504, ''],
+    [400, ''],
+  ])('passes an RIE-shaped HTTP %i through', async (status, body) => {
+    nextResponse = () => ({ status, body });
+    await expect(invokeRie('127.0.0.1', port, {}, 5000)).resolves.toMatchObject({ raw: body });
+  });
 });
 
 // go-to-k/cdkd#2338: an IPv6 `--container-host` used to be joined bare, so

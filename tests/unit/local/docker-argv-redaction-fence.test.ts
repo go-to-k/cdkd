@@ -145,6 +145,7 @@ const MIN_REDACTION_SITES: Record<string, number> = {
   'src/local/ecs-task-runner/containers.ts': 2,
   'src/local/ecs-task-runner/images.ts': 3,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
+  'src/local/rie-mount.ts': 4,
 };
 
 function read(relPath: string): string {
@@ -417,6 +418,7 @@ const MIN_DOCKER_EXEC_CATCHES: Record<string, number> = {
   'src/local/ecs-task-runner/containers.ts': 2,
   'src/local/ecs-task-runner/images.ts': 2,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
+  'src/local/rie-mount.ts': 4,
 };
 
 describe('docker argv redaction fence (issue #2440)', () => {
@@ -481,6 +483,7 @@ describe('docker argv redaction fence (issue #2440)', () => {
       'src/local/ecs-task-runner/containers.ts',
       'src/local/ecs-task-runner/images.ts',
       'src/local/invoke-agentcore-watch-loop.ts',
+      'src/local/rie-mount.ts',
     ]);
     // Both directories are actually represented. Asserting only the sorted
     // list would stay green if `SWEPT_DIRS` lost `src/assets` and the literal
