@@ -64,5 +64,4 @@ src/state/lock-manager.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts
-src/utils/docker-cmd.ts
 src/utils/error-handler.ts

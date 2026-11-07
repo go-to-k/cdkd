@@ -174,7 +174,7 @@ export interface DockerRunOptions {
  * NOT necessarily to stdout: on a command holding a payload reservation --
  * which `cdkd local invoke` and `cdkd local invoke-agentcore` both do, and
  * both reach this function -- the child's fd 1 is redirected to stderr by
- * `spawnForeground` (`src/utils/docker-cmd.ts`, issue
+ * `spawnForeground` (`src/utils/docker-cmd/spawn.ts`, issue
  * [#2410](https://github.com/go-to-k/cdkd/issues/2410)), so the progress
  * lands there instead. Do not build on the fd-1 assumption; that is the one
  * this file's own leak was made of. In the default compact mode the call is
@@ -386,7 +386,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
  *
  * The container's STDOUT follows the payload reservation
  * ({@link isStdoutReservedForPayload}), decided per chunk, the same way
- * `spawnStreaming` in `src/utils/docker-cmd.ts` routes its live mirror
+ * `spawnStreaming` in `src/utils/docker-cmd/spawn.ts` routes its live mirror
  * (issue #2419). On `cdkd local invoke` / `local invoke-agentcore`, which
  * reserve stdout for the response, the Lambda RIE puts `START` / `END` /
  * `REPORT` and every handler log line — `console.error` included — on the

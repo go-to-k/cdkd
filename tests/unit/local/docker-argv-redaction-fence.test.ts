@@ -46,7 +46,8 @@ const SRC_WALK_TIMEOUT_MS = 60_000;
  * caught value whole. Blocks that never ran docker are outside the rules by
  * construction rather than by exemption — no list to go stale.
  *
- * `src/utils/docker-cmd.ts` is deliberately unfenced: it DEFINES the
+ * `src/utils/docker-cmd.ts` and its `src/utils/docker-cmd/` companion
+ * directory (go-to-k/cdkd#5835) are deliberately unfenced: they DEFINE the
  * redaction, so requiring its composers to redact before touching the value
  * they redact is circular. Their behaviour is pinned by
  * `tests/unit/utils/docker-cmd.test.ts`.
@@ -406,9 +407,10 @@ describe('docker argv redaction fence (issue #2440)', () => {
     // ALL of `src/` and requires every caller of a shared spawn helper to live
     // somewhere the derivation can reach.
     //
-    // `src/utils/docker-cmd.ts` is the one exemption and it is structural, not
-    // a list entry: it DEFINES those helpers, so it names them by declaring
-    // them.
+    // `src/utils/docker-cmd.ts` and its `src/utils/docker-cmd/` companion
+    // directory (go-to-k/cdkd#5835) are the one exemption and it is
+    // structural, not a list entry: they DEFINE those helpers, so they name
+    // them by declaring them.
     const offenders: string[] = [];
     const walk = (relDir: string): void => {
       for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
@@ -418,7 +420,7 @@ describe('docker argv redaction fence (issue #2440)', () => {
           continue;
         }
         if (!entry.name.endsWith('.ts')) continue;
-        if (rel === 'src/utils/docker-cmd.ts') continue;
+        if (rel === 'src/utils/docker-cmd.ts' || rel.startsWith('src/utils/docker-cmd/')) continue;
         if (SWEPT_DIRS.some((dir) => rel.startsWith(`${dir}/`))) continue;
         // Comments and string contents are blanked first, so a module merely
         // MENTIONING a helper in prose is not an offender.
@@ -501,7 +503,7 @@ describe('docker argv redaction fence (issue #2440)', () => {
     // after it: adding one makes the rule observable AND makes this red, at
     // which point the missing case is `['-lKEY=va=e=b']`, where first-hit-wins
     // slices at the stray `e` and prints the head of the value.
-    const src = read('src/utils/docker-cmd.ts');
+    const src = read('src/utils/docker-cmd/argv-redaction.ts');
     const decl = /const ARGV_VALUE_BEARING_FLAGS: ReadonlySet<string> = new Set\(\[([\s\S]*?)\]\)/.exec(
       src
     );
@@ -514,11 +516,17 @@ describe('docker argv redaction fence (issue #2440)', () => {
   });
 
   it('every composer keeps its argv REQUIRED — that is the guarantee, not this file', () => {
-    const src = read('src/utils/docker-cmd.ts');
+    // The composers are DECLARED in the companion `failure.ts` and re-exported
+    // by the public entry `docker-cmd.ts`, which every call site imports.
+    const src = read('src/utils/docker-cmd/failure.ts');
+    const entry = read('src/utils/docker-cmd.ts');
+    const reExported = /export \{([^}]*)\} from '\.\/docker-cmd\/failure\.js';/.exec(entry);
+    expect(reExported, 'docker-cmd.ts does not re-export from ./docker-cmd/failure.js').not.toBeNull();
     for (const fn of COMPOSERS.map((c) => c.slice(0, -1))) {
+      expect(reExported![1]!.split(',').map((s) => s.trim())).toContain(fn);
       const decl = new RegExp(`export function ${fn}\\(([\\s\\S]{0,200}?)\\)\\s*:\\s*string`);
       const match = decl.exec(src);
-      expect(match, `${fn} is not exported from docker-cmd.ts`).not.toBeNull();
+      expect(match, `${fn} is not exported from docker-cmd/failure.ts`).not.toBeNull();
       expect(match![1]).toContain('args: readonly string[]');
       expect(match![1]).not.toContain('args?:');
     }
