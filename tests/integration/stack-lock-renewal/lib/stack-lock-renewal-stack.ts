@@ -20,7 +20,7 @@ import * as cr from 'aws-cdk-lib/custom-resources';
  *
  * `CDKD_LOCK_RENEWAL_SLEEP_SECONDS` lets verify.sh dial the deploy length; it
  * defaults to 150s, comfortably past the 120s renewal cap in
- * `src/state/lock-manager.ts`.
+ * `src/state/lock-manager/shared.ts`.
  *
  * covers: Custom::CdkdLockRenewalSleep
  */
