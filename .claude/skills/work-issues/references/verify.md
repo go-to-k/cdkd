@@ -38,7 +38,10 @@ The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES (a code path its run takes, not merely a file it loads; #4683):
-re-run it on the rebased head (#3726).
+re-run it on the rebased head (#3726). A `refactor(...)` commit that only
+MOVES that code (a file split; the unit suite green on the rebased head) is no
+such change: merge over it, re-running only for a commit that changes logic
+(#6019: one 65-min re-run, then merged over #5835 splits).
 
 - **DECLARE the tree final to whoever is still editing it.** The one
   exception to §8-h's "nits
@@ -110,9 +113,14 @@ feature hitting an UNRELATED pre-fix limitation is dropped or worked around in
 the throwaway tree only, never the PR, and re-run (#5414), at most two such workarounds
 (#5528) — a third stops the probe for the parent; at an older step, harden it and
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
-fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
-one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework
-the arm so the symptom reaches AWS (#4927). A NEEDLE (hint, retry regex,
+fix replaces while the fixed route accepts the shape, IS the symptom (#5507) —
+so is the fixture's route guard firing there when the log's routing line names
+the fix's property as the cause (#5992); one on either route is #5204's. A
+GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
+(#4927); a TIMING symptom (a cdkd wait racing an AWS-side duration) is made
+deterministic by shrinking that wait with a per-type `--resource-timeout
+'<Type>=<n>m'` on the fixture's command, plus a verdict that the shrink took
+effect (#5975). A NEEDLE (hint, retry regex,
 fixture refusal grep) is copied from cdkd's red output on EACH route, never
 reasoned nor the `aws` CLI's (#4336, #5592; #5680: masked account ids,
 code-only SDK errors); a refusal the
