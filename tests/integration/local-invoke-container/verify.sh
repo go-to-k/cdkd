@@ -105,7 +105,7 @@ ${CDKD} synth >/dev/null
 # default; --no-pull on the container-Lambda local-build path is
 # documented as a no-op in CLI help — it still skips the public-base
 # image's `docker pull` from the ZIP path which we did up front).
-echo "==> [1/5] Invoking EchoHandler (container) with default empty event"
+echo "==> [1/6] Invoking EchoHandler (container) with default empty event"
 RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 grep -q '"greeting":"hello"' <<<"${RESULT_1}" || {
@@ -120,7 +120,7 @@ grep -q '"fromContainer":true' <<<"${RESULT_1}" || {
 # Test 1b — a DEFAULT (building) invoke keeps stdout to the payload alone
 # (go-to-k/cdkd#2429's headline case): `Building container image ...` is on
 # stderr, and stdout is exactly one JSON document.
-echo "==> [1b/5] Invoking EchoHandler (container build) with stdout and stderr split"
+echo "==> [1b/6] Invoking EchoHandler (container build) with stdout and stderr split"
 STDOUT_1B=$(mktemp)
 STDERR_1B=$(mktemp)
 trap 'rm -f "${STDOUT_1B}" "${STDERR_1B}"' EXIT
@@ -133,7 +133,7 @@ grep -q "Building container image" "${STDERR_1B}" || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/5] Invoking EchoHandler with --event payload"
+echo "==> [2/6] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${STDOUT_1B}" "${STDERR_1B}" "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -145,7 +145,7 @@ grep -q '"key":"value"' <<<"${RESULT_2}" || {
 }
 
 # Test 3 — --env-vars override
-echo "==> [3/5] Invoking EchoHandler with --env-vars override"
+echo "==> [3/6] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${STDOUT_1B}" "${STDERR_1B}" "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -164,7 +164,7 @@ grep -q '"greeting":"overridden"' <<<"${RESULT_3}" || {
 # cdk-local's own logger via the `buildContainerImage` shim, which cdkd routes
 # through its own logger, so under the payload reservation they land on
 # STDERR and stdout carries the response alone (go-to-k/cdkd#2429).
-echo "==> [4/5] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
+echo "==> [4/6] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 STDOUT_4=$(mktemp)
 STDERR_4=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STDOUT_1B}" "${STDERR_1B}" "${STDOUT_4}" "${STDERR_4}"' EXIT
@@ -192,7 +192,7 @@ fi
 # (go-to-k/cdkd#4967). The stack passes an obviously fake sentinel as a build
 # arg. Both polarities: the build line IS logged with the key and the `***`
 # marker, so the absence below cannot pass because nothing was logged.
-echo "==> [5/5] --verbose container build masks the sentinel build-arg value"
+echo "==> [5/6] --verbose container build masks the sentinel build-arg value"
 SENTINEL="FAKE-SENTINEL-NOT-A-SECRET-7f1e"
 STDOUT_5=$(mktemp)
 STDERR_5=$(mktemp)
@@ -210,5 +210,45 @@ if grep -qF "${SENTINEL}" "${STDOUT_5}" "${STDERR_5}"; then
   exit 1
 fi
 
+# Test 6 — a function on a NON-AWS base image (go-to-k/cdkd#6018). The image
+# ships no Runtime Interface Emulator and, with AWS_LAMBDA_RUNTIME_API unset,
+# serves plain HTTP on :8080 answering 404. cdkd must mount an RIE, run it as
+# the entrypoint with the image's own ENTRYPOINT + CMD, and return the
+# function's result. A fresh XDG_CACHE_HOME forces the real extraction of the
+# RIE from the AWS base image (no --no-pull, so cdkd pulls it).
+echo "==> [6/6] Invoking NonAwsBaseHandler (non-AWS base image, RIE mounted by cdkd)"
+RIE_CACHE_HOME=$(mktemp -d)
+STDOUT_6=$(mktemp)
+STDERR_6=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STDOUT_1B}" "${STDERR_1B}" "${STDOUT_4}" "${STDERR_4}" "${STDOUT_5}" "${STDERR_5}" "${STDOUT_6}" "${STDERR_6}"; rm -rf "${RIE_CACHE_HOME}"' EXIT
+invoke_split "${STDOUT_6}" "${STDERR_6}" env XDG_CACHE_HOME="${RIE_CACHE_HOME}" ${CDKD} local invoke CdkdLocalInvokeContainerFixture/NonAwsBaseHandler --event "${EVENT_FILE}"
+RESULT_6=$(cat "${STDOUT_6}")
+echo "    response: ${RESULT_6}"
+assert_one_json "${STDOUT_6}" "${STDERR_6}"
+grep -q '"fromNonAwsBase": true' <<<"${RESULT_6}" || {
+  echo "FAIL: the non-AWS-base function did not answer (go-to-k/cdkd#6018). stdout / stderr were:"
+  cat "${STDOUT_6}" "${STDERR_6}"
+  exit 1
+}
+# The image's own CMD reached the process: docker drops it under --entrypoint,
+# so this holds only when cdkd hands the RIE the inspected Entrypoint + Cmd.
+grep -q '"args": \["from-image-cmd"\]' <<<"${RESULT_6}" || {
+  echo "FAIL: the image CMD did not reach the function. response: ${RESULT_6}"
+  exit 1
+}
+grep -q '"greeting": "from-non-aws-base"' <<<"${RESULT_6}" || {
+  echo "FAIL: expected greeting=from-non-aws-base, got: ${RESULT_6}"
+  exit 1
+}
+grep -q '"key": "value"' <<<"${RESULT_6}" || {
+  echo "FAIL: expected the --event payload echoed, got: ${RESULT_6}"
+  exit 1
+}
+[ -x "${RIE_CACHE_HOME}/cdkd/lambda-rie/" ] && ls "${RIE_CACHE_HOME}"/cdkd/lambda-rie/*/aws-lambda-rie >/dev/null || {
+  echo "FAIL: the RIE was not extracted into the cache home. stderr was:"
+  cat "${STDERR_6}"
+  exit 1
+}
+
 echo ""
-echo "==> All 5 local-invoke container-Lambda tests passed"
+echo "==> All 6 local-invoke container-Lambda tests passed"

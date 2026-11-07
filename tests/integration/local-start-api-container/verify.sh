@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # verify.sh — local-start-api-container integ test (closes #453)
 #
-# Boots `cdkd local start-api` against a CDK app whose only Lambda is a
-# `lambda.DockerImageFunction` (container Lambda), then curls the
-# resulting HTTP API v2 route. Mirrors the structure of the local-
-# invoke-container integ but exercises the long-running HTTP server
+# Boots `cdkd local start-api` against a CDK app whose Lambdas are
+# `lambda.DockerImageFunction`s (container Lambdas: one on the AWS base
+# image, one on a non-AWS base, #6018), then curls their HTTP API v2 routes.
+# Mirrors the structure of the local-invoke-container integ but exercises
+# the long-running HTTP server
 # + warm container pool path that closes #453 ("cdkd local start-api:
 # container image Lambda (Code.ImageUri) support").
 #
@@ -43,6 +44,7 @@ echo "==> Synthesizing fixture CDK app"
 ${CDKD} synth >/dev/null
 
 LOG_FILE="$(mktemp)"
+RIE_CACHE_HOME="$(mktemp -d)"
 SERVER_PID=""
 
 cleanup() {
@@ -67,16 +69,19 @@ cleanup() {
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
   rm -f "${LOG_FILE}"
+  rm -rf "${RIE_CACHE_HOME}"
 }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Starting cdkd local start-api on port ${PORT}"
-${CDKD} local start-api \
+# No --no-pull (go-to-k/cdkd#6018): cdkd pulls the AWS base image it copies
+# the Lambda RIE out of, per function architecture. The fresh XDG_CACHE_HOME
+# makes every run do that extraction for real instead of reusing a cached RIE.
+XDG_CACHE_HOME="${RIE_CACHE_HOME}" ${CDKD} local start-api \
   --port "${PORT}" \
   --container-host "${CONTAINER_HOST}" \
-  --no-pull \
   >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 
@@ -151,5 +156,27 @@ echo "==> Smoke-testing route via curl"
 # via the CDK environment block reached the runtime.
 curl_assert "GET / (container Lambda)" "http://127.0.0.1:${PORT_HTTP}/" '"fromContainer":true'
 curl_assert "GET / env var" "http://127.0.0.1:${PORT_HTTP}/" '"greeting":"hello"'
+
+# go-to-k/cdkd#6018: GET /non-aws is backed by a function on a NON-AWS base
+# image with no Runtime Interface Emulator; with AWS_LAMBDA_RUNTIME_API unset
+# it serves plain HTTP on :8080 answering 404. It answers here only when cdkd
+# mounts an RIE and runs the image's own ENTRYPOINT + CMD under it (the args
+# marker is the image CMD, which docker drops under --entrypoint).
+curl_assert "GET /non-aws (non-AWS base image)" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"fromNonAwsBase": true'
+curl_assert "GET /non-aws image CMD" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"args": \["from-image-cmd"\]'
+curl_assert "GET /non-aws env var" "http://127.0.0.1:${PORT_HTTP}/non-aws" '"greeting": "from-non-aws-base"'
+# Every function, the AWS-base GET / one included, ran under the mounted RIE:
+# a failed mount only warns and runs the image as built, which GET / would
+# survive. The fresh cache home above means the RIE was really extracted.
+if grep -qE "Could not (mount the Lambda Runtime Interface Emulator|read the ENTRYPOINT)" "${LOG_FILE}"; then
+  echo "FAIL: cdkd ran a container-image Lambda without the mounted RIE. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! grep -q "Fetching the Lambda Runtime Interface Emulator" "${LOG_FILE}"; then
+  echo "FAIL: the server log does not show the RIE extraction (sentinel for the check above). Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
 
 echo "==> All assertions passed"

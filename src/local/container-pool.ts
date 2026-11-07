@@ -234,6 +234,13 @@ export interface ImageContainerSpec extends ContainerSpecBase {
    */
   entryPoint?: string[];
   /**
+   * Issue #6018: the host RIE binary bind-mounted read-only at
+   * `/var/rapid/aws-lambda-rie`, set together with an `entryPoint` naming it
+   * and a `command` carrying the image's effective EntryPoint + Cmd
+   * (`src/local/rie-mount.ts`). Undefined when the image runs as built.
+   */
+  rieMount?: { hostPath: string; containerPath: string; readOnly: true };
+  /**
    * `ImageConfig.WorkingDirectory` → `docker run --workdir <dir>`.
    * Undefined when the image's own WORKDIR is sufficient.
    */
@@ -433,15 +440,18 @@ export function createContainerPool(
         runDetached({
           image: spec.image,
           mounts: [],
-          ...(spec.profileCredentialsFile && {
-            extraMounts: [
-              {
-                hostPath: spec.profileCredentialsFile.hostPath,
-                containerPath: spec.profileCredentialsFile.containerPath,
-                readOnly: true,
-              },
-            ],
-          }),
+          extraMounts: [
+            ...(spec.rieMount ? [spec.rieMount] : []),
+            ...(spec.profileCredentialsFile
+              ? [
+                  {
+                    hostPath: spec.profileCredentialsFile.hostPath,
+                    containerPath: spec.profileCredentialsFile.containerPath,
+                    readOnly: true,
+                  },
+                ]
+              : []),
+          ],
           env: spec.env,
           ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
           cmd: spec.command,
