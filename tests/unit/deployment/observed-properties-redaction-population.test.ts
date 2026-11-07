@@ -209,7 +209,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'own. The rewrite that follows goes through `scrubResourceRecord`, which is ' +
       'listed in its own entry.',
   },
-  'src/deployment/rollback-executor/replay-reverse-replacement.ts': {
+  'src/deployment/rollback-executor/replay-reverse-replacement/finish.ts': {
     sites: 1,
     why:
       'NOT a write: the destructuring rename that STRIPS `observedProperties` off a ' +

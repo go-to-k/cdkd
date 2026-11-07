@@ -324,7 +324,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     expect(byFile).toEqual([
       'cli/commands/destroy-runner.ts',
       'deployment/deploy-engine/delete.ts',
-      'deployment/deploy-engine/update-in-place.ts',
+      'deployment/deploy-engine/update-in-place/replace-fallback.ts',
       'provisioning/cc-protection-properties.ts',
       'provisioning/cloud-control/poll-failure.ts',
     ]);
@@ -349,7 +349,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
         'population permanently.'
     ).toHaveLength(5);
     expect(governed.filter((s) => s.file === 'deployment/deploy-engine/delete.ts')).toHaveLength(1);
-    expect(governed.filter((s) => s.file === 'deployment/deploy-engine/update-in-place.ts')).toHaveLength(1);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine/update-in-place/replace-fallback.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);
   });
 
@@ -553,7 +553,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     // Round 8 measured this arm deletable-green: `createSourceFile` does not
     // throw, so an unparseable file yields ZERO candidate expressions, which is
     // byte-identical to a file with no classifier in it. Silently dropping the
-    // real `deploy-engine/update-in-place.ts` or `deploy-engine/delete.ts` that way
+    // real `deploy-engine/update-in-place/replace-fallback.ts` or `deploy-engine/delete.ts` that way
     // would take a governed site out of the population and leave every
     // assertion above passing.
     expect(() => candidateExpressions('const x = (;;', 'broken.ts')).toThrow(/scan REFUSED/);

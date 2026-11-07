@@ -8,19 +8,14 @@
 #     list in the same change (a stale entry fails the test).
 # Never add a line here; split the file instead.
 src/cli/commands/destroy-runner.ts
-src/cli/commands/destroy.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
-src/deployment/deploy-engine/execute.ts
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/replacement.ts
 src/deployment/deploy-engine/rollback.ts
-src/deployment/deploy-engine/update-in-place.ts
 src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
 src/deployment/inline-policy-claims.ts
-src/deployment/rollback-executor.ts
-src/deployment/rollback-executor/replay-reverse-replacement.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/types/state.ts

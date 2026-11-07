@@ -44,6 +44,33 @@ if (ENGINE_FAMILY.length < 2) {
   throw new Error(`the engine family resolved to ${ENGINE_FAMILY.join(', ')} only`);
 }
 
+// Named nested modules: the per-directory floor above holds only while the
+// listing descends at all, so a non-recursive read would drop every nested
+// directory without reaching it. These paths must be present by name.
+for (const rel of ['masking/remedy.ts', 'masking/noecho-attributes.ts']) {
+  if (!ENGINE_FAMILY.includes(`src/deployment/deploy-engine/${rel}`)) {
+    throw new Error(`the engine family is missing the nested module deploy-engine/${rel}`);
+  }
+}
+
+// Per nested directory, the modules it held when it was split: a listing that
+// stopped descending (or a directory renamed away) drops the moved code out of
+// every fence above, so each nested directory is floored on its own.
+const NESTED_FLOORS: Readonly<Record<string, number>> = {
+  // `executeDeployment`'s body (#5835): entry `execute.ts` plus six modules.
+  execute: 6,
+  // `provisionUpdateInPlace`'s body (#5835): entry `update-in-place.ts` plus 1 modules.
+  'update-in-place': 1,
+};
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const held = ENGINE_FAMILY.filter((rel) =>
+    rel.startsWith(`src/deployment/deploy-engine/${dir}/`)
+  ).length;
+  if (held < floor) {
+    throw new Error(`the engine family holds ${held} module(s) of deploy-engine/${dir}/, floor ${floor}`);
+  }
+}
+
 /** Every family file's source, joined with a newline. */
 export function readEngineFamily(): string {
   const root = join(import.meta.dirname, '../..');

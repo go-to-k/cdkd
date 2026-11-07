@@ -423,8 +423,8 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     // catch in provision.ts, which also calls `printingSecretsFor`): if the
     // stub answered the needle bag unconditionally, the boundary would mask
     // the needle too and hide a deleted printing-bag argument at THIS wrap
-    // site. The bag is handed back only to a caller inside update-in-place.ts
-    // (the wrap site itself) — by CALLER, not by call order/count, since a
+    // site. The bag is handed back only to a caller inside replace-fallback.ts
+    // (the wrap site itself, split out of update-in-place.ts by #5835) — by CALLER, not by call order/count, since a
     // call-count stub would still answer the boundary's lone remaining call
     // if this site's own call were deleted, defeating the discrimination.
     it('masks a multi-line needle only the printing bag holds (#2676)', async () => {
@@ -432,7 +432,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       createRejection = () => new Error(`Handler failed: '${multiLine}' is still referenced`);
       const engine = makeEngine();
       vi.mocked(printingSecretsFor).mockImplementation(() =>
-        (new Error().stack ?? '').includes('update-in-place.ts')
+        (new Error().stack ?? '').includes('replace-fallback.ts')
           ? new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
           : undefined
       );

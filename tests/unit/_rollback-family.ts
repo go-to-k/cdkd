@@ -5,9 +5,7 @@ import { join, sep } from 'node:path';
  * The rollback replay is split across modules (issue #4426): the entry points stay
  * in `rollback-executor.ts`, and its helpers live in `rollback-executor/*.ts`. A
  * fence that scans "the replay" for a site or a declaration reads this family,
- * so moving code between the files never takes it out of the scan. The directory
- * is read RECURSIVELY: a module split further into a nested directory named after
- * its stem (`plan.ts` + `plan/`, #5835) stays in the family.
+ * so moving code between the files never takes it out of the scan.
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/rollback-executor');
 
@@ -35,7 +33,7 @@ if (ROLLBACK_FAMILY.length < 12) {
 // A floor per nested directory (go-to-k/cdkd#5835): a recursive read that
 // stopped descending would drop these modules while the total above still
 // cleared its floor.
-const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2, 'plan/': 3 };
+const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2, 'replay-reverse-replacement/': 4, 'plan/': 3 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
   const found = ROLLBACK_FAMILY.filter((f) => f.startsWith(`src/deployment/rollback-executor/${dir}`));
   if (found.length < floor) {
