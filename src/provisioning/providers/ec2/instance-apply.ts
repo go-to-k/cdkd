@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   DescribeInstancesCommand,
   ModifyInstanceAttributeCommand,
+  ModifyInstancePlacementCommand,
   ModifyPrivateDnsNameOptionsCommand,
   type PrivateDnsNameOptionsRequest,
   StopInstancesCommand,
@@ -195,6 +196,20 @@ export async function prepareInstanceMemberUpdates(
     if (Object.keys(rest).length > 0) plan.privateDnsNameOptions = rest;
     else delete plan.privateDnsNameOptions;
   }
+  // go-to-k/cdkd#5630: a value the instance already has costs no stop either
+  // (a record an earlier --prefer-sdk-route deploy left without it).
+  const placement = plan.placement;
+  if (placement !== undefined) {
+    if (placement.Affinity !== undefined && instance?.Placement?.Affinity === placement.Affinity) {
+      delete placement.Affinity;
+    }
+    if (placement.HostId !== undefined && instance?.Placement?.HostId === placement.HostId) {
+      delete placement.HostId;
+    }
+    if (placement.Affinity === undefined && placement.HostId === undefined) delete plan.placement;
+  }
+  if (plan.kernelId !== undefined && instance?.KernelId === plan.kernelId) delete plan.kernelId;
+  if (plan.ramdiskId !== undefined && instance?.RamdiskId === plan.ramdiskId) delete plan.ramdiskId;
   const stopMembers = instanceStopMembers(plan);
   const needsStop = stopMembers.length > 0;
   if (tenancy !== undefined) {
@@ -426,6 +441,31 @@ export async function applyInstanceMemberUpdates(
         new ModifyPrivateDnsNameOptionsCommand({ InstanceId: physicalId, ...dns })
       );
       applied.push('the new PrivateDnsNameOptions');
+    }
+    // go-to-k/cdkd#5630: Dedicated Host placement, kernel and RAM disk.
+    if (plan.placement !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstancePlacementCommand({ InstanceId: physicalId, ...plan.placement })
+      );
+      applied.push(`the new ${Object.keys(plan.placement).join(' and ')}`);
+    }
+    if (plan.kernelId !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          Kernel: { Value: plan.kernelId },
+        })
+      );
+      applied.push('the new KernelId');
+    }
+    if (plan.ramdiskId !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          Ramdisk: { Value: plan.ramdiskId },
+        })
+      );
+      applied.push('the new RamdiskId');
     }
     if (!startAfter) return;
     phase = 'start';
