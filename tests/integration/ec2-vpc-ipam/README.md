@@ -46,10 +46,22 @@ took 556 seconds to monitor the new subnet VPC before the planning pool could be
 created (the run polls for it for up to 30 minutes and prints the lag), and the
 subnet pool released the deleted subnet's allocation about 19 minutes after
 `DeleteSubnet`. The destroy waits for each release: the VPC's, which AWS gives
-about 18 minutes after `DeleteVpc`, and the subnet's. Only then can a pool CIDR
-be deprovisioned. Give a watchdog at least 6000 seconds: the monitoring wait is
-capped at 30 minutes, each in-provider release wait at 25, and the gone-checks
-after the destroy wait up to 10 more.
+about 18 minutes after `DeleteVpc` (once more than 25), and the subnet's. Only
+then can a pool CIDR be deprovisioned; a pool CIDR delete refused while a
+deleted VPC's or subnet's allocation remains waits up to 25 more minutes and
+is sent again.
+
+The destroy passes `--resource-timeout AWS::EC2::VPC=10m` (per type only), which
+stops the VPC's release wait after 300 seconds. Every measured release took 18
+minutes or more, so the pool CIDR delete then always meets `The CIDR has one or
+more allocations.` and has to wait out the rest itself (issue #5975). The run
+fails if the VPC wait did not stop at 300 seconds (the arm would prove
+nothing), if the pool CIDR delete printed no wait for the VPC's allocation, or
+if the destroy did not finish. The destroy takes about as long as before, about
+20 minutes: 5 minutes on the VPC, the remaining ~13 on the pool CIDR, beside the
+subnet's ~19-minute release. Give a watchdog at least 7500 seconds: the monitoring wait is
+capped at 30 minutes, each release wait at 25, and the gone-checks after the
+destroy wait up to 10 more.
 
 ## Run
 
