@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 /**
  * `.github/workflows/release-pr-staleness.yml` — the check that disarms
@@ -113,6 +114,7 @@ function git(cwd: string, ...args: string[]): string {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, ...GIT_ENV },
+    timeout: CONTENDED_CASE_TIMEOUT_MS,
   }).trim();
 }
 
@@ -134,7 +136,9 @@ interface Run {
   ghCalls: string[];
 }
 
-describe('release-pr-staleness', () => {
+// Every case builds git repos and runs the workflow shell through spawned
+// processes, so under a full parallel suite a case can pass 5 s.
+describe('release-pr-staleness', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
   let scratch: string;
   let seq = 0;
 
@@ -223,9 +227,13 @@ describe('release-pr-staleness', () => {
     const bare = join(scratch, `${id}-remote.git`);
     execFileSync('git', ['clone', '-q', '--bare', origin, bare], {
       env: { ...process.env, ...GIT_ENV },
+      timeout: CONTENDED_CASE_TIMEOUT_MS,
     });
     const cwd = join(scratch, `${id}-work`);
-    execFileSync('git', ['clone', '-q', bare, cwd], { env: { ...process.env, ...GIT_ENV } });
+    execFileSync('git', ['clone', '-q', bare, cwd], {
+      env: { ...process.env, ...GIT_ENV },
+      timeout: CONTENDED_CASE_TIMEOUT_MS,
+    });
 
     // Delete the release branch from the BARE remote, so the clone's fetch of
     // it fails the way a deleted head branch really does. Deleting only the
@@ -322,6 +330,7 @@ esac
       output = execFileSync('bash', ['-c', disarmShell()], {
         cwd: fx.cwd,
         encoding: 'utf8',
+        timeout: CONTENDED_CASE_TIMEOUT_MS,
         env: {
           ...process.env,
           ...GIT_ENV,
