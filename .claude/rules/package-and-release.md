@@ -26,6 +26,15 @@ table cdkd's own S3-endpoint and region tables are compared against.
 `aws-cdk-lib` in again ([#2861](https://github.com/go-to-k/cdkd/issues/2861),
 [#4521](https://github.com/go-to-k/cdkd/issues/4521)).
 
+## Runtime `@aws-sdk/*` / `@smithy/*` floors equal the locked version
+
+`src/` compiles against the LOCKED client, so a lower floor lets a user's
+install reuse an older client that lacks a command cdkd imports, and every
+command crashes at startup ([#5948](https://github.com/go-to-k/cdkd/issues/5948)).
+When code adopts a new SDK command or a lockfile bump lands, raise the floor to
+the locked version in the same change; Dependabot does this itself
+(`versioning-strategy: increase`).
+
 ## Other dependencies worth knowing
 
 - `cdk-local` — the local-emulation engine. `src/cli/commands/local-state-source.ts`
