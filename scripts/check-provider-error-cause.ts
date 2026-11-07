@@ -147,7 +147,7 @@
  *     --root=/tmp/scratch-copy/src      (test seam; probes never touch src/)
  */
 
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -429,11 +429,29 @@ function collectErrorClasses(
   return table;
 }
 
-/** The base table, derived from `src/utils/error-handler.ts`. */
+/**
+ * The base table, derived from `src/utils/error-handler.ts` AND every `.ts`
+ * file under its sibling `error-handler/` directory, recursively. The entry
+ * module only re-exports since go-to-k/cdkd#5835 split it; the classes live in
+ * the directory, so reading the entry alone derives an empty table. Each class
+ * file there contributes at least four classes, so dropping any one of them out
+ * of view falls below {@link MIN_ERROR_CLASSES}.
+ */
 export function buildErrorClassTable(errorHandlerPath = ERROR_HANDLER_PATH): ErrorClassTable {
-  const text = readFileSync(errorHandlerPath, 'utf8');
-  const source = parseSource(errorHandlerPath, text);
-  return collectErrorClasses([source], new Map());
+  const paths = [errorHandlerPath];
+  const companionDir = errorHandlerPath.replace(/\.ts$/, '');
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+        paths.push(path);
+      }
+    }
+  };
+  if (existsSync(companionDir) && statSync(companionDir).isDirectory()) walk(companionDir);
+  const sources = paths.map((path) => parseSource(path, readFileSync(path, 'utf8')));
+  return collectErrorClasses(sources, new Map());
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,7 +1336,7 @@ function main(argv: readonly string[]): number {
 
   if (table.size < MIN_ERROR_CLASSES) {
     failures.push(
-      `derived ${table.size} error classes from src/utils/error-handler.ts, expected at least ` +
+      `derived ${table.size} error classes from src/utils/error-handler{.ts,/}, expected at least ` +
         `${MIN_ERROR_CLASSES} (class-hierarchy walk regression?)`
     );
   }
