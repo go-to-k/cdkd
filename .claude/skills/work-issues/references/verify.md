@@ -40,8 +40,8 @@ rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES (a code path its run takes, not merely a file it loads; #4683):
 re-run it on the rebased head (#3726). With the marker still set, a commit
 that only MOVES that code is no such change — proven by
-`git show -M --color-moved=dimmed-zebra <sha>` showing no added or removed line
-beyond import/export plumbing, never by its `refactor(...)` title: merge over
+`git show -M --color=always --color-moved=dimmed-zebra <sha>` showing no
+non-dimmed `+`/`-` line beyond import/export plumbing, never by its `refactor(...)` title: merge over
 it (#6019: one 65-min re-run, then merged over #5835 splits). A split of a file
 THIS branch changes stales the marker and re-runs (ship.md §9, #5873).
 
