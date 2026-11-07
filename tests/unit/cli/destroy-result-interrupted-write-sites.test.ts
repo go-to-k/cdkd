@@ -73,8 +73,17 @@ import { join } from 'node:path';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
 
-/** The file that owns the type and, today, is its only constructor. */
-const OWNER_FILE = 'src/cli/commands/destroy-runner.ts';
+/**
+ * The files that own the type and, today, are its only constructor: the
+ * runner's entry and the `destroy-runner/` modules that construct the result
+ * (`run.ts`) and publish its `interrupted` (`under-lock.ts`), split out of the
+ * entry in go-to-k/cdkd#5835.
+ */
+const OWNER_FILES = [
+  'src/cli/commands/destroy-runner.ts',
+  'src/cli/commands/destroy-runner/run.ts',
+  'src/cli/commands/destroy-runner/under-lock.ts',
+];
 
 /**
  * A write to `<something>.interrupted`.
@@ -224,7 +233,7 @@ describe('DestroyRunnerResult.interrupted write sites are enumerated mechanicall
     const files = constructingFiles();
     // POPULATION floor: a broken pathspec, or a type-detection regex that
     // stopped matching, would otherwise report a clean tree.
-    expect(files).toContain(OWNER_FILE);
+    for (const owner of OWNER_FILES) expect(files).toContain(owner);
     // ...and the two CONSUMER files whose absence was the actual hole. A floor
     // naming only the owner is satisfied by the very file a narrowed
     // derivation collapses to: measured 2026-08-26, replacing the pathspec

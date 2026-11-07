@@ -108,6 +108,7 @@ const DESTROY_SCOPE_PIN = [
   'src/analyzer/implicit-delete-deps.ts',
   'src/analyzer/lambda-vpc-deps.ts',
   'src/cli/commands/destroy-runner.ts',
+  'src/cli/commands/destroy-runner/**',
   'src/cli/commands/destroy.ts',
   'src/deployment/deploy-engine/**',
   'src/deployment/deploy-engine.ts',

@@ -302,8 +302,58 @@ describe("the rollback family's read order (go-to-k/cdkd#5835)", () => {
   });
 });
 
+/**
+ * The shared destroy runner is `destroy-runner.ts` plus every module under
+ * `destroy-runner/` (go-to-k/cdkd#5835), keyed as ONE subject,
+ * {@link DESTROY_RUNNER}, the same way as {@link ROLLBACK}. Its modules are read
+ * in {@link DESTROY_RUNNER_ORDER}, the order the code runs in: the types and
+ * module-level helpers (above `destroyStackInRegion` in the one file, as
+ * before), then `preflight.ts`, whose FIRST function holds the entry refusals
+ * `destroyStackInRegion` calls before any container read in `run.ts`, and whose
+ * later two (the empty-stack path, the listing and prompt) run below them; then
+ * `run.ts`, then `under-lock.ts` and the steps and per-resource delete it
+ * calls. A module on disk that the list does not name fails the "read order"
+ * case by name.
+ */
+const DESTROY_RUNNER = 'src/cli/commands/destroy-runner.ts';
+const DESTROY_RUNNER_DIR = 'src/cli/commands/destroy-runner/';
+const DESTROY_RUNNER_ORDER = [
+  'types.ts',
+  'helpers.ts',
+  'preflight.ts',
+  'run.ts',
+  'under-lock.ts',
+  'under-lock-steps.ts',
+  'delete-resource.ts',
+] as const;
+/** The modules under `destroy-runner/`, the directory read recursively. */
+function destroyRunnerModules(): string[] {
+  return readdirSync(join(repoRoot, DESTROY_RUNNER_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
+
+describe("the destroy-runner family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(destroyRunnerModules().sort()).toEqual([...DESTROY_RUNNER_ORDER].sort());
+  });
+});
+
 /** The repo-relative files a fence subject reads: every scrub module for {@link SCRUB}. */
 function subjectFiles(relPath: string): string[] {
+  if (relPath === DESTROY_RUNNER) {
+    const files = [
+      DESTROY_RUNNER,
+      ...DESTROY_RUNNER_ORDER.map((name) => `${DESTROY_RUNNER_DIR}${name}`),
+    ];
+    for (const file of files) {
+      // A per-file floor, for the reason the refactor family's carries.
+      if (readFileSync(join(repoRoot, file), 'utf8').trim().length === 0) {
+        throw new Error(`${file} is empty; update DESTROY_RUNNER_ORDER`);
+      }
+    }
+    return files;
+  }
   if (relPath === ROLLBACK) {
     const files = [ROLLBACK, ...ROLLBACK_ORDER.map((name) => `${ROLLBACK_DIR}${name}`)];
     for (const file of files) {
@@ -337,9 +387,10 @@ function subjectFiles(relPath: string): string[] {
 /**
  * The fence subject a `git grep` path belongs to: every scrub module is
  * {@link SCRUB}, every refactor module {@link REFACTOR}, every rollback module
- * {@link ROLLBACK}.
+ * {@link ROLLBACK}, every destroy-runner module {@link DESTROY_RUNNER}.
  */
 function subjectOf(file: string): string {
+  if (file.startsWith(DESTROY_RUNNER_DIR)) return DESTROY_RUNNER;
   if (file.startsWith(REFACTOR_DIR)) return REFACTOR;
   if (file.startsWith(ROLLBACK_DIR)) return ROLLBACK;
   return file.startsWith('src/cli/commands/scrub/') ? SCRUB : file;
@@ -3807,8 +3858,9 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
       // The under-lock re-read guards the count `stillEmpty` and `deleteState`
       // act on — a DIFFERENT object, which a concurrent writer can supply.
       [
-        // Wrapped since the account context joined its arguments (go-to-k/cdkd#3909).
-        'refuseMalformedOrphanRecordsForDestroy(\n          recheck.state,',
+        // Wrapped since the account context joined its arguments (go-to-k/cdkd#3909),
+        // indented as `destroyEmptyStack`'s body (go-to-k/cdkd#5835).
+        'refuseMalformedOrphanRecordsForDestroy(\n        recheck.state,',
         '(recheck.state.orphans ?? []).length',
       ],
     ],

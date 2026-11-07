@@ -322,14 +322,15 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     // that would make this whole file green while guarding nothing.
     const byFile = [...new Set(governed.map((s) => s.file))].sort();
     expect(byFile).toEqual([
-      'cli/commands/destroy-runner.ts',
+      // The per-resource delete, split out of `destroy-runner.ts` (#5835).
+      'cli/commands/destroy-runner/delete-resource.ts',
       'deployment/deploy-engine/delete.ts',
       'deployment/deploy-engine/update-in-place.ts',
       'provisioning/cc-protection-properties.ts',
       'provisioning/cloud-control/poll-failure.ts',
     ]);
     // FIVE governed sites: the engine's DELETE and UPDATE arms (one each, in
-    // their #4200 split-out modules), plus one each in `destroy-runner.ts`,
+    // their #4200 split-out modules), plus one each in `destroy-runner/delete-resource.ts`,
     // `cloud-control/poll-failure.ts` (the CC provider's delete classifier,
     // split out of `cloud-control-provider.ts` by #5835) and
     // `cc-protection-properties.ts` (the
@@ -350,7 +351,9 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     ).toHaveLength(5);
     expect(governed.filter((s) => s.file === 'deployment/deploy-engine/delete.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'deployment/deploy-engine/update-in-place.ts')).toHaveLength(1);
-    expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);
+    expect(
+      governed.filter((s) => s.file === 'cli/commands/destroy-runner/delete-resource.ts')
+    ).toHaveLength(1);
   });
 
   it.each(EXEMPT.map((e) => [e.file, e] as const))(

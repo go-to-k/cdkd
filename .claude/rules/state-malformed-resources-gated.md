@@ -2,6 +2,7 @@
 description: Why cdkd destroy and cdkd deploy REFUSE a record whose root resources map a hand edit left unreadable, and why repairing it is not the safe half there
 paths:
   - 'src/cli/commands/destroy-runner.ts'
+  - 'src/cli/commands/destroy-runner/**'
 ---
 
 # The `resources` root bag at the two gated commands

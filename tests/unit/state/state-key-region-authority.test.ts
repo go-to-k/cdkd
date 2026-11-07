@@ -698,7 +698,12 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       encoding: 'utf-8',
     })
       .split('\n')
-      .filter((line) => line !== '' && !line.endsWith('destroy-runner.ts'))
+      // The runner itself: its entry and the `destroy-runner/` modules split
+      // out of it (go-to-k/cdkd#5835), where `runDestroyForStack` is defined.
+      .filter(
+        (line) =>
+          line !== '' && !line.endsWith('destroy-runner.ts') && !line.includes('/destroy-runner/')
+      )
       // A CALL, not a mention: a doc comment writing `runDestroyForStack(ctx)`
       // in prose would otherwise join the population and fail this for a reason
       // that is not a defect. Excluding COMMENT lines rather than requiring a
