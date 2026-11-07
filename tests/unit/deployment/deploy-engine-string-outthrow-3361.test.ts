@@ -302,7 +302,9 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/execute/provision-node.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/execute/rollback-after-failure.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/observed-capture.ts': { thenRejection: 1 },
-    'src/deployment/deploy-engine/outputs.ts': { catchClause: 2 },
+    // The Outputs pass, split into `outputs/` (go-to-k/cdkd#5835): both of its
+    // handlers live in `resolveOutputs`'s module.
+    'src/deployment/deploy-engine/outputs/resolve.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/replacement.ts': { catchClause: 5 },
     'src/deployment/deploy-engine/rollback.ts': { catchClause: 6 },
