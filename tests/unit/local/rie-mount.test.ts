@@ -193,6 +193,13 @@ describe('resolveRieWrap', () => {
     expect(h.warns).toEqual([]);
   });
 
+  it('does not wrap an image whose init wrapper starts an RIE from the CMD', async () => {
+    imageConfig = { Entrypoint: ['/tini', '--'], Cmd: ['/usr/local/bin/aws-lambda-rie', '/app'] };
+    expect(await resolveRieWrap({ image: 'i', platform: 'linux/amd64' })).toBeUndefined();
+    expect(verbs()).not.toContain('create --platform');
+    expect(h.warns).toEqual([]);
+  });
+
   it('wraps an AWS base image too (its entrypoint script is not the RIE)', async () => {
     imageConfig = { Entrypoint: ['/lambda-entrypoint.sh'], Cmd: ['app.handler'] };
     expect((await resolveRieWrap({ image: 'i', platform: 'linux/amd64' }))?.cmd).toEqual([
@@ -201,16 +208,18 @@ describe('resolveRieWrap', () => {
     ]);
   });
 
-  it('falls back to undefined and warns ONCE when the binary cannot be obtained', async () => {
+  it('falls back to undefined and warns ONCE PER PLATFORM when the binary cannot be obtained', async () => {
     h.docker.mockImplementation(async (args: string[]) => {
       if (args[0] === 'image') return { stdout: JSON.stringify(imageConfig), stderr: '' };
       throw Object.assign(new Error('pull denied'), { exitCode: 1, stderr: 'denied', stdout: '' });
     });
     expect(await resolveRieWrap({ image: 'a', platform: 'linux/amd64' })).toBeUndefined();
-    expect(await resolveRieWrap({ image: 'b', platform: 'linux/arm64' })).toBeUndefined();
+    expect(await resolveRieWrap({ image: 'b', platform: 'linux/amd64' })).toBeUndefined();
     expect(h.warns).toHaveLength(1);
     expect(h.warns[0]).toMatch(/Could not mount the Lambda Runtime Interface Emulator/);
     expect(h.warns[0]).toMatch(/docker pull failed/);
+    expect(await resolveRieWrap({ image: 'c', platform: 'linux/arm64' })).toBeUndefined();
+    expect(h.warns).toHaveLength(2);
   });
 
   it('falls back when the image config cannot be inspected, warning per image', async () => {

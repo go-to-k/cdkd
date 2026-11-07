@@ -223,8 +223,10 @@ runs every container-image Lambda under an RIE of its own:
   entrypoint.
 - It hands the RIE the image's `ENTRYPOINT` followed by its `CMD`, each
   replaced by its `ImageConfig` field when set, as the program to run.
-- It leaves an image alone whose program already is an RIE: the first word
-  of that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
+- It leaves an image alone whose program already starts an RIE: any word of
+  that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it, which
+  covers an init wrapper such as `["/tini", "--"]` starting the RIE from the
+  `CMD`.
 
 An image whose entrypoint is a script that always starts its own RIE cannot
 be recognised, and its emulator then fails to bind port 8080. Start the RIE
