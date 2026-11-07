@@ -42,6 +42,8 @@ import { join, resolve } from 'node:path';
 
 const cdkdWarns: string[] = [];
 const cdkdErrors: string[] = [];
+// The image plan would otherwise run the real docker to mount an RIE (#6018).
+vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: async () => undefined }));
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   const quiet = {
     debug: () => {},
