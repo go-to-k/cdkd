@@ -131,7 +131,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'form, and it sits in the integ-destroy gate scope, so ' +
       'folding it would buy a real-AWS run for a pure refactor.',
   },
-  'src/cli/commands/gc.ts': {
+  // `promptGcConfirm`, moved out of `gc.ts` (go-to-k/cdkd#5835).
+  'src/cli/commands/gc/candidates.ts': {
     sites: 1,
     why: 'Pre-existing guarded prompt (`process.stdin.isTTY` + NON_INTERACTIVE_CONFIRM).',
   },

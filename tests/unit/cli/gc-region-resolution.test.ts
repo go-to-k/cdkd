@@ -230,7 +230,7 @@ describe('cdkd gc region resolution (issue #2029)', () => {
     await runGc(['--yes']);
 
     // Assert the bag that does the ASSET work, not the marker client. gc lists
-    // and deletes asset objects through `awsClients.s3` (`gc.ts` -
+    // and deletes asset objects through `awsClients.s3` (`gc/candidates.ts` -
     // `listS3Candidates` / `deleteS3Candidates`), and that bag is built AFTER
     // the reconciliation. `markerS3Client` is deliberately allowed to keep the
     // pre-reconciliation region: it serves the STATE bucket, which is
