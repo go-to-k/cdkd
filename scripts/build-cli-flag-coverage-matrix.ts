@@ -5,7 +5,7 @@
  * Builds a `(CLI flag) -> (integ fixture verify.sh that exercises it)`
  * coverage map by:
  *
- *   1. Parsing src/cli/options.ts for declared Commander Option flags
+ *   1. Parsing src/cli/options.ts and src/cli/options/** for declared Commander Option flags
  *      (both `new Option('--foo')` and `new Option('-f, --foo')` shapes,
  *      single-line AND multi-line constructor calls).
  *   2. Grepping every tests/integration/<fixture>/verify.sh for
@@ -53,6 +53,9 @@ const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, '..');
 
 const OPTIONS_FILE = join(REPO_ROOT, 'src/cli/options.ts');
+// `src/cli/options.ts` re-exports option declarations that live in its
+// sibling module directory (go-to-k/cdkd#5835), so both are read.
+const OPTIONS_DIR = join(REPO_ROOT, 'src/cli/options');
 const INTEG_DIR = join(REPO_ROOT, 'tests/integration');
 const OUTPUT_JSON = join(REPO_ROOT, 'docs/_generated/cli-flag-coverage.json');
 const OUTPUT_MD = join(REPO_ROOT, 'docs/cli-flag-coverage.md');
@@ -209,9 +212,48 @@ export interface FlagCoverageReport {
   unknownFlagsInIntegs: string[];
 }
 
+/**
+ * Every `.ts` file the declared-flag set is read from: the entry module plus
+ * its sibling module directory, recursively. Each file is parsed on its own
+ * (no concatenation), and a file that declares no `new Option(` is refused
+ * unless it is listed in `optionFreeFiles`, so a walk that silently stops
+ * reaching a declaring file fails loudly instead of shrinking the matrix.
+ */
+export function listOptionSourceFiles(
+  entryFile: string = OPTIONS_FILE,
+  dir: string = OPTIONS_DIR
+): string[] {
+  const out = [entryFile];
+  const walk = (d: string): void => {
+    for (const name of readdirSync(d).sort()) {
+      const full = join(d, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name.endsWith('.ts')) out.push(full);
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return out;
+}
+
+const OPTION_FREE_FILES = new Set(['assume-role.ts']);
+
+export function readDeclaredFlags(
+  files: string[] = listOptionSourceFiles(),
+  optionFreeFiles: ReadonlySet<string> = OPTION_FREE_FILES
+): string[] {
+  const all = new Set<string>();
+  for (const file of files) {
+    const flags = parseDeclaredFlags(readFileSync(file, 'utf8'));
+    if (flags.length === 0 && !optionFreeFiles.has(basename(file))) {
+      throw new Error(`no \`new Option(\` declaration found in ${file}`);
+    }
+    for (const f of flags) all.add(f);
+  }
+  return Array.from(all).sort();
+}
+
 function buildReport(): FlagCoverageReport {
-  const optionsSrc = readFileSync(OPTIONS_FILE, 'utf8');
-  const declaredFlags = parseDeclaredFlags(optionsSrc);
+  const declaredFlags = readDeclaredFlags();
   const declaredSet = new Set(declaredFlags);
 
   const perFlag = new Map<string, Set<string>>();

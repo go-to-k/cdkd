@@ -22,7 +22,6 @@ src/cli/commands/local-run-task.ts
 src/cli/commands/refactor.ts
 src/cli/commands/retire-cfn-stack.ts
 src/cli/commands/rollback.ts
-src/cli/options.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
 src/deployment/deploy-engine/execute.ts

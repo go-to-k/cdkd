@@ -1018,7 +1018,8 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     // reason the directory case below states about itself.
     const arnFiles = new Set(roleArn.map((s) => s.file.replace(/\\/g, '/')));
     for (const file of [
-      'src/cli/options.ts',
+      // The `--assume-role` parser, split out of `src/cli/options.ts` (#5835).
+      'src/cli/options/assume-role.ts',
       'src/cli/commands/drift/command.ts',
       'src/cli/commands/rollback.ts',
       'src/utils/role-arn.ts',
