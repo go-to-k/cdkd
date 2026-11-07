@@ -302,7 +302,10 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/replacement.ts': { catchClause: 5 },
     'src/deployment/deploy-engine/rollback.ts': { catchClause: 6 },
-    'src/deployment/deploy-engine/update-in-place.ts': { catchClause: 3 },
+    // `updateInPlace`, split into `update-in-place/` (go-to-k/cdkd#5835): the
+    // update's own handler stays in the entry, the fallback's two moved.
+    'src/deployment/deploy-engine/update-in-place.ts': { catchClause: 1 },
+    'src/deployment/deploy-engine/update-in-place/replace-fallback.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/update-replace.ts': { catchClause: 3 },
     // `cdkd diff`'s walk, split into `diff-recursive/` (go-to-k/cdkd#5835): the
     // two modules holding its four handlers. The family case below scans the rest.

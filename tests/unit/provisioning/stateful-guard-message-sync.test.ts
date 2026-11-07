@@ -22,27 +22,21 @@
  * unchanged. That case is deliberately source-only.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import { hasNoCloudControlHandlers } from '../../../src/provisioning/unsupported-types.js';
+import { readEngineFamily } from '../_engine-family.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 // `DeployEngine`'s source: the class file plus the modules split out of it
-// (#4200), where the provisioning arms now live. Joined, so
+// (#4200), where the provisioning arms now live, read recursively so a module
+// split into a nested directory (#5835) stays in it. Joined, so
 // a phrase counted once is counted once across the whole engine.
-const DEPLOY_ENGINE = (() => {
-  const engine = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf8');
-  const dir = join(REPO_ROOT, 'src/deployment/deploy-engine');
-  const mixins = readdirSync(dir)
-    .filter((f) => f.endsWith('.ts'))
-    .sort()
-    .map((f) => readFileSync(join(dir, f), 'utf8'));
-  return [engine, ...mixins].join('\n');
-})();
+const DEPLOY_ENGINE = readEngineFamily();
 const STATEFUL_TYPES_SRC = readFileSync(
   join(REPO_ROOT, 'src/provisioning/stateful-types.ts'),
   'utf8'

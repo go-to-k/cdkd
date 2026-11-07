@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readEngineFamily } from '../_engine-family.js';
 
 /**
  * `docs/cli-deploy-safety.md` quotes the stateful-replace refusals' text
@@ -173,17 +174,9 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     ])
   ) as Record<keyof typeof SOURCE_PATHS, string>;
   // `engine` is `DeployEngine`'s whole source: the class file plus the
-  // modules split out of it (#4200), where the provisioning arms now live.
-  const mixinDir = join(repoRoot, 'src', 'deployment', 'deploy-engine');
-  sources.engine = flattenWhitespace(
-    [
-      readFileSync(SOURCE_PATHS.engine, 'utf8'),
-      ...readdirSync(mixinDir)
-        .filter((f) => f.endsWith('.ts'))
-        .sort()
-        .map((f) => readFileSync(join(mixinDir, f), 'utf8')),
-    ].join('\n')
-  );
+  // modules split out of it (#4200), where the provisioning arms now live --
+  // read recursively, so a module split into a nested directory (#5835) stays.
+  sources.engine = flattenWhitespace(readEngineFamily());
   const doc = readFileSync(docPath, 'utf8');
   const docBlocks = fencedTextBlocks(doc).map(flattenWhitespace);
   /**
@@ -261,7 +254,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //                                 --recreate-via-sdk-provider
     //                                 (one pre-flight probe, two flags)
     //   deploy-engine/update-replace.ts -> property-driven replacement
-    //   deploy-engine/update-in-place.ts -> --replace,
+    //   deploy-engine/update-in-place/replace-fallback.ts -> --replace,
     //     (update-failure fallback)   Cloud Control auto-fallback
     //                                 (one guard, two triggers)
     //   recreate-target-readers.ts -> a resource a --recreate-via-* deploy
@@ -361,7 +354,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.length).toBeGreaterThanOrEqual(5);
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
-      'src/deployment/deploy-engine/update-in-place.ts',
+      'src/deployment/deploy-engine/update-in-place/replace-fallback.ts',
       'src/deployment/deploy-engine/update-replace.ts',
       'src/deployment/recreate-target-readers.ts',
       'src/deployment/recreate-targets/validate.ts',
