@@ -78,7 +78,7 @@ export async function resolveProfileCredentials(
   // than a name. Shell-quoting is not the answer either (an option is still
   // an option inside quotes), so the honest answer for a name failing the
   // test is to NOT print a command whose effect we cannot predict, and to
-  // say so -- the same disposition `gc.ts` takes for an unpasteable stack
+  // say so -- the same disposition `gc/scan.ts` takes for an unpasteable stack
   // name. When the test passes, the value is `[A-Za-z0-9][A-Za-z0-9~_.-]*`,
   // which needs no quoting at all.
   const shownProfile = displayIdent(profile);
