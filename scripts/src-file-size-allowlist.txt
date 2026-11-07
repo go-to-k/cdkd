@@ -17,8 +17,6 @@ src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
 src/cli/commands/gc.ts
-src/cli/commands/local-invoke-agentcore.ts
-src/cli/commands/local-run-task.ts
 src/cli/commands/refactor.ts
 src/cli/commands/retire-cfn-stack.ts
 src/cli/commands/rollback.ts
@@ -50,7 +48,6 @@ src/deployment/secret-redaction/nested-stack.ts
 src/deployment/secret-redaction/positions.ts
 src/deployment/secret-redaction/redact-path.ts
 src/deployment/secret-redaction/redact-state.ts
-src/local/ecs-task-resolver.ts
 src/local/ecs-task-runner.ts
 src/local/lambda-resolver.ts
 src/provisioning/final-snapshot.ts
