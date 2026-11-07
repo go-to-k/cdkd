@@ -629,30 +629,48 @@ It is raised before any stack deploys.
 
 ## `Fn::GetAtt` attributes read live
 
-**An attribute cdkd reads live never falls back to the physical ID.** A
-few attributes are read from AWS at resolution time when the state record
-does not hold them: an EC2 instance's `PrivateIp` / `PublicIp` /
-`PrivateDnsName` / `PublicDnsName` / `AvailabilityZone`, a VPC's
-`DefaultSecurityGroup`, a CloudFront distribution's `DomainName`, a
-security group's `VpcId` (recorded at create from `DescribeSecurityGroups`,
-so a group declared without `VpcId` resolves to the default VPC's id as
-CloudFormation answers, and re-read when the record lacks it — or holds
-`''`, which an older cdkd wrote for such a group; that record keeps `''`
-until the group's next update, only the resolution changes — so on such a
-record `cdkd diff` issues one `DescribeSecurityGroups` and shows a one-time
+**An attribute cdkd reads live never falls back to the physical ID.** These
+attributes are read from AWS at resolution time when the state record does
+not hold them:
+
+- an EC2 instance's `PrivateIp` / `PublicIp` / `PrivateDnsName` /
+  `PublicDnsName` / `AvailabilityZone`;
+- a VPC's `DefaultSecurityGroup`;
+- a CloudFront distribution's `DomainName`;
+- a security group's `VpcId` (see below);
+- a subnet's `OutpostArn` / `AvailabilityZone` / `AvailabilityZoneId` /
+  `CidrBlock` / `VpcId`, after the record is first re-read from the subnet.
+
+A subnet's `Ipv6CidrBlocks`, `NetworkAclAssociationId` and
+`BlockPublicAccessStates` (including a dotted
+`BlockPublicAccessStates.<member>`) are read live even when the record holds
+them: an in-place IPv6 block change, a network ACL association or a
+block-public-access exclusion changes them after the create. A subnet with no
+IPv6 block answers an empty `Ipv6CidrBlocks`; one
+whose block is still associating is re-read for about 30 seconds.
+
+A security group's `VpcId` is recorded at create from
+`DescribeSecurityGroups`, so a group declared without `VpcId` resolves to the
+default VPC's id as CloudFormation answers. It is re-read when the record lacks
+it, or holds `''`, which an older cdkd wrote for such a group. That record
+keeps `''` until the group's next update; only the resolution changes. On such
+a record `cdkd diff` issues one `DescribeSecurityGroups` and shows a one-time
 `'' → vpc-…` Output delta, which `--fail` exits 1 on once and the next
 deploy's Outputs persist heals; if the read is refused, the Output lands in
-the failed keys and the Outputs section is suppressed with a warning). When
-the read finds the value not yet assigned (an instance still `pending`
-under `--no-wait`) or the read fails, cdkd refuses to resolve the reference
-rather than substituting the instance / VPC / distribution / group ID,
-which can never be the right value there; the message names the resource, the
+the failed keys and the Outputs section is suppressed with a warning.
+
+When the read finds the value not yet assigned (an instance still `pending`
+under `--no-wait`, a subnet's IPv6 block still associating), AWS reports no
+value (a subnet's `OutpostArn` off an Outpost, its `CidrBlock` when it is
+IPv6-only), or the read fails, cdkd refuses to resolve the reference rather
+than substituting the instance / VPC / distribution / group / subnet ID, which
+can never be the right value there. The message names the resource, the
 attribute, what was observed (the instance state, or the error class —
-`--verbose` shows the AWS text) and the remedy. Nothing is cached, so the
-next deploy re-reads. An RDS `DBProxy` / `DBProxyEndpoint` `VpcId` the
-record lacks is refused the same way without a live read. The
-`--no-wait` section of [`cdkd deploy`](cli-deploy.md)
-says what the refusal does in a resource property versus an Output.
+`--verbose` shows the AWS text) and the remedy. Nothing is cached, so the next
+deploy re-reads. An RDS `DBProxy` / `DBProxyEndpoint` `VpcId` the record lacks
+is refused the same way without a live read. The `--no-wait` section of
+[`cdkd deploy`](cli-deploy.md) says what the refusal does in a resource
+property versus an Output.
 
 ## Cloud assembly checks
 

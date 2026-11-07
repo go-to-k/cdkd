@@ -105,6 +105,27 @@ export function pushRedactedAttributeRead(
 }
 
 /**
+ * An attribute `resolveGetAtt` never serves from the state record, because it
+ * changes on the live resource after the create and nothing re-records it:
+ * the VPC's `Ipv6CidrBlocks` (a later `VPCCidrBlock` association) and the
+ * Subnet's `Ipv6CidrBlocks`, `NetworkAclAssociationId` and
+ * `BlockPublicAccessStates` (an in-place `Ipv6CidrBlock` update, a
+ * `SubnetNetworkAclAssociation`, a VPC block-public-access exclusion;
+ * go-to-k/cdkd#5944). Exported so a reader that otherwise prefers the
+ * recorded value can mirror it.
+ */
+export function isAlwaysLiveAttribute(resourceType: string, attributeName: string): boolean {
+  if (resourceType === 'AWS::EC2::VPC') return attributeName === 'Ipv6CidrBlocks';
+  if (resourceType !== 'AWS::EC2::Subnet') return false;
+  return (
+    attributeName === 'Ipv6CidrBlocks' ||
+    attributeName === 'NetworkAclAssociationId' ||
+    attributeName === 'BlockPublicAccessStates' ||
+    attributeName.startsWith('BlockPublicAccessStates.')
+  );
+}
+
+/**
  * Resolve Fn::GetAtt intrinsic function
  */
 export async function resolveGetAtt(
@@ -222,10 +243,9 @@ export async function resolveGetAtt(
   recordSecretNamedRead(logicalId, undefined, context);
 
   // Check if attribute exists in resource.attributes
-  // For VPC Ipv6CidrBlocks, always use constructAttribute (dynamic fetch with retry)
-  // because the stored value may be stale (empty array from before VPCCidrBlock association)
-  const skipCachedAttribute =
-    resource.resourceType === 'AWS::EC2::VPC' && attributeName === 'Ipv6CidrBlocks';
+  // except an always-live attribute, which goes to constructAttribute's live
+  // read because a stored copy may be stale (`isAlwaysLiveAttribute`).
+  const skipCachedAttribute = isAlwaysLiveAttribute(resource.resourceType, attributeName);
 
   if (!skipCachedAttribute && resource.attributes !== undefined) {
     // Flat-key lookup first (SDK providers store nested attributes as flat

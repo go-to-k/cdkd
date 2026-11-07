@@ -312,7 +312,7 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
       '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5247)',
   },
   {
-    file: 'state/lock-manager.ts',
+    file: 'state/lock-manager/read.ts',
     errorClass: 'LockError',
     within: 'getLockRecord',
     count: 1,

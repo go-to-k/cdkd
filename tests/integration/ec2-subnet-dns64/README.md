@@ -25,6 +25,14 @@ the new block and the three values are live. `NativeSubnet` is an IPv6-only subn
 block) that must keep its ID through every phase. Every subnet must stay on the
 SDK route and be drift-clean.
 
+Three outputs read `Fn::GetAtt` on `Subnet` (#5944): `SubnetIpv6Blocks`
+joins `Ipv6CidrBlocks` behind a `blocks:` prefix, and after every `check_live`
+`verify.sh` requires it to name exactly the associated block (empty once IPv6
+is removed), so the in-place CIDR change proves a live read. After the create
+it also requires `SubnetVpcId` to be the VPC and `SubnetNaclAssociationId` to
+be the subnet's live network ACL association. Before the fix each resolved to
+the subnet ID.
+
 `BlockSubnet` (#5843) never declares `Ipv6CidrBlock`. Its `cidr-block-on` phase
 adds an `AWS::EC2::SubnetCidrBlock` in the same deploy that declares
 auto-assign, DNS64 and the AAAA record `true`. The subnet update runs before the
