@@ -51,17 +51,13 @@
  * marker each first deploy claims before its first provider call serializes
  * them; across buckets that window is a documented residual.
  */
-import {
-  createLookupArn,
-  probeFoundSameId,
-  replacementCreateAdoptsName,
-} from './replacement-name-holder.js';
+import { probeFoundSameId, replacementCreateAdoptsName } from './replacement-name-holder.js';
 import {
   explicitNamePropertyFor,
   withNameGeneration,
   withSkipPrefix,
 } from '../provisioning/resource-name.js';
-import { isAccessDeniedError, lookupEachName } from '../provisioning/name-lookup.js';
+import { isAccessDeniedError } from '../provisioning/name-lookup.js';
 import {
   ledgerAbandonedAt,
   noteAbandonedRun,
@@ -76,163 +72,30 @@ import { startInterruptWatch, type InterruptWatch } from '../provisioning/interr
 import { createdBeforeFailure } from '../provisioning/auxiliary-failure.js';
 import { isAmbiguousOutcomeError } from './retryable-errors/transient.js';
 import { isThrottlingError } from './retryable-errors/marks.js';
-import type { ResourceChange, ResourceState, StackOrphanRecord } from '../types/state.js';
 import type { ProvisionedBy } from '../provisioning/provider-registry.js';
 import type { ResourceProvider } from '../types/resource.js';
-import type { RollbackJournal } from '../types/rollback-journal.js';
-import type { RetainedResource } from '../state/s3-state-backend.js';
+import {
+  DEFAULT_TIMING,
+  GROUP_WINDOW_MS,
+  KEPT_AT_SKEW_MS,
+  STILL_LISTED_WHILE_DELETING,
+  type Candidate,
+  type GeneratedNameGuardInput,
+  type GeneratedNameVerdict,
+  type GuardTiming,
+  type KeptInHistory,
+  type LicenseSource,
+} from './generated-name-guard/types.js';
+import { loadEvidence, lookupAll, type Evidence } from './generated-name-guard/lookup.js';
 
-/** What a planned create's generated name was found to be. */
-export type GeneratedNameVerdict =
-  | { kind: 'free' }
-  /** A holder this stack's own evidence names (`via`). */
-  | { kind: 'licensed'; holder: string; via: LicenseSource }
-  /**
-   * A holder nothing of this stack names: refuse. `ownIntent` (review D1):
-   * this stack's ledger does name the name, but cannot tell this holder is
-   * what its create made -- a run abandoned or a create that came back
-   * failed, for a type that reports no creation time -- so it may be this
-   * stack's own resource; the refusal says so.
-   */
-  | { kind: 'held'; holder: string; ownIntent?: 'abandoned' | 'failed' }
-  /** The lookup was refused (403): create, warning once. */
-  | { kind: 'unchecked'; error: unknown }
-  /** The lookup, or reading this stack's evidence, failed otherwise: refuse. */
-  | { kind: 'failed'; error: unknown };
-
-/** Which evidence named a holder. */
-export type LicenseSource = 'record' | 'orphan' | 'journal' | 'ledger' | 'retained' | 'history';
-
-/** One planned create the guard asks about. */
-interface Candidate {
-  logicalId: string;
-  resourceType: string;
-  name: string;
-  property: string | undefined;
-  provider: ResourceProvider;
-  properties: Record<string, unknown>;
-  /**
-   * Its lookup needs a value only known once the create's properties resolve
-   * (an EventBridge rule's `EventBusName` given as an intrinsic): it runs at
-   * the create, never against a guessed default.
-   */
-  deferred: boolean;
-}
-
-/** A resource this stack's own history shows it created, then kept. */
-export interface KeptInHistory {
-  logicalId: string;
-  resourceType: string;
-  physicalId: string;
-  /** When it was kept (epoch ms), when the history says. */
-  keptAt?: number;
-}
-
-/** What the guard needs from the engine. */
-export interface GeneratedNameGuardInput {
-  stackName: string;
-  region: string;
-  changes: Iterable<ResourceChange>;
-  /** The router a create uses (`ProviderRegistry.getProviderFor`). */
-  providerFor(input: { resourceType: string; properties: Record<string, unknown> }): {
-    provider: ResourceProvider;
-    provisionedBy: ProvisionedBy;
-  };
-  /** The stack's loaded state record's resources. */
-  records: Readonly<Record<string, ResourceState>>;
-  /** The stack's loaded rollback orphans. */
-  orphans: readonly StackOrphanRecord[] | undefined;
-  /** This stack's rollback journal, read on demand. */
-  loadJournal(): Promise<RollbackJournal | null>;
-  /**
-   * What this stack let go of under this prefix (`retained.json`), read on
-   * demand; `null` when there is no such record at all (this cdkd never
-   * destroyed or orphaned the stack here), the only case in which the history
-   * below is read.
-   */
-  loadRetained(): Promise<readonly RetainedResource[] | null>;
-  /**
-   * What this prefix's own history shows this stack created and then kept (an
-   * older cdkd that wrote no `retained.json`), read only when a held name is
-   * licensed by nothing else and there is no `retained.json`.
-   */
-  loadKeptInHistory?(): Promise<readonly KeptInHistory[]>;
-  /** The account the ARNs of SNS / Step Functions names are built in. */
-  accountInfo(): Promise<{ partition: string; region: string; accountId: string }>;
-  /**
-   * When this deploy took over an EXPIRED lock: the abandoned run's lease
-   * horizon (its last renewal plus its renewal interval, epoch ms). With the ledger's own record of an abandoned run
-   * (`cdkd force-unlock`), it bounds what that run's intents license (G-1).
-   */
-  abandonedRunAt?: number;
-  /** Timing, overridable for tests. */
-  timing?: Partial<GuardTiming>;
-  /** Where a non-fatal note goes (the deploy's logger). */
-  warn?(message: string): void;
-  /**
-   * go-to-k/cdkd#5064: the stack has a `stackInstanceId`. What left the stack
-   * (a rollback's orphans, `retained.json`, what history shows it kept) is
-   * then never taken back implicitly, so none of it licenses a holder; only
-   * this stack's live records, its journal and its ledger do.
-   */
-  newScheme?: boolean;
-  /**
-   * go-to-k/cdkd#5064 phase 2: for a planned UPDATE that replaces its
-   * resource on a stack with an instance id, the name generation the new
-   * resource is created at (`nextNameGeneration`); `undefined` for any other
-   * change. Such a replacement creates under a NEW generated name, so it is
-   * checked like a create: looked up now, its intent recorded, and a crash
-   * re-run's own resource licensed by the ledger.
-   */
-  replacementGeneration?(change: ResourceChange): number | undefined;
-}
-
-/** The guard's clocks and waits. */
-export interface GuardTiming {
-  now(): number;
-  sleep(ms: number): Promise<void>;
-  /** How long a held queue or bucket is re-read while it may be deleting. */
-  cooldownMs: number;
-  /** The wait between those re-reads. */
-  cooldownStepMs: number;
-}
-
-/**
- * go-to-k/cdkd#4705 perf: how long the first planned intent write waits for
- * the other types' lookups to answer, so they share one write.
- */
-const GROUP_WINDOW_MS = 15;
-
-/** The defaults (exported so an engine-level test can shorten the waits). */
-export const DEFAULT_TIMING: GuardTiming = {
-  now: () => Date.now(),
-  // Unref'd (review N1): a Ctrl-C that ends the cooldown never waits on it.
-  sleep: (ms) =>
-    new Promise((resolve) => {
-      setTimeout(resolve, ms).unref?.();
-    }),
-  // SQS keeps a deleted queue's name for 60 seconds; S3 answers for a
-  // just-deleted bucket for about as long.
-  cooldownMs: 65_000,
-  cooldownStepMs: 10_000,
-};
-
-/**
- * Types whose exact read can still answer for a resource being deleted (a
- * queue's 60-second cooldown, a bucket's delete propagating): a held name of
- * these is read again across that window before it is refused.
- */
-const STILL_LISTED_WHILE_DELETING: ReadonlySet<string> = new Set([
-  'AWS::SQS::Queue',
-  'AWS::S3::Bucket',
-]);
-
-/** Per-name reads through `import()` at once, per type (SNS's API is the strictest). */
-const PER_NAME_CONCURRENCY: Readonly<Record<string, number>> = { 'AWS::SNS::Topic': 4 };
-const DEFAULT_PER_NAME_CONCURRENCY = 10;
-
-/** Clock skew tolerated between cdkd's clock (when kept) and AWS's (when created). */
-const KEPT_AT_SKEW_MS = 60_000;
+export { DEFAULT_TIMING } from './generated-name-guard/types.js';
+export type {
+  GeneratedNameVerdict,
+  LicenseSource,
+  KeptInHistory,
+  GeneratedNameGuardInput,
+  GuardTiming,
+} from './generated-name-guard/types.js';
 
 /**
  * Did the create call that threw `error` prove that it created nothing? A
@@ -996,164 +859,4 @@ export class GeneratedNameGuard {
     });
     return Promise.race([this.timing.sleep(ms), interrupted]).finally(() => clearInterval(timer));
   }
-}
-
-/**
- * S3's answer for a bucket that exists in another region: 301
- * PermanentRedirect (SDK v3 surfaces a HEAD's as a synthetic `Unknown` error
- * carrying the 301 status).
- */
-function isPermanentRedirect(error: unknown): boolean {
-  const e = error as {
-    name?: unknown;
-    $metadata?: { httpStatusCode?: unknown };
-    $response?: { statusCode?: unknown };
-  } | null;
-  return (
-    e?.name === 'PermanentRedirect' ||
-    e?.$metadata?.httpStatusCode === 301 ||
-    e?.$response?.statusCode === 301
-  );
-}
-
-/** Every candidate's holder (by logical id), and the types whose lookup failed. */
-async function lookupAll(
-  input: GeneratedNameGuardInput,
-  candidates: readonly Candidate[]
-): Promise<{ found: Map<string, string>; typeFailures: Map<string, unknown> }> {
-  const byType = new Map<string, Candidate[]>();
-  for (const c of candidates)
-    byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
-  const found = new Map<string, string>();
-  const typeFailures = new Map<string, unknown>();
-  await Promise.all(
-    [...byType].map(async ([resourceType, group]) => {
-      try {
-        const holders = await lookupType(input, resourceType, group);
-        for (const c of group) {
-          const holder = holders.get(c.name);
-          if (holder !== undefined) found.set(c.logicalId, holder);
-        }
-      } catch (error) {
-        typeFailures.set(resourceType, error);
-      }
-    })
-  );
-  return { found, typeFailures };
-}
-
-/** This stack's evidence of the resources it holds or made. */
-interface Evidence {
-  namedBy(
-    resourceType: string,
-    holder: string
-  ): { via: LicenseSource; keptAt?: number } | undefined;
-  /** No `retained.json` at all: this cdkd never destroyed or orphaned the stack here. */
-  retainedAbsent: boolean;
-}
-
-async function loadEvidence(input: GeneratedNameGuardInput): Promise<Evidence> {
-  // go-to-k/cdkd#5064: on a stack with an instance id what left the stack
-  // licenses nothing, so `retained.json` is not read for it.
-  const kept = input.newScheme !== true;
-  const [journal, retained] = await Promise.all([
-    input.loadJournal(),
-    kept ? input.loadRetained() : Promise.resolve([]),
-  ]);
-  const sources: Array<{ via: LicenseSource; type: string; id: string; keptAt?: number }> = [];
-  for (const record of Object.values(input.records)) {
-    if (typeof record?.physicalId === 'string')
-      sources.push({ via: 'record', type: record.resourceType, id: record.physicalId });
-  }
-  for (const orphan of kept ? (input.orphans ?? []) : []) {
-    const s = orphan.state;
-    if (typeof s?.physicalId === 'string')
-      sources.push({ via: 'orphan', type: s.resourceType, id: s.physicalId });
-  }
-  for (const segment of journal?.segments ?? []) {
-    for (const op of [...(segment.operations ?? []), ...(segment.failedOperations ?? [])]) {
-      if (typeof op.physicalId === 'string' && op.physicalId !== '') {
-        sources.push({ via: 'journal', type: op.resourceType, id: op.physicalId });
-      }
-    }
-  }
-  for (const r of retained ?? []) {
-    sources.push({
-      via: 'retained',
-      type: r.resourceType,
-      id: r.physicalId,
-      ...(r.keptAt !== undefined && { keptAt: r.keptAt }),
-    });
-  }
-  return {
-    retainedAbsent: retained === null,
-    namedBy: (resourceType, holder) => {
-      const hit = sources.find(
-        (s) => s.type === resourceType && probeFoundSameId(resourceType, s.id, holder)
-      );
-      return hit === undefined
-        ? undefined
-        : { via: hit.via, ...(hit.keptAt !== undefined && { keptAt: hit.keptAt }) };
-    },
-  };
-}
-
-/**
- * One type's holders, name → physical id: the provider's batch
- * (`lookupNames`), or, when it has none or asks for it, per-name lookups
- * through its `import()`, bounded. Throws when it cannot tell.
- */
-async function lookupType(
-  input: GeneratedNameGuardInput,
-  resourceType: string,
-  group: readonly Candidate[]
-): Promise<Map<string, string>> {
-  const provider = group[0]!.provider;
-  const names = group.map((c) => c.name);
-  // The lookups run with the stack-name prefix rule OFF: each name is the
-  // one `create()` sends already, which a provider whose lookup re-derives a
-  // template name (ELBv2) must not prefix a second time.
-  return withSkipPrefix(true, async () => {
-    if (provider.lookupNames !== undefined) {
-      return provider.lookupNames(resourceType, names, {
-        region: input.region,
-        stackName: input.stackName,
-        propertiesByName: new Map(group.map((c) => [c.name, c.properties])),
-      });
-    }
-    const lookup = provider.import?.bind(provider);
-    if (lookup === undefined) return new Map();
-    const byName = new Map(group.map((c) => [c.name, c]));
-    const account = ['AWS::SNS::Topic', 'AWS::StepFunctions::StateMachine'].includes(resourceType)
-      ? await input.accountInfo()
-      : undefined;
-    const concurrency = PER_NAME_CONCURRENCY[resourceType] ?? DEFAULT_PER_NAME_CONCURRENCY;
-    return lookupEachName(names, `${resourceType}:import`, concurrency, async (name) => {
-      const c = byName.get(name)!;
-      const arn = account !== undefined ? createLookupArn(resourceType, name, account) : undefined;
-      if (arn !== undefined && 'unbuildable' in arn) {
-        throw new Error(`cannot build the ARN ${resourceType} name ${name} would take`);
-      }
-      // A 403 (S3 answers it for a bucket ANOTHER account owns, too) throws:
-      // the 403 contract, unchecked (warn and create), never silently free.
-      let found: Awaited<ReturnType<typeof lookup>>;
-      try {
-        found = await lookup({
-          logicalId: c.logicalId,
-          resourceType,
-          stackName: input.stackName,
-          region: input.region,
-          properties:
-            c.property === undefined ? c.properties : { ...c.properties, [c.property]: name },
-          ...(arn !== undefined && { knownPhysicalId: arn.arn }),
-        });
-      } catch (error) {
-        // Review H-7: S3's 301 for HeadBucket is a bucket of that name in
-        // another region -- the name is held, not unreadable.
-        if (resourceType === 'AWS::S3::Bucket' && isPermanentRedirect(error)) return name;
-        throw error;
-      }
-      return found?.physicalId;
-    });
-  });
 }
