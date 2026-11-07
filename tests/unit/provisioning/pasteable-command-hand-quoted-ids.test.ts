@@ -19,7 +19,7 @@ import { displayIdent, SECRET_REF_MAX_CODE_POINTS } from '../../../src/utils/dis
  *
  * The four, each driven through its real `create()` / `import()` below:
  *
- *  - `ssm-parameter-provider.ts` — the partial-create cleanup warning
+ *  - `ssm-parameter-provider.ts` (with `ssm-parameter/`) — the partial-create cleanup warning
  *    (`aws ssm delete-parameter --name`) and `refuseUnwritableParameterId`'s
  *    thrown remedy (`aws ssm get-parameter --name`);
  *  - `s3-bucket-provider.ts` — both partial-create cleanup arms

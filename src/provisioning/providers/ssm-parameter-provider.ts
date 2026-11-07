@@ -1,53 +1,21 @@
-import {
-  SSMClient,
-  DescribeParametersCommand,
-  GetParameterCommand,
-  ListTagsForResourceCommand,
-  PutParameterCommand,
-  DeleteParameterCommand,
-  AddTagsToResourceCommand,
-  RemoveTagsFromResourceCommand,
-  ParameterNotFound,
-  type ParameterType,
-} from '@aws-sdk/client-ssm';
-import { getLogger } from '../../utils/logger.js';
-import { definedAttributes } from '../attribute-map.js';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import {
-  displayIdent,
-  displaySafe,
-  isPasteableIdent,
-  SECRET_REF_MAX_CODE_POINTS,
-} from '../../utils/display-safe.js';
-import { commandHole } from '../../utils/pasteable-command.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generatedNameFor } from '../resource-name.js';
-import {
-  normalizeAwsTagsToCfn,
-  remedyLogicalId,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
-import {
-  planTagDiff,
-  tagPlanWarning,
-  refuseMalformedDesiredTags,
-  tagMapAsList,
-  type CfnTagEntry,
-} from '../tag-list.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { renderDisableCommand } from '../replacement-protection-advice.js';
+import type { DeleteContext } from '../region-check.js';
+import { refuseMalformedDesiredTags, tagMapAsList, type CfnTagEntry } from '../tag-list.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import {
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markNotGone } from '../not-gone.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -58,7 +26,11 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { create } from './ssm-parameter/create.js';
+import { update } from './ssm-parameter/update.js';
+import { deleteImpl } from './ssm-parameter/delete.js';
+import { readCurrentState } from './ssm-parameter/read-state.js';
+import { refuseUnwritableParameterId, importImpl } from './ssm-parameter/import.js';
 
 /**
  * AWS SSM Parameter Provider
@@ -67,11 +39,11 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  * This is required because SSM Parameter is not supported by Cloud Control API.
  */
 export class SSMParameterProvider implements ResourceProvider {
-  private ssmClient: SSMClient;
+  ssmClient: SSMClient;
   private createClient: Promise<SSMClient> | undefined;
   /** The credential half of the `AwsClients` `ssmClient` came from (#4639). */
   private readonly credentialConfig: CredentialConfig;
-  private logger = getLogger().child('SSMParameterProvider');
+  logger: ConsoleLogger = getLogger().child('SSMParameterProvider');
 
   /**
    * The failure wrap this provider's create, update and delete catches throw.
@@ -94,7 +66,7 @@ export class SSMParameterProvider implements ResourceProvider {
    * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
    * sees the catch that throws it as a wrap.
    */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
@@ -187,7 +159,7 @@ export class SSMParameterProvider implements ResourceProvider {
    * name is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
    * attribution").
    */
-  private getCreateClient(): Promise<SSMClient> {
+  getCreateClient(): Promise<SSMClient> {
     const shared = this.ssmClient;
     if (!(shared instanceof SSMClient)) return Promise.resolve(shared);
     this.createClient ??= shared.config.region().then(
@@ -204,7 +176,7 @@ export class SSMParameterProvider implements ResourceProvider {
   }
 
   /** `aws:`-prefixed keys are reserved: AWS rejects a user's attempt to set or remove them. */
-  private static userTags(tags: CfnTagEntry[]): CfnTagEntry[] {
+  static userTags(tags: CfnTagEntry[]): CfnTagEntry[] {
     return tags.filter((t) => !t.Key.startsWith('aws:'));
   }
 
@@ -215,7 +187,7 @@ export class SSMParameterProvider implements ResourceProvider {
    * `tagMapAsList`; a `{Key,Value}[]` list (a hand-authored template) is read
    * as it is.
    */
-  private static desiredSsmTags(
+  static desiredSsmTags(
     raw: unknown,
     resourceType: string,
     logicalId: string,
@@ -319,7 +291,7 @@ export class SSMParameterProvider implements ResourceProvider {
    * reject, so the whole body is wrapped: either failure degrades to "no Arn
    * recorded".
    */
-  private async buildParameterArn(name: string, mask: MaskerFn): Promise<string | undefined> {
+  async buildParameterArn(name: string, mask: MaskerFn): Promise<string | undefined> {
     try {
       return await this.buildParameterArnUnguarded(name);
     } catch (error) {
@@ -398,131 +370,16 @@ export class SSMParameterProvider implements ResourceProvider {
     return `arn:${partition}:ssm:${canonicalizeRegion(accountInfo.region)}:${accountInfo.accountId}:parameter/${qualifiedName}`;
   }
 
-  /**
-   * Create an SSM parameter
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // Issue #2176: ONE masked sink per operation, rather than a `mask(...)` at
-    // each interpolation. `properties['Name']` reaches several message sites
-    // here, and a line added later is masked by construction instead of by
-    // remembering.
-    // Absent context means identity, which is the back-compatible default the
-    // contract mandates -- `create()` is also reached from the import path,
-    // from `cdkd drift --revert`, and from tests.
-    const mask = maskerOrIdentity(context?.maskSecrets);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const ssmTags = SSMParameterProvider.desiredSsmTags(
-      properties['Tags'],
-      resourceType,
-      logicalId
-    );
-    const debug = (message: string): void => this.logger.debug(mask(message));
-    debug(`Creating SSM parameter ${displaySafe(logicalId)}`);
-
-    const name =
-      (properties['Name'] as string | undefined) ||
-      generatedNameFor('AWS::SSM::Parameter', logicalId);
-    const type = (properties['Type'] as string | undefined) || 'String';
-    const value = properties['Value'] as string | undefined;
-
-    if (!value) {
-      throw new ProvisioningError(
-        `Value is required for SSM parameter ${displaySafe(logicalId)}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    try {
-      const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
-        Name: name,
-        Type: type as ParameterType,
-        Value: value,
-        Description: properties['Description'] as string | undefined,
-        Overwrite: false,
-      };
-      if (properties['AllowedPattern']) {
-        putParams.AllowedPattern = properties['AllowedPattern'] as string;
-      }
-      if (properties['Tier']) {
-        putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
-      }
-      const policies = ssmPoliciesParameter(properties['Policies']);
-      if (policies !== undefined) putParams.Policies = policies;
-      if (properties['DataType']) {
-        putParams.DataType = properties['DataType'] as string;
-      }
-
-      // go-to-k/cdkd#4971: the tags ride on `PutParameter` itself, as
-      // CloudFormation sends them, so an SCP requiring `aws:RequestTag/...` on
-      // `ssm:PutParameter` sees them. `AWS::SSM::Parameter.Tags` is a key->value
-      // MAP (not the {Key,Value}[] list most CFn resources use); `ssmTags` was
-      // normalized from either form, and checked, before any call. A tagged
-      // `PutParameter` needs `ssm:AddTagsToResource` (measured), the permission
-      // the follow-up `AddTagsToResource` already needed. AWS refuses `Tags`
-      // with `Overwrite: true` ("tags and overwrite can't be used together",
-      // measured); this create sends `Overwrite: false`, which it accepts, and
-      // `update()` keeps tagging through `AddTagsToResource`.
-      if (ssmTags.length > 0) putParams.Tags = ssmTags;
-
-      await (await this.getCreateClient()).send(new PutParameterCommand(putParams));
-
-      debug(
-        `Successfully created SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(name))}`
-      );
-
-      // Nothing after `PutParameter` can fail the create (issue #1824): a
-      // failure building the ARN must not fail -- or clean up -- a parameter
-      // that was created over a missing attribute. `buildParameterArn` never
-      // throws (enforced in its own body, not assumed here).
-      const arn = await this.buildParameterArn(name, mask);
-
-      return {
-        physicalId: name,
-        attributes: {
-          Type: type as ParameterType,
-          Value: value,
-          // Spread CONDITIONALLY rather than writing `undefined`: a
-          // present-but-undefined key survives `structuredClone` into the state
-          // record, so every `Object.keys` consumer sees a key carrying nothing.
-          ...(arn !== undefined && { Arn: arn }),
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // Issue #2176: `PutParameter` quotes the offending `Name` / `Value` back
-      // on an `AllowedPattern` rejection, and this message reaches the durable
-      // `deployments/*.jsonl`. An AWS-authored failure is therefore named by
-      // its class only (go-to-k/cdkd#2319); its text reaches only the masked
-      // `debug` line, where `maskSecretsInText`'s SUBSTRING arm and its
-      // `MIN_NEEDLE_LENGTH` (4) floor apply -- a 1-3 character secret is NOT
-      // covered there. A cdkd-authored message is masked RAW, before
-      // interpolation, so the engine is not the only boundary. The `cause`
-      // stays unmasked and the wrap is stamped (`wrapCaughtError`).
-      throw this.wrapCaughtError(
-        mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create SSM parameter ${displaySafe(logicalId)}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update an SSM parameter
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -530,542 +387,41 @@ export class SSMParameterProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Issue #2176 -- see `create()` for why this is one sink rather than a mask
-    // per call site.
-    const mask = maskerOrIdentity(context?.maskSecrets);
-    const debug = (message: string): void => this.logger.debug(mask(message));
-    debug(`Updating SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(physicalId))}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    SSMParameterProvider.desiredSsmTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    const type = (properties['Type'] as string | undefined) || 'String';
-    const value = properties['Value'] as string | undefined;
-
-    if (!value) {
-      throw new ProvisioningError(
-        `Value is required for SSM parameter ${displaySafe(logicalId)}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    try {
-      const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
-        Name: physicalId,
-        Type: type as ParameterType,
-        Value: value,
-        Overwrite: true,
-      };
-      // `!== undefined` (not truthy) so empty Description / AllowedPattern
-      // ('') from `readCurrentState`'s placeholders reaches `PutParameterCommand`
-      // on the `cdkd drift --revert` round-trip. A truthy gate would silently
-      // drop the empty string and leave the AWS-side value untouched — drift
-      // would report `✓ reverted` but the next run re-detects the same drift.
-      if (properties['Description'] !== undefined) {
-        putParams.Description = properties['Description'] as string;
-      }
-      if (properties['AllowedPattern'] !== undefined) {
-        putParams.AllowedPattern = properties['AllowedPattern'] as string;
-      }
-      if (properties['Tier'] !== undefined) {
-        putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
-      }
-      const policies = ssmPoliciesParameter(properties['Policies']);
-      if (policies !== undefined) {
-        putParams.Policies = policies;
-      } else if (
-        context?.desiredFromAwsReadback === true &&
-        !['[]', undefined].includes(ssmPoliciesParameter(previousProperties['Policies'])) &&
-        context.declaredEmptyProperties?.has('Policies') === true
-      ) {
-        // go-to-k/cdkd#4884: PutParameter keeps a parameter's policies until it
-        // is sent new ones or an empty one, so omitting `Policies` would leave
-        // an out-of-band policy in place while `cdkd drift --revert` reports
-        // success. The AWS-documented removal is the empty policy `[{}]`. A
-        // deploy keeps omitting it: CloudFormation's update passes an absent
-        // template `Policies` through as none, which keeps the policies.
-        // Only when the TEMPLATE declares no policies too: `readCurrentState`
-        // also writes the `[]` placeholder when DescribeParameters fails, so a
-        // baseline captured that way must not delete a policy the template
-        // declares.
-        putParams.Policies = SSM_CLEAR_POLICIES;
-      }
-      if (properties['DataType'] !== undefined) {
-        putParams.DataType = properties['DataType'] as string;
-      }
-
-      await this.ssmClient.send(new PutParameterCommand(putParams));
-
-      // Update Tags if changed. AWS::SSM::Parameter.Tags is a key->value MAP;
-      // both sides are normalized to the CFn list and diffed through
-      // `planTagDiff` (go-to-k/cdkd#3994): only removed keys are untagged and
-      // only new or changed tags are added, and a recorded Tags cdkd cannot
-      // read untags nothing. `aws:` keys are reserved and never sent.
-      const plan = planTagDiff(
-        tagMapAsList(previousProperties['Tags']),
-        tagMapAsList(properties['Tags'])
-      );
-      const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-      if (tagWarning !== undefined) {
-        this.logger.warn(mask(tagWarning));
-      }
-      const tagsToRemove = plan.remove.filter((k) => !k.startsWith('aws:'));
-      const tagsToAdd = SSMParameterProvider.userTags(
-        [...plan.set].map(([Key, Value]) => ({ Key, Value }))
-      );
-      if (tagsToRemove.length > 0) {
-        await this.ssmClient.send(
-          new RemoveTagsFromResourceCommand({
-            ResourceType: 'Parameter',
-            ResourceId: physicalId,
-            TagKeys: tagsToRemove,
-          })
-        );
-      }
-      if (tagsToAdd.length > 0) {
-        await this.ssmClient.send(
-          new AddTagsToResourceCommand({
-            ResourceType: 'Parameter',
-            ResourceId: physicalId,
-            Tags: tagsToAdd,
-          })
-        );
-      }
-      if (tagsToRemove.length > 0 || tagsToAdd.length > 0) {
-        debug(`Updated tags for SSM parameter ${displaySafe(mask(physicalId))}`);
-      }
-
-      debug(`Successfully updated SSM parameter ${displaySafe(logicalId)}`);
-
-      // Re-report `Arn` here even though an in-place update cannot change it
-      // (issue #1824): an update result's `attributes` REPLACE the state
-      // record's rather than merging into it, so returning only Type / Value
-      // would WIPE the ARN recorded at create time and re-break the `Fn::GetAtt`
-      // the create-side fix repairs. Construction is what makes re-reporting it
-      // cost no AWS call — see `buildParameterArn`'s source-decision note, which
-      // also records why the DEGRADED case here still returns the partial map
-      // (dropping `Arn`, a loud failure) rather than no attributes at all
-      // (keeping a superseded `Value`, a silent wrong answer).
-      const arn = await this.buildParameterArn(physicalId, mask);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          Type: type as ParameterType,
-          Value: value,
-          ...(arn !== undefined && { Arn: arn }),
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // Issue #2176 / go-to-k/cdkd#2319 -- class-only or masked, as in `create()`.
-      throw this.wrapCaughtError(
-        mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update SSM parameter ${displaySafe(logicalId)}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
   }
 
-  /**
-   * Delete an SSM parameter
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(
-      `Deleting SSM parameter ${displaySafe(logicalId)}: ${displaySafe(physicalId)}`
-    );
-
-    try {
-      await this.ssmClient.send(
-        new DeleteParameterCommand({
-          Name: physicalId,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted SSM parameter ${displaySafe(logicalId)}`);
-    } catch (error) {
-      if (error instanceof ParameterNotFound) {
-        const clientRegion = await this.ssmClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`Parameter ${displaySafe(physicalId)} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete SSM parameter ${displaySafe(logicalId)}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, and the delete classifiers
-      // read `NotFound` in a message as "already deleted": only the typed
-      // `ParameterNotFound` above means this parameter is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Read the AWS-current SSM parameter configuration in CFn-property shape.
-   *
-   * Issues `GetParameter` (with `WithDecryption: false` so SecureString
-   * values stay encrypted on the wire) for `Type` / `Value` / `DataType`,
-   * then `DescribeParameters` filtered on the parameter name to fetch
-   * metadata (`Description`, `AllowedPattern`, `Tier`) that `GetParameter`
-   * does not return.
-   *
-   * `Name` is set to the physical id. `Tags` is surfaced via a follow-up
-   * `ListTagsForResource(ResourceType=Parameter)` call, with CDK's `aws:*`
-   * auto-tags filtered out.
-   *
-   * `Policies` is surfaced from the same `DescribeParameters` response.
-   * AWS returns `Parameters[0].Policies` as
-   * `[{PolicyText, PolicyType, PolicyStatus}]`; cdkd state holds a JSON
-   * string of the user-templated policy array (CFn's documented shape).
-   * To compare cleanly we parse each `PolicyText` (itself JSON) into
-   * objects, drop the AWS-managed `PolicyStatus` (Pending / InSync /
-   * Expired), and emit the parsed object array. On the v3
-   * `observedProperties` baseline this matches `observedProperties` (which
-   * stored our parsed output at deploy time) exactly. On the v2 fallback
-   * baseline (state.properties = JSON string) the comparator reports a
-   * one-time drift on first run; users resolve via
-   * `cdkd state refresh-observed`. Always-emit `[]` placeholder for
-   * console-side ADD detection.
-   *
-   * **Note**: For `SecureString` parameters, AWS returns the encrypted
-   * blob in `Value` (we pass `WithDecryption: false`). cdkd state usually
-   * holds the plaintext value the user typed in their CDK app, so a
-   * SecureString parameter will surface as `Value` drift on every run.
-   * That's the correct conservative behavior — surfacing the discrepancy
-   * is more useful than silently masking it.
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the parameter is gone (`ParameterNotFound`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string
+    logicalId: string,
+    resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let getResp: {
-      Parameter?: { Type?: string; Value?: string; DataType?: string };
-    };
-    try {
-      getResp = (await this.ssmClient.send(
-        new GetParameterCommand({ Name: physicalId, WithDecryption: false })
-      )) as unknown as typeof getResp;
-    } catch (err) {
-      if (err instanceof ParameterNotFound) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    const param = getResp.Parameter;
-    if (!param) return undefined;
-
-    const result: Record<string, unknown> = { Name: physicalId };
-    if (param.Type !== undefined) result['Type'] = param.Type;
-    if (param.Value !== undefined) result['Value'] = param.Value;
-    if (param.DataType !== undefined) result['DataType'] = param.DataType;
-
-    // Fetch metadata via DescribeParameters filtered on the name. Best-effort:
-    // a missing-permission error here should not fail the snapshot — we just
-    // omit the metadata keys.
-    let policiesEmitted = false;
-    try {
-      const desc = await this.ssmClient.send(
-        new DescribeParametersCommand({
-          ParameterFilters: [{ Key: 'Name', Values: [physicalId] }],
-        })
-      );
-      const meta = desc.Parameters?.[0];
-      result['Description'] = meta?.Description ?? '';
-      result['AllowedPattern'] = meta?.AllowedPattern ?? '';
-      if (meta?.Tier !== undefined) {
-        result['Tier'] = meta.Tier;
-      }
-
-      // Policies — AWS returns [{PolicyText, PolicyType, PolicyStatus}];
-      // we parse PolicyText (JSON) and emit the parsed objects. PolicyStatus
-      // is AWS-managed (Pending / InSync / Expired) and intentionally
-      // dropped — it's not part of the user's templated input.
-      const parsedPolicies: unknown[] = [];
-      for (const p of meta?.Policies ?? []) {
-        if (!p.PolicyText) continue;
-        try {
-          parsedPolicies.push(JSON.parse(p.PolicyText));
-        } catch {
-          parsedPolicies.push(p.PolicyText);
-        }
-      }
-      result['Policies'] = parsedPolicies;
-      policiesEmitted = true;
-    } catch {
-      // Ignore — Type / Value / DataType already captured above.
-    }
-    // Always-emit guard: if DescribeParameters failed entirely, surface
-    // an empty Policies placeholder so a console-side ADD on a previously-
-    // un-policy'd parameter still surfaces as drift on the v3
-    // observedProperties baseline. The placeholder cannot be told from a read
-    // of no policies, so `update` clears live policies on a revert only when
-    // the template declares none too (go-to-k/cdkd#4884).
-    if (!policiesEmitted) result['Policies'] = [];
-
-    // Tags via ListTagsForResource (best-effort; missing tag permission is
-    // tolerated by simply omitting the key).
-    try {
-      const tagsResp = await this.ssmClient.send(
-        new ListTagsForResourceCommand({
-          ResourceType: 'Parameter',
-          ResourceId: physicalId,
-        })
-      );
-      // AWS::SSM::Parameter.Tags is a key->value MAP in CFn (cdkd stores the
-      // template's map shape in state), so emit the readback as a map too — an
-      // array shape here would false-positive drift on every clean run for a
-      // tagged parameter (state map vs observed list never compare equal).
-      const tagArr = normalizeAwsTagsToCfn(tagsResp.TagList);
-      result['Tags'] = Object.fromEntries(tagArr.map((t) => [t.Key, t.Value]));
-    } catch {
-      // Ignore — tag drift is best-effort.
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, logicalId, resourceType);
   }
 
-  /**
-   * Refuse a physical id SSM's WRITE APIs could never accept (issue #1824
-   * review round 3).
-   *
-   * An SSM parameter's physicalId must always be the parameter NAME, because
-   * that is the only thing the write APIs take. `PutParameterRequest.Name`:
-   * "You can't enter the Amazon Resource Name (ARN) for a parameter, only the
-   * parameter name itself", with a name charset of `a-zA-Z0-9_.-` plus `/` as
-   * the hierarchy separator; `DeleteParameterRequest.Name` repeats the ARN
-   * prohibition verbatim. A COLON therefore cannot appear in any writable name,
-   * which is the single predicate used here — it covers both shapes
-   * `GetParameter` additionally accepts and this method has to stop:
-   *
-   *  - an ARN (`arn:aws:ssm:us-east-1:111122223333:parameter/foo`), and
-   *  - a version / label SELECTOR (`GetParameterRequest.Name`: "To query by
-   *    parameter label, use `"Name": "name:label"`. To query by parameter
-   *    version, use `"Name": "name:version"`").
-   *
-   * Both sail through this provider's existence check, so before this guard the
-   * value was RECORDED as the physicalId and the damage landed later and
-   * elsewhere: `cdkd deploy` failing at `PutParameter({Name: physicalId})` with
-   * a `ValidationException` after a `Value` change, and `cdkd destroy` failing
-   * identically at `DeleteParameter`. This is where the bad value ENTERS
-   * (`--resource` / `Properties.Name`), so it is where it is stopped.
-   *
-   * REFUSED, NOT NORMALIZED to the name, and the ARN grammar is the reason. The
-   * mapping back is genuinely ambiguous rather than merely awkward:
-   *
-   *  - The leading `/` is NOT recoverable. `arn:…:parameter/foo` is the ARN of
-   *    BOTH the simple name `foo` and the one-level hierarchical name `/foo`,
-   *    since the name's leading slash IS the separator — `aws-cdk-lib`'s
-   *    `arnForParameterName` renders the two to the identical string, and that
-   *    is precisely why CDK needs an explicit `simpleName` flag whenever the
-   *    name is a token. Guessing wrong writes a physicalId naming a DIFFERENT
-   *    parameter, i.e. converts a loud failure into a silent wrong-resource
-   *    write.
-   *  - A parameter SHARED from another account has no name form at all
-   *    ("For parameters shared with you from another account, you must use the
-   *    full ARN"), so for that shape there is nothing to normalize TO.
-   *
-   * A refusal is a loud, fixable error, and the message names the exact command
-   * that prints the name to pass instead.
-   */
-  private refuseUnwritableParameterId(input: ResourceImportInput, explicit: string): void {
-    if (!explicit.includes(':')) return;
-
-    const isArn = explicit.startsWith('arn:');
-    const shape = isArn ? 'an ARN' : 'a version / label selector';
-    // The `--resource` fragment is a span the operator PASTES, so it takes the
-    // pasteable rule (go-to-k/cdkd#3436, the checkbox the #3269 lane left for
-    // it), not the prose one: the logical id is template-controlled, and
-    // `--resource` splits its value on the FIRST `=`, so an id carrying `=`
-    // retargets the flag while one carrying `'` or a space reshapes the pasted
-    // line. It is named only when `isPasteableIdent` admits it -- the same
-    // predicate `export.ts`'s `importRepairCommand` applies to the same flag --
-    // and holed otherwise; `shellQuote` is NOT the alternative, since a quoted
-    // `'a=b'` still reaches Commander as `a=b` and still splits. The
-    // placeholder is `commandHole`'s quoted form: bare, `<parameterName>` was
-    // two redirections the moment the sentence after it was pasted with it.
-    const resourceArg = `${remedyLogicalId(input.logicalId)}=` + commandHole('parameterName');
-    const remedy =
-      input.knownPhysicalId === explicit
-        ? `pass the parameter NAME instead: --resource ${resourceArg}`
-        : `set Properties.Name to the parameter NAME rather than ${shape}`;
-    // The ARN case is the one with a derivation a reader may expect cdkd to
-    // perform, so only it carries the why-not note.
-    const whyNotDerived = isArn
-      ? ' cdkd deliberately does NOT derive the name from the ARN: the leading "/" is not ' +
-        'recoverable (arn:...:parameter/foo is the ARN of BOTH the simple name "foo" and the ' +
-        'hierarchical name "/foo"), and a parameter shared from another account has no name ' +
-        'form at all — so a derived name could silently address a DIFFERENT parameter.'
-      : '';
-
-    // The pasteable half goes through the shared sanitize / shell-quote /
-    // SUPPRESS (issue #3136, the #2669 shape). `explicit` is the `--resource`
-    // override or the template's `Properties.Name`, so it is USER-controlled
-    // text on its way into a command this message tells the operator to run.
-    // A value sanitizing to something DIFFERENT gets no command at all: it
-    // would read a different parameter, which is worse than naming none.
-    //
-    // NO masker is threaded, and that is a fact about the PATH rather than an
-    // omission: `import()` takes a `ResourceImportInput`, which carries no
-    // `maskSecrets`, and `cdkd import` resolves no dynamic references, so
-    // there is no secret bag for one to be built from. For the same reason
-    // this message does NOT reach `deployments/{runId}.jsonl` — only
-    // deploy / destroy / rollback start the run recorder, and `import` is the
-    // only caller of `provider.import` (security review of issue #3136
-    // corrected an earlier claim here that it did).
-    // A block that displays an untrusted value carries no pasteable command
-    // (go-to-k/cdkd#3950's S1 rule), and this block carries two: the read
-    // command below and the `--resource` remedy. So `explicit` is shown, and
-    // named in the read command, only when it is plain in `displayIdent`'s
-    // sense (every character literal inside single quotes, no whitespace,
-    // tested first so a value that IS `displayIdent`'s own cut output is
-    // refused without resting on the marker's tail digest); otherwise it is
-    // described and the console wording replaces the command. The logical id
-    // follows the `--resource` fragment's own predicate, `isPasteableIdent`,
-    // so it is either named in both or in neither. Displayed, a JSON-bounded `$( )`
-    // value ran when the sentence was pasted into zsh, which the `(` around
-    // it does not stop.
-    const explicitPlain =
-      !/\s/.test(explicit) &&
-      displayIdent(explicit, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS }) === explicit;
-    const readCommand = explicitPlain
-      ? renderDisableCommand({
-          before: 'aws ssm get-parameter --name',
-          identifier: explicit,
-          after: '--query Parameter.Name --output text',
-        })
-      : '';
-    const subject = isPasteableIdent(input.logicalId)
-      ? `SSM parameter ${input.logicalId}`
-      : 'an SSM parameter whose logical id is not a plain identifier';
-    const shown = explicitPlain ? explicit : 'not shown: it is not a plain identifier';
-    const howToRead = readCommand
-      ? ` Read the name AWS holds with: ${readCommand}`
-      : // The "via the console" wording the sibling sites use (`UNNAMEABLE_ID_CLAUSE`),
-        // with its reasons spelled out: this value is user-supplied, so any of
-        // them can fire here (go-to-k/cdkd#4238).
-        ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
-        'safely on a command line (sanitizing would change it, so a command would read a ' +
-        'different parameter, or it holds a character or prefix a pasted shell line, or the ' +
-        'AWS CLI itself, would act on).';
-    throw new ProvisioningError(
-      // The logical id and `explicit` are shown only when plain and described
-      // otherwise (see `subject` / `shown` above). Neither ever sits inside a
-      // hand-written `'...'` (go-to-k/cdkd#3950): a `'` in the value closed
-      // that quote and left the rest of a pasted clause as bare shell. A plain
-      // ARN is shown whole, at the ARN ceiling, so a legitimate one is never
-      // cut.
-      `Cannot adopt ${subject} from ${shape} (${shown}): cdkd records ` +
-        `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
-        `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
-        `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +
-        `${remedy}.${whyNotDerived}${howToRead}`,
-      input.resourceType,
-      input.logicalId
-    );
+  refuseUnwritableParameterId(input: ResourceImportInput, explicit: string): void {
+    return refuseUnwritableParameterId.call(this, input, explicit);
   }
 
-  /**
-   * Adopt an existing SSM parameter into cdkd state.
-   *
-   * SSM physical IDs ARE the parameter names (`/foo/bar`). The CDK template
-   * usually carries `Properties.Name` explicitly, so the explicit-name path
-   * covers most cases.
-   *
-   * Lookup order:
-   *  1. `--resource` override or `Properties.Name` → refuse it outright when it
-   *     is not a writable NAME (see {@link refuseUnwritableParameterId} — note
-   *     `GetParameter` accepts an ARN and a `name:version` selector while every
-   *     write API rejects both), else verify via `GetParameter`.
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'Name');
-    if (explicit) {
-      this.refuseUnwritableParameterId(input, explicit);
-      try {
-        const resp = await this.ssmClient.send(new GetParameterCommand({ Name: explicit }));
-        // Record `Arn` on the import path too (issue #1824): the state record an
-        // import writes is what a later `Fn::GetAtt` reads, so leaving it empty
-        // left an ADOPTED parameter hitting the same resolver shape-guard
-        // hard-fail the create-side fix repairs. Unlike create / update this
-        // needs no construction and no extra call — the existence-verification
-        // `GetParameter` above ALREADY reports the authoritative ARN, so prefer
-        // the value AWS holds over deriving one.
-        const arn = resp.Parameter?.ARN;
-        // Issue #3627: `Type` / `Value` too, the rest of the map `create()`
-        // records; the resolver has no arm for them, so after an import they
-        // resolved to the parameter NAME.
-        //
-        // `Value` ONLY when the template declares it as a plain literal.
-        // `GetParameter` returns the PLAINTEXT a `{{resolve:...}}` dynamic
-        // reference or a `Ref` to a NoEcho parameter put there, and nothing on
-        // these paths holds a needle for it: the #1852 heal re-reads through
-        // this method for an UNCHANGED record, whose scrub has no needles and
-        // relies on the read itself returning nothing sensitive, and the import
-        // scan's needles are only what THIS run resolved (a NoEcho parameter's
-        // `Default`, a secret's current version). A literal cannot hide a
-        // secret, so recording it is the `create()` parity. The heal passes the
-        // record's already-redacted properties and import passes the
-        // Ref-substituted template, and both keep a reference visible as either
-        // an object or `{{resolve:` text. (`WithDecryption` stays off, so a
-        // `SecureString` adopted via `--resource` would yield ciphertext, never
-        // plaintext; CloudFormation cannot create one.)
-        const declared = input.properties?.['Value'];
-        const literalValue = typeof declared === 'string' && !declared.includes('{{resolve:');
-        return {
-          physicalId: explicit,
-          attributes: definedAttributes({
-            Type: resp.Parameter?.Type,
-            ...(literalValue && { Value: resp.Parameter?.Value }),
-            Arn: arn,
-          }),
-        };
-      } catch (err) {
-        if (err instanceof ParameterNotFound) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a
-    // parameter reaching here needs an explicit `--resource` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 }
 

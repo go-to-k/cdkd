@@ -70,7 +70,7 @@ function registeredTypeFiles(): Map<string, string> {
 /**
  * A `delete()` gating on the flag. The call-site spelling, not the bare
  * identifier, so a mention in a comment does not count.
- * `nested-stack-provider.ts` forwards the flag to the child destroy
+ * `nested-stack/delete.ts` forwards the flag to the child destroy
  * (`deleteContext?.removeProtection`) without flipping anything, and does not
  * match.
  */

@@ -397,7 +397,7 @@ describe('real repo coverage (regression floor)', () => {
     // Measured — neutralizing BOTH the create and update spreads leaves this test
     // and `--check` green off the `import()` occurrences alone, and only removing
     // all three reds them. So do NOT read this as "dropping the caching in
-    // rds/ / ssm-parameter-provider.ts reds this test"; the per-path
+    // rds/ / ssm-parameter/ reds this test"; the per-path
     // discrimination lives in
     // `tests/unit/provisioning/uncached-arn-attributes-issue-1824.test.ts`, which
     // drives each path's real result through the resolver, and this fence's job
