@@ -63,7 +63,7 @@ function armRestartingRandom(): void {
 
 // A secret member REMOVED from the template is not reset: UpdateSecret has
 // merge semantics, and CloudFormation keeps the live value on removal
-// (secretsmanager-secret-provider.ts update(); go-to-k/cdkd#5004, #1160).
+// (secretsmanager-secret/update.ts update(); go-to-k/cdkd#5004, #1160).
 const KEPT_ON_REMOVAL = Object.fromEntries(
   ['Description', 'KmsKeyId', 'Type'].map((k) => [
     `update-remove:${k}`,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * A fixture whose CDK app puts SECRET MATERIAL into state must sweep S3 object
@@ -556,6 +557,25 @@ const PROVIDER_SRC = join(
   '../../../src/provisioning/providers/secretsmanager-secret-provider.ts'
 );
 
+/**
+ * The provider is split across the class file and its companion directory
+ * `secretsmanager-secret/` (go-to-k/cdkd#5835): the moved bodies live there
+ * and the class keeps one-line `return f.call(this, ...)` delegators. The
+ * premises below are judged over the WHOLE family -- every file
+ * `companionFiles` finds, recursively -- one file at a time (never a
+ * concatenation, so no check depends on file order). The companion set is
+ * pinned by name, so a new file is a deliberate edit here rather than a file
+ * the fence reads without anyone checking the premises against it.
+ */
+const PROVIDER_COMPANIONS = [
+  'create.ts',
+  'delete.ts',
+  'read-state.ts',
+  'secret-value.ts',
+  'shared.ts',
+  'update.ts',
+];
+
 describe('shapes deliberately NOT treated as seeding, and the premises behind that', () => {
   const fixtures = readFixtures();
 
@@ -584,25 +604,60 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
    * Scoped to those two methods rather than the whole file: they are the only
    * ones that can hand a freshly minted value back to the engine.
    */
-  function methodBody(src: string, name: string): string {
+  function methodBodies(src: string, name: string): string[] {
     // `async` and `private` are both optional so a SYNC private helper can be
     // read too (issue #3048 needs `retainPreviousGenerateBlock`). The existing
     // `async create(` / `async update(` matches are unaffected.
     // Anchored to a DECLARATION line (`^\s*` + the `m` flag): unanchored, the
     // optional prefixes let a bare `create(` elsewhere in the file win, and
     // the fence then reads the wrong body and passes vacuously (measured).
-    const m = new RegExp(`^\\s*(?:private\\s+)?(?:async\\s+)?${name}\\(`, 'm').exec(src);
-    expect(m, `${name}() not found in the provider — this fence reads a shape that has changed`).not.toBeNull();
-    let i = src.indexOf('{', m!.index);
-    let depth = 0;
-    for (let j = i; j < src.length; j++) {
-      if (src[j] === '{') depth += 1;
-      else if (src[j] === '}') {
-        depth -= 1;
-        if (depth === 0) return src.slice(i, j + 1);
+    // `export function name(` is the companion-file spelling of a moved body
+    // (go-to-k/cdkd#5835); a class method keeps the method spelling.
+    const re = new RegExp(
+      `^\\s*(?:export\\s+)?(?:private\\s+)?(?:async\\s+)?(?:function\\s+)?${name}(?:<[^>(]*>)?\\(`,
+      'gm'
+    );
+    const out: string[] = [];
+    for (const m of src.matchAll(re)) {
+      const i = src.indexOf('{', m.index);
+      let depth = 0;
+      for (let j = i; j < src.length; j++) {
+        if (src[j] === '{') depth += 1;
+        else if (src[j] === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            out.push(src.slice(i, j + 1));
+            break;
+          }
+        }
       }
+      if (depth !== 0) throw new Error(`unbalanced braces in ${name}()`);
     }
-    throw new Error(`unbalanced braces in ${name}()`);
+    return out;
+  }
+
+  /**
+   * The ONE body of `name` across the provider family (see
+   * {@link PROVIDER_COMPANIONS}). The class keeps a delegator for every moved
+   * body, `{ return name.call(this, ...); }`, which is skipped -- but only in
+   * exactly that spelling and only when it hands off to the SAME name, so a
+   * delegator that grew logic of its own counts as a second body and fails
+   * the exactly-one expectation instead of being read past.
+   */
+  function familyBody(files: ReadonlyArray<{ rel: string; text: string }>, name: string): string {
+    const delegator = new RegExp(
+      `^\\{\\s*return\\s+\\(?${name}(?:<[^>(]*>)?\\)?\\.call\\(\\s*this\\b[^;{}]*\\);\\s*\\}$`
+    );
+    const bodies = files.flatMap((f) =>
+      methodBodies(f.text, name)
+        .filter((b) => !delegator.test(b))
+        .map((b) => ({ rel: f.rel, b }))
+    );
+    expect(
+      bodies.map((x) => x.rel),
+      `${name}() must have exactly one body in the provider family — this fence reads a shape that has changed`
+    ).toHaveLength(1);
+    return bodies[0]!.b;
   }
 
   /** Every `return { ... }` object literal in a method body, brace-matched. */
@@ -664,10 +719,32 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // a field seven other providers already populate, which the engine records
     // VERBATIM in place of the desired bag. A fence on one spelling of a write
     // is not a fence on the write.
-    const src = readFileSync(PROVIDER_SRC, 'utf8');
+    // The provider family, one entry per file (see PROVIDER_COMPANIONS): the
+    // raw source, and the comment-stripped code every check below reads.
     // Comment-stripped, so the two JSDoc mentions of GetSecretValue (both
     // saying it is never called) do not have to be spelled around.
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const companions = companionFiles(PROVIDER_SRC);
+    expect(
+      companions.map((f) => relative(join(dirname(PROVIDER_SRC), 'secretsmanager-secret'), f)),
+      'the provider gained or lost a companion file — add it to PROVIDER_COMPANIONS and check the ' +
+        'premises below against it'
+    ).toEqual(PROVIDER_COMPANIONS);
+    const family = [PROVIDER_SRC, ...companions].map((path) => {
+      const src = readFileSync(path, 'utf8');
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+      return { path, rel: relative(dirname(PROVIDER_SRC), path), src, code };
+    });
+    // Per-file floor: every file holds real code, so no check below passes by
+    // reading an empty string.
+    expect(
+      family.filter((f) => f.code.trim().length < 1000).map((f) => f.rel),
+      'a provider-family file reads as (nearly) empty — the fence would attest to nothing there'
+    ).toEqual([]);
+    const providerFile = family[0]!;
+    const codeFiles = family.map((f) => ({ rel: f.rel, text: f.code }));
+    const srcFiles = family.map((f) => ({ rel: f.rel, text: f.src }));
+    const countAll = (re: RegExp): number =>
+      family.reduce((n, f) => n + (f.code.match(re)?.length ?? 0), 0);
 
     // 1. The value is never read back. GetSecretValue is the ONLY API that
     //    returns it, so the provider must not REACH it -- by any construction.
@@ -676,9 +753,9 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     //    parenthesised `new (GetSecretValueCommand)(...)`. With comments gone,
     //    a bare mention is strictly stronger and costs nothing.
     expect(
-      /GetSecretValue/i.test(code),
+      family.filter((f) => /GetSecretValue/i.test(f.code)).map((f) => f.rel),
       'the secret provider now reaches GetSecretValue — the value can reach state; re-open #2212'
-    ).toBe(false);
+    ).toEqual([]);
 
     // 2. WHAT create()/update() RETURN is limited to fields that cannot carry a
     //    secret. Anything else -- `effectiveProperties`, `properties`, a new
@@ -720,13 +797,15 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'effectiveProperties',
     ]);
 
+    // Read off update()'s own body: the construction must be the one update()
+    // returns, not a match anywhere in the family.
     expect(
-      EFFECTIVE_PROPS_RE.test(code),
+      EFFECTIVE_PROPS_RE.test(familyBody(codeFiles, 'update')),
       'effectiveProperties is no longer built by retainPreviousGenerateBlock — it may now be able ' +
         'to carry the generated secret; re-open #2212 rather than editing this expectation'
     ).toBe(true);
 
-    const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
+    const retainBody = familyBody(codeFiles, 'retainPreviousGenerateBlock');
     // String literals are prose; a template literal keeps the CODE in its
     // `${...}` holes. Used by every arm below that reads a NAME, so a future
     // warning saying "fix this template" is not read as `this`.
@@ -781,8 +860,13 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // records -- lives in
     // `tests/unit/provisioning/secretsmanager-secret-provider-update-value-source.test.ts`
     // ("runtime half"), and is the check no spelling can dodge.
+    // Not `private` since the split (go-to-k/cdkd#5835): the moved bodies in
+    // the companion files read it through `this`. The `ConsoleLogger`
+    // annotation is a type only; the initializer is what is pinned.
     expect(
-      /private logger = getLogger\(\)\.child\('SecretsManagerSecretProvider'\);/.test(src),
+      /^ {2}logger: ConsoleLogger = getLogger\(\)\.child\('SecretsManagerSecretProvider'\);$/m.test(
+        providerFile.src
+      ),
       'the logger field is no longer the verbatim getLogger().child(...) — a custom logger can ' +
         'return a stash through the one call the helper may make; re-open #2212'
     ).toBe(true);
@@ -861,37 +945,108 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // records the same object it hands the provider), or reaches `this` by
     // any spelling other than a dotted member (`this!`, `<any>this`,
     // `(this)`, `this['x']`, `this satisfies`, `= this`) reds here.
-    const codeNoStrings = stripStrings(code);
-    for (const escape of [
-      /^(?:export\s+)?(?:const|let|var)\s/m,
-      /\bstatic\s/,
-      /\bglobalThis\b/,
-      /\bReflect\./,
-      /Object\.(?:assign|defineProperty|defineProperties)\(/,
-      /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
-      // A FUNCTION OBJECT is a stash too (`generateMemberRefusal.cache = v`,
-      // measured GREEN under every arm above -- the write sits at depth > 0
-      // and `.cache` is a member access). This refuses the write on every
-      // VALUE binding the module holds: the three free functions, the class,
-      // and every import (the SDK command classes included). RECORDED BOUND:
-      // a parenthesised cast, `(generateMemberRefusal as any).cache = v`,
-      // puts a paren between the name and the member and walks past; the
-      // runtime half catches the READ of any such stash (measured, round 3),
-      // which is the closer -- this arm is the cheap write-side half.
-      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException|createMaskedLogSinks|isSecretDerivedValue|withDerivedNameMasks|MASK_WALK_DEPTH_CAP_MARKER)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
-      /\bthis\b(?!\.)/,
-    ]) {
-      expect(
-        escape.exec(codeNoStrings)?.[0],
-        `the secret provider now contains \`${escape.source}\` — a value can travel outside the ` +
-          `method it was minted in; re-open #2212`
-      ).toBeUndefined();
+    // The split's two spellings of `this` that are not a dotted member
+    // (go-to-k/cdkd#5835), removed before the `this` arm below reads the code,
+    // and each only in its exact shape: the `this:` parameter that opens a
+    // moved body's signature, and the delegator hand-off `return f.call(this,`
+    // -- ONLY when `f` is a function the family itself declares, so handing
+    // the instance to any other module's function still reds.
+    const familyFunctions = new Set(
+      family.flatMap((f) =>
+        [...f.code.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map(
+          (m) => m[1]!
+        )
+      )
+    );
+    const withoutSplitThis = (text: string): string =>
+      text
+        .replace(
+          /(\bfunction\s+[A-Za-z_$][\w$]*(?:<[^>(]*>)?\()\s*this:\s*SecretsManagerSecretProvider\s*,/g,
+          '$1'
+        )
+        .replace(
+          /(\breturn\s+\(?([A-Za-z_$][\w$]*)(?:<[^>(]*>)?\)?\.call\()\s*this\s*,/g,
+          (whole: string, head: string, fn: string) => (familyFunctions.has(fn) ? head : whole)
+        );
+    // A FUNCTION OBJECT is a stash too (`generateMemberRefusal.cache = v`,
+    // measured GREEN under every arm below -- the write sits at depth > 0 and
+    // `.cache` is a member access). That arm refuses the write on every VALUE
+    // binding the family holds: every function it declares, the class, and
+    // every non-type import (the SDK command classes included). DERIVED from
+    // the source since the split (go-to-k/cdkd#5835) rather than listed, so a
+    // new import or a new moved function is covered without an edit here; the
+    // floor below keeps the derivation from silently reading nothing.
+    // RECORDED BOUND: a parenthesised cast, `(generateMemberRefusal as
+    // any).cache = v`, puts a paren between the name and the member and walks
+    // past; the runtime half catches the READ of any such stash (measured,
+    // round 3), which is the closer -- this arm is the cheap write-side half.
+    const valueBindings = new Set<string>([...familyFunctions, 'SecretsManagerSecretProvider']);
+    for (const f of family) {
+      for (const m of f.code.matchAll(/^import\s+(?!type\b)\{([^}]*)\}\s*from\s/gm)) {
+        for (const spec of m[1]!.split(',')) {
+          const s = spec.trim();
+          if (s === '' || /^type\s/.test(s)) continue;
+          valueBindings.add(s.split(/\s+as\s+/).pop()!.trim());
+        }
+      }
     }
-    // And the module's TOP LEVEL is an allow-list of its own, by BRACE DEPTH
+    expect(
+      [
+        'asJson',
+        'requireSecretStringShape',
+        'generateMemberRefusal',
+        'generateCharset',
+        'randomIndex',
+        'retainPreviousGenerateBlock',
+        'requireConfigObject',
+        'getLogger',
+        'redactForState',
+        'getCurrentResourceSecrets',
+        'CreateSecretCommand',
+        'isDeepStrictEqual',
+      ].filter((n) => !valueBindings.has(n)),
+      'the value-binding derivation lost names it must see — the function-object arm guards less'
+    ).toEqual([]);
+    const functionObjectWrite = new RegExp(
+      `\\b(?:${[...valueBindings].sort().join('|')})(?:\\.\\w+|\\[[^\\]]*\\])\\s*(?:\\|\\||\\?\\?|&&|\\*\\*|<<|>>>?|[-+*\\/%&|^])?=(?!=)`
+    );
+    // Routes AROUND the instance are refused by absence, on the STRING-STRIPPED
+    // source (a future warning saying "fix this template" is prose, not a
+    // `this`): none of these tokens appears in the provider today, so a mutant
+    // that stashes the value in module or static state (`export const` too --
+    // the first cut anchored on the keyword and `export` walked past it),
+    // writes the instance reflectively, writes the minted value INTO the
+    // desired bag the helper spreads by ANY assignment operator (`||=` /
+    // `??=` were measured to land in state with no flag flip: the engine
+    // records the same object it hands the provider), or reaches `this` by
+    // any spelling other than a dotted member (`this!`, `<any>this`,
+    // `(this)`, `this['x']`, `this satisfies`, `= this`) reds here. Every
+    // file of the family is read on its own.
+    for (const f of family) {
+      const codeNoStrings = withoutSplitThis(stripStrings(f.code));
+      for (const escape of [
+        /^(?:export\s+)?(?:const|let|var)\s/m,
+        /\bstatic\s/,
+        /\bglobalThis\b/,
+        /\bReflect\./,
+        /Object\.(?:assign|defineProperty|defineProperties)\(/,
+        /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+        functionObjectWrite,
+        /\bthis\b(?!\.)/,
+      ]) {
+        expect(
+          escape.exec(codeNoStrings)?.[0],
+          `${f.rel} now contains \`${escape.source}\` — a value can travel outside the ` +
+            `method it was minted in; re-open #2212`
+        ).toBeUndefined();
+      }
+    }
+    // And each module's TOP LEVEL is an allow-list of its own, by BRACE DEPTH
     // rather than by column (the parser does not care about indentation, so
     // an indented module statement is still module state): every statement
-    // that opens at depth 0 is an import, one of the two known free
-    // functions, or the class. Anything else is module state a method can
+    // that opens at depth 0 is an import, one of the known free functions
+    // (the five helpers, and since the split the moved bodies), or the class
+    // (in the class file only). Anything else is module state a method can
     // write -- the `export const stash` the keyword arm above walked past
     // until it learned `export`. RECORDED BOUND: the walk counts brackets
     // inside REGEX LITERALS too, so a `/\{/` early and a `/\}/` late would
@@ -899,52 +1054,88 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // returns to 0 (measured, round 6) -- and it was still RED, because the
     // helper has to NAME the stash. Not hardened: round 6 also showed a stash
     // needs no module state at all, so the walk's job is the cheap half.
-    const topLevel: string[] = [];
-    let depth = 0;
-    for (const rawLine of codeNoStrings.split('\n')) {
-      const line = rawLine.trim();
-      if (depth === 0 && line !== '' && !/^[})\]]/.test(line)) topLevel.push(line);
-      for (const ch of rawLine) {
-        if (ch === '{' || ch === '(' || ch === '[') depth += 1;
-        else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
+    const KNOWN_FUNCTIONS =
+      'asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|' +
+      'create|update|deleteImpl|replicaRegionsBlockingDelete|retainPreviousGenerateBlock|' +
+      'changedSecretValue|asPersisted|generateSecretString|readCurrentState|importImpl';
+    for (const f of family) {
+      const topLevel: string[] = [];
+      let depth = 0;
+      for (const rawLine of stripStrings(f.code).split('\n')) {
+        const line = rawLine.trim();
+        if (depth === 0 && line !== '' && !/^[})\]]/.test(line)) topLevel.push(line);
+        for (const ch of rawLine) {
+          if (ch === '{' || ch === '(' || ch === '[') depth += 1;
+          else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
+        }
       }
+      expect(depth, `the brace walk did not return to depth 0 in ${f.rel} — the stripper mis-read the source`).toBe(0);
+      const allowed = new RegExp(
+        `^(?:import\\b|${f === providerFile ? 'export\\s+class\\s+SecretsManagerSecretProvider\\b|' : ''}` +
+          `(?:export\\s+)?(?:async\\s+)?function\\s+(?:${KNOWN_FUNCTIONS})(?:<[^>(]*>)?\\()`
+      );
+      expect(topLevel.length, `the top-level walk saw no statements in ${f.rel} — it attests to nothing`).toBeGreaterThanOrEqual(2);
+      expect(
+        topLevel.filter((line) => !allowed.test(line)),
+        `${f.rel} gained a module-level statement — module state outlives a method and ` +
+          'a resource (the provider is a singleton); re-open #2212'
+      ).toEqual([]);
     }
-    expect(depth, 'the brace walk did not return to depth 0 — the stripper mis-read the source').toBe(0);
-    const unexpectedTopLevel = topLevel.filter(
-      (line) =>
-        !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex)\()/.test(
-          line
-        )
-    );
-    expect(topLevel.length, 'the top-level walk saw no statements — it attests to nothing').toBeGreaterThanOrEqual(5);
-    expect(
-      unexpectedTopLevel,
-      'the secret provider gained a module-level statement — module state outlives a method and ' +
-        'a resource (the provider is a singleton); re-open #2212'
-    ).toEqual([]);
     // The SKIP flag is what routes `update()` to the helper, so its true arm is
     // pinned to the one site that also returns NO value: a flipped flag beside
     // a minted value would hand the helper a bag the wire is about to carry.
+    // Counted per file and summed over the family.
     expect(
-      code.match(/skippedGenerate:\s*true/g)?.length,
+      countAll(/skippedGenerate:\s*true/g),
       'skippedGenerate: true appears at more than one site — each must be the { value: undefined } arm'
     ).toBe(1);
     expect(
-      code.match(/\{\s*value:\s*undefined,\s*skippedGenerate:\s*true\s*\}/g)?.length,
+      countAll(/\{\s*value:\s*undefined,\s*skippedGenerate:\s*true\s*\}/g),
       'the skippedGenerate: true arm no longer returns value: undefined; re-open #2212'
     ).toBe(1);
     expect(
-      code.match(/\bthis\.generateSecretString\(/g)?.length,
+      countAll(/\bthis\.generateSecretString\(/g),
       'generateSecretString gained a call site — trace where its value goes before changing this'
     ).toBe(2);
+    // The hand-offs between the class and the moved bodies (go-to-k/cdkd#5835)
+    // are part of the route: `update()` reaches the helper through the class
+    // delegator, so the delegator's argument list is pinned as tightly as the
+    // call site above, and the generator's two call sites reach the ONE body.
+    expect(
+      /\n {2}retainPreviousGenerateBlock\(\s*logicalId: string,\s*properties: Record<string, unknown>,\s*previousProperties: Record<string, unknown>\s*\): Record<string, unknown> \{\s*return retainPreviousGenerateBlock\.call\(this, logicalId, properties, previousProperties\);\s*\}/.test(
+        providerFile.code
+      ),
+      'the retainPreviousGenerateBlock delegator no longer hands over exactly its three arguments; re-open #2212'
+    ).toBe(true);
+    expect(
+      /\n {2}generateSecretString\(\s*config: Record<string, unknown>,\s*options\?: \{ onUnusable\?: \(message: string\) => void \}\s*\): string \| undefined \{\s*return generateSecretString\.call\(this, config, options\);\s*\}/.test(
+        providerFile.code
+      ),
+      'the generateSecretString delegator changed shape — trace where its value goes before changing this'
+    ).toBe(true);
     // Provenance of the allow-listed names: `requireConfigObject` and
     // `getLogger` come from the modules they always came from. An
     // `import { requireConfigObject } from './leaky.js'` is an allowed
     // top-level statement and a second file this fence cannot read, so the
     // import block's SOURCES are pinned instead (recorded bound: the modules
-    // themselves are trusted as the rest of the tree is).
+    // themselves are trusted as the rest of the tree is). Since the split
+    // every file's relative specifiers are resolved and re-spelled from the
+    // class file's directory, so one list covers the family, and the family's
+    // own files are the only additions -- each of them read by this fence.
+    const providerDir = dirname(PROVIDER_SRC);
     expect(
-      [...src.matchAll(/^import\b[\s\S]*?\bfrom\s+'([^']+)';/gm)].map((m) => m[1]).sort(),
+      [
+        ...new Set(
+          family.flatMap((f) =>
+            [...f.src.matchAll(/^import\b[\s\S]*?\bfrom\s+'([^']+)';/gm)].map((m) => {
+              const spec = m[1]!;
+              if (!spec.startsWith('.')) return spec;
+              const rel = relative(providerDir, resolve(dirname(f.path), spec));
+              return rel.startsWith('.') ? rel : `./${rel}`;
+            })
+          )
+        ),
+      ].sort(),
       'the secret provider imports from a module it did not before — trace what it brings in'
     ).toEqual([
       '../../deployment/resource-secrets-scope.js',
@@ -979,6 +1170,15 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it
       // reads its arguments and throws or returns).
       '../tag-list.js',
+      // go-to-k/cdkd#5835: the provider family itself -- the class file and
+      // its companion directory, every one of them read by this fence.
+      './secretsmanager-secret-provider.js',
+      './secretsmanager-secret/create.js',
+      './secretsmanager-secret/delete.js',
+      './secretsmanager-secret/read-state.js',
+      './secretsmanager-secret/secret-value.js',
+      './secretsmanager-secret/shared.js',
+      './secretsmanager-secret/update.js',
       '@aws-sdk/client-secrets-manager',
       'node:util',
     ]);
@@ -988,14 +1188,14 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // above by the `this` followed by anything but a dot arm.
     const fieldWrites = (s: string): number => (s.match(/\bthis\.[\w.]+\s*=(?!=)/g) ?? []).length;
     expect(
-      fieldWrites(code),
+      family.reduce((n, f) => n + fieldWrites(f.code), 0),
       'an instance field is assigned outside the constructor — a stash can carry the minted value ' +
         'across methods (and across resources: the provider is a singleton); re-open #2212'
-    ).toBe(fieldWrites(methodBody(code, 'constructor')));
+    ).toBe(fieldWrites(familyBody(codeFiles, 'constructor')));
     for (const method of ['create', 'update']) {
       // Comment-STRIPPED: a comment inside a return literal was otherwise read
       // as a key (measured on issue #3048's `effectiveProperties` note).
-      const body = methodBody(code, method);
+      const body = familyBody(codeFiles, method);
       const objs = returnedObjects(body);
       expect(objs.length, `${method}() returns no object literal — shape changed`).toBeGreaterThanOrEqual(1);
       for (const obj of objs) {
@@ -1043,13 +1243,16 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
 
     // 4. The drift comparator is still told to skip both keys, which is the
     //    codified statement that neither is readable from AWS.
-    expect(code).toMatch(/getDriftUnknownPaths\(\)[\s\S]{0,200}return \['SecretString', 'GenerateSecretString'\]/);
+    expect(providerFile.code).toMatch(/getDriftUnknownPaths\(\)[\s\S]{0,200}return \['SecretString', 'GenerateSecretString'\]/);
 
     // 5. The generated value reaches the API call and nothing else: the
     //    `secretString` local must never appear inside a returned object.
-    expect(code).toMatch(/secretString = this\.generateSecretString\(generateConfig\)/);
+    expect(
+      family.filter((f) => /secretString = this\.generateSecretString\(generateConfig\)/.test(f.code))
+        .length
+    ).toBe(1);
     for (const method of ['create', 'update']) {
-      for (const obj of returnedObjects(methodBody(src, method))) {
+      for (const obj of returnedObjects(familyBody(srcFiles, method))) {
         expect(
           /\bsecretString\b/.test(obj),
           `${method}() now returns the minted value: ${obj.slice(0, 120)}`
