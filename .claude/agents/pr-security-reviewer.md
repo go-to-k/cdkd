@@ -81,7 +81,8 @@ the integ proves it.
 `src/local/authorizer-cache.ts`, `src/local/sigv4-verify.ts`,
 `src/local/agentcore-sigv4-sign.ts`, `src/local/docker-runner.ts`,
 `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`,
-`src/local/ecs-secrets-resolver.ts`, `src/local/ecs-task-runner.ts`,
+`src/local/ecs-secrets-resolver.ts`, `src/local/ecs-task-runner.ts` +
+`ecs-task-runner/**`,
 `src/provisioning/providers/**`: privilege boundaries, token validation, a
 cross-account role assumption that trusts unvalidated input, a credential
 passed where it need not be.

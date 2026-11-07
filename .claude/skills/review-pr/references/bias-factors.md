@@ -29,7 +29,7 @@ holds:
   - `src/local/docker-image-builder.ts`
   - `src/local/ecr-puller.ts`
   - `src/local/ecs-secrets-resolver.ts`
-  - `src/local/ecs-task-runner.ts`
+  - `src/local/ecs-task-runner.ts` + `ecs-task-runner/**`
 
   **What belongs on that list**: a file is listed when it (a) verifies or mints
   authn material or loads credentials, (b) resolves secret material, or (c)
