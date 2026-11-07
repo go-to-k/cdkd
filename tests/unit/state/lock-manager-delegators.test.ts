@@ -12,6 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { S3Client } from '@aws-sdk/client-s3';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+// The compiler API lives under `typescript-v6`, as in the other source-reading fences.
+import ts from 'typescript-v6';
 
 /** Replace every function a module exports with a pass-through spy. */
 async function spied(path: string): Promise<Record<string, unknown>> {
@@ -104,6 +108,21 @@ describe('LockManager delegators hand every argument and the result on', () => {
       (m) => !KEPT_ON_CLASS.has(m)
     );
     expect(methods.sort()).toEqual(DELEGATORS.map(([m]) => m).sort());
+  });
+
+  it('each arity in the table is the delegator signature parameter count', () => {
+    // Read off the class source, so a parameter added to a delegator without
+    // a table update reddens here instead of leaving its hand-off unchecked.
+    const file = join(process.cwd(), 'src/state/lock-manager.ts');
+    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const declared = new Map<string, number>();
+    source.forEachChild(function visit(node: ts.Node): void {
+      if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+        declared.set(node.name.text, node.parameters.length);
+      }
+      node.forEachChild(visit);
+    });
+    for (const [method, , arity] of DELEGATORS) expect(declared.get(method), method).toBe(arity);
   });
 
   for (const [method, mod, arity] of DELEGATORS) {
