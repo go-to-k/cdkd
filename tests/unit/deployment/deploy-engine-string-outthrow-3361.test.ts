@@ -310,7 +310,10 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     // update's own handler stays in the entry, the fallback's two moved.
     'src/deployment/deploy-engine/update-in-place.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/update-in-place/replace-fallback.ts': { catchClause: 2 },
-    'src/deployment/deploy-engine/update-replace.ts': { catchClause: 3 },
+    // `updateByReplacement`, split into `update-replace/` (go-to-k/cdkd#5835):
+    // its three handlers moved with the two arms. The family case below scans the rest.
+    'src/deployment/deploy-engine/update-replace/recreate.ts': { catchClause: 1 },
+    'src/deployment/deploy-engine/update-replace/create-first.ts': { catchClause: 2 },
     // `cdkd diff`'s walk, split into `diff-recursive/` (go-to-k/cdkd#5835): the
     // two modules holding its four handlers. The family case below scans the rest.
     'src/cli/commands/diff-recursive/nested-template.ts': { catchClause: 2 },
@@ -444,5 +447,23 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(10);
+  });
+
+  it('the entry and every module of src/deployment/deploy-engine/update-replace/ (read recursively)', () => {
+    // As above, for `updateByReplacement`'s split (go-to-k/cdkd#5835). The
+    // floor is the family's total on the pre-split file.
+    const dir = 'src/deployment/deploy-engine/update-replace/';
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThanOrEqual(4);
+    const files = ['src/deployment/deploy-engine/update-replace.ts', ...modules];
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(3);
   });
 });

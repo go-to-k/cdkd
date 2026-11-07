@@ -253,7 +253,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //   recreate-targets.ts        -> --recreate-via-cc-api,
     //                                 --recreate-via-sdk-provider
     //                                 (one pre-flight probe, two flags)
-    //   deploy-engine/update-replace.ts -> property-driven replacement
+    //   deploy-engine/update-replace/preflight.ts -> property-driven replacement
     //   deploy-engine/update-in-place/replace-fallback.ts -> --replace,
     //     (update-failure fallback)   Cloud Control auto-fallback
     //                                 (one guard, two triggers)
@@ -355,7 +355,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
       'src/deployment/deploy-engine/update-in-place/replace-fallback.ts',
-      'src/deployment/deploy-engine/update-replace.ts',
+      'src/deployment/deploy-engine/update-replace/preflight.ts',
       'src/deployment/recreate-target-readers.ts',
       'src/deployment/recreate-targets/validate.ts',
       'src/deployment/rollback-executor/replay-reverse-replacement.ts',
