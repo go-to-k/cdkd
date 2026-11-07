@@ -410,7 +410,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
     // Object]` comes back ResourceNotFoundException and the idempotent arm
     // below then reports the statement DELETED, while `['my-fn']` coerces to a
     // bare name nothing validated and can succeed against the WRONG function.
-    // Mirrors the same guard in iam-policy-provider.ts.
+    // Mirrors the same guard in iam-policy/delete.ts.
     // go-to-k/cdkd#3952: a redacted FunctionName names no function, so it is
     // treated as absent here and the physicalId below gets its turn.
     const recordedFunctionName = properties?.['FunctionName'];
