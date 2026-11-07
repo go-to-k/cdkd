@@ -83,12 +83,13 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`: the modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. The FIRST flip goes through `observeThenDisableInstanceApiTermination`, or the compensation (#2204) records nothing. A CC-routed protected ASG is delegated to `ASGProvider.delete`.
 
-- **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (#3455). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because already-deleted classifiers match logical-id substrings.
+- **ec2-volume-delete.ts** - CC deletes EVERY `AWS::EC2::Volume` via EC2 `DeleteVolume`: the handler can snapshot, then hang (#3455). Region check OUTSIDE the delete `try`; timeout: a marked abandoned wait (already-deleted needles hit logical ids).
+- **ipam-pool-cidr-release.ts** - CC `IPAMPoolCidr` delete refused (allocations): waits out own-account same-region DELETED VPCs/subnets, re-sends (#5975).
 
 - **guardduty-detector-patch.ts** - GuardDuty detector's Cloud Control update patch (#4910).
 - **apigwv2-body-import-patch.ts** - imported HTTP API's definition updates via `ReimportApi` (#5260).
 
-- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; #3872; DynamoDB `Table`, #5514). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
+- **delete-gone-wait.ts** - The post-delete wait for a service holding a NAME while `DELETING` that refuses same-name creates (Kinesis, Firehose; #3872; DynamoDB `Table`, #5514). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 
 - **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON. `--allow-unsupported-types` routes named types through CC. Hand-written `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` lists the REGISTERED `NON_PROVISIONABLE` types the audit drops from Tier 3; the CC auto-route reads both, per TYPE, via `hasNoCloudControlHandlers` (#3871).
 
