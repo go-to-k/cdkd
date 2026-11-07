@@ -974,7 +974,7 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     // issue #2080); three
     // `JSON.parse(JSON.stringify(...))` round-trips feeding an in-memory
     // comparison whose result is compared and dropped, never logged or thrown
-    // (`asJson` in `secretsmanager-secret-provider.ts`, issue #2472,
+    // (`asJson` in `secretsmanager-secret/shared.ts`, issue #2472,
     // `sameJsonValue` in `dynamodb-table-provider.ts`, issue #1812, and
     // `deepEqual` in `dynamodb-globaltable-provider.ts`, issue #3775); and
     // `describeValue` in `s3-bucket-provider.ts`, whose
