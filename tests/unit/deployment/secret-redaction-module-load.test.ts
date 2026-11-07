@@ -12,17 +12,20 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
-// RECURSIVE: a split module keeps its companions in a nested directory
-// (`positions.ts` + `positions/`, #5835), and the entry cannot load in the
-// copy unless they are transpiled beside it.
+/**
+ * Recursive: a module split into a companion directory (`nested-stack.ts` +
+ * `nested-stack/`, #5835) imports its parts by relative specifier, so the
+ * transpiled copy must hold them too, and each part must load first on its own.
+ */
 const MODULES = readdirSync(DIR, { recursive: true, encoding: 'utf8' })
   .filter((f) => f.endsWith('.ts'))
+  .map((f) => f.split(sep).join('/'))
   .sort();
 
 /** Vitest cannot interrupt a synchronous spawn, so the spawn carries the case's timeout too. */
@@ -87,8 +90,11 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
-    expect(MODULES).toContain(join('positions', 'skeleton.ts'));
-    expect(MODULES).toContain(join('positions', 'spans.ts'));
+    // Per-directory floors: the recursion reaches each companion directory.
+    expect(MODULES.filter((f) => f.startsWith('nested-stack/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES.filter((f) => f.startsWith('positions/')).length).toBeGreaterThanOrEqual(2);
+    expect(MODULES).toContain('positions/skeleton.ts');
+    expect(MODULES).toContain('positions/spans.ts');
   });
 
   // Each case spawns a Node process, so it declares its own timeout.

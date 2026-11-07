@@ -122,7 +122,7 @@ dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-11-04T18:01:46Z	PASS	233	verify.sh	rc ok, M3 delete-resource-policy cooldown retry passed, M4/M5 passed, orph clean, own temp state bucket deleted; sweep batch 19 re-run
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
-ec2-instance	2026-11-06T16:47:02Z	PASS	742	verify.sh	rc ok, orph clean, us-east-1, #5884 final
+ec2-instance	2026-11-07T11:30:30Z	PASS	764	verify.sh	rc ok, orph clean; EnclaveOptions arm (#5630)
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
@@ -306,7 +306,7 @@ nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
 noecho-parameter-masking	2026-10-24T15:38:28Z	PASS	1283	verify.sh	PR #5265 (#2319) c10ed412; destroy 0 errors, orph clean, own ephemeral bucket swept; pre-fix probe FAILed at the Phase 2 class-only persisted-event arm
 opensearch-domain-getatt	2026-11-04T07:36:26Z	PASS	1744	verify.sh	rc ok, orph clean (own state bucket, wrasse)
-orphan-getatt-takeover	2026-11-04T20:44:53Z	PASS	65	verify.sh	rc ok; orphan substituted recorded RoleId, live Arn read in stack region; orph clean
+orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs
 orphan-resource	2026-11-04T05:17:34Z	PASS	99	standard	manual README flow (no verify.sh): deploy, orphan, state/bucket survive, import, destroy 0 errors; orph clean
 output-never-resolved-diff	2026-11-04T19:47:52Z	PASS	161	verify.sh	rc ok, orph clean
 outputs-only-export	2026-11-04T20:43:48Z	PASS	99	verify.sh	rc 0, all 13 checks passed, destroy 0 errors; orph clean
@@ -317,7 +317,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-07T00:06:14Z	PASS	3271	verify.sh	#5929 rds-dbproxy-targetgroup split head; rc ok, orph clean
+rds-aurora	2026-11-07T11:08:39Z	PASS	3722	verify.sh	rc ok, destroy 0 errors, orph clean (#5985)
 rds-dbinstance-backfill	2026-11-05T06:54:50Z	PASS	2203	verify.sh	rc ok, destroy 0 errors, orph clean (auto snapshots gone after ~2min)
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean
