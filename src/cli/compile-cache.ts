@@ -1,8 +1,9 @@
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { enableCompileCache } from 'node:module';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 
+import { cdkdCacheHome } from '../utils/cache-home.js';
 import { getCdkdVersion } from '../version.js';
 
 /**
@@ -23,19 +24,8 @@ export function compileCacheDirectory(
   env: NodeJS.ProcessEnv,
   home: () => string = homedir
 ): string | undefined {
-  const xdg = env['XDG_CACHE_HOME'];
-  // A relative value is ignored, as the XDG Base Directory spec requires: it
-  // would resolve against the cwd, i.e. inside the CDK project a user may have
-  // just cloned, which could ship planted cache entries.
-  if (xdg !== undefined && isAbsolute(xdg)) return join(xdg, 'cdkd', 'compile-cache');
-  let dir: string;
-  try {
-    dir = home();
-  } catch {
-    return undefined;
-  }
-  // A relative (or empty) HOME would resolve against the cwd the same way.
-  return isAbsolute(dir) ? join(dir, '.cache', 'cdkd', 'compile-cache') : undefined;
+  const root = cdkdCacheHome(env, home);
+  return root === undefined ? undefined : join(root, 'compile-cache');
 }
 
 /** A version string usable as one path segment: no separator, no `..`. */

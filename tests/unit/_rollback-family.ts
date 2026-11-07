@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 /**
  * The rollback replay is split across modules (issue #4426): the entry points stay
@@ -9,11 +9,16 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/rollback-executor');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in name order. Read
+ * recursively: a family module split further keeps its own sibling directory
+ * (`journaled-orphans.ts` + `journaled-orphans/`, go-to-k/cdkd#5835).
+ */
 export const ROLLBACK_FAMILY: readonly string[] = [
   'src/deployment/rollback-executor.ts',
-  ...readdirSync(SPLIT_DIR)
+  ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
+    .map((f) => f.split(sep).join('/'))
     .sort()
     .map((f) => `src/deployment/rollback-executor/${f}`),
 ];
@@ -23,6 +28,17 @@ export const ROLLBACK_FAMILY: readonly string[] = [
 // ABSENCE over it would shrink silently rather than red.
 if (ROLLBACK_FAMILY.length < 12) {
   throw new Error(`the rollback family resolved to ${ROLLBACK_FAMILY.join(', ')} only`);
+}
+
+// A floor per nested directory (go-to-k/cdkd#5835): a recursive read that
+// stopped descending would drop these modules while the total above still
+// cleared its floor.
+const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2 };
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const found = ROLLBACK_FAMILY.filter((f) => f.startsWith(`src/deployment/rollback-executor/${dir}`));
+  if (found.length < floor) {
+    throw new Error(`the rollback family's ${dir} resolved to ${found.length} module(s), under its floor of ${floor}`);
+  }
 }
 
 /** Every family file's source, joined with a newline. */

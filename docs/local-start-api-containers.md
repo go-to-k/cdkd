@@ -90,6 +90,12 @@ times:
   `--watch` reload. cdkd builds the image from the cloud assembly's Docker
   asset or pulls it from ECR. An edit to the Dockerfile or the build context
   produces a new image on the next reload.
+- **The Runtime Interface Emulator** that cdkd mounts into every
+  container-image Lambda is set up at the same times, so an image on a
+  non-AWS base works too. See
+  [Images without the Runtime Interface Emulator](local-invoke.md#images-without-the-runtime-interface-emulator).
+  Under `--no-pull` it comes from a cached copy or a local
+  `public.ecr.aws/lambda/provided:al2023` image only.
 - **Architecture and `/tmp` size** are applied to every container, as on
   `local invoke`.
 

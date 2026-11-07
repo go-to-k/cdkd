@@ -48,7 +48,8 @@ balancer itself, so you do not run `start-service` next to it.
 Docker must be running, because every command runs your code in a container:
 
 - A Lambda function runs in the AWS Lambda Runtime Interface Emulator (RIE)
-  image for its runtime.
+  image for its runtime. A container-image function runs in its own image;
+  `local invoke` and `local start-api` mount an RIE into it.
 - An ECS container runs from its own image, next to the ECS metadata sidecar
   that AWS publishes.
 - An AgentCore agent runs in the agent's image.

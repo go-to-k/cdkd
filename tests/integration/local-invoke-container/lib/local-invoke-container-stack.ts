@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /**
  * Fixture stack for `cdkd local invoke` container-Lambda integ test (PR 5).
  *
- * Single Lambda — `EchoHandler` — built from a local Dockerfile in
+ * Main Lambda — `EchoHandler` — built from a local Dockerfile in
  * `docker/`. The Dockerfile starts FROM the AWS Lambda Node.js base image
  * (which bundles RIE), copies a tiny `app.js` into `${LAMBDA_TASK_ROOT}`,
  * and uses CMD `["app.handler"]` so the image's default entrypoint
@@ -20,6 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *      asset manifest, calls `docker build`, then runs the resulting image.
  *   2. `--event` payload pass-through.
  *   3. `--env-vars` SAM-shape override.
+ *   4. `NonAwsBaseHandler` (#6018): an image on a non-AWS base with no RIE;
+ *      cdkd mounts one and runs the image ENTRYPOINT + CMD under it.
  */
 export class LocalInvokeContainerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -33,6 +35,20 @@ export class LocalInvokeContainerStack extends cdk.Stack {
       }),
       environment: {
         GREETING: 'hello',
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // go-to-k/cdkd#6018: a function on a NON-AWS base image, which ships no
+    // Runtime Interface Emulator. cdkd must mount one and hand it the image's
+    // own ENTRYPOINT + CMD. Built for the HOST's architecture (the base image
+    // is multi-arch), so neither the function nor the mounted RIE runs under
+    // emulation.
+    new lambda.DockerImageFunction(this, 'NonAwsBaseHandler', {
+      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../docker-non-aws')),
+      architecture: process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64,
+      environment: {
+        GREETING: 'from-non-aws-base',
       },
       timeout: cdk.Duration.seconds(10),
     });
