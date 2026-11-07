@@ -38,7 +38,6 @@
       "AllocatedStorage",
       "DBClusterInstanceClass",
       "DBInstanceParameterGroupName",
-      "DBSystemId",
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
@@ -50,8 +49,7 @@
       "SourceDBClusterIdentifier",
       "SourceDbClusterResourceId",
       "SourceRegion",
-      "UseLatestRestorableTime",
-      "WithExpressConfiguration"
+      "UseLatestRestorableTime"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
