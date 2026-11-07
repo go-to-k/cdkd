@@ -562,7 +562,9 @@ describe('the local --from-cfn-stack surface names the API that actually runs (#
     // call `DescribeStackResources`, and the fence must not be excusing it by a
     // rule broad enough to excuse the local files as well. It falls out because
     // it never mentions the flag — asserted here, not assumed.
-    const retire = joinPath(SRC, 'cli', 'commands', 'retire-cfn-stack.ts');
+    // The `DescribeStackResources` calls live in `retire-cfn-stack/resource-tree.ts`
+    // since the split (go-to-k/cdkd#5835).
+    const retire = joinPath(SRC, 'cli', 'commands', 'retire-cfn-stack', 'resource-tree.ts');
     expect(reallyCallsDescribeStackResources(readFileSync(retire, 'utf8'))).toBe(true);
     expect(population).not.toContain(retire);
   });
