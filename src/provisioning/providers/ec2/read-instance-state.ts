@@ -147,6 +147,22 @@ export async function readInstanceCurrentState(
   if (typeof instance.Placement?.GroupName === 'string' && instance.Placement.GroupName !== '') {
     result['PlacementGroupName'] = instance.Placement.GroupName;
   }
+  // go-to-k/cdkd#5630: the Dedicated Host members live under Placement too,
+  // the kernel / RAM disk at the top level, all with CloudFormation's names
+  // (AWS omits each one an instance does not have).
+  const placementReads = [
+    ['Affinity', instance.Placement?.Affinity],
+    ['HostId', instance.Placement?.HostId],
+    ['HostResourceGroupArn', instance.Placement?.HostResourceGroupArn],
+    ['KernelId', instance.KernelId],
+    ['RamdiskId', instance.RamdiskId],
+  ] as const;
+  for (const [key, value] of placementReads) {
+    if (typeof value === 'string' && value !== '') result[key] = value;
+  }
+  if (instance.EnclaveOptions?.Enabled !== undefined) {
+    result['EnclaveOptions'] = { Enabled: instance.EnclaveOptions.Enabled };
+  }
 
   // IamInstanceProfile: CFn accepts either a name or an ARN. AWS returns
   // the ARN; we surface that. State that holds a name will fire one-time

@@ -19,14 +19,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
 /**
- * Recursive: a module split into a nested companion directory (e.g.
- * `redact-state.ts` + `redact-state/`, go-to-k/cdkd#5835) is imported by its
- * entry, so the copy must carry the nested files for the entry to load, and
- * each nested module must load first in a fresh graph too.
+ * Recursive: a module split into a companion directory (`nested-stack.ts` +
+ * `nested-stack/`, #5835) imports its parts by relative specifier, so the
+ * transpiled copy must hold them too, and each part must load first on its own.
  */
-const MODULES = (readdirSync(DIR, { recursive: true }) as string[])
-  .map((f) => f.split(sep).join('/'))
+const MODULES = readdirSync(DIR, { recursive: true, encoding: 'utf8' })
   .filter((f) => f.endsWith('.ts'))
+  .map((f) => f.split(sep).join('/'))
   .sort();
 
 /** Vitest cannot interrupt a synchronous spawn, so the spawn carries the case's timeout too. */
@@ -91,6 +90,9 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
+    // Per-directory floors: the recursion reaches each companion directory.
+    expect(MODULES.filter((f) => f.startsWith('nested-stack/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES.filter((f) => f.startsWith('redact-state/')).length).toBeGreaterThanOrEqual(1);
     expect(MODULES).toContain('redact-state/scrub-record.ts');
   });
 

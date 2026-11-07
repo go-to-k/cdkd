@@ -1105,19 +1105,24 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AdditionalInfo',
+        'Affinity',
         'AvailabilityZone',
         'BlockDeviceMappings',
         'CpuOptions',
         'CreditSpecification',
         'DisableApiTermination',
         'EbsOptimized',
+        'EnclaveOptions',
         'HibernationOptions',
+        'HostId',
+        'HostResourceGroupArn',
         'IamInstanceProfile',
         'ImageId',
         'InstanceInitiatedShutdownBehavior',
         'InstanceType',
         'Ipv6AddressCount',
         'Ipv6Addresses',
+        'KernelId',
         'KeyName',
         'LaunchTemplate',
         'LicenseSpecifications',
@@ -1128,6 +1133,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'PrivateDnsNameOptions',
         'PrivateIpAddress',
         'PropagateTagsToVolumeOnCreation',
+        'RamdiskId',
         'SecurityGroupIds',
         'SecurityGroups',
         'SourceDestCheck',
@@ -1139,7 +1145,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Volumes',
       ]),
       sdkUnwired: new Map<string, string>([
-        ['Affinity', 'not yet implemented by cdkd'],
         [
           'ElasticGpuSpecifications',
           'AWS Elastic GPU end-of-life (announced 2023-11); no replacement API',
@@ -1148,17 +1153,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'ElasticInferenceAccelerators',
           'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
         ],
-        ['EnclaveOptions', 'not yet implemented by cdkd'],
-        ['HostId', 'not yet implemented by cdkd'],
-        ['HostResourceGroupArn', 'not yet implemented by cdkd'],
-        ['KernelId', 'not yet implemented by cdkd'],
-        ['RamdiskId', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>([
         'ElasticGpuSpecifications',
         'ElasticInferenceAccelerators',
-        'EnclaveOptions',
-        'HostResourceGroupArn',
       ]),
       readOnly: new Set<string>([
         'InstanceId',
@@ -2687,7 +2685,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AllocatedStorage', 'not yet implemented by cdkd'],
         ['DBClusterInstanceClass', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
-        ['DBSystemId', 'not yet implemented by cdkd'],
+        [
+          'DBSystemId',
+          'reserved for future use, per the CloudFormation schema (cloudformation:DescribeType, us-east-1, 2026-11-07); no observable behaviour to wire. Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
         [
           'DeleteAutomatedBackups',
           'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
@@ -2708,7 +2709,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['SourceDbClusterResourceId', 'not yet implemented by cdkd'],
         ['SourceRegion', 'not yet implemented by cdkd'],
         ['UseLatestRestorableTime', 'not yet implemented by cdkd'],
-        ['WithExpressConfiguration', 'not yet implemented by cdkd'],
+        [
+          'WithExpressConfiguration',
+          "CloudFormation's RDS handler fails to create it (an RDS 500, CREATE_FAILED on 3 stacks, us-east-1, 2026-11-07), Cloud Control calls the same RDS handler, so it is expected to fail the same way (inferred, not measured), and there is no parity oracle for what cdkd should do with the writer instance RDS auto-creates; re-measure tracked in go-to-k/cdkd#5984. Kept unhandled so a template declaring it keeps its Cloud Control route",
+        ],
       ]),
       createOnlyDrops: new Set<string>([
         'DBSystemId',

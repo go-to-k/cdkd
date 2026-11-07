@@ -97,6 +97,9 @@
 # association id, same instance), 1m removes it, 1n adds it back, and 1o
 # drops the license, which replaces the instance; the replaced instance's
 # association is deleted, and so is the last one on destroy.
+# The final #5630 slice: a c6a.xlarge launched with EnclaveOptions.Enabled
+# (EC2 refuses enclaves on t3), asserted on the SDK route, read back enabled,
+# and never replaced by a later phase.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -187,6 +190,9 @@ PLACEMENT_GROUP_NAME=""
 # by the trap if state destroy cannot reach them.
 IPV6_COUNT_INSTANCE_ID=""
 IPV6_ADDRESS_INSTANCE_ID=""
+# Issue #5630 (final slice): the Nitro Enclaves instance, terminated by the trap
+# if state destroy cannot reach it.
+ENCLAVE_INSTANCE_ID=""
 # Issue #5630 (fourth slice): the launch-template instance, its two volumes and
 # the template, swept by the trap if state destroy cannot reach them.
 LT_INSTANCE_ID=""
@@ -328,7 +334,7 @@ cleanup() {
       --instance-ids "${PUBLIC_INSTANCE_ID}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
-  for v6_instance in ${IPV6_COUNT_INSTANCE_ID:-} ${IPV6_ADDRESS_INSTANCE_ID:-}; do
+  for v6_instance in ${IPV6_COUNT_INSTANCE_ID:-} ${IPV6_ADDRESS_INSTANCE_ID:-} ${ENCLAVE_INSTANCE_ID:-}; do
     aws ec2 terminate-instances \
       --instance-ids "${v6_instance}" \
       --region "${REGION}" >/dev/null 2>&1 || true
@@ -612,6 +618,8 @@ PLACEMENT_GROUP_NAME=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PlacementGroupNa
 # Issue #5630 (third slice): the IPv6-subnet instances, for the trap.
 IPV6_COUNT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6CountInstanceId // ""')
 IPV6_ADDRESS_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6AddressInstanceId // ""')
+# Issue #5630 (final slice): the Nitro Enclaves instance, for the trap.
+ENCLAVE_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EnclaveInstanceId // ""')
 # Issue #5630 (fourth slice): the launch-template instance, its volumes and the
 # template, for the trap.
 LT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtInstanceId // ""')
@@ -1187,6 +1195,25 @@ if [ "$(canonical_v6 "${V6_FIXED_ADDRS}")" != "$(canonical_v6 "${IPV6_EXPECTED}"
   exit 1
 fi
 echo "    OK: #5630 Ipv6AddressCount gave ${IPV6_COUNT_INSTANCE_ID} ${V6_COUNT_ADDRS}; Ipv6Addresses gave ${IPV6_ADDRESS_INSTANCE_ID} ${V6_FIXED_ADDRS}"
+# Issue #5630 (final slice): EnclaveOptions rides RunInstances on the SDK route.
+# Before the wiring it was SDK-unwired, so the resource went to Cloud Control
+# (which also enables enclaves): the route check is the discriminating one,
+# and the readback proves the value reached EC2.
+ENCLAVE_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.EnclaveInstanceId // ""')
+P1_ENCLAVE_INSTANCE_ID="${ENCLAVE_INSTANCE_ID}"
+ENCLAVE_ROUTE=$(echo "${STATE}" | jq -r '.resources.EnclaveInstance5630.provisionedBy // "missing"')
+if [ "${ENCLAVE_ROUTE}" != "sdk" ]; then
+  echo "FAIL: issue #5630 -- EnclaveInstance5630 is provisionedBy '${ENCLAVE_ROUTE}', expected sdk (EnclaveOptions must not route the instance to Cloud Control)" >&2
+  exit 1
+fi
+ENCLAVE_ENABLED=$(aws ec2 describe-instances --instance-ids "${ENCLAVE_INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].EnclaveOptions.Enabled' --output text 2>&1) \
+  || ENCLAVE_ENABLED="<describe-failed: $(sanitize_aws_output "${ENCLAVE_ENABLED}")>"
+if [ "${ENCLAVE_ENABLED}" != "True" ]; then
+  echo "FAIL: issue #5630 -- EnclaveOptions.Enabled of ${ENCLAVE_INSTANCE_ID} reads '${ENCLAVE_ENABLED}', expected True" >&2
+  exit 1
+fi
+echo "    OK: #5630 ${ENCLAVE_INSTANCE_ID} launched on the SDK route with Nitro Enclaves enabled"
 # PropagateTagsToVolumeOnCreation: RunInstances tags BOTH block-device volumes
 # (root /dev/xvda and data /dev/sdf) with the instance's tag. Count the volume
 # ROWS carrying it, never a length(), and require the attached total too.
@@ -2002,6 +2029,14 @@ if [ "${IPV6_COUNT_INSTANCE_ID}" != "${P1_IPV6_COUNT_INSTANCE_ID}" ] || [ "${IPV
   exit 1
 fi
 echo "    OK: #5630 the IPv6 instances were not replaced by the update phases"
+# Issue #5630 (final slice): EnclaveOptions is create-only and no phase changed
+# it; a changed id means its recorded value compared unequal to the template's.
+ENCLAVE_INSTANCE_ID=$(echo "${P1J_STATE}" | jq -r '.outputs.EnclaveInstanceId // ""')
+if [ "${ENCLAVE_INSTANCE_ID}" != "${P1_ENCLAVE_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- the enclave instance is '${ENCLAVE_INSTANCE_ID}' after the update phases, expected the Phase 1 one '${P1_ENCLAVE_INSTANCE_ID}' (a spurious create-only replacement)" >&2
+  exit 1
+fi
+echo "    OK: #5630 the enclave instance was not replaced by the update phases"
 
 # Phase 1k (issue #5630, fourth slice): ONE deploy removes LtInstance5630's
 # Volumes property AND volume B (the volume it lists) from the template. As in
@@ -2353,8 +2388,9 @@ else
   exit 1
 fi
 
-# Issue #5630 (third slice): the two IPv6-subnet instances must be gone too.
-for v6_instance in "${IPV6_COUNT_INSTANCE_ID}" "${IPV6_ADDRESS_INSTANCE_ID}"; do
+# Issue #5630: the two IPv6-subnet instances (third slice) and the enclave
+# instance (final slice) must be gone too.
+for v6_instance in "${IPV6_COUNT_INSTANCE_ID}" "${IPV6_ADDRESS_INSTANCE_ID}" "${ENCLAVE_INSTANCE_ID}"; do
   if gone_probe aws ec2 describe-instances --instance-ids "${v6_instance}" --region "${REGION}"; then
     V6_STATE="gone"
   elif ! V6_STATE=$(aws ec2 describe-instances \
@@ -2372,6 +2408,7 @@ for v6_instance in "${IPV6_COUNT_INSTANCE_ID}" "${IPV6_ADDRESS_INSTANCE_ID}"; do
 done
 IPV6_COUNT_INSTANCE_ID=""
 IPV6_ADDRESS_INSTANCE_ID=""
+ENCLAVE_INSTANCE_ID=""
 
 # Issue #5630 (fourth slice): the launch-template instance, both volumes and
 # the template must be gone too.

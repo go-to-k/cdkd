@@ -526,6 +526,24 @@ export class Ec2InstanceStack extends cdk.Stack {
       description: 'The instance with LicenseSpecifications and SsmAssociations (issue #5630)',
     });
 
+    // Issue #5630 (final slice): an instance with Nitro Enclaves enabled.
+    // EnclaveOptions is create-only, and EC2 refuses it on t3 ("You cannot
+    // enable Nitro Enclaves for "t3.nano" instance types"), so this instance
+    // is a c6a.xlarge, the cheapest x86 type with 4 vCPUs and enclave support
+    // (probed: a RunInstances dry run of c6a.xlarge + AL2023 + EnclaveOptions
+    // succeeds in us-east-1). verify.sh reads EnclaveOptions.Enabled back and
+    // checks the instance stays on the SDK route; no phase changes it.
+    const enclaveInstance = new ec2.CfnInstance(this, 'EnclaveInstance5630', {
+      imageId: ami,
+      instanceType: 'c6a.xlarge',
+      subnetId: vpc.publicSubnets[0].subnetId,
+      enclaveOptions: { enabled: true },
+    });
+    new cdk.CfnOutput(this, 'EnclaveInstanceId', {
+      value: enclaveInstance.ref,
+      description: 'The instance launched with EnclaveOptions.Enabled (issue #5630)',
+    });
+
     new cdk.CfnOutput(this, 'EbsKeyArn', {
       value: ebsKey.keyArn,
       description: 'CMK the #5445 data volume must be encrypted with',
