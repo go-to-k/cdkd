@@ -344,7 +344,7 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
       'src/cli/commands/scrub/nested.ts',
       'src/cli/commands/scrub/stack-rewrite.ts',
       'src/cli/commands/destroy-runner.ts',
-      'src/analyzer/orphan-rewriter.ts',
+      'src/analyzer/orphan-rewriter/rewrite.ts',
       'src/state/s3-state-backend.ts',
     ]) {
       expect(files).toContain(file);

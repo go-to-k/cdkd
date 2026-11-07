@@ -8,6 +8,7 @@ paths:
   - 'src/cli/commands/orphan.ts'
   - 'src/cli/cdk-path.ts'
   - 'src/analyzer/orphan-rewriter.ts'
+  - 'src/analyzer/orphan-rewriter/**'
 ---
 
 # `cdkd state` and `cdkd orphan`
