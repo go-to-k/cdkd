@@ -3,15 +3,15 @@ description: The one lock-contention refusal and its `cdkd force-unlock` hint
 paths:
   - 'src/state/lock-contention-message.ts'
   - 'src/state/lock-manager.ts'
+  - 'src/state/lock-manager/**'
   - 'src/cli/commands/force-unlock.ts'
 ---
 
 # The lock-contention message and its recovery command
 
 `src/state/lock-contention-message.ts` is the ONLY place a fail-fast
-lock-contention refusal is worded (issue
-[#2161](https://github.com/go-to-k/cdkd/issues/2161)). Every refusing site uses
-it, `acquireLockWithRetry`'s exhaustion arm and the destroy FORCE-QUIT hint
+lock-contention refusal is worded (#2161). Every refusing site uses it,
+`acquireLockWithRetry`'s exhaustion arm and the destroy FORCE-QUIT hint
 (`src/cli/commands/stack-lock-guard.ts`, both `destroy-runner.ts` lock sites'
 one SIGINT + lock guard) included.
 
