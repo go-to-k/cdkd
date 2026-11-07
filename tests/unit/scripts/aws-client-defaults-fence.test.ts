@@ -667,12 +667,12 @@ describe('SDK client construction critic', () => {
       ).toEqual([]);
     });
 
-    it('reports the shared-bag shape restored in the REAL asset-storage.ts', () => {
+    it('reports the shared-bag shape restored in the REAL asset-storage/verify.ts', () => {
       // The shape this file actually shipped with for an hour before the
       // inline review caught it, so the probe is the real regression rather
       // than a fixture of one.
       const srcDir = scratchCopyOfSrc();
-      const target = join(srcDir, 'assets/asset-storage.ts');
+      const target = join(srcDir, 'assets/asset-storage/verify.ts');
       const source = readFileSync(target, 'utf8');
       const start = source.indexOf(
         '  const clientOpts = { region, ...(opts.profile && { profile: opts.profile }) };'
@@ -694,7 +694,7 @@ describe('SDK client construction critic', () => {
       );
       const report = buildReport(srcDir, allowList);
       const verdicts = report.gaps
-        .filter((gap) => gap.file === 'src/assets/asset-storage.ts')
+        .filter((gap) => gap.file === 'src/assets/asset-storage/verify.ts')
         .map((gap) => gap.verdict);
       expect(verdicts).toEqual(['shared-defaults', 'shared-defaults']);
     });
