@@ -27,7 +27,6 @@ import {
   clusterAttributes,
   declaresSnapshot,
   ignoredRestoreKeys,
-  isRestoringClusterRefusal,
   readClusterRestore,
   restoreFollowUp,
   restoreWaitMs,
@@ -266,7 +265,7 @@ export async function sendRestoreFollowUp(
       logger: this.logger,
       label: 'Neptune DBCluster',
       subject: 'cluster',
-      isRefusal: (error) => isModifyNotAvailableRefusal(error) || isRestoringClusterRefusal(error),
+      isRefusal: isModifyNotAvailableRefusal,
       logicalId,
       remainingMs: enclosingDeadlineRemainingMs(),
     });

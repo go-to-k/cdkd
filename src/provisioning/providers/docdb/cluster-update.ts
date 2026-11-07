@@ -3,7 +3,13 @@ import {
   ModifyDBClusterCommand,
   DescribeGlobalClustersCommand,
   type DBCluster,
+  type ModifyDBClusterCommandInput,
 } from '@aws-sdk/client-docdb';
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import {
+  isModifyNotAvailableRefusal,
+  modifyDbInstanceWhenAvailable,
+} from '../db-instance-modify-retry.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -179,48 +185,63 @@ export async function updateDBCluster(
       previousProperties,
       context
     );
-    await this.getClient().send(
-      new ModifyDBClusterCommand({
-        DBClusterIdentifier: physicalId,
-        EngineVersion: docdbEngineVersionToSend(properties, previousProperties, context),
-        // #5004: CloudFormation KEEPS the live value of a removed
-        // DeletionProtection / BackupRetentionPeriod, so an absent value
-        // is passed through as absent (no reset).
-        DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-        BackupRetentionPeriod:
-          properties['BackupRetentionPeriod'] != null
-            ? Number(properties['BackupRetentionPeriod'])
-            : undefined,
-        PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
-        PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as string | undefined,
-        DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as
-          | string
-          | undefined,
-        ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
-        // #5153: only a changed password; any supplied one resets credentials.
-        MasterUserPassword: credentials.password,
-        Port: portToSend,
-        CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
-        // #2762: a request for this update, never a setting to repeat.
-        ...(rotateMasterUserPassword(properties, previousProperties, context) && {
-          RotateMasterUserPassword: true,
-        }),
-        ...(credentials.managed !== undefined && {
-          ManageMasterUserPassword: credentials.managed,
-        }),
-        ...(credentials.secretKmsKey !== undefined && {
-          MasterUserSecretKmsKeyId: credentials.secretKmsKey,
-        }),
-        // Each sent only on a change: re-sending asks AWS for one every update.
-        ...(networkChange && { NetworkType: networkType }),
-        ...(storageChange && { StorageType: storageType }),
-        ...(scalingChange && { ServerlessV2ScalingConfiguration: scaling }),
-        ...(logExportConfig !== undefined && {
-          CloudwatchLogsExportConfiguration: logExportConfig,
-        }),
-        ApplyImmediately: true,
-      })
-    );
+    // go-to-k/cdkd#5994: AWS refuses the modify while the cluster is in a
+    // status that ends on its own (`backing-up` right after create), and
+    // CloudFormation waits it out. The same input is resent only after such a
+    // refusal, so a rollback replay sends exactly what it computed; a terminal
+    // status fails at once. One exception to "same end state": when the SDK's
+    // own retry replays an ACCEPTED request whose response was lost and AWS
+    // refuses the replay as busy, a RotateMasterUserPassword request is sent
+    // again and the managed secret rotates twice (still a valid secret).
+    const modifyInput: ModifyDBClusterCommandInput = {
+      DBClusterIdentifier: physicalId,
+      EngineVersion: docdbEngineVersionToSend(properties, previousProperties, context),
+      // #5004: CloudFormation KEEPS the live value of a removed
+      // DeletionProtection / BackupRetentionPeriod, so an absent value
+      // is passed through as absent (no reset).
+      DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+      BackupRetentionPeriod:
+        properties['BackupRetentionPeriod'] != null
+          ? Number(properties['BackupRetentionPeriod'])
+          : undefined,
+      PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
+      PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as string | undefined,
+      DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as string | undefined,
+      ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
+      // #5153: only a changed password; any supplied one resets credentials.
+      MasterUserPassword: credentials.password,
+      Port: portToSend,
+      CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
+      // #2762: a request for this update, never a setting to repeat.
+      ...(rotateMasterUserPassword(properties, previousProperties, context) && {
+        RotateMasterUserPassword: true,
+      }),
+      ...(credentials.managed !== undefined && {
+        ManageMasterUserPassword: credentials.managed,
+      }),
+      ...(credentials.secretKmsKey !== undefined && {
+        MasterUserSecretKmsKeyId: credentials.secretKmsKey,
+      }),
+      // Each sent only on a change: re-sending asks AWS for one every update.
+      ...(networkChange && { NetworkType: networkType }),
+      ...(storageChange && { StorageType: storageType }),
+      ...(scalingChange && { ServerlessV2ScalingConfiguration: scaling }),
+      ...(logExportConfig !== undefined && {
+        CloudwatchLogsExportConfiguration: logExportConfig,
+      }),
+      ApplyImmediately: true,
+    };
+    await modifyDbInstanceWhenAvailable({
+      send: () => this.getClient().send(new ModifyDBClusterCommand(modifyInput)),
+      readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      label: 'DocDB DBCluster',
+      subject: 'cluster',
+      isRefusal: isModifyNotAvailableRefusal,
+      logicalId,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
 
     // go-to-k/cdkd#5498: what this call added, so a convergence after a later
     // failure disables it, and nothing an out-of-band change enabled.

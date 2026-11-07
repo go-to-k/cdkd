@@ -203,18 +203,6 @@ export const ROLE_AVAILABLE_MAX_WAIT_MS = 1_800_000;
 /** The longest a create waits for the cluster to read `available`. */
 export const CLUSTER_AVAILABLE_MAX_WAIT_MS = 1_800_000;
 
-/**
- * A restored cluster's Modify refused while it settles (measured, #5638):
- * "DB cluster isn't available for modification with status creating."
- */
-export function isRestoringClusterRefusal(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.name === 'InvalidDBClusterStateFault' &&
-    /(?:isn't|is not|isn’t) available for modification with status/i.test(error.message)
-  );
-}
-
 /** Budget kept back from the enclosing resource deadline. */
 export const DEADLINE_MARGIN_MS = 30_000;
 
