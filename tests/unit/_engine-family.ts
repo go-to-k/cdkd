@@ -9,10 +9,15 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/deploy-engine');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in path order.
+ * Recursive: a split module that outgrew the size cap moves into a nested
+ * `deploy-engine/<stem>/` directory (#5835) and stays in the family.
+ */
 export const ENGINE_FAMILY: readonly string[] = [
   'src/deployment/deploy-engine.ts',
-  ...readdirSync(SPLIT_DIR)
+  ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
+    .map((f) => f.split('\\').join('/'))
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => `src/deployment/deploy-engine/${f}`),
@@ -22,6 +27,22 @@ export const ENGINE_FAMILY: readonly string[] = [
 // every fence counting an ABSENCE over it would shrink silently rather than red.
 if (ENGINE_FAMILY.length < 2) {
   throw new Error(`the engine family resolved to ${ENGINE_FAMILY.join(', ')} only`);
+}
+
+// Per nested directory, the modules it held when it was split: a listing that
+// stopped descending (or a directory renamed away) drops the moved code out of
+// every fence above, so each nested directory is floored on its own.
+const NESTED_FLOORS: Readonly<Record<string, number>> = {
+  // `executeDeployment`'s body (#5835): entry `execute.ts` plus six modules.
+  execute: 6,
+};
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const held = ENGINE_FAMILY.filter((rel) =>
+    rel.startsWith(`src/deployment/deploy-engine/${dir}/`)
+  ).length;
+  if (held < floor) {
+    throw new Error(`the engine family holds ${held} module(s) of deploy-engine/${dir}/, floor ${floor}`);
+  }
 }
 
 /** Every family file's source, joined with a newline. */
