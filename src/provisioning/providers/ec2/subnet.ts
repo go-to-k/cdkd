@@ -258,9 +258,11 @@ export async function createSubnet(
       // go-to-k/cdkd#5632: so does a block allocated from an IPv6 pool.
       if (prepared['Ipv6CidrBlock'] !== undefined || inputs.ipv6PoolId !== undefined) {
         let associationId = response.Subnet?.Ipv6CidrBlockAssociationSet?.[0]?.AssociationId;
-        // go-to-k/cdkd#5632: whether CreateSubnet names a pool-allocated
-        // block's association is not measured, so a missing one is looked
-        // up before the create is called failed.
+        // go-to-k/cdkd#5632: CreateSubnet's response names a pool-allocated
+        // IPv6 block's association, in state `associating`, for a
+        // dual-stack and an IPv6-only subnet alike (measured, us-east-1,
+        // 2026-11-07, #5945). The lookup stays as a fallback: a missing one
+        // is read for before the create is called failed.
         for (
           let attempt = 1;
           !associationId &&
