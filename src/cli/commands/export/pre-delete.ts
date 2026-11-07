@@ -28,7 +28,7 @@ type PreDeleteHandler = (entry: RecreateBeforePhase2Entry) => Promise<void>;
 export const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
   'AWS::IAM::Policy': async (entry) => {
     // Mirrors IAMPolicyProvider.delete (src/provisioning/providers/
-    // iam-policy-provider.ts): inline policy attachments are stored per-
+    // iam-policy/delete.ts): inline policy attachments are stored per-
     // target via PutRolePolicy/PutUserPolicy/PutGroupPolicy, so deletion
     // is per-target too. State carries Roles/Users/Groups arrays
     // capturing the attachment set at deploy time.
