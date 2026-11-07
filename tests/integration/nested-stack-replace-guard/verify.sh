@@ -115,8 +115,10 @@ if [ "${REFUSAL_RC}" = "0" ]; then
   echo "FAIL: Phase 0 deploy exited 0; NotificationARNs on AWS::CloudFormation::Stack must be refused" >&2
   exit 1
 fi
+# `Child: ` is the logical-id prefix only the pre-flight check prints; the
+# same refusal raised later from getProviderFor carries no prefix.
 for NEEDLE in \
-  'AWS::CloudFormation::Stack uses properties' \
+  'Child: AWS::CloudFormation::Stack uses properties' \
   'cannot fall back to Cloud Control API' \
   '(disableCcApiFallback)' \
   '- NotificationARNs: ' \
