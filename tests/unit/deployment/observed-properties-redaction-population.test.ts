@@ -359,8 +359,17 @@ describe('observedProperties write population (issue #2828)', () => {
     // ...and the reason it gives must still be TRUE: the engine's persist choke
     // point is what makes the bare assignment safe, so assert the choke point
     // is still wired rather than trusting the paragraph.
+    // The host's `withParentInfo` / `redactStateForPersist` delegate to their
+    // bodies in `deploy-engine/state-persist.ts` (go-to-k/cdkd#5835): each hop
+    // of the choke point is asserted in the file that holds it.
     const engine = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf-8');
-    expect(engine).toContain('this.redactStateForPersist(state)');
-    expect(engine).toContain('scrubResourceRecord');
+    expect(engine).toContain('return withParentInfo.call(this, state);');
+    expect(engine).toContain('return redactStateForPersist.call(this, state);');
+    const persist = readFileSync(
+      join(REPO_ROOT, 'src/deployment/deploy-engine/state-persist.ts'),
+      'utf-8'
+    );
+    expect(persist).toContain('this.redactStateForPersist(state)');
+    expect(persist).toContain('scrubResourceRecord');
   });
 });

@@ -43,15 +43,6 @@ export const ENGINE_FAMILY: readonly string[] = [
 if (ENGINE_FAMILY.length < 2) {
   throw new Error(`the engine family resolved to ${ENGINE_FAMILY.join(', ')} only`);
 }
-// And one per nested directory: a recursive read that stopped descending would
-// drop a whole subdirectory's modules while the top level kept the floor above.
-for (const sub of readdirSync(SPLIT_DIR, { withFileTypes: true })) {
-  if (!sub.isDirectory()) continue;
-  const prefix = `src/deployment/deploy-engine/${sub.name}/`;
-  if (!ENGINE_FAMILY.some((rel) => rel.startsWith(prefix))) {
-    throw new Error(`the engine family holds no module under ${prefix}`);
-  }
-}
 
 // Named nested modules: the per-directory floor above holds only while the
 // listing descends at all, so a non-recursive read would drop every nested
@@ -70,7 +61,9 @@ const NESTED_FLOORS: Readonly<Record<string, number>> = {
   execute: 6,
   // `provisionUpdateInPlace`'s body (#5835): entry `update-in-place.ts` plus 1 modules.
   'update-in-place': 1,
-  // `doDeployWithPrefetch`'s phases (#5835): entry `deploy-flow.ts` plus 12 modules.
+  // `update.ts`'s split body (#5835): 6 nested modules.
+  'update': 6,
+  // `deploy-flow.ts`'s split body (#5835): 12 nested modules.
   'deploy-flow': 12,
 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
