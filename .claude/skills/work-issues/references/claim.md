@@ -78,10 +78,12 @@ provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every file the fix makes FALSE — a comment, doc or rule stating the old invariant
 or calling the issue open, or a `verify.sh` / workflow reading a renamed key
 (`grep -rnw '<issue digits>\|<key symbol>\|<each changed flag or cdkd
-subcommand>' --exclude-dir={node_modules,cdk.out,_generated} src docs
+subcommand>\|<a special case the fix generalizes, by its OLD spelling>'
+--exclude-dir={node_modules,cdk.out,_generated} src docs
 .claude/rules plugins tests/integration .github`, each hit through §2's
 open-PR `files` query; READ each hit's
-prose, as a stale sentence may name no symbol; a `plugins/**` edit adds
+prose, as a stale sentence may name no symbol — a mirror or list of a widened
+special case names the OLD type, not the new one (#5944); a `plugins/**` edit adds
 check-docs' two `version` files); a NEW SDK provider adds
 `.claude/rules/providers.md`'s "Adding a New SDK Provider" files, the fenced
 tables (`name-keys.ts`,
