@@ -304,4 +304,35 @@ describe('container-pool — IMAGE branch (issue #453)', () => {
     pool.release(h);
     await pool.dispose();
   });
+  it('IMAGE branch: mounts spec.rieMount before the profile credentials file (#6018)', async () => {
+    const rieMount = {
+      hostPath: '/cache/lambda-rie/linux-amd64/aws-lambda-rie',
+      containerPath: '/var/rapid/aws-lambda-rie',
+      readOnly: true as const,
+    };
+    const spec = makeImageSpec('Fn', {
+      rieMount,
+      entryPoint: ['/var/rapid/aws-lambda-rie'],
+      command: ['/app'],
+      profileCredentialsFile: { hostPath: '/tmp/creds', containerPath: '/cdkd/credentials' },
+    });
+    const pool = createContainerPool(new Map([['Fn', spec]]), {
+      perLambdaConcurrency: 1,
+      streamLogs: false,
+    });
+    const h = await pool.acquire('Fn');
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      extraMounts?: unknown[];
+      entryPoint?: string[];
+      cmd: string[];
+    };
+    expect(callArg.extraMounts).toEqual([
+      rieMount,
+      { hostPath: '/tmp/creds', containerPath: '/cdkd/credentials', readOnly: true },
+    ]);
+    expect(callArg.entryPoint).toEqual(['/var/rapid/aws-lambda-rie']);
+    expect(callArg.cmd).toEqual(['/app']);
+    pool.release(h);
+    await pool.dispose();
+  });
 });
