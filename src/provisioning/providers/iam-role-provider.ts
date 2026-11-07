@@ -1,62 +1,11 @@
-import {
-  IAMClient,
-  CreateRoleCommand,
-  UpdateRoleCommand,
-  UpdateAssumeRolePolicyCommand,
-  DeleteRoleCommand,
-  GetRoleCommand,
-  GetRolePolicyCommand,
-  PutRolePolicyCommand,
-  DeleteRolePolicyCommand,
-  ListRolePoliciesCommand,
-  AttachRolePolicyCommand,
-  DetachRolePolicyCommand,
-  ListAttachedRolePoliciesCommand,
-  ListInstanceProfilesForRoleCommand,
-  RemoveRoleFromInstanceProfileCommand,
-  TagRoleCommand,
-  UntagRoleCommand,
-  PutRolePermissionsBoundaryCommand,
-  DeleteRolePermissionsBoundaryCommand,
-  ListRoleTagsCommand,
-  NoSuchEntityException,
-  type Role,
-} from '@aws-sdk/client-iam';
-import { getLogger } from '../../utils/logger.js';
-import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { IAMClient } from '@aws-sdk/client-iam';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { markNotGone } from '../not-gone.js';
-import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { withRemovalDefaults } from '../update-removal.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import {
-  createMaskedLogSinks,
-  isSecretDerivedValue,
-  maskerOrIdentity,
-  withDerivedNameMasks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
-import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import {
-  markNonRetryable,
-  markRedactedCause,
-  relayedNameCollision,
-  wrapMaskedAwsError,
-} from '../../deployment/retryable-errors.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import { type DeleteContext } from '../region-check.js';
+import { type MaskedLogSinks, type MaskerFn } from '../masked-retry-logger.js';
+import { type DeleteProgress } from '../delete-started.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -70,31 +19,28 @@ import type {
   ResourceNotFound,
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { safeMsg } from '../../utils/display-safe.js';
-
-/**
- * An IAM role NAME (1-64 of `A-Z a-z 0-9 + = , . @ _ -`, IAM's `RoleName`
- * pattern), the physical id this provider records. The identity answers
- * (`isSameResource`, `resourceIdentity`) refuse anything else, an ARN
- * included: this provider never records one.
- */
-function isRoleName(id: string): boolean {
-  return /^[\w+=,.@-]{1,64}$/.test(id);
-}
-
-/**
- * go-to-k/cdkd#4606 / #4655: a role's identity token is its `RoleId` (the
- * `AROA…` unique id). IAM assigns it at `CreateRole` and never changes it; a
- * role deleted and re-created under the same name gets another one (IAM User
- * Guide, "IAM identifiers" → "Unique identifiers"; the
- * `iam-role-fix-forward-orphan` fixture measures the re-create). The wiring
- * calls a CREATE makes after `CreateRole` (policies) do not touch it.
- * `undefined` for a missing or empty one.
- */
-function roleIdentityToken(roleId: string | undefined): string | undefined {
-  return typeof roleId === 'string' && roleId !== '' ? roleId : undefined;
-}
+import { wrapMaskedError } from './iam-role/shared.js';
+import { create } from './iam-role/create.js';
+import {
+  update,
+  updateManagedPolicies,
+  updateInlinePolicies,
+  updateTags,
+} from './iam-role/update.js';
+import {
+  deleteImpl,
+  detachAllManagedPolicies,
+  deleteAllInlinePolicies,
+  removeFromAllInstanceProfiles,
+} from './iam-role/delete.js';
+import {
+  getAttribute,
+  isSameResource,
+  resourceIdentity,
+  readRoleIdIfExists,
+  readCurrentState,
+  importImpl,
+} from './iam-role/read-state.js';
 
 /**
  * AWS IAM Role Provider
@@ -103,41 +49,17 @@ function roleIdentityToken(roleId: string | undefined): string | undefined {
  * This is required because IAM Role is not supported by Cloud Control API.
  */
 export class IAMRoleProvider implements ResourceProvider {
-  private iamClient: IAMClient;
+  iamClient: IAMClient;
   /** `CreateRole` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
-  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
-  private logger = getLogger().child('IAMRoleProvider');
+  readonly createClient = new IamCreateClientCache(() => this.iamClient);
+  logger: ConsoleLogger = getLogger().child('IAMRoleProvider');
 
-  /**
-   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
-   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
-   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
-   * failure is named by its class plus the `--verbose` pointer: AWS's text
-   * goes to `debug` through the masker, and the wrap is stamped
-   * `markRedactedCause` so the retry classifiers read the withheld text (the
-   * IAM-propagation wording included) on the unmasked `cause` chain. An
-   * "already exists" is restated ({@link relayedNameCollision}); the class
-   * name keeps `NoSuchEntity` in the message for the engine's not-found
-   * matchers. A cdkd-authored or transport error, or a non-`Error` throw,
-   * keeps its text masked (issue #2177, `wrapMaskedAwsError`, issue #4244).
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
-   * sees the catch that throws it as a wrap.
-   */
-  private wrapMaskedError(
+  wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(mask(failure.detail));
-    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
-    this.logger.debug(mask(build(mask(failure.detail)).message));
-    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
-    // read as the resource just created.
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
+    return wrapMaskedError.call(this, mask, error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -201,260 +123,16 @@ export class IAMRoleProvider implements ResourceProvider {
     this.iamClient = awsClients.iam;
   }
 
-  /**
-   * Create an IAM role
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    // Issue #2177: ONE masked sink per operation (the `ssm-parameter-provider.ts`
-    // shape), and every bag-derived value masked RAW as well -- the name, the
-    // attached ARNs and the inline policy names all come out of the resolved
-    // `properties` bag. Absent context means identity.
-    const roleName = generateResourceNameWithFallback(
-      properties['RoleName'] as string | undefined,
-      logicalId,
-      { maxLength: 64 }
-    );
-    // The physical name is REWRITTEN from the template value (stack prefix,
-    // charset folding, truncation), so the masker cannot recognise it by
-    // itself: add it as a needle when the value it came from is a secret.
-    const log = withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [[properties['RoleName'], roleName]]
-    );
-    const { value: v } = log;
-    log.debug(`Creating IAM role ${logicalId}`);
-    const assumeRolePolicyDocument = properties['AssumeRolePolicyDocument'];
-
-    if (!assumeRolePolicyDocument) {
-      throw new ProvisioningError(
-        `AssumeRolePolicyDocument is required for IAM role ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // go-to-k/cdkd#4583: set once CreateRole returns, or a replay adopts its own
-    // role (#5656); cleared when the partial-create cleanup deleted the role, so
-    // only a left-behind one is marked.
-    let leftBehind = false;
-    // go-to-k/cdkd#4606: the RoleId CreateRole answered with (for an adopted
-    // role, the same one, read back), carried on the mark so the journal needs
-    // no read of a role whose failure may fail that read too.
-    let createdRoleIdentity: string | undefined;
-    try {
-      // Serialize policy document
-      const policyDocument =
-        typeof assumeRolePolicyDocument === 'string'
-          ? assumeRolePolicyDocument
-          : JSON.stringify(assumeRolePolicyDocument);
-
-      // Create role
-      const createParams: {
-        RoleName: string;
-        AssumeRolePolicyDocument: string;
-        Description?: string;
-        MaxSessionDuration?: number;
-        Path?: string;
-        PermissionsBoundary?: string;
-        Tags?: Array<{ Key: string; Value: string }>;
-      } = {
-        RoleName: roleName,
-        AssumeRolePolicyDocument: policyDocument,
-      };
-
-      if (properties['Description']) {
-        createParams.Description = properties['Description'] as string;
-      }
-      if (properties['MaxSessionDuration']) {
-        createParams.MaxSessionDuration = properties['MaxSessionDuration'] as number;
-      }
-      if (properties['Path']) {
-        createParams.Path = properties['Path'] as string;
-      }
-      if (properties['PermissionsBoundary']) {
-        createParams.PermissionsBoundary = properties['PermissionsBoundary'] as string;
-      }
-      // go-to-k/cdkd#4971: the tags ride on `CreateRole` itself, as
-      // CloudFormation sends them, so an SCP requiring `aws:RequestTag/...` on
-      // `iam:CreateRole` sees them. No separate `TagRole` follows. A tagged
-      // `CreateRole` needs `iam:TagRole` (measured), the permission the
-      // follow-up `TagRole` already needed, so no role that could create
-      // before loses it.
-      if (tags.length > 0) {
-        createParams.Tags = tags;
-      }
-
-      const createClient = await this.createClient.get();
-      let role: Role | undefined;
-      let adopted = false;
-      try {
-        role = (await createClient.send(new CreateRoleCommand(createParams))).Role;
-      } catch (createError) {
-        // go-to-k/cdkd#5656: a replay colliding with the role its own earlier
-        // attempt left behind finishes that role; anything else fails as before.
-        // Repeating `AttachRolePolicy` succeeded when measured on real IAM
-        // (2026-11-03); `PutRolePolicy` was not probed, while its siblings
-        // `PutUserPolicy` and `PutGroupPolicy` were and succeeded.
-        role = await iamEntityLeftByThisCreate({
-          logicalId,
-          resourceType,
-          noun: 'role',
-          displayName: roleName,
-          createError,
-          namesThisEntity: (reported) => reported === roleName,
-          read: async () =>
-            (await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }))).Role,
-          identityOf: (live) => roleIdentityToken(live?.RoleId),
-          log,
-        });
-        if (role === undefined) throw createError;
-        adopted = true;
-      }
-      leftBehind = true;
-      createdRoleIdentity = roleIdentityToken(role?.RoleId);
-      if (!adopted) {
-        reportCreatedResource(logicalId, resourceType, roleName, createdRoleIdentity); // go-to-k/cdkd#5511
-        log.debug(`Created IAM role: ${v(roleName)}`);
-      }
-
-      // CreateRoleCommand has succeeded (here or, for an adopted role, in an
-      // earlier attempt) — AWS has now committed the Role.
-      // Every subsequent call wires sub-resources onto it (managed-policy
-      // attachments / inline policies); if any fail, the role
-      // exists on AWS but cdkd state will NOT (the throw aborts before
-      // the success-return). The next redeploy would then re-try CREATE
-      // and AWS would reject with `EntityAlreadyExists: Role with name
-      // <X> already exists`. Wrap the wiring in an inner try/catch that
-      // issues best-effort `Detach*` + `DeleteRolePolicy` + `DeleteRole`
-      // before re-throwing, so the failed attempt is self-healing on the
-      // next redeploy; an adopted role skips this cleanup (see the catch).
-      // The cleanup mirrors the order in `delete()`:
-      // managed-policy detach -> inline-policy delete -> DeleteRole
-      // (instance profiles don't need removal on a freshly-created role).
-      try {
-        // Attach managed policies if specified
-        const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
-        if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
-          for (const policyArn of managedPolicyArns) {
-            await this.iamClient.send(
-              new AttachRolePolicyCommand({
-                RoleName: roleName,
-                PolicyArn: policyArn,
-              })
-            );
-            log.debug(`Attached managed policy ${v(policyArn)} to role ${v(roleName)}`);
-          }
-        }
-
-        // Add inline policies if specified
-        const policies = properties['Policies'] as
-          | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined;
-        if (policies && Array.isArray(policies)) {
-          for (const policy of policies) {
-            const policyDoc =
-              typeof policy.PolicyDocument === 'string'
-                ? policy.PolicyDocument
-                : JSON.stringify(policy.PolicyDocument);
-
-            await this.iamClient.send(
-              new PutRolePolicyCommand({
-                RoleName: roleName,
-                PolicyName: policy.PolicyName,
-                PolicyDocument: policyDoc,
-              })
-            );
-            log.debug(`Added inline policy ${v(policy.PolicyName)} to role ${v(roleName)}`);
-          }
-        }
-      } catch (innerError) {
-        // go-to-k/cdkd#5656: the identity was read once, and every call here
-        // goes by NAME, so a stripping delete is not repeated on the strength
-        // of that read. The role stays reported and marked: the next replay
-        // adopts it again, and a final failure leaves it to the journal, whose
-        // settle compares the RoleId before deleting.
-        if (!adopted) {
-          try {
-            await this.detachAllManagedPolicies(roleName, log);
-            await this.deleteAllInlinePolicies(roleName, log);
-            await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
-            retractCreatedResource(logicalId, resourceType, roleName);
-            leftBehind = false;
-            log.debug(
-              `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
-            );
-          } catch (cleanupError) {
-            // The name is `generateResourceNameWithFallback`'s output, whose
-            // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-            // (issue #3136), so it renders BARE -- but it can still BE a resolved
-            // secret, so every command goes through `pasteableAwsCommand` with the
-            // masker (issue #2177): a masked name is WITHHELD rather than printed
-            // as `***`, which would act on a different role. Pinned by this
-            // type's partial-create cleanup test.
-            // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
-            // redirections.
-            const aws = pasteableAwsCommand(log.mask);
-            // An AWS-authored failure is named by its class at warn, and AWS's
-            // text (a denied `DeleteRole` names the caller) goes to `debug` under
-            // the same head (go-to-k/cdkd#2319).
-            const cleanupFailure = describeAwsFailure(cleanupError);
-            const cleanupHead = `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): `;
-            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
-            log.warn(
-              `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
-            );
-          }
-        }
-        // The resource itself was created: an "already exists" from its wiring
-        // is an auxiliary object's, not this resource's name collision (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
-
-      log.debug(`Successfully created IAM role ${logicalId}: ${v(roleName)}`);
-
-      const attributes = {
-        Arn: role?.Arn,
-        RoleId: role?.RoleId,
-      };
-
-      return {
-        physicalId: roleName,
-        attributes,
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // An AWS-authored failure is named by its class (issue #2319) and any
-      // other text masked RAW (issue #2177). The cause stays unmasked, and the
-      // stamp lets the retry classifiers read it (`wrapMaskedError`, #4244).
-      throw this.wrapMaskedError(log.mask, error, (text) => {
-        const built = new ProvisioningError(
-          `Failed to create IAM role ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          roleName,
-          cause
-        );
-        // With its RoleId (go-to-k/cdkd#4606), which a later settle compares
-        // before deleting the role by name.
-        return leftBehind
-          ? markCreatedBeforeFailure(built, logicalId, resourceType, roleName, createdRoleIdentity)
-          : built;
-      });
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update an IAM role
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -462,747 +140,75 @@ export class IAMRoleProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // The re-create below takes the template bag: a reset is an UPDATE value,
-    // so a key the caller injected one for (#1160) is taken back out. Defensive
-    // since #5004: the only reset left is Description '', which create() skips
-    // anyway because it sends Description only when truthy.
-    const templateProperties: Record<string, unknown> = { ...properties };
-    for (const key of context?.removedProperties ?? []) {
-      if (this.removalDefaults.get(resourceType)?.has(key) === true) delete templateProperties[key];
-    }
-    properties = withRemovalDefaults(
-      this.removalDefaults,
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
       resourceType,
       properties,
       previousProperties,
       context
     );
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const derivedRoleName = generateResourceNameWithFallback(
-      properties['RoleName'] as string | undefined,
-      logicalId,
-      { maxLength: 64 }
-    );
-    // Issue #2177 -- see `create()`, including the derived-name needles. The
-    // recorded name is paired with the PREVIOUS value it was derived from, and
-    // with the DESIRED one too: on a `drift --revert` the previous side is an
-    // AWS readback (never secret-derived) while the desired bag re-resolved the
-    // secret the recorded name was built from, and a truncated recorded name
-    // contains no copy of the derived needle (issue #4023).
-    const log = withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      [
-        [properties['RoleName'], derivedRoleName],
-        [previousProperties['RoleName'], physicalId],
-        // Only on a revert: on a template-path rename the recorded name is
-        // NOT derived from the desired value, and masking it would hide the
-        // old name for no reason.
-        ...(context?.desiredFromAwsReadback === true
-          ? [[properties['RoleName'], physicalId] as [unknown, string]]
-          : []),
-      ]
-    );
-    const { value: v } = log;
-    log.debug(`Updating IAM role ${logicalId}: ${v(physicalId)}`);
-
-    // Issue #4023: `cdkd drift --revert` keeps the recorded name. The name is
-    // derived in the CALLER's stack-name / prefix scope, which a revert does
-    // not reproduce, and its desired bag can carry the template's pre-prefix
-    // name (a legacy `--prefix-user-supplied-names` stack with no observed
-    // baseline) — so a mismatch there is not a rename the user asked for, and
-    // the replacement arm below would create a role under the derived name and
-    // delete the live one. A role cannot be renamed in place anyway.
-    const revertKeepsName =
-      context?.desiredFromAwsReadback === true && derivedRoleName !== physicalId;
-    if (revertKeepsName) {
-      log.warn(
-        `IAM role ${logicalId}: RoleName is not reverted — the role ${v(physicalId)} keeps ` +
-          `its name (the reverted properties derive ${v(derivedRoleName)}), since a drift ` +
-          `revert never replaces a role. 'cdkd drift' keeps reporting the name until ` +
-          `'cdkd drift --accept' records the live one; only a deploy renames the role.`
-      );
-    }
-    // go-to-k/cdkd#5064: an un-named role whose recorded name differs from the
-    // derivation only by the naming scheme keeps it, never a replacement.
-    const generatedNameKept = recordedGeneratedNameKept({
-      recorded: physicalId,
-      derived: derivedRoleName,
-      declaredName: properties['RoleName'],
-      previousDeclaredName: previousProperties['RoleName'],
-      logicalId,
-      options: { maxLength: 64 },
-    });
-    if (generatedNameKept) {
-      log.debug(
-        `IAM role ${logicalId}: keeping its generated name ${v(physicalId)} (the template names no role)`
-      );
-    }
-    const newRoleName = revertKeepsName || generatedNameKept ? physicalId : derivedRoleName;
-
-    // Check if immutable properties changed (requires replacement)
-    // RoleName and Path are immutable - cannot be changed after creation
-    const newPath = (properties['Path'] as string | undefined) || '/';
-    const oldPath = (previousProperties['Path'] as string | undefined) || '/';
-    // A secret-derived Path is recorded as its `{{resolve:...}}` reference and
-    // handed here resolved (go-to-k/cdkd#4275). The template did not change it:
-    // a changed reference is a replacement the engine plans before any update.
-    // So it is never a Path change here — refusing it would let `--replace`'s
-    // fallback delete and re-create the role on an unrelated update. A secret
-    // ROTATED under the reference is not applied, as CloudFormation keeps a
-    // create-only value its template did not change; the live path is read to
-    // say so. A rename needs no Path evidence, so it reads nothing.
-    const pathBehindSecret =
-      newRoleName === physicalId &&
-      newPath !== oldPath &&
-      isSecretDerivedValue(previousProperties['Path'], maskerOrIdentity(undefined));
-    let livePath: string | undefined;
-    if (pathBehindSecret) {
-      try {
-        livePath = (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role
-          ?.Path;
-      } catch (error) {
-        const cause = error instanceof Error ? error : undefined;
-        throw this.wrapMaskedError(
-          log.mask,
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to read the path of IAM role ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        );
-      }
-    }
-    if (pathBehindSecret) {
-      // No live path means the role cannot be shown to be the recorded one:
-      // fail closed, and NOT as update-not-supported, which `--replace` would
-      // turn into a delete.
-      if (livePath === undefined || livePath === '') {
-        throw markNonRetryable(
-          new ProvisioningError(
-            `IAM role ${logicalId}: its Path comes from a secret reference, and IAM returned no ` +
-              `path for ${v(physicalId)} to confirm it against. Nothing was changed.`,
-            resourceType,
-            logicalId,
-            physicalId
-          )
-        );
-      }
-      if (livePath !== newPath) {
-        // Neither path is printed: both are secret values.
-        log.warn(
-          `IAM role ${logicalId}: the secret its Path comes from now resolves to a different ` +
-            `path than the role ${v(physicalId)} has. A role cannot move in place, so it keeps ` +
-            `its path; the new value takes effect when the template changes the reference, ` +
-            `which replaces the role.`
-        );
-      }
-    }
-    const pathChanged = newPath !== oldPath && !pathBehindSecret;
-    const needsReplacement = newRoleName !== physicalId || pathChanged;
-
-    // Issue #4023: the replacement arm re-derives the name inside `create()`,
-    // so on a revert it would still create under the derived name and delete
-    // the recorded role. A revert restores the recorded resource and never
-    // replaces it: refuse before any call.
-    if (needsReplacement && context?.desiredFromAwsReadback === true) {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `IAM role ${logicalId}: Path cannot be reverted to ${v(newPath)} — a role's Path ` +
-            `cannot change in place, and a drift revert never replaces the role ` +
-            `${v(physicalId)}. Nothing was changed; deploy the stack to replace it.`,
-          resourceType,
-          logicalId,
-          physicalId
-        )
-      );
-    }
-
-    // Issue #4739: the re-create below asks for `newRoleName`, which a Path-only
-    // change leaves equal to the live role's name, and IAM role names are unique
-    // whatever the path, so CreateRole could only fail `EntityAlreadyExists`.
-    // The registry classifies a Path change as a replacement, so a deploy never
-    // routes one here; a caller that still does gets the update-not-supported
-    // refusal, which the engine's fallback turns into a delete-first replacement
-    // under `--replace`, before any call.
-    if (needsReplacement && newRoleName === physicalId) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        log.mask(
-          `Path changed from ${v(oldPath)} to ${v(newPath)}, and an IAM role cannot move to ` +
-            `another path; a replacement under the same name ${v(physicalId)} must delete the ` +
-            `role first — re-deploy with --replace, or give the role a new name`
-        )
-      );
-    }
-
-    if (needsReplacement) {
-      // Only a rename reaches here: a Path-only change was refused above.
-      log.debug(
-        `RoleName changed, replacing role: ${v(physicalId)} (RoleName: from ${v(physicalId)} to ${v(newRoleName)})`
-      );
-
-      // Create new role. The masker is forwarded (issue #2177) and NOTHING
-      // else: this context never carries `replayingState`, so a create-side
-      // pre-flight refusal would still fire on a rollback replay (see
-      // `CreateContext`).
-      // Rebound rather than passed by its own name, so the wiring generator
-      // still traces the bag into `create()`.
-      properties = templateProperties;
-      const createResult = await this.create(logicalId, resourceType, properties, {
-        maskSecrets: log.mask,
-      });
-
-      // Delete old role with full cleanup (managed policies, inline policies, instance profiles)
-      // What the inner delete left behind, if anything (issue #1819). The new
-      // role already exists, so the replacement cannot be aborted — the honest
-      // outcome is "updated, and the old role survives", which is what the
-      // update's `'partial'` arm says. Before that channel existed this was a
-      // `logger.warn` and the deploy exited 0 with the old role alive and no
-      // longer in cdkd state.
-      let orphanReason: string | undefined;
-      try {
-        // The OLD name can be secret-derived too (go-to-k/cdkd#2007).
-        const deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
-          maskSecrets: log.mask,
-        });
-        // Issue #1778: a SKIP is a non-throwing "I did not address this
-        // resource", so it sails straight past the catch below — the one path
-        // that would have told the user the old role is still there.
-        if (deleteResult?.outcome === 'skipped') {
-          orphanReason = log.mask(
-            `old role ${v(physicalId)} was not deleted: ${deleteResult.reason}`
-          );
-          log.warn(
-            `Skipped deleting old role ${v(physicalId)} during replacement: ${deleteResult.reason}. ` +
-              `The old role may be orphaned and require manual cleanup.`
-          );
-        }
-      } catch (error) {
-        // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
-        // strips the role before `DeleteRole` refuses, so it is not whole.
-        // `error` is `delete()`'s wrap, which names an AWS failure by its class
-        // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
-        orphanReason = log.mask(
-          `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
-        );
-        log.warn(
-          `Failed to delete old role ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
-            `The old role may be orphaned and require manual cleanup.`
-        );
-      }
-
-      const base = {
-        physicalId: createResult.physicalId,
-        wasReplaced: true as const,
-        ...(createResult.attributes ? { attributes: createResult.attributes } : {}),
-      };
-      // The old physical id travels in the reason: state now points at the NEW
-      // role and nothing else downstream still knows the one that survived.
-      return orphanReason !== undefined
-        ? { ...base, outcome: 'partial' as const, reason: orphanReason }
-        : base;
-    }
-
-    try {
-      // Update role properties (Description, MaxSessionDuration)
-      const updateParams: {
-        RoleName: string;
-        Description?: string;
-        MaxSessionDuration?: number;
-      } = {
-        RoleName: physicalId,
-      };
-
-      // A REMOVED field arrives as its `removalDefaults` reset (issue
-      // #1160); a field that was never set stays absent (no spurious
-      // reset). An explicit user-supplied '' Description passes through
-      // too — the `!== undefined` behavior that fixed the `cdkd drift
-      // --revert` "reverted but re-detected" symptom; a truthy gate would
-      // silently drop the empty string.
-      const descriptionInput = properties['Description'] as string | undefined;
-      if (descriptionInput !== undefined) {
-        updateParams.Description = descriptionInput;
-      }
-      const maxSessionDurationInput = properties['MaxSessionDuration'] as number | undefined;
-      if (maxSessionDurationInput !== undefined) {
-        updateParams.MaxSessionDuration = maxSessionDurationInput;
-      }
-
-      await this.iamClient.send(new UpdateRoleCommand(updateParams));
-
-      // Update AssumeRolePolicyDocument if changed
-      const newAssumePolicy = properties['AssumeRolePolicyDocument'];
-      const oldAssumePolicy = previousProperties['AssumeRolePolicyDocument'];
-      if (newAssumePolicy) {
-        const newPolicyStr =
-          typeof newAssumePolicy === 'string' ? newAssumePolicy : JSON.stringify(newAssumePolicy);
-        const oldPolicyStr = oldAssumePolicy
-          ? typeof oldAssumePolicy === 'string'
-            ? oldAssumePolicy
-            : JSON.stringify(oldAssumePolicy)
-          : '';
-
-        if (newPolicyStr !== oldPolicyStr) {
-          await this.iamClient.send(
-            new UpdateAssumeRolePolicyCommand({
-              RoleName: physicalId,
-              PolicyDocument: newPolicyStr,
-            })
-          );
-          log.debug(`Updated assume role policy for ${v(physicalId)}`);
-        }
-      }
-
-      // Update PermissionsBoundary
-      const newBoundary = properties['PermissionsBoundary'] as string | undefined;
-      const oldBoundary = previousProperties['PermissionsBoundary'] as string | undefined;
-      if (newBoundary !== oldBoundary) {
-        if (newBoundary) {
-          await this.iamClient.send(
-            new PutRolePermissionsBoundaryCommand({
-              RoleName: physicalId,
-              PermissionsBoundary: newBoundary,
-            })
-          );
-          log.debug(`Set permissions boundary for ${v(physicalId)}: ${v(newBoundary)}`);
-        } else if (oldBoundary) {
-          await this.iamClient.send(
-            new DeleteRolePermissionsBoundaryCommand({
-              RoleName: physicalId,
-            })
-          );
-          log.debug(`Removed permissions boundary from ${v(physicalId)}`);
-        }
-      }
-
-      // Update managed policies
-      await this.updateManagedPolicies(
-        physicalId,
-        properties['ManagedPolicyArns'] as string[] | undefined,
-        previousProperties['ManagedPolicyArns'] as string[] | undefined,
-        log
-      );
-
-      // Update inline policies
-      await this.updateInlinePolicies(
-        physicalId,
-        properties['Policies'] as
-          | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined,
-        previousProperties['Policies'] as
-          | Array<{ PolicyName: string; PolicyDocument: unknown }>
-          | undefined,
-        log,
-        context?.inlinePolicyClaimed
-      );
-
-      // Update tags
-      await this.updateTags(
-        physicalId,
-        resourceType,
-        logicalId,
-        properties['Tags'],
-        previousProperties['Tags'],
-        log
-      );
-
-      log.debug(`Successfully updated IAM role ${logicalId}`);
-
-      // Get updated role info
-      const getRoleResponse = await this.iamClient.send(
-        new GetRoleCommand({ RoleName: physicalId })
-      );
-
-      const attributes = {
-        Arn: getRoleResponse.Role?.Arn,
-        RoleId: getRoleResponse.Role?.RoleId,
-      };
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes,
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // Redacted or masked RAW, and stamped, as in `create()` (`wrapMaskedError`).
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update IAM role ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  /**
-   * Delete an IAM role
-   *
-   * Before deleting, performs full cleanup:
-   * 1. Detach all managed policies
-   * 2. Delete all inline policies
-   * 3. Remove role from all instance profiles
-   * 4. Delete the role itself
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    // go-to-k/cdkd#2007: the role name can be secret-derived. One sink set for
-    // the whole delete, the cleanup helpers it shares with `update()` included.
-    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    const { value: v } = log;
-    log.debug(`Deleting IAM role ${logicalId}: ${v(physicalId)}`);
-    // go-to-k/cdkd#4946: set once a step below changes the role, so a refused
-    // `DeleteRole` is never read as a whole survivor.
-    const progress: DeleteProgress = { stripped: false };
-
-    try {
-      // Check if role exists
-      try {
-        await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
-      } catch (error) {
-        if (error instanceof NoSuchEntityException) {
-          const clientRegion = await this.iamClient.config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            physicalId
-          );
-          if (context?.failedCreateOrphan === true) {
-            // A journaled failed-CREATE orphan already gone settles with exit
-            // 0 (go-to-k/cdkd#4606), so it is said once at info. The name is
-            // interpolated verbatim for the caller's printing bag to mask.
-            this.logger.info(
-              safeMsg`  IAM role ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
-            );
-          } else {
-            log.debug(`Role ${v(physicalId)} does not exist, skipping deletion`);
-          }
-          return;
-        }
-        throw error;
-      }
-
-      // Step 1: Detach all managed policies
-      await this.detachAllManagedPolicies(physicalId, log, progress);
-
-      // Step 2: Delete all inline policies
-      await this.deleteAllInlinePolicies(physicalId, log, progress);
-
-      // Step 3: Remove role from all instance profiles
-      await this.removeFromAllInstanceProfiles(physicalId, log, progress);
-
-      // Step 4: Delete the role
-      await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
-
-      log.debug(`Successfully deleted IAM role ${logicalId}`);
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            log.mask(`Failed to delete IAM role ${logicalId}: ${text}`),
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, which the delete classifiers
-      // read as "already deleted" on a `NotFound` needle: only the typed
-      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
-      // `NoSuchEntity` is not such a class.
-      const marked =
-        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
-      throw progress.stripped ? markDeleteStarted(marked) : marked;
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, _properties, context);
   }
 
-  /**
-   * Detach all managed policies from the role
-   */
-  private async detachAllManagedPolicies(
+  detachAllManagedPolicies(
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
     // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks,
     progress?: DeleteProgress
   ): Promise<void> {
-    const { value: v } = log;
-    log.debug(`Detaching all managed policies from role ${v(roleName)}`);
-
-    try {
-      const attachedPolicies = await this.iamClient.send(
-        new ListAttachedRolePoliciesCommand({ RoleName: roleName })
-      );
-
-      const policies = attachedPolicies.AttachedPolicies || [];
-      if (policies.length === 0) {
-        log.debug(`No managed policies attached to role ${v(roleName)}`);
-        return;
-      }
-
-      for (const policy of policies) {
-        if (policy.PolicyArn) {
-          try {
-            await this.iamClient.send(
-              new DetachRolePolicyCommand({
-                RoleName: roleName,
-                PolicyArn: policy.PolicyArn,
-              })
-            );
-            if (progress) progress.stripped = true;
-            log.debug(`Detached managed policy ${v(policy.PolicyArn)} from role ${v(roleName)}`);
-          } catch (error) {
-            if (error instanceof NoSuchEntityException) {
-              log.debug(
-                `Managed policy ${v(policy.PolicyArn)} already detached from role ${v(roleName)}`
-              );
-            } else {
-              throw error;
-            }
-          }
-        }
-      }
-
-      log.debug(`Detached ${policies.length} managed policies from role ${v(roleName)}`);
-    } catch (error) {
-      if (error instanceof NoSuchEntityException) {
-        log.debug(`Role ${v(roleName)} not found when detaching managed policies`);
-        return;
-      }
-      throw error;
-    }
+    return detachAllManagedPolicies.call(this, roleName, log, progress);
   }
 
-  /**
-   * Delete all inline policies from the role
-   */
-  private async deleteAllInlinePolicies(
+  deleteAllInlinePolicies(
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
     // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks,
     progress?: DeleteProgress
   ): Promise<void> {
-    const { value: v } = log;
-    log.debug(`Deleting all inline policies from role ${v(roleName)}`);
-
-    try {
-      const inlinePolicies = await this.iamClient.send(
-        new ListRolePoliciesCommand({ RoleName: roleName })
-      );
-
-      const policyNames = inlinePolicies.PolicyNames || [];
-      if (policyNames.length === 0) {
-        log.debug(`No inline policies on role ${v(roleName)}`);
-        return;
-      }
-
-      for (const policyName of policyNames) {
-        try {
-          await this.iamClient.send(
-            new DeleteRolePolicyCommand({
-              RoleName: roleName,
-              PolicyName: policyName,
-            })
-          );
-          if (progress) progress.stripped = true;
-          log.debug(`Deleted inline policy ${v(policyName)} from role ${v(roleName)}`);
-        } catch (error) {
-          if (error instanceof NoSuchEntityException) {
-            log.debug(`Inline policy ${v(policyName)} already deleted from role ${v(roleName)}`);
-          } else {
-            throw error;
-          }
-        }
-      }
-
-      log.debug(`Deleted ${policyNames.length} inline policies from role ${v(roleName)}`);
-    } catch (error) {
-      if (error instanceof NoSuchEntityException) {
-        log.debug(`Role ${v(roleName)} not found when deleting inline policies`);
-        return;
-      }
-      throw error;
-    }
+    return deleteAllInlinePolicies.call(this, roleName, log, progress);
   }
 
-  /**
-   * Remove the role from all instance profiles
-   */
-  private async removeFromAllInstanceProfiles(
+  removeFromAllInstanceProfiles(
     roleName: string,
     log: MaskedLogSinks,
     progress?: DeleteProgress
   ): Promise<void> {
-    const { value: v } = log;
-    log.debug(`Removing role ${v(roleName)} from all instance profiles`);
-
-    try {
-      const instanceProfiles = await this.iamClient.send(
-        new ListInstanceProfilesForRoleCommand({ RoleName: roleName })
-      );
-
-      const profiles = instanceProfiles.InstanceProfiles || [];
-      if (profiles.length === 0) {
-        log.debug(`No instance profiles associated with role ${v(roleName)}`);
-        return;
-      }
-
-      for (const profile of profiles) {
-        if (profile.InstanceProfileName) {
-          try {
-            await this.iamClient.send(
-              new RemoveRoleFromInstanceProfileCommand({
-                RoleName: roleName,
-                InstanceProfileName: profile.InstanceProfileName,
-              })
-            );
-            if (progress) progress.stripped = true;
-            log.debug(
-              `Removed role ${v(roleName)} from instance profile ${v(profile.InstanceProfileName)}`
-            );
-          } catch (error) {
-            if (error instanceof NoSuchEntityException) {
-              log.debug(
-                `Role ${v(roleName)} already removed from instance profile ${v(profile.InstanceProfileName)}`
-              );
-            } else {
-              throw error;
-            }
-          }
-        }
-      }
-
-      log.debug(`Removed role ${v(roleName)} from ${profiles.length} instance profiles`);
-    } catch (error) {
-      if (error instanceof NoSuchEntityException) {
-        log.debug(`Role ${v(roleName)} not found when removing from instance profiles`);
-        return;
-      }
-      throw error;
-    }
+    return removeFromAllInstanceProfiles.call(this, roleName, log, progress);
   }
 
-  /**
-   * Update managed policies attached to role
-   */
-  private async updateManagedPolicies(
+  updateManagedPolicies(
     roleName: string,
     newPolicies: string[] | undefined,
     oldPolicies: string[] | undefined,
     log: MaskedLogSinks
   ): Promise<void> {
-    const { value: v } = log;
-    const newSet = new Set(newPolicies || []);
-    const oldSet = new Set(oldPolicies || []);
-
-    // Attach new policies
-    for (const policyArn of newSet) {
-      if (!oldSet.has(policyArn)) {
-        await this.iamClient.send(
-          new AttachRolePolicyCommand({
-            RoleName: roleName,
-            PolicyArn: policyArn,
-          })
-        );
-        log.debug(`Attached managed policy ${v(policyArn)}`);
-      }
-    }
-
-    // Detach removed policies
-    for (const policyArn of oldSet) {
-      if (!newSet.has(policyArn)) {
-        await this.iamClient.send(
-          new DetachRolePolicyCommand({
-            RoleName: roleName,
-            PolicyArn: policyArn,
-          })
-        );
-        log.debug(`Detached managed policy ${v(policyArn)}`);
-      }
-    }
+    return updateManagedPolicies.call(this, roleName, newPolicies, oldPolicies, log);
   }
 
-  /**
-   * Update inline policies
-   */
-  private async updateInlinePolicies(
+  updateInlinePolicies(
     roleName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
     oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
     log: MaskedLogSinks,
     claimed?: InlinePolicyClaimed
   ): Promise<void> {
-    const { value: v } = log;
-    const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
-    const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
-
-    // Add or update policies
-    for (const [policyName, policyDoc] of newMap) {
-      const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
-
-      await this.iamClient.send(
-        new PutRolePolicyCommand({
-          RoleName: roleName,
-          PolicyName: policyName,
-          PolicyDocument: policyDocument,
-        })
-      );
-      log.debug(`Updated inline policy ${v(policyName)}`);
-    }
-
-    // Delete removed policies
-    // go-to-k/cdkd#4225: a name another resource has ALREADY written onto
-    // this role in the same run is not removed. Set by a rollback revert,
-    // where the policy that took this name over may have been put back
-    // before this principal's own revert drops it.
-    for (const policyName of oldMap.keys()) {
-      if (!newMap.has(policyName)) {
-        if (claimed?.('role', roleName, policyName) === true) {
-          log.debug(
-            `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
-          );
-          continue;
-        }
-        await this.iamClient.send(
-          new DeleteRolePolicyCommand({
-            RoleName: roleName,
-            PolicyName: policyName,
-          })
-        );
-        log.debug(`Deleted inline policy ${v(policyName)}`);
-      }
-    }
+    return updateInlinePolicies.call(this, roleName, newPolicies, oldPolicies, log, claimed);
   }
 
-  /**
-   * Update tags on the role. Both sides are read through `planTagDiff`
-   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
-   */
-  private async updateTags(
+  updateTags(
     roleName: string,
     resourceType: string,
     logicalId: string,
@@ -1210,395 +216,46 @@ export class IAMRoleProvider implements ResourceProvider {
     oldTags: unknown,
     log: MaskedLogSinks
   ): Promise<void> {
-    const { value: v } = log;
-    const plan = planTagDiff(oldTags, newTags);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      log.warn(tagWarning);
-    }
-    const tagsToRemove = plan.remove;
-    const tagsToAdd = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
-
-    if (tagsToRemove.length > 0) {
-      await this.iamClient.send(
-        new UntagRoleCommand({
-          RoleName: roleName,
-          TagKeys: tagsToRemove,
-        })
-      );
-      log.debug(`Removed ${tagsToRemove.length} tags from role ${v(roleName)}`);
-    }
-
-    if (tagsToAdd.length > 0) {
-      await this.iamClient.send(
-        new TagRoleCommand({
-          RoleName: roleName,
-          Tags: tagsToAdd,
-        })
-      );
-      log.debug(`Added/updated ${tagsToAdd.length} tags on role ${v(roleName)}`);
-    }
+    return updateTags.call(this, roleName, resourceType, logicalId, newTags, oldTags, log);
   }
 
-  /**
-   * Resolve a single `Fn::GetAtt` attribute for an existing IAM role.
-   *
-   * CloudFormation's `AWS::IAM::Role` exposes `Arn` and `RoleId`; both are
-   * available from the `GetRole` response. See:
-   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html#aws-resource-iam-role-return-values
-   *
-   * Used by `cdkd orphan` to live-fetch attribute values that need to be
-   * substituted into sibling references.
-   */
-  async getAttribute(
-    physicalId: string,
-    _resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
-    try {
-      const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
-      switch (attributeName) {
-        case 'Arn':
-          return resp.Role?.Arn;
-        case 'RoleId':
-          return resp.Role?.RoleId;
-        default:
-          return undefined;
-      }
-    } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
-      throw err;
-    }
+  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
+    return getAttribute.call(this, physicalId, _resourceType, attributeName);
   }
 
-  /**
-   * go-to-k/cdkd#4606: whether the role a failed CREATE journaled is the one
-   * the record under the same logical id holds (a fix-forward that created a
-   * new role there under another name).
-   *
-   * Both ids must be role NAMES (the physical id this provider records);
-   * anything else is `'unknown'`, and so are two names differing only in
-   * case: IAM treats those as one role, and this check does not decide on
-   * IAM's case rules. Equal names are `'same'` without a read: whatever role
-   * holds the name now is the record's, and deleting by that name would
-   * delete it. A role name is unique per account (case-insensitively) and a
-   * role cannot be renamed. After the region check the record's role must
-   * read back (else `'unknown'`); the journaled one is `'same'` when it reads
-   * back under the record's `RoleId`, `'different'` under another, and
-   * `'different'` when IAM reports it gone: the record's role answers to its
-   * own, other, name. Any other read failure throws, which the caller reads
-   * as `'unknown'`.
-   */
-  async isSameResource(
+  isSameResource(
     journaledPhysicalId: string,
     record: { physicalId: string },
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<ResourceIdentityVerdict> {
-    if (resourceType !== 'AWS::IAM::Role') return 'unknown';
-    if (!isRoleName(journaledPhysicalId) || !isRoleName(record.physicalId)) return 'unknown';
-    if (journaledPhysicalId === record.physicalId) return 'same';
-    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
-    const clientRegion = await this.iamClient.config.region();
-    if (clientRegion !== context.expectedRegion) return 'unknown';
-    const recordRoleId = await this.readRoleIdIfExists(record.physicalId);
-    if (recordRoleId === undefined) return 'unknown';
-    const journaledRoleId = await this.readRoleIdIfExists(journaledPhysicalId);
-    if (journaledRoleId === undefined) return 'different';
-    // Unreachable as 'same' while the names differ beyond case; kept so the
-    // verdict rests on AWS's answer.
-    return journaledRoleId === recordRoleId ? 'same' : 'different';
+    return isSameResource.call(this, journaledPhysicalId, record, resourceType, context);
   }
 
-  /**
-   * go-to-k/cdkd#4655 / #4606: the role's `RoleId`
-   * ({@link roleIdentityToken}). A role re-created under the name answers
-   * with another one, so the settle keeps it rather than deleting it as the
-   * failed CREATE's orphan. A failed CREATE's own token comes from its
-   * CreateRole response, on the failure's mark (`markCreatedBeforeFailure`);
-   * this is the live read.
-   *
-   * `undefined` for another type, an id that is not a role name, or a client
-   * in another region than `expectedRegion` (IAM is global, but the check
-   * keeps every identity read on the stack's own client). `RESOURCE_NOT_FOUND`
-   * only on `NoSuchEntityException`; any other failure, a response naming
-   * another role, and one with no `RoleId` throw.
-   */
-  async resourceIdentity(
+  resourceIdentity(
     physicalId: string,
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<string | ResourceNotFound | undefined> {
-    if (resourceType !== 'AWS::IAM::Role' || !isRoleName(physicalId)) return undefined;
-    const clientRegion = await this.iamClient.config.region();
-    if (clientRegion !== context.expectedRegion) return undefined;
-    const roleId = await this.readRoleIdIfExists(physicalId);
-    return roleId === undefined ? RESOURCE_NOT_FOUND : roleId;
+    return resourceIdentity.call(this, physicalId, resourceType, context);
   }
 
-  /**
-   * The role's `RoleId`, or `undefined` when `GetRole` answers
-   * `NoSuchEntityException`. Any other failure, a response naming another
-   * role, and one with no `RoleId` throw: "could not read" never reads as
-   * "gone".
-   */
-  private async readRoleIdIfExists(roleName: string): Promise<string | undefined> {
-    let response;
-    try {
-      response = await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }));
-    } catch (error) {
-      if (error instanceof NoSuchEntityException) return undefined;
-      throw error;
-    }
-    if (response.Role?.RoleName !== roleName) {
-      throw new Error('GetRole answered for another role than the one asked for');
-    }
-    const roleId = roleIdentityToken(response.Role.RoleId);
-    if (roleId === undefined) throw new Error('GetRole returned no RoleId');
-    return roleId;
+  readRoleIdIfExists(roleName: string): Promise<string | undefined> {
+    return readRoleIdIfExists.call(this, roleName);
   }
 
-  /**
-   * Read the AWS-current IAM role configuration in CFn-property shape.
-   *
-   * Issues `GetRole` for the top-level role configuration and
-   * `ListRolePolicies` + `ListAttachedRolePolicies` for inline / managed
-   * policy *names*. AWS URL-decodes `AssumeRolePolicyDocument` for us
-   * when it surfaces — we re-parse it as JSON so the comparator can match
-   * against state's already-parsed object.
-   *
-   * Coverage and shape decisions:
-   *  - `RoleName`, `Description`, `MaxSessionDuration`, `Path` — straight
-   *    from `Role.*`.
-   *  - `PermissionsBoundary` — emitted as `'' ` placeholder when AWS has
-   *    none, so a console-side ADD on a role that was deployed without a
-   *    boundary surfaces as drift. (The drift comparator's top-level walk
-   *    is state-keys-only; without the always-emit placeholder a fresh
-   *    `PermissionsBoundary` on the AWS side would never enter
-   *    `observedProperties` and the comparator would silently ignore it.)
-   *  - `AssumeRolePolicyDocument` — `Role.AssumeRolePolicyDocument` is a
-   *    URL-encoded JSON string; we URL-decode + JSON-parse so cdkd state's
-   *    object form compares cleanly. (Both shapes — string and object — are
-   *    accepted by `create()`, but state typically stores the parsed object
-   *    after intrinsic resolution.)
-   *  - `ManagedPolicyArns` — array of ARN strings from
-   *    `ListAttachedRolePolicies`.
-   *  - `Policies` — inline policies surfaced as `[{PolicyName, PolicyDocument}]`.
-   *    `ListRolePolicies` for names + `GetRolePolicy` per name for the
-   *    body (URL-decoded + JSON-parsed). Ordering is reconciled against
-   *    state's `Policies` array (when supplied via the `properties`
-   *    parameter) so a state-vs-AWS positional compare doesn't fire false
-   *    drift purely from `ListRolePolicies` returning lexicographic order;
-   *    AWS-only policies (added via console) are appended at the end so
-   *    they still surface as drift via length / content mismatch.
-   *  - `Tags` is surfaced via `ListRoleTags` (paginated). CDK's `aws:*`
-   *    auto-tags are filtered out by `normalizeAwsTagsToCfn` so they don't
-   *    fire false-positive drift; always emitted (even when empty) so a
-   *    console-side tag ADD on an originally-untagged role surfaces as
-   *    drift on the v3 observedProperties baseline.
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the role is gone (`NoSuchEntityException`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: import('../../types/resource.js').ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let role;
-    try {
-      const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
-      role = resp.Role;
-    } catch (err) {
-      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!role) return undefined;
-
-    const result: Record<string, unknown> = {};
-
-    if (role.RoleName !== undefined) result['RoleName'] = role.RoleName;
-    result['Description'] = role.Description ?? '';
-    if (role.MaxSessionDuration !== undefined) {
-      result['MaxSessionDuration'] = role.MaxSessionDuration;
-    }
-    if (role.Path !== undefined) result['Path'] = role.Path;
-    // Always-emit (PR #145 pattern): surfaces console-side ADDs on roles
-    // deployed without a boundary. AWS returns the boundary as a nested
-    // `{ PermissionsBoundaryArn, PermissionsBoundaryType }` shape; cdkd
-    // state stores the bare ARN string (matches CFn input shape).
-    result['PermissionsBoundary'] = role.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
-    if (role.AssumeRolePolicyDocument) {
-      // GetRole returns AssumeRolePolicyDocument URL-encoded. Decode and
-      // parse so the comparator can match cdkd state (which holds the
-      // already-resolved object form).
-      try {
-        result['AssumeRolePolicyDocument'] = JSON.parse(
-          decodeURIComponent(role.AssumeRolePolicyDocument)
-        ) as unknown;
-      } catch {
-        // Fall back to the raw string if decoding / parsing fails. The
-        // comparator handles primitive vs object mismatches correctly.
-        result['AssumeRolePolicyDocument'] = role.AssumeRolePolicyDocument;
-      }
-    }
-
-    // ManagedPolicyArns — string[] of attached managed policy ARNs.
-    try {
-      const attached = await this.iamClient.send(
-        new ListAttachedRolePoliciesCommand({ RoleName: physicalId })
-      );
-      const arns = (attached.AttachedPolicies ?? [])
-        .map((p) => p.PolicyArn)
-        .filter((arn): arn is string => !!arn);
-      result['ManagedPolicyArns'] = arns;
-    } catch (err) {
-      if (!(err instanceof NoSuchEntityException)) throw err;
-    }
-
-    // Inline Policies — `[{PolicyName, PolicyDocument}]`. Cap at IAM's
-    // documented 10-inline-policies-per-role limit to bound the API
-    // budget; ListRolePolicies is paginated for forward-compat anyway.
-    try {
-      const policyNames: string[] = [];
-      let policyMarker: string | undefined;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const listResp = await this.iamClient.send(
-          new ListRolePoliciesCommand({
-            RoleName: physicalId,
-            ...(policyMarker ? { Marker: policyMarker } : {}),
-          })
-        );
-        for (const name of listResp.PolicyNames ?? []) policyNames.push(name);
-        if (!listResp.IsTruncated) break;
-        policyMarker = listResp.Marker;
-      }
-
-      // Issue #323: filter out inline policies that are managed by a
-      // SEPARATE `AWS::IAM::Policy` resource attached via `Roles: [role]`.
-      // CDK's `iam.Policy({ roles: [r] })` (and L2 helpers like
-      // `taskRole.addToPolicy(...)` / `bucket.grantRead(role)` /
-      // `ContainerImage.fromEcrRepository(repo)`'s execution-role grant)
-      // creates a separate `AWS::IAM::Policy` resource — which AWS
-      // implements via `iam:PutRolePolicy`, so those inline policies
-      // appear in `ListRolePolicies` output. Without this filter every
-      // such Role fires false drift (state.Policies = [] vs aws =
-      // [{...DefaultPolicy*}]).
-      const managedByOtherResource = collectInlinePolicyNamesManagedBySiblings(
-        physicalId,
-        context,
-        'Roles'
-      );
-      const filteredNames = policyNames.filter((n) => !managedByOtherResource.has(n));
-
-      // Fetch every body in parallel (max 10; well under any IAM rate
-      // limit). URL-decode + JSON-parse so the comparator sees the same
-      // object shape state holds after intrinsic resolution.
-      const bodies = new Map<string, unknown>();
-      await Promise.all(
-        filteredNames.map(async (name) => {
-          const resp = await this.iamClient.send(
-            new GetRolePolicyCommand({ RoleName: physicalId, PolicyName: name })
-          );
-          if (!resp.PolicyDocument) return;
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(decodeURIComponent(resp.PolicyDocument));
-          } catch {
-            parsed = resp.PolicyDocument;
-          }
-          bodies.set(name, parsed);
-        })
-      );
-
-      // Reconcile order against state's `Policies` so a positional array
-      // compare doesn't fire purely from `ListRolePolicies` returning
-      // lexicographic order. AWS-only entries (console adds) tail-append
-      // so length / content mismatch still surfaces them as drift.
-      const statePolicies =
-        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [];
-      const remaining = new Set(bodies.keys());
-      const inline: Array<{ PolicyName: string; PolicyDocument: unknown }> = [];
-      for (const sp of statePolicies) {
-        const name = sp?.PolicyName;
-        if (typeof name !== 'string') continue;
-        if (bodies.has(name)) {
-          inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
-          remaining.delete(name);
-        }
-      }
-      for (const name of [...remaining].sort()) {
-        inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
-      }
-      result['Policies'] = inline;
-    } catch (err) {
-      if (!(err instanceof NoSuchEntityException)) throw err;
-    }
-
-    // Tags via ListRoleTags. Paginated — small page sizes are fine since
-    // IAM enforces a 50-tag-per-role limit, but we still iterate Marker for
-    // forward-compat.
-    try {
-      const collected: Array<{ Key?: string | undefined; Value?: string | undefined }> = [];
-      let marker: string | undefined;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const tagsResp = await this.iamClient.send(
-          new ListRoleTagsCommand({
-            RoleName: physicalId,
-            ...(marker ? { Marker: marker } : {}),
-          })
-        );
-        if (tagsResp.Tags) {
-          for (const t of tagsResp.Tags) {
-            collected.push({ Key: t.Key, Value: t.Value });
-          }
-        }
-        if (!tagsResp.IsTruncated) break;
-        marker = tagsResp.Marker;
-      }
-      const tags = normalizeAwsTagsToCfn(collected);
-      result['Tags'] = tags;
-    } catch (err) {
-      if (!(err instanceof NoSuchEntityException)) throw err;
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType, properties, context);
   }
 
-  /**
-   * Adopt an existing IAM role into cdkd state.
-   *
-   * Lookup order:
-   *  1. `--resource` override or `Properties.RoleName` → use directly,
-   *     verify via `GetRole`.
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'RoleName');
-    if (explicit) {
-      try {
-        const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: explicit }));
-        // Issue #3627: the same map `create()` records. The resolver's
-        // `RoleId` arm refuses the reference without it (issue #4077), and its `Arn` arm
-        // ignores a non-`/` `Path`.
-        return {
-          physicalId: explicit,
-          attributes: definedAttributes({ Arn: resp.Role?.Arn, RoleId: resp.Role?.RoleId }),
-        };
-      } catch (err) {
-        if (err instanceof NoSuchEntityException) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
-    // tag never exists on a real resource and the walk could not match (issue
-    // #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a role
-    // reaching here needs an explicit `--resource` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 }
 

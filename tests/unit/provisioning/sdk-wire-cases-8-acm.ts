@@ -12,11 +12,11 @@ import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-
  * The batch-8 ACM wire cases (#3723): `AWS::CertificateManager::Certificate`,
  * served by `ACMCertificateProvider`.
  *
- * create() polls DescribeCertificate until ISSUED (acm-certificate-provider.ts:1030-1047).
+ * create() polls DescribeCertificate until ISSUED (acm-certificate/wait.ts:55-72).
  * The arm answers the first poll PENDING_VALIDATION with the DNS validation
  * record of `example.com`, then ISSUED: that first poll is where a
  * `DomainValidationOptions[].HostedZoneId` is delivered, as Route 53
- * ChangeResourceRecordSets (:1092-1102, :1165-1198). The suite running these
+ * ChangeResourceRecordSets (:117-135, :190-241). The suite running these
  * cases sets `CDKD_ACM_POLL_INTERVAL_MS=0`, so the poll does not sleep.
  *
  * `RequestCertificate`'s `IdempotencyToken` is cdkd's own
@@ -63,7 +63,7 @@ function armPendingThenIssued(): void {
 }
 
 const DOMAIN_REQUIRED: Throw = {
-  why: 'create() refuses a missing DomainName before any call (acm-certificate-provider.ts:271-278)',
+  why: 'create() refuses a missing DomainName before any call (acm-certificate/create.ts:31-38)',
   says: /DomainName is required/,
 };
 
@@ -75,7 +75,7 @@ export const ACM_CASES: TypeCase[] = [
     // CertificateTransparencyLoggingPreference and Tags are updated in place;
     // ValidationMethod is not create-only in the schema, but update() replaces
     // the certificate through create() when it changes
-    // (acm-certificate-provider.ts:633-637); the rest is create-only.
+    // (acm-certificate/update.ts:37-50); the rest is create-only.
     createOnly: createOnlyOf('AWS::CertificateManager::Certificate'),
     arm: armPendingThenIssued,
     exempt: {},
