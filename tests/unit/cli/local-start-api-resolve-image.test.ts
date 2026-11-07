@@ -33,6 +33,11 @@ const mocks = vi.hoisted(() => ({
   parseEcrUriMock: vi.fn(),
   loadManifestMock: vi.fn(),
   getDockerImageBySourceHashMock: vi.fn(),
+  resolveRieWrapMock: vi.fn(),
+}));
+
+vi.mock('../../../src/local/rie-mount.js', () => ({
+  resolveRieWrap: mocks.resolveRieWrapMock,
 }));
 
 vi.mock('../../../src/local/docker-image-builder.js', () => ({
@@ -51,6 +56,7 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
 }));
 
 import { resolveContainerImageForStartApi } from '../../../src/cli/commands/local-start-api.js';
+import { buildContainerSpec } from '../../../src/cli/commands/local-start-api/container-spec.js';
 
 function makeImageLambda(
   overrides: Partial<ResolvedStartApiImageLambda> = {}
@@ -258,5 +264,90 @@ describe('resolveContainerImageForStartApi (PR #493 review G4)', () => {
     await expect(resolveContainerImageForStartApi(makeImageLambda(), false)).rejects.toThrow(
       /docker build failed: syntax error/
     );
+  });
+});
+
+describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#6018)', () => {
+  const ecrUri = '111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef';
+  const stack = {
+    stackName: 'ApiStack',
+    displayName: 'ApiStack',
+    artifactId: 'ApiStack',
+    assetManifestPath: '/tmp/cdk.out/ApiStack.assets.json',
+    template: {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: ecrUri },
+            ImageConfig: { Command: ['h'], WorkingDirectory: '/w' },
+          },
+        },
+      },
+    },
+    dependencyNames: [],
+    region: 'us-east-1',
+  } as unknown as StackInfo;
+  const build = (): ReturnType<typeof buildContainerSpec> =>
+    buildContainerSpec({
+      logicalId: 'Fn',
+      stacks: [stack],
+      overrides: undefined,
+      assumeRole: undefined,
+      containerHost: '127.0.0.1',
+      stsRegion: undefined,
+      inlineTmpDirs: new Set(),
+      layerTmpDirs: new Set(),
+      stateByStack: new Map(),
+      skipPull: true,
+    });
+
+  beforeEach(() => {
+    mocks.loadManifestMock.mockReset();
+    mocks.getDockerImageBySourceHashMock.mockReset();
+    mocks.parseEcrUriMock.mockReset();
+    mocks.pullEcrImageMock.mockReset();
+    mocks.resolveRieWrapMock.mockReset();
+    mocks.loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    mocks.getDockerImageBySourceHashMock.mockReturnValue(undefined);
+    mocks.parseEcrUriMock.mockReturnValue({ accountId: '111111111111', region: 'us-east-1' });
+    mocks.pullEcrImageMock.mockResolvedValue(ecrUri);
+  });
+
+  it('carries the wrap onto the spec and passes the ImageConfig + --no-pull through', async () => {
+    const mount = {
+      hostPath: '/cache/aws-lambda-rie',
+      containerPath: '/var/rapid/aws-lambda-rie',
+      readOnly: true as const,
+    };
+    mocks.resolveRieWrapMock.mockResolvedValue({
+      mount,
+      entryPoint: ['/var/rapid/aws-lambda-rie'],
+      cmd: ['/app', 'h'],
+    });
+    const spec = await build();
+    expect(mocks.resolveRieWrapMock).toHaveBeenCalledWith({
+      image: ecrUri,
+      platform: 'linux/amd64',
+      entryPoint: undefined,
+      command: ['h'],
+      skipPull: true,
+    });
+    expect(spec).toMatchObject({
+      kind: 'image',
+      rieMount: mount,
+      entryPoint: ['/var/rapid/aws-lambda-rie'],
+      command: ['/app', 'h'],
+      workingDir: '/w',
+    });
+  });
+
+  it('keeps the pre-#6018 shape when no wrap resolves', async () => {
+    mocks.resolveRieWrapMock.mockResolvedValue(undefined);
+    const spec = await build();
+    expect(spec).toMatchObject({ kind: 'image', command: ['h'] });
+    expect(spec).not.toHaveProperty('rieMount');
+    expect(spec).not.toHaveProperty('entryPoint');
   });
 });
