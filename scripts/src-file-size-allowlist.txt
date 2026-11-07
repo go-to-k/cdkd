@@ -29,7 +29,6 @@ src/deployment/deploy-engine/update.ts
 src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/intrinsic-resolver/context.ts
-src/deployment/intrinsic-resolver/cross-stack.ts
 src/deployment/intrinsic-resolver/dynamic-refs.ts
 src/deployment/intrinsic-resolver/functions.ts
 src/deployment/intrinsic-resolver/getatt.ts

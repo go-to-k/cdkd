@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
 
@@ -73,6 +73,7 @@ import { abandonedUnit } from '../../../src/deployment/intrinsic-resolver/maskin
 import { describeInnermostAwsError } from '../../../src/deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { RESOLVER_FAMILY } from '../_resolver-family.js';
 
 /** What `describeAwsFailure(x).detail` renders for a value `String()` cannot convert. */
 const PLACEHOLDER = 'a value that could not be converted to text';
@@ -320,13 +321,8 @@ describe('helpers that render a caught value (#3361)', () => {
  * `String()` or a template-literal interpolation (both run ToString).
  */
 describe('src/deployment/intrinsic-resolver source scan (#3361)', () => {
-  const DIR = join(process.cwd(), 'src/deployment/intrinsic-resolver');
-  const files = [
-    ...readdirSync(DIR)
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => join(DIR, f)),
-    join(process.cwd(), 'src/deployment/intrinsic-function-resolver.ts'),
-  ];
+  // The resolver family, nested split directories included (`cross-stack/`, #5835).
+  const files = RESOLVER_FAMILY.map((rel) => join(process.cwd(), rel));
 
   /** The parameter name of `node` when it IS a `.catch(...)` callback, scoped to its own body. */
   function catchCallbackParam(node: ts.Node): string | undefined {
