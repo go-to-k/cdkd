@@ -303,7 +303,7 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
       'assembly-reader.ts (go-to-k/cdkd#3617)',
   },
   {
-    file: 'state/s3-state-backend.ts',
+    file: 'state/s3-state-backend/legacy.ts',
     errorClass: 'StateError',
     within: 'parseStateBody',
     count: 1,

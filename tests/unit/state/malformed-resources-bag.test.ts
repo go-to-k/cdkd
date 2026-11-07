@@ -7647,7 +7647,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // cache) — all five through this module, so one count covers the file.
     ['src/cli/commands/scrub.ts', 5],
     ['src/cli/commands/local-state-loader.ts', 1],
-    ['src/state/s3-state-backend.ts', 2],
+    // `listStacks`, moved out of `s3-state-backend.ts` (go-to-k/cdkd#5835).
+    ['src/state/s3-state-backend/listing.ts', 2],
     // `state show --json`'s tree key, moved from `state.ts` (go-to-k/cdkd#5835).
     ['src/cli/commands/state/show.ts', 1],
     ['src/cli/commands/state-list-tree.ts', 1],
