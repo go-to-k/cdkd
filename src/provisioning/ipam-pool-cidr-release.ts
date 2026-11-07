@@ -5,6 +5,7 @@ import {
   type EC2Client,
 } from '@aws-sdk/client-ec2';
 import { waitForGoneAfterDelete } from './delete-gone-wait.js';
+import { resolvedResourceTimeoutMs } from './resource-timeout-registry.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
@@ -33,6 +34,19 @@ export const IPAM_CIDR_HAS_ALLOCATIONS = 'The CIDR has one or more allocations.'
  * tests can shorten it.
  */
 export const ipamPoolCidrReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 25 * 60_000 };
+
+/**
+ * The whole budget of one pool CIDR delete's release waits, however many
+ * times the delete is re-sent: {@link ipamPoolCidrReleaseWait}'s cap, or half
+ * an explicit `--resource-timeout` for the type when that is lower, as
+ * `delete-gone-wait.ts` caps a single wait.
+ */
+export function ipamPoolCidrReleaseBudgetMs(resourceType: string): number {
+  const userTimeoutMs = resolvedResourceTimeoutMs(resourceType);
+  return userTimeoutMs === undefined
+    ? ipamPoolCidrReleaseWait.maxWaitMs
+    : Math.min(ipamPoolCidrReleaseWait.maxWaitMs, userTimeoutMs / 2);
+}
 
 const IPAM_POOL_ID = /^ipam-pool-[0-9a-z]+$/;
 const MAX_ALLOCATION_PAGES = 10;

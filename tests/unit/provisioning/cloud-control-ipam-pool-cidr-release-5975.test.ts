@@ -39,6 +39,10 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import { ipamPoolCidrReleaseWait } from '../../../src/provisioning/ipam-pool-cidr-release.js';
+import {
+  clearResolvedResourceTimeouts,
+  setResolvedResourceTimeouts,
+} from '../../../src/provisioning/resource-timeout-registry.js';
 
 const ACCOUNT = '123456789012';
 const POOL = 'ipam-pool-0ddc60dcd6c12d1c9';
@@ -145,6 +149,7 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
 
   afterEach(() => {
     Object.assign(ipamPoolCidrReleaseWait, savedWait);
+    clearResolvedResourceTimeouts();
   });
 
   it('waits until the deleted VPC allocation is released, then deletes the pool CIDR again', async () => {
@@ -251,6 +256,29 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
     const deletes = callsOf(mockCloudControlSend, 'DeleteResourceCommand').length;
     expect(deletes).toBeGreaterThan(1);
     expect(deletes).toBeLessThan(20);
+  });
+
+  it('caps the shared budget at half an explicit --resource-timeout for the type', async () => {
+    // The cap alone would allow 10s; half of the 60ms timeout is 30ms.
+    ipamPoolCidrReleaseWait.maxWaitMs = 10_000;
+    setResolvedResourceTimeouts({ perTypeMs: { 'AWS::EC2::IPAMPoolCidr': 60 } });
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = (ms) =>
+      new Promise((r) => setTimeout(r, Math.min(ms, 10)));
+    wireCc(['REFUSED']);
+    let reads = 0;
+    mockEc2Send.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetIpamPoolAllocationsCommand') {
+        return Promise.resolve({ IpamPoolAllocations: reads++ % 2 === 0 ? [vpcAllocation()] : [] });
+      }
+      return Promise.resolve({ Vpcs: [] });
+    });
+
+    const started = Date.now();
+    await expect(
+      provider.delete('PoolCidr', POOL_CIDR_ID, 'AWS::EC2::IPAMPoolCidr')
+    ).rejects.toThrow('The CIDR has one or more allocations.');
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand').length).toBeGreaterThan(1);
   });
 
   it('does not wait when the EC2 client targets another region', async () => {

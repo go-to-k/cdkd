@@ -49,7 +49,7 @@ import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js'
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   IPAM_CIDR_HAS_ALLOCATIONS,
-  ipamPoolCidrReleaseWait,
+  ipamPoolCidrReleaseBudgetMs,
   ipamPoolIdOfPoolCidr,
   waitForLingeringIpamAllocations,
 } from '../ipam-pool-cidr-release.js';
@@ -614,7 +614,7 @@ export async function deleteThroughCloudControl(
           logicalId,
           physicalId,
           resourceType,
-          ipamPoolCidrReleaseWait.maxWaitMs - (Date.now() - ipamReleaseWaitStartedAt)
+          ipamPoolCidrReleaseBudgetMs(resourceType) - (Date.now() - ipamReleaseWaitStartedAt)
         );
         if (verdict === 'released') continue;
       }
