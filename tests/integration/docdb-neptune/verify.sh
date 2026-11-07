@@ -6,9 +6,6 @@
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
-#   1b. CDKD_TEST_NONPROV_REFUSAL=true deploy — adds UseLatestRestorableTime,
-#       which the DocDB cluster's SDK provider does not handle; must be
-#       refused pre-flight with no state written (issue #3866)
 #   2. cdkd deploy CdkdDocdbNeptuneExample with per-type long timeouts
 #      (DocDB / Neptune cluster + instance creates each take 5-10 min).
 #      The BASELINE template sets the #1160 removable cluster fields
@@ -315,55 +312,14 @@ trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
-# AWS::DocDB::DBCluster is NON_PROVISIONABLE (Cloud Control has no handlers),
-# so a property its SDK provider does not handle must stop the deploy BEFORE
-# anything is provisioned (issue #3866). Before the fix the cluster was
-# auto-routed to Cloud Control, which failed with UnsupportedActionException
-# after the VPC and subnet group had been created -- also a non-zero exit, so
-# the refusal's own wording is the discriminator, not the rc.
-echo "[verify] step 1b: a UseLatestRestorableTime property is refused pre-flight (issue #3866)"
-# Precondition for the no-state assertion below: a state record left by an
-# earlier, interrupted run would otherwise be blamed on this step.
-if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
-  echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it before running this fixture" >&2
-  exit 1
-elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
-  echo "[verify] FAIL: step 1b pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
-  exit 1
-fi
-if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true ${CLI} deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  "${TIMEOUT_OVERRIDES[@]}" 2>&1)"; then
-  printf '%s\n' "${REFUSAL_OUT}" >&2
-  echo "[verify] FAIL: step 1b deploy exited 0; UseLatestRestorableTime on AWS::DocDB::DBCluster must be refused" >&2
-  exit 1
-fi
-REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
-printf '%s\n' "${REFUSAL_PLAIN}" >&2
-if grep -qF 'UnsupportedActionException' <<<"${REFUSAL_PLAIN}"; then
-  echo "[verify] FAIL: step 1b routed the cluster to Cloud Control (the pre-#3866 behavior) instead of refusing pre-flight" >&2
-  exit 1
-fi
-for needle in \
-  'AWS::DocDB::DBCluster uses properties' \
-  'cannot fall back to Cloud Control API' \
-  '- UseLatestRestorableTime: ' \
-  '--prefer-sdk-route AWS::DocDB::DBCluster:UseLatestRestorableTime'; do
-  if ! grep -qF -- "${needle}" <<<"${REFUSAL_PLAIN}"; then
-    echo "[verify] FAIL: step 1b output lacks the pre-flight refusal wording: '${needle}'" >&2
-    exit 1
-  fi
-done
-# Nothing may be provisioned, so no state record may exist. A probe failing
-# for any reason other than not-found is undetermined and fails the run.
-if HEAD_OUT="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
-  echo "[verify] FAIL: step 1b left a state record at ${STATE_KEY}; the refusal must precede provisioning" >&2
-  exit 1
-elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_OUT}"; then
-  echo "[verify] FAIL: step 1b state probe undetermined: ${HEAD_OUT}" >&2
-  exit 1
-fi
-echo "[verify] step 1b ok: refused pre-flight, no state written"
+# Issue #3866 (a NON_PROVISIONABLE type's SDK-unwired property is refused
+# pre-flight) was step 1b here until go-to-k/cdkd#5667 wired DocDB restore:
+# neither DocDB type has an SDK-unwired property left, so the deploy succeeded
+# (go-to-k/cdkd#6012). No NON_PROVISIONABLE type with an SDK provider has one
+# today; tests/unit/provisioning/non-provisionable-cc-route-refusal-3866.test.ts
+# pins the refusal on a mocked coverage entry, and nested-stack-replace-guard
+# pins the same refusal live on the disableCcApiFallback arm. Restore a live
+# arm here once a schema refresh gives such a type an SDK-unwired property.
 
 echo "[verify] step 2: cdkd deploy (baseline — #1160 removable fields set non-default)"
 ${CLI} deploy "${STACK}" \
