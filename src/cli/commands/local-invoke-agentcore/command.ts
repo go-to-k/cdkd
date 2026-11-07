@@ -106,8 +106,8 @@ export async function localInvokeAgentCoreCommand(
   // through the embed config `createLocalCommand` installs
   // ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), and two raw
   // writers consult the reservation directly: `docker pull` progress under
-  // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
-  // fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
+  // `runDockerForeground` (`docker-cmd/spawn.ts` redirects that child's fd 1
+  // to fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
   // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and
   // every handler log line — it now joins the container's stderr on ours
   // ([#2419](https://github.com/go-to-k/cdkd/issues/2419)). Do not re-file

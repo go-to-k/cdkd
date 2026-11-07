@@ -32,7 +32,7 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 
 vi.mock('../../../src/utils/logger.js', async () => {
   // `importActual` keeps `isStdoutReservedForPayload`, which the real
-  // `docker-cmd.ts` imports: a factory that returns only `getLogger` makes
+  // `docker-cmd/spawn.ts` imports: a factory that returns only `getLogger` makes
   // that a call on `undefined` at spawn time.
   const actual = await vi.importActual<typeof import('../../../src/utils/logger.js')>(
     '../../../src/utils/logger.js'
