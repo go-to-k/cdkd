@@ -13,7 +13,7 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1526**
+- Nested CFn key paths under handled top-levels: **1525**
 - Paths delivered whole by a generic hand-off: **621**
 - Bare-array pairs clean: **182**
 - Explicitly handled in provider: **50**
@@ -122,7 +122,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 88 | 24 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 16 | 7 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | 38 | 35 | 6 |
-| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 8 | 0 | 3 |
+| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 7 | 0 | 3 |
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 4 | 0 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 17 | 0 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | 208 | 2 | 0 |

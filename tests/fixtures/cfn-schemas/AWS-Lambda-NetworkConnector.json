@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::NetworkConnector",
-  "generatedAt": "2026-10-23",
+  "generatedAt": "2026-11-07",
   "properties": [
     "Arn",
     "Configuration",
@@ -31,7 +31,6 @@
   "nestedProperties": {
     "Configuration": [
       "AssociatedComputeResourceTypes",
-      "ElasticIpConfiguration",
       "NetworkProtocol",
       "SecurityGroupIds",
       "SubnetIds",
@@ -46,7 +45,6 @@
     "Configuration": [
       "VpcEgressConfiguration",
       "VpcEgressConfiguration.AssociatedComputeResourceTypes",
-      "VpcEgressConfiguration.ElasticIpConfiguration",
       "VpcEgressConfiguration.NetworkProtocol",
       "VpcEgressConfiguration.SecurityGroupIds",
       "VpcEgressConfiguration.SubnetIds"
@@ -71,7 +69,6 @@
       "VpcEgressConfiguration": "object"
     },
     "VpcEgressConfiguration": {
-      "ElasticIpConfiguration": "scalar",
       "AssociatedComputeResourceTypes": "array",
       "NetworkProtocol": "scalar",
       "SubnetIds": "array",

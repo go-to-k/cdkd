@@ -599,7 +599,10 @@ export async function deleteVpc(
  * before AWS releases the allocation, so this waits here, by the pool's
  * `GetIpamPoolAllocations`. The provider cannot see whether the same run
  * deletes the pool CIDR, so a VPC on a pool another stack owns waits too.
- * Not measured: whether CloudFormation's own VPC handler is what waits.
+ * CloudFormation's VPC delete handler does not wait (it holds no
+ * `ec2:GetIpamPoolAllocations`). A release past this cap is waited out again
+ * by the pool CIDR's own delete (go-to-k/cdkd#5975,
+ * `ipam-pool-cidr-release.ts`).
  *
  * The delete is ACCEPTED, so the wait follows `delete-gone-wait.ts`: a cap,
  * a Ctrl-C or an unreadable listing (a role without

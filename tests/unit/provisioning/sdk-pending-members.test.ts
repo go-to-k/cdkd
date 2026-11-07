@@ -52,7 +52,7 @@ const PENDING_MEMBERS: readonly PendingMember[] = [
     cfnPath:
       'AWS::Lambda::NetworkConnector Configuration.VpcEgressConfiguration.ElasticIpConfiguration',
     refusedBy:
-      'src/provisioning/providers/lambda-network-connector-provider.ts (#5123; forward it on create AND update, and read it back)',
+      'src/provisioning/providers/lambda-network-connector-provider.ts (#5123; withdrawn from the CFn schema on 2026-11-07: forward it on create AND update and read it back only if the schema declares it again, otherwise keep the refusal and just delete this row)',
     member: 'ElasticIpConfiguration',
     sentinel: 'subnet-sentinel',
     serialize: () =>
