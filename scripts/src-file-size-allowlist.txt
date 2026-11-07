@@ -11,7 +11,6 @@ src/cli/commands/destroy-runner.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
 src/deployment/deploy-engine/execute.ts
-src/deployment/deploy-engine/masking.ts
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/replacement.ts
 src/deployment/deploy-engine/rollback.ts
@@ -20,7 +19,6 @@ src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/rollback-executor.ts
-src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
 src/deployment/rollback-executor/replay-reverse-replacement.ts
 src/provisioning/provider-registry.ts

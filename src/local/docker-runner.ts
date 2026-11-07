@@ -115,8 +115,8 @@ export interface DockerRunOptions {
    * `ImageConfig.EntryPoint`). When set, only the first entry is passed
    * to docker as `--entrypoint` (docker accepts a single binary there);
    * the remaining entries are pre-pended to `cmd` as positional args.
-   * Most container Lambdas leave EntryPoint unset so `/lambda-entrypoint.sh`
-   * stays in charge of dispatching to RIE.
+   * The Lambda paths set it to the mounted RIE (`src/local/rie-mount.ts`,
+   * issue #6018), or to `ImageConfig.EntryPoint` when no RIE is mounted.
    */
   entryPoint?: string[];
   /** `--workdir <dir>` for container Lambdas (PR 5, `ImageConfig.WorkingDirectory`). */

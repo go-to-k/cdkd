@@ -29,6 +29,7 @@ import {
 } from '../../../assets/asset-manifest-loader.js';
 import type { DockerImageAssetSource } from '../../../types/assets.js';
 import type { ContainerSpec } from '../../../local/container-pool.js';
+import { resolveRieWrap } from '../../../local/rie-mount.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../../local/env-resolver.js';
 import { assetPathDirs, type ResolvedLambdaLayer } from '../../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../../local/layer-arn-materializer.js';
@@ -394,13 +395,27 @@ export async function buildContainerSpec(args: {
     return spec;
   }
 
+  // Issue #6018: run the image under a mounted Lambda RIE (resolved once per
+  // boot / `--watch` reload, so a cold start pays nothing extra). `undefined`
+  // keeps the pre-#6018 shape: the image already starts an RIE, or the binary
+  // could not be obtained (warned once).
+  const rie = await resolveRieWrap({
+    image: imageRef!,
+    platform: platform!,
+    entryPoint: lambda.imageConfig.entryPoint,
+    command: lambda.imageConfig.command,
+    skipPull,
+  });
+
   const spec: ContainerSpec = {
     kind: 'image',
     lambda,
     image: imageRef!,
     platform: platform!,
-    command: lambda.imageConfig.command ?? [],
-    ...(lambda.imageConfig.entryPoint !== undefined &&
+    command: rie ? rie.cmd : (lambda.imageConfig.command ?? []),
+    ...(rie && { entryPoint: rie.entryPoint, rieMount: rie.mount }),
+    ...(!rie &&
+      lambda.imageConfig.entryPoint !== undefined &&
       lambda.imageConfig.entryPoint.length > 0 && {
         entryPoint: lambda.imageConfig.entryPoint,
       }),
