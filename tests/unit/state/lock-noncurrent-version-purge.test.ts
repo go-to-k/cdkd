@@ -1063,7 +1063,8 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       return n;
     };
 
-    it('no file outside the class and its companion modules imports a companion module', () => {
+    /** Every `.ts` file under `src/` that is neither the class file nor a companion module. */
+    const outsideSources = (): string[] => {
       const all: string[] = [];
       const collect = (dir: string): void => {
         for (const name of readdirSync(dir)) {
@@ -1077,6 +1078,55 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       // Floor: the walk saw the tree, and SOURCES is a strict subset of it.
       expect(outside.length).toBeGreaterThan(100);
       expect(SOURCES.every((p) => all.includes(p))).toBe(true);
+      return outside;
+    };
+
+    /**
+     * `deleteLock` / `purgeLockVersions` were `private` before the split
+     * (go-to-k/cdkd#5835), so tsc refused `lm.deleteLock(...)` anywhere outside
+     * the class, and the pairing walk, which reads SOURCES only, could rely on
+     * that. They are public now (`@internal`), so the refusal moves here: any
+     * property access, element access or destructuring that names either
+     * method, on any receiver, in a file outside SOURCES.
+     */
+    const LOCK_INTERNALS = new Set(['deleteLock', 'purgeLockVersions']);
+    const instanceAccesses = (text: string): number => {
+      const source = ts.createSourceFile(SRC, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const walk = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node) && LOCK_INTERNALS.has(node.name.text)) n += 1;
+        if (
+          ts.isElementAccessExpression(node) &&
+          ts.isStringLiteralLike(node.argumentExpression) &&
+          LOCK_INTERNALS.has(node.argumentExpression.text)
+        ) {
+          n += 1;
+        }
+        if (ts.isBindingElement(node)) {
+          const key = node.propertyName ?? node.name;
+          if (ts.isIdentifier(key) && LOCK_INTERNALS.has(key.text)) n += 1;
+        }
+        node.forEachChild(walk);
+      };
+      walk(source);
+      return n;
+    };
+
+    it('no file outside the class and its companion modules reaches deleteLock or the purge', () => {
+      const offenders = outsideSources().filter(
+        (p) => instanceAccesses(readFileSync(p, 'utf8')) > 0
+      );
+      expect(offenders).toEqual([]);
+      // ...and the detector is not vacuous, for each shape it counts.
+      expect(instanceAccesses("void lm.deleteLock('s', 'r');")).toBe(1);
+      expect(instanceAccesses("void this.lockManager.purgeLockVersions('k', 'reap');")).toBe(1);
+      expect(instanceAccesses("void lm['deleteLock']('s', 'r');")).toBe(1);
+      expect(instanceAccesses('const { deleteLock: d } = lm; void d;')).toBe(1);
+      expect(instanceAccesses("void lm.releaseLock('s', 'r');")).toBe(0);
+    });
+
+    it('no file outside the class and its companion modules imports a companion module', () => {
+      const outside = outsideSources();
       const offenders = outside.filter((p) => companionImports(p, readFileSync(p, 'utf8')) > 0);
       expect(offenders).toEqual([]);
       // ...and the detector is not vacuous, for each of its three shapes.

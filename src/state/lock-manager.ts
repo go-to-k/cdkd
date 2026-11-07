@@ -279,6 +279,17 @@ export class LockManager {
     return `${minutes}m${remainingSeconds}s`;
   }
 
+  /**
+   * Try to acquire a lock for a stack
+   *
+   * Uses If-None-Match: "*" to ensure atomic lock acquisition.
+   * If an expired lock exists, it will be cleaned up and re-acquired.
+   *
+   * @param stackName Stack name
+   * @param region Target region (lock key is region-scoped)
+   * @param owner Lock owner identifier (defaults to user@hostname:pid)
+   * @param operation Operation being performed (e.g., "deploy", "destroy")
+   */
   acquireLock(
     stackName: string,
     region: string,
@@ -419,6 +430,23 @@ export class LockManager {
     return this.abandonedLocks.get(this.getLockKey(stackName, region));
   }
 
+  /**
+   * Force release a lock regardless of owner or expiry status
+   *
+   * This is intended for CLI usage -- it is what the `cdkd force-unlock
+   * <stack>` SUBCOMMAND calls -- when a lock is stuck and needs manual
+   * intervention. There is no `--force-unlock` FLAG anywhere in `src/`; this
+   * comment said there was, and issue [#2610] site 14 records that the message
+   * `acquireLockWithRetry` used to raise had inherited the same mistake.
+   *
+   * Pass `region: undefined` to operate on a legacy
+   * `{prefix}/{stackName}/lock.json` file.
+   *
+   * Remove the stack's lock whoever holds it. Resolves the removed lock's
+   * lease horizon ({@link abandonedRunHorizon}) when one was read
+   * (go-to-k/cdkd#4705 review G-1/B1: the caller records it as the latest
+   * moment the abandoned run can have created anything).
+   */
   forceReleaseLock(
     stackName: string,
     region: string | undefined,
@@ -567,6 +595,27 @@ export class LockManager {
     return this.isForeignLockError(error) || this.isGoneError(error);
   }
 
+  /**
+   * Acquire lock with retry logic
+   *
+   * Retries up to maxRetries times with retryDelay between attempts.
+   * If lock is expired, cleans it up automatically.
+   * On failure, provides helpful message with lock owner and expiry information.
+   *
+   * A failed acquire followed by a read that finds NO lock means the holder
+   * released it in between (issue #4055), so that read re-attempts at once
+   * without spending a retry -- up to `RELEASED_LOCK_REACQUIRE_LIMIT` times per
+   * call, so a lock that keeps flapping cannot loop forever. `getLockInfo`
+   * also returns null for a lock.json whose body is not an object, which
+   * `acquireLock` can never replace; the limit is what ends that case too, and
+   * after it an empty read waits `retryDelay` like a held lock.
+   *
+   * @param stackName Stack name
+   * @param owner Lock owner identifier
+   * @param operation Operation being performed
+   * @param maxRetries Maximum number of retries (default: 3)
+   * @param retryDelay Delay between retries in milliseconds (default: 2000)
+   */
   acquireLockWithRetry(
     stackName: string,
     region: string,

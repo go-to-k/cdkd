@@ -217,8 +217,7 @@ export async function stillOursByBody(this: LockManager, held: HeldLock): Promis
  *
  * Pass `region: undefined` to operate on a legacy
  * `{prefix}/{stackName}/lock.json` file.
- */
-/**
+ *
  * Remove the stack's lock whoever holds it. Resolves the removed lock's
  * lease horizon ({@link abandonedRunHorizon}) when one was read
  * (go-to-k/cdkd#4705 review G-1/B1: the caller records it as the latest
