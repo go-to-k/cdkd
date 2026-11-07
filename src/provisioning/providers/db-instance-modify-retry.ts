@@ -23,11 +23,27 @@ const DEADLINE_MARGIN_MS = 30_000;
  * enough, since the same fault carries refusals no wait ends. The wording is
  * the one {@link isFinalSnapshotNotAvailableRefusal} matches, so both stay one
  * match.
+ *
+ * Issue #5994: a CLUSTER refusal also comes worded "DB cluster isn't available
+ * for modification with status backing-up." (`InvalidDBClusterStateFault`,
+ * read us-east-1, 2026-11-07, on an Aurora cluster's first automated backup
+ * after create; Neptune words a restored cluster still settling the same way,
+ * "... with status creating.", measured in #5638). That wording is matched for
+ * the cluster fault only, where it names the status the cluster is in; a
+ * TERMINAL one still fails at once, since the retry reads the status before
+ * it resends. The widening reaches every caller of this matcher, not only the
+ * cluster updates: an instance's `ModifyDBInstance` refused with this cluster
+ * wording while the instance reads `available` is now resent until the budget
+ * runs out instead of failing at once, and so are the RDS / Neptune role calls
+ * and the RDS protection flips.
  */
 export function isModifyNotAvailableRefusal(error: unknown): boolean {
   return (
     isFinalSnapshotNotAvailableRefusal(error, 'InvalidDBInstanceStateFault') ||
-    isFinalSnapshotNotAvailableRefusal(error, 'InvalidDBClusterStateFault')
+    isFinalSnapshotNotAvailableRefusal(error, 'InvalidDBClusterStateFault') ||
+    (error instanceof Error &&
+      error.name === 'InvalidDBClusterStateFault' &&
+      /(?:isn't|is not|isn’t) available for modification with status/i.test(error.message))
   );
 }
 

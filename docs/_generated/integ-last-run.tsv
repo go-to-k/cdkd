@@ -102,7 +102,7 @@ diff-intrinsic-target-change	2026-11-04T09:11:36Z	PASS	50	verify.sh	rc 0, destro
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docdb-global-cluster	2026-11-06T17:37:57Z	PASS	267	verify.sh	#5898 docdb split head; rc ok, orph clean
-docdb-neptune	2026-11-03T00:01:22Z	PASS	5990	verify.sh	rc ok, destroy 0 errors, 0 orphans (#5682 step 3g kept-dependency lines)
+docdb-neptune	2026-11-07T13:39:08Z	FAIL	2211	verify.sh	step 1b: UseLatestRestorableTime deploy exited 0 (docdb/cluster-create.ts, not in PR diff); destroy 0 errors; noncurrent state versions left (#5996)
 docdb-restore	2026-11-06T17:43:30Z	PASS	600	verify.sh	#5898 docdb split head; rc ok, orph clean
 docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
@@ -317,7 +317,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-07T11:08:39Z	PASS	3722	verify.sh	rc ok, destroy 0 errors, orph clean (#5985)
+rds-aurora	2026-11-07T13:39:08Z	PASS	3409	verify.sh	rc ok, orph clean (#5996)
 rds-dbinstance-backfill	2026-11-05T06:54:50Z	PASS	2203	verify.sh	rc ok, destroy 0 errors, orph clean (auto snapshots gone after ~2min)
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean
