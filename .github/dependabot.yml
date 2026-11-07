@@ -9,8 +9,8 @@
 # standing release PR the way `feat` / `fix` / `perf` do — the only three
 # section headings CHANGELOG.md has ever grown. That is deliberate — runtime
 # deps use caret ranges, so users already pick up newer AWS SDK clients on
-# install; a lockfile/range bump only affects dev + CI. All prefixes are in
-# pr-title-check.yml's allowed types.
+# install, and a raised floor ships with the next release anyway. All prefixes
+# are in pr-title-check.yml's allowed types.
 version: 2
 updates:
   - package-ecosystem: "npm"
@@ -26,6 +26,11 @@ updates:
       day: "monday"
       timezone: "Asia/Tokyo"
     open-pull-requests-limit: 10
+    # Raise the declared floor with the lockfile, not the lockfile alone: the
+    # code compiles against the LOCKED client, so a floor left behind lets a
+    # user's install resolve an older client missing a command cdkd imports
+    # (#5948).
+    versioning-strategy: increase
     commit-message:
       prefix: "chore"
       prefix-development: "chore"
@@ -35,6 +40,7 @@ updates:
       aws-sdk:
         patterns:
           - "@aws-sdk/*"
+          - "@smithy/*"
       dev-dependencies:
         dependency-type: "development"
 
