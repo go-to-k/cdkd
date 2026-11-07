@@ -149,7 +149,7 @@ describe('provider error-cause critic — the real tree', () => {
     // One real consumer per composer, so no registration is dead weight.
     for (const file of [
       'assets/docker-asset-publisher.ts', // redactedDockerCause
-      'state/s3-state-backend.ts', // normalizeAwsError
+      'state/s3-state-backend/listing.ts', // normalizeAwsError
       'deployment/deploy-engine/provision.ts', // maskSecretsInError
       'local/ecr-puller.ts', // redactedAwsCause
     ]) {
@@ -934,13 +934,14 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     const dir = copySrcTree();
     mutate(
       dir,
-      'state/s3-state-backend.ts',
-      "      const normalized = normalizeAwsError(error, {\n        bucket: this.config.bucket,\n        operation: 'ListObjectsV2',",
-      "      const normalized = normalizeAwsError(undefined, {\n        bucket: this.config.bucket,\n        operation: 'ListObjectsV2',"
+      // `listStacks`, moved out of `s3-state-backend.ts` (go-to-k/cdkd#5835).
+      'state/s3-state-backend/listing.ts',
+      "    const normalized = normalizeAwsError(error, {\n      bucket: this.config.bucket,\n      operation: 'ListObjectsV2',",
+      "    const normalized = normalizeAwsError(undefined, {\n      bucket: this.config.bucket,\n      operation: 'ListObjectsV2',"
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('src/state/s3-state-backend.ts');
+    expect(stderr).toContain('src/state/s3-state-backend/listing.ts');
     expect(stderr).toContain('StateError');
   }, SPAWN_TIMEOUT_MS);
 

@@ -408,9 +408,19 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
   });
 
   it('the state backend method delegates rather than reimplementing', () => {
-    const backend = parsed.get('src/state/s3-state-backend.ts')!;
-    expect(callsPurge(backend)).toBe(true);
-    expect(namesIdentifier(backend, LISTING_COMMAND)).toBe(false);
+    // The backend is `s3-state-backend.ts` plus its `s3-state-backend/`
+    // companion modules (go-to-k/cdkd#5835): the purge method's body lives in
+    // `s3-state-backend/listing.ts`, so a re-implementation there must red.
+    const unit = files
+      .filter(
+        (rel) =>
+          rel === 'src/state/s3-state-backend.ts' || rel.startsWith('src/state/s3-state-backend/')
+      )
+      .map((rel) => parsed.get(rel) ?? ast(rel));
+    expect(unit.length).toBeGreaterThan(1);
+    const listing = parsed.get('src/state/s3-state-backend/listing.ts') ?? ast('src/state/s3-state-backend/listing.ts');
+    expect(callsPurge(listing)).toBe(true);
+    expect(unit.filter((src) => namesIdentifier(src, LISTING_COMMAND))).toEqual([]);
   });
 
   it('the three whole-bucket emptiers are excluded by PROPERTY, not by name', () => {

@@ -28,6 +28,8 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 /** Every file in `src/` that constructs a listing command. Derived, not listed. */
 const LISTING_FILES = [
   'src/state/s3-state-backend.ts',
+  // The backend's other listings, moved out of `s3-state-backend.ts` (go-to-k/cdkd#5835).
+  'src/state/s3-state-backend/listing.ts',
   'src/state/s3-noncurrent-version-purge.ts',
   'src/state/earlier-state-versions.ts',
   // `cdkd gc`'s listings, moved out of `gc.ts` (go-to-k/cdkd#5835).
