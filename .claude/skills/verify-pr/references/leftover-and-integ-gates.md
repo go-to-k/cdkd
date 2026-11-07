@@ -16,7 +16,8 @@ AGENTS.md's "cost is not a tiebreaker" is what settles it.
 
 ## Deletion-touching PRs
 
-Changes under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`,
+Changes under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`
+(and `destroy/**`),
 `src/analyzer/dag-builder.ts` and the rest of the `include:` list in
 `.markgate.yml`: `gh pr merge` is blocked while the `integ-destroy` marker is
 stale. Check it here so a failure surfaces early rather than at the merge:
