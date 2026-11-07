@@ -59,6 +59,8 @@ for (const rel of ['masking/remedy.ts', 'masking/noecho-attributes.ts']) {
 const NESTED_FLOORS: Readonly<Record<string, number>> = {
   // `executeDeployment`'s body (#5835): entry `execute.ts` plus six modules.
   execute: 6,
+  // `provisionUpdateInPlace`'s body (#5835): entry `update-in-place.ts` plus 1 modules.
+  'update-in-place': 1,
 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
   const held = ENGINE_FAMILY.filter((rel) =>
