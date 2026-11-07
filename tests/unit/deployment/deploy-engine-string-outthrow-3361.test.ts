@@ -305,7 +305,10 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/outputs.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/replacement.ts': { catchClause: 5 },
-    'src/deployment/deploy-engine/rollback.ts': { catchClause: 6 },
+    // `rollback.ts`, split into `rollback/` (go-to-k/cdkd#5835): the two
+    // modules holding its six handlers. The family case below scans the rest.
+    'src/deployment/deploy-engine/rollback/settle.ts': { catchClause: 5 },
+    'src/deployment/deploy-engine/rollback/journal-write.ts': { catchClause: 1 },
     // `updateInPlace`, split into `update-in-place/` (go-to-k/cdkd#5835): the
     // update's own handler stays in the entry, the fallback's two moved.
     'src/deployment/deploy-engine/update-in-place.ts': { catchClause: 1 },
@@ -444,5 +447,23 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(10);
+  });
+
+  it('the entry and every module of src/deployment/deploy-engine/rollback/ (read recursively)', () => {
+    // As above, for `deploy-engine/rollback.ts`'s split (go-to-k/cdkd#5835).
+    // The floor is the family's total on the pre-split file.
+    const dir = 'src/deployment/deploy-engine/rollback/';
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThanOrEqual(8);
+    const files = ['src/deployment/deploy-engine/rollback.ts', ...modules];
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(6);
   });
 });
