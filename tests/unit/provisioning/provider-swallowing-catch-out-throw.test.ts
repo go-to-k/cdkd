@@ -473,7 +473,7 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
     /(?:could not be|was not) deleted: \$\{(?:safeStringify|describeAwsFailure)\(/;
 
   const PERSISTED_REASON_SITES: readonly string[] = [
-    'providers/acm-certificate-provider.ts',
+    'providers/acm-certificate/update.ts',
     'providers/apigateway/resource-deployment.ts',
     'providers/iam-managed-policy-provider.ts',
     'providers/iam-role/update.ts',

@@ -3768,10 +3768,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   // Real-code anchors for the write COLLECTOR — the scope index the hand-off
   // mapping and the `segmentRenames` staleness fence read.
   const s3Source = providerWithCompanions('s3-bucket-provider.ts');
-  const cbSource = readFileSync(
-    resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts'),
-    'utf8'
-  );
+  const cbSource = providerWithCompanions('codebuild-provider.ts');
   it('a purely NESTED write opens no root scope (#1464 — the #1448 bound, inverted)', () => {
     // The INVERSION of "scopes are keyed by NAME and unioned across write
     // sites". Two halves of that bound: (a) unrelated write SITES of one name
@@ -3865,7 +3862,8 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // object-literal property: `batchReportMode: cfnBuildBatchConfig['BatchReportMode']`
     expect(writtenNames(evidence).has('batchReportMode'), 'property assignment').toBe(true);
     // shorthand property: `buildBatchConfig,` in mapProperties\' return literal
-    expect(cbSource).toMatch(/^\s{6}buildBatchConfig,$/m);
+    // (a top-level function in `codebuild/map-properties.ts`, so one level shallower)
+    expect(cbSource).toMatch(/^\s{4}buildBatchConfig,$/m);
     expect(writtenNames(evidence).has('buildBatchConfig'), 'shorthand property').toBe(true);
     // element-access assignment with a literal key, on a genuine FORWARD path:
     // `CloudFrontDistributionProvider.completeRequiredUpdateFields` fills the
@@ -3951,7 +3949,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     const scoped = collectStringLiterals(cbSource, 'codebuild-provider.ts');
     const unscoped = collectStringLiterals(cbSource, 'codebuild-provider.ts', []);
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n));
-    // Measured on `codebuild-provider.ts`: these CFn spellings appear ONLY in
+    // Measured on `codebuild-provider.ts` and its companion files: these CFn spellings appear ONLY in
     // `readCurrentState`, so before the exclusion each was "provider names this
     // key" evidence produced entirely by the read path.
     // (`ResourceAccessRole` left the list once go-to-k/cdkd#2762 wired it.)

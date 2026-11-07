@@ -729,7 +729,7 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * now throw on an intrinsic — `route53/hosted-zone.ts` (`HostedZoneConfig`),
  * `cloudfront-oai-provider.ts` (`CloudFrontOriginAccessIdentityConfig`),
  * `kinesis/update.ts` (`StreamModeDetails`), `ecs-provider.ts`
- * (`DeploymentController`) and `codebuild-provider.ts` (reached from `update()`
+ * (`DeploymentController`) and `codebuild/map-properties.ts` (reached from `update()`
  * through `mapProperties`). `secretsmanager-secret-provider.ts` was on this
  * list until issue #3048 moved its update path to a SKIP (the container is
  * refused by `requireConfigObject` before `generateSecretString` reads it,
