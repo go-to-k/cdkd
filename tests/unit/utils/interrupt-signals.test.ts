@@ -74,8 +74,9 @@ describe('forwardSigtermToSigint', () => {
 describe('SIGTERM forwarding command wiring (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   // `cdkd state destroy` moved from `state.ts` into `state/destroy.ts` with the
-  // split (go-to-k/cdkd#5835).
-  const files = ['deploy.ts', 'destroy.ts', 'state/destroy.ts', 'rollback.ts'];
+  // split (go-to-k/cdkd#5835), and `cdkd rollback`'s replay from `rollback.ts`
+  // into `rollback/replay.ts` with its own.
+  const files = ['deploy.ts', 'destroy.ts', 'state/destroy.ts', 'rollback/replay.ts'];
 
   it.each(files)('%s registers forwardSigtermToSigint and unregisters it', (file) => {
     const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', file), 'utf8');

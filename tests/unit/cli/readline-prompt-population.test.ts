@@ -169,7 +169,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
  * showing up as an anonymous change in the total.
  */
 const FOLDED_FILES: readonly string[] = [
-  'src/cli/commands/rollback.ts',
+  // `confirm` moved with the rollback split (go-to-k/cdkd#5835).
+  'src/cli/commands/rollback/render.ts',
   'src/cli/commands/orphan.ts',
   // `cdkd import`'s and `cdkd export`'s prompts moved with their splits into
   // `import/*.ts` and `export/*.ts`.
@@ -266,9 +267,10 @@ describe('readline interface population (issue #2275)', () => {
     ]) {
       const text = readFileSync(join(REPO_ROOT, path), 'utf-8');
       // `drift/plan.ts`, `export/command-helpers.ts`, `import/import-one.ts`,
-      // `retire-cfn-stack/prepare.ts` and the two `state/` modules sit one
-      // directory below their siblings, so they reach the helper as `../`.
-      const spec = /^src\/cli\/commands\/(drift|export|import|retire-cfn-stack|state)\//.test(path)
+      // `retire-cfn-stack/prepare.ts`, `rollback/render.ts` and the two
+      // `state/` modules sit one directory below their siblings, so they reach
+      // the helper as `../`.
+      const spec = /^src\/cli\/commands\/(drift|export|import|retire-cfn-stack|rollback|state)\//.test(path)
         ? '../confirm-prompt.js'
         : './confirm-prompt.js';
       expect(text, `${path} no longer routes through confirmOrRefuse`).toContain(
