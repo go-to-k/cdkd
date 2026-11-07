@@ -4851,7 +4851,20 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * see the lookups its caller already made.
    */
   it('src/analyzer/outputs-diff.ts admits the stored bag through the SHARED predicate', () => {
-    const src = code('src/analyzer/outputs-diff.ts');
+    // `src/analyzer/outputs-diff.ts` re-exports the modules split out under
+    // `outputs-diff/` (go-to-k/cdkd#5835). Read the directory recursively and
+    // fence the ONE module that declares the function, so the body bound and
+    // the import below are both read from the file the code runs in.
+    const dir = 'src/analyzer/outputs-diff/';
+    const modules = readdirSync(join(repoRoot, dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, `${dir} holds no modules`).toBeGreaterThan(0);
+    const declaring = ['src/analyzer/outputs-diff.ts', ...modules].filter((file) =>
+      code(file).includes('export function computeOutputsDiff')
+    );
+    expect(declaring, 'computeOutputsDiff was renamed; this fence reads its body').toHaveLength(1);
+    const src = code(declaring[0]!);
     const at = src.indexOf('export function computeOutputsDiff');
     expect(at, 'computeOutputsDiff was renamed; this fence reads its body').toBeGreaterThan(-1);
     // BOUNDED at the next top-level export, not sliced to EOF. The function is
@@ -4876,8 +4889,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // And through the SHARED predicate, not a second spelling of it beside the
     // one `isReadableBag`'s export note exists to keep singular.
     expect(
-      src.includes(`from '../state/malformed-resources-bag.js'`),
-      `src/analyzer/outputs-diff.ts no longer imports the shared predicate.`
+      /from '(\.\.\/)+state\/malformed-resources-bag\.js'/.test(src),
+      `${declaring[0]} no longer imports the shared predicate.`
     ).toBe(true);
   });
 });

@@ -5,7 +5,7 @@
   "src/analyzer/diff-calculator/in-place-promotion.ts": 1,
   "src/analyzer/diff-calculator/promotion.ts": 2,
   "src/analyzer/orphan-rewriter/attribute-fetcher.ts": 4,
-  "src/analyzer/outputs-diff.ts": 8,
+  "src/analyzer/outputs-diff/resolve.ts": 8,
   "src/analyzer/replacement-rules.ts": 3,
   "src/analyzer/replacement-rules/rules.ts": 1,
   "src/analyzer/template-parser.ts": 3,
