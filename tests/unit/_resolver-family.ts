@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 /**
  * `intrinsic-function-resolver.ts` is split across modules (issue #4337): the
@@ -10,11 +10,17 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/intrinsic-resolver');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in path order.
+ * RECURSIVE: a split module may itself be split into a sibling directory
+ * (`dynamic-refs.ts` + `dynamic-refs/`, #5835), and a flat listing would drop
+ * the moved bodies out of every family scan.
+ */
 export const RESOLVER_FAMILY: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
-  ...readdirSync(SPLIT_DIR)
+  ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
+    .map((f) => f.split(sep).join('/'))
     .sort()
     .map((f) => `src/deployment/intrinsic-resolver/${f}`),
 ];
