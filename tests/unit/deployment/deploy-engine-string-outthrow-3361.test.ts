@@ -296,7 +296,11 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/create.ts': { catchClause: 3 },
     'src/deployment/deploy-engine/delete.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/deploy-flow.ts': { catchClause: 8 },
-    'src/deployment/deploy-engine/execute.ts': { catchClause: 10 },
+    // `executeDeployment`, split into `execute/` (go-to-k/cdkd#5835): the entry
+    // and the two modules holding its bound handlers. The family case below scans the rest.
+    'src/deployment/deploy-engine/execute.ts': { catchClause: 7 },
+    'src/deployment/deploy-engine/execute/provision-node.ts': { catchClause: 1 },
+    'src/deployment/deploy-engine/execute/rollback-after-failure.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/observed-capture.ts': { thenRejection: 1 },
     'src/deployment/deploy-engine/outputs.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
@@ -422,5 +426,23 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(4);
+  });
+
+  it('the entry and every module of src/deployment/deploy-engine/execute/ (read recursively)', () => {
+    // As above, for `executeDeployment`'s split (go-to-k/cdkd#5835). The floor
+    // is the family's total on the pre-split file.
+    const dir = 'src/deployment/deploy-engine/execute/';
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThanOrEqual(6);
+    const files = ['src/deployment/deploy-engine/execute.ts', ...modules];
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(10);
   });
 });

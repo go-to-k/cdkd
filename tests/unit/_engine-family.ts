@@ -44,14 +44,30 @@ if (ENGINE_FAMILY.length < 2) {
   throw new Error(`the engine family resolved to ${ENGINE_FAMILY.join(', ')} only`);
 }
 
-// A floor per NESTED directory (#5835): a module split further into a
-// directory named after its stem keeps its bodies there, and a read that stops
-// recursing drops them from the family without taking it below the floor above.
-for (const entry of readdirSync(SPLIT_DIR, { withFileTypes: true })) {
-  if (!entry.isDirectory()) continue;
-  const prefix = `src/deployment/deploy-engine/${entry.name}/`;
-  if (!ENGINE_FAMILY.some((rel) => rel.startsWith(prefix))) {
-    throw new Error(`the engine family holds no module under ${prefix}`);
+// Named nested modules: the per-directory floor above holds only while the
+// listing descends at all, so a non-recursive read would drop every nested
+// directory without reaching it. These paths must be present by name.
+for (const rel of ['masking/remedy.ts', 'masking/noecho-attributes.ts']) {
+  if (!ENGINE_FAMILY.includes(`src/deployment/deploy-engine/${rel}`)) {
+    throw new Error(`the engine family is missing the nested module deploy-engine/${rel}`);
+  }
+}
+
+// Per nested directory, the modules it held when it was split: a listing that
+// stopped descending (or a directory renamed away) drops the moved code out of
+// every fence above, so each nested directory is floored on its own.
+const NESTED_FLOORS: Readonly<Record<string, number>> = {
+  // `executeDeployment`'s body (#5835): entry `execute.ts` plus six modules.
+  execute: 6,
+  // `provisionUpdateInPlace`'s body (#5835): entry `update-in-place.ts` plus 1 modules.
+  'update-in-place': 1,
+};
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const held = ENGINE_FAMILY.filter((rel) =>
+    rel.startsWith(`src/deployment/deploy-engine/${dir}/`)
+  ).length;
+  if (held < floor) {
+    throw new Error(`the engine family holds ${held} module(s) of deploy-engine/${dir}/, floor ${floor}`);
   }
 }
 
