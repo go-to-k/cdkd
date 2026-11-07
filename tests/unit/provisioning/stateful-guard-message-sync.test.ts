@@ -35,8 +35,7 @@ const REPO_ROOT = join(import.meta.dirname, '../../..');
 // `DeployEngine`'s source: the class file plus the modules split out of it
 // (#4200), where the provisioning arms now live. Joined, so
 // a phrase counted once is counted once across the whole engine.
-// Read through the shared family, which descends into nested split
-// directories (#5835) and floors each one.
+// The engine family read recursively (`_engine-family.ts`, go-to-k/cdkd#5835).
 const DEPLOY_ENGINE = readEngineFamily();
 const STATEFUL_TYPES_SRC = readFileSync(
   join(REPO_ROOT, 'src/provisioning/stateful-types.ts'),
