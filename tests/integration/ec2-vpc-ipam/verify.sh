@@ -23,14 +23,23 @@
 #      subnet pool's 10.241.0.0/24 in SubnetVpc, in the zone its
 #      AvailabilityZoneId names; its SubnetCidr / SubnetAzId Outputs
 #      (Fn::GetAtt) must equal what EC2 reports.
-#      Then `cdkd drift` must report the VPC and the subnet compared and clean.
-#   2. CDKD_TEST_UPDATE=true adds a tag to the VPC and the subnet: in-place
+#      go-to-k/cdkd#5945: 1a also gives SubnetVpc the IPv6 block
+#      fd12:cd:5945:100::/56 from an IPv6 pool holding the ULA range
+#      fd12:cd:5945::/48 (asserted on the VPC and in the pool's allocations);
+#      the monitoring wait covers that block too, and 1b adds an IPv6 planning
+#      pool holding it and an IPv6-only subnet taking a /64 from it
+#      (Ipv6IpamPoolId + Ipv6NetmaskLength). Assert it is on the SDK path, holds
+#      exactly one associated /64 inside the VPC's block, that block is the
+#      planning pool's allocation for it, and its Ipv6SubnetCidr Output agrees.
+#      Then `cdkd drift` must report the VPC and both subnets compared and clean.
+#   2. CDKD_TEST_UPDATE=true adds a tag to the VPC and both subnets: in-place
 #      updates. Assert the same ids, the tags on AWS, and that the recorded
 #      CidrBlock attributes (the VpcCidr / SubnetCidr Outputs) still equal the
-#      live CIDRs.
-#   3. Destroy. Assert the subnet, both VPCs, the pools, the private scope and
-#      the IPAM are gone (IPAM deletes are asynchronous, so the gone-checks
-#      wait), and the state file too.
+#      live CIDRs, and the IPv6 subnet still holds its block.
+#   3. Destroy. Assert both subnets' deletes waited on their pools, that both
+#      subnets, both VPCs, the pools, the private scope and the IPAM are gone
+#      (IPAM deletes are asynchronous, so the gone-checks wait), and the state
+#      file too.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -78,6 +87,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 POOL_CIDR_PREFIX="10.240."
 # go-to-k/cdkd#5632: the subnet pool's CIDR in lib/ (inside SubnetVpc's 10.241.0.0/20).
 SUBNET_POOL_CIDR_PREFIX="10.241.0."
+# go-to-k/cdkd#5945: SubnetVpc's IPv6 block in lib/, inside its pool's fd12:cd:5945::/48.
+IPV6_VPC_CIDR="fd12:cd:5945:100::/56"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -294,6 +305,34 @@ case "${SUBNET_VPC_ID}" in
   vpc-?*) ;;
   *) echo "FAIL: output SubnetVpcId is '${SUBNET_VPC_ID}'" >&2; exit 1 ;;
 esac
+
+# go-to-k/cdkd#5945: SubnetVpc holds the IPv6 block lib/ names, allocated
+# from the IPv6 pool's ULA range.
+IPV6_POOL_ID=$(jq -r '.outputs.Ipv6PoolId // ""' <<<"${STATE}")
+case "${IPV6_POOL_ID}" in
+  ipam-pool-?*) ;;
+  *) echo "FAIL: output Ipv6PoolId is '${IPV6_POOL_ID}'" >&2; exit 1 ;;
+esac
+VPC6_BLOCK=$(aws ec2 describe-vpcs --vpc-ids "${SUBNET_VPC_ID}" --region "${REGION}" \
+  --query "Vpcs[0].Ipv6CidrBlockAssociationSet[?Ipv6CidrBlockState.State=='associated'].Ipv6CidrBlock | join(' ', @)" --output text 2>&1) || {
+  echo "FAIL: describe-vpcs ${SUBNET_VPC_ID} failed: ${VPC6_BLOCK}" >&2
+  exit 1
+}
+if [ "${VPC6_BLOCK}" != "${IPV6_VPC_CIDR}" ]; then
+  echo "FAIL: ${SUBNET_VPC_ID}'s associated IPv6 blocks are '${VPC6_BLOCK}', expected ${IPV6_VPC_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+VPC6_ALLOCATED=$(aws ec2 get-ipam-pool-allocations --ipam-pool-id "${IPV6_POOL_ID}" --region "${REGION}" \
+  --query "IpamPoolAllocations[?ResourceId=='${SUBNET_VPC_ID}'].Cidr | [0]" --output text 2>&1) || {
+  echo "FAIL: get-ipam-pool-allocations ${IPV6_POOL_ID} failed: ${VPC6_ALLOCATED}" >&2
+  exit 1
+}
+if [ "${VPC6_ALLOCATED}" != "${IPV6_VPC_CIDR}" ]; then
+  echo "FAIL: IPv6 pool ${IPV6_POOL_ID} allocates '${VPC6_ALLOCATED}' to ${SUBNET_VPC_ID}, expected ${IPV6_VPC_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: ${SUBNET_VPC_ID} holds ${IPV6_VPC_CIDR}, allocated from IPv6 pool ${IPV6_POOL_ID}"
+
 echo "==> Phase 1b: wait for IPAM scope ${SCOPE_ID} to monitor ${SUBNET_VPC_ID}"
 MONITOR_START=$(date +%s)
 while :; do
@@ -304,14 +343,20 @@ while :; do
     echo "FAIL: get-ipam-resource-cidrs ${SCOPE_ID} ${SUBNET_VPC_ID} failed: ${MONITOR_JSON}" >&2
     exit 1
   }
-  MONITORED=$(jq --arg v "${SUBNET_VPC_ID}" '[.IpamResourceCidrs[]? | select(.ResourceId == $v and .ResourceType == "vpc")] | length' <<<"${MONITOR_JSON}")
+  MONITORED=$(jq --arg v "${SUBNET_VPC_ID}" '[.IpamResourceCidrs[]? | select(.ResourceId == $v and .ResourceType == "vpc" and ((.ResourceCidr // "") | contains(".")))] | length' <<<"${MONITOR_JSON}")
+  # go-to-k/cdkd#5945: the IPv6 planning pool needs the VPC's IPv6 block
+  # monitored too, so the IPv4 rows (a dotted CIDR) and that block's row are
+  # counted apart.
+  # Any IPv6 row: the VPC holds one IPv6 block (asserted above), and a
+  # text-form compare would turn a different spelling into a 30-minute wait.
+  MONITORED6=$(jq --arg v "${SUBNET_VPC_ID}" '[.IpamResourceCidrs[]? | select(.ResourceId == $v and .ResourceType == "vpc" and ((.ResourceCidr // "") | contains(":")))] | length' <<<"${MONITOR_JSON}")
   MONITOR_LAG=$(( $(date +%s) - MONITOR_START ))
-  if [ "${MONITORED}" -gt 0 ]; then
+  if [ "${MONITORED}" -gt 0 ] && [ "${MONITORED6}" -gt 0 ]; then
     echo "    OK: IPAM monitors ${SUBNET_VPC_ID} after ${MONITOR_LAG}s (go-to-k/cdkd#5632 measurement)"
     break
   fi
   if [ "${MONITOR_LAG}" -ge "${MONITOR_CAP_S}" ]; then
-    echo "FAIL: IPAM scope ${SCOPE_ID} still does not monitor ${SUBNET_VPC_ID} after ${MONITOR_LAG}s; the planning pool sourced from it cannot be created" >&2
+    echo "FAIL: IPAM scope ${SCOPE_ID} still does not monitor ${SUBNET_VPC_ID} after ${MONITOR_LAG}s (IPv4 rows ${MONITORED}, ${IPV6_VPC_CIDR} rows ${MONITORED6}); the planning pools sourced from it cannot be created" >&2
     exit 1
   fi
   sleep "${MONITOR_POLL_S}"
@@ -385,6 +430,70 @@ if [ "${SUBNET_CIDR_OUTPUT}" != "${SUBNET_CIDR}" ] || [ "${SUBNET_AZ_OUTPUT}" !=
 fi
 echo "    OK: ${SUBNET_ID} on the SDK path with ${SUBNET_CIDR} in ${SUBNET_AZ}, allocated from ${SUBNET_POOL_ID}; Fn::GetAtt agrees"
 
+# go-to-k/cdkd#5945: the IPv6-only subnet allocated from the IPv6 planning
+# pool. Its one block must be a non-empty /64 inside SubnetVpc's IPv6 block,
+# associated, and that pool's allocation for this subnet.
+IPV6_SUBNET_ID=$(jq -r '.outputs.Ipv6SubnetId // ""' <<<"${STATE}")
+IPV6_PLANNING_POOL_ID=$(jq -r '.outputs.Ipv6PlanningPoolId // ""' <<<"${STATE}")
+IPV6_SUBNET_CIDR_OUTPUT=$(jq -r '.outputs.Ipv6SubnetCidr // ""' <<<"${STATE}")
+case "${IPV6_SUBNET_ID}|${IPV6_PLANNING_POOL_ID}" in
+  subnet-?*\|ipam-pool-?*) ;;
+  *)
+    echo "FAIL: outputs Ipv6SubnetId/Ipv6PlanningPoolId are '${IPV6_SUBNET_ID}' / '${IPV6_PLANNING_POOL_ID}'" >&2
+    exit 1
+    ;;
+esac
+# An SDK record may omit provisionedBy; a missing record is not the SDK path.
+IPV6_SUBNET_ROUTE=$(jq -r 'if .resources.Ipv6Subnet then (.resources.Ipv6Subnet.provisionedBy // "sdk") else "no state record" end' <<<"${STATE}")
+if [ "${IPV6_SUBNET_ROUTE}" != "sdk" ]; then
+  echo "FAIL: the IPv6 subnet was provisioned by '${IPV6_SUBNET_ROUTE}', expected the SDK provider (issue #5945)" >&2
+  exit 1
+fi
+IPV6_SUBNET_LIVE=$(aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}" \
+  --query 'Subnets[0].[VpcId, Ipv6Native, AvailabilityZoneId, length(Ipv6CidrBlockAssociationSet), Ipv6CidrBlockAssociationSet[0].Ipv6CidrBlockState.State, Ipv6CidrBlockAssociationSet[0].Ipv6CidrBlock]' \
+  --output text 2>&1) || {
+  echo "FAIL: describe-subnets ${IPV6_SUBNET_ID} failed: ${IPV6_SUBNET_LIVE}" >&2
+  exit 1
+}
+read -r IPV6_SUBNET_VPC IPV6_SUBNET_NATIVE IPV6_SUBNET_AZ IPV6_SUBNET_BLOCKS IPV6_SUBNET_STATE IPV6_SUBNET_CIDR <<<"${IPV6_SUBNET_LIVE}"
+if [ "${IPV6_SUBNET_VPC}" != "${SUBNET_VPC_ID}" ] || [ "${IPV6_SUBNET_NATIVE}" != "True" ] || [ "${IPV6_SUBNET_AZ}" != "${AZ_ID}" ]; then
+  echo "FAIL: IPv6 subnet ${IPV6_SUBNET_ID} reads VPC '${IPV6_SUBNET_VPC}', Ipv6Native '${IPV6_SUBNET_NATIVE}', zone '${IPV6_SUBNET_AZ}'; expected ${SUBNET_VPC_ID}, True, ${AZ_ID} (issue #5945)" >&2
+  exit 1
+fi
+if [ "${IPV6_SUBNET_BLOCKS}" != "1" ] || [ "${IPV6_SUBNET_STATE}" != "associated" ]; then
+  echo "FAIL: IPv6 subnet ${IPV6_SUBNET_ID} holds ${IPV6_SUBNET_BLOCKS} IPv6 block(s), the first '${IPV6_SUBNET_STATE}'; expected one, associated (issue #5945)" >&2
+  exit 1
+fi
+# Non-empty, a /64, and inside SubnetVpc's block (node's BlockList, so no
+# string-prefix guess about IPv6 text forms).
+if ! node -e '
+  const net = require("net");
+  const [sub, parent] = process.argv.slice(1);
+  const m = /^([0-9a-f:]+)\/(\d+)$/.exec(sub || "");
+  const p = /^([0-9a-f:]+)\/(\d+)$/.exec(parent);
+  if (!m || !p || Number(m[2]) !== 64 || !net.isIPv6(m[1])) process.exit(1);
+  const list = new net.BlockList();
+  list.addSubnet(p[1], Number(p[2]), "ipv6");
+  process.exit(list.check(m[1], "ipv6") ? 0 : 1);
+' "${IPV6_SUBNET_CIDR}" "${IPV6_VPC_CIDR}"; then
+  echo "FAIL: IPv6 subnet ${IPV6_SUBNET_ID}'s block is '${IPV6_SUBNET_CIDR}', expected a /64 inside ${IPV6_VPC_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+IPV6_SUBNET_ALLOCATED=$(aws ec2 get-ipam-pool-allocations --ipam-pool-id "${IPV6_PLANNING_POOL_ID}" --region "${REGION}" \
+  --query "IpamPoolAllocations[?ResourceId=='${IPV6_SUBNET_ID}'].Cidr | [0]" --output text 2>&1) || {
+  echo "FAIL: get-ipam-pool-allocations ${IPV6_PLANNING_POOL_ID} failed: ${IPV6_SUBNET_ALLOCATED}" >&2
+  exit 1
+}
+if [ "${IPV6_SUBNET_ALLOCATED}" != "${IPV6_SUBNET_CIDR}" ]; then
+  echo "FAIL: IPv6 planning pool ${IPV6_PLANNING_POOL_ID} allocates '${IPV6_SUBNET_ALLOCATED}' to ${IPV6_SUBNET_ID}, expected its block ${IPV6_SUBNET_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+if [ "${IPV6_SUBNET_CIDR_OUTPUT}" != "${IPV6_SUBNET_CIDR}" ]; then
+  echo "FAIL: the Ipv6SubnetCidr Output (Fn::Select 0 of Fn::GetAtt Ipv6CidrBlocks) is '${IPV6_SUBNET_CIDR_OUTPUT}', expected ${IPV6_SUBNET_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: ${IPV6_SUBNET_ID} on the SDK path with ${IPV6_SUBNET_CIDR} (associated), allocated from ${IPV6_PLANNING_POOL_ID} inside ${IPV6_VPC_CIDR}; Fn::GetAtt agrees"
+
 # `cdkd drift` compares the VPC through the SDK provider's readCurrentState
 # (Ipv4NetmaskLength from the CIDR; Ipv4IpamPoolId is declared unreadable):
 # it must be compared and CLEAN right after the deploy.
@@ -407,8 +516,16 @@ if [ "${SUBNET_CLEAN}" != "1" ]; then
   cat "${DRIFT_JSON}" >&2
   exit 1
 fi
+# go-to-k/cdkd#5945: the same for the IPv6-only subnet (Ipv6IpamPoolId is
+# unreadable, Ipv6NetmaskLength reads back from its block).
+IPV6_SUBNET_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "Ipv6Subnet")] | length' "${DRIFT_JSON}") || IPV6_SUBNET_CLEAN="?"
+if [ "${IPV6_SUBNET_CLEAN}" != "1" ]; then
+  echo "FAIL: the IPv6 subnet is not drift-clean right after the deploy (clean=${IPV6_SUBNET_CLEAN} rc=${DRIFT_RC}) (issue #5945):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
 rm -f "${DRIFT_JSON}"
-echo "    OK: ${VPC_ID} and ${SUBNET_ID} read back drift-clean"
+echo "    OK: ${VPC_ID}, ${SUBNET_ID} and ${IPV6_SUBNET_ID} read back drift-clean"
 
 # --- Phase 2: in-place update keeps the CidrBlock attribute --------------
 echo "==> Phase 2: CDKD_TEST_UPDATE=true (tag the VPC in place)"
@@ -462,6 +579,30 @@ if [ "${P2_SUBNET_ATTR}" != "${SUBNET_CIDR}" ] || [ "${P2_SUBNET_OUTPUT}" != "${
 fi
 echo "    OK: ${SUBNET_ID} updated in place and still records CidrBlock ${SUBNET_CIDR}"
 
+# go-to-k/cdkd#5945: the tag update leaves the IPv6 subnet and its block alone.
+P2_IPV6_SUBNET_ID=$(jq -r '.outputs.Ipv6SubnetId // ""' <<<"${STATE}")
+P2_IPV6_SUBNET_OUTPUT=$(jq -r '.outputs.Ipv6SubnetCidr // ""' <<<"${STATE}")
+if [ "${P2_IPV6_SUBNET_ID}" != "${IPV6_SUBNET_ID}" ]; then
+  echo "FAIL: the tag update replaced the IPv6 subnet: '${IPV6_SUBNET_ID}' -> '${P2_IPV6_SUBNET_ID}' (issue #5945)" >&2
+  exit 1
+fi
+if [ "${P2_IPV6_SUBNET_OUTPUT}" != "${IPV6_SUBNET_CIDR}" ]; then
+  echo "FAIL: after the in-place update the Ipv6SubnetCidr Output (Fn::GetAtt Ipv6CidrBlocks) is '${P2_IPV6_SUBNET_OUTPUT}', expected ${IPV6_SUBNET_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+P2_IPV6_SUBNET_LIVE=$(aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}" \
+  --query "Subnets[0].[Tags[?Key=='cdkd-5945'].Value | [0], Ipv6CidrBlockAssociationSet[?Ipv6CidrBlockState.State=='associated'].Ipv6CidrBlock | join(' ', @)]" \
+  --output text 2>&1) || {
+  echo "FAIL: describe-subnets ${IPV6_SUBNET_ID} failed: ${P2_IPV6_SUBNET_LIVE}" >&2
+  exit 1
+}
+read -r P2_IPV6_SUBNET_TAG P2_IPV6_SUBNET_BLOCK <<<"${P2_IPV6_SUBNET_LIVE}"
+if [ "${P2_IPV6_SUBNET_TAG}" != "updated" ] || [ "${P2_IPV6_SUBNET_BLOCK}" != "${IPV6_SUBNET_CIDR}" ]; then
+  echo "FAIL: after the tag update the IPv6 subnet ${IPV6_SUBNET_ID} reads tag '${P2_IPV6_SUBNET_TAG}' and associated block(s) '${P2_IPV6_SUBNET_BLOCK}', expected 'updated' and ${IPV6_SUBNET_CIDR} (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: ${IPV6_SUBNET_ID} updated in place and keeps ${IPV6_SUBNET_CIDR}"
+
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
 DESTROY_LOG="$(mktemp -t cdkd-ec2-vpc-ipam-destroy.XXXXXX)"
@@ -508,8 +649,31 @@ if ! grep -qF "release the allocation of deleted subnet ${SUBNET_ID}" <<<"${DEST
   exit 1
 fi
 echo "    OK: the subnet delete waited for ${SUBNET_POOL_ID} to release its allocation"
+# go-to-k/cdkd#5945: the IPv6 subnet's delete waited on its IPv6 pool; the
+# IPv4 subnet's line above is the sentinel.
+if ! grep -qF "IPAM pool ${IPV6_PLANNING_POOL_ID} to release the allocation of deleted subnet ${IPV6_SUBNET_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: the destroy waited on the IPv4 subnet's pool but printed no wait for IPv6 subnet ${IPV6_SUBNET_ID} on ${IPV6_PLANNING_POOL_ID} (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: the IPv6 subnet delete waited for ${IPV6_PLANNING_POOL_ID} to release its allocation"
+# The IPv6 pool CIDR is deleted after SubnetVpc (lib/), so its delete meets
+# the deleted VPC's lingering block and waits it out. Without that order it
+# meets a LIVE VPC's allocation and fails, and this line never prints.
+if ! grep -qE "IPAM pool ${IPV6_POOL_ID} still holds the allocations of deleted .*${SUBNET_VPC_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: the IPv6 pool CIDR delete printed no wait for deleted ${SUBNET_VPC_ID}'s block on ${IPV6_POOL_ID}; the destroy order or the wording changed (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: the IPv6 pool CIDR delete waited out deleted ${SUBNET_VPC_ID}'s block"
+# Which side finished the wait varies by run (the measured release, 1523 s,
+# sits at the subnet wait's 25-minute cap), so it is recorded, not asserted.
+if grep -qE "still holds the allocations of deleted .*${IPV6_SUBNET_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "    NOTE: ${IPV6_SUBNET_ID}'s release outlasted the subnet delete; the IPv6 planning pool CIDR delete waited out the rest (go-to-k/cdkd#5945 measurement)"
+else
+  echo "    NOTE: ${IPV6_SUBNET_ID}'s release finished inside the subnet delete's wait (go-to-k/cdkd#5945 measurement)"
+fi
 
 assert_gone "subnet '${SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}"
+assert_gone "IPv6 subnet '${IPV6_SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}"
 assert_gone "VPC '${VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 assert_gone "VPC '${SUBNET_VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${SUBNET_VPC_ID}" --region "${REGION}"
 # IPAM, scope and pool deletes finish asynchronously: wait for each to stop
@@ -519,6 +683,8 @@ for _ in $(seq 1 60); do
   if ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${POOL_ID}" --region "${REGION}" \
     && ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${SUBNET_POOL_ID}" --region "${REGION}" \
     && ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${PLANNING_POOL_ID}" --region "${REGION}" \
+    && ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${IPV6_POOL_ID}" --region "${REGION}" \
+    && ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${IPV6_PLANNING_POOL_ID}" --region "${REGION}" \
     && ipam_resource_gone 'IpamScopes[0].State' aws ec2 describe-ipam-scopes --ipam-scope-ids "${SCOPE_ID}" --region "${REGION}" \
     && ipam_resource_gone 'Ipams[0].State' aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}"; then
     IPAM_FAMILY_GONE=true
@@ -527,13 +693,13 @@ for _ in $(seq 1 60); do
   sleep 10
 done
 if [ "${IPAM_FAMILY_GONE}" != "true" ]; then
-  echo "FAIL: after destroy, the IPAM '${IPAM_ID}', scope '${SCOPE_ID}', pool '${POOL_ID}', subnet pool '${SUBNET_POOL_ID}' or planning pool '${PLANNING_POOL_ID}' is still described in a state other than delete-complete after 10 minutes" >&2
+  echo "FAIL: after destroy, the IPAM '${IPAM_ID}', scope '${SCOPE_ID}', pool '${POOL_ID}', subnet pool '${SUBNET_POOL_ID}', planning pool '${PLANNING_POOL_ID}', IPv6 pool '${IPV6_POOL_ID}' or IPv6 planning pool '${IPV6_PLANNING_POOL_ID}' is still described in a state other than delete-complete after 10 minutes" >&2
   exit 1
 fi
-echo "    OK: the subnet, both VPCs, the three pools, the private scope and the IPAM are gone"
+echo "    OK: both subnets, both VPCs, the five pools, the private scope and the IPAM are gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "[verify] PASS — ec2-vpc-ipam: VPC and subnet CIDRs allocated from IPAM pools on the SDK path, kept across an in-place update, clean destroy"
+echo "[verify] PASS — ec2-vpc-ipam: VPC and subnet CIDRs (IPv4 and IPv6) allocated from IPAM pools on the SDK path, kept across an in-place update, clean destroy"

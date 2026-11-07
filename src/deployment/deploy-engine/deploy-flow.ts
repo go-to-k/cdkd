@@ -1,132 +1,51 @@
-import { refusePendingMovesOut } from '../../state/pending-moves.js';
-import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
-import { retryCarriedSupersededResources } from './superseded-retry.js';
-import { supersededResourcesOf } from '../superseded-resources.js';
-import {
-  freshNoEchoParametersWithDeclared,
-  noEchoDiffComparison,
-  seedPersistedNoEchoAttributes,
-} from './noecho.js';
+import { readRefactorMarker } from '../../state/refactor-marker.js';
+import { seedPersistedNoEchoAttributes } from './noecho.js';
 import { stampReasonlessParameterRefusals } from './observed-capture.js';
-import {
-  captureStoredNoEchoNamingValues,
-  diffLogMasker,
-  freshNoEchoParameters,
-  redactOutputs,
-  redactParametersForDiff,
-  stateNamingSecrets,
-} from './masking.js';
+import { captureStoredNoEchoNamingValues, stateNamingSecrets } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { getAccountInfo } from '../intrinsic-function-resolver.js';
-import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
-import { nameGenerationsOf, nextNameGeneration } from '../../state/name-generation.js';
+import { nameGenerationsOf } from '../../state/name-generation.js';
 import { flushKeptForReadoption } from './delete.js';
-import {
-  adoptRollbackOrphans,
-  producerRegionEvidence,
-  settleJournalAfterSuccess,
-} from './rollback.js';
+import { adoptRollbackOrphans, producerRegionEvidence } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
 import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
-import {
-  loadKeptForWarning,
-  loadKeptInHistory,
-  type KeptInHistorySources,
-} from '../kept-in-history.js';
-import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
-import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
-import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
-import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
-import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
+import { loadKeptForWarning } from '../kept-in-history.js';
+import type { DeployEngine } from '../deploy-engine.js';
 import type { CreateOnlyPrefetch } from '../../provisioning/create-only-properties.js';
-import {
-  refuseMalformedOrphanRecords,
-  refuseMalformedOrphans,
-  refuseMalformedOutputs,
-  refuseMalformedResourceEntriesForDeploy,
-  refuseMalformedResourceProperties,
-  refuseMalformedResourcesForDeploy,
-} from '../../state/malformed-resources-bag.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   type StackState,
-  exportNamesCarriedFrom,
-  stackInstanceIdCarriedFrom,
   importableOutputKeys,
-  importableOutputs,
-  orphansCarriedFrom,
 } from '../../types/state.js';
 import { green, red, yellow } from '../../utils/colors.js';
 import { asIsMessage, displayStackName, safeMsg } from '../../utils/display-safe.js';
-import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { DeployResult } from './options.js';
-import { outputMapsEqual } from '../deploy-value-equality.js';
-import { withSharedDrainBudget } from '../drain-budget.js';
-import { NESTED_PENDING_PARENT_REASON } from '../nested-child-journal.js';
-import {
-  type NoChangeOutputsMerge,
-  bagHoldsSecretExpression,
-  keptWholeReasonText,
-  mergeNoChangeOutputs,
-} from '../no-change-outputs-merge.js';
-import { refuseNoValueOutputs } from '../output-value-preflight.js';
-import {
-  checkDestructivePlan,
-  isNoEchoPromotionOnly,
-  requireDeploymentApproval,
-  requireOutputsOnlyApproval,
-} from '../deployment-approval.js';
-import {
-  buildConditionVerdictRecord,
-  conditionInputsFrom,
-  conditionVerdictRecordsEqual,
-  conditionsReadByDiff,
-  deployConditionInputs,
-  parentSuppliedValues,
-  readRecordedConditionVerdicts,
-} from '../condition-verdicts.js';
 import {
   backfillMaskedPropertyFingerprints,
-  parameterInputsFor,
   withRebaselinedFingerprints,
 } from '../masked-property-fingerprints.js';
-import { childTemplateLoader } from '../nested-output-templates.js';
-import { noEchoParameterValueSeed } from '../outputs-export-alias.js';
-import { getCurrentNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
-import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
-import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
-import { markNonRetryable } from '../retryable-errors.js';
-import { carriesSecretMask, hasMaskableValues } from '../secret-redaction.js';
 import {
-  findNestedStackTypeChanges,
-  renderNestedStackTypeChangeRefusal,
-} from '../type-change-guard.js';
-import {
-  findServiceTokenRefusals,
-  renderServiceTokenRefusal,
-  SERVICE_TOKEN_CHANGE_REFUSED,
-} from '../custom-resource-service-token.js';
-import {
-  forgetRecordedCreateTokens,
-  noteAbandonedRun,
   noteDeployStateRecord,
   prefetchCreateTokenLedger,
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 import { isKnownTokenFreeState } from '../../state/token-free-state.js';
-import { provenanceBaselineOf } from './provenance-capture.js';
-import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js';
-import type { CrossStackRead } from '../intrinsic-resolver/context.js';
-import { resolvePendingCloudControlRequests } from '../cc-pending-requests.js';
-import { buildDisplayOutputs, resolveOutputs } from './outputs.js';
 import { executeDeployment } from './execute.js';
-import { buildResolverContext, maskedInputSources } from './resolver-context.js';
+import { refuseUnreadableLoadedState } from './deploy-flow/load-checks.js';
+import { settleJournalAtStart } from './deploy-flow/journal-at-start.js';
+import { resolveDeployParameters } from './deploy-flow/parameters.js';
+import { evaluateDeployConditions } from './deploy-flow/conditions.js';
+import { validateAndBuildGraph } from './deploy-flow/validate.js';
+import { calculateDeployDiff } from './deploy-flow/diff.js';
+import { refuseUnsafePlan } from './deploy-flow/plan-checks.js';
+import { deployWithoutChanges } from './deploy-flow/no-change.js';
+import { prepareChangeExecution } from './deploy-flow/change-plan.js';
+import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
+import { keptHistorySources } from './deploy-flow/kept-history.js';
 
 /**
  * Connections `warmConnections` opens before the tail (#4837): the state
@@ -134,16 +53,6 @@ import { buildResolverContext, maskedInputSources } from './resolver-context.js'
  * backend's client.
  */
 const TAIL_WARM_CONNECTIONS = 3;
-
-/** What `loadKeptInHistory` / `loadKeptForWarning` read, from the engine. */
-function keptHistorySources(engine: DeployEngine): KeptInHistorySources {
-  const reader = new DeploymentEventsReader(engine.stateBackend);
-  return {
-    earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
-    listRuns: (s, r) => reader.listRuns(s, r),
-    readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
-  };
-}
 
 export async function doDeployWithPrefetch(
   engine: DeployEngine,
@@ -328,114 +237,12 @@ export async function doDeployWithPrefetch(
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
-    // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
-    // the most write-capable consumer of this bag there is: the no-change
-    // merge path below carries `currentState.outputs ?? {}` into
-    // `persistedOutputs` and SAVES it, five failure-path saves write
-    // `outputs: currentState.outputs` verbatim, and the next success
-    // republishes the result into `cdkd/_index/<region>/exports.json` — the
-    // namespace every other stack's `Fn::ImportValue` binds against. So a
-    // string bag is rebuilt into a well-formed map of one fabricated export
-    // per CHARACTER and the only signal the record was damaged is gone
-    // permanently: the laundering go-to-k/cdkd#3192 exists to stop.
-    //
-    // Here rather than at the twelve later reads because every one of them is
-    // dominated by this point, which is the placement rule
-    // `repairMalformedResourcesForReadOnly`'s own note records: a per-walk
-    // `?? {}` is inert for this class, since each flow dereferences the
-    // container a line earlier.
-    refuseMalformedOutputs(
-      currentState,
+    refuseUnreadableLoadedState(engine, {
       stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // And the `resources` bag, a SEPARATE container with a separate absence
-    // rule, refused separately so the message names the one that is broken
-    // (issue go-to-k/cdkd#3161).
-    //
-    // The gap go-to-k/cdkd#3317 measured and left: it closed the per-ENTRY
-    // `properties` map at `DiffCalculator.calculateDiff`, and that
-    // predicate returns `[]` for a record whose ROOT bag is itself
-    // unreadable — so `"resources": "abcdef"` still reached the diff and
-    // enumerated two fabricated logical ids, while a `[]` or a `5`
-    // enumerated none and planned every template resource as a CREATE,
-    // re-provisioning a stack that already exists.
-    //
-    // HERE rather than at `calculateDiff`, although that is the chokepoint
-    // both diff callers share: this load DOMINATES the call and the reads
-    // between them, the first of which is the `Object.keys(...)` debug line
-    // immediately below — where a `null` bag raised the bare `TypeError`
-    // go-to-k/cdkd#3018 exists to remove. `cdkd diff` keeps its repair-and-warn
-    // half at its own load, so the preview this refusal points at still works.
-    refuseMalformedResourcesForDeploy(
       currentState,
-      stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // And each ROW of that bag (go-to-k/cdkd#3314). A `null` or typeless row
-    // reads as absent in the diff and is planned as a CREATE of a resource
-    // this stack already manages. `calculateDiff` refuses it too, but two
-    // walks run before the diff and each died on the row first, with a bare
-    // `TypeError`: the CLI's prefix-migration gate (`onCurrentStateLoaded`
-    // below) and the observed-state auto-refresh. The load dominates both.
-    // It does not dominate the CLI's PRE-lock `--recreate-via-*` check, which
-    // reads the named rows itself (go-to-k/cdkd#3202 owns that site).
-    refuseMalformedResourceEntriesForDeploy(
-      currentState,
-      stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // And each row's `properties` MAP (go-to-k/cdkd#3211), BELOW the row guard,
-    // which names a typeless row with a torn map more precisely. `calculateDiff`
-    // refuses it too, but the observed-state auto-refresh below hands the map
-    // to `provider.readCurrentState` first, and the walks between here and the
-    // diff read it. The load dominates every one of them.
-    refuseMalformedResourceProperties(
-      currentState,
-      stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // The `orphans` CONTAINER, beside it and for the same placement reason
-    // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
-    // and ASSIGNS `currentState.orphans` from what it read, so an unreadable
-    // container is rewritten by a writer. AFTER the lock, so the guarantee is
-    // "before any resource operation" rather than "before any lock".
-    refuseMalformedOrphans(
-      currentState,
-      stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // The ROWS of a readable list (go-to-k/cdkd#3500). Its own call because
-    // the questions are independent: the adoption pass below dereferences
-    // each row's `state`, and `orphansAfterRollback` keys its merge map on
-    // each row's `logicalId`, so a list that IS a list can still abort the
-    // run, or collapse the rows MISSING a `logicalId` into one saved survivor.
-    refuseMalformedOrphanRecords(
-      currentState,
-      stackName,
-      engine.stackRegion,
-      engine.options.refusalRecovery
-    );
-    // An unfinished `cdkd refactor` moving resources out of this stack
-    // (go-to-k/cdkd#5212): the destination may already hold them, and this
-    // deploy would DELETE each one the template no longer declares. One field
-    // test on the record already loaded; no extra call.
-    refusePendingMovesOut(currentState, stackName, engine.stackRegion, 'cdkd deploy');
-    // And a move whose DESTINATION is this stack: its record knows nothing of
-    // the move, and this deploy would create the resource a second time.
-    refuseRefactorMarker(refactorMarker, stackName, engine.stackRegion, 'cdkd deploy');
-    // State schema v12: the loaded outputs bag and its provenance, for a save
-    // that carries that bag forward. After the refusals, which own the first
-    // read of the bag.
-    engine.provenanceBaseline = provenanceBaselineOf(
-      currentState,
-      isKnownTokenFreeState(currentStateData?.state)
-    );
+      currentStateData,
+      refactorMarker,
+    });
     // Set when we loaded a `version: 1` legacy record. The next save
     // migrates it to the new key.
     const migrationPending = currentStateData?.migrationPending ?? false;
@@ -491,140 +298,16 @@ export async function doDeployWithPrefetch(
     }
     engine.absentJournalVersionPurge = undefined;
 
-    // 1b-pre. go-to-k/cdkd#3252: settle the Cloud Control CREATEs an earlier
-    // run stopped waiting for, before anything reads the journal or plans. A
-    // create that made its resource becomes a proven orphan; one still
-    // unknown refuses the deploy (a re-create beside it would duplicate it).
-    // Under the lock; after a first deploy's state gate, which must refuse
-    // before anything is written. It reads the journal step 1b reads, so a
-    // stack with nothing pending pays no extra read; the read error, if any,
-    // is 1b's to swallow.
-    let journalAtStart: Awaited<ReturnType<typeof engine.stateBackend.loadRollbackJournal>> = null;
-    let journalReadError: unknown;
-    try {
-      journalAtStart = await journalRead;
-    } catch (error) {
-      journalReadError = error ?? new Error('unreadable rollback journal');
-    }
-    if (
-      !engine.options.dryRun &&
-      (await resolvePendingCloudControlRequests({
-        journal: engine.stateBackend,
-        loaded: journalAtStart,
-        reader: () => engine.providerRegistry.getCloudControlProvider(),
-        stackName,
-        region: engine.stackRegion,
-        command: 'deploy',
-        logger: engine.logger,
-        stateResources: currentState.resources,
-        // Before a first deploy's record exists, a re-run after a crash has
-        // its id only in the write-ahead sibling: read there (never minted),
-        // and only when a request is pending, so the earlier attempt's
-        // generated name reads as a name. An ordinary deploy reads nothing.
-        stackInstanceId:
-          currentStateData?.state === undefined
-            ? () => engine.stateBackend.readStackInstanceSibling(stackName, engine.stackRegion)
-            : nameScope().stackInstanceId,
-        // A CREATE that completed is RESUMED when the template still declares
-        // its logical id with the type and the journal holds the bag it sent
-        // (no secret mask: the create path compares that bag with what it
-        // would send now, create.ts). Anything else becomes a proven orphan.
-        resume: (op, identifier) => {
-          const attempted = op.attemptedProperties;
-          if (
-            template.Resources?.[op.logicalId]?.Type !== op.resourceType ||
-            attempted === undefined ||
-            carriesSecretMask(attempted) ||
-            op.pendingCloudControlRequest === undefined ||
-            // Another record already holds it (a `cdkd import` under another
-            // logical id): taking it over would give it two owners.
-            Object.values(currentState.resources).some(
-              (r) => r.physicalId === identifier && r.resourceType === op.resourceType
-            )
-          ) {
-            return false;
-          }
-          engine.resumedCreates.set(op.logicalId, {
-            requestToken: op.pendingCloudControlRequest.requestToken,
-            identifier,
-            resourceType: op.resourceType,
-            attemptedProperties: attempted,
-          });
-          return true;
-        },
-        ...(gate !== undefined && { beforeSettle: () => gate }),
-      }))
-    ) {
-      try {
-        journalAtStart = await engine.stateBackend.loadRollbackJournal(
-          stackName,
-          engine.stackRegion
-        );
-      } catch (error) {
-        journalReadError = error ?? new Error('unreadable rollback journal');
-      }
-    }
-
-    // 1b. If a rollback journal exists, a previous deploy failed / was
-    // interrupted and has not yet been reverted (issue #1183). Note that
-    // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
-    // still supported). Best-effort — a journal read failure must not
-    // block the deploy.
-    try {
-      if (journalReadError !== undefined) throw journalReadError;
-      const loaded = journalAtStart;
-      // No journal: purge what an earlier delete's unfinished purge left, now,
-      // beside the deploy, so the success settle need not touch the key.
-      if (loaded === null && !engine.options.parentStackInfo && !engine.options.dryRun) {
-        engine.absentJournalVersionPurge = afterGate(() =>
-          engine.stateBackend.purgeRollbackJournalVersions(stackName, engine.stackRegion)
-        );
-      }
-      // A nested child's `nested-pending-parent` segments record a deploy
-      // that SUCCEEDED while its parent's was still running (issue #3754);
-      // they are its parent's to replay, not a failure to report here.
-      const journal = loaded && {
-        ...loaded,
-        segments: loaded.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
-      };
-      if (journal && journal.segments.length > 0) {
-        // A journal whose every segment carries no completed ops is the
-        // failed-only shape kept after a CLEAN automatic rollback (issue
-        // #1208) — the stack is already back at its pre-deploy baseline,
-        // so the generic "run cdkd rollback to revert" advice would be
-        // misleading (a plain rollback is a no-op replay there). Detected
-        // structurally, not by reason, so mixed journals keep the generic
-        // note.
-        const failedOnly =
-          journal.segments.every((s) => s.operations.length === 0) &&
-          journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
-        engine.logger.info(
-          failedOnly
-            ? safeMsg`A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
-                `The failed resource may be partially applied — revert it, or continue ` +
-                safeMsg`deploying to fix forward (${
-                  // Issue #3754: a nested child's journal is cleared by its
-                  // TOP-LEVEL stack's success, not by its own.
-                  engine.options.parentStackInfo
-                    ? 'a successful deploy of the top-level stack clears this note'
-                    : 'a successful deploy clears this note'
-                }).` +
-                safeMsg`\nRevert it with: ${
-                  pasteableCommand('cdkd rollback', [
-                    { value: stackName, hole: 'stack' },
-                    { literal: '--revert-failed' },
-                  ]).command
-                }`
-            : safeMsg`A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
-                `or continue deploying to fix forward.` +
-                safeMsg`\nRevert it with: ${
-                  pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
-                }`
-        );
-      }
-    } catch {
-      // ignore — journal is advisory here
-    }
+    await settleJournalAtStart(engine, {
+      stackName,
+      template,
+      currentState,
+      currentStateData,
+      journalRead,
+      nameScope,
+      gate,
+      afterGate,
+    });
 
     // 1-pre. Issue #3468: read every REASON-LESS baseline refusal before
     // anything in this deploy can take a readback. See the function's doc.
@@ -667,128 +350,20 @@ export async function doDeployWithPrefetch(
       Resources: {},
     });
 
-    // 2.5. Resolve parameters from template and user input
-    // The inherited bag travels into `resolveParameters` as well as into the
-    // per-resource contexts below (issue #1903 review round 2). This is the
-    // seam where the PARENT's already-decrypted values first enter the child
-    // engine, so it is where both the `--verbose` parameter lines are masked
-    // and where a declared `Type` that would coerce the value out of cdkd's
-    // string-keyed redaction model is refused.
-    const parameterValues = await engine.resolver.resolveParameters(
-      template,
-      engine.options.parameters,
-      {
-        // `hasMaskableValues` (go-to-k/cdkd#1998): only the `--verbose`
-        // lines read a bag holding log-only needles alone here; the
-        // coercion refusal asks `size` itself.
-        ...(engine.options.inheritedSecrets &&
-          hasMaskableValues(engine.options.inheritedSecrets) && {
-            inheritedSecrets: engine.options.inheritedSecrets,
-          }),
-      }
-    );
-    engine.logger.debug(
-      safeMsg`Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
-    );
-    // Issue #4731: before the diff binding and any resource resolution, so
-    // both read one answer per parameter whatever order resources resolve in.
-    poisonRenderedSpellingsCollidingIn(template, parameterValues, engine.options.inheritedSecrets);
-    // go-to-k/cdkd#4043 (review round 9): a nested child positions each
-    // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
-    // here on (every save, the journal, the outputs pass).
-    engine.noEchoRun.inheritedNoEchoParameters = new Set([
-      ...(freshNoEchoParameters(engine.maskingDeps(), parameterValues) ?? []),
-      ...(engine.options.passedNoEchoParameters ?? []),
-    ]);
-    // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
-    // older cdkd recorded) takes today's template's, which is what this
-    // deploy's unchanged comparison concludes AWS holds anyway, so the deploy
-    // sends what it sent before and the next edit is seen. Saved by the
-    // no-change path too. After the parameters, so a template literal equal to
-    // a `NoEcho` parameter's value is refused a hash here rather than
-    // persisted; before the diff and the orphan adoption, which read it.
-    const backfillNoEchoValues = noEchoParameterValueSeed(
-      template.Parameters,
-      parameterValues,
-      engine.options.inheritedSecrets,
-      engine.options.parameters
-    );
-    // The save reads the same corpus for a record it stamps or carries.
-    engine.secretsRun.fingerprintNoEchoValues = backfillNoEchoValues;
-    // go-to-k/cdkd#4543: how each parameter enters a masked property's INPUT
-    // fingerprint, decided once from the REAL values so the diff pass (which
-    // binds a nested child's redacted bag) and the provisioning arms agree.
-    engine.secretsRun.fingerprintParameters = parameterInputsFor({
-      template,
-      values: parameterValues,
-      nestedChild: engine.options.parentStackInfo !== undefined,
-      supplied: engine.options.parameters,
-      passedClasses: engine.options.passedParameterClasses,
-    });
-    // go-to-k/cdkd#4565: the nested-stack templates one level below this
-    // stack, from the assembly the surrounding nested-stack context carries
-    // (the top-level run's `StackInfo.nestedTemplates`, or the provider's
-    // index for a child). The loader is built once here, never from inside a
-    // fingerprint walk; each file is read on first use and cached for the
-    // rest of this deploy.
-    engine.secretsRun.fingerprintChildTemplates = childTemplateLoader(
-      getCurrentNestedStackContext()?.nestedTemplates
+    const { parameterValues, backfillNoEchoValues } = await resolveDeployParameters(
+      engine,
+      template
     );
     let maskedFingerprintsBackfilled =
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
       0;
 
-    // 2.6. Evaluate conditions from template
-    const context = buildResolverContext(
-      engine.resolverContextDeps(),
-      {
-        template,
-        resources: currentState.resources,
-        parameters: parameterValues,
-      },
-      stackName
-    );
-    const conditions = await engine.resolver.evaluateConditions(context);
-    engine.logger.debug(
-      safeMsg`Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
-    );
-    // CloudFormation rejects an Output whose Value evaluates to
-    // AWS::NoValue before it creates anything (issue #4077), so refuse it
-    // here, before provisioning, rather than publishing nothing after it.
-    refuseNoValueOutputs(template.Outputs, conditions);
-    // go-to-k/cdkd#4479: the verdicts `cdkd diff` cannot compute (a condition
-    // over a parameter a nested child received from a secret), each with the
-    // fingerprint the diff must recompute to reuse it. Persisted by the final
-    // save and the no-change save below; the other saves of a deploy rebuild
-    // state without it, so a failed or interrupted deploy leaves NO record and
-    // the next diff falls back to the FALSE branch, never a stale verdict.
-    // Skipped when the template has no condition the diff reads: the token
-    // derivation redacts every parameter value, which a child with no such
-    // condition does not need.
-    let conditionVerdicts: ReturnType<typeof buildConditionVerdictRecord>;
-    if (conditionsReadByDiff(template, conditions).size > 0) {
-      // A parameter the resolver would serve from a STATE resource of the same
-      // logical id (`Ref` checks resources first) is no input.
-      const { tokens, unavailable } = deployConditionInputs(
-        parameterValues,
-        engine.options.inheritedSecrets,
-        new Set(Object.keys(currentState.resources))
-      );
-      // A plain value the parent supplied is no input either: the inherited
-      // corpus can miss a short ancestor secret embedded in it.
-      for (const name of parentSuppliedValues(
-        template,
-        engine.options.parameters,
-        new Set(Object.keys(tokens))
-      )) {
-        unavailable.add(name);
-      }
-      conditionVerdicts = buildConditionVerdictRecord(
-        template,
-        conditions,
-        conditionInputsFrom({ tokens, bound: parameterValues, unavailable })
-      );
-    }
+    const { conditions, conditionVerdicts } = await evaluateDeployConditions(engine, {
+      stackName,
+      template,
+      currentState,
+      parameterValues,
+    });
 
     // 2.7. Prune resources whose `Condition:` key evaluated false (issue
     // #840). CFn does not strip condition-gated resources at synth time —
@@ -880,213 +455,19 @@ export async function doDeployWithPrefetch(
       Object.keys(orphanPlan.adopted).length > 0 ||
       (currentState.orphans ?? []).length !== orphanCountBeforeAdoption;
 
-    // 3. Validate resource types (before deployment starts)
-    // Skip metadata resources as they don't actually deploy
-    const resourceTypes = new Set(
-      Object.values(effectiveTemplate.Resources || {})
-        .map((r) => r.Type)
-        .filter((type) => type !== 'AWS::CDK::Metadata')
-    );
-    engine.providerRegistry.validateResourceTypes(resourceTypes);
-    engine.logger.debug(`All resource types validated`);
-
-    // 3.5. Report top-level resource property routing decisions
-    // (#614). For each resource using an SDK-unwired top-level property,
-    // info-log that cdkd is auto-routing it via Cloud Control (which
-    // forwards the full property map). For each resource explicitly
-    // opted out via `--allow-unsupported-properties Type:Prop`, warn
-    // that the property is left unwritten. Neither of those throws —
-    // the legacy PR #608 fail-fast was reversed by #614 to a default-on
-    // auto-route — but this step CAN still refuse, and the comment said
-    // it could not until issue #3028. An SDK-unwired key on a type the Cloud Control
-    // route cannot serve (`hasNoCloudControlHandlers`, or a provider declaring
-    // `disableCcApiFallback`) has nowhere to be auto-routed, so
-    // `ProviderRegistry.reportSdkUnwiredDecisions` throws rather than
-    // letting the route fail later with an opaque error. That refusal
-    // lands HERE — ahead of the DAG at step 4 and the diff at step 5 —
-    // so the deploy ends having provisioned nothing. Skips
-    // AWS::CDK::Metadata (filtered by the same predicate as the type
-    // set).
-    const resourcesForPropertyCheck = Object.entries(effectiveTemplate.Resources || {})
-      .filter(([, r]) => r.Type !== 'AWS::CDK::Metadata')
-      .map(([logicalId, r]) => ({
-        logicalId,
-        resourceType: r.Type,
-        properties: r.Properties,
-        // Thread the state-recorded routing layer so already-sticky CC
-        // resources demote the info-log to debug (avoids "routing via
-        // Cloud Control API" repeated on every redeploy).
-        provisionedBy: currentState.resources[logicalId]?.provisionedBy,
-        // The baseline an unrecognized property is compared against, so the
-        // routing lines describe the route `getProviderFor` takes (#3713).
-        previousProperties: currentState.resources[logicalId]?.properties,
-      }));
-    engine.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
-    engine.logger.debug(`All resource properties validated`);
-
-    // 4. Build dependency graph
-    const dag = engine.dagBuilder.buildGraph(effectiveTemplate);
-    const executionLevels = engine.dagBuilder.getExecutionLevels(dag);
-    engine.logger.debug(safeMsg`Dependency graph: ${executionLevels.length} execution levels`);
-
-    // 5. Calculate diff
-    // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
-    // `Fn::Join` literal args like "-value" -> "-value2") are detected against
-    // the already-resolved values stored in state.
-    const diffResolverContext = buildResolverContext(
-      engine.resolverContextDeps(),
-      {
-        template: effectiveTemplate,
-        resources: currentState.resources,
-        // The DIFF side binds the REDACTED parameter bag on a nested-stack
-        // child (issue #1903). The provisioning contexts below deliberately
-        // keep `parameterValues` — the real values are what reach AWS — and
-        // so does the condition evaluation above, where substituting an
-        // expression would flip an `Fn::Equals` over a parameter. See
-        // `redactParametersForDiff`.
-        parameters: redactParametersForDiff(engine.maskingDeps(), parameterValues),
-        conditions,
-      },
-      stackName
-    );
-    // The diff-phase resolution is best-effort (the calculator catches
-    // failures and keeps the raw intrinsic): a Ref to a resource this
-    // same deploy will CREATE is the expected case, so the resolver logs
-    // it at debug, not warn (issue #1017). The provisioning-phase
-    // resolver contexts do NOT set this — there, an unresolvable Ref is
-    // a genuine error signal.
-    diffResolverContext.bestEffort = true;
-    // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED for the
-    // diff (GHSA fix): state now stores the unresolved expression, so
-    // comparing the desired side as its expression too avoids a spurious
-    // perpetual UPDATE on every deploy of a secret-bearing resource, and
-    // fetches no secret value at plan time. `cdkd diff --recursive` sets the
-    // same flag when it resolves a nested child's input `Parameters`
-    // (`resolveChildStackParameters`) — as of issue #1903, together with the
-    // child-state half that makes the comparison self-consistent; setting it
-    // there alone would have compared an expression against a child state
-    // still holding plaintext. A changed expression still diffs.
-    // An `ssm` reference is classified by the parameter's TYPE rather than by
-    // its spelling (issue #1901), so unlike the secretsmanager case the diff
-    // DOES issue one `GetParameter` per not-yet-classified reference — with
-    // `WithDecryption: false`, so a `SecureString` never yields plaintext
-    // here, while a `String` / `StringList` keeps resolving as the public
-    // config state stores resolved.
-    diffResolverContext.skipDynamicReferences = true;
-    // go-to-k/cdkd#4852: which producer output each cross-stack read of the
-    // diff pass read, for the read-provenance arm below.
-    const crossStackReads = new Map<string, CrossStackRead>();
-    diffResolverContext.crossStackReads = crossStackReads;
-    const diffResolveFn = (value: unknown) => engine.resolver.resolve(value, diffResolverContext);
-    const maskedInputSourcesForDiff = maskedInputSources(
-      engine.resolverContextDeps(),
-      effectiveTemplate,
-      currentState.resources,
-      conditions,
-      stackName
-    );
-    const maskedInputs = maskedInputSourcesForDiff && {
-      sources: maskedInputSourcesForDiff,
-      rebaselined: new Map<string, Record<string, string>>(),
-    };
-    clock.lap('journal, parameters, conditions, DAG build');
-    const changes = await engine.diffCalculator.calculateDiff(
+    const { dag, executionLevels } = validateAndBuildGraph(engine, {
       currentState,
       effectiveTemplate,
-      diffResolveFn,
-      // Shared with `cdkd diff` (issue #1591): a preview that narrows
-      // differently from the apply forecasts a change the deploy will never
-      // make, which is this issue's own bug class moved one command over.
-      makeCanonicalizePropertiesFn(engine.providerRegistry),
-      // Issue #2750: the drops THIS deploy opted into via
-      // `--allow-unsupported-properties` are not written, so comparing them
-      // would report a change the SDK route will never make. `cdkd diff`
-      // passes nothing here and that is correct — it registers no such flag,
-      // so its preview is of a FLAG-LESS deploy, which is the one that
-      // auto-routes and does write the property.
-      //
-      // Optional call for the TEST DOUBLES only. Many unit files hand-build
-      // a registry object literal and cast it in; an unconditional call
-      // failed 39 test FILES / 270 cases across `tests/unit/{deployment,cli}`
-      // when measured, which is a count of what BROKE, not a survey of the
-      // doubles. The sibling `makeCanonicalizePropertiesFn` survives them
-      // only because it defers its registry reads into a closure the mocked
-      // DiffCalculator never invokes. `undefined` degrades to "no flag",
-      // which is what every one of those doubles means. The real class
-      // always has the method — `providerRegistry` is typed as the concrete
-      // class, so the `undefined` branch is unreachable in production, and
-      // the method's existence is pinned directly on `ProviderRegistry` by
-      // `provider-registry-report-sdk-unwired.test.ts`, since a mocked
-      // registry cannot witness the real one losing it.
-      engine.providerRegistry.getAllowedUnsupportedProperties?.(),
-      // go-to-k/cdkd#3717: a nested child's parameters carrying a `NoEcho`
-      // value the parent supplied in THIS deploy. The diff side binds the
-      // redacted bag above, where such a value is `***` like its record, so
-      // the calculator promotes each reader instead.
-      // go-to-k/cdkd#4043: and EVERY `NoEcho: true` parameter of this
-      // template, at every level. Its readers persist `***`, so the diff
-      // cannot see a changed value; each is promoted and the engine decides
-      // with the value in hand (a readback, or the migration witness).
-      // Review round 9: a nested child's parameters its parent fills from a
-      // `NoEcho` source too (`inheritedNoEchoParameters`, set above).
-      freshNoEchoParametersWithDeclared(
-        engine.noEchoRun.inheritedNoEchoParameters,
-        effectiveTemplate
-      ),
-      // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
-      // parameter to its plaintext and records it as a log-only needle of
-      // THIS context's bag, so the calculator's replacement line masks with
-      // it (and with a nested child's inherited bag). Printing only: the
-      // changes it returns are unmasked.
-      // go-to-k/cdkd#3869: and the name spellings of each record named from
-      // a secret, for an OLD side no read of the diff pass names.
-      diffLogMasker(
-        engine.secretsRun,
-        engine.maskingDeps(),
-        diffResolverContext.recordedSecretValues,
-        effectiveTemplate,
-        parameterValues,
-        currentState.resources
-      ),
-      // go-to-k/cdkd#4383: a recreate target is destroyed and re-created, so
-      // its same-stack readers are promoted as for a property-driven
-      // replacement, before anything below counts the changes. This stack's
-      // targets only, never a nested child's or another stack's.
-      recreateTargetIdsFor(engine.options.recreateTargets, stackName),
-      // go-to-k/cdkd#4543: a masked property's resolved inputs, so a changed
-      // parameter or flipped condition behind unchanged template text diffs.
-      // A layout-1 fingerprint whose text still matches is re-baselined to
-      // layout 2 from these same inputs, stamped below without sending.
-      maskedInputs,
-      // go-to-k/cdkd#4159: the account flags the load's refusals above carry.
-      engine.options.refusalRecovery,
-      // go-to-k/cdkd#4043: compare what the persist side writes for a value
-      // a `NoEcho` source served, and read a pre-v11 record's plaintext as
-      // the migration witness.
-      noEchoDiffComparison(
-        engine.noEchoRun,
-        engine.noEchoDeps(),
-        currentState.resources,
-        effectiveTemplate,
-        conditions,
-        parameterValues,
-        stackName
-      ),
-      // State schema v12 (go-to-k/cdkd#4852): the read-provenance arm's
-      // members outside this stack's records. A nested child's inherited
-      // snapshot, and each producer output a consumer read, through the run's
-      // producer-state cache (the consumer's provisioning reuses the read).
-      {
-        ...(engine.options.inheritedReferenceProvenance && {
-          inherited: engine.options.inheritedReferenceProvenance,
-        }),
-        crossStackOutputs: crossStackOutputProvenanceSource(
-          crossStackReads,
-          engine.recordedImports,
-          engine.stateBackend
-        ),
-      }
-    );
+    });
+
+    const { diffResolverContext, maskedInputs, changes } = await calculateDeployDiff(engine, {
+      stackName,
+      currentState,
+      effectiveTemplate,
+      parameterValues,
+      conditions,
+      clock,
+    });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
@@ -1102,122 +483,15 @@ export async function doDeployWithPrefetch(
       maskedFingerprintsBackfilled = true;
     }
 
-    // Issue #2668: refuse a Type change into or out of
-    // `AWS::CloudFormation::Stack` before anything is provisioned. Every
-    // other Type change is replaced normally — the old half routes on the
-    // state record's type, the create on the template's — but for this pair
-    // correct routing is not sufficient: the replacement's cleanup delete is
-    // warn-and-continue, which for a nested row strands a whole child stack.
-    // Full reasoning, and why there is no override, in
-    // `type-change-guard.ts`.
-    //
-    // Placed HERE rather than in a CLI pre-flight for two reasons: nested
-    // child stacks get their own `DeployEngine` from
-    // `NestedStackProvider.runChildDeploy` and never pass through
-    // `deploy.ts`, and this is the site that owns the very `changes` map the
-    // routing decision is made from, so a pre-flight would have to
-    // re-implement the diff's Type-change rule and could drift from it. It
-    // is still before every provider call — and before the `--dry-run`
-    // return below, so a dry run reports the refusal instead of previewing a
-    // plan cdkd will not run. The lock acquired above is released by this
-    // block's `finally`.
-    const nestedStackTypeChanges = findNestedStackTypeChanges({
+    await refuseUnsafePlan(engine, {
+      stackName,
+      currentState,
+      effectiveTemplate,
+      parameterValues,
+      conditions,
       changes,
-      stateResources: currentState.resources,
+      diffResolverContext,
     });
-    if (nestedStackTypeChanges.length > 0) {
-      // `markNonRetryable` for the same reason as the sibling refusals in
-      // this file: the verdict is computed from a state record and a template
-      // type, which no retry can change, while the message interpolates
-      // TEMPLATE-CONTROLLED text (a logical id, the stack name, both type
-      // strings, a physical id) into a string the SUBSTRING-matching
-      // classifiers read.
-      //
-      // LATENT today, and deliberately marked anyway — the #1778 precedent,
-      // and the same status `nested-stack-provider.ts` records for its own
-      // mark. No claim is made here about WHICH loop would observe it:
-      // two successive revisions of this comment named a loop that turned
-      // out unreachable, so the honest statement is the one the mark itself
-      // makes. `retry.ts` consults `isMarkedNonRetryable` ahead of
-      // `opts.isRetryable`, so the DECLARATION survives any caller that
-      // later opts back into retrying this path, which a message-only
-      // classifier could not.
-      throw markNonRetryable(
-        new CdkdError(
-          renderNestedStackTypeChangeRefusal(nestedStackTypeChanges, stackName),
-          'TYPE_CHANGE_NESTED_STACK'
-        )
-      );
-    }
-
-    // go-to-k/cdkd#4749: a custom resource's changed ServiceToken, refused
-    // as CloudFormation refuses it, before any provider call and before the
-    // `--dry-run` return, for the same reasons as the refusal above. A token
-    // the plan cannot judge is decided again at the in-place update
-    // (`update.ts`), once it is resolved. Rationale in
-    // `custom-resource-service-token.ts`.
-    const serviceTokenRefusals = findServiceTokenRefusals({
-      changes,
-      stateResources: currentState.resources,
-      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
-    }).refused;
-    if (serviceTokenRefusals.length > 0) {
-      const mask = diffLogMasker(
-        engine.secretsRun,
-        engine.maskingDeps(),
-        diffResolverContext.recordedSecretValues,
-        effectiveTemplate,
-        parameterValues,
-        currentState.resources
-      );
-      throw markNonRetryable(
-        new CdkdError(
-          renderServiceTokenRefusal(serviceTokenRefusals, stackName, mask),
-          SERVICE_TOKEN_CHANGE_REFUSED
-        )
-      );
-    }
-
-    // Issue #2651: a `--recreate-via-*` target the diff calls NO_CHANGE is
-    // still a resource the user named and consented to recreate, and the
-    // template not changing is the usual reason to reach for the flag. Make
-    // it an UPDATE before anything counts changes, so the dispatch, the
-    // summary and `--dry-run` all see it. Before `hasChanges`, which is
-    // what turned a run with only such a target into "No changes detected".
-    const recreatePromotion = promoteRecreateTargets(
-      changes,
-      engine.options.recreateTargets,
-      stackName
-    );
-    for (const id of recreatePromotion.promoted) {
-      engine.logger.debug(
-        safeMsg`UPDATE (recreate target): ${id} has no template change; recreating it as requested`
-      );
-    }
-    for (const { logicalId, flag, changeType } of recreatePromotion.unreached) {
-      engine.logger.warn(
-        changeType === undefined
-          ? safeMsg`${flag} ${logicalId}: not recreated, this deploy has no such resource.`
-          : safeMsg`${flag} ${logicalId}: not recreated, this deploy will ${changeType.toLowerCase()} it instead.`
-      );
-    }
-
-    // go-to-k/cdkd#4383: a stateful resource the recreate would REPLACE (it
-    // holds a target in a create-only property) needs
-    // `--force-stateful-recreation`, as a stateful target does. Refused HERE,
-    // on the condition-evaluated template this diff ran on and before any
-    // provider call (and before `--dry-run` returns), rather than by the
-    // replacement guard once the target has been destroyed and recreated.
-    const ownRecreateTargets = recreateTargetIdsFor(engine.options.recreateTargets, stackName);
-    if (ownRecreateTargets !== undefined) {
-      await refuseStatefulReplacedReaders({
-        template: effectiveTemplate,
-        state: currentState,
-        targetIds: [...ownRecreateTargets],
-        conditions,
-        forceStatefulRecreation: engine.options.forceStatefulRecreation === true,
-      });
-    }
 
     // The first deploy's state gate (above), before any branch acts on the plan.
     if (firstDeployStateGate !== undefined) {
@@ -1268,418 +542,25 @@ export async function doDeployWithPrefetch(
 
     clock.lap('post-diff checks');
     if (!hasChanges) {
-      engine.logger.info('No changes detected. Stack is up to date.');
-      startProvenanceCapture();
-      // go-to-k/cdkd#5111: an earlier deploy's superseded resources are
-      // retried by every deploy, an unchanged one included.
-      const supersededChanged = engine.options.dryRun
-        ? false
-        : await retryCarriedSupersededResources(
-            engine,
-            currentState,
-            supersededResourcesOf(currentState),
-            currentState.resources
-          );
-
-      // The diff only inspects Resources, so an Outputs-only change (a new
-      // Export added because a downstream stack now references this one — its
-      // Resources stay identical) lands here with hasChanges=false. If we
-      // early-returned without persisting, the new export would never be
-      // written to state / the exports index and the consumer's subsequent
-      // Fn::ImportValue would fail (issue #875). So in the no-change path we
-      // also resolve the template outputs against current state and persist
-      // them when they differ — alongside the existing observed-properties
-      // refresh (e.g. a v2 → v3 schema upgrade on a stack with nothing to
-      // deploy). Both are skipped in dry-run.
-      let persistedOutputs: Record<string, unknown> = currentState.outputs ?? {};
-      if (!engine.options.dryRun) {
-        // Resolve against `effectiveTemplate` (condition-pruned) — the same
-        // map the executeDeployment path resolves. Outputs reference
-        // resources, which come from `currentState.resources` (the arg), and
-        // condition pruning only touches `Resources`, so resolving against
-        // `effectiveTemplate` vs the raw `template` is equivalent here.
-        const resolvedOutputs = redactOutputs(
-          engine.maskingDeps(),
-          // One budget for the whole pass, as on the deploy path above.
-          await withSharedDrainBudget(() =>
-            resolveOutputs(
-              engine.outputsRun,
-              engine.outputsDeps(),
-              effectiveTemplate,
-              currentState.resources,
-              stackName,
-              outputsDigestSource,
-              parameterValues,
-              conditions
-            )
-          )
-        );
-        // Drain any auto-refresh readCurrentState calls (drainObservedCaptures
-        // short-circuits on an empty map) so the refreshed observed-properties
-        // baseline lands in the same save. Drained BEFORE the outputs bag is
-        // decided (issue #2771): it is the one await between the outputs pass
-        // and the save, and a secret a released outputs-pass part records
-        // during it must be visible to the save-time check below.
-        const observedRefresh =
-          (await engine.observedCapture.drainObservedCaptures(currentState.resources)) > 0;
-
-        // Without `--strict-getatt`, resolveOutputs stores `undefined` for any
-        // output it could not resolve (warned about there when the resolver
-        // threw, silently when it returned nothing); with the flag it throws
-        // for either instead. In the no-change path every resource is
-        // already in state so resolution usually succeeds.
-        const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
-        const currentEffectiveExports = new Set(importableOutputKeys(currentState));
-        // Issue #2771: when one did not, persist what DID resolve instead of
-        // keeping the previous bag whole. A failed key keeps its stored value
-        // (the #875 guard: never overwrite a good value with nothing), a key
-        // this pass did not produce is removed, and the shapes the merge
-        // cannot do safely keep the whole previous bag as before. The rules
-        // and the refusals are in `no-change-outputs-merge.ts`.
-        let merge: NoChangeOutputsMerge | undefined = resolutionFailed
-          ? mergeNoChangeOutputs({
-              persisted: persistedOutputs,
-              resolved: resolvedOutputs,
-              declaredOutputs: effectiveTemplate.Outputs,
-              previousExportNames: currentEffectiveExports,
-              resolvedExportNames: engine.outputsRun.resolvedExportNames,
-              // go-to-k/cdkd#4657: the outputs pass's own verdict. Always set by
-              // a pass with `Outputs`, which is what a failed key needs; absent,
-              // carry nothing.
-              refusesCarriedAlias: (outputKey, exportName) =>
-                engine.outputsRun.carriedExportAliasRefusal === undefined
-                  ? 'An export alias was not carried: no export-name verdict is available.'
-                  : engine.outputsRun.carriedExportAliasRefusal(outputKey, exportName),
-            })
-          : undefined;
-        // Today's template may position only the keys THIS pass wrote. The save
-        // redacts the bag again (`withParentInfo` -> `redactOutputs`), and
-        // `redactByPath` returns a source leaf that is a whole secret expression
-        // verbatim — so a carried key, or a whole kept bag, positioned by
-        // today's template would be persisted as a reference its stored value
-        // never came from. Those keys fall to the value scan instead.
-        if (merge?.kind === 'merged') {
-          for (const key of merge.carriedKeys) {
-            Reflect.deleteProperty(engine.outputsRun.outputsTemplateSource, key);
-          }
-          // The merge's own mixed-generation check read the bag BEFORE this
-          // save's redaction, which can still give it a first expression (a
-          // needle recorded late, during the drain above). Re-read it as the
-          // save will write it. No await separates this check from the
-          // save's own redaction below.
-          if (
-            merge.carriedKeys.length > 0 &&
-            !bagHoldsSecretExpression(persistedOutputs) &&
-            bagHoldsSecretExpression(redactOutputs(engine.maskingDeps(), merge.outputs))
-          ) {
-            merge = { kind: 'kept', reason: 'mixed-generation' };
-          }
-        }
-        if (merge?.kind === 'kept') engine.outputsRun.outputsSourceUsable = false;
-        // A carried alias the export-name verdict refused (go-to-k/cdkd#4657),
-        // reported as the alias pass reports its own refusals. Only for a bag
-        // that is written: a kept one holds the previous aliases whole.
-        if (merge?.kind === 'merged') {
-          for (const { reason } of merge.refusedAliases) engine.logger.warn(reason);
-        }
-        // The bag and export set this save describes: this pass's when every
-        // output resolved, the merge's when one did not, and the previous
-        // bag itself when the merge keeps it whole — `undefined` for the set
-        // then, because its own set travels with it (below). No separate
-        // kept-whole guard on `outputsChanged`: a kept bag IS
-        // `persistedOutputs`, so it compares equal by construction.
-        const outputsToPersist =
-          merge === undefined
-            ? resolvedOutputs
-            : merge.kind === 'merged'
-              ? merge.outputs
-              : persistedOutputs;
-        const exportNamesToPersist: readonly string[] | undefined =
-          merge === undefined
-            ? engine.outputsRun.resolvedExportNames
-            : merge.kind === 'merged'
-              ? merge.exportNames
-              : undefined;
-        const outputsChanged = !outputMapsEqual(persistedOutputs, outputsToPersist);
-        // Issue #2193: the EFFECTIVE export set can change without the outputs
-        // VALUES changing, and the no-change path is the only place that would
-        // persist it. Two shapes reach here with `outputsChanged` false:
-        //   - a pre-v9 record (`exportNames` undefined) still feeding the index
-        //     every plain Output name — the legacy every-key set differs from
-        //     the resolved exports whenever there is a plain name to suppress;
-        //   - a SELF-NAMED export toggled on a v9 record: adding
-        //     `Export: { Name: <same-as-output-key> }` (or removing it) rewrites
-        //     the same key with the same value, so the bag is byte-equal, but
-        //     `exportNames` flips between `[]` and `[<key>]`. Without this the
-        //     added export never lands in state/index (consumer's Fn::ImportValue
-        //     hard-fails), and the removed one is a phantom export served forever.
-        // Detect it by comparing the CURRENTLY-effective set against the set
-        // this save would write. Subsumes the old pre-v9 backfill and catches
-        // both self-named directions. Kept OUT of `outputsChanged` deliberately:
-        // this is not an outputs-VALUE change, so it must not flip the
-        // "Outputs-only change" log or the bag choice. Never set when the
-        // previous bag is kept whole: its own set is carried with it.
-        const persistExportSet = new Set(exportNamesToPersist ?? []);
-        const exportSetChanged =
-          exportNamesToPersist !== undefined &&
-          (currentEffectiveExports.size !== persistExportSet.size ||
-            [...persistExportSet].some((k) => !currentEffectiveExports.has(k)));
-
-        // Surface the case where outputs DID change but the merge refused and
-        // the previous bag was kept whole. resolveOutputs already warns
-        // per-output, but a call-site summary makes the "deploy reports
-        // no-change yet a new export silently failed to land" path explicit
-        // (a downstream Fn::ImportValue would otherwise break later with no
-        // obvious link back to this deploy). The merged arm needs no such
-        // line: everything that resolved is persisted, an output whose
-        // resolver threw already has its own warning, and one whose resolver
-        // returned nothing is silent here as it is on every path without
-        // `--strict-getatt` (which fails the deploy for it before this
-        // point) — the #2740 record still names it.
-        if (merge?.kind === 'kept' && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
-          engine.logger.warn(
-            safeMsg`Outputs changed but one or more could not be resolved; keeping the previously persisted outputs. ${keptWholeReasonText(merge.reason)} ` +
-              'A downstream Fn::ImportValue may fail until the next deploy.'
-          );
-        } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
-          engine.logger.debug(
-            safeMsg`Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
-              'carried export aliases included, that could not be resolved (no-change path)'
-          );
-        }
-
-        // Issue #2740: the skipped-outputs record needs its OWN trigger on
-        // this path. The shape that produces it — an output failing inside
-        // a secret lookup on a stack with no resource diff — lands here
-        // with `resolutionFailed` true, and `outputsChanged` /
-        // `exportSetChanged` stay false whenever the bag this save would
-        // write equals the stored one (the usual case: the skipped key was
-        // never stored) or the previous bag is kept whole, so without this
-        // the field would never be written for exactly the case it exists
-        // for. A difference in either direction saves: a key newly skipped
-        // (or its digest moved), or one that resolved / left the template
-        // and must be cleared. Also the upgrade path — a record with no
-        // field yet whose broken output is skipped again today.
-        const skippedOutputsChanged = !skippedOutputsEqual(
-          currentState.skippedOutputs,
-          engine.outputsRun.skippedOutputs
-        );
-
-        // Issue #1852: a heal the outputs pass (or the diff pass above) read
-        // must reach state even when nothing else changed. Otherwise every
-        // later deploy pays the same read again, `cdkd diff` repeats it on
-        // every run (its healer is read-only and saves nothing,
-        // go-to-k/cdkd#3456), and `cdkd drift`, which re-reads nothing,
-        // never sees the attribute at all.
-        const healedAttributesPending = engine.attributeHealer.hasUnpersistedHeals(
-          currentState.resources
-        );
-
-        // go-to-k/cdkd#4479: the record changed (a first record, another
-        // verdict, or one to clear) on a run with no resource change, so it is
-        // saved here with no provider call; the save below also keeps it
-        // through any other refresh. A nested child reaches this only when its
-        // engine runs: a parent skips an unchanged nested-stack row, so a child
-        // an older binary deployed gains its record on the next deploy that
-        // reaches it, not on a plain re-deploy of an unchanged tree.
-        const conditionVerdictsChanged = !conditionVerdictRecordsEqual(
-          readRecordedConditionVerdicts(currentState),
-          conditionVerdicts
-        );
-
-        // `--require-approval=any-change` covers an Outputs-only change too,
-        // asked before anything below writes it. An export-set change on a
-        // record with no `exportNames` (written before v9) is the backfill of
-        // that list, not a change the user made: asking there would fail every
-        // non-interactive deploy of an unchanged stack.
-        if (outputsChanged || (exportSetChanged && currentState.exportNames !== undefined)) {
-          await requireOutputsOnlyApproval({ options: engine.options, stackName });
-        }
-
-        // State schema v12: the outputs' share of the migration. A record
-        // written before v12 has no `outputReferenceProvenance`; this deploy
-        // resolved an equal bag, so its provenance is saved once.
-        const outputProvenanceBackfill =
-          !outputsChanged &&
-          currentState.outputReferenceProvenance === undefined &&
-          engine.provenanceBaseline?.tokenFree === false &&
-          engine.outputReferenceProvenanceFor(
-            persistedOutputs,
-            redactOutputs(engine.maskingDeps(), persistedOutputs)
-          ) !== undefined;
-
-        if (
-          observedRefresh ||
-          outputProvenanceBackfill ||
-          maskedFingerprintsBackfilled ||
-          conditionVerdictsChanged ||
-          outputsChanged ||
-          exportSetChanged ||
-          skippedOutputsChanged ||
-          orphansChanged ||
-          supersededChanged ||
-          terminationProtectionChanged ||
-          healedAttributesPending
-        ) {
-          // A first deploy with nothing to create still writes its record here.
-          await resolveStackInstanceId();
-          try {
-            const refreshedState: StackState = {
-              version: STATE_SCHEMA_VERSION_CURRENT,
-              region: engine.stackRegion,
-              stackName: currentState.stackName,
-              resources: currentState.resources,
-              ...orphansCarriedFrom(currentState),
-              ...stackInstanceIdCarriedFrom(currentState),
-              outputs: (outputsChanged ? outputsToPersist : persistedOutputs) as Record<
-                string,
-                string
-              >,
-              // The set belongs to the bag written above: this pass's when
-              // every output resolved (changed, or equal — either way the
-              // resolved set describes it), the merge's when one did not, and
-              // the previous record's when the previous bag was kept whole.
-              ...(exportNamesToPersist === undefined
-                ? exportNamesCarriedFrom(currentState)
-                : { exportNames: [...exportNamesToPersist] }),
-              // Unlike `exportNames`, ALWAYS this pass's: the record says
-              // what THIS deploy skipped, which the resolution just decided
-              // whether or not the bag was carried forward. Omitted when
-              // nothing was skipped. COPIED, like the `exportNames` /
-              // `imports` spreads beside it. Consistency, not a fix for an
-              // observable bug: `collectSkippedOutputs` builds a FRESH
-              // object each pass, so no alias outlives one and no test can
-              // tell a copy from an alias here. Stated so the absence of a
-              // fence is not read as an oversight.
-              ...(engine.outputsRun.skippedOutputs && {
-                skippedOutputs: { ...engine.outputsRun.skippedOutputs },
-              }),
-              // Preserve existing imports[] / outputReads[] (v8+) — otherwise
-              // the refresh would silently strip the strong-reference record
-              // on every diff-clean deploy. Unioned with this session's
-              // records rather than taking the snapshot alone (issue #2057):
-              // the no-change path resolves nothing new in the common case,
-              // so the union is usually an identity, and applying one rule at
-              // every non-success save leaves no exception to remember. See
-              // `crossStackReadsForPartialSave`.
-              ...crossStackReadsForPartialSave(
-                currentState,
-                engine.recordedImports,
-                engine.recordedOutputReads,
-                engine.crossStackReadKeyNormalizer()
-              ),
-              ...(conditionVerdicts && { conditionVerdicts }),
-              lastModified: Date.now(),
-            };
-            const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
-            if (currentEtag !== undefined) saveOptions.expectedEtag = currentEtag;
-            if (migrationPending) saveOptions.migrateLegacy = true;
-            await engine.stateBackend.saveState(
-              stackName,
-              engine.stackRegion,
-              engine.withParentInfo(refreshedState),
-              saveOptions
-            );
-            if (outputsChanged || exportSetChanged) {
-              persistedOutputs = refreshedState.outputs;
-              if (outputsChanged) {
-                engine.logger.info('Persisted Outputs-only change (no resource diff).');
-              } else {
-                engine.logger.debug(
-                  'Persisted export-set change (no outputs-value diff, no-change path)'
-                );
-              }
-              // Update the persistent exports index so the newly-added export
-              // resolves O(1) for consumers — with the EXPORTS only (#2193),
-              // which on the backfill arm is what evicts the plain-name
-              // entries a pre-v9 deploy published. Inside the try so a failed
-              // state save doesn't publish an export that wasn't persisted;
-              // updateForStack is itself best-effort (swallows + warns).
-              if (engine.exportIndexStore) {
-                await engine.exportIndexStore.updateForStack(
-                  stackName,
-                  engine.stackRegion,
-                  // Redacted again as the save above redacts it (issue
-                  // #2814), so this path's index cannot diverge from what
-                  // state holds. Since issue #2771 the call is load-bearing
-                  // rather than only fail-safe: a released drain leaves an
-                  // output unresolved, and the partial persist then writes
-                  // the SIBLINGS that did resolve, so a needle a released
-                  // part records after the outputs pass CAN reach this
-                  // block. (The bag is not always this pass's either: on the
-                  // `exportSetChanged`-only arm it is `persistedOutputs`,
-                  // the PREVIOUS deploy's bag, and a second pass is not
-                  // unconditionally idempotent; see
-                  // `absorbOutputsPassSecrets`.) A needle arriving between
-                  // the save and this call leaves the index more redacted
-                  // than state, never less.
-                  importableOutputs({
-                    ...refreshedState,
-                    outputs: redactOutputs(engine.maskingDeps(), refreshedState.outputs),
-                  })
-                );
-              }
-            } else if (observedRefresh) {
-              engine.logger.debug('Persisted refreshed observedProperties (no-change path)');
-            } else if (healedAttributesPending) {
-              engine.logger.debug(
-                'Persisted attributes re-read from AWS for a stale record (no-change path)'
-              );
-            } else {
-              engine.logger.debug(
-                'Persisted skipped-outputs record (no outputs-value diff, no-change path)'
-              );
-            }
-          } catch (saveError) {
-            engine.logger.warn(
-              safeMsg`Failed to persist no-change state update: ${asIsMessage(describeAwsFailure(saveError).detail)} — drift baseline / outputs will be re-resolved on next deploy.`
-            );
-          }
-        }
-      }
-
-      // A clean no-change deploy is still a SUCCESSFUL deploy — drop any
-      // lingering rollback journal, matching the documented "deleted on
-      // the next successful deploy" contract (the changes path does this
-      // at its end too). This matters for the failed-only segment a clean
-      // auto-rollback retains (issue #1208): the typical fix-forward is
-      // REMOVING the failed resource from the template, which lands here
-      // with hasChanges=false — without this delete the journal (and its
-      // "previous deploy failed" note) would linger indefinitely.
-      //
-      // go-to-k/cdkd#4600: a journaled proven orphan it could not delete is
-      // a resource left in AWS, counted with the skipped deletes (exit 2).
-      const journaledOrphansLeft = engine.options.dryRun
-        ? 0
-        : await settleJournalAfterSuccess(
-            engine.rollbackDeps(),
-            stackName,
-            [],
-            currentState,
-            currentState.resources,
-            currentEtag === undefined
-          );
-      clock.lap('no-change path');
-
-      return {
+      return await deployWithoutChanges(engine, {
         stackName,
-        created: 0,
-        updated: 0,
-        deleted: 0,
-        deleteSkipped: journaledOrphansLeft,
-        updatePartial: 0,
-        unchanged: Object.keys(currentState.resources).length,
-        durationMs: Date.now() - startTime,
-        // Redacted again, as the save redacts the bag it writes (issue
-        // #2814): a part the drain cap stopped waiting for can record after
-        // the outputs pass, and the bag kept here may be the PREVIOUS
-        // deploy's, holding a literal nothing resolved then.
-        outputs: buildDisplayOutputs(
-          template,
-          redactOutputs(engine.maskingDeps(), persistedOutputs)
-        ),
-        attributeFallbackCount: engine.resolver.getPhysicalIdFallbackCount(),
-      };
+        template,
+        currentState,
+        currentEtag,
+        effectiveTemplate,
+        outputsDigestSource,
+        parameterValues,
+        conditions,
+        conditionVerdicts,
+        migrationPending,
+        maskedFingerprintsBackfilled,
+        orphansChanged,
+        terminationProtectionChanged,
+        resolveStackInstanceId,
+        startProvenanceCapture,
+        startTime,
+        clock,
+      });
     }
 
     // Log changes summary
@@ -1707,159 +588,21 @@ export async function doDeployWithPrefetch(
       };
     }
 
-    // go-to-k/cdkd#4043: a stack whose only "changes" are readers of a
-    // `NoEcho` parameter (state holds `***` there) has no template change; the
-    // engine compares each with AWS and skips it when unchanged. Said so, as
-    // the no-change path would, rather than reading as a pending update.
-    const nonNoEchoChanges = [...changes.values()].filter(
-      (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
-    );
-    if (nonNoEchoChanges.length === 0) {
-      const readers = [...changes.values()].filter(isNoEchoPromotionOnly).length;
-      engine.logger.info(
-        safeMsg`No changes detected in the template. Comparing ${String(readers)} resource(s) that read a NoEcho parameter with AWS.`
-      );
-    }
-
-    // go-to-k/cdkd#4705: every planned create of a name-adopting type whose
-    // name cdkd generates is looked up NOW (exact reads, all at once),
-    // overlapping the checks and the prompt below; each create awaits its
-    // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intents
-    // are written per type after the approval, and settled in the `finally`.
-    const abandonedRunAt = (
-      engine.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
-    ).abandonedRunEndedBy?.(stackName, engine.stackRegion);
-    if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
-    const generatedNameGuardInput: GeneratedNameGuardInput = {
+    await prepareChangeExecution(engine, {
       stackName,
-      region: engine.stackRegion,
-      changes: changes.values(),
-      providerFor: (input) => engine.providerRegistry.getProviderFor({ ...input, quiet: true }),
-      records: currentState.resources,
-      orphans: currentState.orphans,
-      loadJournal: () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
-      loadRetained: () =>
-        retainedAtFirstDeploy ??
-        engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
-      loadKeptInHistory: () =>
-        loadKeptInHistory(keptHistorySources(engine), stackName, engine.stackRegion),
-      accountInfo: () => getAccountInfo(engine.stackRegion),
-      warn: (message) => engine.logger.warn(message),
-      // G-1: this deploy took over the lock an abandoned run left.
-      ...(abandonedRunAt !== undefined && { abandonedRunAt }),
-    };
-    // go-to-k/cdkd#5064: the planned names are derived in the stack's naming
-    // scope. A first deploy has no instance id until it is going ahead (past
-    // the prompt below), so its lookups start then, before the first create;
-    // a stack with a record looks up now, overlapping the checks and prompt.
-    const startGeneratedNameGuard = (): void => {
-      const scope = nameScope();
-      const lifetimeId = scope.stackInstanceId;
-      engine.generatedNameGuard = withStackScope(scope, () =>
-        GeneratedNameGuard.start({
-          ...generatedNameGuardInput,
-          ...(lifetimeId !== undefined && {
-            newScheme: true,
-            // Phase 2: a planned replacement of the same type creates under
-            // its next generation's name, checked like a create.
-            replacementGeneration: (change) => {
-              const record = currentState.resources[change.logicalId];
-              if (
-                record === undefined ||
-                record.resourceType !== change.resourceType ||
-                !(
-                  (change.propertyChanges ?? []).some((pc) => pc.requiresReplacement) ||
-                  // A `--recreate-via-*` target is a replacement too.
-                  recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(
-                    change.logicalId
-                  ) === true
-                )
-              ) {
-                return undefined;
-              }
-              return nextNameGeneration(record, change.logicalId, lifetimeId);
-            },
-          }),
-        })
-      );
-      if (engine.generatedNameGuard !== undefined) {
-        engine.logger.debug(
-          safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
-        );
-      }
-    };
-    if (!idArrivesLater) startGeneratedNameGuard();
-
-    // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
-    // is checked against the bucket's other state prefixes BEFORE the approval
-    // prompt and any provider call.
-    await checkDestructivePlan({
-      options: engine.options,
-      stackName,
-      changes: changes.values(),
-      records: currentState.resources,
-      template: effectiveTemplate,
-      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
+      currentState,
+      effectiveTemplate,
+      parameterValues,
+      changes,
+      diffResolverContext,
+      idArrivesLater,
+      nameScope,
+      retainedAtFirstDeploy,
+      retainedForWarning,
+      resolveStackInstanceId,
+      startProvenanceCapture,
+      clock,
     });
-
-    // `--require-approval`: asked on the diff this deploy executes, before any
-    // provider call. The lock is released by the `finally`.
-    const prompted = await requireDeploymentApproval({
-      options: engine.options,
-      stackName,
-      changes: changes.values(),
-      records: currentState.resources,
-      orphans: currentState.orphans,
-      template: effectiveTemplate,
-      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
-      // go-to-k/cdkd#4601: the `broadening` table prints resolved values;
-      // built only if that level asks.
-      secretMask: () =>
-        diffLogMasker(
-          engine.secretsRun,
-          engine.maskingDeps(),
-          diffResolverContext.recordedSecretValues,
-          effectiveTemplate,
-          parameterValues,
-          currentState.resources
-        ),
-    });
-    // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
-    // it are read again at each create.
-    // A first deploy's guard starts after the prompt (below): nothing to re-read.
-    if (prompted) engine.generatedNameGuard?.noteApprovalPrompted();
-    startProvenanceCapture();
-
-    // Issue #1111 item 3 (review fix): the diff phase above resolves
-    // intrinsics through the SAME counted resolver, so a warn-path
-    // fallback on a to-be-updated resource would otherwise count once
-    // during diff and AGAIN during provisioning (~2x distinct sites in
-    // the summary). Reset here so the change-path summary counts each
-    // fallback site once (provisioning + final output resolution). The
-    // no-change / dry-run early returns above keep the deploy()-start
-    // reset: their only resolutions ARE the diff phase (+ the no-change
-    // path's output resolution), so nothing double-counts there. Full
-    // semantics in the counter's JSDoc
-    // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
-    engine.resolver.resetPhysicalIdFallbackCount();
-
-    clock.lap('plan checks, approval');
-    await resolveStackInstanceId();
-    if (idArrivesLater) {
-      startGeneratedNameGuard();
-      const kept = (await retainedForWarning) ?? [];
-      if (kept.length > 0) {
-        engine.logger.warn(
-          safeMsg`An earlier deployment of ${displayStackName(stackName)} kept ${String(kept.length)} ` +
-            'resource(s) here (DeletionPolicy: Retain). This deploy does not take ' +
-            'them back: it creates new resources under new names, as CloudFormation does. To manage a ' +
-            "kept resource again, adopt it with 'cdkd import'."
-        );
-      }
-    }
-    // The one intent write (review P1): past the prompt and the destructive
-    // check, under the lock, before the first create (each awaits it).
-    engine.generatedNameGuard?.recordPlannedIntents();
 
     // Progress counter for tracking overall deployment progress
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
@@ -1952,116 +695,19 @@ export async function doDeployWithPrefetch(
     ]);
     engine.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
     clock.lap('final state save');
-    // go-to-k/cdkd#4438: the record now names every resource this deploy
-    // created, so their create-token `sent` entries have done their job.
-    // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
-    // record now names it, so `retained.json` lets it go. Best-effort. Both
-    // run beside 7c's writes below (review P4): disjoint objects, read by
-    // neither, so no serial round trip on a successful deploy.
-    const ledgerAndKeptCleanup = (async (): Promise<void> => {
-      await forgetRecordedCreateTokens(Object.keys(newState.resources));
-      const readopted = (await engine.generatedNameGuard?.readoptedFromRetained()) ?? [];
-      if (readopted.length > 0) {
-        try {
-          const kept = await engine.stateBackend.loadRetainedResources(
-            stackName,
-            engine.stackRegion
-          );
-          await engine.stateBackend.saveRetainedResources(
-            stackName,
-            engine.stackRegion,
-            kept.filter((entry) => !readopted.includes(entry.logicalId))
-          );
-        } catch (error) {
-          engine.logger.debug(
-            safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
-          );
-        }
-      }
-    })();
-
-    // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
-    //
-    //   1. Delete the rollback journal. Deploy succeeded, so the stable
-    //      baseline has moved and a journal from a prior failed attempt
-    //      (fix-forward that now succeeded) must NOT be replayable past
-    //      this point (issue #1183). Best-effort.
-    //   2. Update the persistent exports index with this stack's outputs
-    //      so subsequent `Fn::ImportValue` resolves hit O(1). Best-effort:
-    //      failures are swallowed inside updateForStack and surfaced as
-    //      warnings (state.json is canonical; a stale index self-heals on
-    //      the next deploy/resolve fallback).
-    //
-    // They target DISJOINT S3 objects — `{prefix}/{stack}/{region}/
-    // rollback-journal.json` vs the bucket-level exports index — and
-    // neither reads what the other writes: `updateForStack` only ever
-    // touches the exports index (plus, on a first-ever call, a rebuild
-    // scan of `state.json` files, which the journal delete does not
-    // affect), and the journal delete reads nothing at all. So the
-    // previous sequential ordering carried no dependency; it was costing
-    // a full extra S3 round trip on every successful deploy (measured
-    // ~0.5s of the ~1.0s "State saved" -> "Lock released" window).
-    //
-    // BOTH stay strictly AFTER the state save above and strictly BEFORE
-    // the lock release in the `finally` below, which is load-bearing:
-    // deleting the journal before the new baseline is durable would lose
-    // the ability to revert, and releasing the lock before these settle
-    // would let a concurrent deploy of the same stack observe a journal
-    // we are about to delete (spurious "a previous deploy failed" note)
-    // or race the exports-index read-modify-write.
-    // go-to-k/cdkd#4600: a journaled proven orphan the settle could not
-    // delete is a resource left in AWS, counted with the skipped deletes.
-    const [journaledOrphansLeft] = await Promise.all([
-      settleJournalAfterSuccess(
-        engine.rollbackDeps(),
-        stackName,
-        completedOperations,
-        currentState,
-        newState.resources,
-        currentEtag === undefined
-      ),
-      engine.exportIndexStore
-        ? engine.exportIndexStore.updateForStack(
-            stackName,
-            engine.stackRegion,
-            // The EXPORTS only (issue #2193): the bag also holds every plain
-            // Output name, and an index fed the whole bag served those to
-            // `Fn::ImportValue` — a same-named plain Output in an unrelated
-            // stack could shadow a real export.
-            importableOutputs({
-              ...newState,
-              outputs: redactOutputs(engine.maskingDeps(), newState.outputs),
-            })
-          )
-        : Promise.resolve(),
-      ledgerAndKeptCleanup,
-      finalSaveCleanup,
-    ]);
-    clock.lap('journal settle, exports index');
-
-    const durationMs = Date.now() - startTime;
-    const unchangedCount =
-      engine.diffCalculator.filterByType(changes, 'NO_CHANGE').length + actualCounts.skipped;
-
-    return {
+    return await settleSuccessfulDeploy(engine, {
       stackName,
-      created: actualCounts.created,
-      updated: actualCounts.updated,
-      deleted: actualCounts.deleted,
-      deleteSkipped: actualCounts.deleteSkipped + journaledOrphansLeft,
-      updatePartial: actualCounts.updatePartial,
-      nestedUpdatePartial: actualCounts.nestedUpdatePartial,
-      ...((actualCounts.crossPrefixKept ?? 0) > 0 && {
-        crossPrefixKept: actualCounts.crossPrefixKept,
-      }),
-      unchanged: unchangedCount,
-      durationMs,
-      outputs: buildDisplayOutputs(
-        template,
-        redactOutputs(engine.maskingDeps(), newState.outputs ?? {})
-      ),
-      attributeFallbackCount: engine.resolver.getPhysicalIdFallbackCount(),
-    };
+      template,
+      currentState,
+      currentEtag,
+      changes,
+      newState,
+      actualCounts,
+      completedOperations,
+      finalSaveCleanup,
+      startTime,
+      clock,
+    });
   } catch (error) {
     failed = true;
     // G-6: the overlapped gate's refusal outranks an error from its window.

@@ -119,6 +119,11 @@ import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 import { isMalformedBagSourceFile, malformedBagSourceFiles } from './_malformed-resources-bag-source.js';
 import { companionFiles } from '../../../scripts/provider-companion-files.ts';
+import {
+  DEPLOY_FLOW,
+  DEPLOY_FLOW_DIR,
+  readDeployFlowInRunOrder,
+} from '../deployment/_deploy-flow-source.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -211,6 +216,11 @@ function code(relPath: string): string {
   if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
   // `cdkd diff`'s walk reads the barrel and every module, in {@link diffRecursiveFamily} order.
   if (relPath === DIFF_RECURSIVE) return diffRecursiveFamily().map(strippedFile).join('\n');
+  // The engine's deploy flow is `deploy-flow.ts` plus `deploy-flow/**`
+  // (go-to-k/cdkd#5835), read in RUN order: each module spliced in at the
+  // entry's call of it, so a guard-above-anchor check reads the order the
+  // flow runs in.
+  if (relPath === DEPLOY_FLOW) return readDeployFlowInRunOrder(strippedFile);
   // `cdkd scrub` reads every module, in the order {@link subjectFiles} gives.
   return subjectFiles(relPath).map(strippedFile).join('\n');
 }
@@ -506,12 +516,14 @@ function subjectFiles(relPath: string): string[] {
 function subjectOf(file: string): string {
   if (file.startsWith(DESTROY_RUNNER_DIR)) return DESTROY_RUNNER;
   if (file.startsWith(REFACTOR_DIR)) return REFACTOR;
+  if (file.startsWith(DEPLOY_FLOW_DIR)) return DEPLOY_FLOW;
   if (file.startsWith(ROLLBACK_DIR)) return ROLLBACK;
   return file.startsWith('src/cli/commands/scrub/') ? SCRUB : file;
 }
 
 /** A subject's raw text (comments kept), every module joined for {@link SCRUB}. */
 function rawSource(relPath: string): string {
+  if (relPath === DEPLOY_FLOW) return readDeployFlowInRunOrder();
   return subjectFiles(relPath)
     .map((file) => readFileSync(join(repoRoot, file), 'utf8'))
     .join('\n');
@@ -3873,13 +3885,19 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'deploy-engine/rollback.ts reads the orphans container outside adoptRollbackOrphans / ' +
         'settleJournalAfterSuccess, on a path the engine anchor does not cover: give it its own ANCHORS entry.'
     ).toBe(reads(fnBody) + reads(settleBody));
-    const settleCallers = spawnSync('git', ['grep', '-l', 'settleJournalAfterSuccess(', '--', 'src'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    })
-      .stdout.split('\n')
-      .filter(Boolean)
-      .sort();
+    // A `deploy-flow/` module folds onto the flow ({@link subjectOf}), which
+    // reads it in run order (go-to-k/cdkd#5835).
+    const settleCallers = [
+      ...new Set(
+        spawnSync('git', ['grep', '-l', 'settleJournalAfterSuccess(', '--', 'src'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+        })
+          .stdout.split('\n')
+          .filter(Boolean)
+          .map(subjectOf)
+      ),
+    ].sort();
     expect(settleCallers, 'settleJournalAfterSuccess gained a caller outside the deploy flow').toEqual([
       'src/deployment/deploy-engine/deploy-flow.ts',
       'src/deployment/deploy-engine/rollback.ts',
