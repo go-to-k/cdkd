@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
 // compiler API only under `typescript/unstable/*`. Same import every other
 // AST-based critic in this repo uses.
@@ -1032,8 +1032,9 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
      * The refusal above reads SOURCES only, so a file elsewhere under `src/`
      * could import `deleteLock` and hand it back renamed (`export { deleteLock
      * as zap }`). Nothing outside the class file reaches a companion module:
-     * count every static import / export and dynamic `import()` whose relative
-     * specifier resolves into the companion directory, outside SOURCES.
+     * count every static import / export, `import x = require()` and dynamic
+     * `import()` whose relative specifier resolves into the companion
+     * directory, outside SOURCES.
      */
     const companionImports = (file: string, text: string): number => {
       const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -1042,14 +1043,17 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         spec !== undefined &&
         ts.isStringLiteralLike(spec) &&
         spec.text.startsWith('.') &&
-        resolve(dirname(file), spec.text).startsWith(COMPANION_DIR + '/');
+        resolve(dirname(file), spec.text).startsWith(COMPANION_DIR + sep);
       const walk = (node: ts.Node): void => {
         if (
           ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
             hits(node.moduleSpecifier)) ||
           (ts.isCallExpression(node) &&
             node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-            hits(node.arguments[0]))
+            hits(node.arguments[0])) ||
+          (ts.isImportEqualsDeclaration(node) &&
+            ts.isExternalModuleReference(node.moduleReference) &&
+            hits(node.moduleReference.expression))
         ) {
           n += 1;
         }
@@ -1085,6 +1089,9 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       ).toBe(1);
       expect(
         companionImports(elsewhere, "void import('./lock-manager/release.js');")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "import rel = require('./lock-manager/release.js');")
       ).toBe(1);
       expect(companionImports(elsewhere, "import { LockManager } from './lock-manager.js';")).toBe(0);
     });
