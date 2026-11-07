@@ -24,6 +24,7 @@ import {
   protectionFlipKey,
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
+  PROTECTION_FLIP_RETRY_WAIT_MS,
 } from '../deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
@@ -283,14 +284,26 @@ export async function deleteDBInstance(
         notFoundFault: 'DBInstanceNotFoundFault',
         isNotFound: (error) => this.isNotFoundError(error, 'DBInstanceNotFoundFault'),
       }),
+      // go-to-k/cdkd#5995: as for the cluster, and as RDS does (#5639).
       reEnable: async () => {
-        await this.getClient().send(
-          new ModifyDBInstanceCommand({
-            DBInstanceIdentifier: physicalId,
-            DeletionProtection: true,
-            ApplyImmediately: true,
-          })
-        );
+        await modifyDbInstanceWhenAvailable({
+          send: () =>
+            this.getClient().send(
+              new ModifyDBInstanceCommand({
+                DBInstanceIdentifier: physicalId,
+                DeletionProtection: true,
+                ApplyImmediately: true,
+              })
+            ),
+          readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+          sleep: (ms) => this.sleep(ms),
+          logger: this.logger,
+          label: 'Neptune DBInstance',
+          logicalId,
+          remainingMs: enclosingDeadlineRemainingMs(),
+          maxWaitMs: PROTECTION_FLIP_RETRY_WAIT_MS,
+          command: 'destroy',
+        });
       },
     },
   });
@@ -323,14 +336,27 @@ export async function deleteDBInstanceOnce(
           guardName: 'DeletionProtection',
           observe: async () =>
             (await this.describeDBInstance(physicalId))?.DeletionProtection === true,
+          // go-to-k/cdkd#5995: AWS refuses the flip while the instance is busy
+          // (a backup, a member modification); wait that out and resend.
           disable: async () => {
-            await this.getClient().send(
-              new ModifyDBInstanceCommand({
-                DBInstanceIdentifier: physicalId,
-                DeletionProtection: false,
-                ApplyImmediately: true,
-              })
-            );
+            await modifyDbInstanceWhenAvailable({
+              send: () =>
+                this.getClient().send(
+                  new ModifyDBInstanceCommand({
+                    DBInstanceIdentifier: physicalId,
+                    DeletionProtection: false,
+                    ApplyImmediately: true,
+                  })
+                ),
+              readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+              sleep: (ms) => this.sleep(ms),
+              logger: this.logger,
+              label: 'Neptune DBInstance',
+              logicalId,
+              remainingMs: enclosingDeadlineRemainingMs(),
+              maxWaitMs: PROTECTION_FLIP_RETRY_WAIT_MS,
+              command: 'destroy',
+            });
           },
         });
         this.logger.debug(
