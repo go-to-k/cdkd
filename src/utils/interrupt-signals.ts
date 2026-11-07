@@ -270,7 +270,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
    * A provider's transient wait listener does count, and that is correct
    * rather than a false positive: three providers install one — grep
    * `process.on('SIGINT'` under `src/provisioning/providers/**` for the
-   * closed set, today `acm-certificate-provider.ts`,
+   * closed set, today `acm-certificate/wait.ts`,
    * `cloudfront-distribution/delete.ts` and `custom-resource-provider.ts`,
    * NOT Route53, whose provider registers none — and each exists only
    * DURING a provider wait, which is strictly inside the runner handler's own

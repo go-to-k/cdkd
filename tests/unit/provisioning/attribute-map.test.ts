@@ -12,7 +12,8 @@
  *     `docs/provider-development.md` forbids) through the shapes the walk
  *     follows -- the literal, a same-function `const` / `let` an identifier
  *     resolves to and every reassignment of it, builder writes onto it, a
- *     same-file helper's `return`s, the ARGUMENTS and the RECEIVER of any
+ *     helper's `return`s (same file, or anywhere in a split provider's
+ *     companion-file family), the ARGUMENTS and the RECEIVER of any
  *     call at those positions, and a spread -- with a floor per followed
  *     shape so a walk that silently stops following one cannot pass, and a
  *     fixture-driven probe (a fake provider under a temp dir) that reds every
@@ -139,7 +140,10 @@ interface Scan {
   filesWithAttributes: Set<string>;
   /** Identifier values resolved to a same-function declaration (the hoisted shape). */
   hoistedResolved: number;
-  /** Call values resolved to a same-file method / function body (the helper-return shape). */
+  /**
+   * Call values resolved to a method / function body (the helper-return
+   * shape): same-file, or in another member of the file's provider family.
+   */
   helperCallsResolved: number;
   /** `attrs['X'] = …` / `attrs.X = …` assignments followed (the builder shape). */
   builderAssignments: number;
@@ -172,9 +176,11 @@ interface Scan {
  * would pass too); a helper resolved by BARE NAME (`findCallee` takes the first
  * same-named method / function in the file, so a file declaring several
  * classes with a same-named method can attribute a hit to the wrong class or
- * miss one); a bare-identifier call with no same-file declaration resolved in
- * the file's provider FAMILY (the provider and its companion files) only when
- * exactly one other member declares a top-level function of that name; and
+ * miss one); a call with no same-file declaration, resolved in the file's
+ * provider FAMILY (the provider and its companion files) only when exactly one
+ * other member declares it -- a top-level function for a bare-identifier call,
+ * a top-level class's method for a `this.m(...)` call -- so an ambiguous name
+ * is left unresolved rather than attributed by file order; and
  * `findDeclaration`, which takes the first same-named declaration in the
  * enclosing function.
  *
@@ -193,8 +199,11 @@ interface Scan {
 function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
   // With each provider's companion files (scripts/provider-companion-files.ts),
   // which hold code split out of it. A provider and its companions form one
-  // FAMILY: a helper moved into a companion is called from the others by its
-  // imported bare name, so `findCallee` resolves such a call inside the family.
+  // FAMILY (go-to-k/cdkd#5835): a method body moved into a companion becomes
+  // `export function f(this: Host, ...)` behind a class delegator
+  // `return f.call(this, ...)`, so a helper is reached from another member by
+  // its imported bare name or through `this.m(...)`, and `findCallee` resolves
+  // both inside the family.
   const families = new Map<string, readonly string[]>();
   const files = readdirSync(providersDir)
     .filter((f) => f.endsWith('.ts'))
@@ -249,73 +258,141 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
     return cur;
   };
 
+  /** The first method or function declaration named `name`, with a body, in `sf`. */
+  const findLocalDeclaration = (sf: ts.SourceFile, name: string): ts.Node | undefined => {
+    let found: ts.Node | undefined;
+    const look = (n: ts.Node): void => {
+      if (found) return;
+      if (
+        (ts.isMethodDeclaration(n) || ts.isFunctionDeclaration(n)) &&
+        n.name !== undefined &&
+        n.name.getText() === name &&
+        n.body !== undefined
+      ) {
+        found = n;
+        return;
+      }
+      ts.forEachChild(n, look);
+    };
+    look(sf);
+    return found;
+  };
+
+  /**
+   * The ONE declaration of `name` in a family member other than `file`: a
+   * top-level function (`'function'`) or a method of a top-level class
+   * (`'method'`). Undefined when none or several match -- a name two members
+   * declare is left unresolved rather than picked by file order.
+   */
+  const findFamilyDeclaration = (
+    file: string,
+    name: string,
+    kind: 'function' | 'method'
+  ): ts.Node | undefined => {
+    const matches = (families.get(file) ?? [])
+      .filter((member) => member !== file)
+      .flatMap((member) =>
+        parse(member).statements.flatMap((st): ts.Node[] => {
+          if (kind === 'function') {
+            return ts.isFunctionDeclaration(st) && st.name?.text === name && st.body !== undefined
+              ? [st]
+              : [];
+          }
+          if (!ts.isClassDeclaration(st)) return [];
+          return st.members.filter(
+            (m) => ts.isMethodDeclaration(m) && m.name.getText() === name && m.body !== undefined
+          );
+        })
+      );
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+
+  /** The providers-dir-relative path of the file `node` sits in. */
+  const fileOf = (node: ts.Node): string => relative(providersDir, node.getSourceFile().fileName);
+
+  /**
+   * `f` when `method`'s whole body is `return f.call(this, ...)` (or
+   * `return await f.call(this, ...)`) -- the class delegator a split leaves
+   * behind for a body it moved into a companion function.
+   */
+  const delegatedName = (method: ts.Node): string | undefined => {
+    if (!ts.isMethodDeclaration(method) || method.body === undefined) return undefined;
+    const stmts = method.body.statements;
+    if (stmts.length !== 1) return undefined;
+    const only = stmts[0]!;
+    if (!ts.isReturnStatement(only) || only.expression === undefined) return undefined;
+    let expr: ts.Expression = only.expression;
+    if (ts.isAwaitExpression(expr)) expr = expr.expression;
+    if (
+      !ts.isCallExpression(expr) ||
+      !ts.isPropertyAccessExpression(expr.expression) ||
+      expr.expression.name.text !== 'call' ||
+      !ts.isIdentifier(expr.expression.expression) ||
+      expr.arguments[0]?.kind !== ts.SyntaxKind.ThisKeyword
+    ) {
+      return undefined;
+    }
+    return expr.expression.expression.text;
+  };
+
+  /**
+   * The method or function declaration a call resolves to. By bare name in
+   * the CALLER's file first (the pre-split reach); failing that, in the
+   * caller's provider family: a bare-identifier call to the one top-level
+   * function another member declares (a helper a split moved into a
+   * companion, called by its imported name), and a `this.m(...)` call to the
+   * one class method another member declares (a companion function calling
+   * back into the provider class). A method that is a pure
+   * `.call(this, ...)` delegator resolves on to the function it delegates to,
+   * looked up the same way from the delegator's own file.
+   */
+  const findCallee = (call: ts.CallExpression): ts.Node | undefined => {
+    const callee = call.expression;
+    const name = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isIdentifier(callee)
+        ? callee.text
+        : undefined;
+    if (name === undefined) return undefined;
+    const isThisCall =
+      ts.isPropertyAccessExpression(callee) && callee.expression.kind === ts.SyntaxKind.ThisKeyword;
+    const file = fileOf(call);
+    let found =
+      findLocalDeclaration(call.getSourceFile(), name) ??
+      (ts.isIdentifier(callee)
+        ? findFamilyDeclaration(file, name, 'function')
+        : isThisCall
+          ? findFamilyDeclaration(file, name, 'method')
+          : undefined);
+    const target = found === undefined ? undefined : delegatedName(found);
+    if (found !== undefined && target !== undefined) {
+      // A top-level function only: the moved body usually keeps the method's
+      // name, so a bare-name lookup would find the delegator itself.
+      const delegate =
+        found
+          .getSourceFile()
+          .statements.find(
+            (st): st is ts.FunctionDeclaration =>
+              ts.isFunctionDeclaration(st) && st.name?.text === target && st.body !== undefined
+          ) ?? findFamilyDeclaration(fileOf(found), target, 'function');
+      if (delegate !== undefined) found = delegate;
+    }
+    return found;
+  };
+
   for (const file of files) {
     const sf = parse(file);
     const visited = new Set<ts.Node>();
 
     const record = (n: ts.Node): void => {
-      // Attributed to the file the node sits in, which is a family member's
-      // when the walk followed a family helper.
-      const nodeSf = n.getSourceFile();
-      const nodeFile = relative(providersDir, nodeSf.fileName);
+      // Attributed to the file and line the node sits in -- another family
+      // member's when the walk followed a family helper.
+      const nodeFile = fileOf(n);
       const key = `${nodeFile}:${n.getStart()}`;
       if (recorded.has(key)) return;
       recorded.add(key);
-      const { line } = nodeSf.getLineAndCharacterOfPosition(n.getStart());
-      scan.hits.push({
-        file: nodeFile,
-        line: line + 1,
-        text: n.getText().replace(/\s+/g, ' '),
-      });
-    };
-
-    /**
-     * The same-file method or function declaration a call resolves to, by bare
-     * name; failing that, for a bare-identifier call, the top-level function
-     * declaration of that name in ANOTHER member of the file's family (a
-     * helper a split moved into a companion, called by its imported name).
-     * Only a name exactly one other member declares resolves: an ambiguous one
-     * is left unresolved rather than attributed by file order.
-     */
-    const findCallee = (call: ts.CallExpression): ts.Node | undefined => {
-      const local = findLocalCallee(call);
-      if (local !== undefined || !ts.isIdentifier(call.expression)) return local;
-      const name = call.expression.text;
-      const matches = (families.get(file) ?? [])
-        .filter((member) => member !== file)
-        .flatMap((member) =>
-          parse(member).statements.filter(
-            (st): st is ts.FunctionDeclaration =>
-              ts.isFunctionDeclaration(st) && st.name?.text === name && st.body !== undefined
-          )
-        );
-      return matches.length === 1 ? matches[0] : undefined;
-    };
-
-    const findLocalCallee = (call: ts.CallExpression): ts.Node | undefined => {
-      const callee = call.expression;
-      const name = ts.isPropertyAccessExpression(callee)
-        ? callee.name.text
-        : ts.isIdentifier(callee)
-          ? callee.text
-          : undefined;
-      if (name === undefined) return undefined;
-      let found: ts.Node | undefined;
-      const look = (n: ts.Node): void => {
-        if (found) return;
-        if (
-          (ts.isMethodDeclaration(n) || ts.isFunctionDeclaration(n)) &&
-          n.name !== undefined &&
-          n.name.getText() === name &&
-          n.body !== undefined
-        ) {
-          found = n;
-          return;
-        }
-        ts.forEachChild(n, look);
-      };
-      look(sf);
-      return found;
+      const { line } = n.getSourceFile().getLineAndCharacterOfPosition(n.getStart());
+      scan.hits.push({ file: nodeFile, line: line + 1, text: n.getText().replace(/\s+/g, ' ') });
     };
 
     /** The `const`/`let` declaration of `name` inside `fn`, if any. */
@@ -395,7 +472,7 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
       ts.forEachChild(node, scanLiteral);
     };
 
-    /** A helper call: scan each `return` of its same-file body as an attributes value. */
+    /** A helper call: scan each `return` of its resolved body as an attributes value. */
     const followCall = (call: ts.CallExpression, depth: number): boolean => {
       const callee = findCallee(call);
       if (
@@ -441,8 +518,8 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
      * One attributes VALUE. Follows exactly the four shapes the fence claims:
      * the literal (each property value's own subtree), an identifier's
      * same-function initializer (a hoisted `const x = … ?? ''`), builder
-     * writes onto that identifier (`x['K'] = … ?? ''`), and a same-file
-     * helper's `return`s. It does NOT follow a call nested inside a property
+     * writes onto that identifier (`x['K'] = … ?? ''`), and a resolved
+     * helper's `return`s (`findCallee`). It does NOT follow a call nested inside a property
      * value's expression, nor a local arrow helper applied per member -- the
      * documented reach of this walk, bounded so a tag-map or physical-id
      * helper two hops away cannot report a false positive.
@@ -542,10 +619,15 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
 }
 
 // Measured on the tree this fence shipped with; each is ~12% under the count.
+// `helperCallsResolved` was re-measured when the walk learned to follow a
+// helper across a split provider's companion files (go-to-k/cdkd#5835): 94 on
+// that tree (36 with the family lookup disabled -- the provider splits had
+// already cut the same-file reach to just over the old floor), with the floor
+// set just under it so the next split that loses a cross-file shape reds here.
 const FLOORS = {
   attributeValues: 330, // measured 376
   hoistedResolved: 190, // measured 220
-  helperCallsResolved: 34, // measured 40
+  helperCallsResolved: 90, // measured 94 (2026-11-07)
   builderAssignments: 76, // measured 86
 };
 // Values past the depth cap, measured 2026-09-14: 19, all arguments of
@@ -556,7 +638,13 @@ const FLOORS = {
 // go-to-k/cdkd#4926: the Lambda Web Function revision / endpoint providers
 // record the response their poll helper returns, so the walk reaches that
 // helper's SDK command argument at depth 5 -- the same poll-helper class.
-const DEPTH_DROPPED_CAP = 29;
+// Raised to 32 by the companion-file resolution (go-to-k/cdkd#5835): the
+// provider splits had moved the `route53`, `emr-cluster`, `fsx-filesystem` and
+// `s3-bucket` helpers above into companion files the walk stopped reaching
+// (11 dropped on that tree), and following them again restores those chains,
+// plus `elbv2/shared.ts`'s `lbArn.split('/')` (the receiver and argument of a
+// `LoadBalancerFullName` value inside `definedAttributes`, neither a fallback).
+const DEPTH_DROPPED_CAP = 32;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and
@@ -852,7 +940,13 @@ describe('the fence reds every shape it claims to see (fixture-driven probe)', (
   });
 });
 
-describe('a split provider family: a helper a companion declares is followed from every member', () => {
+// ---------------------------------------------------------------------------
+// A split provider (go-to-k/cdkd#5835): `<stem>-provider.ts` plus `<stem>/*.ts`.
+// A helper is reached across the family by its imported bare name, or through
+// `this.m(...)` into the class, and on through a `.call(this, ...)` delegator.
+// ---------------------------------------------------------------------------
+
+describe('a split provider family: a helper is followed across its companion files', () => {
   let dir: string;
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'attribute-map-family-'));
@@ -860,16 +954,6 @@ describe('a split provider family: a helper a companion declares is followed fro
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
   });
-
-  const helper = 'export function toArn(r: { arn?: string }): string {\n  return r.arn ?? "";\n}\n';
-  const caller = (fn: string, from: string): string =>
-    [
-      `import { toArn } from '${from}';`,
-      `export function ${fn}(resp: { arn?: string }) {`,
-      '  return { physicalId: "a", attributes: { Arn: toArn(resp) } };',
-      '}',
-      '',
-    ].join('\n');
 
   /** A providers dir holding `files` (path relative to it -> source). */
   function family(files: Record<string, string>): string {
@@ -881,17 +965,33 @@ describe('a split provider family: a helper a companion declares is followed fro
     return root;
   }
 
-  it('follows a provider call into the companion that declares the helper, and attributes the hit there', () => {
+  const lines = (...l: string[]): string => [...l, ''].join('\n');
+  const where = (scan: Scan): Array<[string, number, string]> =>
+    scan.hits.map((h) => [h.file, h.line, h.text]);
+
+  // Shape 2: a top-level function another member declares, called by bare name.
+  const helper = lines(
+    'export function toArn(r: { arn?: string }): string {',
+    "  return r.arn ?? '';",
+    '}'
+  );
+  const caller = (fn: string, from: string): string =>
+    lines(
+      `import { toArn } from '${from}';`,
+      `export function ${fn}(resp: { arn?: string }) {`,
+      "  return { physicalId: 'a', attributes: toArn(resp) };",
+      '}'
+    );
+
+  it('follows a bare-name call into the companion that declares the helper, and reports the hit there', () => {
     const scan = scanProviders(
       family({ 'fake-provider.ts': caller('create', './fake/shared.js'), 'fake/shared.ts': helper })
     );
     expect(scan.helperCallsResolved).toBe(1);
-    expect(scan.hits.map((h) => [h.file, h.line, h.text])).toEqual([
-      ['fake/shared.ts', 2, 'r.arn ?? ""'],
-    ]);
+    expect(where(scan)).toEqual([['fake/shared.ts', 2, "r.arn ?? ''"]]);
   });
 
-  it('reports the helper once when two members call it', () => {
+  it('reports a family helper once when two members call it', () => {
     const scan = scanProviders(
       family({
         'fake-provider.ts': caller('create', './fake/shared.js'),
@@ -900,7 +1000,7 @@ describe('a split provider family: a helper a companion declares is followed fro
       })
     );
     expect(scan.helperCallsResolved).toBe(2);
-    expect(scan.hits.map((h) => h.file)).toEqual(['fake/shared.ts']);
+    expect(where(scan)).toEqual([['fake/shared.ts', 2, "r.arn ?? ''"]]);
   });
 
   it('leaves a name two other members declare unresolved instead of picking one by file order', () => {
@@ -922,6 +1022,108 @@ describe('a split provider family: a helper a companion declares is followed fro
         'other-provider.ts': helper,
       })
     );
+    expect(scan.helperCallsResolved).toBe(0);
+    expect(scan.hits).toEqual([]);
+  });
+
+  // Shape 1: `this.m(...)` in a companion function, `m` on the provider class.
+  const companionCreate = lines(
+    "import type { FakeProvider } from '../fake-provider.js';",
+    'export async function create(this: FakeProvider, resp: { arn?: string }) {',
+    "  return { physicalId: 'a', attributes: this.attributesOf(resp) };",
+    '}'
+  );
+
+  it('follows `this.m(...)` from a companion into the method the provider class keeps (the pipes `attributesOf` shape)', () => {
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': lines(
+          "import { create } from './fake/create.js';",
+          'export class FakeProvider {',
+          '  create(resp: { arn?: string }) {',
+          '    return create.call(this, resp);',
+          '  }',
+          '  attributesOf(r: { arn?: string }): Record<string, unknown> {',
+          "    return { Arn: r.arn ?? '' };",
+          '  }',
+          '}'
+        ),
+        'fake/create.ts': companionCreate,
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(1);
+    expect(where(scan)).toEqual([['fake-provider.ts', 7, "r.arn ?? ''"]]);
+  });
+
+  it('follows `this.m(...)` through the class delegator into the companion that holds the moved body', () => {
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': lines(
+          "import { attributesOf } from './fake/shared.js';",
+          'export class FakeProvider {',
+          '  attributesOf(r: { arn?: string }): Record<string, unknown> {',
+          '    return attributesOf.call(this, r);',
+          '  }',
+          '}'
+        ),
+        'fake/create.ts': companionCreate,
+        'fake/shared.ts': lines(
+          "import type { FakeProvider } from '../fake-provider.js';",
+          'export function attributesOf(this: FakeProvider, r: { arn?: string }) {',
+          "  return { Arn: r.arn ?? '' };",
+          '}'
+        ),
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(1);
+    expect(where(scan)).toEqual([['fake/shared.ts', 3, "r.arn ?? ''"]]);
+  });
+
+  it("follows the provider's own `this.m(...)` through a delegator whose moved body kept the method's name", () => {
+    // The bare-name lookup for the delegated `attributesOf` would find the
+    // delegator itself; the delegate must be a top-level function.
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': lines(
+          "import { attributesOf } from './fake/shared.js';",
+          'export class FakeProvider {',
+          '  create(resp: { arn?: string }) {',
+          "    return { physicalId: 'a', attributes: this.attributesOf(resp) };",
+          '  }',
+          '  async attributesOf(r: { arn?: string }): Promise<Record<string, unknown>> {',
+          '    return await attributesOf.call(this, r);',
+          '  }',
+          '}'
+        ),
+        'fake/shared.ts': lines(
+          'export function attributesOf(r: { arn?: string }) {',
+          "  return { Arn: r.arn || '' };",
+          '}'
+        ),
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(1);
+    expect(where(scan)).toEqual([['fake/shared.ts', 2, "r.arn || ''"]]);
+  });
+
+  it('leaves `this.m(...)` unresolved when two family classes declare `m`', () => {
+    const cls = (name: string): string =>
+      lines(
+        `export class ${name} {`,
+        '  attributesOf(r: { arn?: string }): Record<string, unknown> {',
+        "    return { Arn: r.arn ?? '' };",
+        '  }',
+        '}'
+      );
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': cls('FakeProvider'),
+        'fake/other.ts': cls('Other'),
+        'fake/create.ts': companionCreate,
+      })
+    );
+    // The two classes' own methods are not attributes values; only the
+    // companion's `this.attributesOf(...)` is, and it stays unresolved.
     expect(scan.helperCallsResolved).toBe(0);
     expect(scan.hits).toEqual([]);
   });

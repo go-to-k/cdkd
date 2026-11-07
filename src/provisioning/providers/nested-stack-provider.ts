@@ -1,10 +1,3 @@
-import * as fs from 'node:fs';
-import {
-  pasteableCommand,
-  plainOrDescribed,
-  withheldTargetClause,
-} from '../../utils/pasteable-command.js';
-import * as path from 'node:path';
 import type {
   CloudFormationTemplate,
   ResourceProvider,
@@ -15,145 +8,34 @@ import type {
   DeleteContext,
   UpdateContext,
 } from '../../types/resource.js';
-import { DeployEngine } from '../../deployment/deploy-engine.js';
-import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
-import { secretNamedAttributeNamesOf } from '../../deployment/secret-name-needles.js';
+import type { NestedStackProviderContext } from '../nested-stack-context.js';
+import type { AssetRedirectMap } from '../../assets/asset-redirect.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import {
-  recordReferenceProvenanceEntry,
-  snapshotPassProvenance,
-} from '../../deployment/secret-redaction/reference-provenance.js';
-import { outputReferenceProvenanceOf } from '../../deployment/reference-provenance-record.js';
-import { passedParameterClassesOf } from '../../deployment/masked-property-fingerprints.js';
-import { getCurrentProducerRegions } from '../../deployment/producer-regions-scope.js';
+  requireContext,
+  requireDeployContext,
+  deriveChildStackName,
+  synthesizeArn,
+} from './nested-stack/shared.js';
+import { create, update, revertFromChildJournal } from './nested-stack/create-update.js';
+import { deleteImpl } from './nested-stack/delete.js';
+import { runChildDeploy } from './nested-stack/child-deploy.js';
 import {
-  getNestedRevertRun,
-  revertNestedChildFromJournal,
-} from '../../deployment/nested-child-journal.js';
-import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
+  getAttribute,
+  readChildOutputsAsAttributes,
+  outputAttributeName,
+  buildOutputsAttributes,
+} from './nested-stack/outputs.js';
 import {
-  accountArgs,
-  refuseMalformedNestedChildOutputs,
-  refuseMalformedResourcesForDestroy,
-  withheldAccountClause,
-} from '../../state/malformed-resources-bag.js';
-import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
-import {
-  withNestedStackContext,
-  getCurrentNestedStackContext,
-  type NestedStackProviderContext,
-} from '../nested-stack-context.js';
-import {
-  rewriteTemplateAssetReferences,
-  type AssetRedirectMap,
-} from '../../assets/asset-redirect.js';
-import { getLogger } from '../../utils/logger.js';
-import { withoutSdkUnwiredProperties } from '../property-coverage.js';
-// Leaf module by design — see the note in nested-stack-messages.ts: importing
-// this builder from anywhere on the provider/destroy-runner ring re-creates the
-// cycle it was extracted to break.
-import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
-// `retryable-errors.ts` is a graph LEAF (its family's only outside import is
-// the zero-import `aws-failure-text.ts`), so importing it here
-// cannot close a cycle — which is also why the marker cannot live in
-// `nested-stack-messages.ts` instead: that module is required to stay
-// import-free (its own header says so), so the mark belongs at the THROW
-// SITE. Throw-site rather than constructor shape is right for a second
-// reason too: the errors below are plain `Error`s, and — unlike
-// `ResourceUpdateNotSupportedError` — the class raised here is NOT a refusal
-// in every instance (see the per-arm note at the `errorCount` throw).
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
-import { clearCreatedBeforeFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import {
-  carriesSecretMask,
-  hasMaskableValues,
-  markSameGenerationBag,
-  passedNoEchoParametersOf,
-  physicalNameCopiesOf,
-  recordAttributeIdCopy,
-  recoverMaskedOutput,
-} from '../../deployment/secret-redaction.js';
-import {
-  ambientCredentialConfig,
-  credentialFingerprint,
-} from '../../utils/ambient-client-defaults.js';
-import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
-import {
-  describeFileReadFailure,
-  displayAssemblyPath,
-  renderAssemblyPathEscape,
-  resolveAssemblyPath,
-} from '../../utils/assembly-path.js';
-import {
-  findNestedTemplateTreeDefect,
-  isAbsoluteAssetPath,
-  listNestedTemplateRows,
-  renderNestedTemplateTreeDefect,
-} from '../../utils/nested-template-cycle.js';
+  refuseMalformedNestedTemplateTree,
+  extractParameters,
+  refuseNonScalarParameter,
+  readChildTemplate,
+  indexGrandchildTemplates,
+} from './nested-stack/template.js';
 
-/**
- * Returns `true` when `p` is absolute on the current platform OR begins
- * with a forward slash. The `startsWith('/')` arm covers the cross-platform
- * leak where `path.isAbsolute('/abs/foo')` returns `true` on POSIX but
- * `false` on Windows (Windows absolute paths require a drive letter or
- * UNC root) — a POSIX-style absolute path embedded in a synth template
- * generated on Linux and consumed on a Windows host would slip past
- * `path.isAbsolute()` alone. Exported for unit testing.
- */
-export function isAbsoluteCrossPlatform(p: string): boolean {
-  // One spelling, shared with the pre-deploy tree validation, so the per-level
-  // backstop below and the up-front walk cannot disagree about "absolute".
-  return isAbsoluteAssetPath(p);
-}
-
-/**
- * The record-only key a nested row carries while its child still holds a
- * skipped DELETE (issue [#4453](https://github.com/go-to-k/cdkd/issues/4453)).
- *
- * A skipped DELETE keeps its record so the next deploy re-attempts it, but
- * inside a nested child that re-attempt needs the child deploy to RUN, and the
- * parent's diff sees only this row's `TemplateURL` / `Parameters`: with an
- * unchanged child template the row is `NO_CHANGE` and the child's pending
- * DELETE is never retried, so the next deploy exits 0 over it. Recording this
- * key (via `effectiveProperties`) makes the next diff see a REMOVAL on the row,
- * so it updates, the child deploys and retries, and — counted again through
- * the #1989 channel — the run exits 2 until the DELETE lands. It also makes
- * `cdkd diff` preview that re-run. It holds the child's `deleteSkipped`, which
- * includes every descendant's, so each level's row re-runs the level below;
- * a clean re-run records the desired bag again and the key is gone.
- *
- * No CloudFormation property name contains `:`, so the key cannot shadow a
- * real one, and no template can declare it.
- */
-export const PENDING_CHILD_DELETES_KEY = 'cdkd:PendingChildDeletes';
-
-const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
-
-/**
- * The bag to record for a nested row whose child left `pendingChildDeletes`
- * skipped DELETEs, or `undefined` (record the desired bag) when there are none.
- *
- * Shaped exactly like the bag the engine records itself, plus the key: the
- * SDK route's SDK-unwired properties (`Tags`, `TimeoutInMinutes`, ...) are removed
- * FIRST, and the result is then marked same-generation. `properties` is this
- * pass's own resolution of the template, which is the one fact the persist
- * choke point needs to tokenize a short secret in the row's `Parameters` (the
- * engine marks the desired bag it records itself, but never an
- * `effectiveProperties` replacement). The order matters: the engine narrows
- * an `effectiveProperties` bag again, and a narrowing that drops a key returns
- * a NEW, unmarked object; narrowed here, its pass removes nothing and keeps
- * this object. Callers must not pass a STATE record here (a rollback replay):
- * it would vouch for leaves this pass never resolved.
- */
-function recordWithPendingChildDeletes(
-  properties: Record<string, unknown>,
-  pendingChildDeletes: number
-): Record<string, unknown> | undefined {
-  if (pendingChildDeletes <= 0) return undefined;
-  return markSameGenerationBag({
-    ...withoutSdkUnwiredProperties(NESTED_STACK_TYPE, properties),
-    [PENDING_CHILD_DELETES_KEY]: pendingChildDeletes,
-  });
-}
+export { isAbsoluteCrossPlatform } from './nested-stack/template.js';
+export { PENDING_CHILD_DELETES_KEY } from './nested-stack/shared.js';
 
 /**
  * Provider for `AWS::CloudFormation::Stack` — cdkd's recursive nested-stack
@@ -185,7 +67,7 @@ function recordWithPendingChildDeletes(
  * accidentally uses it as a real AWS ARN fails loudly.
  */
 export class NestedStackProvider implements ResourceProvider {
-  private logger = getLogger().child('NestedStackProvider');
+  logger: ConsoleLogger = getLogger().child('NestedStackProvider');
 
   /**
    * Opt out of the deploy engine's outer transient-error retry loop. A
@@ -280,105 +162,16 @@ export class NestedStackProvider implements ResourceProvider {
     ],
   ]);
 
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    const ctx = this.requireContext();
-    this.requireDeployContext(ctx, 'create');
-
-    const childTemplatePath = ctx.nestedTemplates![logicalId];
-    if (!childTemplatePath) {
-      throw markNonRetryable(
-        new Error(
-          `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} ` +
-            `under parent ${displayStackName(ctx.parentStackName)}. Verify the synth output emits ` +
-            `Metadata['aws:asset:path'] on this resource (CDK 2.x cdk.NestedStack does so by default).`
-        )
-      );
-    }
-    this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
-
-    const { template: childTemplate, grandchildTemplates } = this.readChildTemplate(
-      childTemplatePath,
-      ctx.assetRedirect
-    );
-    const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
-    const childRegion = ctx.parentRegion;
-    const childParameters = this.extractParameters(properties);
-
-    const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
-    this.logger.info(
-      `Deploying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
-    );
-
-    let pendingChildDeletes: Awaited<ReturnType<NestedStackProvider['runChildDeploy']>>;
-    try {
-      pendingChildDeletes = await this.runChildDeploy(
-        ctx,
-        logicalId,
-        childStackName,
-        childRegion,
-        childTemplate,
-        childParameters,
-        grandchildTemplates
-      );
-    } catch (error) {
-      // go-to-k/cdkd#4583: the child's journal already holds its rows' marks;
-      // read again here, a grandchild stack sharing this row's logical id
-      // would be journaled as THIS row's resource.
-      clearCreatedBeforeFailure(error);
-      throw error;
-    }
-
-    // The CHILD's region, not the parent's — identical today (see
-    // `childRegion` above) but the two are named apart because the resolver
-    // READS this segment back as the producer region when it re-resolves a
-    // redacted child output (issue #2055).
-    const physicalId = this.synthesizeArn(
-      ctx.accountId,
-      childRegion,
-      ctx.parentStackName,
-      logicalId
-    );
-    try {
-      const childOutputs = await this.readChildOutputsAsAttributes(
-        ctx,
-        childStackName,
-        childRegion
-      );
-      const pendingRecord =
-        context?.replayingState === true
-          ? undefined
-          : recordWithPendingChildDeletes(properties, pendingChildDeletes);
-
-      return {
-        physicalId,
-        attributes: childOutputs.attributes,
-        // Issue #2274: names the recovered outputs so the deploy engine
-        // re-registers them as mask-only needles for this record and for every
-        // parent resource that resolves one.
-        ...(childOutputs.noEchoAttributeNames.length > 0 && {
-          noEchoAttributeNames: childOutputs.noEchoAttributeNames,
-        }),
-        // go-to-k/cdkd#3869: always set (possibly empty), so the engine
-        // rewrites the row's field from this read.
-        secretNamedAttributeNames: childOutputs.secretNamedAttributeNames,
-        ...(pendingRecord && { effectiveProperties: pendingRecord }),
-      };
-    } catch (error) {
-      // go-to-k/cdkd#4583: the child stack is deployed (its own state holds
-      // its resources) and this row would hold nothing, so name it for the
-      // failed-CREATE journal. `delete()` addresses the child by the parent
-      // stack name and logical id; the id is the one a success records.
-      markCreatedBeforeFailure(error, logicalId, resourceType, physicalId);
-      throw error;
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     _resourceType: string,
@@ -386,462 +179,44 @@ export class NestedStackProvider implements ResourceProvider {
     _previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    const ctx = this.requireContext();
-
-    // Issue #3754: a ROLLBACK revert of this row. The desired bag is the
-    // row's previous state record, but the child's previous state is not in
-    // it — and re-deploying `ctx.nestedTemplates[logicalId]`, the CURRENT
-    // synth, over the child's just-saved state diffs NO_CHANGE, so the revert
-    // reported the row restored while the child kept the failed deploy's
-    // configuration. Replay the child's own journal for the run being rolled
-    // back instead. Ahead of `requireDeployContext`: this path reads no
-    // template, so standalone `cdkd rollback` (a destroy-mode context) can
-    // take it too.
-    if (context?.replayingState === true) {
-      return this.revertFromChildJournal(ctx, logicalId, physicalId);
-    }
-
-    this.requireDeployContext(ctx, 'update');
-
-    const childTemplatePath = ctx.nestedTemplates![logicalId];
-    if (!childTemplatePath) {
-      throw markNonRetryable(
-        new Error(
-          `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} on update.`
-        )
-      );
-    }
-    this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
-
-    const { template: childTemplate, grandchildTemplates } = this.readChildTemplate(
-      childTemplatePath,
-      ctx.assetRedirect
-    );
-    const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
-    const childRegion = ctx.parentRegion;
-    const childParameters = this.extractParameters(properties);
-
-    const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
-    this.logger.info(
-      `Updating nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
-    );
-
-    // The child's own DeployEngine handles CREATE / UPDATE / DELETE per
-    // resource based on its diff against the child's state — so calling
-    // `deploy()` here naturally covers add / remove / mutate inside the
-    // child. The parent's physicalId (synthesized ARN) is stable as long
-    // as the parent stack name + nested logical id don't change.
-    const pendingChildDeletes = await this.runChildDeploy(
-      ctx,
+    return update.call(
+      this,
       logicalId,
-      childStackName,
-      childRegion,
-      childTemplate,
-      childParameters,
-      grandchildTemplates
-    );
-    const pendingRecord = recordWithPendingChildDeletes(properties, pendingChildDeletes);
-
-    const updatedOutputs = await this.readChildOutputsAsAttributes(
-      ctx,
-      childStackName,
-      childRegion
-    );
-
-    return {
       physicalId,
-      wasReplaced: false,
-      attributes: updatedOutputs.attributes,
-      // Issue #2274 — see `create()`.
-      ...(updatedOutputs.noEchoAttributeNames.length > 0 && {
-        noEchoAttributeNames: updatedOutputs.noEchoAttributeNames,
-      }),
-      // go-to-k/cdkd#3869 — see `create()`.
-      secretNamedAttributeNames: updatedOutputs.secretNamedAttributeNames,
-      ...(pendingRecord && { effectiveProperties: pendingRecord }),
-    };
+      _resourceType,
+      properties,
+      _previousProperties,
+      context
+    );
   }
 
-  /**
-   * The rollback arm of {@link update} (issue #3754): replay the child's
-   * journal segments for the parent run being rolled back. The run comes from
-   * {@link getNestedRevertRun}, bound by both rollback drivers; its ABSENCE is
-   * refused rather than guessed, because selecting segments without it could
-   * replay another run's changes over a live child.
-   *
-   * Returns no `attributes`: the rollback executor restores this row's
-   * previous record wholesale, previous `Outputs.<Key>` included. When the
-   * child replay skipped an op, the result is `partial`: the executor then
-   * reports the row as restored with a remainder instead of cleanly (the
-   * drivers count the skips as warnings through the run scope).
-   */
-  private async revertFromChildJournal(
+  revertFromChildJournal(
     ctx: NestedStackProviderContext,
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
-    const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
-    const run = getNestedRevertRun();
-    if (!run) {
-      throw markNonRetryable(
-        new Error(
-          `Cannot revert nested stack ${displayStackName(childStackName)}: the revert was requested ` +
-            `outside a rollback run, so there is no deploy run to select its journal segments by. ` +
-            `The child was NOT reverted.`
-        )
-      );
-    }
-    this.logger.info(
-      safeMsg`Reverting nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}) from its rollback journal`
-    );
-    const { warnings } = await revertNestedChildFromJournal({
-      ctx,
-      logicalId,
-      childStackName,
-      region: ctx.parentRegion,
-      run,
-      logger: this.logger,
-      // go-to-k/cdkd#4174: the reverting replay's producer regions, bound by
-      // the rollback executor. None bound reads as incomplete in the child.
-      inheritedProducerRegions: getCurrentProducerRegions()?.(),
-    });
-    if (warnings > 0) {
-      return {
-        physicalId,
-        wasReplaced: false,
-        outcome: 'partial',
-        // `plainOrDescribed`, not `displaySafe`: a skip or partial reason is
-        // shown beside a flag or a `cdkd` command, and the child name holds a
-        // state.json logical id, whose words would otherwise be the command a
-        // pasted clause runs (go-to-k/cdkd#4265).
-        reason: `nested stack ${plainOrDescribed(childStackName, 'stack name')} skipped ${warnings} operation(s) of its revert`,
-      };
-    }
-    return { physicalId, wasReplaced: false };
+    return revertFromChildJournal.call(this, ctx, logicalId, physicalId);
   }
 
-  async delete(
+  delete(
     logicalId: string,
     _physicalId: string,
     _resourceType: string,
     _properties?: Record<string, unknown>,
     deleteContext?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    const ctx = this.requireContext();
-    const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
-    const childRegion = ctx.parentRegion;
-
-    // Treat a missing child state file as idempotent success — the child
-    // was never deployed or was already destroyed out-of-band. Mirrors
-    // every other provider's "not found = already gone" delete semantic.
-    //
-    // Load-bearing assumption: `S3StateBackend.getState` returns `null`
-    // ONLY on a 404 (NoSuchKey) and throws on every other failure class
-    // (auth / IAM / network / 5xx). A future refactor that swallows those
-    // error classes and returns `null` would silently mask real failures
-    // here and leave orphan AWS resources behind — re-verify the backend
-    // contract before changing its null-return semantics.
-    const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
-    if (!childStateData) {
-      this.logger.debug(
-        `Nested stack ${displaySafe(childStackName)} has no state — treating delete as idempotent success.`
-      );
-      return;
-    }
-
-    // ABOVE the count, for the reason `runDestroyForStack`'s own guard is
-    // (issue go-to-k/cdkd#3161). That runner refuses an unreadable `resources`
-    // bag, but this line reads the CHILD's bag one call EARLIER — so a child
-    // record holding `null` or no `resources` at all still died here on the
-    // bare `TypeError` the guard exists to remove, and a `[]` / number /
-    // boolean logged `0 resource(s)` before the runner got to say otherwise.
-    // Same helper, so the child's refusal reads identically to a top-level
-    // one — and the same account flags the child's runner is handed below, so
-    // its pasteable commands read the bucket this run read (go-to-k/cdkd#3909).
-    refuseMalformedResourcesForDestroy(
-      childStateData.state,
-      childStackName,
-      childRegion,
-      runAccountOf(ctx)
-    );
-    const resourceCount = Object.keys(childStateData.state.resources).length;
-    this.logger.info(
-      `Destroying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
-    );
-
-    // Switch the ALS context so any grandchildren the child contains
-    // resolve against the right "parent" (the child) when their own
-    // NestedStackProvider.delete fires from inside runDestroyForStack.
-    const childCtx: NestedStackProviderContext = {
-      ...ctx,
-      parentStackName: childStackName,
-      parentRegion: childRegion,
-      nestedTemplates: undefined,
-      // A row's report slot never crosses a nesting boundary (issue #1989).
-      childUnaddressed: undefined,
-    };
-
-    // go-to-k/cdkd#4682: a `cdkd destroy` holding the parent's template
-    // re-resolves the child's NoEcho coordinates from the child's template
-    // and the parameters this row hands it. Absent on a deploy's removal.
-    const childNoEchoReresolver =
-      deleteContext?.noEchoReresolver === undefined
-        ? undefined
-        : await deleteContext.noEchoReresolver.forNestedChild(
-            logicalId,
-            {
-              properties: _properties,
-              noEchoLeaves: deleteContext.recordedNoEchoLeaves,
-              values: deleteContext.noEchoDeleteValues,
-            },
-            childStackName,
-            (templatePath) => {
-              const { template, grandchildTemplates } = this.readChildTemplate(templatePath);
-              return { template, nestedTemplates: grandchildTemplates };
-            },
-            (properties) => this.extractParameters(properties)
-          );
-
-    const childResult = await withNestedStackContext(childCtx, () =>
-      runDestroyForStack(childStackName, childStateData.state, {
-        stateBackend: ctx.stateBackend,
-        lockManager: ctx.lockManager,
-        providerRegistry: ctx.providerRegistry,
-        baseAwsClients: ctx.awsClients,
-        baseRegion: childRegion,
-        // `getState` adopted the KEY's region into the child record above, so
-        // this is the only place the divergence is still visible; the runner
-        // refuses on it when the child still lists resources (issue #3328).
-        // A cascading destroy is the case that most needs it: the parent has
-        // already confirmed, and nothing else asks about this child.
-        ...(childStateData.divergentBodyRegion !== undefined && {
-          divergentBodyRegion: childStateData.divergentBodyRegion,
-        }),
-        stateBucket: ctx.stateBucket,
-        // Parent has already confirmed the cascading destroy — children
-        // are not separately confirmable per design §7.
-        skipConfirmation: true,
-        ...(ctx.exportIndexStore && { exportIndexStore: ctx.exportIndexStore }),
-        ...(ctx.destroyOptions?.profile && { profile: ctx.destroyOptions.profile }),
-        ...(ctx.destroyOptions?.statePrefix !== undefined && {
-          statePrefix: ctx.destroyOptions.statePrefix,
-        }),
-        ...(deleteContext?.removeProtection === true && { removeProtection: true }),
-        // go-to-k/cdkd#4150: forwarded ONLY from this delete's own context,
-        // which a top-level destroy sets and a deploy's nested-stack removal
-        // never does (its template-removal DELETE runs after every CREATE).
-        // The parent's producer regions go down with it: a child receives a
-        // parent's cross-region value only as a Parameter, which its own
-        // state does not record as a read. go-to-k/cdkd#4887: so does the
-        // marker that those regions miss an ancestor's (this child was
-        // destroyed on its own), or the grandchild would read them as complete.
-        ...(deleteContext?.resolveSecretDerivedPrincipals !== undefined && {
-          resolveSecretDerivedPrincipals: {
-            inheritedProducerRegions:
-              deleteContext.resolveSecretDerivedPrincipals.importedProducerRegions,
-            ...(deleteContext.resolveSecretDerivedPrincipals.producerRegionsIncomplete === true && {
-              producerRegionsIncomplete: true,
-            }),
-          },
-        }),
-        // go-to-k/cdkd#2115: likewise forwarded ONLY from this delete's own
-        // context. A nested child of a real stack destroy inherits it; one a
-        // deploy removes stays on the deploy-side warn-and-drop, since
-        // CloudFormation ignores delete failures in an update's cleanup phase.
-        ...(deleteContext?.stackDestroy === true && { stackDestroy: true }),
-        // go-to-k/cdkd#2346: only `cdkd state destroy` sets it, so the child's
-        // earlier record versions go with the parent's on that path alone.
-        ...(ctx.destroyOptions?.purgeStateHistory === true && { purgeStateHistory: true }),
-        ...(childNoEchoReresolver !== undefined && { noEchoReresolver: childNoEchoReresolver }),
-        // `--skip-final-snapshot` reaches a whole-nested-stack removal from
-        // BOTH directions: `cdkd destroy` / `state destroy` thread it via
-        // ctx.destroyOptions, while `cdkd deploy` (template-removal delete of
-        // the nested-stack row) only sets ctx.options (the parent's
-        // DeployEngineOptions) — reviewer catch on issue #1352.
-        ...((ctx.destroyOptions?.skipFinalSnapshot === true ||
-          ctx.options?.skipFinalSnapshot === true) && { skipFinalSnapshot: true }),
-        ...(ctx.destroyOptions?.resourceWarnAfterMs !== undefined && {
-          resourceWarnAfterMs: ctx.destroyOptions.resourceWarnAfterMs,
-        }),
-        ...(ctx.destroyOptions?.resourceTimeoutMs !== undefined && {
-          resourceTimeoutMs: ctx.destroyOptions.resourceTimeoutMs,
-        }),
-        ...(ctx.destroyOptions?.resourceWarnAfterByType && {
-          resourceWarnAfterByType: ctx.destroyOptions.resourceWarnAfterByType,
-        }),
-        ...(ctx.destroyOptions?.resourceTimeoutByType && {
-          resourceTimeoutByType: ctx.destroyOptions.resourceTimeoutByType,
-        }),
-      })
-    );
-
-    // Issue #1752: the child runner reports a resource it could NOT address
-    // (no AWS call issued, the resource may still be alive) as `skippedCount`.
-    // Swallowing that here re-creates the very mis-report the issue is about,
-    // one level up: the PARENT would print `✓ <Child> (AWS::CloudFormation::Stack)
-    // deleted`, drop the child's row from parent state, and exit 0 — while the
-    // child's own state.json is sitting there preserved, describing a live
-    // resource nobody will ever look for again. Propagating the skip makes the
-    // parent preserve its own state too, so the whole tree stays traceable.
-    //
-    // `interrupted` (a graceful SIGINT mid-child, issue #816) is the SAME
-    // data-loss shape reached through a different field: the child stops early
-    // and preserves its own state.json listing resources that still exist,
-    // while the parent — with no signal — prints `✓ <Child> deleted`, drops the
-    // child's row, and exits 0. It is reported as a skip for the same reason:
-    // the child stack was NOT destroyed, so the parent's record of it must
-    // survive. A skip rather than a throw is right for it because NOTHING
-    // failed — the run is already ending non-zero (the runner sets
-    // `interrupted` on the parent too, and both CLIs raise PartialFailureError
-    // for it), so this changes what SURVIVES, not whether the command fails,
-    // and an interrupt is a user-requested stop rather than a failure.
-    //
-    // `errorCount` is the THIRD field saying "this child stack is NOT gone",
-    // and it is the only one whose honest answer is a THROW rather than a skip
-    // (issue [#1777](https://github.com/go-to-k/cdkd/issues/1777)). A resource
-    // inside the child was ATTEMPTED and FAILED — so the parent's
-    // `AWS::CloudFormation::Stack` row must FAIL too, exactly as a failed
-    // delete of any other resource type does. Reporting it as a skip would be
-    // a lie in the other direction (a skip means no AWS call was issued), and
-    // swallowing it was the pre-#1777 behavior: the parent printed
-    // `✓ <Child> deleted`, dropped the child's row AND — with its own
-    // `errorCount` still 0 — deleted the parent's `state.json` and the exports
-    // index outright, exiting 0 over a child whose preserved state.json
-    // describes live resources. Throwing keeps the row, preserves the parent's
-    // state, and surfaces a non-zero exit.
-    //
-    // This is deliberately a BEHAVIOR CHANGE, and it reaches BOTH callers of
-    // `delete`. A `{ outcome: 'skipped' }` return value reaches both too since
-    // issue #1762 — but it is deliberately WEAKER there (the deploy's
-    // template-removal DELETE warns and keeps the record), whereas a child that
-    // FAILED must fail its parent's row on either path:
-    //   - `cdkd destroy` / `cdkd state destroy` — the parent's nested-stack row
-    //     now fails (exit 2) where it previously reported the child deleted;
-    //   - `cdkd deploy` — REMOVING a nested stack from the template routes the
-    //     row through the deploy engine's DELETE path, so a child that fails to
-    //     destroy now fails the DEPLOY (and triggers its rollback) where it
-    //     previously recorded the row as deleted and carried on.
-    // The deploy-side reach is the wider half of the blast radius; it is the
-    // same correctness argument, but it turns a silent success into a failed
-    // deploy rather than a failed destroy.
-    // Issue #1849: this message interpolates `childStackName`
-    // (`<parent>~<childLogicalId>`), which is fully user-controlled, and
-    // `retryable-errors.ts` classifies by SUBSTRING —
-    // `DependencyViolation` being a whitespace-free entry in
-    // `RETRYABLE_ERROR_MESSAGE_PATTERNS` (it was the ONLY one until issue
-    // #2116 added the name-cooldown error CODES `QueueDeletedRecently` /
-    // `StateMachineDeleting`, so the hazard is wider now, not narrower), a
-    // nested stack whose logical id
-    // merely CONTAINS it makes a cdkd-authored message look transient. The
-    // remedy is `markNonRetryable`, which is consulted BEFORE any message
-    // heuristic, and BOTH arms carry it (go-to-k/cdkd#1889):
-    //
-    //  - Interrupted: the child stopped early because the user pressed
-    //    Ctrl-C, and a retry would start a FRESH child destroy with the
-    //    interrupt forgotten (`destroy-runner.ts` reads `lock.interrupted`
-    //    from a per-INVOCATION stack-lock guard) — resuming work the user
-    //    just aborted.
-    //  - NOT interrupted: a whole-child re-destroy COULD heal a resource that
-    //    was still draining, but no caller retries this provider's `delete()`
-    //    — it sets `disableOuterRetry`, so `destroy-runner.ts` computes
-    //    `maxAttempts = 0` and `DeployEngine.withRetry` short-circuits — so
-    //    leaving it unmarked bought no retry. What it DID buy was the
-    //    "already deleted" misread: both delete callers drop the state row
-    //    when an UNMARKED message contains `NotFoundException` / `not found`,
-    //    and the child name interpolated here is template-controlled (a
-    //    child logical id `HandleNotFoundException` dropped the parent's row
-    //    while the child state survived). The marker is what those guards
-    //    read, so it closes that hole without touching them.
-    if (childResult.errorCount > 0) {
-      // The run's account flags (go-to-k/cdkd#4648), so the pasted command
-      // reads the child record in the bucket this destroy read.
-      const account = runAccountOf(ctx);
-      const accountClause = withheldAccountClause(account, 'the command below prints').trimEnd();
-      const inspect = pasteableCommand('cdkd state show', [
-        { value: childStackName, hole: 'stack', opts: { plainIdent: true } },
-        ...accountArgs(account),
-      ]);
-      const failure = new Error(
-        nestedStackChildFailureMessage(
-          // Both built HERE because the message module is a leaf by design.
-          // The child name sits beside a labelled line, so the prose names it
-          // and the command carries it only when it is a plain identifier —
-          // a padded logical id could otherwise wrap into a counterfeit
-          // `Inspect it with:` row (go-to-k/cdkd#3759).
-          plainOrDescribed(childStackName, 'stack name'),
-          childResult.errorCount,
-          childResult.skippedCount,
-          childResult.interrupted,
-          inspect.command,
-          withheldTargetClause(inspect, 'stack', 'cdkd state show', "The child stack's name") +
-            (accountClause === '' ? '' : ` ${accountClause}`)
-        )
-      );
-      throw markNonRetryable(failure);
-    }
-
-    // go-to-k/cdkd#4738: a skip that is a journaled orphan keeps no record, so
-    // a child whose only skips are those deletes its own state. On a stack
-    // destroy its row is gone, not kept: report it deleted, the orphans named
-    // in `leftInPlace` and their count in the destroy runner's slot, so the
-    // run still exits 2. Gated on the runner's own `stateDeleted`, never on a
-    // re-derivation of its preserve decision, so the row cannot be dropped
-    // while the child's state survives. A deploy's removal and a rollback
-    // keep the `skipped` below: their callers neither count a slot on a
-    // delete nor print `leftInPlace`, and their re-run finds the child state
-    // gone, a success.
-    const orphanSkips = childResult.journaledOrphanSkips;
-    if (deleteContext?.stackDestroy === true && childResult.stateDeleted && orphanSkips > 0) {
-      // A `stackDestroy: true` caller must bind this slot
-      // (`collectNestedChildUnaddressed`, as the destroy runner does around
-      // every delete): without it the count is not surfaced and the run can
-      // exit 0 over the resources left in AWS.
-      const slot = ctx.childUnaddressed;
-      if (slot) slot.last = { deleteSkipped: orphanSkips, updatePartial: 0 };
-      return {
-        outcome: 'deleted',
-        leftInPlace:
-          `nested stack ${plainOrDescribed(childStackName, 'stack name')} left ${orphanSkips} ` +
-          `resource(s) a failed deploy created in AWS`,
-      };
-    }
-
-    if (childResult.skippedCount > 0 || childResult.interrupted) {
-      const causes: string[] = [];
-      if (childResult.skippedCount > 0) {
-        causes.push(`skipped ${childResult.skippedCount} resource(s)`);
-      }
-      if (childResult.interrupted) causes.push('was interrupted');
-      return {
-        outcome: 'skipped',
-        // As the partial reason above (go-to-k/cdkd#4265).
-        reason: `nested stack ${plainOrDescribed(childStackName, 'stack name')} ${causes.join(' and ')}`,
-      };
-    }
+    return deleteImpl.call(this, logicalId, _physicalId, _resourceType, _properties, deleteContext);
   }
 
-  async getAttribute(
+  getAttribute(
     _physicalId: string,
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // The intrinsic-function resolver fast-paths `Fn::GetAtt: [<NestedStack>, 'Outputs.<Key>']`
-    // via the resource's recorded `attributes['Outputs.<Key>']` (populated in
-    // create / update). Reaching this method means the resolver fell through
-    // the flat-key lookup — only happens when the user references an
-    // attribute name cdkd did not record. Surface a clear error rather
-    // than returning undefined silently.
-    throw markNonRetryable(
-      new Error(
-        `AWS::CloudFormation::Stack: attribute ${displayIdent(attributeName)} is not in the recorded Outputs map. ` +
-          `Only 'Outputs.<Key>' references to declared Output names on the child template are supported.`
-      )
-    );
+    return getAttribute.call(this, _physicalId, _resourceType, attributeName);
   }
 
-  // ----- private helpers -----
-
-  private async runChildDeploy(
+  runChildDeploy(
     parentCtx: NestedStackProviderContext,
     logicalId: string,
     childStackName: string,
@@ -850,218 +225,19 @@ export class NestedStackProvider implements ResourceProvider {
     childParameters: Record<string, string>,
     grandchildTemplates: Record<string, string>
   ): Promise<number> {
-    // Issue #1903. The parent resolved this row's `Parameters` block before
-    // calling us, so `childParameters` above holds PLAINTEXT for any parameter
-    // fed by a `{{resolve:secretsmanager:...}}` / SecureString `{{resolve:ssm:...}}`
-    // reference — and the child's template spells the consumption as
-    // `{Ref: <ParamName>}`, an intrinsic OBJECT, so nothing in the child's own
-    // resolution can ever record the plaintext -> expression pair its state-save
-    // choke point redacts from. The parent's bag for THIS resource is exactly
-    // that set of pairs; hand it down as the child engine's seed.
-    //
-    // TWO binders, not one (issue
-    // [#2086](https://github.com/go-to-k/cdkd/issues/2086)): the deploy engine
-    // around its provider CREATE / UPDATE sites, and `rollback-executor.ts`
-    // around its own, where `resolveReplayProps` has just re-resolved the
-    // journal's `{{resolve:...}}` back to plaintext. A rollback reaches this
-    // method only through `create()` — a reverse-replacement replay re-creating
-    // this row — since a revert of the row passes `UpdateContext.replayingState`
-    // and `update()` returns through the journal-replay arm (issue #3754).
-    //
-    // `undefined` whenever no binder is on the stack (tests, and any future
-    // non-deploy driver), which the child engine reads as "nothing to inherit"
-    // — the pre-#1903 behaviour. Of the rollback drivers, only the in-process
-    // auto-rollback's own rows get here, in its deploy-mode context. Standalone `cdkd rollback`
-    // and a nested child's journal replay (`nested-child-journal.ts`) never
-    // do: both contexts carry no templates, so a re-create throws at
-    // `requireDeployContext`.
-    //
-    // SCOPED PER RESOURCE, not per stack. What the child engine does with this
-    // map is record a pair into a resource's own bag at the moment that
-    // resource's `{Ref: <Param>}` resolves to a value carrying the plaintext —
-    // NOT pre-seed every resource's bag, which is what the first cut did and
-    // what issue [#2087](https://github.com/go-to-k/cdkd/issues/2087) is about.
-    //
-    // Never enumerate or log this map's KEYS: they are secret plaintext. It is
-    // passed on and nothing else.
-    const inheritedSecrets = getCurrentResourceSecrets();
-    const passedClasses = passedParameterClassesOf(inheritedSecrets);
-    const childEngine = new DeployEngine(
-      parentCtx.stateBackend,
-      parentCtx.lockManager,
-      parentCtx.dagBuilder!,
-      parentCtx.diffCalculator!,
-      parentCtx.providerRegistry,
-      {
-        // THIS SPREAD IS THE PARENT→CHILD OPTION BOUNDARY. Anything the parent
-        // validated against ITS OWN template / state / live AWS arrives here
-        // unvalidated for the child, so an option carrying user-named
-        // identifiers must be scoped to the stack it was validated against
-        // rather than re-matched blind (issue
-        // [#2567](https://github.com/go-to-k/cdkd/issues/2567), where
-        // `--recreate-via-*` targets were a bare id set and matched a child
-        // resource that merely SHARED a logical id, skipping the child's
-        // stateful guard).
-        //
-        // Which `DeployEngineOptions` members name a stack, or a resource in
-        // one, is a judgment recorded HERE; what
-        // `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`
-        // does is refuse to let a member reach this spread without that
-        // judgment having been made — it is a membership fence and cannot
-        // decide scoping for you. No count is written in this paragraph,
-        // because a count is the part that rots.
-        //
-        // `recreateTargets`, `pinCcApi`, `onCurrentStateLoaded` and
-        // `onFirstDeployLeftNoRecord` (go-to-k/cdkd#4705) SELF-SCOPE,
-        // so inheriting them is inert: the first two match only while deploying
-        // their own `stackName` (`pinCcApi` gained that shape in issue #2719
-        // for exactly this reason -- it started as a bare logical-id Set), the
-        // third (the prefix-migration gate) and the fourth (the registry
-        // release) return early on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
-        // and CDK's stack-name rule bars `~`, so neither can match in a
-        // descendant. `parentStackInfo` and `eventRecorder` are stack-named but
-        // are not decisions ABOUT a stack: the first is overwritten a few lines
-        // below (it must describe THIS child), and the second carries the
-        // top-level run's stack name because a nested child's resource events
-        // belong to the parent's run by design.
-        //
-        // Two more things cross this boundary deliberately unscoped, and this
-        // comment is not a claim that they are scoped. Neither picks out a
-        // particular resource, which is why neither appears in the paragraph
-        // above — whose subject is an option naming a specific stack, or one
-        // resource in one. The consent flags name no resource at all:
-        // `forceStatefulRecreation` (documented in `docs/cli-deploy-safety.md`
-        // as clearing the guard for every target in the RUN), `replace`
-        // (documented there as a STACK-WIDE opt-in that fires wherever an
-        // update hard-rejects), and `skipFinalSnapshot` (`docs/cli-destroy.md`).
-        // And `parentCtx.providerRegistry`, one argument above this bag,
-        // carries the `--allow-unsupported-types` /
-        // `--allow-unsupported-properties` allow-lists, keyed by resource TYPE
-        // and `Type:Property` -- a per-type opt-in whose meaning does not
-        // change between stacks. What #2567 was about is a per-STACK identifier
-        // deciding an action, and there are now two: `recreateTargets` (a
-        // destructive one) and `pinCcApi` (issue #2719 -- a routing one, which
-        // is quieter and therefore easier to get wrong: a pin that matches in
-        // the wrong stack produces no output at all).
-        ...(parentCtx.options ?? {}),
-        // Always overwrite (never spread-inherit) parameters: the parent's
-        // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,
-        // and inheriting it would silently leak into the child if the child
-        // template happens to declare a same-named parameter the user did
-        // not intend to set. The child's own parameters come from
-        // `properties.Parameters` on its `AWS::CloudFormation::Stack`
-        // resource — that's the authoritative source.
-        parameters: childParameters,
-        // go-to-k/cdkd#4705: the cross-prefix destructive-plan check is the
-        // TOP-LEVEL stack's, taken before the parent's first provider call
-        // (a nested-stack row added or updated in the parent's plan triggers
-        // it). A child running it mid-parent-deploy would refuse after the
-        // parent changed things.
-        onDestructivePlan: undefined,
-        // `crossPrefixHolder` IS inherited (go-to-k/cdkd#4705 review R6-2): a
-        // child's creates can be handed resources its twin under another
-        // prefix records (`Parent~Child`), and the child's AUTOMATIC rollback
-        // asks it, by the child's own name, before deleting one. A child never
-        // settles a journal, so that is its only use there.
-        // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding
-        // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
-        // child's lines and is carried into its consuming resources' bags.
-        ...(inheritedSecrets && hasMaskableValues(inheritedSecrets) && { inheritedSecrets }),
-        // go-to-k/cdkd#4819: the physical ids the row read, ungated: a row
-        // passing only `Ref Queue` records a copy and no maskable value, and
-        // a child resource spelling the secret itself must still keep it.
-        // Always set, so a grandchild never inherits its grandparent's.
-        inheritedPhysicalNameCopies: inheritedPhysicalNameCopiesOf(inheritedSecrets),
-        // State schema v12 (go-to-k/cdkd#4852): the provenance the row's
-        // resolution recorded, frozen now. Always set, so a grandchild never
-        // inherits its grandparent's.
-        inheritedReferenceProvenance: snapshotPassProvenance(inheritedSecrets),
-        // go-to-k/cdkd#4543: how the parent classified each value it passes
-        // (recorded on the same bag), so the child hashes a clean one into a
-        // masked property's input fingerprint and keeps the rest as written.
-        ...(passedClasses && { passedParameterClasses: passedClasses }),
-        // go-to-k/cdkd#4043 (review round 10): which child parameters the row
-        // fills from a `NoEcho` source, read off the same bag but NOT gated
-        // on `hasMaskableValues`: a short value or a Number leaves the bag
-        // otherwise empty. Always set, so a grandchild never inherits it.
-        passedNoEchoParameters: passedNoEchoParametersOf(inheritedSecrets),
-        // go-to-k/cdkd#4174: the parent engine's producer regions, for the
-        // child's own in-process rollback. Always overwritten: none bound
-        // (no parent engine on the stack) reads as incomplete in the child.
-        inheritedProducerRegions: getCurrentProducerRegions(),
-        parentStackInfo: {
-          parentStack: parentCtx.parentStackName,
-          parentLogicalId: logicalId,
-          parentRegion: parentCtx.parentRegion,
-        },
-      },
+    return runChildDeploy.call(
+      this,
+      parentCtx,
+      logicalId,
+      childStackName,
       childRegion,
-      parentCtx.exportIndexStore
+      childTemplate,
+      childParameters,
+      grandchildTemplates
     );
-
-    const childCtx: NestedStackProviderContext = {
-      ...parentCtx,
-      parentStackName: childStackName,
-      parentRegion: childRegion,
-      nestedTemplates: grandchildTemplates,
-      // The PARENT row's slot never reaches the child: the child engine binds
-      // its own per row, and a grandchild writing straight into this one would
-      // be counted again through the child's `DeployResult` below.
-      childUnaddressed: undefined,
-    };
-
-    const childResult = await withNestedStackContext(childCtx, () =>
-      childEngine.deploy(childStackName, childTemplate)
-    );
-    // Issue #1989: hand what the child left unaddressed to the parent engine,
-    // which adds it to this run's counters -- the summary rows, `RunCounts`
-    // and the exit code. `childResult` already carries the grandchildren's.
-    // Should one row ever run the child twice (this provider sets
-    // `disableOuterRetry`, so today it does not), the two counters differ: a
-    // skipped DELETE keeps its record and is counted again by the re-run, so
-    // the LAST report holds it; an orphaned predecessor is untracked, so the
-    // re-run diffs that row NO_CHANGE and reports 0 -- it must ADD, or the
-    // survivor drops out of the exit code.
-    const slot = parentCtx.childUnaddressed;
-    if (slot) {
-      slot.last = {
-        deleteSkipped: childResult.deleteSkipped,
-        updatePartial: (slot.last?.updatePartial ?? 0) + childResult.updatePartial,
-      };
-    }
-    // Issue #4453: the skipped DELETEs (this child's and every descendant's)
-    // that the next deploy must re-attempt. See `PENDING_CHILD_DELETES_KEY`.
-    return childResult.deleteSkipped;
   }
 
-  /**
-   * The child's outputs, as `Outputs.<Key>` attributes for the parent's
-   * `Fn::GetAtt` — plus the subset whose plaintext this run had to RECOVER
-   * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
-   *
-   * WHY THE RECOVERY IS HERE. This method reads the child's PERSISTED state,
-   * and since #2274 an output whose value resolved a `NoEcho` custom resource's
-   * `Data` is persisted as the redaction mask. Handing the parent `***` would
-   * make the FIRST deploy of any such parent refuse — a template that deployed
-   * before the feature — so where the child engine masked that output moments
-   * ago IN THIS PROCESS, the plaintext is still available (see
-   * `recoverMaskedOutput`) and is what the parent gets. The reported names are
-   * what tells the deploy engine to re-register those values as MASK-ONLY
-   * needles, so the parent's own record and every parent resource that consumes
-   * one still persist `***`.
-   *
-   * PER ATTRIBUTE, not for the bag: a child typically exports one sensitive
-   * output among several ordinary ones, and declaring the whole bag would mask
-   * every unrelated output into the parent's state and into any parent resource
-   * that reads one.
-   *
-   * A mask this run did NOT produce (the child was deployed by an earlier run
-   * and its custom resource was `NO_CHANGE`, so no handler ran) is left as the
-   * mask, and the resolver refuses the consumer rather than writing `***` to
-   * AWS. That refusal is the feature's stated cost; recovering here removes it
-   * for the in-run case only.
-   */
-  private async readChildOutputsAsAttributes(
+  readChildOutputsAsAttributes(
     ctx: NestedStackProviderContext,
     childStackName: string,
     childRegion: string
@@ -1070,503 +246,65 @@ export class NestedStackProvider implements ResourceProvider {
     noEchoAttributeNames: string[];
     secretNamedAttributeNames: string[];
   }> {
-    const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
-    if (!childStateData) {
-      throw markNonRetryable(
-        new Error(
-          `Child stack state ${displayStackName(childStackName)} not found after deploy — NestedStackProvider invariant violated.`
-        )
-      );
-    }
-    // AT THE LOAD, above the rebuild it protects (issue #3207). The child's
-    // record is UNCHECKED data — `parseStateBody` validates the root object and
-    // the schema version and nothing inside — so `outputs` can hold a string, a
-    // list, a number, a boolean or `null`, and `Object.entries` walks the first
-    // two as readily as a map. Both reads below would then fabricate: a
-    // six-character bag becomes six `Outputs.<n>` attributes, which the parent's
-    // deploy PERSISTS into the parent's own record and every `Fn::GetAtt`
-    // against this nested stack resolves into live AWS calls.
-    //
-    // REFUSE rather than repair even though this file calls no `saveState`:
-    // what it returns is written by its CALLER, so repairing would put a
-    // well-formed fabricated attribute set into the parent's record with
-    // nothing left to say the child was damaged.
-    refuseMalformedNestedChildOutputs(
-      childStateData.state,
-      childStackName,
-      childRegion,
-      // The run's account flags (go-to-k/cdkd#4159), as the delete path's.
-      runAccountOf(ctx)
-    );
-    const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
-    // go-to-k/cdkd#4849: an output holding a child resource's physical id (an
-    // ARN `!Ref` / `Fn::GetAtt` exported up) is a copy of that id, which the
-    // child's record stores in plaintext. The row's bag records it as one for
-    // its ATTRIBUTES only (`properties` keep their reference form), so the
-    // row's own record keeps it as written even when the row passed the
-    // child a `NoEcho` value the id embeds, and a parent `Fn::GetAtt` reader
-    // of it still resolves.
-    const rowSecrets = getCurrentResourceSecrets();
-    // State schema v12 (go-to-k/cdkd#4852): each `Outputs.<Key>` token's
-    // provenance is the child's own record of that output, carried into the
-    // row's bag on the `read` route; the row persists it beside the attribute.
-    if (rowSecrets !== undefined) {
-      for (const outputKey of Object.keys(childStateData.state.outputs ?? {})) {
-        const entries = outputReferenceProvenanceOf(childStateData.state, outputKey);
-        if (entries === undefined) continue;
-        for (const [token, entry] of Object.entries(entries)) {
-          recordReferenceProvenanceEntry(rowSecrets, token, entry, 'read');
-        }
-      }
-    }
-    if (rowSecrets !== undefined) {
-      const childResources = childStateData.state.resources;
-      const ids =
-        childResources !== null && typeof childResources === 'object'
-          ? Object.values(childResources as Record<string, { physicalId?: unknown } | null>)
-              .map((record) => record?.physicalId)
-              .filter((id): id is string => typeof id === 'string' && id !== '')
-          : [];
-      for (const value of Object.values(attributes)) {
-        if (typeof value !== 'string') continue;
-        for (const id of ids) if (value.includes(id)) recordAttributeIdCopy(rowSecrets, id);
-      }
-    }
-    const noEchoAttributeNames: string[] = [];
-    // The identity the child was deployed with, which is this process's
-    // current one (go-to-k/cdkd#3691).
-    const identity = credentialFingerprint(ambientCredentialConfig());
-    for (const [outputKey, persisted] of Object.entries(childStateData.state.outputs ?? {})) {
-      if (!carriesSecretMask(persisted)) continue;
-      const recovered = recoverMaskedOutput(identity, childStackName, childRegion, outputKey);
-      if (recovered === undefined) continue;
-      const attributeName = this.outputAttributeName(outputKey);
-      attributes[attributeName] = recovered;
-      noEchoAttributeNames.push(attributeName);
-    }
-    // go-to-k/cdkd#3869: the outputs holding a child resource's name taken
-    // from a secret (one its provider rewrote or case-folded, which no
-    // recorded plaintext spells). Judged HERE, from the child's records this
-    // read already holds, and persisted on the row as KEYS, since a later
-    // deploy where the row is NO_CHANGE never runs this method and must not
-    // re-read the child's state to learn it. The row's bag holds what the
-    // parent passed (a pre-v11 child record's plaintext is judged with it).
-    // Known bound: a pre-v11 child record holding a value of the CHILD's own
-    // `NoEcho` parameter (its `Default`, not parent-passed) in plaintext is not
-    // judged here; a post-v11 one stores `***` and is. Nor are the values each
-    // child record STORED where a `NoEcho` parameter served it (the deploy's
-    // per-record judge, `recordedNoEchoValuesOf`): judging with them would need
-    // the child's template here.
-    const childResources = childStateData.state.resources;
-    const secretNamedAttributeNames =
-      childResources !== null && typeof childResources === 'object'
-        ? secretNamedAttributeNamesOf(attributes, childResources, rowSecrets)
-        : [];
-    return { attributes, noEchoAttributeNames, secretNamedAttributeNames };
+    return readChildOutputsAsAttributes.call(this, ctx, childStackName, childRegion);
   }
 
-  private requireContext(): NestedStackProviderContext {
-    const ctx = getCurrentNestedStackContext();
-    if (!ctx) {
-      // Issue #1849: the OTHER deterministic refusal `delete()` can raise, and
-      // the one whose terminality is a matter of IMPOSSIBILITY rather than of
-      // policy — which is what distinguishes it from the interrupted arm marked
-      // above. There the retry COULD run; it is marked because re-entering a
-      // destroy the user just aborted is the wrong thing to do. Here it could
-      // not succeed at all — the store is read
-      // from AsyncLocalStorage, and a retry runs inside the SAME async
-      // context as the first attempt, so a caller that did not wrap will not
-      // have wrapped on attempt 2 either. The mark reaches `create()` /
-      // `update()` too (both call this helper), which is correct rather than
-      // incidental: the invariant is identical on every attempt from any of
-      // the three. Marked even though this message
-      // interpolates nothing user-controlled and therefore cannot pick up a
-      // retryable substring today: the marker is a DECLARATION by the raiser,
-      // which is what the mechanism exists for — message discipline is what
-      // failed at the `errorCount` throw above.
-      throw markNonRetryable(
-        new Error(
-          'NestedStackProvider invoked outside withNestedStackContext() scope. ' +
-            'The deploy / destroy CLI entry point must wrap its DeployEngine.deploy / ' +
-            'runDestroyForStack call in withNestedStackContext(ctx, () => ...).'
-        )
-      );
-    }
-    return ctx;
+  requireContext(): NestedStackProviderContext {
+    return requireContext.call(this);
   }
 
-  private requireDeployContext(ctx: NestedStackProviderContext, op: 'create' | 'update'): void {
-    if (!ctx.nestedTemplates || !ctx.dagBuilder || !ctx.diffCalculator) {
-      throw markNonRetryable(
-        new Error(
-          `NestedStackProvider.${op}: deploy-mode context fields (nestedTemplates / dagBuilder / diffCalculator) ` +
-            `are missing. This usually means a destroy-mode entry point called into create/update by mistake.`
-        )
-      );
-    }
+  requireDeployContext(ctx: NestedStackProviderContext, op: 'create' | 'update'): void {
+    return requireDeployContext.call(this, ctx, op);
   }
 
-  /**
-   * Validate the WHOLE nested-template subtree under this row before the first
-   * child engine is built (issue go-to-k/cdkd#3247).
-   *
-   * Up front rather than as an ancestor chain threaded through the recursion,
-   * because here a level is not a read, it is a DEPLOY: refusing at the first
-   * repeat would leave every level above it provisioned, with a state record
-   * each, for the rollback to unwind. Every file the recursion would follow is
-   * already on disk, so the top-most row's call sees the entire cycle and
-   * nothing below it ever starts. Deeper levels re-run the same walk over
-   * their own (already proven) subtree; it is a few file reads next to a
-   * deploy, and it keeps the guard independent of who built the context.
-   *
-   * This is the earliest point THIS FILE owns. The parent stack's other
-   * resources may already be in flight when its nested-stack row is
-   * dispatched; they are unwound by the parent's ordinary rollback. No level of
-   * the cyclic tree is deployed.
-   *
-   * It also reports an absolute `aws:asset:path` at ANY depth, for the same
-   * reason: `indexGrandchildTemplates` refuses one too, but only on reaching
-   * that level, after the levels above it deployed. That check stays as the
-   * per-level backstop.
-   *
-   * `markNonRetryable`: the verdict is computed from files no retry changes,
-   * while the message carries template-controlled text (logical ids, paths)
-   * that the SUBSTRING-matching retry classifier would otherwise read. Latent
-   * while `disableOuterRetry` is set, and declared anyway, like the sibling
-   * marks in this file.
-   */
-  private refuseMalformedNestedTemplateTree(
+  refuseMalformedNestedTemplateTree(
     ctx: NestedStackProviderContext,
     logicalId: string,
     childTemplatePath: string
   ): void {
-    const defect = findNestedTemplateTreeDefect({ [logicalId]: childTemplatePath });
-    if (!defect) return;
-    throw markNonRetryable(
-      new Error(
-        `NestedStackProvider: ${renderNestedTemplateTreeDefect(
-          defect,
-          ctx.parentStackName,
-          'deploy any level of it'
-        )}`
-      )
-    );
+    return refuseMalformedNestedTemplateTree.call(this, ctx, logicalId, childTemplatePath);
   }
 
-  private deriveChildStackName(parentStackName: string, nestedLogicalId: string): string {
-    // `~` separator avoids ambiguity with CDK Stage paths (which use `/`).
-    return `${parentStackName}~${nestedLogicalId}`;
+  deriveChildStackName(parentStackName: string, nestedLogicalId: string): string {
+    return deriveChildStackName.call(this, parentStackName, nestedLogicalId);
   }
 
-  /**
-   * The synthesized `physicalId` recorded on the PARENT's
-   * `AWS::CloudFormation::Stack` row.
-   *
-   * `childRegion` is the region the child stack was deployed into (its own
-   * `StackState.region`), and the segment is LOAD-BEARING as of issue
-   * [#2055](https://github.com/go-to-k/cdkd/issues/2055):
-   * `IntrinsicFunctionResolver` reads it back as the producer region when a
-   * parent property consumes `Fn::GetAtt: [<Child>, 'Outputs.<Name>']` and the
-   * child's persisted output is a redacted `{{resolve:...}}` expression. A
-   * secret NAME is regional, so resolving that expression anywhere but the
-   * child's own region can answer with a different secret. Equal to the
-   * parent's region today; do not collapse the two.
-   */
-  private synthesizeArn(
+  synthesizeArn(
     accountId: string,
     childRegion: string,
     parentStackName: string,
     logicalId: string
   ): string {
-    // Per design §3: partition `cdkd-local` is load-bearing — any consumer
-    // that misuses this value as a real AWS ARN fails loudly with
-    // `Invalid ARN partition: cdkd-local` rather than silently using a
-    // non-ARN string.
-    return `arn:cdkd-local:${childRegion}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
+    return synthesizeArn.call(this, accountId, childRegion, parentStackName, logicalId);
   }
 
-  private extractParameters(properties: Record<string, unknown>): Record<string, string> {
-    const params = properties['Parameters'];
-    if (!params || typeof params !== 'object' || Array.isArray(params)) return {};
-    const result: Record<string, string> = {};
-    for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
-      // Intrinsics in Parameter values were already resolved by the
-      // parent's IntrinsicFunctionResolver before reaching the provider,
-      // so the value here is a scalar literal — cast number / boolean to
-      // string (matches CFn's own coercion of NumberParameter to string
-      // at boundary). Refuse non-scalars: if an unresolved intrinsic
-      // object leaks through the resolver, `String(obj)` would silently
-      // produce `[object Object]` and the child engine would deploy
-      // with a meaningless parameter value. Loud failure is the right
-      // signal for the upstream resolver bug.
-      //
-      // An ARRAY is the one non-scalar that is NOT a resolver bug (issue
-      // #2347). A `Ref` to a list-typed parent parameter -- any `List<...>`
-      // type or `CommaDelimitedList` -- resolves to a JS array by design, and
-      // `Parameters` is a string-valued map on the wire, so it is joined back
-      // with `,` exactly as CloudFormation carries a list-typed Parameter
-      // value. The child's own resolver re-splits it against the child's
-      // declared `Type`, so for a NON-EMPTY array whose elements carry no
-      // comma the round-trip returns the same LIST. It is not byte-lossless:
-      // the re-split trims each member, so `[' a ']` comes back as `['a']`.
-      // CloudFormation trims identically, so the padding was never data.
-      //
-      // THE EMPTY ARRAY IS THE ONE ASYMMETRY, and it is deliberate: `[]` joins
-      // to `''`, which the child re-splits to `['']` -- one empty string, not
-      // an empty list. `''` is nonetheless the correct wire value, because a
-      // CloudFormation Parameter is a string and there is no spelling of "no
-      // elements" in it; CFn's own `CommaDelimitedList` has the same hole.
-      // Recorded rather than fixed, so the next reader does not mistake it for
-      // an oversight.
-      //
-      // The SHAPE is copied from `resolveChildImportParameters` in
-      // `src/cli/commands/export.ts` (its `Array.isArray` arm), which already
-      // had to answer this question for `cdkd export`. Deliberately the same
-      // down to `String()`-ing each element first, so a mixed array (a
-      // `List<Number>` resolves to numbers) survives instead of throwing here
-      // and the two paths cannot disagree about what a list-typed Parameter
-      // looks like on the wire. Before #2347 only `CommaDelimitedList` and
-      // `List<Number>` could reach this arm; widening the coercion made the
-      // whole `List<...>` family reach it, which is what turned a working
-      // deploy into the throw below.
-      //
-      // IT IS **NOT** COPIED IN ONE RESPECT, and that divergence is the point:
-      // each ELEMENT is checked here. `export.ts` calls `String(e)` on an
-      // unchecked element, so a nested unresolved intrinsic there becomes
-      // `[object Object]` -- the very shape the refusal below exists to
-      // prevent, arriving one level down. That hole is silent on ITS path too
-      // -- `stillSkipped` is reached only for null/undefined, a non-array
-      // object, or a resolver throw, never for a bad ELEMENT -- so this is a
-      // deliberate divergence rather than a difference in what the two paths
-      // tolerate. It is fixed HERE because this path promises loudness and
-      // ships the value into a child deploy. Do not "restore parity" by
-      // deleting the element check.
-      if (typeof v === 'string') {
-        result[k] = v;
-      } else if (typeof v === 'number' || typeof v === 'boolean') {
-        result[k] = String(v);
-      } else if (Array.isArray(v)) {
-        const badIndex = v.findIndex(
-          (e) => typeof e !== 'string' && typeof e !== 'number' && typeof e !== 'boolean'
-        );
-        if (badIndex !== -1)
-          this.refuseNonScalarParameter(k, v[badIndex], ` element [${badIndex}]`);
-        result[k] = v.map((e) => String(e)).join(',');
-      } else {
-        this.refuseNonScalarParameter(k, v, '');
-      }
-    }
-    return result;
+  extractParameters(properties: Record<string, unknown>): Record<string, string> {
+    return extractParameters.call(this, properties);
   }
 
-  /**
-   * ONE refusal for a parameter value the child engine must never receive,
-   * shared by the TOP-LEVEL arm and the per-ELEMENT check inside an array
-   * (issue #2347). Two spellings would be two chances for the element arm to
-   * drift into permissiveness, which is exactly the hole the array arm opened
-   * when it was first written without a check.
-   *
-   * `where` names the position when the offender is an element, so the message
-   * points at `[2]` rather than at the whole parameter.
-   */
-  private refuseNonScalarParameter(k: string, offender: unknown, where: string): never {
-    throw markNonRetryable(
-      new Error(
-        `NestedStackProvider: child Parameter ${displayIdent(k)}${where} resolved to a non-scalar value ` +
-          `(type=${offender === null ? 'null' : typeof offender}). Parameters must be scalars ` +
-          `(string / number / boolean), or an ARRAY of them from a list-typed parameter, by ` +
-          `the time they reach the provider — an unresolved intrinsic here means ` +
-          `IntrinsicFunctionResolver upstream did not handle the value, which ` +
-          `is a bug. Surface the unresolved input rather than silently coercing to ` +
-          `'[object Object]'.`
-      )
-    );
+  refuseNonScalarParameter(k: string, offender: unknown, where: string): never {
+    return refuseNonScalarParameter.call(this, k, offender, where);
   }
 
-  /**
-   * The child template as the child engine deploys it, plus the grandchild
-   * template paths indexed from it.
-   *
-   * The index is taken BEFORE the asset-reference rewrite, and returning both
-   * from here is what keeps that order from being undone by a caller. The
-   * rewrite walks every string in the template, `Metadata['aws:asset:path']`
-   * included, and a path segment that spells a bootstrap bucket name is
-   * rewritten like any other occurrence. `aws:asset:path` is a LOCAL file
-   * path, never an asset-storage reference; indexing after the rewrite made
-   * the deploy follow a different file than the one
-   * `refuseMalformedNestedTemplateTree` had validated from the raw file, which
-   * is a way around that guard (issue go-to-k/cdkd#3247).
-   */
-  private readChildTemplate(
+  readChildTemplate(
     templatePath: string,
     assetRedirect?: AssetRedirectMap
   ): { template: CloudFormationTemplate; grandchildTemplates: Record<string, string> } {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(templatePath, 'utf-8');
-    } catch (err) {
-      throw new Error(
-        `Failed to read nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
-      );
-    }
-    let template: CloudFormationTemplate;
-    try {
-      template = JSON.parse(raw) as CloudFormationTemplate;
-    } catch (err) {
-      throw markNonRetryable(
-        new Error(
-          `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
-        )
-      );
-    }
-    const grandchildTemplates = this.indexGrandchildTemplates(template, templatePath);
-    // Issue #1002 PR 2 — nested child templates are a separate parse path
-    // that bypasses the top-level analyzer entry, so the §7 asset-reference
-    // rewrite must be applied here too (design §7). No-op in legacy mode
-    // (assetRedirect undefined).
-    if (assetRedirect) {
-      const n = rewriteTemplateAssetReferences(template, assetRedirect);
-      if (n > 0) {
-        this.logger.debug(
-          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${displayAssemblyPath(templatePath)}`
-        );
-      }
-    }
-    return { template, grandchildTemplates };
+    return readChildTemplate.call(this, templatePath, assetRedirect);
   }
 
-  private indexGrandchildTemplates(
+  indexGrandchildTemplates(
     childTemplate: CloudFormationTemplate,
     childTemplatePath: string
   ): Record<string, string> {
-    const dir = path.dirname(childTemplatePath);
-    // Null-prototype: a logical id is a template key, and on a plain object a
-    // row named `__proto__` is silently dropped by the assignment below and
-    // then answered with `Object.prototype` by the lookup in create()/update().
-    const result = Object.create(null) as Record<string, string>;
-    // `listNestedTemplateRows` is shared with the pre-deploy tree validation
-    // ON PURPOSE: that walk is only a guard while it follows exactly the rows
-    // this loop follows, and a second hand-written copy is how the two came to
-    // disagree about an array-valued `Resources`.
-    for (const { logicalId: grandLogicalId, assetPath } of listNestedTemplateRows(childTemplate)) {
-      // CDK emits relative asset paths for nested templates (they're
-      // siblings of the parent template in the same cdk.out directory).
-      // An absolute path indicates the synth output was hand-modified or
-      // generated by a non-CDK toolchain — `path.join(dir, '/abs/foo')`
-      // produces `/abs/foo` (POSIX) which silently bypasses our `dir`
-      // resolution and points outside cdk.out. Refuse loudly rather than
-      // accept a path we cannot trust.
-      if (isAbsoluteCrossPlatform(assetPath)) {
-        // Normally unreachable: `refuseMalformedNestedTemplateTree` reports
-        // this for the whole subtree before any level deploys. Kept as the
-        // per-level backstop, sanitized and marked like that refusal.
-        throw markNonRetryable(
-          new Error(
-            `NestedStackProvider: nested-stack ${displayIdent(grandLogicalId)} has ` +
-              `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which is absolute. ` +
-              `CDK emits relative asset paths for nested templates; an absolute path ` +
-              `indicates the synth output was hand-modified or generated by a non-CDK ` +
-              `toolchain. Refusing to load.`
-          )
-        );
-      }
-      // The containment check the tripwire above is NOT (issue
-      // go-to-k/cdkd#3489): `path.join` folds `..`, so `../../etc/passwd`
-      // resolved out of `dir` and the child engine deployed whatever parsed.
-      // Normally unreachable for the same reason the absolute arm is —
-      // `refuseMalformedNestedTemplateTree` reports the whole subtree first —
-      // and kept as the per-level backstop, marked and sanitized alike.
-      const resolved = resolveAssemblyPath(dir, assetPath);
-      if (!resolved.contained) {
-        throw markNonRetryable(
-          new Error(
-            `NestedStackProvider: nested-stack ${displayIdent(grandLogicalId)} has ` +
-              `Metadata['aws:asset:path']=${displayAssemblyPath(assetPath)} which ` +
-              `${renderAssemblyPathEscape(resolved, dir)}`
-          )
-        );
-      }
-      result[grandLogicalId] = resolved.path;
-    }
-    return result;
+    return indexGrandchildTemplates.call(this, childTemplate, childTemplatePath);
   }
 
-  /**
-   * Surface the child's PERSISTED outputs as the parent's `Outputs.<Key>`
-   * attributes, VERBATIM — including a secret-bearing one, which PR #1899
-   * persists as its unresolved `{{resolve:...}}` expression.
-   *
-   * DELIBERATELY NOT the place the expression is re-resolved (issue
-   * [#2055](https://github.com/go-to-k/cdkd/issues/2055)). Re-resolving here
-   * would be easy — `readChildOutputsAsAttributes` is already async — and it
-   * would trade one bug for a worse one: this map becomes the parent's
-   * `ResourceState.attributes`, and every CONSUMER resource then reads the
-   * plaintext through `Fn::GetAtt` with no entry in its OWN
-   * `recordedSecretValues`, so the deploy engine's save choke point has nothing
-   * to redact it back to and the consumer's `state.json` persists the decrypted
-   * secret. Keeping the expression here keeps BOTH the parent's nested-stack row
-   * and every consumer's record redacted.
-   *
-   * The re-resolution therefore lives at the READ site, in
-   * `resolveGetAtt` (`deployment/intrinsic-resolver/getatt.ts`), where the CONSUMER's resolver
-   * context is in hand — the same seam and the same reason as the
-   * `Fn::ImportValue` / `Fn::GetStackOutput` arms of issue #1934.
-   *
-   * "A read site risks missing a caller" is answered for the RESOLUTION path by
-   * there being exactly one: the flat-key attribute lookup, which
-   * `getAttribute()` below exists to prove is the only route (it throws for
-   * anything that falls through it).
-   *
-   * It is NOT answered for every reader of `ResourceState.attributes` in the
-   * codebase, and an earlier revision of this note claimed it was.
-   * `AttributeFetcher.cacheFallback` in `src/analyzer/orphan-rewriter.ts` reads
-   * `orphan.attributes?.[attribute]` directly under `cdkd orphan --force` and
-   * has no resolver context to re-resolve with, so it splices the token
-   * verbatim into the referring resource's state and warns about exactly that.
-   * The seam decision above is unchanged — putting the plaintext here would
-   * make EVERY consumer persist it — but the count is "one resolution path",
-   * not "one reader".
-   */
-  /**
-   * The ONE spelling of a child output's attribute name. Both this class's
-   * writers go through it, so the recovery pass (issue #2274) cannot name a key
-   * `buildOutputsAttributes` did not write.
-   */
-  private outputAttributeName(outputKey: string): string {
-    return `Outputs.${outputKey}`;
+  outputAttributeName(outputKey: string): string {
+    return outputAttributeName.call(this, outputKey);
   }
 
-  private buildOutputsAttributes(outputs: Record<string, unknown>): Record<string, unknown> {
-    const attributes: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(outputs)) {
-      attributes[this.outputAttributeName(key)] = value;
-    }
-    return attributes;
+  buildOutputsAttributes(outputs: Record<string, unknown>): Record<string, unknown> {
+    return buildOutputsAttributes.call(this, outputs);
   }
-}
-
-/**
- * The run's account (`--profile`, the RESOLVED bucket, `--state-prefix`) as the
- * provider context carries it, for every pasteable command a nested child's
- * message prints: the deploy and destroy paths set `stateBucket` and
- * `destroyOptions` alike (go-to-k/cdkd#3909, #4159, #4648).
- */
-function runAccountOf(ctx: NestedStackProviderContext): LockRecoveryContext {
-  return {
-    profile: ctx.destroyOptions?.profile,
-    stateBucket: ctx.stateBucket,
-    statePrefix: ctx.destroyOptions?.statePrefix,
-  };
-}
-
-/**
- * The `inheritedPhysicalNameCopies` option for a child engine: a snapshot of
- * the physical ids the parent row's resolution read (go-to-k/cdkd#4810), or
- * `undefined` when it read none (go-to-k/cdkd#4819).
- */
-function inheritedPhysicalNameCopiesOf(
-  bag: ReturnType<typeof getCurrentResourceSecrets>
-): ReadonlySet<string> | undefined {
-  const copies = bag === undefined ? undefined : physicalNameCopiesOf.get(bag);
-  return copies === undefined || copies.size === 0 ? undefined : new Set(copies);
 }

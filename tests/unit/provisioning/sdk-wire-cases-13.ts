@@ -1485,7 +1485,7 @@ const S3_CASES: TypeCase[] = [BUCKET_CASE];
 //
 // The provider makes no SDK call of its own: `create()` / `update()` read the
 // child template from `ctx.nestedTemplates[logicalId]` and deploy it through a
-// child `DeployEngine` (nested-stack-provider.ts:292-327, :406-442), handing it
+// child `DeployEngine` (`create` / `update` in nested-stack/create-update.ts), handing it
 // `Parameters` as `DeployEngineOptions.parameters` (:954). So the wire a
 // `Parameters` member reaches is the CHILD's resources' SDK calls. The case runs
 // the REAL child engine (real `DagBuilder` / `DiffCalculator`, an in-memory
@@ -1534,7 +1534,7 @@ const nestedStates = new Map<string, StackState>();
  */
 function nestedChildState(bag: Bag): StackState {
   const params = (bag['Parameters'] ?? {}) as Record<string, unknown>;
-  // The provider's own coercion (nested-stack-provider.ts:1344-1354): a
+  // The provider's own coercion (`extractParameters` in nested-stack/template.ts): a
   // number to its string, a list joined with `,`.
   const wireValue = (v: unknown, dflt: string): string =>
     v === undefined ? dflt : Array.isArray(v) ? v.map(String).join(',') : String(v);
@@ -1644,8 +1644,8 @@ function nestedProvider(): ResourceProvider {
 
 const NESTED_TEMPLATE_URL_SILENT =
   'TemplateURL is informational: the child template is read from the local ' +
-  "Metadata['aws:asset:path'] file in ctx.nestedTemplates (nested-stack-provider.ts:213-216, " +
-  ':292, :406), never from the URL; a changed URL is only what makes the parent diff call update()';
+  "Metadata['aws:asset:path'] file in ctx.nestedTemplates (nested-stack-provider.ts " +
+  'handledProperties; create / update in nested-stack/create-update.ts), never from the URL; a changed URL is only what makes the parent diff call update()';
 
 const NESTED_TEMPLATE_URL_SILENTS = Object.fromEntries(
   ['create', 'update-add', 'update-remove', 'create-vary', 'update-vary'].map((d) => [
@@ -1674,7 +1674,7 @@ const NESTED_CASES: TypeCase[] = [
       },
       {
         // A number is stringified and a list-typed value joined with `,`
-        // (nested-stack-provider.ts:1344-1354): each element reaches the wire.
+        // (`extractParameters` in nested-stack/template.ts): each element reaches the wire.
         name: 'number and list parameter values',
         bag: fresh({
           TemplateURL: 'https://s3.us-east-1.amazonaws.com/assets/child.nested.template.json',
