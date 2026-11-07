@@ -81,7 +81,7 @@
   "src/cli/commands/state-migrate.ts": 17,
   "src/cli/commands/synth.ts": 8,
   "src/cli/config-loader.ts": 6,
-  "src/cli/options.ts": 2,
+  "src/cli/options/resource-timeout.ts": 2,
   "src/cli/region-options.ts": 5,
   "src/cli/upload-cfn-template.ts": 1,
   "src/deployment/dag-executor.ts": 1,

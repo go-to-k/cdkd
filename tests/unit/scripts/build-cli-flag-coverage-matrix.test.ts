@@ -8,6 +8,8 @@ import {
   parseDeclaredFlags,
   scanFlagsInShellScript,
   listFixtures,
+  listOptionSourceFiles,
+  readDeclaredFlags,
 } from '../../../scripts/build-cli-flag-coverage-matrix.js';
 
 describe('parseFlagSpec', () => {
@@ -222,5 +224,53 @@ describe('listFixtures', () => {
     mkdirSync(join(tmpRoot, '.hidden'));
     mkdirSync(join(tmpRoot, '.scratch'));
     expect(listFixtures(tmpRoot)).toEqual(['a-fixture']);
+  });
+});
+
+describe('readDeclaredFlags', () => {
+  it('reads src/cli/options.ts AND its sibling module directory', () => {
+    const files = listOptionSourceFiles().map((f) => f.replace(/\\/g, '/'));
+    expect(files[0]).toMatch(/src\/cli\/options\.ts$/);
+    for (const sibling of ['provisioning-route.ts', 'resource-timeout.ts']) {
+      expect(files.some((f) => f.endsWith(`src/cli/options/${sibling}`))).toBe(true);
+    }
+    const flags = readDeclaredFlags();
+    // One flag declared in each declaring file: the entry and both siblings.
+    expect(flags).toContain('--concurrency');
+    expect(flags).toContain('--resource-timeout');
+    expect(flags).toContain('--prefer-sdk-route');
+  });
+
+  describe('with a scratch directory', () => {
+    let tmpRoot: string;
+    beforeEach(() => {
+      tmpRoot = mkdtempSync(join(tmpdir(), 'cdkd-flag-sources-'));
+    });
+    afterEach(() => {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    });
+
+    it('walks nested directories and unions every file', () => {
+      const entry = join(tmpRoot, 'options.ts');
+      const dir = join(tmpRoot, 'options');
+      mkdirSync(join(dir, 'nested'), { recursive: true });
+      writeFileSync(entry, "new Option('--alpha')");
+      writeFileSync(join(dir, 'nested', 'b.ts'), "new Option('--beta <x>')");
+      expect(readDeclaredFlags(listOptionSourceFiles(entry, dir), new Set())).toEqual([
+        '--alpha',
+        '--beta',
+      ]);
+    });
+
+    it('refuses a file that declares no option unless it is listed as option-free', () => {
+      const entry = join(tmpRoot, 'options.ts');
+      const dir = join(tmpRoot, 'options');
+      mkdirSync(dir);
+      writeFileSync(entry, "new Option('--alpha')");
+      writeFileSync(join(dir, 'empty.ts'), 'export const x = 1;');
+      const files = listOptionSourceFiles(entry, dir);
+      expect(() => readDeclaredFlags(files, new Set())).toThrow(/empty\.ts/);
+      expect(readDeclaredFlags(files, new Set(['empty.ts']))).toEqual(['--alpha']);
+    });
   });
 });
