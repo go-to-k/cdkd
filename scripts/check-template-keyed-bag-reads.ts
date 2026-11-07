@@ -86,6 +86,8 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/context.ts',
   'src/deployment/intrinsic-resolver/account-drain.ts',
   'src/deployment/intrinsic-resolver/getatt.ts',
+  'src/deployment/intrinsic-resolver/getatt/reresolve.ts',
+  'src/deployment/intrinsic-resolver/getatt/secrecy.ts',
   'src/deployment/intrinsic-resolver/getatt-heal.ts',
   'src/deployment/intrinsic-resolver/getatt-refusals.ts',
   'src/deployment/intrinsic-resolver/getatt-construct-core.ts',

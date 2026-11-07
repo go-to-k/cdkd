@@ -371,8 +371,11 @@ describe('the intrinsic resolver compares regions only through sameRegion (issue
   const RESOLVER_DIR = path.join('deployment', 'intrinsic-resolver');
   const family = [
     path.join('deployment', 'intrinsic-function-resolver.ts'),
-    ...readdirSync(path.join(SRC, RESOLVER_DIR))
+    // Recursive (#5835): a split module's own nested directory
+    // (`getatt.ts` + `getatt/`) is part of the family.
+    ...readdirSync(path.join(SRC, RESOLVER_DIR), { recursive: true, encoding: 'utf8' })
       .filter((f) => f.endsWith('.ts'))
+      .sort()
       .map((f) => path.join(RESOLVER_DIR, f)),
   ].map((rel) => ({ rel, text: readFileSync(path.join(SRC, rel), 'utf8') }));
 
