@@ -981,9 +981,10 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
      * also module functions, so `deleteLock.call(this, ...)` from a companion
      * function, or a kept class method, deletes with no `this.deleteLock` for
      * the walk to see. Every reference to either NAME that is not a property
-     * name (`this.deleteLock`), a declaration, an import specifier, or the
-     * class delegator's own `name.call(this, ...)` inside the member of that
-     * name is counted, and the real sources must hold none.
+     * name on `this` (`this.deleteLock`), a declaration, an un-renamed import
+     * specifier, or the class delegator's own `name.call(this, ...)` inside
+     * the member of that name is counted, and so are a namespace import and an
+     * element access spelling either name; the real sources must hold none.
      */
     const bareReferences = (name: string, text: string): number => {
       const source = ts.createSourceFile(SRC, text, ts.ScriptTarget.Latest, true);
@@ -991,12 +992,27 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       const walk = (node: ts.Node, member: string | undefined): void => {
         const here =
           ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) ? node.name.text : member;
+        // A namespace import reaches the function as `ns.deleteLock` or
+        // `ns['deleteLock']`, neither of which names a `this` receiver: refused
+        // whole rather than followed.
+        if (ts.isNamespaceImport(node)) n += 1;
+        if (
+          ts.isStringLiteralLike(node) &&
+          node.text === name &&
+          ts.isElementAccessExpression(node.parent)
+        ) {
+          n += 1;
+        }
         if (ts.isIdentifier(node) && node.text === name) {
           const p = node.parent;
           const allowed =
-            (ts.isPropertyAccessExpression(p) && p.name === node) ||
+            // `this.deleteLock` only: `rel.deleteLock` is the module function.
+            (ts.isPropertyAccessExpression(p) &&
+              p.name === node &&
+              p.expression.kind === ts.SyntaxKind.ThisKeyword) ||
             ((ts.isMethodDeclaration(p) || ts.isFunctionDeclaration(p)) && p.name === node) ||
-            ts.isImportSpecifier(p) ||
+            // An un-renamed import only: `{ deleteLock as dl }` hides every later use.
+            (ts.isImportSpecifier(p) && p.propertyName === undefined) ||
             (here === name &&
               ts.isPropertyAccessExpression(p) &&
               p.expression === node &&
@@ -1034,6 +1050,25 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       ).toBe(1);
       expect(
         bareReferences('deleteLock', 'class A { m(): void { const f = deleteLock; void f(1); } }')
+      ).toBe(1);
+      // A renamed import, a namespace import's property, and its element access.
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import { deleteLock as dl } from './release.js';\nexport async function f(this: LockManager): Promise<void> { await dl.call(this, 1); }"
+        )
+      ).toBeGreaterThan(0);
+      expect(
+        bareReferences(
+          'deleteLock',
+          "import * as rel from './release.js';\nexport async function f(this: LockManager): Promise<void> { await rel.deleteLock.call(this, 1); }"
+        )
+      ).toBeGreaterThan(0);
+      expect(
+        bareReferences(
+          'deleteLock',
+          "export async function f(this: LockManager, rel: Record<string, Function>): Promise<void> { await rel['deleteLock']!.call(this, 1); }"
+        )
       ).toBe(1);
       // The delegator shape it allows is exactly the class's own.
       expect(
