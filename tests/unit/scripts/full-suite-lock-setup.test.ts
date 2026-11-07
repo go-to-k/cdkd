@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import type { TestProject } from 'vite-plus/test/node';
 import setup, {
   HOLDER_ENV,
+  LARGE_RUN_FILES,
   bootTimeMs,
   isFullSuiteRun,
   release,
@@ -21,8 +22,9 @@ function fakeProject(opts: {
   watch?: boolean;
   changed?: boolean;
   related?: string[];
+  all?: number;
 }): TestProject {
-  const all = 100;
+  const all = opts.all ?? 100;
   return {
     vitest: {
       config: { watch: opts.watch ?? false, changed: opts.changed ?? false, related: opts.related },
@@ -88,13 +90,21 @@ describe('full-suite lock', () => {
 });
 
 describe('isFullSuiteRun', () => {
-  it('counts an unfiltered run, and a filter selecting most files, as full', async () => {
+  it('counts an unfiltered run, and a filter selecting more than LARGE_RUN_FILES files, as large', async () => {
     expect(await isFullSuiteRun(fakeProject({}))).toBe(true);
     expect(await isFullSuiteRun(fakeProject({ filters: ['tests/unit'], selected: 90 }))).toBe(true);
+    // A directory run is a small share of the suite and still large (the crash this lock missed).
+    expect(
+      await isFullSuiteRun(fakeProject({ filters: ['tests/unit/deployment'], selected: 470, all: 2356 }))
+    ).toBe(true);
+    expect(
+      await isFullSuiteRun(fakeProject({ filters: ['tests/unit/x'], selected: LARGE_RUN_FILES + 1, all: 2356 }))
+    ).toBe(true);
   });
 
   it('does not count targeted, watch, changed or related runs', async () => {
     expect(await isFullSuiteRun(fakeProject({ filters: ['a.test.ts'], selected: 2 }))).toBe(false);
+    expect(await isFullSuiteRun(fakeProject({ filters: ['tests/unit/x'], selected: LARGE_RUN_FILES }))).toBe(false);
     expect(await isFullSuiteRun(fakeProject({ watch: true }))).toBe(false);
     expect(await isFullSuiteRun(fakeProject({ changed: true }))).toBe(false);
     expect(await isFullSuiteRun(fakeProject({ related: ['src/x.ts'] }))).toBe(false);

@@ -5,17 +5,22 @@ import { join } from 'node:path';
 import type { TestProject } from 'vite-plus/test/node';
 
 /**
- * Vitest `globalSetup`: lets only ONE full-suite run proceed per machine at a
- * time; any other full-suite run waits here until it ends.
+ * Vitest `globalSetup`: lets only ONE large run proceed per machine at a
+ * time; any other large run waits here until it ends.
  *
- * WHY. Every full run starts up to `cpus - 1` forks, and many forks spawn
- * script CLIs of their own. Parallel agent lanes each running the full suite
- * from their own worktree exhausted a 48 GB host and froze it; the written
- * rule "lanes do not run the full suite" did not hold. A run counts as full
- * when its filters select more than `FULL_SHARE` of the test files, since a
- * filter such as `tests/unit` is a substring match over nearly everything.
- * Smaller runs, watch mode, `--changed` / `related`, and a run spawned by a
- * suite that already holds the lock (`HOLDER_ENV`) never wait.
+ * WHY. Every run starts up to `cpus - 1` forks, and many forks spawn child
+ * processes of their own: script CLIs, and the paste harness's bash and zsh
+ * per span (`tests/unit/utils/paste-harness.ts`). Parallel agent lanes each
+ * running the full suite from their own worktree froze a 48 GB host; the
+ * written rule "lanes do not run the full suite" did not hold. A lock on full
+ * runs alone (more than 25% of the files) did not hold either: one lane's
+ * `tests/unit` ran beside two lanes' `tests/unit/deployment` runs (~20% of the
+ * files each, so never waiting), spawning ~5,000 processes a second, and the
+ * host crashed again. So a run counts as large when its filters select more
+ * than `LARGE_RUN_FILES` test files — any directory-sized run (a filter such
+ * as `tests/unit` is a substring match over nearly everything). Targeted runs,
+ * watch mode, `--changed` / `related`, and a run spawned by a suite that
+ * already holds the lock (`HOLDER_ENV`) never wait.
  *
  * The lock is a directory under the user temp root, shared by every worktree.
  * A holder that died without teardown is taken over: its pid is gone, is no
@@ -30,7 +35,8 @@ const POLL_MS = 5_000;
 const OWNERLESS_STALE_MS = 60_000;
 /** Boot times computed from `uptime()` drift by a little; a reboot moves them by far more. */
 const BOOT_TOLERANCE_MS = 60_000;
-export const FULL_SHARE = 0.25;
+/** Above any targeted run's file count, below every `tests/unit/<area>` directory with a paste-harness caller. */
+export const LARGE_RUN_FILES = 50;
 
 export interface LockOwner {
   pid: number;
@@ -110,11 +116,8 @@ export async function isFullSuiteRun(project: TestProject): Promise<boolean> {
   if (config.watch || config.changed || (config.related?.length ?? 0) > 0) return false;
   const filters = (project.vitest as unknown as { filenamePattern?: string[] }).filenamePattern;
   if (!filters?.length) return true;
-  const [selected, all] = await Promise.all([
-    project.vitest.globTestSpecifications(filters),
-    project.vitest.globTestSpecifications(),
-  ]);
-  return selected.length > all.length * FULL_SHARE;
+  const selected = await project.vitest.globTestSpecifications(filters);
+  return selected.length > LARGE_RUN_FILES;
 }
 
 export default async function setup(project: TestProject): Promise<(() => void) | undefined> {
@@ -128,8 +131,8 @@ export default async function setup(project: TestProject): Promise<(() => void) 
     if (announced !== holder.pid) {
       announced = holder.pid;
       console.error(
-        `[cdkd] waiting: a full test suite is already running (pid ${holder.pid}, ${holder.cwd}). ` +
-          'One full suite runs per machine; run targeted files meanwhile (tests/full-suite-lock-setup.ts).'
+        `[cdkd] waiting: a large test run is already running (pid ${holder.pid}, ${holder.cwd}). ` +
+          `One run of more than ${LARGE_RUN_FILES} files runs per machine; run targeted files meanwhile (tests/full-suite-lock-setup.ts).`
       );
     }
     await new Promise((r) => setTimeout(r, POLL_MS));
