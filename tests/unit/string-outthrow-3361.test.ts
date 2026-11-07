@@ -16,7 +16,7 @@ import { join } from 'node:path';
  * that dropped the failure text would not pass either.
  *
  * Sites that only ever see an `Error` (`parseResourceTimeoutToken`'s
- * `parseDuration` catch in `src/cli/options.ts`, and the two
+ * `parseDuration` catch in `src/cli/options/resource-timeout.ts`, and the two
  * `parseCfnTemplate` catches in `src/cli/commands/retire-cfn-stack.ts`, whose
  * callee always throws an `Error` it built itself) are converted as hygiene
  * and have no non-`Error` input to feed; the YAML / JSON parse catches are

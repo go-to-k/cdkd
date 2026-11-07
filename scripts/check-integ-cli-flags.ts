@@ -14,7 +14,7 @@
  * Two existing things do NOT catch it:
  *   - `--help` output omits hidden options, so auditing by hand is unreliable.
  *   - `scripts/build-cli-flag-coverage-matrix.ts` parses `src/cli/options.ts`
- *     as a FLAT GLOBAL set. `--region` IS declared there; it is just never
+ *     (and its `src/cli/options/` sibling modules) as a FLAT GLOBAL set. `--region` IS declared there; it is just never
  *     attached to `import`. Command attachment is exactly the dimension that
  *     matters, and that matrix does not model it.
  *

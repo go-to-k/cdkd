@@ -39,6 +39,8 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { readLocalStartApiSource } from './_local-start-api-source.js';
+import { readLocalInvokeSource } from './_local-invoke-source.js';
+import { readLocalRunTaskSource } from './_local-run-task-source.js';
 import {
   createLocalStateProvider,
   LocalStateSourceError,
@@ -57,13 +59,21 @@ interface LocalCommand {
 }
 
 const COMMANDS: LocalCommand[] = [
-  { name: 'local-invoke', path: 'src/cli/commands/local-invoke.ts' },
+  {
+    name: 'local-invoke',
+    path: 'src/cli/commands/local-invoke.ts',
+    read: readLocalInvokeSource,
+  },
   {
     name: 'local-start-api',
     path: 'src/cli/commands/local-start-api.ts',
     read: readLocalStartApiSource,
   },
-  { name: 'local-run-task', path: 'src/cli/commands/local-run-task.ts' },
+  {
+    name: 'local-run-task',
+    path: 'src/cli/commands/local-run-task.ts',
+    read: readLocalRunTaskSource,
+  },
 ];
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');

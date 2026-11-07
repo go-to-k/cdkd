@@ -204,7 +204,7 @@ describe('docker push auth classification (#3361)', () => {
 describe('no handler in the slice stringifies its caught value with String() (#3361)', () => {
   /** File -> the floor of handlers the scan must see, so a parse that saw nothing cannot pass. */
   const FILES: Readonly<Record<string, number>> = {
-    'src/analyzer/orphan-rewriter.ts': 1,
+    'src/analyzer/orphan-rewriter/attribute-fetcher.ts': 1,
     'src/assets/docker-asset-publisher.ts': 1,
     'src/cli/config-loader.ts': 1,
     'src/cli/upload-cfn-template.ts': 1,
