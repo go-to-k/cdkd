@@ -135,10 +135,12 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
     vi.clearAllMocks();
     ccRegion = 'us-east-1';
     ec2Region = 'us-east-1';
+    // A short real budget, so a regression that waits where it must not
+    // ends as a failed assertion rather than a loop.
+    ipamPoolCidrReleaseWait.maxWaitMs = 200;
     provider = new CloudControlProvider();
-    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = vi.fn(() =>
-      Promise.resolve()
-    );
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = () =>
+      new Promise((r) => setTimeout(r, 1));
   });
 
   afterEach(() => {
@@ -267,8 +269,9 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
     wireCc(['REFUSED', 'SUCCESS']);
     wireEc2([[vpcAllocation()], []]);
 
+    // The pool CIDR's identifier shape, so only the type gate stops the wait.
     await expect(
-      provider.delete('Pool', POOL, 'AWS::EC2::IPAMPool')
+      provider.delete('Pool', POOL_CIDR_ID, 'AWS::EC2::IPAMPool')
     ).rejects.toThrow('The CIDR has one or more allocations.');
     expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand')).toHaveLength(1);
     expect(mockEc2Send).not.toHaveBeenCalled();
