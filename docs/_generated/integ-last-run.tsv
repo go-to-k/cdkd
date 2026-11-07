@@ -128,7 +128,7 @@ ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
 ec2-vpc	2026-11-03T18:37:59Z	PASS	145	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; EncryptedVpc drift-clean, orph clean
-ec2-vpc-ipam	2026-11-07T15:43:12Z	FAIL	170	verify.sh	Phase 1 deploy: Ipv6PoolCidr fd00:cd:5945::/48 rejected by CreateIpamPoolCidr (not valid for use in pool); rollback clean, 0 orphans
+ec2-vpc-ipam	2026-11-07T17:40:51Z	PASS	3883	verify.sh	rc ok, orph clean, IPv6 IPAM-pool subnet arm
 ecr	2026-11-05T03:57:45Z	PASS	40	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-11-04T19:21:11Z	PASS	57	verify.sh	rc ok, orph clean; no ECR repo leak
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
