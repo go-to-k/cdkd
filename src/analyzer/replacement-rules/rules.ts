@@ -598,8 +598,22 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // Ipv6CidrBlock uses disassociate/associate, and Tags use CreateTags/DeleteTags.
   // These are wired through EC2Provider.updateSubnet; declaring them
   // updateable pins that routing against future createOnly-fallback drift.
+  // go-to-k/cdkd#5632: the zone id, IPAM inputs and Ipv6Native are
+  // create-only in the registry schema; named here so a DescribeType
+  // failure keeps them so. A `"true"` / `true` spelling of Ipv6Native is
+  // folded by canonicalizeDesiredProperties before any comparison.
   this.rules.set('AWS::EC2::Subnet', {
-    replacementProperties: new Set(['VpcId', 'CidrBlock', 'AvailabilityZone']),
+    replacementProperties: new Set([
+      'VpcId',
+      'CidrBlock',
+      'AvailabilityZone',
+      'AvailabilityZoneId',
+      'Ipv4IpamPoolId',
+      'Ipv4NetmaskLength',
+      'Ipv6IpamPoolId',
+      'Ipv6NetmaskLength',
+      'Ipv6Native',
+    ]),
     updateableProperties: new Set(['MapPublicIpOnLaunch', 'EnableDns64', 'Ipv6CidrBlock', 'Tags']),
   });
 

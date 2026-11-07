@@ -120,10 +120,12 @@ a fast iteration loop, or a pipeline that runs its own health check.
 
 ### The waits `--no-wait` never skips
 
-An `AWS::EC2::Subnet` with `Ipv6CidrBlock` waits in every mode. On create,
-cdkd waits for the returned IPv6 association to be `associated` before the
-`ModifySubnetAttribute` wiring (DNS64, `AssignIpv6AddressOnCreation`,
-`PrivateDnsNameOptionsOnLaunch`) and observed-state capture. In-place CIDR changes wait for both
+An `AWS::EC2::Subnet` with `Ipv6CidrBlock` or `Ipv6IpamPoolId` waits in every
+mode. On create, cdkd waits for the IPv6 association to be `associated` before
+the `ModifySubnetAttribute` wiring (DNS64, `AssignIpv6AddressOnCreation`,
+`PrivateDnsNameOptionsOnLaunch`) and observed-state capture. For a block
+allocated from an IPAM pool, when the create response names no association,
+cdkd first reads the subnet for it, up to 10 times about 2 seconds apart. In-place CIDR changes wait for both
 disassociation and association. Each wait polls at most 30 times and honors
 interrupts and resource deadlines. A failed create wait enters the cleanup for
 the newly created subnet.
@@ -270,6 +272,7 @@ prints the manual wait command, and continues.
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |
 | VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
+| Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes) |
 
 Each wait is there for a reason:
 
@@ -303,6 +306,11 @@ Each wait is there for a reason:
   25 minutes. If this wait runs out, or the role cannot call
   `ec2:GetIpamPoolAllocations`, cdkd warns and moves on, and a destroy that
   then stops at the pool CIDR can be re-run.
+- A subnet whose IPv4 or IPv6 CIDR came from an IPAM pool holds its
+  allocation past the delete the same way, so cdkd waits for each pool the
+  subnet names to stop listing it. An IPv4 and an IPv6 pool share one
+  25-minute cap, with the same warning. AWS releases a subnet's allocation
+  about 19 minutes after `DeleteSubnet` returns.
 
 - An RDS, DocumentDB or Neptune cluster or instance, or an ElastiCache cache
   cluster, can take ten minutes or more to delete. cdkd waits for it to be

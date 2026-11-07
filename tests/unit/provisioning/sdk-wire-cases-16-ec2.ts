@@ -772,6 +772,27 @@ export const CASES_16_EC2: TypeCase[] = [
           'update-remove:Ipv6CidrBlock': nativeBlockRefusal,
         },
       },
+      {
+        // go-to-k/cdkd#5632: the zone by id, and both blocks allocated from
+        // IPAM pools instead of declared.
+        name: 'ipam allocation',
+        bag: {
+          VpcId: 'vpc-1',
+          AvailabilityZoneId: 'use1-az1',
+          Ipv4IpamPoolId: 'ipam-pool-1',
+          Ipv4NetmaskLength: 28,
+          Ipv6IpamPoolId: 'ipam-pool-2',
+          Ipv6NetmaskLength: 64,
+        },
+        expectedRemovalThrows: {
+          'create:VpcId': required('VpcId', /VpcId and CidrBlock are required for Subnet/, '5632'),
+          'create:Ipv4IpamPoolId': required(
+            'Ipv4IpamPoolId',
+            /CidrBlock may be omitted only when Ipv6Native is true or Ipv4IpamPoolId is set/,
+            '5632'
+          ),
+        },
+      },
     ],
     {
       targets: tagTargets(),
@@ -786,7 +807,10 @@ export const CASES_16_EC2: TypeCase[] = [
         });
         setOutputOverrides({
           CreateSubnetCommand: (input) => {
-            ipv6 = input['Ipv6CidrBlock'];
+            // go-to-k/cdkd#5632: a pool allocates the block the create names.
+            ipv6 =
+              input['Ipv6CidrBlock'] ??
+              (input['Ipv6IpamPoolId'] !== undefined ? '2001:db8:9::/64' : undefined);
             return { Subnet: { SubnetId: 'subnet-1', AvailabilityZone: 'us-east-1a', Ipv6CidrBlockAssociationSet: ipv6 === undefined ? [] : [association()] } };
           },
           DescribeSubnetsCommand: () => ({ Subnets: [{

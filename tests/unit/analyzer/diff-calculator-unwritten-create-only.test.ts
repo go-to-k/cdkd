@@ -8,7 +8,7 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   >('../../../src/provisioning/create-only-properties.js');
   return {
     ...actual,
-    getCreateOnlyPropertyPaths: async () => [['VpcId'], ['CidrBlock'], ['AvailabilityZoneId']],
+    getCreateOnlyPropertyPaths: async () => [['VpcId'], ['CidrBlock'], ['OutpostArn']],
   };
 });
 
@@ -41,13 +41,13 @@ import type { StackState } from '../../../src/types/state.js';
  */
 describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
-  const CREATE_ONLY = 'AvailabilityZoneId';
+  const CREATE_ONLY = 'OutpostArn';
   const PLAIN = 'EnableLniAtDeviceIndex';
   const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
-  const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+  const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
 
-  it('PREMISE: AvailabilityZoneId is a create-only drop, EnableLniAtDeviceIndex a plain one', () => {
+  it('PREMISE: OutpostArn is a create-only drop, EnableLniAtDeviceIndex a plain one', () => {
     const cov = getPropertyCoverage(TYPE);
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
@@ -116,7 +116,7 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
       expect.objectContaining({
         path: CREATE_ONLY,
         oldValue: undefined,
-        newValue: 'use1-az1',
+        newValue: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1',
         requiresReplacement: true,
       }),
     ]);
@@ -184,11 +184,11 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
   });
 
   it('never reports a replacement the refusal does not cover: a canonicalizer-only difference stays NO_CHANGE (#5572)', async () => {
-    // The refusal's "unchanged" test is raw, so it does not cover 'USE1-AZ1'
-    // vs 'use1-az1'. Had the record side dropped the key anyway, the diff
+    // The refusal's "unchanged" test is raw, so it does not cover an
+    // upper-cased ARN vs the recorded one. Had the record side dropped the key anyway, the diff
     // would read an added create-only key and the flag-less deploy would
     // replace the subnet with no opt-in.
-    const declaredUpper = { ...WRITTEN, [CREATE_ONLY]: 'USE1-AZ1' };
+    const declaredUpper = { ...WRITTEN, [CREATE_ONLY]: 'ARN:AWS:OUTPOSTS:US-EAST-1:123456789012:OUTPOST/OP-1' };
     const canonicalize = (_type: string, props: Record<string, unknown>) =>
       typeof props[CREATE_ONLY] === 'string'
         ? { ...props, [CREATE_ONLY]: (props[CREATE_ONLY] as string).toLowerCase() }

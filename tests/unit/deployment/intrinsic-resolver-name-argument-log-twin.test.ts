@@ -2725,6 +2725,87 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // holds if the sink keeps the character, which it does not.
     expect(checked).toBe(0x110000);
   });
+
+  /**
+   * The BAG half of the state-read mask (go-to-k/cdkd#5835). Every case above
+   * reaches the masked text through the positional PAIRS — the secret sits
+   * inside the stack name or the region. Here the names are plain and the
+   * secret is one the context knows only through its secret bags (resolved
+   * earlier in the same pass through a dynamic reference), quoted back by the
+   * S3 error text. Only `maskStateReadError` passing `context` on to
+   * `maskNamedError`, and that one unioning the bags, can mask it.
+   *
+   * Two spellings, per the masking-test convention: one carrying a `"` and a
+   * newline (what a JSON / line rendering would escape), and a plain
+   * alphanumeric twin, so a pass that only works for one shape cannot hide.
+   */
+  describe('a secret the context knows only through its bags, quoted by the S3 error (go-to-k/cdkd#5835)', () => {
+    const OTHER_ID = 'cdkd-state-read-bag-probe';
+    const QUOTED_SECRET = 'st"ate\nRd7x';
+    const ALNUM_SECRET = 'stateRd7xAlnum';
+
+    /** An S3 failure for a PLAIN name whose AWS text quotes `quoted` back. */
+    function quotingBackend(quoted: string): S3StateBackend {
+      return {
+        listStacks: vi.fn(async () => []),
+        getState: vi.fn(async () => {
+          const aws = new Error(
+            `Access Denied: s3:GetObject on cdkd/Producer/us-east-1/state.json (x-amz-meta-note: ${quoted})`
+          );
+          (aws as unknown as { $metadata: unknown }).$metadata = { httpStatusCode: 403 };
+          throw new StateError(`Failed to get state for stack 'Producer' (us-east-1): ${aws.message}`, aws);
+        }),
+      } as unknown as S3StateBackend;
+    }
+
+    /** Resolve `secret` through a dynamic reference first, then fail the state read in the same context. */
+    async function stateReadErrorAfterResolving(secret: string, quoted: string): Promise<Error> {
+      lookupBehaviour.secretAnswer = { SecretString: JSON.stringify({ k: secret }) };
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const context = makeContext({ stateBackend: quotingBackend(quoted) });
+      const resolved = await resolver.resolve(
+        `{{resolve:secretsmanager:${OTHER_ID}:SecretString:k}}`,
+        context as never
+      );
+      expect(resolved, 'premise: the dynamic reference resolved to the secret').toBe(secret);
+      expect(context.recordedSecretValues.size, 'premise: the secret reached the bag').toBeGreaterThan(0);
+      const outcome = await resolver
+        .resolve(producer('Producer'), context as never)
+        .then((r) => ({ resolvedInstead: JSON.stringify(r) }), (reason: unknown) => reason);
+      if (outcome && typeof outcome === 'object' && 'resolvedInstead' in outcome) {
+        throw new Error(`the site must throw; it resolved to ${String(outcome.resolvedInstead)}`);
+      }
+      expect(outcome).toBeInstanceOf(Error);
+      return outcome as Error;
+    }
+
+    it.each([
+      ['a quote and a newline', QUOTED_SECRET],
+      ['the alphanumeric twin', ALNUM_SECRET],
+    ])('masks %s in the thrown error, its cause and every logged line', async (_label, secret) => {
+      const error = await stateReadErrorAfterResolving(secret, secret);
+      const messages = chainMessages(error);
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toBe(
+        "Failed to get state for stack 'Producer' (us-east-1): " +
+          'Access Denied: s3:GetObject on cdkd/Producer/us-east-1/state.json (x-amz-meta-note: ***)'
+      );
+      expect(messages[1]).toBe(
+        'Access Denied: s3:GetObject on cdkd/Producer/us-east-1/state.json (x-amz-meta-note: ***)'
+      );
+      expect(error.stack ?? '').not.toContain(secret);
+      expectNowhere(secret, ...messages);
+    });
+
+    it('CONTROL: the same error quoting an UNRECORDED value prints it verbatim', async () => {
+      // The case where the wrong value IS emitted: the backend really does put
+      // the quoted text into the message, so a green above is the mask's doing.
+      const unrecorded = 'unrecordedRd7x';
+      const error = await stateReadErrorAfterResolving(ALNUM_SECRET, unrecorded);
+      expect(chainMessages(error).every((m) => m.includes(unrecorded))).toBe(true);
+      expect(error.message).not.toContain('***');
+    });
+  });
 });
 
 /**

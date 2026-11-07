@@ -506,19 +506,19 @@ describe('unrecognized keys and the narrowings (issue #3713)', () => {
 });
 
 /**
- * go-to-k/cdkd#2790. `AWS::EC2::Subnet` is the pair
- * `tests/integration/sdk-to-cc-autoroute/` deploys: `AvailabilityZoneId` is a
- * CREATE-ONLY SDK-unwired property. The unit cases pair it with the still-unwired
- * `EnableLniAtDeviceIndex` as a plain property.
+ * go-to-k/cdkd#2790. On `AWS::EC2::Subnet`, `OutpostArn` is a CREATE-ONLY
+ * SDK-unwired property (`unhandledByDesign`; go-to-k/cdkd#5632 wired the
+ * `AvailabilityZoneId` these cases used before). The unit cases pair it with
+ * the still-unwired `EnableLniAtDeviceIndex` as a plain property.
  */
 describe('the record COMPARISON side and its create-only drops (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
-  const CREATE_ONLY = 'AvailabilityZoneId';
+  const CREATE_ONLY = 'OutpostArn';
   const PLAIN = 'EnableLniAtDeviceIndex';
   const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
   const NONE = new Set<string>();
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
-  const RECORD = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+  const RECORD = { ...WRITTEN, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
   // What an SDK-route deploy that accepted the drop records beside it.
   const EVIDENCE = new Set([CREATE_ONLY]);
   const NO_EVIDENCE = new Set<string>();
@@ -592,7 +592,7 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
     });
 
     it('is empty when the template CHANGED the value: that replacement is a template edit', () => {
-      const desired = { ...RECORD, [CREATE_ONLY]: 'use1-az2' };
+      const desired = { ...RECORD, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-2' };
       expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, NONE, EVIDENCE)).toEqual([]);
     });
 
@@ -616,7 +616,7 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
 
     it('counts a recorded dynamic-reference expression as unchanged: the refusal destroys nothing', () => {
       const record = { ...WRITTEN, [CREATE_ONLY]: '{{resolve:ssm:/az-id}}' };
-      const desired = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+      const desired = { ...WRITTEN, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
       expect(findUnwrittenCreateOnlyDrops(TYPE, record, desired, NONE, EVIDENCE)).toEqual([CREATE_ONLY]);
     });
   });

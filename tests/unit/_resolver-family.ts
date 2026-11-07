@@ -40,6 +40,22 @@ for (const entry of readdirSync(SPLIT_DIR, { withFileTypes: true })) {
   }
 }
 
+// And a cross-check by an independent directory walk: a module in a nested
+// split directory (#5835) that the listing above missed would drop out of
+// every family fence silently, since none of them counts an absence per file.
+const walkTs = (dir: string, rel: string): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory()
+      ? walkTs(join(dir, e.name), `${rel}${e.name}/`)
+      : e.name.endsWith('.ts')
+        ? [`src/deployment/intrinsic-resolver/${rel}${e.name}`]
+        : []
+  );
+const missing = walkTs(SPLIT_DIR, '').filter((f) => !RESOLVER_FAMILY.includes(f));
+if (missing.length > 0) {
+  throw new Error(`the resolver family is missing ${missing.join(', ')}`);
+}
+
 /** Every family file's source, joined with a newline. */
 export function readResolverFamily(): string {
   const root = join(import.meta.dirname, '../..');

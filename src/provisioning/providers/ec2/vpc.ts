@@ -39,6 +39,7 @@ import { reportCreatedResource, retractCreatedResource } from '../../created-res
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
 import {
+  IPAM_POOL_ID_PATTERN,
   IPAM_POOL_NOT_FOUND_NAMES,
   VPC_CREATE_ONLY_SENT,
   VPC_ENCRYPTION_CONTROL_EXCLUSIONS,
@@ -613,43 +614,94 @@ export async function waitForVpcIpamRelease(
   properties: Record<string, unknown> | undefined,
   context: DeleteContext | undefined
 ): Promise<void> {
-  const poolId = properties?.['Ipv4IpamPoolId'];
-  if (typeof poolId !== 'string' || !/^ipam-pool-[0-9a-z]+$/.test(poolId)) return;
+  await this.waitForIpamAllocationRelease(
+    [properties?.['Ipv4IpamPoolId']],
+    vpcId,
+    'VPC',
+    'AWS can take about 18 minutes',
+    resourceType,
+    context
+  );
+}
+
+/**
+ * The wait {@link waitForVpcIpamRelease} describes, for any resource IPAM
+ * pools allocated to: until no pool's `GetIpamPoolAllocations` names
+ * `resourceId`. go-to-k/cdkd#5632: a deleted subnet's pool allocations wait
+ * the same way, since their pool CIDRs cannot be deprovisioned before then.
+ * Every pool shares ONE wait, so a subnet holding an IPv4 and an IPv6
+ * allocation is capped by one budget, not one per pool, and stays under the
+ * per-resource deadline. Only a recorded pool id cdkd can send is waited on:
+ * a redacted or `{{resolve:...}}` one is skipped.
+ */
+export async function waitForIpamAllocationRelease(
+  this: EC2Provider,
+  poolIds: readonly unknown[],
+  resourceId: string,
+  noun: string,
+  expectedDuration: string,
+  resourceType: string,
+  context: DeleteContext | undefined
+): Promise<void> {
+  const pending = new Set(
+    poolIds.filter(
+      (poolId): poolId is string => typeof poolId === 'string' && IPAM_POOL_ID_PATTERN.test(poolId)
+    )
+  );
+  if (pending.size === 0) return;
+  const mask = maskerOrIdentity(context?.maskSecrets);
+  const pools = [...pending].join(' and ');
+  const plural = pending.size > 1;
   // Said up front: the release takes minutes, and a silent wait reads as a
   // hang. The per-resource warn-after timer repeats the reminder later.
   this.logger.info(
-    maskerOrIdentity(context?.maskSecrets)(
-      safeMsg`  Waiting for IPAM pool ${poolId} to release the allocation of deleted VPC ${vpcId}; AWS can take about 18 minutes, and the pool CIDR cannot be deprovisioned before then`
+    mask(
+      plural
+        ? safeMsg`  Waiting for IPAM pools ${pools} to release the allocations of deleted ${noun} ${resourceId}; ${expectedDuration}, and the pool CIDRs cannot be deprovisioned before then`
+        : safeMsg`  Waiting for IPAM pool ${pools} to release the allocation of deleted ${noun} ${resourceId}; ${expectedDuration}, and the pool CIDR cannot be deprovisioned before then`
     )
   );
+  // One pool's answer: allocated, released, or unknown (a listing cut at the
+  // page cap proves nothing about the pages never read).
+  const poolState = async (poolId: string): Promise<'allocated' | 'released' | 'unknown'> => {
+    try {
+      let token: string | undefined;
+      let pages = 0;
+      do {
+        const page = await this.ec2Client.send(
+          new GetIpamPoolAllocationsCommand({ IpamPoolId: poolId, NextToken: token })
+        );
+        if ((page.IpamPoolAllocations ?? []).some((a) => a.ResourceId === resourceId)) {
+          return 'allocated';
+        }
+        token = page.NextToken;
+        pages++;
+      } while (token && pages < MAX_ORPHAN_LIST_PAGES);
+      return token ? 'unknown' : 'released';
+    } catch (error) {
+      if (isNamedError(error, IPAM_POOL_NOT_FOUND_NAMES)) return 'released';
+      throw error;
+    }
+  };
   await waitForGoneAfterDelete({
-    what: maskerOrIdentity(context?.maskSecrets)(
-      `the IPAM pool ${poolId} allocation of VPC ${vpcId}`
+    what: mask(
+      plural
+        ? `the IPAM pool ${pools} allocations of ${noun} ${resourceId}`
+        : `the IPAM pool ${pools} allocation of ${noun} ${resourceId}`
     ),
     resourceType,
-    consequence:
-      'AWS releases the allocation on its side; until it does, the pool refuses to deprovision its CIDR ("The CIDR has one or more allocations."), so re-run the destroy if it stops there.',
+    consequence: plural
+      ? 'AWS releases the allocations on its side; until it does, each pool refuses to deprovision its CIDR ("The CIDR has one or more allocations."), so re-run the destroy if it stops there.'
+      : 'AWS releases the allocation on its side; until it does, the pool refuses to deprovision its CIDR ("The CIDR has one or more allocations."), so re-run the destroy if it stops there.',
     describe: async () => {
-      try {
-        let token: string | undefined;
-        let pages = 0;
-        do {
-          const page = await this.ec2Client.send(
-            new GetIpamPoolAllocationsCommand({ IpamPoolId: poolId, NextToken: token })
-          );
-          if ((page.IpamPoolAllocations ?? []).some((a) => a.ResourceId === vpcId)) {
-            return 'allocated';
-          }
-          token = page.NextToken;
-          pages++;
-        } while (token && pages < MAX_ORPHAN_LIST_PAGES);
-        // A listing cut at the page cap proves nothing about the pages
-        // never read: keep waiting rather than call the VPC released.
-        return token ? 'unknown (allocation listing truncated)' : undefined;
-      } catch (error) {
-        if (isNamedError(error, IPAM_POOL_NOT_FOUND_NAMES)) return undefined;
-        throw error;
+      let truncated = false;
+      for (const poolId of [...pending]) {
+        const state = await poolState(poolId);
+        if (state === 'allocated') return 'allocated';
+        if (state === 'released') pending.delete(poolId);
+        else truncated = true;
       }
+      return truncated ? 'unknown (allocation listing truncated)' : undefined;
     },
     logger: this.logger,
     pollIntervalMs: vpcIpamReleaseWait.pollIntervalMs,
@@ -735,5 +787,6 @@ export const vpcMethods = {
   updateVpc,
   deleteVpc,
   waitForVpcIpamRelease,
+  waitForIpamAllocationRelease,
   getVpcAttribute,
 };

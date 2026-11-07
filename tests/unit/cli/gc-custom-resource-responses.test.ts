@@ -116,7 +116,7 @@ vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
   };
 });
 
-// `gc.ts` imports readline as a DEFAULT namespace (`import readline from
+// `gc/candidates.ts` imports readline as a DEFAULT namespace (`import readline from
 // 'node:readline/promises'`), so a named-export-only mock throws "No 'default'
 // export is defined" instead of answering the prompt. Same shape as gc.test.ts.
 vi.mock('node:readline/promises', () => ({

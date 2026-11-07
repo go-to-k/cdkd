@@ -332,7 +332,8 @@ export async function deleteSubnet(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  context?: DeleteContext
+  context?: DeleteContext,
+  properties?: Record<string, unknown>
 ): Promise<void> {
   this.logger.debug(`Deleting Subnet ${logicalId}: ${physicalId}`);
 
@@ -347,6 +348,18 @@ export async function deleteSubnet(
     try {
       await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: physicalId }));
       this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
+      // go-to-k/cdkd#5632: a pool-allocated block holds its allocation past
+      // the delete, as an IPAM VPC's does (#5633). Both pools share one wait
+      // budget. Measured: about 19 minutes after DeleteSubnet (1153 s,
+      // us-east-1, 2026-11-07), inside the 25-minute cap.
+      await this.waitForIpamAllocationRelease(
+        [properties?.['Ipv4IpamPoolId'], properties?.['Ipv6IpamPoolId']],
+        physicalId,
+        'subnet',
+        'AWS can take about 19 minutes',
+        resourceType,
+        context
+      );
       return;
     } catch (error) {
       // go-to-k/cdkd#4606: a journaled orphan counts as gone only on
@@ -477,6 +490,10 @@ export async function getSubnetAttribute(
     if (!subnet) return undefined;
 
     if (attributeName === 'AvailabilityZone') return subnet.AvailabilityZone;
+    // go-to-k/cdkd#5632: the other create-only members create() records.
+    if (attributeName === 'AvailabilityZoneId') return subnet.AvailabilityZoneId;
+    if (attributeName === 'CidrBlock') return subnet.CidrBlock;
+    if (attributeName === 'VpcId') return subnet.VpcId;
     return undefined;
   } catch {
     return undefined;

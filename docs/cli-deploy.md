@@ -194,8 +194,8 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 
 ### Edge cases
 
-- A subnet with `Ipv6CidrBlock` waits for its IPv6 association in every mode,
-  before DNS64 wiring and observed-state capture. In-place CIDR changes also
+- A subnet with `Ipv6CidrBlock` or `Ipv6IpamPoolId` waits for its IPv6
+  association in every mode, before DNS64 wiring and observed-state capture. In-place CIDR changes also
   wait for disassociation and association. See
   [wait mode details](cli-deploy-waits.md).
 
