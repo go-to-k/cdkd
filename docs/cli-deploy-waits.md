@@ -273,6 +273,7 @@ prints the manual wait command, and continues.
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |
 | VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
 | Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes) |
+| IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
 
 Each wait is there for a reason:
 
@@ -302,10 +303,16 @@ Each wait is there for a reason:
   after `DeleteVpc` returns, and until then the pool refuses to deprovision
   its CIDR (`The CIDR has one or more allocations.`). So destroying a VPC
   whose CIDR came from an IPAM pool takes that long. cdkd waits for the pool
-  to stop listing the allocation, as CloudFormation must too, for up to
-  25 minutes. If this wait runs out, or the role cannot call
-  `ec2:GetIpamPoolAllocations`, cdkd warns and moves on, and a destroy that
-  then stops at the pool CIDR can be re-run.
+  to stop listing the allocation for up to 25 minutes. If this wait runs out,
+  or the role cannot call `ec2:GetIpamPoolAllocations`, cdkd warns and moves
+  on.
+- An IPAM pool CIDR whose delete is refused with
+  `The CIDR has one or more allocations.` waits too, when the pool still lists
+  allocations of VPCs or subnets of your account that are already deleted.
+  cdkd waits up to another 25 minutes for AWS to release them, then deletes
+  the pool CIDR again. An allocation held by a live resource fails the delete
+  at once, as CloudFormation's own pool CIDR delete does. If the wait runs
+  out, the destroy stops at the pool CIDR and can be re-run.
 - A subnet whose IPv4 or IPv6 CIDR came from an IPAM pool holds its
   allocation past the delete the same way, so cdkd waits for each pool the
   subnet names to stop listing it. An IPv4 and an IPv6 pool share one

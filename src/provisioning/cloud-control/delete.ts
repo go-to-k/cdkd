@@ -44,6 +44,15 @@ import {
   ccDeleteMayHaveActed,
 } from './delete-guards.js';
 import { IdScrubLog, inIdLogScope, holdsSecretDerivedLeaf } from './id-log.js';
+import { CloudControlOperationFailedError } from './shared.js';
+import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  IPAM_CIDR_HAS_ALLOCATIONS,
+  ipamPoolCidrReleaseWait,
+  ipamPoolIdOfPoolCidr,
+  waitForLingeringIpamAllocations,
+} from '../ipam-pool-cidr-release.js';
 
 /**
  * Delete a resource using Cloud Control API.
@@ -456,6 +465,9 @@ export async function deleteThroughCloudControl(
   // Whether an earlier attempt of this record may already be deleting (see
   // `ccDeleteMayHaveActed`), captured before each attempt can clear the latch.
   let priorMayBeDeleting = false;
+  // go-to-k/cdkd#5975: when the first "has allocations" refusal started the
+  // pool CIDR's release wait; one budget across every re-sent delete.
+  let ipamReleaseWaitStartedAt: number | undefined;
   for (let attempt = 1; ; attempt++) {
     try {
       // Issue #3455: an EBS volume is deleted with EC2 `DeleteVolume`, never
@@ -590,6 +602,22 @@ export async function deleteThroughCloudControl(
         await this.sleep(3000 * attempt);
         continue;
       }
+      // go-to-k/cdkd#5975: the pool refuses to deprovision this CIDR while a
+      // VPC or subnet it allocated to is deleted but not yet RELEASED, which
+      // AWS can take past the VPC's own 25-minute wait. Wait for those
+      // allocations here and send the same delete again, as Terraform's pool
+      // CIDR delete waits for them first. Any other holder fails now.
+      if (resourceType === 'AWS::EC2::IPAMPoolCidr' && isCidrHasAllocationsRefusal(error)) {
+        ipamReleaseWaitStartedAt ??= Date.now();
+        const verdict = await awaitIpamPoolCidrRelease.call(
+          this,
+          logicalId,
+          physicalId,
+          resourceType,
+          ipamPoolCidrReleaseWait.maxWaitMs - (Date.now() - ipamReleaseWaitStartedAt)
+        );
+        if (verdict === 'released') continue;
+      }
       // Issue #5225: what this arm kept must not be dropped one level up by
       // the engine's or the destroy runner's substring classifiers.
       try {
@@ -599,6 +627,60 @@ export async function deleteThroughCloudControl(
       }
     }
   }
+}
+
+/**
+ * go-to-k/cdkd#5975: the handler's own refusal of a pool CIDR delete while
+ * the CIDR has allocations. Read off the FAILED operation only: the message
+ * also carries the logical id, which cannot spell this sentence.
+ */
+function isCidrHasAllocationsRefusal(error: unknown): boolean {
+  return (
+    error instanceof CloudControlOperationFailedError &&
+    error.ccOperation === 'DELETE' &&
+    error.message.includes(IPAM_CIDR_HAS_ALLOCATIONS)
+  );
+}
+
+/**
+ * go-to-k/cdkd#5975: the release wait {@link waitForLingeringIpamAllocations}
+ * describes, for a refused `AWS::EC2::IPAMPoolCidr` delete. Anything that
+ * keeps it from reading (an identifier of another shape, a region mismatch, an
+ * unknown account, a spent budget) answers `'none'`, so the caller fails with
+ * the handler's refusal, as before.
+ */
+async function awaitIpamPoolCidrRelease(
+  this: CloudControlProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  budgetMs: number
+): Promise<'released' | 'none' | 'not-released'> {
+  const poolId = ipamPoolIdOfPoolCidr(physicalId);
+  if (poolId === undefined || budgetMs <= 0) return 'none';
+  let ec2: EC2Client;
+  let accountId: string;
+  let region: string;
+  try {
+    ec2 = await this.ec2ClientInCcRegion(resourceType, logicalId, physicalId);
+    region = canonicalizeRegion((await ec2.config.region()).trim());
+    accountId = (await getAccountInfo(region)).accountId;
+  } catch (error) {
+    this.logger.debug(
+      safeMsg`${logicalId}: cannot read IPAM pool ${poolId}'s allocations, so the pool CIDR delete is not retried: ${describeAwsFailure(error).detail}`
+    );
+    return 'none';
+  }
+  return waitForLingeringIpamAllocations({
+    ec2,
+    poolId,
+    accountId,
+    region,
+    resourceType,
+    logger: this.logger,
+    maxWaitMs: budgetMs,
+    sleep: (ms) => this.sleep(ms),
+  });
 }
 
 /**
