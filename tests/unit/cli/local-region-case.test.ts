@@ -745,6 +745,31 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     return out;
   };
 
+  /**
+   * Unfolded `options.region` reads that a split MOVED rather than added, as
+   * exact per-member counts. In the pre-split `local-invoke-agentcore.ts` they
+   * sat in helpers below the handler's fold (`resolveAgentCoreImage`,
+   * `buildContainerEnvWith`), which the handler calls with its folded
+   * `options` — the line-order check passed them then, and the split
+   * (go-to-k/cdkd#5835) moved them without changing a byte. Exact, not a
+   * ceiling: a NEW unfolded read in these members reds, and so does one that
+   * goes away (update the count deliberately).
+   */
+  const MOVED_SIBLING_READS: Record<string, Record<string, number>> = {
+    'local-invoke-agentcore.ts': {
+      'local-invoke-agentcore/env.ts': 3,
+      'local-invoke-agentcore/image.ts': 2,
+    },
+  };
+  const countByMember = (reads: string[]): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const read of reads) {
+      const member = read.slice(0, read.lastIndexOf(':'));
+      out[member] = (out[member] ?? 0) + 1;
+    }
+    return out;
+  };
+
   const commands = readdirSync(commandsDir)
     .filter((f) => f.startsWith('local-') && f.endsWith('.ts'))
     .filter((f) => familyLiveLines(f).some((line) => line.includes('options.region')));
@@ -765,9 +790,9 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     expect(holders, `${file}: live options.region canonicalization not found`).toHaveLength(1);
     const holder = holders[0]!;
     expect(
-      siblingReads(file, holder, 'options.region'),
+      countByMember(siblingReads(file, holder, 'options.region')),
       `${file}: options.region is read unfolded outside ${holder}, the module that folds it`
-    ).toEqual([]);
+    ).toEqual(MOVED_SIBLING_READS[file] ?? {});
     const lines = liveLinesOf(holder);
     const foldAt = lines.findIndex(
       (line) => line.includes(FOLD) || line.includes(SHARED_FOLD)
