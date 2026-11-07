@@ -151,7 +151,9 @@ export function canonicalizeUnsettledProperties(
  *    `PrivateIpAddress`, `SourceDestCheck`, `Monitoring` (mapped from
  *    AWS `Monitoring.State` to CFn boolean), `Tenancy` (from
  *    `Placement.Tenancy`), `PlacementGroupName` (from
- *    `Placement.GroupName`), `IamInstanceProfile` (ARN form — v2 fallback
+ *    `Placement.GroupName`), `Affinity` / `HostId` / `HostResourceGroupArn`
+ *    (from `Placement`), `KernelId`, `RamdiskId`, `EnclaveOptions.Enabled`
+ *    (go-to-k/cdkd#5630), `IamInstanceProfile` (ARN form — v2 fallback
  *    state holding a name will fire one-time drift, resolved via
  *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`). For
  *    `BlockDeviceMappings`, `DescribeInstances` only returns

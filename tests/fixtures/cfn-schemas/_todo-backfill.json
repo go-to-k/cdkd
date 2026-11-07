@@ -23,14 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::EC2::Instance": [
-      "Affinity",
-      "EnclaveOptions",
-      "HostId",
-      "HostResourceGroupArn",
-      "KernelId",
-      "RamdiskId"
-    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ],

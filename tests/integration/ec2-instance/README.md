@@ -15,6 +15,8 @@ Minimal EC2 Instance deployment example for cdkd.
   holding its first /64, with two t3.nano instances (issue #5630)
 - **Launch template** - a t3.nano instance launched from an `AWS::EC2::LaunchTemplate`, with two
   1 GiB gp3 `AWS::EC2::Volume`s for its `Volumes` property (issue #5630)
+- **Enclave instance** - a c6a.xlarge with Nitro Enclaves enabled (issue #5630); EC2 refuses
+  `EnclaveOptions` on t3 types, and c6a.xlarge is the cheapest x86 type with 4 vCPUs that takes it
 
 ## Demonstrates
 
@@ -64,6 +66,11 @@ Minimal EC2 Instance deployment example for cdkd.
   (a new association on the same instance), 1m (`=removed`) removes the association, 1n
   (`=readded`) adds one back, and 1o (`=unlicensed`) drops the license, which replaces the instance;
   the replaced instance's association is deleted, and so is the last one on destroy.
+- `EnclaveOptions` (issue #5630): the enclave instance must stay on the SDK route and read back
+  `EnclaveOptions.Enabled: true`, and no later phase may replace it (the member is create-only).
+  The Dedicated Host members (`Affinity`, `HostId`, `HostResourceGroupArn`) and the paravirtual
+  `KernelId` / `RamdiskId` have no arm: they need a Dedicated Host allocation or a PV AMI, which
+  current instance types cannot launch.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.
