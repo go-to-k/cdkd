@@ -9,7 +9,6 @@
 # Never add a line here; split the file instead.
 src/analyzer/diff-calculator.ts
 src/analyzer/outputs-diff.ts
-src/analyzer/replacement-rules.ts
 src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
