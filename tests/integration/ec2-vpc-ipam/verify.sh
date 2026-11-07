@@ -24,8 +24,8 @@
 #      AvailabilityZoneId names; its SubnetCidr / SubnetAzId Outputs
 #      (Fn::GetAtt) must equal what EC2 reports.
 #      go-to-k/cdkd#5945: 1a also gives SubnetVpc the IPv6 block
-#      fd00:cd:5945:100::/56 from an IPv6 pool holding the ULA range
-#      fd00:cd:5945::/48 (asserted on the VPC and in the pool's allocations);
+#      fd12:cd:5945:100::/56 from an IPv6 pool holding the ULA range
+#      fd12:cd:5945::/48 (asserted on the VPC and in the pool's allocations);
 #      the monitoring wait covers that block too, and 1b adds an IPv6 planning
 #      pool holding it and an IPv6-only subnet taking a /64 from it
 #      (Ipv6IpamPoolId + Ipv6NetmaskLength). Assert it is on the SDK path, holds
@@ -87,9 +87,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 POOL_CIDR_PREFIX="10.240."
 # go-to-k/cdkd#5632: the subnet pool's CIDR in lib/ (inside SubnetVpc's 10.241.0.0/20).
 SUBNET_POOL_CIDR_PREFIX="10.241.0."
-# go-to-k/cdkd#5945: the IPv6 pool's ULA range and SubnetVpc's IPv6 block in lib/.
-IPV6_POOL_CIDR="fd00:cd:5945::/48"
-IPV6_VPC_CIDR="fd00:cd:5945:100::/56"
+# go-to-k/cdkd#5945: SubnetVpc's IPv6 block in lib/, inside its pool's fd12:cd:5945::/48.
+IPV6_VPC_CIDR="fd12:cd:5945:100::/56"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below

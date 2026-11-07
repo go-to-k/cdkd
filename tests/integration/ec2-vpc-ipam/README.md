@@ -15,8 +15,8 @@ from an IPv6 pool planning that VPC's IPv6 block (issue #5945).
 - **Subnet VPC** - A second VPC with a declared `10.241.0.0/20`. A VPC whose CIDR came from a pool cannot source a planning pool: its CIDR is already allocated space in the scope
 - **Planning pool** - IPv4 pool whose source resource is the subnet VPC, holding its whole CIDR
 - **Subnet pool** - Carved from the planning pool (same source resource), holding `10.241.0.0/24`
-- **IPv6 pool** - IPv6, in the private scope, holding the ULA range `fd00:cd:5945::/48`
-- **Subnet VPC IPv6 block** - `AWS::EC2::VPCCidrBlock` (Cloud Control) giving the subnet VPC `fd00:cd:5945:100::/56` from the IPv6 pool
+- **IPv6 pool** - IPv6, in the private scope, holding the ULA range `fd12:cd:5945::/48` (EC2 refuses a range inside `fd00::/16`: "is not valid for use in pool")
+- **Subnet VPC IPv6 block** - `AWS::EC2::VPCCidrBlock` (Cloud Control) giving the subnet VPC `fd12:cd:5945:100::/56` from the IPv6 pool
 - **IPv6 planning pool** - Sourced from the subnet VPC AND the IPv6 pool, holding the VPC's `/56`. Without the source pool, EC2 refuses the `/56` as overlapping space already in the scope
 
 The planning pools, the subnet pool and both subnets are deployed in a second
