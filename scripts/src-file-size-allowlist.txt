@@ -58,7 +58,6 @@ src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
-src/provisioning/providers/pipes-provider.ts
 src/provisioning/resource-name.ts
 src/state/lock-manager.ts
 src/state/s3-state-backend.ts
