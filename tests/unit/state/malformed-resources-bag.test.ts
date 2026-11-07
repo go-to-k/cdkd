@@ -3599,11 +3599,13 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // engine's guard — and `settleJournalAfterSuccess` (#4600), reached only
       // from the deploy flow below its guard. Pinned in the next case.
       if (file === 'src/deployment/deploy-engine/rollback.ts') return false;
-      // The engine host reads the container only in `redactStateForPersist`,
+      // The engine host reads the container only in `redactStateForPersist`
+      // (its body in `deploy-engine/state-persist.ts`, go-to-k/cdkd#5835),
       // and `deploy-engine/execute.ts` only inside `executeDeployment` /
       // `persistStateAfterOutputFailure`, both reached only through the deploy
       // flow's single `executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
+      if (file === 'src/deployment/deploy-engine/state-persist.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
       // `executeDeployment`'s failure path, split out of `execute.ts`
       // (go-to-k/cdkd#5835): read only inside `rollbackFailedDeploy`, whose
@@ -3751,18 +3753,25 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
         "diff-recursive's repair."
     ).not.toContain('getState(');
     // The engine host's only container read is `redactStateForPersist`, which
-    // runs only on a save, and every save follows the deploy flow's guard.
+    // runs only on a save, and every save follows the deploy flow's guard. Its
+    // body lives in `deploy-engine/state-persist.ts` (go-to-k/cdkd#5835), so
+    // the host is read together with that module: a read in EITHER file outside
+    // the body reds below.
     const reads = (text: string): number =>
       text.split(/[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/).length - 1;
-    const engine = code('src/deployment/deploy-engine.ts');
-    const redactAt = engine.indexOf('redactStateForPersist(state: StackState)');
+    const engine = [
+      code('src/deployment/deploy-engine.ts'),
+      code('src/deployment/deploy-engine/state-persist.ts'),
+    ].join('\n');
+    const redactAt = engine.indexOf('redactStateForPersist(this: DeployEngine, state: StackState)');
     expect(redactAt, 'redactStateForPersist moved or was renamed').toBeGreaterThan(-1);
-    const redactBody = engine.slice(redactAt, engine.indexOf('\n  }\n', redactAt));
+    const redactBody = engine.slice(redactAt, engine.indexOf('\n}\n', redactAt));
     expect(reads(engine), 'the engine host no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(engine),
-      'deploy-engine.ts reads the orphans container outside redactStateForPersist, on a path ' +
-        'the deploy-flow anchor does not cover: give it its own ANCHORS entry.'
+      'deploy-engine.ts / deploy-engine/state-persist.ts read the orphans container outside ' +
+        'redactStateForPersist, on a path the deploy-flow anchor does not cover: give it its ' +
+        'own ANCHORS entry.'
     ).toBe(reads(redactBody));
     // `deploy-engine/execute.ts` reads it only in the two methods the deploy
     // flow reaches through ONE call, placed below that flow's guard.
