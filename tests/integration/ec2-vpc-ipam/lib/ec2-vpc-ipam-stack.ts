@@ -26,13 +26,25 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * join the stack only under CDKD_IPAM_WITH_SUBNET=true, after IPAM monitors
  * SubnetVpc (see below).
  *
- * UPDATE phase: CDKD_TEST_UPDATE=true adds a tag to the IPAM VPC and the subnet,
+ * go-to-k/cdkd#5945: the IPv6 arm. SubnetVpc also takes an IPv6 block from an
+ * IPv6 pool in the private scope (`AWS::EC2::VPCCidrBlock`, through Cloud
+ * Control), and an IPv6-only subnet (`Ipv6Subnet`) takes a /64 from an IPv6
+ * planning pool holding that block, with `Ipv6IpamPoolId` and
+ * `Ipv6NetmaskLength`. The planning pool and the subnet join with the IPv4
+ * ones.
+ *
+ * UPDATE phase: CDKD_TEST_UPDATE=true adds a tag to the IPAM VPC and both subnets,
  * in-place updates whose recorded `CidrBlock` attributes must survive.
  *
  * covers: AWS::EC2::IPAM
  * covers: AWS::EC2::IPAMPool
  * covers: AWS::EC2::IPAMPoolCidr
  */
+/** go-to-k/cdkd#5945: the IPv6 pool's ULA range (verify.sh asserts against it). */
+const IPV6_POOL_CIDR = 'fd00:cd:5945::/48';
+/** go-to-k/cdkd#5945: SubnetVpc's IPv6 block, the second /56 of that range. */
+const IPV6_VPC_CIDR = 'fd00:cd:5945:100::/56';
+
 export class Ec2VpcIpamStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -82,6 +94,32 @@ export class Ec2VpcIpamStack extends cdk.Stack {
     const subnetVpcCidr = '10.241.0.0/20';
     const subnetVpc = new ec2.CfnVPC(this, 'SubnetVpc', { cidrBlock: subnetVpcCidr });
     new cdk.CfnOutput(this, 'SubnetVpcId', { value: subnetVpc.ref });
+
+    // go-to-k/cdkd#5945: the IPv6 arm. SubnetVpc's IPv6 block comes from an
+    // IPv6 pool in the private scope holding a ULA range (EC2 accepts any
+    // fd00::/8 CIDR there; measured, us-east-1). The block is named
+    // explicitly inside the pool, so the planning pool below can hold it
+    // without reading it back.
+    const ipv6Pool = new ec2.CfnIPAMPool(this, 'Ipv6Pool', {
+      addressFamily: 'ipv6',
+      ipamScopeId: ipam.attrPrivateDefaultScopeId,
+      locale: this.region,
+    });
+    const ipv6PoolCidr = new ec2.CfnIPAMPoolCidr(this, 'Ipv6PoolCidr', {
+      ipamPoolId: ipv6Pool.attrIpamPoolId,
+      cidr: IPV6_POOL_CIDR,
+    });
+    // Deleted only after SubnetVpc: the pool keeps the VPC's allocation for
+    // a while after the block is disassociated, and the pool CIDR delete
+    // waits out the allocations of DELETED VPCs only (go-to-k/cdkd#5975).
+    ipv6PoolCidr.addDependency(subnetVpc);
+    const subnetVpcIpv6 = new ec2.CfnVPCCidrBlock(this, 'SubnetVpcIpv6', {
+      vpcId: subnetVpc.ref,
+      ipv6IpamPoolId: ipv6Pool.attrIpamPoolId,
+      ipv6CidrBlock: IPV6_VPC_CIDR,
+    });
+    subnetVpcIpv6.addDependency(ipv6PoolCidr);
+    new cdk.CfnOutput(this, 'Ipv6PoolId', { value: ipv6Pool.attrIpamPoolId });
 
     // EC2 refuses a pool sourced from a VPC until IPAM monitors it ("The
     // source resource vpc-... is not monitored in the IPAM scope."), which
@@ -139,6 +177,40 @@ export class Ec2VpcIpamStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'SubnetAzId', { value: subnet.attrAvailabilityZoneId });
       new cdk.CfnOutput(this, 'SubnetPoolId', { value: subnetPool.attrIpamPoolId });
       new cdk.CfnOutput(this, 'PlanningPoolId', { value: planningPool.attrIpamPoolId });
+
+      // go-to-k/cdkd#5945: the IPv6 planning pool. Unlike the IPv4 one it
+      // must name the pool the VPC's block came from as its source too:
+      // without it, provisioning the VPC's block fails with "The CIDR
+      // overlaps with space already in the scope." (measured, us-east-1).
+      const ipv6PlanningPool = new ec2.CfnIPAMPool(this, 'Ipv6PlanningPool', {
+        addressFamily: 'ipv6',
+        ipamScopeId: ipam.attrPrivateDefaultScopeId,
+        locale: this.region,
+        sourceIpamPoolId: ipv6Pool.attrIpamPoolId,
+        sourceResource,
+      });
+      // The VPC must hold the block before the planning pool can.
+      ipv6PlanningPool.addDependency(subnetVpcIpv6);
+      const ipv6PlanningPoolCidr = new ec2.CfnIPAMPoolCidr(this, 'Ipv6PlanningPoolCidr', {
+        ipamPoolId: ipv6PlanningPool.attrIpamPoolId,
+        cidr: IPV6_VPC_CIDR,
+      });
+      // An IPv6-only subnet: its one block is the pool's allocation, so
+      // nothing else can satisfy the create's association wait.
+      const ipv6Subnet = new ec2.CfnSubnet(this, 'Ipv6Subnet', {
+        vpcId: subnetVpc.ref,
+        ipv6Native: true,
+        ipv6IpamPoolId: ipv6PlanningPool.attrIpamPoolId,
+        ipv6NetmaskLength: 64,
+        availabilityZoneId: azId,
+        ...(isUpdate ? { tags: [{ key: 'cdkd-5945', value: 'updated' }] } : {}),
+      });
+      ipv6Subnet.addDependency(ipv6PlanningPoolCidr);
+      new cdk.CfnOutput(this, 'Ipv6SubnetId', { value: ipv6Subnet.ref });
+      new cdk.CfnOutput(this, 'Ipv6SubnetCidr', {
+        value: cdk.Fn.select(0, ipv6Subnet.attrIpv6CidrBlocks),
+      });
+      new cdk.CfnOutput(this, 'Ipv6PlanningPoolId', { value: ipv6PlanningPool.attrIpamPoolId });
     }
     new cdk.CfnOutput(this, 'VpcCidr', { value: vpc.attrCidrBlock });
     new cdk.CfnOutput(this, 'IpamId', { value: ipam.attrIpamId });
