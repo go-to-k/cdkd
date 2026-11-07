@@ -2809,6 +2809,82 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
 });
 
 /**
+ * The BAG half of the Fn::ImportValue exports-index same-region read's debug
+ * mask (go-to-k/cdkd#5835). A cross-region index entry is checked against the
+ * same-named producer's record in the consumer's region (#5176); when that
+ * read fails, the failure is logged at debug through `displayMasked(...,
+ * context)`. Every name here is plain: the secret is one the context knows
+ * only through its secret bags (resolved earlier in the same pass through a
+ * dynamic reference), quoted back by the S3 error text. Only `context`
+ * reaching that `displayMasked` call can mask it.
+ *
+ * Two spellings, per the masking-test convention: one carrying a `"` and a
+ * newline, and a plain alphanumeric twin. The CONTROL drives the same failure
+ * quoting an UNRECORDED value, which must print verbatim — the case where the
+ * wrong value IS emitted, so a green above is the mask's doing.
+ */
+describe('the exports-index same-region read debug line masks through the secret bags (go-to-k/cdkd#5835)', () => {
+  const OTHER_ID = 'cdkd-index-read-bag-probe';
+  const QUOTED_SECRET = 'ix"Rd\nQ7zp';
+  const ALNUM_SECRET = 'ixRdQ7zpAlnum';
+  const PREFIX = 'Same-region read for an exports index entry failed: ';
+
+  /** Resolve `secret` through a dynamic reference, then import through a cross-region index entry whose same-region read fails quoting `quoted`. */
+  async function debugLinesAfterResolving(secret: string, quoted: string): Promise<string[]> {
+    lookupBehaviour.secretAnswer = { SecretString: JSON.stringify({ k: secret }) };
+    const getState = vi.fn(async (stackName: string, region?: string) => {
+      const aws = new Error(
+        `Access Denied: s3:GetObject on cdkd/${stackName}/${region}/state.json (x-amz-meta-note: ${quoted})`
+      );
+      (aws as unknown as { $metadata: unknown }).$metadata = { httpStatusCode: 403 };
+      throw new StateError(
+        `Failed to get state for stack '${stackName}' (${region}): ${aws.message}`,
+        aws
+      );
+    });
+    const stateBackend = { listStacks: vi.fn(async () => []), getState } as unknown as S3StateBackend;
+    const exportIndex = {
+      lookup: vi.fn(async () => ({
+        value: 'literal-v',
+        producerStack: 'Producer',
+        producerRegion: 'us-west-2',
+      })),
+    } as unknown as ExportIndexStore;
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = makeContext({ stateBackend, exportIndex });
+    expect(
+      await resolver.resolve(`{{resolve:secretsmanager:${OTHER_ID}:SecretString:k}}`, context as never),
+      'premise: the dynamic reference resolved to the secret'
+    ).toBe(secret);
+    expect(context.recordedSecretValues.size, 'premise: the secret reached the bag').toBeGreaterThan(0);
+    expect(
+      await resolver.resolve({ 'Fn::ImportValue': 'SharedExport' }, context as never),
+      'premise: the cross-region entry is kept after the failed read'
+    ).toBe('literal-v');
+    expect(getState, 'premise: the same-region read ran').toHaveBeenCalledWith('Producer', 'us-east-1');
+    return logSpies.debug.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(PREFIX));
+  }
+
+  it.each([
+    ['a quote and a newline', QUOTED_SECRET],
+    ['the alphanumeric twin', ALNUM_SECRET],
+  ])('masks %s in the debug line', async (_label, secret) => {
+    const lines = await debugLinesAfterResolving(secret, secret);
+    expect(lines, 'the debug line must have fired, or this is vacuous').toHaveLength(1);
+    expect(lines[0]).toContain('cdkd/Producer/us-east-1/state.json (x-amz-meta-note: ***)');
+    expectNowhere(secret);
+  });
+
+  it('CONTROL: the same failure quoting an UNRECORDED value prints it verbatim', async () => {
+    const unrecorded = 'unrecordedIxRd7';
+    const lines = await debugLinesAfterResolving(ALNUM_SECRET, unrecorded);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`(x-amz-meta-note: ${unrecorded})`);
+    expect(lines[0]).not.toContain('***');
+  });
+});
+
+/**
  * go-to-k/cdkd#3171: text the AWS SDK produces about a request that carried a
  * name assembled around a sub-floor secret. The resolver prints the name
  * masked in its OWN words (go-to-k/cdkd#3150); the SDK quotes the name back as
