@@ -10,7 +10,6 @@
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
 src/cli/commands/rollback.ts
-src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
 src/deployment/deploy-engine/execute.ts
 src/deployment/deploy-engine/masking.ts
