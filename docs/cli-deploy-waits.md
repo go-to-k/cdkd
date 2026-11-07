@@ -272,7 +272,7 @@ prints the manual wait command, and continues.
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |
 | VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
-| Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes) |
+| Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes for an IPv4 block, about 25 for an IPv6 one) |
 | IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
 
 Each wait is there for a reason:
@@ -318,8 +318,11 @@ Each wait is there for a reason:
 - A subnet whose IPv4 or IPv6 CIDR came from an IPAM pool holds its
   allocation past the delete the same way, so cdkd waits for each pool the
   subnet names to stop listing it. An IPv4 and an IPv6 pool share one
-  25-minute cap, with the same warning. AWS releases a subnet's allocation
-  about 19 minutes after `DeleteSubnet` returns.
+  25-minute cap, with the same warning. AWS releases an IPv4 allocation about
+  19 minutes after `DeleteSubnet` returns, and an IPv6 one about 25 minutes
+  after (1523 seconds, measured in us-east-1 on 2026-11-07), past that cap: the
+  subnet delete then warns and moves on, and the pool CIDR's delete above
+  waits out the rest.
 
 - An RDS, DocumentDB or Neptune cluster or instance, or an ElastiCache cache
   cluster, can take ten minutes or more to delete. cdkd waits for it to be
