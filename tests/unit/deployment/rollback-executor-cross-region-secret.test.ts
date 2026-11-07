@@ -1080,7 +1080,9 @@ describe('the cdkd rollback command wires importedProducerRegions (issue #2057)'
    */
   it('passes producerRegionsFromState(baseState) into the executor context', () => {
     const source = readFileSync(
-      fileURLToPath(new URL('../../../src/cli/commands/rollback.ts', import.meta.url)),
+      // The executor context is built in the replay module since the rollback
+      // split (go-to-k/cdkd#5835).
+      fileURLToPath(new URL('../../../src/cli/commands/rollback/replay.ts', import.meta.url)),
       'utf8'
     );
     expect(source).toContain('importedProducerRegions: producerRegionsFromState(baseState)');
