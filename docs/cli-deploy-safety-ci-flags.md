@@ -106,13 +106,18 @@ physical ID for them:
   and `AvailabilityZone`;
 - a VPC's `DefaultSecurityGroup`;
 - a CloudFront distribution's `DomainName`;
-- a security group's `VpcId`.
+- a security group's `VpcId`;
+- a subnet's `Ipv6CidrBlocks`, `NetworkAclAssociationId`,
+  `BlockPublicAccessStates`, `OutpostArn`, `AvailabilityZone`,
+  `AvailabilityZoneId`, `CidrBlock` and `VpcId`.
 
 When AWS has not assigned the value yet, as for an instance still `pending`
-under `--no-wait`, or when the read fails, cdkd refuses to resolve the
+under `--no-wait`, when it reports no value, as for the `OutpostArn` of a
+subnet not on an Outpost, or when the read fails, cdkd refuses to resolve the
 reference. The message names the resource, the attribute, what cdkd observed
 and the remedy. [`cdkd deploy`](cli-deploy.md) describes the effect under
-`--no-wait`.
+`--no-wait`. A subnet with no IPv6 block is not such a case: its
+`Ipv6CidrBlocks` resolves to `[]`, as in CloudFormation.
 
 An RDS `DBProxy` or `DBProxyEndpoint` `VpcId` that is missing from the state
 record is refused the same way.
