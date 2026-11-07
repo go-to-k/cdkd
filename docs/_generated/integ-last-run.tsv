@@ -246,7 +246,7 @@ local-invoke	2026-11-05T09:05:23Z	PASS	25	verify.sh	rc=0; docker sweep clean; af
 local-invoke-agentcore	2026-11-05T07:11:59Z	PASS	81	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-buildkit	2026-11-05T06:49:09Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; BuildKit features all fired
-local-invoke-container	2026-11-05T07:09:33Z	PASS	20	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
+local-invoke-container	2026-11-07T15:32:43Z	PASS	50	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-from-cfn-stack	2026-11-05T06:55:50Z	PASS	94	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-from-cfn-stack-multi-stack	2026-11-05T06:54:12Z	PASS	112	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
@@ -266,7 +266,7 @@ local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep
 local-start-alb	2026-11-06T09:11:57Z	PASS	26	verify.sh	rc=0; docker sweep clean; after cdk-local 0.160.0 bump (#5856)
 local-start-alb-from-state	2026-11-05T09:04:33Z	PASS	311	verify.sh	rc=0; own temp state bucket; destroy 0 errors, state+AWS orphan-clean, docker clean; after cdk-local 0.158.2 bump (#5800)
 local-start-api	2026-11-05T09:04:58Z	PASS	25	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
-local-start-api-container	2026-11-05T06:44:58Z	PASS	10	verify.sh	rc ok, docker sweep clean
+local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-05T06:44:46Z	PASS	10	verify.sh	rc ok, docker sweep clean
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean
 local-start-cloudfront	2026-11-06T09:12:11Z	PASS	10	verify.sh	rc=0; docker sweep clean; no AWS; after cdk-local 0.160.0 bump (#5856)
