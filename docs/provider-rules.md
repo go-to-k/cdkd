@@ -2350,7 +2350,8 @@ it substitutes the orphan's **recorded** attribute instead wherever cdkd's own
 `Fn::GetAtt` resolution would serve that value, and keeps the live answer only
 when the record lacks it or holds a value that cannot be spliced (a
 redaction mask, a `{{resolve:...}}` reference, a stale placeholder ARN, a VPC's
-`Ipv6CidrBlocks`, an impossible empty value). A credential-named attribute
+`Ipv6CidrBlocks`, a subnet's `Ipv6CidrBlocks`, `NetworkAclAssociationId` or
+`BlockPublicAccessStates`, an impossible empty value). A credential-named attribute
 (`SecretAccessKey`), a known secret-valued attribute (an AppSync API key's
 `ApiKey`, an IPAM verification token's `TokenValue`, an IVS stream key's
 `Value`), a value holding a

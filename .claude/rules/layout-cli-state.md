@@ -62,7 +62,9 @@ that read answered, so it prints nothing the live path could not (#4186).
   segment: a Stage stack's path is hierarchical
   (#3943). `stackForConstructPath` in `cdk-path.ts` is the one copy; the `cdkd local` resolvers use it too.
 - Unresolvable references hard-fail; `--force` falls back to
-  `state.attributes`, never what `servableRecordedAttribute` won't serve.
+  `state.attributes`, never what `unsplicableCachedAttribute` refuses (the
+  secret classes; a freshness-only exclusion such as an always-live attribute
+  is spliced with a warning, #4602).
 - WRITE-CAPABLE, so it refuses a record it could not read — the root, `outputs`,
   and the `...ForOrphan` refusals over what the save keeps, each passed the
   LISTED `recordRegion`:

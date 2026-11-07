@@ -3,6 +3,7 @@ import {
   isImpossibleEmptyStoredAttribute,
   isStalePlaceholderArnAttribute,
 } from '../../deployment/intrinsic-function-resolver.js';
+import { isAlwaysLiveAttribute } from '../../deployment/intrinsic-resolver/getatt.js';
 import { carriesSecretMask, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type { ResourceState } from '../../types/state.js';
 import { isSensitiveAttributeName } from '../../utils/stringify.js';
@@ -100,8 +101,10 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  * verbatim either:
  * - an absent key, or `''` where `isImpossibleEmptyStoredAttribute` says the
  *   resource cannot hold it — the record predates the attribute;
- * - `AWS::EC2::VPC` `Ipv6CidrBlocks`, which the resolver never serves stored
- *   (an association after the create leaves the recorded list stale);
+ * - an attribute the resolver never serves stored (`isAlwaysLiveAttribute`:
+ *   the VPC's `Ipv6CidrBlocks`, the Subnet's `Ipv6CidrBlocks`,
+ *   `NetworkAclAssociationId` and `BlockPublicAccessStates` or a dotted member
+ *   of it), since a change after the create leaves the recorded value stale;
  * - a pre-#1681 placeholder ARN (`isStalePlaceholderArnAttribute`), which the
  *   resolver heals by a re-read;
  * - a value carrying the redaction mask (`SECRET_MASK`): it is all cdkd kept of
@@ -133,7 +136,7 @@ export function servableRecordedAttribute(
   attribute: string
 ): { served: true; value: unknown } | { served: false } {
   if (
-    (orphan.resourceType === 'AWS::EC2::VPC' && attribute === 'Ipv6CidrBlocks') ||
+    isAlwaysLiveAttribute(orphan.resourceType, attribute) ||
     isSensitiveAttributeName(attribute) ||
     isCustomResourceType(orphan.resourceType) ||
     SECRET_VALUED_ATTRIBUTES.get(orphan.resourceType)?.includes(attribute)

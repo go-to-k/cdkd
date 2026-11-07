@@ -1,6 +1,7 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked } from './masking-display.js';
+import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { isSettledInstanceState } from '../../provisioning/ec2-instance-state.js';
 import type { ResourceState } from '../../types/state.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -19,7 +20,10 @@ import {
   DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
   DescribeNatGatewaysCommand,
+  DescribeNetworkAclsCommand,
   DescribeSecurityGroupsCommand,
+  DescribeSubnetsCommand,
+  type Subnet,
 } from '@aws-sdk/client-ec2';
 import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
 import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
@@ -28,7 +32,7 @@ import {
   guardedPhysicalIdFallback,
   refuseUnservedAttribute,
 } from './getatt-refusals.js';
-import { staleRecordRemedy } from './getatt-heal.js';
+import { healBeforeConstructing, staleRecordRemedy } from './getatt-heal.js';
 
 /**
  * `constructAttribute`'s per-type handlers for AWS::Logs::LogGroup through AWS::RDS::DBProxy, moved
@@ -253,7 +257,24 @@ export async function constructAttributeForComputeTypes(
     switch (attributeName) {
       case 'SubnetId':
         return physicalId;
+      case 'Ipv6CidrBlocks':
+      case 'NetworkAclAssociationId':
+      case 'BlockPublicAccessStates':
+        return readSubnetAttributeLive(resolver, attributeName, context, logicalId, physicalId);
+      case 'OutpostArn':
+      case 'AvailabilityZone':
+      case 'AvailabilityZoneId':
+      case 'CidrBlock':
+      case 'VpcId':
+        // Create-only, so a value the #1852 heal re-reads through `import()` is
+        // persisted and served from the record on every later deploy; the live
+        // read answers only what that re-read does not return.
+        healBeforeConstructing(resolver, context);
+        return readSubnetAttributeLive(resolver, attributeName, context, logicalId, physicalId);
       default:
+        if (attributeName.startsWith('BlockPublicAccessStates.')) {
+          return readSubnetAttributeLive(resolver, attributeName, context, logicalId, physicalId);
+        }
         return guardedPhysicalIdFallback(
           resolver,
           logicalId,
@@ -701,3 +722,192 @@ export const natGatewayAttributeWait = {
   delayMs: 10_000,
   sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+/**
+ * How long `Fn::GetAtt [<Subnet>, Ipv6CidrBlocks]` waits for an `associating`
+ * IPv6 block (go-to-k/cdkd#5944): the VPC arm's budget, 15 reads 2 s apart, so
+ * the resolver's largest fixed wait stays what `account-drain.ts` sizes its
+ * hang guard against. A mutable seam so tests do not sleep.
+ */
+export const subnetIpv6AttributeWait = {
+  attempts: 15,
+  delayMs: 2_000,
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * `Fn::GetAtt` on an `AWS::EC2::Subnet`, read live (go-to-k/cdkd#5944).
+ *
+ * The SDK provider records only `SubnetId` and `AvailabilityZone` at create,
+ * and its `update()` returns no attributes, so every other CloudFormation
+ * return value used to land on `guardedPhysicalIdFallback` and serve the
+ * SUBNET ID with a warning. `Ipv6CidrBlocks`, `NetworkAclAssociationId` and
+ * `BlockPublicAccessStates` change on a live subnet (an `Ipv6CidrBlock`
+ * update, a `SubnetNetworkAclAssociation`, a VPC block-public-access
+ * exclusion), so `resolveGetAtt` sends them here even when a record holds a
+ * value; the create-only rest arrive only when the record lacks the key, after
+ * the #1852 heal. Nothing is memoized, as in the VPC `Ipv6CidrBlocks` arm: a
+ * mutable value cached for the deploy would be stale after an in-deploy update.
+ *
+ * A value AWS does not report REFUSES (`refuseUnservedAttribute`, unmarked:
+ * a later read can succeed) instead of degrading — an `OutpostArn` on a
+ * subnet not on an Outpost, a `CidrBlock` on an IPv6-only one, a failed
+ * read. The one empty answer is `Ipv6CidrBlocks` on a subnet with no
+ * associated or associating IPv6 block: `[]`, as the VPC arm answers.
+ */
+async function readSubnetAttributeLive(
+  resolver: IntrinsicFunctionResolver,
+  attributeName: string,
+  context: ResolverContext,
+  logicalId: string,
+  physicalId: string
+): Promise<unknown> {
+  const resourceType = 'AWS::EC2::Subnet';
+  // The id goes into an EC2 FILTER value for `NetworkAclAssociationId`, where
+  // `*` / `?` are wildcards (the #3096 VPC DefaultSecurityGroup rule), and is
+  // read off a state record that is not always AWS-assigned. Refused before
+  // any read, and marked: no retry rewrites the record.
+  if (!/^subnet-[0-9a-f]+$/.test(physicalId)) {
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for AWS::EC2::Subnet: the ` +
+          `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+          `is not a subnet id (subnet-<hex>), so cdkd will not look it up. Repair the ` +
+          `record (cdkd import, or re-create the subnet) and deploy again.`
+      )
+    );
+  }
+  // Region-pinned like the VPC `Ipv6CidrBlocks` arm: a subnet id resolves only
+  // in its own region (issue #1994).
+  const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
+  const refuse = (observed: string, remedy: string): never =>
+    refuseUnservedAttribute(resolver, {
+      logicalId,
+      attributeName,
+      resourceType,
+      physicalId,
+      context,
+      observed,
+      remedy,
+    });
+
+  if (attributeName === 'NetworkAclAssociationId') {
+    let associationId: string | undefined;
+    try {
+      const resp = await ec2.send(
+        new DescribeNetworkAclsCommand({
+          Filters: [{ Name: 'association.subnet-id', Values: [physicalId] }],
+        })
+      );
+      associationId = resp.NetworkAcls?.flatMap((acl) => acl.Associations ?? []).find(
+        (a) => a.SubnetId === physicalId
+      )?.NetworkAclAssociationId;
+    } catch (err) {
+      refuse(
+        describeFailureObserved(resolver, 'DescribeNetworkAcls', err, context),
+        'Fix the read (the ec2:DescribeNetworkAcls permission, or the region) and deploy again.'
+      );
+    }
+    if (associationId) return associationId;
+    return refuse(
+      'DescribeNetworkAcls reports no network ACL association for the subnet',
+      'Check the subnet in the console, or reference the attribute from a later deploy.'
+    );
+  }
+
+  const describe = async (): Promise<Subnet | undefined> => {
+    try {
+      const resp = await ec2.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
+      return resp.Subnets?.[0];
+    } catch (err) {
+      return refuse(
+        describeFailureObserved(resolver, 'DescribeSubnets', err, context),
+        'Fix the read (the ec2:DescribeSubnets permission, or the region) and deploy again.'
+      );
+    }
+  };
+  const notFound = (): never =>
+    refuse(
+      'DescribeSubnets returned no subnet for it',
+      'Check that the subnet still exists in this region, or repair the record with cdkd import.'
+    );
+
+  if (attributeName === 'Ipv6CidrBlocks') {
+    const loggedId = displayMasked(resolver, physicalId, context);
+    const { attempts, delayMs } = subnetIpv6AttributeWait;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const subnet = (await describe()) ?? notFound();
+      const associations = subnet.Ipv6CidrBlockAssociationSet ?? [];
+      const blocks = associations
+        .filter((a) => a.Ipv6CidrBlockState?.State === 'associated' && a.Ipv6CidrBlock)
+        .map((a) => a.Ipv6CidrBlock as string);
+      if (blocks.length > 0) {
+        resolver.logger.debug(
+          safeMsg`Resolved Subnet Ipv6CidrBlocks for ${loggedId}: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context)}`
+        );
+        return blocks;
+      }
+      if (!associations.some((a) => a.Ipv6CidrBlockState?.State === 'associating')) {
+        resolver.logger.debug(safeMsg`No IPv6 CIDR associations found for Subnet ${loggedId}`);
+        return [];
+      }
+      if (attempt < attempts) {
+        // not-in-class(attempt): this loop's own counter, incremented by the `for` header — no template value can reach it.
+        resolver.logger.debug(
+          safeMsg`Subnet ${loggedId} IPv6 CIDR still associating (attempt ${attempt}/${attempts}), waiting...`
+        );
+        await subnetIpv6AttributeWait.sleep(delayMs);
+      }
+    }
+    return refuse(
+      `the subnet's IPv6 CIDR block was still associating after ${attempts} reads`,
+      'Deploy again once the block is associated.'
+    );
+  }
+
+  const subnet = (await describe()) ?? notFound();
+  let value: unknown;
+  switch (attributeName) {
+    case 'BlockPublicAccessStates':
+      value = subnet.BlockPublicAccessStates;
+      break;
+    case 'OutpostArn':
+      value = subnet.OutpostArn;
+      break;
+    case 'AvailabilityZone':
+      value = subnet.AvailabilityZone;
+      break;
+    case 'AvailabilityZoneId':
+      value = subnet.AvailabilityZoneId;
+      break;
+    case 'CidrBlock':
+      value = subnet.CidrBlock;
+      break;
+    case 'VpcId':
+      value = subnet.VpcId;
+      break;
+    default: {
+      // `BlockPublicAccessStates.<member>`: the dotted spelling of a nested
+      // read-only member, walked over the live object by OWN keys only (the
+      // #2767 rule `resolveGetAtt`'s own dotted walk follows).
+      value = subnet.BlockPublicAccessStates;
+      for (const part of attributeName.split('.').slice(1)) {
+        value =
+          value !== null && typeof value === 'object' && Object.hasOwn(value, part)
+            ? (value as Record<string, unknown>)[part]
+            : undefined;
+      }
+    }
+  }
+  if (value !== undefined && value !== null && value !== '') return value;
+  let observed = 'DescribeSubnets reports no value for the subnet';
+  if (attributeName === 'OutpostArn') {
+    observed = 'DescribeSubnets reports no OutpostArn: the subnet is not on an Outpost';
+  } else if (attributeName === 'CidrBlock') {
+    observed = 'DescribeSubnets reports no CidrBlock: an IPv6-only subnet has no IPv4 block';
+  }
+  return refuse(
+    observed,
+    'Reference an attribute the subnet has, or check the subnet in the console.'
+  );
+}
