@@ -778,6 +778,12 @@ stage_filter_change "src/deployment/retryable-errors/transient.ts" "const RETRYA
 run_case "diff filter: retryable-errors/*.ts is delete-touching (#4452)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# inline-policy-claims.ts split into inline-policy-claims/ (#5835): the moved
+# claim predicate must not leave the strict bucket.
+stage_filter_change "src/deployment/inline-policy-claims/claimed.ts" "const POLICY_FIELD = 'Roles';"
+run_case "diff filter: inline-policy-claims/*.ts is delete-touching (#5835)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # Its split modules (#4426) are strict too: a helper moved out of the host
 # must not leave the gate's strict bucket.
 stage_filter_change "src/deployment/rollback-executor/plan.ts" "const REPLAY_LIMIT = 3;"
