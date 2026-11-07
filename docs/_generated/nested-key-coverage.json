@@ -1,7 +1,7 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1526,
+    "nestedKeyCount": 1525,
     "wholeDeliveredPathCount": 621,
     "shapeClean": 182,
     "shapeHandled": 50,
@@ -1141,7 +1141,7 @@
       "providerFile": "lambda-network-connector-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-lambda-core",
       "keyStyle": "exact",
-      "nestedKeyCount": 8,
+      "nestedKeyCount": 7,
       "wholeDeliveredPaths": [],
       "shapeEntries": [
         {

@@ -90,8 +90,10 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
-    // Per-directory floor: the recursion reaches the companion directory.
+    // Per-directory floors: the recursion reaches each companion directory.
     expect(MODULES.filter((f) => f.startsWith('nested-stack/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES.filter((f) => f.startsWith('redact-path/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES).toContain('redact-path/reference-tokens.ts');
   });
 
   // Each case spawns a Node process, so it declares its own timeout.
