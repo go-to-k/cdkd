@@ -624,7 +624,6 @@ export async function deleteThroughCloudControl(
         );
         if (verdict === 'released') {
           ipamReleased = true;
-          ipamRechecks = 0;
           continue;
         }
         if (verdict === 'recheck') {

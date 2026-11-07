@@ -52,7 +52,7 @@ export function ipamPoolCidrReleaseBudgetMs(resourceType: string): number {
 export type IpamReleaseVerdict = 'released' | 'recheck' | 'none' | 'not-released';
 
 /**
- * How many `'recheck'` re-sends one pool CIDR delete may make in a row: a
+ * How many `'recheck'` re-sends one pool CIDR delete may make in all: a
  * handler lagging the listing clears in one or two, while a live allocation
  * beside a released one would otherwise re-send every poll until the budget.
  */
