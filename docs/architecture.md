@@ -233,7 +233,7 @@ Use this table to get from a task to the file you start in.
 | What counts as a change, or as a replacement | `src/analyzer/diff-calculator.ts`, `src/analyzer/replacement-rules.ts` |
 | Drift detection | `src/analyzer/drift-calculator.ts` |
 | The state file's shape | `src/types/state.ts`, `src/state/s3-state-backend.ts` |
-| Locking | `src/state/lock-manager.ts` |
+| Locking | `src/state/lock-manager.ts`, `src/state/lock-manager/` |
 | The order resources run in | `src/deployment/dag-executor.ts` |
 | What a deploy does to one resource | `src/deployment/deploy-engine/` |
 | Rollback | `src/deployment/rollback-executor.ts` |

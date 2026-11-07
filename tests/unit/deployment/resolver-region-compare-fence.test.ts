@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, it, expect } from 'vite-plus/test';
 import { codeLines } from '../_code-lines.js';
+import { RESOLVER_FAMILY } from '../_resolver-family.js';
 
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
@@ -368,16 +369,11 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
 
 describe('the intrinsic resolver compares regions only through sameRegion (issue #2209)', () => {
   const SRC = path.resolve(__dirname, '../../../src');
-  const RESOLVER_DIR = path.join('deployment', 'intrinsic-resolver');
-  const family = [
-    path.join('deployment', 'intrinsic-function-resolver.ts'),
-    // Recursive (#5835): a split module's own nested directory
-    // (`getatt.ts` + `getatt/`) is part of the family.
-    ...readdirSync(path.join(SRC, RESOLVER_DIR), { recursive: true, encoding: 'utf8' })
-      .filter((f) => f.endsWith('.ts'))
-      .sort()
-      .map((f) => path.join(RESOLVER_DIR, f)),
-  ].map((rel) => ({ rel, text: readFileSync(path.join(SRC, rel), 'utf8') }));
+  // The shared family, nested split directories included (#5835), as
+  // `src`-relative paths in the platform's separator.
+  const family = RESOLVER_FAMILY.map((repoRel) => path.join(...repoRel.split('/').slice(1))).map(
+    (rel) => ({ rel, text: readFileSync(path.join(SRC, rel), 'utf8') })
+  );
 
   it('scans the family it claims to police (floor)', () => {
     // A literal the fence does not read: the family had 26 files when #2209

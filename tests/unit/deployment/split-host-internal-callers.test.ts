@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative } from 'node:path';
 import ts from 'typescript-v6';
 import { describe, expect, it } from 'vite-plus/test';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
@@ -33,9 +33,8 @@ const walk = (dir: string): string[] =>
 /** Repo-relative file -> the index of the family it belongs to. */
 const familyOf = new Map<string, number>(
   FAMILIES.flatMap(({ host, dir }, i) =>
-    // Recursive (#5835): a split module's own nested directory
-    // (`intrinsic-resolver/getatt/`) belongs to the family too.
-    [host, ...walk(join(REPO_ROOT, dir)).map((p) => relative(REPO_ROOT, p).split(sep).join('/'))].map(
+    // Recursive: a module split into a nested directory stays IN the family (#5835).
+    [host, ...walk(join(REPO_ROOT, dir)).map((p) => relative(REPO_ROOT, p).split('\\').join('/'))].map(
       (file) => [file, i] as const
     )
   )

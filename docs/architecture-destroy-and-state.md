@@ -115,7 +115,8 @@ A command that changes a stack first takes the stack's lock, so that two
 commands cannot change the same stack at the same time. The lock is the S3
 object `lock.json`, and cdkd writes it with conditional requests. S3 itself
 refuses the request when the condition does not hold, which is why no separate
-lock service is needed. The code is in `src/state/lock-manager.ts`.
+lock service is needed. The code is in `src/state/lock-manager.ts` and its
+`src/state/lock-manager/` modules.
 
 | Step | Request | Succeeds only when |
 | --- | --- | --- |
