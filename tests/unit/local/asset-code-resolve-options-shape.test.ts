@@ -69,7 +69,7 @@ type OneBagParameter =
   Parameters<typeof resolveAssetCodeDirectory> extends [AssetCodeResolveOptions] ? true : never;
 const ARITY_IS_ONE_BAG: OneBagParameter = true;
 
-const RESOLVER = 'src/local/lambda-resolver.ts';
+const RESOLVER = 'src/local/lambda-resolver/asset-code.ts';
 const read = (p: string) =>
   readFileSync(join(import.meta.dirname, '..', '..', '..', p), 'utf-8');
 

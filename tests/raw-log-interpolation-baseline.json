@@ -132,7 +132,7 @@
   "src/local/ecs-task-runner/containers.ts": 2,
   "src/local/ecs-task-runner/images.ts": 3,
   "src/local/invoke-agentcore-watch-loop.ts": 7,
-  "src/local/lambda-resolver.ts": 1,
+  "src/local/lambda-resolver/asset-code.ts": 1,
   "src/local/websocket-server.ts": 12,
   "src/provisioning/canonicalize-properties.ts": 1,
   "src/provisioning/cloud-control/create.ts": 9,
