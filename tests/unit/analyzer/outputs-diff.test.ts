@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import {
@@ -1251,6 +1251,30 @@ describe('anti-drift fence vs resolveOutputs (issue #1921)', () => {
   // (#4200, #4350): `resolveOutputs`, the no-change `outputMapsEqual` gate and
   // the save that persists the merged bag. The fence reads the whole family.
   const source = readEngineFamily();
+  // The twin is `src/analyzer/outputs-diff.ts` plus the modules split out of it
+  // under `outputs-diff/` (go-to-k/cdkd#5835), the directory read recursively,
+  // comments stripped so a needle quoted in prose cannot stand in for the code.
+  // Each assertion below is a `toContain` of one line, so the join order is
+  // not read.
+  function readOutputsDiffFamily(): string {
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+    const dir = 'src/analyzer/outputs-diff';
+    const modules = readdirSync(path.join(root, dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}/${name.split('\\').join('/')}`);
+    // A floor: a renamed directory would leave the twin as the barrel alone,
+    // which holds no code, and every needle below would red for the wrong reason.
+    expect(modules.length, `${dir}/ holds no modules`).toBeGreaterThan(0);
+    return ['src/analyzer/outputs-diff.ts', ...modules]
+      .map((rel) => {
+        const text = readFileSync(path.join(root, rel), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/(^|[^:])\/\/.*$/gm, '$1');
+        expect(text.trim(), `${rel} is empty`).not.toBe('');
+        return text;
+      })
+      .join('\n');
+  }
 
   it('deploy still writes the Export.Name alias as a second bag key, and GUARDS it', () => {
     // This fence went VACUOUS once (issue #1919 review) and the way it did is
@@ -1266,10 +1290,7 @@ describe('anti-drift fence vs resolveOutputs (issue #1921)', () => {
     // either side reds this.
     expect(source).toContain('outputs[exportName] = value;');
     expect(source).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
-    const twin = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
-      'utf8'
-    );
+    const twin = readOutputsDiffFamily();
     expect(twin).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
   });
 
@@ -1282,10 +1303,7 @@ describe('anti-drift fence vs resolveOutputs (issue #1921)', () => {
     // substituted; the diff never substitutes and asks whether the resolved
     // name still carries a secret's `{{resolve:...}}` TOKEN (issue #4056),
     // gated on the name being intrinsic. Losing either arm reds this.
-    const twin = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
-      'utf8'
-    );
+    const twin = readOutputsDiffFamily();
     expect(source).toContain('exportNameSecretExposure(');
     // TWO INDEPENDENT ASSERTIONS rather than one pinned call spelling. A
     // first cut normalised whitespace and pinned the whole argument list --

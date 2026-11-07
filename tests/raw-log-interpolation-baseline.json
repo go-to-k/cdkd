@@ -2,7 +2,7 @@
   "src/analyzer/dag-builder.ts": 14,
   "src/analyzer/diff-calculator.ts": 15,
   "src/analyzer/orphan-rewriter.ts": 4,
-  "src/analyzer/outputs-diff.ts": 8,
+  "src/analyzer/outputs-diff/resolve.ts": 8,
   "src/analyzer/replacement-rules.ts": 4,
   "src/analyzer/template-parser.ts": 3,
   "src/assets/asset-manifest-loader.ts": 5,
