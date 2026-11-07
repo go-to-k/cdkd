@@ -2872,7 +2872,9 @@ describe('the exports-index same-region read debug line masks through the secret
     const lines = await debugLinesAfterResolving(secret, secret);
     expect(lines, 'the debug line must have fired, or this is vacuous').toHaveLength(1);
     expect(lines[0]).toContain('cdkd/Producer/us-east-1/state.json (x-amz-meta-note: ***)');
-    expectNowhere(secret);
+    // The control character is stripped before logging, so the raw spelling
+    // could never appear; the STRIPPED one is what a lost mask would print.
+    expectNowhere(stripNewlines(secret));
   });
 
   it('CONTROL: the same failure quoting an UNRECORDED value prints it verbatim', async () => {
@@ -2881,6 +2883,161 @@ describe('the exports-index same-region read debug line masks through the secret
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`(x-amz-meta-note: ${unrecorded})`);
     expect(lines[0]).not.toContain('***');
+  });
+});
+
+/** What a logged line keeps of a secret once control characters are stripped. */
+function stripNewlines(secret: string): string {
+  return secret.replace(/\n/g, '');
+}
+
+/**
+ * The other four Fn::ImportValue log lines that mask through `context`
+ * (go-to-k/cdkd#5835): the exports-index lookup warn's caught-message half,
+ * the state scan's `Skipping current stack` and `No region available` debugs,
+ * and the index patch failure's caught-message half. Same shape as the block
+ * above: the value is known only through the context's secret bags (a
+ * `{{resolve:secretsmanager}}` resolved first in the same pass), it is quoted
+ * in the text the line prints, and a CONTROL quoting an UNRECORDED value must
+ * print verbatim — the case where the wrong value IS emitted.
+ */
+describe('the other Fn::ImportValue log lines mask through the secret bags (go-to-k/cdkd#5835)', () => {
+  const OTHER_ID = 'cdkd-import-value-bag-probe';
+  const QUOTED_SECRET = 'iv"Bg\nQ8wr';
+  const ALNUM_SECRET = 'ivBgQ8wrAlnum';
+
+  interface Site {
+    prefix: string;
+    /** The pass's context and resolver, with `quoted` in the text the line prints. */
+    build(quoted: string): { context: Ctx; resolver: InstanceType<typeof IntrinsicFunctionResolver> };
+    /** The line with the quoted value replaced by `shown`. */
+    expected(shown: string): string;
+  }
+
+  const SITES: Array<[string, Site]> = [
+    [
+      'the exports-index lookup warn (caught message)',
+      {
+        prefix: "Exports index lookup failed for 'SharedExport': ",
+        build: (quoted) => ({
+          resolver: new IntrinsicFunctionResolver('us-east-1'),
+          context: makeContext({
+            stateBackend: emptyBackend(),
+            exportIndex: {
+              lookup: vi.fn(async () => {
+                throw new Error(
+                  `Exports index at cdkd/_index/us-east-1/exports.json could not be parsed (x-amz-meta-note: ${quoted})`
+                );
+              }),
+            } as unknown as ExportIndexStore,
+          }),
+        }),
+        expected: (shown) =>
+          "Exports index lookup failed for 'SharedExport': Exports index at " +
+          `cdkd/_index/us-east-1/exports.json could not be parsed (x-amz-meta-note: ${shown}); ` +
+          'falling back to state.json scan',
+      },
+    ],
+    [
+      'the Skipping current stack debug',
+      {
+        prefix: 'Skipping current stack: ',
+        build: (quoted) => ({
+          resolver: new IntrinsicFunctionResolver('us-east-1'),
+          context: makeContext({
+            stackName: quoted,
+            stateBackend: {
+              listStacks: vi.fn(async () => [{ stackName: quoted, region: 'us-east-1' }]),
+              getState: vi.fn(async () => null),
+            } as unknown as S3StateBackend,
+          }),
+        }),
+        expected: (shown) => `Skipping current stack: ${shown}`,
+      },
+    ],
+    [
+      'the No region available debug',
+      {
+        prefix: 'No region available for stack ',
+        build: (quoted) => {
+          const resolver = new IntrinsicFunctionResolver('us-east-1');
+          // A defensive branch: the constructor always substitutes a region,
+          // so only a blanked `resolverRegion` beside a region-less legacy
+          // record reaches it.
+          (resolver as unknown as { resolverRegion: string }).resolverRegion = '';
+          return {
+            resolver,
+            context: makeContext({
+              stateBackend: {
+                listStacks: vi.fn(async () => [{ stackName: quoted }]),
+                getState: vi.fn(async () => null),
+              } as unknown as S3StateBackend,
+            }),
+          };
+        },
+        expected: (shown) =>
+          `No region available for stack '${shown}' — skipping (cdkd cannot read state without a region)`,
+      },
+    ],
+    [
+      'the Failed to patch exports index debug (caught message)',
+      {
+        prefix: "Failed to patch exports index for 'SharedExport': ",
+        build: (quoted) => ({
+          resolver: new IntrinsicFunctionResolver('us-east-1'),
+          context: makeContext({
+            stateBackend: backendWith('Producer', { SharedExport: 'literal-v' }),
+            exportIndex: {
+              lookup: vi.fn(async () => undefined),
+              patchEntry: vi.fn(async () => {
+                throw new Error(
+                  `Access Denied: s3:PutObject on cdkd/_index/us-east-1/exports.json (x-amz-meta-note: ${quoted})`
+                );
+              }),
+            } as unknown as ExportIndexStore,
+          }),
+        }),
+        expected: (shown) =>
+          "Failed to patch exports index for 'SharedExport': Access Denied: s3:PutObject on " +
+          `cdkd/_index/us-east-1/exports.json (x-amz-meta-note: ${shown})`,
+      },
+    ],
+  ];
+
+  /** Resolve `secret` into the bags, run the import with `quoted` in the site's text, and return the site's lines. */
+  async function siteLines(site: Site, secret: string, quoted: string): Promise<string[]> {
+    lookupBehaviour.secretAnswer = { SecretString: JSON.stringify({ k: secret }) };
+    const { resolver, context } = site.build(quoted);
+    expect(
+      await resolver.resolve(`{{resolve:secretsmanager:${OTHER_ID}:SecretString:k}}`, context as never),
+      'premise: the dynamic reference resolved to the secret'
+    ).toBe(secret);
+    expect(context.recordedSecretValues.size, 'premise: the secret reached the bag').toBeGreaterThan(0);
+    // Some arms end in the not-found throw; only the log line is under test.
+    await resolver.resolve({ 'Fn::ImportValue': 'SharedExport' }, context as never).catch(() => undefined);
+    const lines = (): string[] => everyLine().filter((l) => l.startsWith(site.prefix));
+    // The patch failure is logged from a detached `.catch`.
+    await vi.waitFor(() => expect(lines().length).toBeGreaterThan(0));
+    return lines();
+  }
+
+  describe.each(SITES)('%s', (_name, site) => {
+    it.each([
+      ['a quote and a newline', QUOTED_SECRET],
+      ['the alphanumeric twin', ALNUM_SECRET],
+    ])('masks %s', async (_label, secret) => {
+      const lines = await siteLines(site, secret, secret);
+      expect(lines, 'the line must have fired exactly once').toHaveLength(1);
+      expect(lines[0]).toBe(site.expected('***'));
+      expectNowhere(stripNewlines(secret));
+    });
+
+    it('CONTROL: an UNRECORDED value prints verbatim', async () => {
+      const unrecorded = 'unrecordedIvBg8';
+      const lines = await siteLines(site, ALNUM_SECRET, unrecorded);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toBe(site.expected(unrecorded));
+    });
   });
 });
 
