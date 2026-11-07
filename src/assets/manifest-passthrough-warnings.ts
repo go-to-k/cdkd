@@ -102,7 +102,8 @@ interface HostPathRef {
  *   `store`, the docker exporter's `context` are not paths); `--cache-to` and
  *   `--cache-from` only under `type=local` (`registry`, `s3`, `azblob`, `gha`
  *   reach the network or take inline values). For the CACHE flags alone there
- *   is a second enumeration to keep in step: `src/utils/docker-cmd.ts`'s
+ *   is a second enumeration to keep in step:
+ *   `src/utils/docker-cmd/argv-redaction.ts`'s
  *   `ARGV_PARAM_LIST_LOCATOR_PARAMS`, consulted under `ARGV_PARAM_LIST_FLAGS`
  *   (`--cache-from` / `--cache-to`), lists the same backends for the
  *   redaction side and agrees — **update both or neither.** `--secret` and

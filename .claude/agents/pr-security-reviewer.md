@@ -76,7 +76,7 @@ the integ proves it.
 
 ### 4. AuthZ / authn + process-launch / credential surfaces
 
-`src/utils/role-arn.ts`, `src/utils/docker-cmd.ts`,
+`src/utils/role-arn.ts`, `src/utils/docker-cmd.ts` + `docker-cmd/**`,
 `src/local/cognito-jwt.ts`, `src/local/authorizer-resolver.ts`,
 `src/local/authorizer-cache.ts`, `src/local/sigv4-verify.ts`,
 `src/local/agentcore-sigv4-sign.ts`, `src/local/docker-runner.ts`,

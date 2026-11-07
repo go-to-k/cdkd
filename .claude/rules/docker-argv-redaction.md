@@ -2,6 +2,7 @@
 description: Keeping the docker argv out of failure text and verbose logs
 paths:
   - 'src/utils/docker-cmd.ts'
+  - 'src/utils/docker-cmd/**'
   - 'src/local/docker-runner.ts'
   - 'src/local/ecs-task-runner.ts'
   - 'src/local/ecs-network.ts'
@@ -13,13 +14,12 @@ paths:
 
 # Docker argv redaction
 
-Issue [#2440](https://github.com/go-to-k/cdkd/issues/2440). `execFile` folds the
+Issue #2440. `execFile` folds the
 command line into `err.message`, so a failure echoes the argv.
 
 - **COMPOSE, never hand-write.** Every docker failure text goes through
-  `describeDockerFailure(error, args)` or a sibling in `docker-cmd.ts`, each
-  taking a REQUIRED `args`. **Pass the array you spawned** — a plausible
-  substitute leaks.
+  `describeDockerFailure(error, args)` or a sibling in `src/utils/docker-cmd/failure.ts`, each
+  taking a REQUIRED `args`. **Pass the array you spawned** — a lookalike leaks.
 - **A chained `cause` is such a text too**: thread it with
   `redactedDockerCause(err, args)`, never the caught error. Its field copy is an
   ALLOWLIST — a denylist carried `err.cmd`, the command line, verbatim.
@@ -29,7 +29,7 @@ command line into `err.message`, so a failure echoes the argv.
   KEYs and locator cache params survive. Every pass is structural — positional,
   never value-based — and covers **all four pflag spellings**: `--flag VALUE`,
   `--flag=VALUE`, and the cluster ATTACHED (`-itdeKEY=VALUE`) or SEPARATED
-  (`-itde KEY=VALUE`), which are separate code paths.
+  (`-itde KEY=VALUE`), which are separate paths.
 - **Cache params are an ALLOWLIST of locators, not a denylist of credentials**:
   a missing allowlist entry costs a diagnostic, a missing denylist entry a
   printed credential. **Everything after the first masked part is masked too**,
