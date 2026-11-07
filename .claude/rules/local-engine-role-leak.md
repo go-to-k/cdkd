@@ -5,6 +5,7 @@ paths:
   - 'src/cli/commands/local-start-*.ts'
   - 'src/cli/commands/local-start-api/**'
   - 'src/cli/commands/local-run-task.ts'
+  - 'src/cli/commands/local-run-task/**'
   - 'src/local/local-role-arn.ts'
 ---
 

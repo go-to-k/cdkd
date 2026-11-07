@@ -736,13 +736,61 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     for (const member of family(file)) {
       if (member === holder) continue;
       const code = liveLinesOf(member).join('\n');
+      const helperSpans = afterFoldHelperSpans(file, member, code);
       for (const m of code.matchAll(new RegExp(`\\b${field.replace('.', '\\.')}\\b`, 'g'))) {
         const before = code.slice(Math.max(0, m.index - 40), m.index);
         if (before.includes('canonicalizeRegion(')) continue;
+        if (helperSpans.some(([from, to]) => m.index > from && m.index < to)) continue;
         out.push(`${member}:${code.slice(0, m.index).split('\n').length}`);
       }
     }
     return out;
+  };
+  /**
+   * Helpers that take the handler's `options` bag and read the already-folded
+   * `options.region` from it. `local-run-task.ts` held them below its handler
+   * until the split (go-to-k/cdkd#5835) moved them into `local-run-task/`, where
+   * no line order places their reads after the fold. A read is exempt only
+   * INSIDE the named function's body, and only while every call to that function
+   * in the folding module comes after the fold (checked by
+   * {@link assertAfterFoldHelpersCalledAfterFold}).
+   */
+  const AFTER_FOLD_HELPERS: Record<string, { member: string; helper: string }[]> = {
+    'local-run-task.ts': [
+      { member: 'local-run-task/credentials.ts', helper: 'buildRunEcsTaskOptions' },
+      { member: 'local-run-task/image-context.ts', helper: 'buildEcsImageResolutionContext' },
+    ],
+  };
+  /** `[start, end)` offsets of each exempt helper's body in `member`'s live code. */
+  const afterFoldHelperSpans = (file: string, member: string, code: string): [number, number][] =>
+    (AFTER_FOLD_HELPERS[file] ?? [])
+      .filter((h) => h.member === member)
+      .map((h) => {
+        const from = code.indexOf(`function ${h.helper}(`);
+        expect(from, `${member}: exempt helper ${h.helper} not found`).toBeGreaterThan(-1);
+        // Formatted top-level functions close with `}` at column 0.
+        const to = code.indexOf('\n}', from);
+        expect(to, `${member}: end of ${h.helper} not found`).toBeGreaterThan(from);
+        return [from, to];
+      });
+  /** Every call to an exempt helper in `holder` comes after the fold at `foldAt`. */
+  const assertAfterFoldHelpersCalledAfterFold = (
+    file: string,
+    holderLines: string[],
+    foldAt: number
+  ): void => {
+    for (const { helper } of AFTER_FOLD_HELPERS[file] ?? []) {
+      const calls = holderLines.flatMap((line, i) =>
+        new RegExp(`\\b${helper}\\(`).test(line) ? [i] : []
+      );
+      expect(calls.length, `${file}: exempt helper ${helper} is never called`).toBeGreaterThan(0);
+      for (const at of calls) {
+        expect(
+          at,
+          `${file}: ${helper} is called at line ${at + 1}, BEFORE the fold at line ${foldAt + 1}`
+        ).toBeGreaterThan(foldAt);
+      }
+    }
   };
 
   const commands = readdirSync(commandsDir)
@@ -774,6 +822,7 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     );
 
     expect(foldAt, `${file}: live options.region canonicalization not found`).toBeGreaterThan(-1);
+    assertAfterFoldHelpersCalledAfterFold(file, lines, foldAt);
 
     /**
      * PRESENCE is not enough — the fold has to come FIRST. Moving it below
@@ -860,12 +909,17 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
    * probe silently collapses onto its first key.
    */
   it('local-run-task.ts captures the RAW env region before folding it (issue #3622)', () => {
-    const lines = liveLinesOf('local-run-task.ts');
+    // The capture and the fold are ordered within the module that folds; the
+    // forward to the probe sits in a helper under `local-run-task/`, so it is a
+    // presence check over the whole family (go-to-k/cdkd#5835).
+    const lines = liveLinesOf(memberHolding('local-run-task.ts', SHARED_FOLD));
     const captureAt = lines.findIndex((line) =>
       line.includes("const rawEnvRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']")
     );
     const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
-    const forwardAt = lines.findIndex((line) => line.includes('rawEnvRegion: options.rawEnvRegion'));
+    const forwardAt = familyLiveLines('local-run-task.ts').findIndex((line) =>
+      line.includes('rawEnvRegion: options.rawEnvRegion')
+    );
 
     expect(captureAt, 'raw env capture not found').toBeGreaterThan(-1);
     expect(captureAt).toBeLessThan(foldAt);

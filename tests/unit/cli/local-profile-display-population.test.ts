@@ -242,7 +242,9 @@ function inArnScope(file: string): boolean {
 function inMixedScope(file: string): boolean {
   const posix = file.replace(/\\/g, '/');
   return (
-    /^src\/cli\/commands\/local-[^/]*\.ts$/.test(posix) ||
+    // A split command's `local-<cmd>/` directory too (go-to-k/cdkd#5835): its
+    // handler and helpers moved there, so a `local-*.ts`-only rule dropped them.
+    /^src\/cli\/commands\/local-[^/]*(\/.+)?\.ts$/.test(posix) ||
     posix.startsWith('src/local/') ||
     // The ONE surface go-to-k/cdkd#3397 added, and it is added because that
     // issue's own fix lands on it: `assumeRoleForCrossAccountStateRead` now
@@ -1350,6 +1352,8 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     for (const predicate of [inArnScope, inMixedScope]) {
       expect(predicate('src/cli/commands/local-invoke.ts')).toBe(true);
       expect(predicate('src/cli/commands/local-run-task.ts')).toBe(true);
+      // A split command's modules (go-to-k/cdkd#5835).
+      expect(predicate('src/cli/commands/local-run-task/stack-account.ts')).toBe(true);
       expect(predicate('src/local/ecr-puller.ts')).toBe(true);
       // A nested file under `src/local/`, so the rule is a PREFIX rather than a
       // one-directory listing.
