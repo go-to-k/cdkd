@@ -2558,6 +2558,7 @@
     "--ipam-ids",
     "--ipam-pool-id",
     "--ipam-pool-ids",
+    "--ipam-scope-id",
     "--ipam-scope-ids",
     "--item",
     "--job-name",

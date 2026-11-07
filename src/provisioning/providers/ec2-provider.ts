@@ -150,6 +150,12 @@ export class EC2Provider implements ResourceProvider {
         'AssignIpv6AddressOnCreation',
         'Ipv6Native',
         'PrivateDnsNameOptionsOnLaunch',
+        // go-to-k/cdkd#5632: create-only CreateSubnet inputs.
+        'AvailabilityZoneId',
+        'Ipv4IpamPoolId',
+        'Ipv4NetmaskLength',
+        'Ipv6IpamPoolId',
+        'Ipv6NetmaskLength',
       ]),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
@@ -573,7 +579,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::VPC':
         return this.deleteVpc(logicalId, physicalId, resourceType, context, properties);
       case 'AWS::EC2::Subnet':
-        return this.deleteSubnet(logicalId, physicalId, resourceType, context);
+        return this.deleteSubnet(logicalId, physicalId, resourceType, context, properties);
       case 'AWS::EC2::InternetGateway':
         return this.deleteInternetGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::EIP':

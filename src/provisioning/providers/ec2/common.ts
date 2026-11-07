@@ -120,6 +120,13 @@ export const vpcIpamReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 25 * 60_0
 export type VpcOrphanMatch = { cidrBlock: string } | { ipamPoolId: string };
 
 /**
+ * What an ambiguous-create orphan report matches a subnet on: a declared
+ * CIDR (IPv4, or IPv6 for an IPv6-only subnet), or (go-to-k/cdkd#5632) the
+ * IPAM pool its block is allocated from.
+ */
+export type SubnetOrphanMatch = { cidr: string; family: 'ipv4' | 'ipv6' } | { ipamPoolId: string };
+
+/**
  * The writable members of CloudFormation's `VpcEncryptionControl`, each the
  * same-named `VpcEncryptionControlConfiguration` member (go-to-k/cdkd#5633).
  * The schema's other members (`State`, `StateMessage`, `VpcId`,
@@ -151,6 +158,26 @@ export function replayedRecordNote(context: { replayingState?: boolean } | undef
 export const VPC_CREATE_ONLY_SENT = ['Ipv4IpamPoolId', 'Ipv4NetmaskLength', 'VpcEncryptionControl'];
 
 /**
+ * go-to-k/cdkd#5632: the Subnet's create-only CreateSubnet inputs, as
+ * {@link VPC_CREATE_ONLY_SENT} is the VPC's. Neither pool id has a readback
+ * (getDriftUnknownPaths), so `update()` compares a key only when both sides
+ * carry it.
+ */
+export const SUBNET_CREATE_ONLY_SENT = [
+  'VpcId',
+  'CidrBlock',
+  'AvailabilityZone',
+  'AvailabilityZoneId',
+  'Ipv4IpamPoolId',
+  'Ipv4NetmaskLength',
+  'Ipv6IpamPoolId',
+  'Ipv6NetmaskLength',
+];
+
+/** go-to-k/cdkd#5632: the IPAM pool id pattern a delete-side wait may send. */
+export const IPAM_POOL_ID_PATTERN = /^ipam-pool-[0-9a-z]+$/;
+
+/**
  * One of those values with CloudFormation's scalar spellings folded (an
  * integer or boolean written as a string), so the comparison sees a change
  * only where AWS would hold a different value.
@@ -160,7 +187,9 @@ function foldCreateOnlySent(key: string, value: unknown): unknown {
     v !== null && typeof v === 'object' && !Array.isArray(v)
       ? (v as Record<string, unknown>)
       : undefined;
-  if (key === 'Ipv4NetmaskLength') return coerceCfnInteger(value) ?? value;
+  if (key === 'Ipv4NetmaskLength' || key === 'Ipv6NetmaskLength') {
+    return coerceCfnInteger(value) ?? value;
+  }
   if (key === 'CpuOptions') {
     const cpu = asRecord(value);
     if (cpu === undefined) return value;

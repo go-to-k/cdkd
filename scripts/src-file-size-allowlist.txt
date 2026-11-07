@@ -11,9 +11,7 @@ src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/gc.ts
 src/cli/commands/refactor.ts
-src/cli/commands/retire-cfn-stack.ts
 src/cli/commands/rollback.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
@@ -28,9 +26,7 @@ src/deployment/deploy-engine/update.ts
 src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/intrinsic-resolver/context.ts
-src/deployment/intrinsic-resolver/cross-stack.ts
 src/deployment/intrinsic-resolver/dynamic-refs.ts
-src/deployment/intrinsic-resolver/functions.ts
 src/deployment/masked-property-fingerprints.ts
 src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
@@ -40,11 +36,9 @@ src/deployment/secret-redaction/nested-stack.ts
 src/deployment/secret-redaction/positions.ts
 src/deployment/secret-redaction/redact-path.ts
 src/deployment/secret-redaction/redact-state.ts
-src/local/lambda-resolver.ts
 src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/provisioning/resource-name.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts
