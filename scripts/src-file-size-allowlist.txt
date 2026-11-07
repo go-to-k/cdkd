@@ -41,4 +41,3 @@ src/provisioning/providers/deletion-protection-compensation.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts
-src/utils/error-handler.ts
