@@ -287,6 +287,18 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
     expect(deletes).toBeLessThan(20);
   });
 
+  it('stops re-sending after MAX_IPAM_RECHECKS when a live allocation stays beside a released one', async () => {
+    const other = vpcAllocation({ ResourceId: 'vpc-0aaaaaaaaaaaaaaaa' });
+    wireCc(['REFUSED']);
+    wireEc2([[vpcAllocation(), other], [other]], ['vpc-0aaaaaaaaaaaaaaaa']);
+
+    await expect(
+      provider.delete('PoolCidr', POOL_CIDR_ID, 'AWS::EC2::IPAMPoolCidr')
+    ).rejects.toThrow('The CIDR has one or more allocations.');
+    // The first send, the send after the release, then MAX_IPAM_RECHECKS (3).
+    expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand')).toHaveLength(5);
+  });
+
   it('caps the shared budget at half an explicit --resource-timeout for the type', async () => {
     // The cap alone would allow 10s; half of the 60ms timeout is 30ms.
     ipamPoolCidrReleaseWait.maxWaitMs = 10_000;

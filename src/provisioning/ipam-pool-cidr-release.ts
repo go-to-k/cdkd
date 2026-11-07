@@ -48,6 +48,16 @@ export function ipamPoolCidrReleaseBudgetMs(resourceType: string): number {
     : Math.min(ipamPoolCidrReleaseWait.maxWaitMs, userTimeoutMs / 2);
 }
 
+/** What {@link waitForLingeringIpamAllocations} answers. */
+export type IpamReleaseVerdict = 'released' | 'recheck' | 'none' | 'not-released';
+
+/**
+ * How many `'recheck'` re-sends one pool CIDR delete may make in a row: a
+ * handler lagging the listing clears in one or two, while a live allocation
+ * beside a released one would otherwise re-send every poll until the budget.
+ */
+export const MAX_IPAM_RECHECKS = 3;
+
 const IPAM_POOL_ID = /^ipam-pool-[0-9a-z]+$/;
 const MAX_ALLOCATION_PAGES = 10;
 /** Ids per `DescribeVpcs` / `DescribeSubnets` filter, under EC2's 200-value limit. */
@@ -154,15 +164,15 @@ export async function lingeringIpamAllocations(
  *
  * Answers:
  *  - `'released'`: there were such allocations and AWS has released them all;
- *    re-send the delete. Also when the first read finds none but the pool
- *    lists no allocation at all, or `afterRelease` says this delete was just
- *    re-sent on a release: the allocation went between the refusal and the
- *    read, or the handler's own check lags the listing. That answer comes one
- *    poll interval later, so a handler that keeps refusing is re-sent at that
- *    pace, within the caller's budget.
- *  - `'none'`: the first read found none while the pool lists allocations, so
- *    the refusal is not the release lag (a live or foreign resource holds the
- *    CIDR); fail now, as before.
+ *    re-send the delete.
+ *  - `'recheck'`: the first read found none, but the pool lists no allocation
+ *    at all, or `afterRelease` says this delete was just re-sent on a release:
+ *    the allocation went between the refusal and the read, or the handler's
+ *    own check lags the listing. Re-send the delete, one poll interval later.
+ *    Only while `allowRecheck`: the caller bounds how many it sends.
+ *  - `'none'`: otherwise, when the first read found none: the refusal is not
+ *    the release lag (a live or foreign resource holds the CIDR); fail now, as
+ *    before.
  *  - `'not-released'`: the wait stopped first (its cap, a Ctrl-C, an
  *    unreadable listing), with `delete-gone-wait.ts`'s warning; fail.
  *
@@ -179,8 +189,11 @@ export async function waitForLingeringIpamAllocations(opts: {
   maxWaitMs: number;
   /** This delete was re-sent on an earlier `'released'` answer. */
   afterRelease?: boolean;
+  /** Whether a `'recheck'` may be answered; else such a case is `'none'`. */
+  allowRecheck?: boolean;
   sleep?: (ms: number) => Promise<void>;
-}): Promise<'released' | 'none' | 'not-released'> {
+}): Promise<IpamReleaseVerdict> {
+  const startedAt = Date.now();
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let sawLingering = false;
   let released = false;
@@ -219,7 +232,9 @@ export async function waitForLingeringIpamAllocations(opts: {
   });
   if (!released) return 'not-released';
   if (sawLingering) return 'released';
-  if (lastTotal > 0 && opts.afterRelease !== true) return 'none';
-  await sleep(ipamPoolCidrReleaseWait.pollIntervalMs);
-  return 'released';
+  if (opts.allowRecheck !== true || (lastTotal > 0 && opts.afterRelease !== true)) return 'none';
+  const remainingMs = opts.maxWaitMs - (Date.now() - startedAt);
+  if (remainingMs <= 0) return 'none';
+  await sleep(Math.min(ipamPoolCidrReleaseWait.pollIntervalMs, remainingMs));
+  return 'recheck';
 }

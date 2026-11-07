@@ -51,7 +51,9 @@ import {
   IPAM_CIDR_HAS_ALLOCATIONS,
   ipamPoolCidrReleaseBudgetMs,
   ipamPoolIdOfPoolCidr,
+  MAX_IPAM_RECHECKS,
   waitForLingeringIpamAllocations,
+  type IpamReleaseVerdict,
 } from '../ipam-pool-cidr-release.js';
 
 /**
@@ -469,6 +471,7 @@ export async function deleteThroughCloudControl(
   // pool CIDR's release wait; one budget across every re-sent delete.
   let ipamReleaseWaitStartedAt: number | undefined;
   let ipamReleased = false;
+  let ipamRechecks = 0;
   for (let attempt = 1; ; attempt++) {
     try {
       // Issue #3455: an EBS volume is deleted with EC2 `DeleteVolume`, never
@@ -616,10 +619,16 @@ export async function deleteThroughCloudControl(
           physicalId,
           resourceType,
           ipamPoolCidrReleaseBudgetMs(resourceType) - (Date.now() - ipamReleaseWaitStartedAt),
-          ipamReleased
+          ipamReleased,
+          ipamRechecks < MAX_IPAM_RECHECKS
         );
         if (verdict === 'released') {
           ipamReleased = true;
+          ipamRechecks = 0;
+          continue;
+        }
+        if (verdict === 'recheck') {
+          ipamRechecks++;
           continue;
         }
       }
@@ -660,8 +669,9 @@ async function awaitIpamPoolCidrRelease(
   physicalId: string,
   resourceType: string,
   budgetMs: number,
-  afterRelease: boolean
-): Promise<'released' | 'none' | 'not-released'> {
+  afterRelease: boolean,
+  allowRecheck: boolean
+): Promise<IpamReleaseVerdict> {
   const poolId = ipamPoolIdOfPoolCidr(physicalId);
   if (poolId === undefined || budgetMs <= 0) return 'none';
   let ec2: EC2Client;
@@ -686,6 +696,7 @@ async function awaitIpamPoolCidrRelease(
     logger: this.logger,
     maxWaitMs: budgetMs,
     afterRelease,
+    allowRecheck,
     sleep: (ms) => this.sleep(ms),
   });
 }
