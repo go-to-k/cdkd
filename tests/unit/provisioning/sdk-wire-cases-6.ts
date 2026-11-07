@@ -437,13 +437,13 @@ const BLOCK_DEFAULT: Bag = {
 };
 
 // Not a gap: `Rules` reaches the SDK as one document. `toSdkRules` /
-// `toSdkStatement` (in wafv2-provider.ts) spread each rule and statement
+// `toSdkStatement` (in wafv2/shared.ts) spread each rule and statement
 // and rewrite only `ByteMatchStatement.SearchStringBase64`, the three
 // reference statements' `Arn` and the five recursion points, all carried in
 // RULES above. Every other member rides through untouched, so its delivery is
 // argued by a delivered sibling under the same parent. What no bag observes
 // is its key SPELLING against the SDK model: the provider's own diff of the
-// CFn keys (`ARN_REFERENCE_STATEMENT_KEYS` in wafv2-provider.ts) is the only evidence there.
+// CFn keys (`ARN_REFERENCE_STATEMENT_KEYS` in wafv2/shared.ts) is the only evidence there.
 const RULES_VERBATIM =
   'passed through verbatim inside the Rules document, as its carried siblings are; its spelling against the SDK model is not observed by a bag';
 

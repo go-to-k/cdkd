@@ -1,44 +1,14 @@
-import { isDeepStrictEqual } from 'node:util';
-import {
-  WAFV2Client,
-  CreateWebACLCommand,
-  UpdateWebACLCommand,
-  DeleteWebACLCommand,
-  GetWebACLCommand,
-  ListTagsForResourceCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
-  WAFNonexistentItemException,
-  type Tag,
-  type Rule,
-  type DefaultAction,
-  type VisibilityConfig,
-  type Scope,
-  type CaptchaConfig,
-  type ChallengeConfig,
-  type CustomResponseBody,
-  type AssociationConfig,
-  type DataProtectionConfig,
-  type OnSourceDDoSProtectionConfig,
-  type ApplicationConfig,
-  type MonetizationConfig,
-} from '@aws-sdk/client-wafv2';
-import { getLogger } from '../../utils/logger.js';
-import { definedAttributes } from '../attribute-map.js';
+import { WAFV2Client } from '@aws-sdk/client-wafv2';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markNotGone } from '../not-gone.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generatedNameFor } from '../resource-name.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import type { DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -49,445 +19,13 @@ import type {
   CreateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { parseWebACLArn } from './wafv2-arn.js';
-
-/**
- * Translate the empty-string placeholder `readCurrentState` emits for an
- * absent `Description` to `undefined` before shipping it to AWS.
- *
- * `readCurrentState` always-emits `Description: ''` on a WebACL with no
- * description (the comparator's top-level walk is state-keys-only, so
- * the placeholder is required to detect a console-side description add).
- * AWS WAFv2 `CreateWebACL` / `UpdateWebACL` reject `Description: ''`
- * with `Member must have length greater than or equal to 1` (min 1 / max
- * 256). On `cdkd drift --revert` the placeholder would round-trip
- * through `update()` and surface as a hard AWS rejection, so we sanitize
- * the wire-layer payload while keeping the read-side placeholder
- * intact. This is the Class 2 pattern from
- * `docs/provider-rules.md#readcurrentstate-for-drift-detection`.
- */
-function sanitizeDescription(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'string' && value.length === 0) return undefined;
-  return value as string;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * The two `DataProtection` booleans AWS documents as `Default: FALSE`.
- */
-const DATA_PROTECTION_FALSE_DEFAULTS: readonly string[] = [
-  'ExcludeRuleMatchDetails',
-  'ExcludeRateBasedDetails',
-];
-
-/**
- * Re-shape an AWS `DataProtectionConfig` against the state baseline (issue
- * #2762): a `false` for one of {@link DATA_PROTECTION_FALSE_DEFAULTS} is
- * dropped when the baseline entry at the same position does not declare that
- * key, because `false` is the documented default and so equals what the
- * template left out. `DataProtections` is compared as a whole array, so
- * without this an echoed default would read as drift against a baseline that
- * holds only the template's `properties`. A `true`, or a key the baseline
- * declares, is kept, so a real change still shows. Entries are matched by
- * position, as the comparator matches them.
- */
-function toCfnDataProtectionConfig(
-  config: Record<string, unknown>,
-  baseline: unknown
-): Record<string, unknown> {
-  const entries = config['DataProtections'];
-  if (!Array.isArray(entries)) return config;
-  const baseEntries =
-    isPlainObject(baseline) && Array.isArray(baseline['DataProtections'])
-      ? (baseline['DataProtections'] as unknown[])
-      : [];
-  return {
-    ...config,
-    DataProtections: entries.map((entry, i) => {
-      if (!isPlainObject(entry)) return entry;
-      const base = baseEntries[i];
-      const converted: Record<string, unknown> = { ...entry };
-      for (const key of DATA_PROTECTION_FALSE_DEFAULTS) {
-        if (converted[key] === false && !(isPlainObject(base) && key in base)) {
-          delete converted[key];
-        }
-      }
-      return converted;
-    }),
-  };
-}
-
-/**
- * The `ApplicationConfig` an `UpdateWebACL` carries (issue #2762).
- *
- * `UpdateWebACL` treats this one member unlike the rest of the request, which
- * replaces the web ACL whole: an OMITTED `ApplicationConfig` keeps every stored
- * entry, and an INCLUDED one must match the stored entries exactly, any change
- * being refused (`@aws-sdk/client-wafv2` `UpdateWebACLRequest.ApplicationConfig`).
- * So it is sent only when the template changed it, and then AWS's refusal of a
- * modification is the outcome, as for any update CloudFormation would send.
- * Unchanged, it is left out: AWS keeps the same value, and the update never
- * depends on the stored entries comparing equal to the template's spelling.
- * Removed from the template, it is left out too, which keeps the stored value
- * exactly as AWS documents for an omission.
- */
-function applicationConfigForUpdate(
-  next: unknown,
-  previous: unknown
-): ApplicationConfig | undefined {
-  if (next === undefined || next === null) return undefined;
-  if (isDeepStrictEqual(next, previous)) return undefined;
-  return next as ApplicationConfig;
-}
-
-/**
- * Convert a CFn `ByteMatchStatement` into the SDK shape.
- *
- * `SearchStringBase64` exists ONLY in CloudFormation — the SDK models
- * carry a single `SearchString: Uint8Array | undefined` blob member
- * (`@aws-sdk/client-wafv2/dist-types/models/models_0.d.ts:1034`).
- * Forwarding the CFn blob raw made the serializer drop the unknown key
- * and `CreateWebACL` then failed validation on the missing required
- * `SearchString` (issue #1389).
- *
- * The decoded bytes are passed as a `Uint8Array`, matching the declared
- * member type: the JSON serializer base64-encodes a blob member on the
- * wire, so decoding here reproduces byte-for-byte what CloudFormation
- * sends. Plain `SearchString` values are deliberately left untouched —
- * the same serializer accepts a string at a blob member and UTF-8 +
- * base64 encodes it, which is exactly the existing (working) behavior.
- *
- * Precedence when a template carries BOTH keys: `SearchStringBase64`
- * wins. CloudFormation treats them as mutually exclusive and rejects
- * such a template, so any choice is arbitrary; the explicit-encoding
- * form is preferred because it is the only one that can express
- * non-UTF-8 bytes, so honoring it never loses information.
- */
-function toSdkByteMatchStatement(
-  byteMatchStatement: Record<string, unknown>
-): Record<string, unknown> {
-  const encoded = byteMatchStatement['SearchStringBase64'];
-  if (typeof encoded !== 'string') return byteMatchStatement;
-
-  const converted: Record<string, unknown> = { ...byteMatchStatement };
-  delete converted['SearchStringBase64'];
-  converted['SearchString'] = Uint8Array.from(Buffer.from(encoded, 'base64'));
-  return converted;
-}
-
-/**
- * CFn `Statement` members that carry a reference ARN.
- *
- * CloudFormation spells the member `Arn`; every one of these SDK types
- * declares it `ARN` (and marks it REQUIRED) — verified against
- * `@aws-sdk/client-wafv2` `models_0.d.ts` (`IPSetReferenceStatement` /
- * `RegexPatternSetReferenceStatement` / `RuleGroupReferenceStatement`),
- * whose schema serde carries a single `_ARN = "ARN"` alias and no `Arn`.
- * The serializer drops the CFn spelling, so `CreateWebACL` fails
- * validation on the missing required `ARN` — the same silent-drop class
- * as `SearchStringBase64`, and the only other one in the whole `Rules`
- * tree (all 154 CFn keys were diffed against the SDK member set).
- */
-const ARN_REFERENCE_STATEMENT_KEYS: readonly string[] = [
-  'IPSetReferenceStatement',
-  'RegexPatternSetReferenceStatement',
-  'RuleGroupReferenceStatement',
-];
-
-/**
- * Recursively convert a CFn `Statement` tree into the SDK shape.
- *
- * Two conversions ride this walk: the `ByteMatchStatement`
- * `SearchStringBase64` decode and the reference-statement `Arn` -> `ARN`
- * rename (see {@link ARN_REFERENCE_STATEMENT_KEYS}). Both leaves are
- * nestable, so the walk has to cover every recursion point the SDK
- * `Statement` union declares:
- *   - `NotStatement.Statement`            (single nested Statement)
- *   - `AndStatement.Statements[]`         (Statement array)
- *   - `OrStatement.Statements[]`          (Statement array)
- *   - `RateBasedStatement.ScopeDownStatement`
- *   - `ManagedRuleGroupStatement.ScopeDownStatement`
- *
- * That list mirrors the SDK model exactly — those are the only members
- * typed `Statement` / `Statement[]`. `RuleGroupReferenceStatement` is
- * NOT a recursion point (it declares no nested statement member, only
- * `ARN` / `ExcludedRules` / `RuleActionOverrides`); it appears in the
- * ARN list above for the rename alone. Extend either list if AWS adds a
- * member.
- *
- * The caller's object is never mutated — every level is rebuilt.
- */
-function toSdkStatement(statement: Record<string, unknown>): Record<string, unknown> {
-  const converted: Record<string, unknown> = { ...statement };
-
-  const byteMatchStatement = converted['ByteMatchStatement'];
-  if (isPlainObject(byteMatchStatement)) {
-    converted['ByteMatchStatement'] = toSdkByteMatchStatement(byteMatchStatement);
-  }
-
-  for (const key of ARN_REFERENCE_STATEMENT_KEYS) {
-    const reference = converted[key];
-    if (!isPlainObject(reference) || !('Arn' in reference)) continue;
-    const { Arn: arn, ...rest } = reference;
-    converted[key] = { ...rest, ARN: arn };
-  }
-
-  const notStatement = converted['NotStatement'];
-  if (isPlainObject(notStatement)) {
-    const nested = notStatement['Statement'];
-    if (isPlainObject(nested)) {
-      converted['NotStatement'] = { ...notStatement, Statement: toSdkStatement(nested) };
-    }
-  }
-
-  for (const key of ['AndStatement', 'OrStatement']) {
-    const combined = converted[key];
-    if (!isPlainObject(combined)) continue;
-    const nested = combined['Statements'];
-    if (!Array.isArray(nested)) continue;
-    converted[key] = {
-      ...combined,
-      Statements: nested.map((item) => (isPlainObject(item) ? toSdkStatement(item) : item)),
-    };
-  }
-
-  for (const key of ['RateBasedStatement', 'ManagedRuleGroupStatement']) {
-    const scoping = converted[key];
-    if (!isPlainObject(scoping)) continue;
-    const nested = scoping['ScopeDownStatement'];
-    if (!isPlainObject(nested)) continue;
-    converted[key] = { ...scoping, ScopeDownStatement: toSdkStatement(nested) };
-  }
-
-  return converted;
-}
-
-/**
- * Convert the CFn `Rules` blob into the SDK `Rule[]` shape.
- *
- * Falsy input degrades to `[]`, matching the previous
- * `(properties['Rules'] as Rule[]) || []` behavior exactly. A truthy NON-array
- * (an unresolved intrinsic) is deliberately passed through instead:
- * defaulting it to `[]` would make `update()` a silent `UpdateWebACL`
- * that wipes every rule and still reports success, where the old code
- * handed the value to the SDK and failed loudly.
- */
-function toSdkRules(rules: unknown): Rule[] {
-  // Falsy (absent / null / '' / 0 / false) degrades to `[]` for EXACT parity
-  // with the previous `(properties['Rules'] as Rule[]) || []`. Only a TRUTHY
-  // non-array passes through.
-  if (!rules) return [];
-  if (!Array.isArray(rules)) return rules as unknown as Rule[];
-  return rules.map((rule) => {
-    if (!isPlainObject(rule)) return rule as unknown as Rule;
-    const statement = rule['Statement'];
-    if (!isPlainObject(statement)) return rule as unknown as Rule;
-    return { ...rule, Statement: toSdkStatement(statement) } as unknown as Rule;
-  });
-}
-
-/**
- * Inverse of {@link toSdkByteMatchStatement}.
- *
- * `GetWebACL` returns `SearchString` as the SDK blob type (a `Uint8Array`),
- * but the template — and therefore cdkd state — carries EITHER a plain
- * `SearchString` string OR a `SearchStringBase64` string. The bytes are
- * identical for both spellings, so the AWS value alone cannot say which
- * one to emit: only the BASELINE can. That is why every function on this
- * side takes the corresponding state node alongside the AWS node.
- *
- * Whenever the baseline string RE-ENCODES to exactly the AWS bytes, it is
- * emitted VERBATIM rather than re-derived. That is what keeps two otherwise
- * permanent false positives from appearing:
- *
- *   - a non-canonical `SearchStringBase64` (whitespace / newlines, missing
- *     padding, base64url) would never equal a canonically re-encoded string,
- *     so the WebACL would drift forever;
- *   - `Buffer.toString('utf8')` is LOSSY for non-UTF-8 bytes (U+FFFD), so a
- *     binary needle under a plain-`SearchString` baseline would both drift
- *     and — via `drift --accept`, which writes the AWS value into
- *     `observedProperties`, then `--revert` — push a mangled needle to AWS.
- *
- * When the bytes genuinely differ from the baseline (REAL drift) or no usable
- * baseline exists, the value is derived: base64 if the baseline used base64,
- * otherwise plain UTF-8 but ONLY when that round-trips losslessly, falling
- * back to base64 so binary content is never corrupted.
- */
-function toCfnByteMatchStatement(
-  byteMatchStatement: Record<string, unknown>,
-  baseline: unknown
-): Record<string, unknown> {
-  const raw = byteMatchStatement['SearchString'];
-  if (raw === undefined) return byteMatchStatement;
-
-  const bytes =
-    raw instanceof Uint8Array
-      ? Buffer.from(raw)
-      : typeof raw === 'string'
-        ? Buffer.from(raw, 'utf8')
-        : undefined;
-  if (!bytes) return byteMatchStatement;
-
-  const base = isPlainObject(baseline) ? baseline : undefined;
-  const baseEncoded = base?.['SearchStringBase64'];
-  const basePlain = base?.['SearchString'];
-
-  const converted: Record<string, unknown> = { ...byteMatchStatement };
-  delete converted['SearchString'];
-  delete converted['SearchStringBase64'];
-
-  // Undrifted: hand back the baseline's own string, byte-for-byte.
-  if (typeof baseEncoded === 'string' && Buffer.from(baseEncoded, 'base64').equals(bytes)) {
-    converted['SearchStringBase64'] = baseEncoded;
-    return converted;
-  }
-  if (typeof basePlain === 'string' && Buffer.from(basePlain, 'utf8').equals(bytes)) {
-    converted['SearchString'] = basePlain;
-    return converted;
-  }
-
-  // Real drift, or no baseline to follow.
-  if (typeof baseEncoded === 'string') {
-    converted['SearchStringBase64'] = bytes.toString('base64');
-    return converted;
-  }
-  const utf8 = bytes.toString('utf8');
-  if (Buffer.from(utf8, 'utf8').equals(bytes)) {
-    converted['SearchString'] = utf8;
-  } else {
-    converted['SearchStringBase64'] = bytes.toString('base64');
-  }
-  return converted;
-}
-
-/**
- * Inverse of {@link toSdkStatement}: re-shape an AWS-returned `Statement`
- * tree back into the CFn spelling, walking the state baseline in lockstep
- * so the per-`ByteMatchStatement` spelling choice is baseline-driven.
- *
- * Recursion points are IDENTICAL to the forward walk by construction — if
- * one gains a member, so must the other, or drift silently reappears at
- * the new nesting depth. When the baseline diverges structurally (a real
- * drift, or a rule added console-side) the walk simply passes `undefined`
- * down and the defaults apply; the resulting difference is exactly the
- * drift the user should see.
- */
-function toCfnStatement(
-  statement: Record<string, unknown>,
-  baseline: unknown
-): Record<string, unknown> {
-  const converted: Record<string, unknown> = { ...statement };
-  const base = isPlainObject(baseline) ? baseline : undefined;
-
-  const byteMatchStatement = converted['ByteMatchStatement'];
-  if (isPlainObject(byteMatchStatement)) {
-    converted['ByteMatchStatement'] = toCfnByteMatchStatement(
-      byteMatchStatement,
-      base?.['ByteMatchStatement']
-    );
-  }
-
-  // CFn spells the reference ARN `Arn`; AWS returns `ARN`. Unconditional —
-  // unlike the search string there is no ambiguity about the CFn spelling.
-  for (const key of ARN_REFERENCE_STATEMENT_KEYS) {
-    const reference = converted[key];
-    if (!isPlainObject(reference) || !('ARN' in reference)) continue;
-    const { ARN: arn, ...rest } = reference;
-    converted[key] = { ...rest, Arn: arn };
-  }
-
-  const notStatement = converted['NotStatement'];
-  if (isPlainObject(notStatement)) {
-    const nested = notStatement['Statement'];
-    if (isPlainObject(nested)) {
-      const baseNot = base?.['NotStatement'];
-      converted['NotStatement'] = {
-        ...notStatement,
-        Statement: toCfnStatement(
-          nested,
-          isPlainObject(baseNot) ? baseNot['Statement'] : undefined
-        ),
-      };
-    }
-  }
-
-  for (const key of ['AndStatement', 'OrStatement']) {
-    const combined = converted[key];
-    if (!isPlainObject(combined)) continue;
-    const nested = combined['Statements'];
-    if (!Array.isArray(nested)) continue;
-    const baseCombined = base?.[key];
-    const baseList =
-      isPlainObject(baseCombined) && Array.isArray(baseCombined['Statements'])
-        ? (baseCombined['Statements'] as unknown[])
-        : undefined;
-    converted[key] = {
-      ...combined,
-      Statements: nested.map((item, i) =>
-        isPlainObject(item) ? toCfnStatement(item, baseList?.[i]) : item
-      ),
-    };
-  }
-
-  for (const key of ['RateBasedStatement', 'ManagedRuleGroupStatement']) {
-    const scoping = converted[key];
-    if (!isPlainObject(scoping)) continue;
-    const nested = scoping['ScopeDownStatement'];
-    if (!isPlainObject(nested)) continue;
-    const baseScoping = base?.[key];
-    converted[key] = {
-      ...scoping,
-      ScopeDownStatement: toCfnStatement(
-        nested,
-        isPlainObject(baseScoping) ? baseScoping['ScopeDownStatement'] : undefined
-      ),
-    };
-  }
-
-  return converted;
-}
-
-/**
- * Inverse of {@link toSdkRules}: re-shape the AWS `Rules` array back into
- * the CFn spelling so `cdkd drift` compares like with like.
- *
- * Without this every WebACL carrying a `ByteMatchStatement` or a reference
- * statement reported permanent phantom drift, because `drift-calculator`
- * compares `Rules` wholesale via `deepEqual` (issue #1403).
- *
- * Rules are matched to the baseline POSITIONALLY, which is what the
- * comparator itself does — a reordered or console-added rule therefore
- * still surfaces as drift, correctly.
- */
-function toCfnRules(rules: unknown, baselineRules: unknown): unknown[] {
-  // `GetWebACL` always returns an array (or nothing), so unlike the forward
-  // walk there is no unresolved-intrinsic case to pass through here.
-  if (!Array.isArray(rules)) return [];
-  const baseList = Array.isArray(baselineRules) ? (baselineRules as unknown[]) : undefined;
-  return rules.map((rule, i) => {
-    // A non-object entry is not a rule cdkd can re-shape; hand it back
-    // untouched rather than casting a lie onto it.
-    if (!isPlainObject(rule)) return rule;
-    const statement = rule['Statement'];
-    if (!isPlainObject(statement)) return rule;
-    const baseRule = baseList?.[i];
-    return {
-      ...rule,
-      Statement: toCfnStatement(
-        statement,
-        isPlainObject(baseRule) ? baseRule['Statement'] : undefined
-      ),
-    };
-  });
-}
+import { create } from './wafv2/create.js';
+import { update, applyTagDiff } from './wafv2/update.js';
+import { deleteImpl } from './wafv2/delete.js';
+import { readCurrentState, importImpl } from './wafv2/read-state.js';
 
 /**
  * AWS WAFv2 WebACL Provider
@@ -501,7 +39,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   private wafv2Client?: WAFV2Client;
   private createClient?: WAFV2Client;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('WAFv2WebACLProvider');
+  logger: ConsoleLogger = getLogger().child('WAFv2WebACLProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -527,7 +65,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): WAFV2Client {
+  getClient(): WAFV2Client {
     if (!this.wafv2Client) {
       // Built together with the create client, so both capture the identity
       // active at this ONE call (issue #4639).
@@ -559,126 +97,21 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * #3978). Nothing is adopted on that collision: a name is not attribution
    * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
-  private getCreateClient(): WAFV2Client {
+  getCreateClient(): WAFV2Client {
     this.getClient();
     return this.createClient as WAFV2Client;
   }
 
-  /**
-   * Create a WAFv2 WebACL
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating WAFv2 WebACL ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-
-    const name =
-      (properties['Name'] as string | undefined) ||
-      generatedNameFor('AWS::WAFv2::WebACL', logicalId);
-    // `replayWarn`: the rollback executor's reverse-replacement arm revives
-    // the OLD resource from `previousState.properties`, which the user cannot
-    // edit from the template — a hard refusal there would leave the resource
-    // unrestorable (issue #1544). Template-path creates keep the refusal.
-    const scope = requireConfigString(
-      properties['Scope'],
-      'REGIONAL',
-      'AWS::WAFv2::WebACL Scope',
-      replayWarn(this.logger, context)
-    ) as Scope;
-
-    try {
-      // Build tags
-      const tags: Tag[] = desiredTags.map((tag) => ({ Key: tag.Key, Value: tag.Value }));
-
-      const response = await this.getCreateClient().send(
-        new CreateWebACLCommand({
-          Name: name,
-          Scope: scope,
-          DefaultAction: properties['DefaultAction'] as DefaultAction,
-          Description: sanitizeDescription(properties['Description']),
-          Rules: toSdkRules(properties['Rules']),
-          VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
-          ...(tags.length > 0 && { Tags: tags }),
-          CustomResponseBodies: properties['CustomResponseBodies'] as
-            | Record<string, CustomResponseBody>
-            | undefined,
-          CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
-          ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
-          TokenDomains: properties['TokenDomains'] as string[] | undefined,
-          AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
-          DataProtectionConfig: properties['DataProtectionConfig'] as
-            | DataProtectionConfig
-            | undefined,
-          OnSourceDDoSProtectionConfig: properties['OnSourceDDoSProtectionConfig'] as
-            | OnSourceDDoSProtectionConfig
-            | undefined,
-          ApplicationConfig: properties['ApplicationConfig'] as ApplicationConfig | undefined,
-          MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
-        })
-      );
-
-      const summary = response.Summary;
-      if (!summary?.ARN || !summary?.Id) {
-        throw new Error('CreateWebACL did not return Summary with ARN and Id');
-      }
-
-      this.logger.debug(`Successfully created WAFv2 WebACL ${logicalId}: ${summary.ARN}`);
-
-      // `LabelNamespace` is not a `WebACLSummary` member, so the value read
-      // off the summary here before was always absent (issue #3627): read it
-      // from `GetWebACL`. The web ACL exists by now, so a failed read omits
-      // the attribute rather than failing the create; the #1852 heal fills it.
-      let labelNamespace: string | undefined;
-      try {
-        labelNamespace = (
-          await this.getClient().send(
-            new GetWebACLCommand({ Id: summary.Id, Name: name, Scope: scope })
-          )
-        ).WebACL?.LabelNamespace;
-      } catch (readError) {
-        this.logger.debug(
-          `Could not read the label namespace of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
-        );
-      }
-
-      return {
-        physicalId: summary.ARN,
-        attributes: definedAttributes({
-          Arn: summary.ARN,
-          Id: summary.Id,
-          LabelNamespace: labelNamespace,
-        }),
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create WAFv2 WebACL ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update a WAFv2 WebACL
-   *
-   * Name and Scope are immutable - changes to those require replacement.
-   * UpdateWebACL requires LockToken obtained from GetWebACL.
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -686,111 +119,15 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating WAFv2 WebACL ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#2613: the update addresses the web ACL by the name, id and
-    // scope inside the recorded ARN, so a client in another region than the
-    // state record would send `GetWebACL`, `UpdateWebACL` and the tag writes to
-    // a region this record was not written through. A CLOUDFRONT-scope web ACL
-    // goes through the same client (there is no us-east-1 routing here), so it
-    // is compared the same way. Outside the try: a refusal is not an AWS
-    // failure to re-label. Refuse before any call; the client's region is
-    // resolved only when there is one to compare with.
-    assertRegionMatch(
-      context?.expectedRegion ? await this.getClient().config.region() : undefined,
-      context?.expectedRegion,
-      resourceType,
+    return update.call(
+      this,
       logicalId,
       physicalId,
-      'pre-update'
+      resourceType,
+      properties,
+      previousProperties,
+      context
     );
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    try {
-      const { id, name, scope } = parseWebACLArn(physicalId);
-
-      // Get current WebACL to obtain LockToken
-      const getResponse = await this.getClient().send(
-        new GetWebACLCommand({
-          Name: name,
-          Scope: scope,
-          Id: id,
-        })
-      );
-
-      const lockToken = getResponse.LockToken;
-      if (!lockToken) {
-        throw new Error('GetWebACL did not return LockToken');
-      }
-
-      await this.getClient().send(
-        new UpdateWebACLCommand({
-          Name: name,
-          Scope: scope,
-          Id: id,
-          LockToken: lockToken,
-          DefaultAction: properties['DefaultAction'] as DefaultAction,
-          Description: sanitizeDescription(properties['Description']),
-          Rules: toSdkRules(properties['Rules']),
-          VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
-          CustomResponseBodies: properties['CustomResponseBodies'] as
-            | Record<string, CustomResponseBody>
-            | undefined,
-          CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
-          ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
-          TokenDomains: properties['TokenDomains'] as string[] | undefined,
-          AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
-          DataProtectionConfig: properties['DataProtectionConfig'] as
-            | DataProtectionConfig
-            | undefined,
-          OnSourceDDoSProtectionConfig: properties['OnSourceDDoSProtectionConfig'] as
-            | OnSourceDDoSProtectionConfig
-            | undefined,
-          ApplicationConfig: applicationConfigForUpdate(
-            properties['ApplicationConfig'],
-            previousProperties['ApplicationConfig']
-          ),
-          MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
-        })
-      );
-
-      // Apply tag diff. WAFv2 uses TagResource / UntagResource keyed by
-      // ResourceARN (the physicalId is the WebACL ARN).
-      await this.applyTagDiff(
-        physicalId,
-        resourceType,
-        logicalId,
-        previousProperties['Tags'],
-        properties['Tags']
-      );
-
-      this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          Arn: physicalId,
-          Id: id,
-          LabelNamespace: getResponse.WebACL?.LabelNamespace,
-        },
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update WAFv2 WebACL ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
   /**
@@ -813,7 +150,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
@@ -825,279 +162,36 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
-  /**
-   * Delete a WAFv2 WebACL
-   *
-   * DeleteWebACL requires LockToken obtained from GetWebACL.
-   * WAFNonexistentItemException is treated as success (idempotent delete).
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting WAFv2 WebACL ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#2613: the delete addresses the web ACL by the name, id and
-    // scope inside the recorded ARN, so a client in another region than the
-    // state record would send `GetWebACL` and `DeleteWebACL` there. Refuse
-    // before any call, not only on NotFound; the client's region is resolved
-    // only when there is one to compare with.
-    assertRegionMatch(
-      context?.expectedRegion ? await this.getClient().config.region() : undefined,
-      context?.expectedRegion,
-      resourceType,
-      logicalId,
-      physicalId,
-      'pre-delete'
-    );
-
-    try {
-      const { id, name, scope } = parseWebACLArn(physicalId);
-
-      // Get LockToken
-      const getResponse = await this.getClient().send(
-        new GetWebACLCommand({
-          Name: name,
-          Scope: scope,
-          Id: id,
-        })
-      );
-
-      const lockToken = getResponse.LockToken;
-      if (!lockToken) {
-        throw new Error('GetWebACL did not return LockToken');
-      }
-
-      await this.getClient().send(
-        new DeleteWebACLCommand({
-          Name: name,
-          Scope: scope,
-          Id: id,
-          LockToken: lockToken,
-        })
-      );
-
-      this.logger.debug(`Successfully deleted WAFv2 WebACL ${logicalId}`);
-    } catch (error) {
-      if (error instanceof WAFNonexistentItemException) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`WAFv2 WebACL ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete WAFv2 WebACL ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, and the delete classifiers
-      // read `NotFoundException` in a message as "already deleted": only the
-      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Apply a diff between old and new CFn-shape Tags arrays via WAFv2's
-   * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`). Both
-   * sides are read through `planTagDiff` (go-to-k/cdkd#3994): an unreadable
-   * record untags nothing.
-   */
-  private async applyTagDiff(
+  applyTagDiff(
     arn: string,
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown
   ): Promise<void> {
-    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
-    }
-    const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
-    const tagsToRemove = plan.remove;
-
-    if (tagsToRemove.length > 0) {
-      await this.getClient().send(
-        new UntagResourceCommand({ ResourceARN: arn, TagKeys: tagsToRemove })
-      );
-      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from WAFv2 WebACL ${arn}`);
-    }
-    if (tagsToAdd.length > 0) {
-      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: tagsToAdd }));
-      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on WAFv2 WebACL ${arn}`);
-    }
+    return applyTagDiff.call(this, arn, resourceType, logicalId, oldTagsRaw, newTagsRaw);
   }
 
-  /**
-   * Read the AWS-current WAFv2 WebACL configuration in CFn-property shape.
-   *
-   * The cdkd physicalId is the WebACL ARN; we parse it back to
-   * `(id, name, scope)` and call `GetWebACL`. The response holds Name,
-   * Description, DefaultAction, Rules, VisibilityConfig,
-   * CustomResponseBodies, CaptchaConfig, ChallengeConfig, TokenDomains,
-   * and AssociationConfig — every key cdkd state declares as
-   * `handledProperties`. `Scope` is recovered from the ARN parse.
-   *
-   * Tags are surfaced via a follow-up `ListTagsForResource(ResourceARN)`
-   * call. CDK's `aws:*` auto-tags are filtered out and the result key is
-   * omitted when AWS reports no user tags. Returns `undefined`
-   * when the ARN can't be parsed, and `RESOURCE_NOT_FOUND` when the WebACL
-   * is gone (`WAFNonexistentItemException`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string,
-    // The state-recorded baseline. Load-bearing, not decoration: the AWS
-    // `Rules` blob cannot say whether the template spelled a byte-match
-    // needle `SearchString` or `SearchStringBase64` (identical bytes), so
-    // the reverse mapping is baseline-driven. See {@link toCfnRules}.
+    logicalId: string,
+    resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const { id, name, scope } = parseWebACLArn(physicalId);
-    if (!id || !name) return undefined;
-
-    let webACL;
-    try {
-      const resp = await this.getClient().send(
-        new GetWebACLCommand({ Id: id, Name: name, Scope: scope })
-      );
-      webACL = resp.WebACL;
-    } catch (err) {
-      if (err instanceof WAFNonexistentItemException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!webACL) return undefined;
-
-    const result: Record<string, unknown> = {};
-    if (webACL.Name !== undefined) result['Name'] = webACL.Name;
-    result['Scope'] = scope;
-    result['Description'] = webACL.Description ?? '';
-    if (webACL.DefaultAction) {
-      result['DefaultAction'] = webACL.DefaultAction as unknown as Record<string, unknown>;
-    }
-    result['Rules'] = toCfnRules(webACL.Rules ?? [], properties?.['Rules']);
-    if (webACL.VisibilityConfig) {
-      result['VisibilityConfig'] = webACL.VisibilityConfig as unknown as Record<string, unknown>;
-    }
-    result['CustomResponseBodies'] = (webACL.CustomResponseBodies ?? {}) as Record<string, unknown>;
-    if (webACL.CaptchaConfig) {
-      result['CaptchaConfig'] = webACL.CaptchaConfig as unknown as Record<string, unknown>;
-    }
-    if (webACL.ChallengeConfig) {
-      result['ChallengeConfig'] = webACL.ChallengeConfig as unknown as Record<string, unknown>;
-    }
-    result['TokenDomains'] = webACL.TokenDomains ? [...webACL.TokenDomains] : [];
-    if (webACL.AssociationConfig) {
-      result['AssociationConfig'] = webACL.AssociationConfig as unknown as Record<string, unknown>;
-    }
-    // Issue #2762: the four members below share their CFn and SDK spelling at
-    // every depth, so each reads back verbatim. Emitted only when AWS reports
-    // one, as CaptchaConfig is: an empty placeholder would be no valid value to
-    // send back on `drift --revert` (`DataProtections` takes at least one entry).
-    if (webACL.DataProtectionConfig) {
-      result['DataProtectionConfig'] = toCfnDataProtectionConfig(
-        webACL.DataProtectionConfig as unknown as Record<string, unknown>,
-        properties?.['DataProtectionConfig']
-      );
-    }
-    if (webACL.OnSourceDDoSProtectionConfig) {
-      result['OnSourceDDoSProtectionConfig'] =
-        webACL.OnSourceDDoSProtectionConfig as unknown as Record<string, unknown>;
-    }
-    if (webACL.ApplicationConfig) {
-      result['ApplicationConfig'] = webACL.ApplicationConfig as unknown as Record<string, unknown>;
-    }
-    if (webACL.MonetizationConfig) {
-      result['MonetizationConfig'] = webACL.MonetizationConfig as unknown as Record<
-        string,
-        unknown
-      >;
-    }
-
-    // Tags via ListTagsForResource (the WebACL ARN is the physicalId).
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsForResourceCommand({ ResourceARN: physicalId })
-      );
-      const tags = normalizeAwsTagsToCfn(tagsResp.TagInfoForResource?.TagList);
-      result['Tags'] = tags;
-    } catch (err) {
-      this.logger.debug(
-        `WAFv2 ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
   }
 
-  /**
-   * Adopt an existing WAFv2 WebACL into cdkd state.
-   *
-   * Lookup order:
-   *  1. `--resource <id>=<arn>` override → verify with `GetWebACL` (parses
-   *     Name/Id/Scope back out of the ARN). CloudFormation's compound
-   *     `name|id|scope` physical id — what `--migrate-from-cloudformation`
-   *     passes — is accepted too and recorded under the ARN (issue #3627).
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      try {
-        // CloudFormation's physical id is the compound `name|id|scope`
-        // (`--migrate-from-cloudformation` hands it over verbatim), which
-        // `parseWebACLArn` cannot read; cdkd's is the ARN (issue #3627).
-        const compound = /^([^|]+)\|([^|]+)\|(REGIONAL|CLOUDFRONT)$/.exec(input.knownPhysicalId);
-        const { id, name, scope } = compound
-          ? { name: compound[1]!, id: compound[2]!, scope: compound[3] as Scope }
-          : parseWebACLArn(input.knownPhysicalId);
-        if (!id || !name) return null;
-        const resp = await this.getClient().send(
-          new GetWebACLCommand({ Id: id, Name: name, Scope: scope })
-        );
-        const arn = resp.WebACL?.ARN;
-        if (!arn) return null;
-        // Recorded under cdkd's ARN form, which every CRUD path parses, with the
-        // map `create()` / `update()` record.
-        return {
-          physicalId: arn,
-          attributes: definedAttributes({
-            Arn: arn,
-            Id: resp.WebACL?.Id,
-            LabelNamespace: resp.WebACL?.LabelNamespace,
-          }),
-        };
-      } catch (err) {
-        if (err instanceof WAFNonexistentItemException) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a WebACL
-    // reaching here needs an explicit `--resource <id>=<arn>` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 }
