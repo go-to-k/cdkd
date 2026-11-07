@@ -256,7 +256,7 @@ export const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysical
     physicalIdShape: '<tableBucketARN>|<namespace>|<name>',
     arnServiceSegment: 's3tables',
   }),
-  // cdkd stores `<groupId>|<ipProtocol>|<fromPort>|<toPort>` (ec2-provider.ts's
+  // cdkd stores `<groupId>|<ipProtocol>|<fromPort>|<toPort>` (ec2/sg-ingress-create.ts's
   // `createSecurityGroupIngress`) — the tuple its own revoke call needs. CFn
   // identifies the rule by the `sgr-...` id AWS mints, which `EC2Provider`
   // records as the `Id` attribute since issue #1761 (read off

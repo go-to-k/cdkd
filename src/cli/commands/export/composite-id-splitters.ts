@@ -179,7 +179,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { RestApiId: restApiId },
     };
   },
-  // cdkd's SDK provider stores `<gatewayId>|<vpcId>` (ec2-provider.ts's
+  // cdkd's SDK provider stores `<gatewayId>|<vpcId>` (ec2/gateway-attachment.ts's
   // `createVpcGatewayAttachment`); the Cloud Control path — reached whenever
   // the template trips the #614 SDK-unwired rule, e.g. by declaring
   // `VpnGatewayId`, which the SDK provider does not handle — stores the CFn
@@ -295,7 +295,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { VpcId: vpcId },
     };
   },
-  // cdkd's SDK provider stores `<routeTableId>|<destination>` (ec2-provider.ts's
+  // cdkd's SDK provider stores `<routeTableId>|<destination>` (ec2/route.ts's
   // `createRoute`), where `destination` is whichever of `DestinationCidrBlock` /
   // `DestinationIpv6CidrBlock` / `DestinationPrefixListId` the route declares —
   // `narrowRouteDestinations` resolves them in that precedence order. The Cloud
@@ -348,7 +348,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { RouteTableId: routeTableId },
     };
   },
-  // cdkd's SDK provider stores `<publicIp>|<allocationId>` (ec2-provider.ts's
+  // cdkd's SDK provider stores `<publicIp>|<allocationId>` (ec2/igw-eip.ts's
   // `eipPhysicalId`), deliberately the same shape the Cloud Control fallback
   // produced — and `verifyExplicit` normalizes an imported EIP to it too, so
   // every state record written by a create OR an import carries both segments.

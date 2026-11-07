@@ -193,7 +193,7 @@ export async function readChildOutputsAsAttributes(
  *
  * "A read site risks missing a caller" is answered for the RESOLUTION path by
  * there being exactly one: the flat-key attribute lookup, which
- * `getAttribute()` below exists to prove is the only route (it throws for
+ * `getAttribute()` above exists to prove is the only route (it throws for
  * anything that falls through it).
  *
  * It is NOT answered for every reader of `ResourceState.attributes` in the

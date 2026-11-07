@@ -738,7 +738,7 @@ export async function update(
     // `dynamodb-ondemand` integ on the first run of this change — the unit
     // tests could not see it, because each mocks ONE call and the defect is
     // an interaction BETWEEN two of them (issue #1588). Same mechanism as
-    // `gsiHandledByBillingFlip` in `dynamodb-globaltable-provider.ts`.
+    // `gsiHandledByBillingFlip` in `dynamodb-globaltable/update-table.ts`.
     const gsiHandledByBillingFlip = new Set<string>();
     await applyBillingModeUpdate.call(
       this,

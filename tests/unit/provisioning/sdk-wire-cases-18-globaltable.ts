@@ -188,7 +188,7 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
       })),
     }),
     // The live tags are what the previous deploy left on the deploy-region
-    // replica. Only readCurrentState reads them (dynamodb-globaltable-provider.ts:7775):
+    // replica. Only readCurrentState reads them (dynamodb-globaltable/read.ts):
     // create and update diff the recorded Tags, so no write path depends on it.
     ListTagsOfResourceCommand: () => ({ Tags: (local['Tags'] as unknown[] | undefined) ?? [] }),
     // Every target the provider asks after is registered with its policy: a

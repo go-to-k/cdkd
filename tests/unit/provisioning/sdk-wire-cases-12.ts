@@ -568,7 +568,7 @@ const CLUSTER_ARN = `arn:aws:ecs:us-east-1:${ACCOUNT}:cluster/${CLUSTER_NAME}`;
 /**
  * `DescribeClusters` answers the cluster: `updateCluster` applies the tag diff
  * to the ARN it reads there and skips it on an empty answer
- * (ecs-provider.ts:1099-1115).
+ * (`updateCluster` in ecs/cluster-task-definition.ts).
  */
 const armCluster = (): void =>
   setOutputOverrides({
@@ -586,7 +586,7 @@ const CLUSTER_CASE: TypeCase = {
   wholeFromNext: {
     keys: (key) => key === 'CapacityProviders' || key === 'DefaultCapacityProviderStrategy',
     reason:
-      'PutClusterCapacityProviders replaces BOTH lists from the desired bag whenever either is declared, a removed one as `[]` (ecs-provider.ts:1026-1040): the previous side is never read',
+      'PutClusterCapacityProviders replaces BOTH lists from the desired bag whenever either is declared, a removed one as `[]` (`updateCluster` in ecs/cluster-task-definition.ts): the previous side is never read',
   },
   exempt: {},
   targets: ECS_TAG_TARGETS,
@@ -772,7 +772,7 @@ const TASK_DEFINITION_CASE: TypeCase = {
   // probes are what read them.
   createOnly: createOnlyOf('AWS::ECS::TaskDefinition'),
   exempt: {},
-  // InferenceAccelerators is unhandled by design (ecs-provider.ts:561-571), so
+  // InferenceAccelerators is unhandled by design (ecs-provider.ts's `unhandledByDesign`), so
   // no bag carries it; the nested-path check reads carried top-levels only.
   targets: ECS_TAG_TARGETS,
   bags: [
@@ -820,13 +820,14 @@ const SERVICE_ARN = `arn:aws:ecs:us-east-1:${ACCOUNT}:service/${CLUSTER_NAME}/sv
 
 /**
  * Keys `updateService` sends from the desired bag on EVERY update, never
- * reading the previous side, so a removal sends nothing (ecs-provider.ts:
- * 2256-2273, 2394-2416). CloudFormation keeps the live value on the removal
- * of the eight measured in a real A/B (#5004, ecs-provider.ts:476-489,
- * 2251-2255); DesiredCount follows CloudFormation's documented rule that an
+ * reading the previous side, so a removal sends nothing (`updateService` in
+ * ecs/service-update.ts). CloudFormation keeps the live value on the removal
+ * of the eight measured in a real A/B (#5004, ecs-provider.ts's
+ * `removalDefaults` note and the removal-semantics comments in
+ * `updateService`); DesiredCount follows CloudFormation's documented rule that an
  * existing service's absent desired count is omitted from the operation;
  * TaskDefinition / NetworkConfiguration are the provider's "always-carried"
- * pass-throughs (ecs-provider.ts:2247-2250): UpdateService keeps an absent one.
+ * pass-throughs (the "always-carried" note in `updateService`): UpdateService keeps an absent one.
  */
 const SERVICE_FROM_NEXT = new Set([
   'TaskDefinition',
@@ -871,13 +872,14 @@ const SERVICE_DEPLOYMENT_CONFIGURATION = {
 
 /**
  * `update-remove` under DeploymentConfiguration: the block is sent whole from
- * the desired bag (ecs-provider.ts:2387-2409), and only the circuit breaker's
- * two optional members reset on removal (ecs-provider.ts:3504-3573).
+ * the desired bag (`updateService` in ecs/service-update.ts), and only the
+ * circuit breaker's two optional members reset on removal
+ * (`resolveDeploymentConfiguration` in ecs/convert-service.ts).
  */
 const DEPLOYMENT_CONFIGURATION_SILENT: Record<string, string> = Object.fromEntries([
   [
     'update-remove:DeploymentConfiguration',
-    'a whole-block removal resets nothing: CloudFormation kept the live configuration too (CFn A/B us-east-1 2026-08-13, ecs-provider.ts:2092-2095)',
+    'a whole-block removal resets nothing: CloudFormation kept the live configuration too (CFn A/B us-east-1 2026-08-13, `resolveDeploymentConfiguration` in ecs/convert-service.ts)',
   ],
   ...paths(SERVICE_DEPLOYMENT_CONFIGURATION)
     .map((p) => p.join('.'))
@@ -888,11 +890,11 @@ const DEPLOYMENT_CONFIGURATION_SILENT: Record<string, string> = Object.fromEntri
     )
     .map((p) => [
       `update-remove:DeploymentConfiguration.${p}`,
-      'a member dropped from a still-declared DeploymentConfiguration is sent as the desired block; UpdateService merges the top level and replaces / default-fills the nested blocks, the end state CloudFormation reached for the same template (CFn A/B us-east-1 2026-08-13, ecs-provider.ts:2083-2154, 2233-2235); a required member it drops is refused by CloudFormation and by the nested-required pre-flight (ecs-provider.ts:2096-2117, 2163-2183)',
+      'a member dropped from a still-declared DeploymentConfiguration is sent as the desired block; UpdateService merges the top level and replaces / default-fills the nested blocks, the end state CloudFormation reached for the same template (CFn A/B us-east-1 2026-08-13, the removal-semantics comments in `updateService`, ecs/service-update.ts); a required member it drops is refused by CloudFormation and by the nested-required pre-flight (`updateService` in ecs/service-update.ts, `nested-required.ts`)',
     ]),
   [
     'update-remove:DeploymentConfiguration.DeploymentCircuitBreaker',
-    'the whole circuit breaker dropped from a still-declared DeploymentConfiguration resets nothing: the provider passes it through by design, and CloudFormation is unmeasured for this removal (ecs-provider.ts:3456-3460)',
+    'the whole circuit breaker dropped from a still-declared DeploymentConfiguration resets nothing: the provider passes it through by design, and CloudFormation is unmeasured for this removal (`resolveDeploymentConfiguration` in ecs/convert-service.ts)',
   ],
 ]);
 
@@ -1033,9 +1035,9 @@ const SERVICE_TOP = {
 
 /** ForceNewDeployment: a one-shot trigger CreateService has no member for. */
 const FORCE_NEW_DEPLOYMENT_CREATE =
-  'ForceNewDeployment is an UpdateService-only trigger: CreateService has no such member, and the initial deployment is a fresh rollout (ecs-provider.ts:1532-1536, 3711-3712)';
+  'ForceNewDeployment is an UpdateService-only trigger: CreateService has no such member, and the initial deployment is a fresh rollout (`createService` in ecs/service-create.ts, `resolveForceNewDeployment` in ecs/convert-service.ts)';
 const FORCE_NEW_DEPLOYMENT_REMOVED =
-  'an absent ForceNewDeployment (or member) forces nothing: the SDK member is a one-shot boolean, never persisted state, so a removal has nothing to reset (ecs-provider.ts:3723-3745)';
+  'an absent ForceNewDeployment (or member) forces nothing: the SDK member is a one-shot boolean, never persisted state, so a removal has nothing to reset (`resolveForceNewDeployment` in ecs/convert-service.ts)';
 
 const forceNewDeploymentSilent = (members: string[]): Record<string, string> => ({
   'create:ForceNewDeployment': FORCE_NEW_DEPLOYMENT_CREATE,
@@ -1051,9 +1053,9 @@ const forceNewDeploymentSilent = (members: string[]): Record<string, string> => 
 
 const LAUNCH_TYPE_SILENT: Record<string, string> = {
   'update-add:LaunchType':
-    'an added LaunchType replaces the service (replacement-rules.ts:221-242, 1045-1048, measured against CloudFormation), so a deploy never brings one to update(); the rollback revert that can passes and sends nothing, as UpdateService has no launchType member (ecs-provider.ts:1914-1941); `describeEcsExtras` pins the refusals',
+    'an added LaunchType replaces the service (replacement-rules.ts:221-242, 1045-1048, measured against CloudFormation), so a deploy never brings one to update(); the rollback revert that can passes and sends nothing, as UpdateService has no launchType member (`updateService` in ecs/service-update.ts); `describeEcsExtras` pins the refusals',
   'update-remove:LaunchType':
-    'a removed LaunchType updates in place and CloudFormation KEEPS the live launch type (replacement-rules.ts:221-239), so sending nothing is parity (ecs-provider.ts:1914-1917)',
+    'a removed LaunchType updates in place and CloudFormation KEEPS the live launch type (replacement-rules.ts:221-239), so sending nothing is parity (`updateService` in ecs/service-update.ts)',
   'update-vary:LaunchType':
     'a changed LaunchType replaces the service (replacement-rules.ts:221-242); the vary base lacks it, so this is the add above. `describeEcsExtras` pins that update() refuses a change and sends nothing',
 };
@@ -1066,7 +1068,7 @@ const SERVICE_CASE: TypeCase = {
   wholeFromNext: {
     keys: (key) => SERVICE_FROM_NEXT.has(key),
     reason:
-      'sent from the desired bag on every UpdateService, so a removal sends nothing and the live value stays: for the eight keys a CloudFormation A/B measured, as CloudFormation keeps it (#5004, ecs-provider.ts:476-489); DesiredCount by CloudFormation\'s documented omit-on-update rule; TaskDefinition / NetworkConfiguration as the provider\'s always-carried pass-throughs, unmeasured against CloudFormation (ecs-provider.ts:2247-2250; see SERVICE_FROM_NEXT)',
+      'sent from the desired bag on every UpdateService, so a removal sends nothing and the live value stays: for the eight keys a CloudFormation A/B measured, as CloudFormation keeps it (#5004, the `removalDefaults` note in ecs-provider.ts); DesiredCount by CloudFormation\'s documented omit-on-update rule; TaskDefinition / NetworkConfiguration as the provider\'s always-carried pass-throughs, unmeasured against CloudFormation (`updateService` in ecs/service-update.ts; see SERVICE_FROM_NEXT)',
   },
   exempt: {},
   targets: ECS_TAG_TARGETS,
@@ -1083,13 +1085,13 @@ const SERVICE_CASE: TypeCase = {
         ...DEPLOYMENT_CONFIGURATION_SILENT,
         ...forceNewDeploymentSilent(['ForceNewDeploymentNonce']),
         'update-vary:ForceNewDeployment.ForceNewDeploymentNonce':
-          'the nonce is read only as changed-or-not against the previous one; any changed value sends the same `forceNewDeployment: true` (ecs-provider.ts:3739-3745)',
+          'the nonce is read only as changed-or-not against the previous one; any changed value sends the same `forceNewDeployment: true` (`resolveForceNewDeployment` in ecs/convert-service.ts)',
         'update-remove:AvailabilityZoneRebalancing':
-          'left in place on removal: CloudFormation KEEPS the live value (DISABLED stayed DISABLED, CFn A/B #5004/#1160), and UpdateService keeps an absent member (ecs-provider.ts:2288-2290)',
+          'left in place on removal: CloudFormation KEEPS the live value (DISABLED stayed DISABLED, CFn A/B #5004/#1160), and UpdateService keeps an absent member (`updateService` in ecs/service-update.ts)',
         'update-remove:GatewayConnectors':
           'left in place on removal: a CloudFormation A/B (#5634) showed dropping it, alone or beside another change, starts no deployment and the live connector stays, and UpdateService keeps an absent member; a DECLARED `[]` is the clearing form, sent as a change',
         'update-remove:DeploymentController':
-          'absent means the default ECS controller, and sending nothing keeps the live one; a controller change is sent only when declared and changed (ecs-provider.ts:2294-2298, 2310-2318). The provider does not reset by design; CloudFormation is unmeasured for this removal',
+          'absent means the default ECS controller, and sending nothing keeps the live one; a controller change is sent only when declared and changed (`updateService` in ecs/service-update.ts). The provider does not reset by design; CloudFormation is unmeasured for this removal',
       },
       expectedRemovalThrows: TAG_THROWS(ECS_ALL_DIRECTIONS, 2),
     },

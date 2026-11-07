@@ -3615,7 +3615,7 @@ export function main(
           `is reachable. Mask the VALUE first — \`maskDeep(<value>, maskerOrIdentity(` +
           `context?.maskSecrets))\` from \`src/provisioning/masked-retry-logger.ts\` — or mask it ` +
           `anywhere upstream on this path; both are accepted. Reference: ` +
-          `src/provisioning/providers/ssm-parameter-provider.ts, rule: ` +
+          `src/provisioning/providers/ssm-parameter/create.ts, rule: ` +
           `.claude/rules/provider-masking.md.`
       );
     }

@@ -141,12 +141,12 @@ const GRAPHQL_API_CASE: TypeCase = {
       expectedSilent: {
         // Not a gap: Name is required (CFn and CreateGraphqlApi), so a desired
         // bag without one keeps the API's name rather than renaming it
-        // (appsync-provider.ts:1016-1020): there is nothing to send.
+        // (`updateGraphQLApi` in appsync/create-update.ts): there is nothing to send.
         'update-remove:Name': 'a desired bag without Name keeps the recorded name',
       },
       expectedRemovalThrows: {
         'create:Name': {
-          why: 'CreateGraphqlApi requires a name (appsync-provider.ts:2913-2920)',
+          why: 'CreateGraphqlApi requires a name (`createGraphQLApi` in appsync/graphql-api.ts)',
           says: /Name is required for GraphQLApi/,
         },
         ...TAG_THROWS(ALL_DIRECTIONS, 2),
@@ -158,18 +158,18 @@ const GRAPHQL_API_CASE: TypeCase = {
 // --- AWS::AppSync::GraphQLSchema ------------------------------------------------
 
 // Not a gap: StartSchemaCreation is sent only when the SDL source changes
-// (appsync-provider.ts:1213-1230). Adding or varying `ApiId` on ONE side
+// (`updateGraphQLSchema` in appsync/update-children.ts). Adding or varying `ApiId` on ONE side
 // leaves the definition equal, so neither side sends anything; an `ApiId`
 // changed on BOTH sides is refused instead, pinned by `describeAppsyncExtras`.
 const SCHEMA_APIID =
   'StartSchemaCreation follows a definition change only; an ApiId move is refused (extras)';
 // Not a gap: AppSync has no schema delete, and CFn requires one of the two
 // definition sources, so a removed source leaves the live schema as it is
-// (appsync-provider.ts:1228-1229).
+// (`updateGraphQLSchema` in appsync/update-children.ts).
 const SCHEMA_SOURCE_REMOVED = 'a removed definition source leaves the live schema in place';
 const SCHEMA_ID_THROWS = {
   'create:ApiId': {
-    why: 'StartSchemaCreation is addressed by the API id (appsync-provider.ts:3279-3286)',
+    why: 'StartSchemaCreation is addressed by the API id (`createGraphQLSchema` in appsync/children.ts)',
     says: /ApiId is required for GraphQLSchema/,
   },
 };
@@ -215,7 +215,7 @@ const DS_REQUIRED: Record<string, { why: string; says: RegExp }> = Object.fromEn
   ['ApiId', 'Name', 'Type'].map((key) => [
     `create:${key}`,
     {
-      why: 'CreateDataSource requires ApiId, Name and Type (appsync-provider.ts:3364-3370)',
+      why: 'CreateDataSource requires ApiId, Name and Type (`createDataSource` in appsync/children.ts)',
       says: /ApiId, Name, and Type are required for DataSource/,
     },
   ])
@@ -306,7 +306,7 @@ const RESOLVER_REQUIRED: Record<string, { why: string; says: RegExp }> = Object.
   ['ApiId', 'TypeName', 'FieldName'].map((key) => [
     `create:${key}`,
     {
-      why: 'CreateResolver is addressed by ApiId, TypeName and FieldName (appsync-provider.ts:3540-3546)',
+      why: 'CreateResolver is addressed by ApiId, TypeName and FieldName (`createResolver` in appsync/children.ts)',
       says: /ApiId, TypeName, and FieldName are required for Resolver/,
     },
   ])
@@ -380,7 +380,7 @@ const API_KEY_CASE: TypeCase = {
       bag: { ApiId: API_ID, Description: 'd', Expires: 1_900_000_000 },
       expectedRemovalThrows: {
         'create:ApiId': {
-          why: 'CreateApiKey is addressed by the API id (appsync-provider.ts:3708-3715)',
+          why: 'CreateApiKey is addressed by the API id (`createApiKey` in appsync/api-key.ts)',
           says: /ApiId is required for ApiKey/,
         },
       },

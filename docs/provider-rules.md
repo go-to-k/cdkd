@@ -572,7 +572,7 @@ implementation. Three details are worth copying:
     [src/provisioning/providers/cognito/mfa-request.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/cognito/mfa-request.ts),
     which routes every warning through one masked sink rather than masking at
     each call; `create()` in
-    [src/provisioning/providers/ssm-parameter-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/ssm-parameter-provider.ts)
+    [src/provisioning/providers/ssm-parameter/create.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/ssm-parameter/create.ts)
     is the same shape for a whole operation (one `mask`, one `warn`, one
     `debug`, built at the top and used everywhere below).
     **Per-site masking DOES drift, and that is measured rather than
