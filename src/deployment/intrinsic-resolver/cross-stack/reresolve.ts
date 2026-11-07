@@ -1,0 +1,471 @@
+import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
+import { displayMasked } from '../masking-display.js';
+import { resolveDynamicReferences } from '../dynamic-refs.js';
+import { safeMsg } from '../../../utils/display-safe.js';
+import type { StackState } from '../../../types/state.js';
+import { outputReferenceProvenanceOf } from '../../reference-provenance-record.js';
+import { provenanceTokenRoutes, reresolveByRecordedRoutes } from '../recorded-reference-routes.js';
+import { publicNoEchoTokens, pushRedactedAttributeRead } from '../getatt.js';
+import {
+  ambientCredentialConfig,
+  credentialFingerprint,
+} from '../../../utils/ambient-client-defaults.js';
+import {
+  type ResolverContext,
+  carriesDynamicReference,
+  withoutProducerRegions,
+} from '../support.js';
+import {
+  carriesSecretMask,
+  isSecretExpressionByVerdictOrSpelling,
+  isSingleDynamicReferenceToken,
+  recordCrossStackExpression,
+  recordFreshNoEchoValuesIn,
+  recordPhysicalNameCopy,
+  recoverMaskedOutput,
+  wholeStringLeavesOf,
+} from '../../secret-redaction.js';
+import { physicalIdsOf, producerStateOnce } from './producer-state.js';
+
+/**
+ * Re-resolve the dynamic references in a value read out of a PRODUCER
+ * stack's persisted outputs, before it is handed to the consumer (issue
+ * [#1934](https://github.com/go-to-k/cdkd/issues/1934)).
+ *
+ * Since PR #1899 a secret-bearing output is stored REDACTED: `state.outputs`
+ * and the exports index hold `{{resolve:secretsmanager:X:SecretString:pw}}`
+ * rather than the resolved value. A consumer resolving `Fn::ImportValue` /
+ * `Fn::GetStackOutput` got that string back VERBATIM and shipped the literal
+ * token to AWS as the property value — the GHSA-p5qg-v9gv-hc7w class one
+ * more time, and the same shape `resolveReplayProps` fixed for the rollback
+ * replay and #1914 fixed for `cdkd drift --revert`. Every place that reads a
+ * REDACTED bag and hands it onward has to re-resolve first; the cross-stack
+ * import edge was the one that was missed, because the redaction and the
+ * consumption live in different stacks and often different runs.
+ *
+ * `{{resolve:` re-resolution in {@link resolveValue} could not cover it: that
+ * arm fires for a leaf INPUT string, and an intrinsic's RETURN value is never
+ * fed back through it.
+ *
+ * WHICH REGION RESOLVES IT — the producer's, via {@link
+ * resolverForProducerRegion}. The expression was resolved BY the producer IN
+ * the producer's region, so that is the only region whose answer reproduces
+ * the value the producer exported; a Secrets Manager secret or an SSM
+ * parameter of the same NAME in two regions is two independent values (issue
+ * #1933). The index hit carries `entry.producerRegion` (a required field) and
+ * `Fn::GetStackOutput` carries the reference's own resolved `Region`, so both
+ * of those are recorded rather than inferred.
+ *
+ * THE SCAN ARM IS THE EXCEPTION, and it is one this method inherits rather
+ * than introduces: a pre-v2 state record has no `region` field, so the scan
+ * reads it as `refRegion ?? resolver.resolverRegion` — the consumer's own region,
+ * itself defaulted through `AWS_REGION` and then `us-east-1`. Where that
+ * guess is wrong the re-resolution asks the wrong region and either misses
+ * the secret (a hard failure naming the lookup, since issue #1934's
+ * restructure surfaces it rather than degrading to `export not found`) or
+ * resolves a same-named secret in the consumer's region. What bounds it is
+ * that the guess is the SAME one the state READ just used, so this method
+ * cannot disagree with the record it was handed — a region-less record was
+ * already being read from that region or not found at all. The honest fix is
+ * a region on the record, which is what schema v2 did for every record
+ * written since.
+ *
+ * WHICH CREDENTIALS — the consumer's, which are the producer's too for every
+ * path that reaches here. `Fn::ImportValue` reads the account-scoped state
+ * bucket / exports index, so a producer it can see is in this account by
+ * construction, and the cross-ACCOUNT `Fn::GetStackOutput` path deliberately
+ * never calls this (see the refusal at its call site) rather than resolving a
+ * producer's expression under the consumer's identity — which would answer
+ * from a same-named secret in the WRONG account, the #1957 disclosure shape.
+ *
+ * The CONSUMER's `context` is passed through, which is what keeps the
+ * consumer's own state redacted: each resolved plaintext is recorded into its
+ * `recordedSecretValues`, so the deploy engine's save choke point rewrites it
+ * back to the expression on the way into `state.json`. It also means
+ * `skipDynamicReferences` is honoured, so the diff / no-op path keeps
+ * comparing expression-vs-expression instead of fetching a secret to print.
+ *
+ * Identity-returns a value carrying no `{{resolve:` at all, so an ordinary
+ * import is untouched.
+ *
+ * THE WALK BELOW IS A THIRD COPY, and that is recorded rather than fixed.
+ * `rollback-executor/replay-props.ts`'s `resolveReplayProps` carries the same descent, and
+ * `drift.ts`'s `resolveStateSecretExpressions` the same idea. Extracting one
+ * helper is the right end state and is NOT this change's to make: the natural
+ * home is beside those callers, in files a parallel lane owns, and a
+ * cross-module extraction done from here would edit them. Two things a future
+ * extractor needs that a mechanical merge would drop: this copy rebuilds
+ * objects with `Object.create(null)` (the `__proto__` hazard below), and it
+ * takes the RESOLVER as a parameter because the region it must answer for is
+ * the producer's rather than the caller's — which is exactly what issue #2057
+ * says the other two copies get wrong.
+ */
+/** @internal */
+export async function reresolveCrossStackValue(
+  resolver: IntrinsicFunctionResolver,
+  value: unknown,
+  producerRegion: string | undefined,
+  context: ResolverContext,
+  origin: string,
+  sourceKey: string | undefined,
+  producerOutput?: {
+    stackName: string;
+    region: string;
+    outputKey: string;
+    /**
+     * Set when the read crosses an ACCOUNT boundary (a `RoleArn` on
+     * `Fn::GetStackOutput`). Recovery is then REFUSED rather than served, and
+     * that is a correctness fact rather than caution: the recovery store is
+     * keyed by the AMBIENT credential identity (go-to-k/cdkd#3691) + stack +
+     * region + output key -- the consumer's identity, never the RoleArn's --
+     * and it only ever holds plaintexts THIS process masked while deploying
+     * with those ambient credentials. So a same-named stack in the same region -- the
+     * common shape for a `Shared` / `Network` stack replicated per account --
+     * would serve the CONSUMER account's secret to a read that asked for the
+     * PRODUCER account's, and the consumer would then send it to a resource
+     * in the other account.
+     *
+     * The neighbouring `CrossAccountSecretRefusalError` refuses exactly this
+     * confusion for a redacted DYNAMIC REFERENCE, and its reasoning ("a
+     * same-named secret in the consumer account would answer instead")
+     * transfers verbatim. It does not fire here only because
+     * {@link SECRET_MASK} is not a dynamic reference, so that guard's
+     * `carriesDynamicReference` test is false and this path falls through it.
+     */
+    crossAccount?: boolean;
+    /**
+     * The producer's state, when the caller already read it (the
+     * `Fn::ImportValue` scan arm, `Fn::GetStackOutput`), so no second read is
+     * made for it (go-to-k/cdkd#4852).
+     */
+    state?: StackState;
+  },
+  /** The producer region's log text, when the caller transformed the region (issue #3150). */
+  producerRegionLogText?: string
+): Promise<unknown> {
+  // go-to-k/cdkd#4852: a DIFF pass records which producer output this leaf
+  // read, so the read-provenance arm finds it without resolving it again.
+  if (
+    context.crossStackReads !== undefined &&
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    sourceKey !== undefined
+  ) {
+    context.crossStackReads.set(sourceKey, {
+      stackName: producerOutput.stackName,
+      // The same key the pin reads under (`producerStateOnce`), so one read serves both.
+      region: producerOutput.region || resolver.resolverRegion || '',
+      outputKey: producerOutput.outputKey,
+      carriesToken: carriesDynamicReference(value),
+      ...(producerOutput.state !== undefined && { state: producerOutput.state }),
+    });
+  }
+  // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
+  // HERE because this method is the one choke point every cross-stack read
+  // returns through — `Fn::ImportValue` (both the index and the scan arms),
+  // `Fn::GetStackOutput`, and a nested stack's `Outputs.<Key>`. A producer's
+  // `state.outputs` entry can hold the mask (its own output resolved a
+  // `NoEcho` custom resource's `Data`), and without this a CONSUMER stack
+  // would push the literal `***` to AWS. It runs BEFORE the
+  // `carriesDynamicReference` early return, because the mask is not a
+  // dynamic reference and that return is exactly the path it takes.
+  //
+  // RECOVERY FIRST, refusal only when it fails. When the producer was
+  // deployed by THIS process in THIS run, the plaintext behind the mask is
+  // still in memory (`recoverMaskedOutput`) — which is the whole
+  // `cdkd deploy --all` case, and the case a consumer template that deployed
+  // fine before this feature lands on. Recovering it keeps the wire value
+  // correct and re-registers it as a MASK-ONLY needle in the CONSUMER's own
+  // bag, so the consumer's record still persists `***`. The refusal below is
+  // then narrowed to what it is genuinely for: a producer deployed by an
+  // EARLIER run, whose plaintext no longer exists anywhere cdkd can read.
+  //
+  // `origin` rather than a logical id: it is the caller-built description of
+  // WHICH read this is (`Fn::ImportValue '<name>' (producer <stack> /
+  // <region>)`), which is what a user needs to find the producer. It DOES
+  // carry resolved values — every builder assembles it from an export /
+  // output / stack name or a region, all of which this family masks elsewhere
+  // (`stack-output.ts` for the `Fn::GetStackOutput` origins) —
+  // so it is masked at the push below. An earlier revision of this sentence
+  // claimed the opposite and was refuted by grep (issue #2827 review).
+  if (carriesSecretMask(value)) {
+    const recovered =
+      producerOutput === undefined || producerOutput.crossAccount === true
+        ? undefined
+        : recoverMaskedOutput(
+            // The identity this resolution reads with (go-to-k/cdkd#3691).
+            credentialFingerprint(ambientCredentialConfig()),
+            producerOutput.stackName,
+            producerOutput.region,
+            producerOutput.outputKey
+          );
+    if (recovered !== undefined) {
+      if (context.recordedSecretValues) {
+        // FRESH (go-to-k/cdkd#3662): a value this process masked this run.
+        // No producer record here, so only the regions and the stack names:
+        // an echoed account id still flattens (fail-closed).
+        const publicTokens = new Set(publicNoEchoTokens(resolver, context));
+        if (producerOutput !== undefined) {
+          publicTokens.add(producerOutput.stackName);
+          publicTokens.add(producerOutput.region);
+        }
+        recordFreshNoEchoValuesIn(recovered, context.recordedSecretValues, undefined, publicTokens);
+      }
+      return recovered;
+    }
+    if (context.redactedAttributeReads !== undefined) {
+      // MASKED AT THE PUSH (issue
+      // [#2827](https://github.com/go-to-k/cdkd/issues/2827) review round 2),
+      // which is one site instead of four: every caller assembles `origin`
+      // from `attributeName` / `exportName` / `outputName` / `stackName` /
+      // `region`, and this PR masks every one of those elsewhere. The comment
+      // above used to assert `origin` "carries no resolved value"; that was
+      // false, and the value travels — `refuseRedactedAttributeReads` (deploy-engine/masking.ts)
+      // joins this array into a throw at DEFAULT verbosity.
+      //
+      // Masked BEFORE the dedup, not after: the dedup compares `display`, so
+      // a raw candidate would otherwise be compared against masked entries
+      // and push a duplicate.
+      //
+      // NO `logicalId`, and that absence is the ROUTING FACT rather than a
+      // missing field: this read resolved through ANOTHER stack, whose masked
+      // record no `cdkd import` in this stack can reach. `maskedRecordRemedyFor`
+      // reads the absence directly instead of inferring it from a spelling
+      // that carries no dot.
+      const loggedOrigin = displayMasked(resolver, origin, context);
+      pushRedactedAttributeRead(resolver, context, {
+        kind: 'cross-stack',
+        display: loggedOrigin,
+      });
+    }
+  }
+  // go-to-k/cdkd#4819: a leaf equal to one of the PRODUCER's physical ids (an
+  // exported queue URL, `Ref` of a queue) is a copy of that id, which the
+  // producer's record stores in plaintext, so the consumer's copy is kept as
+  // it is, as a same-stack `Ref` copy is (go-to-k/cdkd#4810). ONLY a physical
+  // id: an output that merely holds plaintext (a legacy record a scrub has
+  // not reached yet) is redactable and stays the redaction's. Not for a read
+  // across an ACCOUNT boundary, whose producer's bucket is not this account's,
+  // not where no producer stack is named (a nested `Outputs.X` read, this
+  // stack's own stored attributes), and not in a pass that persists nothing
+  // (`skipDynamicReferences`). A producer output a pre-go-to-k/cdkd#4810 deploy
+  // spliced (`https://sqs.../{{resolve:...}}`) is no copy here; its next
+  // deploy stores the plain id. The producer's ids are read once per ENGINE
+  // RUN (keyed by its shared `recordedImports`), never once per resource.
+  if (
+    context.recordedSecretValues !== undefined &&
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    context.stateBackend !== undefined &&
+    context.skipDynamicReferences !== true
+  ) {
+    const plain = [...wholeStringLeavesOf(value)].filter(
+      (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
+    );
+    if (plain.length > 0) {
+      const ids = physicalIdsOf(
+        await producerStateOnce(resolver.resolverRegion, context, producerOutput, () =>
+          resolver.logger.debug(
+            safeMsg`Could not read the state of producer ${displayMasked(resolver, producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
+          )
+        )
+      );
+      for (const leaf of plain) {
+        if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
+      }
+    }
+  }
+  if (!carriesDynamicReference(value)) return value;
+
+  // go-to-k/cdkd#4852: CONSUMER PINNING. A token read out of a producer's
+  // output resolves in the region and at the version the producer's
+  // `outputReferenceProvenance` records for that output, so the consumer is
+  // sent the value the producer deployed (after a rotation, the queue that
+  // exists), and its read route records that version. The producer's state is
+  // read once per engine run (shared with the physical-id read above, and
+  // never for a value carrying no token); a producer output with no provenance
+  // keeps today's path: the producer's region, the current version. Not for a
+  // read across an ACCOUNT boundary (refused upstream for a token), nor in a
+  // pass that resolves no secret, nor in the v12 migration capture (which
+  // records the current version by design, and must not add a producer read).
+  // The re-resolution below names no producer output, so it never re-enters.
+  if (
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    context.recordedSecretValues !== undefined &&
+    context.skipDynamicReferences !== true &&
+    context.provenanceCapture !== true
+  ) {
+    const state = await producerStateOnce(resolver.resolverRegion, context, producerOutput, () =>
+      resolver.logger.debug(
+        safeMsg`Could not read the state of producer ${displayMasked(resolver, producerOutput.stackName, context)} for its recorded secret versions; its output is resolved at the current version`
+      )
+    );
+    const routes = provenanceTokenRoutes(
+      value,
+      outputReferenceProvenanceOf(state, producerOutput.outputKey)
+    );
+    if (routes !== undefined) {
+      return await reresolveByRecordedRoutes(
+        resolver,
+        value,
+        producerOutput.stackName,
+        context,
+        origin,
+        sourceKey,
+        routes,
+        { region: producerRegion || undefined }
+      );
+    }
+  }
+
+  const producerResolver = resolver.resolverForProducerRegion(
+    producerRegion,
+    context,
+    producerRegionLogText
+  );
+  // The evidence must NOT reach a re-resolution whose ORIGIN IS ALREADY KNOWN
+  // (issue #2134, rounds 1 and 2 of review). This method is handed the
+  // producer it read the value out of, so when `producerRegion` is defined
+  // the reference is attributed by construction -- consulting
+  // `producerRegions` there can only re-open a question already answered, and
+  // it verdicts `ambiguous` as soon as the consumer has two producers on
+  // record.
+  //
+  // Gated on whether the producer region is KNOWN, rather than on whether a
+  // SIBLING was built, which is what round 1 got wrong: a producer in the
+  // consumer's OWN region yields `this`, so an identity test let the evidence
+  // through and refused the local case while the cross-region one worked.
+  // When the region really is unknown the evidence is KEPT -- the fail-closed
+  // direction.
+  //
+  // TRUTHINESS, byte-for-byte the test `resolverForProducerRegion` itself
+  // uses (`if (!producerRegion) return this;`). Round 3 caught the earlier
+  // `!== undefined` as a SECOND SPELLING of one question, which is the same
+  // recurrence rounds 1 and 2 were: the two disagree on `''`, and they
+  // disagree on the fail-OPEN side -- the resolver treats `''` as unknown and
+  // answers from the CONSUMER's region, while `!== undefined` called the
+  // origin known and stripped the refusal's evidence.
+  //
+  // An empty region is reachable through the exports index, via EITHER of two
+  // paths -- named separately because they are different code and an earlier
+  // draft of this comment fused them: `loadIndex` parses the stored file with
+  // an unchecked `JSON.parse`, so any `producerRegion` the file happens to
+  // hold arrives verbatim; and `rebuild` writes `ref.region ?? this.region`,
+  // where `??` passes an empty string through rather than replacing it. The
+  // index-HIT arm hands that value straight to this method.
+  // State schema v12 (go-to-k/cdkd#4847 / #4852): whatever resolves here is a
+  // value READ out of a record or another stack, so its provenance is recorded
+  // on the `read` route. A spread, like the evidence-stripping above: every
+  // bag stays the caller's own object.
+  const pinnedContext = {
+    ...(producerRegion ? withoutProducerRegions(context)! : context),
+    provenanceRoute: 'read' as const,
+  };
+  const walk = async (v: unknown): Promise<unknown> => {
+    if (typeof v === 'string') {
+      return v.includes('{{resolve:')
+        ? // The PRODUCER-region resolver above, never the consumer's own.
+          await resolveDynamicReferences(producerResolver, v, pinnedContext)
+        : v;
+    }
+    if (Array.isArray(v)) {
+      const out: unknown[] = new Array(v.length) as unknown[];
+      for (let i = 0; i < v.length; i++) out[i] = await walk(v[i]);
+      return out;
+    }
+    if (v !== null && typeof v === 'object') {
+      // `Object.create(null)` rather than `{}`, matching `secret-redaction.ts`'s
+      // `redactByPath` / `redactSecretsForState` (the #1943 class) so the
+      // codebase carries ONE answer to this hazard. A JSON-parsed
+      // `state.outputs` can hold an OWN key named `__proto__`; assigning it
+      // onto a normal object literal neither creates the key nor keeps the
+      // value — it walks the prototype setter, so the key VANISHES from the
+      // rebuilt bag and the object's prototype changes with it. A null-
+      // prototype object has no such setter, so the assignment is an ordinary
+      // own-property write. Do not "simplify" this back to `{}`.
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const [k, val] of Object.entries(v)) out[k] = await walk(val);
+      return out;
+    }
+    return v;
+  };
+
+  // Names the reference only — never the value, resolved or otherwise — and
+  // MASKED (issue #2133 review). `origin` is assembled by the callers from
+  // the RESOLVED `exportName` / `outputName` / `stackName`, each of which is
+  // a `resolveValue` result and can therefore itself carry a resolved secret
+  // (an export name built by an `Fn::Sub` over a `{{resolve:...}}` string).
+  // Every other line naming those identifiers masks them; this one is the
+  // sibling that did not.
+  resolver.logger.debug(
+    `Re-resolving dynamic reference(s) in ${displayMasked(resolver, origin, context)}`
+  );
+  const reresolved = await walk(value);
+
+  // THE RECORDING SEAM for issue
+  // [#2059](https://github.com/go-to-k/cdkd/issues/2059). This is the only
+  // point in the process holding BOTH halves of the association the persist
+  // path needs: the consumer's source LEAF (via `sourceKey`, computed by the
+  // caller from the raw intrinsic with `crossStackSourceKey`) and the WHOLE
+  // `{{resolve:...}}` token the producer stored. Without it a colliding pair
+  // — an `:AWSCURRENT` and an `:AWSPREVIOUS` export of one secret, momentarily
+  // equal during a rotation — collapses in the plaintext-keyed
+  // `recordedSecretValues`, and `secret-redaction.ts` persists the SIBLING's
+  // expression, which `resolveReplayProps` then applies to the live resource
+  // on a rollback or a `cdkd drift --revert`.
+  //
+  // WHOLE-TOKEN ONLY. A producer value that merely EMBEDS a reference, or a
+  // nested bag carrying one, has no single expression for the consumer's leaf,
+  // and the persist path's condition 1 would refuse such a leaf anyway.
+  //
+  // GATED ON THIS EXPRESSION'S OWN SECRET VERDICT, which takes TWO tests
+  // because neither is sufficient alone.
+  //
+  // `recordedSecretValues.has(reresolved)` says a secret with THIS PLAINTEXT
+  // was resolved somewhere in the pass. It is deliberately a PRESENCE test —
+  // the expression that key maps to may well be a SIBLING's, since that map is
+  // exactly the one that collapsed — which is also why it cannot answer for
+  // THIS token: the map is shared across the whole pass, so a PUBLIC
+  // `{{resolve:ssm:/x}}` whose value happens to equal a secret already
+  // recorded would pass it, and the public expression would then be persisted
+  // in place of a resolved value. That is issue #1901's perpetual-UPDATE
+  // class, and coinciding plaintexts are this issue's own premise rather than
+  // a contrived path, so the presence test alone is not the gate this comment
+  // used to claim it was.
+  //
+  // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
+  // actually ABOUT this token: `secretsmanager` / `ssm-secure` by spelling,
+  // or an `ssm` reference this process PROVED to be a `SecureString`. A plain
+  // `String` parameter answers false — for the consumer's own region, where a
+  // definitive public verdict RETRACTS a stale memo.
+  //
+  // NOT for a CROSS-REGION producer, and the exception belongs here rather
+  // than being left to be rediscovered: `pinSecretVerdict` returns early for
+  // a producer-region GUEST, so a guest's definitive `String` verdict never
+  // retracts a `SecureString` memo the consumer's own resolver pinned for the
+  // same spelling — and this then answers `true` for a producer-region
+  // parameter that is really public. The cost is bounded to a spurious UPDATE
+  // (#1901's class) and can never be a plaintext, since what gets persisted is
+  // still an EXPRESSION. Closing it means a scope-aware read of the bare
+  // set the redaction path shares; only the resolver's own skip-arm read is
+  // scoped (issue #4105).
+  //
+  // Both, not either: presence proves the pass actually resolved this token to
+  // a usable needle, the verdict proves the token is a secret at all.
+  if (
+    sourceKey !== undefined &&
+    typeof value === 'string' &&
+    isSingleDynamicReferenceToken(value) &&
+    typeof reresolved === 'string' &&
+    context.recordedSecretValues?.has(reresolved) === true &&
+    isSecretExpressionByVerdictOrSpelling(value)
+  ) {
+    // Recorded INTO THIS PASS's own bag, which is what keeps two stacks that
+    // spell the identical key (an `Fn::ImportValue` key carries no region)
+    // from reading each other's associations at all. The plaintext beside the
+    // expression then refuses a MISALIGNED entry inside the one pass.
+    recordCrossStackExpression(context.recordedSecretValues, sourceKey, value, reresolved);
+  }
+  return reresolved;
+}
