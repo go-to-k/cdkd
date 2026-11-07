@@ -1,4 +1,10 @@
-import { DescribeGlobalClustersCommand, ModifyDBClusterCommand } from '@aws-sdk/client-rds';
+import {
+  DescribeGlobalClustersCommand,
+  ModifyDBClusterCommand,
+  type ModifyDBClusterCommandInput,
+} from '@aws-sdk/client-rds';
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -45,6 +51,7 @@ import {
   SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
   PORT_CHANGE_MEMBER_STATUSES,
   clusterPortToSend,
+  isClusterBusyRefusal,
 } from './cluster-members.js';
 import {
   securityGroupListChanged,
@@ -338,82 +345,96 @@ export async function updateDBCluster(
       );
       if (detached) detachedFrom = globalClusterPlan.globalClusterId;
     }
-    await this.getClient().send(
-      new ModifyDBClusterCommand({
-        DBClusterIdentifier: physicalId,
-        // Only a changed EngineVersion, with the flag, as the handler sends
-        // it: an unchanged one re-sent after AWS auto-upgraded the minor
-        // version reads as a downgrade, and a rollback replay sends none (RDS
-        // refuses the downgrade, failing every other reverted member).
-        ...(engineVersionChanged && {
-          EngineVersion: properties['EngineVersion'] as string,
-          AllowMajorVersionUpgrade: true,
+    // go-to-k/cdkd#5994: RDS refuses the modify while the cluster is busy
+    // with something that ends on its own (`backing-up` right after create,
+    // a member still taking its settings), and CloudFormation waits it out.
+    // The same input is resent only after such a refusal, so a rollback
+    // replay sends exactly what it computed; a terminal status fails at once.
+    const modifyInput: ModifyDBClusterCommandInput = {
+      DBClusterIdentifier: physicalId,
+      // Only a changed EngineVersion, with the flag, as the handler sends
+      // it: an unchanged one re-sent after AWS auto-upgraded the minor
+      // version reads as a downgrade, and a rollback replay sends none (RDS
+      // refuses the downgrade, failing every other reverted member).
+      ...(engineVersionChanged && {
+        EngineVersion: properties['EngineVersion'] as string,
+        AllowMajorVersionUpgrade: true,
+      }),
+      // Removal keeps the live value, as CFn does (#5004 A/B).
+      DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+      // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
+      BackupRetentionPeriod: clearOnUpdateRemoval(
+        properties['BackupRetentionPeriod'] != null
+          ? Number(properties['BackupRetentionPeriod'])
+          : undefined,
+        previousProperties['BackupRetentionPeriod'] != null
+          ? Number(previousProperties['BackupRetentionPeriod'])
+          : undefined,
+        1
+      ),
+      ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
+      // #5153: only a changed password; any supplied one resets credentials.
+      // go-to-k/cdkd#5639: a switch to password also carries the declared one.
+      MasterUserPassword:
+        masterUserPasswordToSend(properties, previousProperties, context) ??
+        (passwordCompanion?.kind === 'password' ? passwordCompanion.password : undefined),
+      Port: portToSend,
+      // #609 security-cluster backfill — all mutable via ModifyDBCluster.
+      ...(sendManagedPasswordSetting &&
+        properties['ManageMasterUserPassword'] !== undefined && {
+          ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
         }),
-        // Removal keeps the live value, as CFn does (#5004 A/B).
-        DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-        // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
-        BackupRetentionPeriod: clearOnUpdateRemoval(
-          properties['BackupRetentionPeriod'] != null
-            ? Number(properties['BackupRetentionPeriod'])
-            : undefined,
-          previousProperties['BackupRetentionPeriod'] != null
-            ? Number(previousProperties['BackupRetentionPeriod'])
-            : undefined,
-          1
-        ),
-        ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
-        // #5153: only a changed password; any supplied one resets credentials.
-        // go-to-k/cdkd#5639: a switch to password also carries the declared one.
-        MasterUserPassword:
-          masterUserPasswordToSend(properties, previousProperties, context) ??
-          (passwordCompanion?.kind === 'password' ? passwordCompanion.password : undefined),
-        Port: portToSend,
-        // #609 security-cluster backfill — all mutable via ModifyDBCluster.
-        ...(sendManagedPasswordSetting &&
-          properties['ManageMasterUserPassword'] !== undefined && {
-            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-          }),
-        ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
-        // go-to-k/cdkd#5639: also when a switch to password turns the
-        // managed secret on (`passwordAuthenticationCompanion`).
-        ...((sendCredentialSettings || passwordCompanion?.kind === 'managed') &&
-          masterUserSecret?.KmsKeyId !== undefined && {
-            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-          }),
-        ...(properties['MonitoringRoleArn'] !== undefined && {
-          MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+      ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
+      // go-to-k/cdkd#5639: also when a switch to password turns the
+      // managed secret on (`passwordAuthenticationCompanion`).
+      ...((sendCredentialSettings || passwordCompanion?.kind === 'managed') &&
+        masterUserSecret?.KmsKeyId !== undefined && {
+          MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
         }),
-        // Removal keeps the live interval, as CFn does, with or without the
-        // role removed alongside (#1160 comment 6401151077).
-        ...(properties['MonitoringInterval'] != null && {
-          MonitoringInterval: Number(properties['MonitoringInterval']),
-        }),
-        // Removal keeps the live value, as CFn does (#5004 A/B).
-        EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
-          | boolean
-          | undefined,
-        ...(hasServerlessV2 && {
-          ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
-        }),
-        // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
-        ...clusterModifyBackfillMembers(properties, previousProperties, context),
-        // go-to-k/cdkd#5639: only what changed; a removal keeps the live value,
-        // except a removed EnableLocalWriteForwarding: true, which turns it off.
-        ...scalarMembers,
-        // go-to-k/cdkd#5639: only a drift revert sends it; only a change
-        // sends the authentication type, beside the credential settings.
-        ...(engineLifecycleSupport !== undefined && {
-          EngineLifecycleSupport: engineLifecycleSupport,
-        }),
-        ...(authenticationType !== undefined && {
-          MasterUserAuthenticationType: authenticationType,
-        }),
-        ...(logExportConfig !== undefined && {
-          CloudwatchLogsExportConfiguration: logExportConfig,
-        }),
-        ApplyImmediately: true,
-      })
-    );
+      ...(properties['MonitoringRoleArn'] !== undefined && {
+        MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+      }),
+      // Removal keeps the live interval, as CFn does, with or without the
+      // role removed alongside (#1160 comment 6401151077).
+      ...(properties['MonitoringInterval'] != null && {
+        MonitoringInterval: Number(properties['MonitoringInterval']),
+      }),
+      // Removal keeps the live value, as CFn does (#5004 A/B).
+      EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
+        | boolean
+        | undefined,
+      ...(hasServerlessV2 && {
+        ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
+      }),
+      // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
+      ...clusterModifyBackfillMembers(properties, previousProperties, context),
+      // go-to-k/cdkd#5639: only what changed; a removal keeps the live value,
+      // except a removed EnableLocalWriteForwarding: true, which turns it off.
+      ...scalarMembers,
+      // go-to-k/cdkd#5639: only a drift revert sends it; only a change
+      // sends the authentication type, beside the credential settings.
+      ...(engineLifecycleSupport !== undefined && {
+        EngineLifecycleSupport: engineLifecycleSupport,
+      }),
+      ...(authenticationType !== undefined && {
+        MasterUserAuthenticationType: authenticationType,
+      }),
+      ...(logExportConfig !== undefined && {
+        CloudwatchLogsExportConfiguration: logExportConfig,
+      }),
+      ApplyImmediately: true,
+    };
+    await modifyDbInstanceWhenAvailable({
+      send: () => this.getClient().send(new ModifyDBClusterCommand(modifyInput)),
+      readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      label: 'RDS DBCluster',
+      subject: 'cluster',
+      isRefusal: isClusterBusyRefusal,
+      logicalId,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
 
     this.logger.debug(`Successfully updated DBCluster ${logicalId}`);
 

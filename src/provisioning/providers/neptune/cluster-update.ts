@@ -4,6 +4,7 @@ import {
   DescribeDBSubnetGroupsCommand,
   AddRoleToDBClusterCommand,
   RemoveRoleFromDBClusterCommand,
+  type ModifyDBClusterCommandInput,
 } from '@aws-sdk/client-neptune';
 import { DescribeSecurityGroupsCommand } from '@aws-sdk/client-ec2';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
@@ -109,49 +110,61 @@ export async function updateDBCluster(
     // there CloudFormation resets it to 27017. A removed
     // VpcSecurityGroupIds IS reset, to the VPC's default security group
     // (`dbClusterSecurityGroupsToSend`).
-    await this.getClient().send(
-      new ModifyDBClusterCommand({
-        DBClusterIdentifier: physicalId,
-        EngineVersion: send('EngineVersion') as string | undefined,
-        // #5004: CloudFormation KEEPS the live value of a removed
-        // DeletionProtection / BackupRetentionPeriod, so an absent value
-        // is passed through as absent (no reset).
-        DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-        BackupRetentionPeriod:
-          properties['BackupRetentionPeriod'] != null
-            ? Number(properties['BackupRetentionPeriod'])
+    // go-to-k/cdkd#5994: AWS refuses the modify while the cluster is in a
+    // status that ends on its own (`backing-up` right after create), and
+    // CloudFormation waits it out. The same input is resent only after such a
+    // refusal, so a rollback replay sends exactly what it computed; a terminal
+    // status fails at once.
+    const modifyInput: ModifyDBClusterCommandInput = {
+      DBClusterIdentifier: physicalId,
+      EngineVersion: send('EngineVersion') as string | undefined,
+      // #5004: CloudFormation KEEPS the live value of a removed
+      // DeletionProtection / BackupRetentionPeriod, so an absent value
+      // is passed through as absent (no reset).
+      DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+      BackupRetentionPeriod:
+        properties['BackupRetentionPeriod'] != null
+          ? Number(properties['BackupRetentionPeriod'])
+          : undefined,
+      PreferredBackupWindow: send('PreferredBackupWindow') as string | undefined,
+      PreferredMaintenanceWindow: send('PreferredMaintenanceWindow') as string | undefined,
+      DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as string | undefined,
+      // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
+      // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
+      EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
+      ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
+      Port:
+        properties['DBPort'] != null
+          ? Number(properties['DBPort'])
+          : properties['Port'] != null
+            ? Number(properties['Port'])
             : undefined,
-        PreferredBackupWindow: send('PreferredBackupWindow') as string | undefined,
-        PreferredMaintenanceWindow: send('PreferredMaintenanceWindow') as string | undefined,
-        DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as
-          | string
-          | undefined,
-        // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
-        // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
-        EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
-        ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
-        Port:
-          properties['DBPort'] != null
-            ? Number(properties['DBPort'])
-            : properties['Port'] != null
-              ? Number(properties['Port'])
-              : undefined,
-        CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
-        // Sent only on a change: re-sending one asks AWS for a network
-        // change on every update.
-        ...(networkChange && { NetworkType: networkType }),
-        ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
-        ...(logExportConfig !== undefined && {
-          CloudwatchLogsExportConfiguration: logExportConfig,
+      CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
+      // Sent only on a change: re-sending one asks AWS for a network
+      // change on every update.
+      ...(networkChange && { NetworkType: networkType }),
+      ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
+      ...(logExportConfig !== undefined && {
+        CloudwatchLogsExportConfiguration: logExportConfig,
+      }),
+      ...(majorUpgrade && { AllowMajorVersionUpgrade: true }),
+      ...(majorUpgrade &&
+        properties['DBInstanceParameterGroupName'] != null && {
+          DBInstanceParameterGroupName: properties['DBInstanceParameterGroupName'] as string,
         }),
-        ...(majorUpgrade && { AllowMajorVersionUpgrade: true }),
-        ...(majorUpgrade &&
-          properties['DBInstanceParameterGroupName'] != null && {
-            DBInstanceParameterGroupName: properties['DBInstanceParameterGroupName'] as string,
-          }),
-        ApplyImmediately: true,
-      })
-    );
+      ApplyImmediately: true,
+    };
+    await modifyDbInstanceWhenAvailable({
+      send: () => this.getClient().send(new ModifyDBClusterCommand(modifyInput)),
+      readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      label: 'Neptune DBCluster',
+      subject: 'cluster',
+      isRefusal: isModifyNotAvailableRefusal,
+      logicalId,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
 
     // go-to-k/cdkd#5498: what this call added, so a convergence after a
     // later failure disables it, and nothing an out-of-band change enabled.
