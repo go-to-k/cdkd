@@ -1,48 +1,19 @@
-import { randomUUID } from 'node:crypto';
-import { timePhase, timePhaseSync } from '../utils/phase-timings.js';
-import {
-  S3Client,
-  GetObjectCommand,
-  PutObjectCommand,
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
-  HeadBucketCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  NoSuchKey,
-} from '@aws-sdk/client-s3';
-import {
-  STATE_SCHEMA_VERSION_CURRENT,
-  STATE_SCHEMA_VERSIONS_READABLE,
-  describeRegionValueKind,
-  stackInstanceIdCarriedFrom,
-  type StackState,
-} from '../types/state.js';
+import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import type { StackState } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
-import {
-  ROLLBACK_JOURNAL_VERSION,
-  parseRollbackJournal,
-  type ImportedResourceMark,
-  type RollbackJournal,
-  type RollbackJournalSegment,
+import type {
+  ImportedResourceMark,
+  RollbackJournal,
+  RollbackJournalSegment,
 } from '../types/rollback-journal.js';
-import {
-  notifyStateSaved,
-  parseCreateTokenLedger,
-  type CreateTokenLedgerDoc,
-} from './create-token-ledger.js';
-import {
-  STACK_INSTANCE_SIBLING_FILE,
-  parseStackInstanceSibling,
-  stackInstanceSiblingBody,
-} from './stack-instance-id.js';
+import type { CreateTokenLedgerDoc } from './create-token-ledger.js';
+import { STACK_INSTANCE_SIBLING_FILE } from './stack-instance-id.js';
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
-import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
+import { LISTING_ENCODING_TYPE } from '../utils/s3-listing-keys.js';
 import {
   CrossPrefixReadError,
-  isNotImplemented,
   recordCanOwnResources,
   type RecordUnderPrefix,
 } from './cross-prefix-stack-scan.js';
@@ -53,183 +24,115 @@ import {
   safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
-import { VERBOSE_POINTER, describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { markRedactedCause } from '../deployment/retryable-errors/marks.js';
 import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import { describeJsonParseFailure, utf8ByteLength } from '../utils/json-parse-failure.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
-// The LEAF directly, not the re-export: this module needs one pure function,
-// and routing it through `malformed-resources-bag.ts` would add an edge to a
-// module that reaches `error-handler` / `retryable-errors` /
-// `lock-contention-message` for nothing.
-import { producerRecordKey } from './record-keys.js';
+import type { EarlierStateRecord } from './earlier-state-versions.js';
+import { StateError } from '../utils/error-handler.js';
 import {
-  keyMayHaveVersions,
-  listVersionedSubdirectories,
-  readEarlierStateResources,
-  type EarlierStateRecord,
-} from './earlier-state-versions.js';
-import { RetainedTimeUnconfirmedError } from './retained-time.js';
-import { StateError, normalizeAwsError } from '../utils/error-handler.js';
-import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { bodyMayCarryReferences, markTokenFreeState } from './token-free-state.js';
-import {
-  purgeNoncurrentKeyVersions,
   purgeNoncurrentVersionsUnderPrefix,
   type NoncurrentVersionPurgeOptions,
   type PrefixPurgeResult,
 } from './s3-noncurrent-version-purge.js';
-import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
-
-/**
- * An error's text for a state message: the ASCII allowlist, and
- * `UNRENDERABLE` for nothing left. S3's error text ECHOES the key, which embeds
- * the stack name, so a message that guarded the name would otherwise let the
- * same bytes back in through its last interpolation (issue #3027).
- */
-function errorDetail(error: unknown): string {
-  return (
-    displaySafe(error instanceof Error ? error.message : error, { asciiOnly: true }) || UNRENDERABLE
-  );
-}
-
-/**
- * `text` without one final period, for a clause that a message continues
- * with a sentence of its own (`<clause>. The state record was left ...`).
- */
-function withoutFinalPeriod(text: string): string {
-  return text.endsWith('.') ? text.slice(0, -1) : text;
-}
-
-/**
- * Identifier of a state record. The legacy layout (`version: 1`) didn't have
- * region in the S3 key, so reads from the legacy key carry `region:
- * undefined`.
- */
-export interface StackStateRef {
-  stackName: string;
-  /** Region of the state. `undefined` ONLY for legacy `version: 1` records. */
-  region?: string;
-}
-
-/**
- * The `version: 1` legacy state key under the `cdkd/` prefix. Two layers
- * deep — split off into a constant so call sites can clearly distinguish
- * "two-segment legacy key" from "three-segment new key".
- */
-/**
- * `{stack}/state.json` — one segment plus the file, i.e. the v1 region-less
- * layout. Exported because `state-file-keys.ts` classifies the same layouts
- * from the other side and the two must not drift (issue #2001).
- */
-export const LEGACY_KEY_DEPTH = 2;
-/** The `version: 2` region-prefixed key. */
-const NEW_KEY_DEPTH = 3;
-
-/**
- * Options used to reconstruct the S3Client if the bucket lives in a region
- * different from the one the initial client was built for.
- *
- * Mirrors {@link AwsClientConfig} from `aws-clients.ts` but kept local so
- * the state backend doesn't depend on the CLI-side AwsClients wrapper.
- */
-export interface S3ClientOptions {
-  region?: string;
-  profile?: string;
-  credentials?: {
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken?: string;
-  };
-}
-
-/**
- * Options for {@link S3StateBackend.verifyBucketExists}.
- */
-export interface VerifyBucketExistsOptions {
-  /**
-   * Set when the caller ALREADY proved the bucket exists moments earlier with
-   * the same credentials — today only the default-state-bucket resolution in
-   * `config-loader.ts`, which `HeadBucket`s both candidate names to choose
-   * between them (see `stateBucketExistenceConfirmed`). Skips the duplicate
-   * `HeadBucket` round trip on the deploy preflight's critical path (issue
-   * [#1283](https://github.com/go-to-k/cdkd/issues/1283)).
-   *
-   * The region resolution / client rebuild is NOT skipped — only the HEAD.
-   *
-   * Never set it for an explicitly-specified bucket (`--state-bucket` /
-   * `CDKD_STATE_BUCKET` / `cdk.json`): those are taken verbatim, were never
-   * probed, and must keep failing fast here before asset uploads / Docker
-   * builds run against a missing bucket.
-   */
-  existenceAlreadyProbed?: boolean;
-}
-
-/**
- * What the legacy `{prefix}/{stackName}/state.json` key holds, as four
- * distinct answers rather than the single `undefined` that collapsed them
- * (issue #2550).
- *
- * The collapse is what made the destroy bug hard to fix safely: `absent`,
- * `no-region` and `unreadable` all read as "no region", so a caller could not
- * tell "there is no record" from "there is a record that names no region"
- * from "I could not look". The delete sweep needs the middle one to mean YES
- * and `stateExists` needs the other two to mean NO.
- *
- * `absent` is the NoSuchKey answer specifically. Without `s3:ListBucket` S3
- * reports a missing object as AccessDenied instead, which lands in
- * `unreadable` — harmless, since both consumers answer the same way to both,
- * but it is why `absent` must not be read as "definitely nothing there".
- */
-type LegacyStateProbe =
-  | { kind: 'absent' }
-  | { kind: 'no-region' }
-  | { kind: 'region'; region: string }
-  | { kind: 'unreadable'; reason: string };
-
-/**
- * Does a legacy record classified by {@link LegacyStateProbe} belong to an
- * operation targeting `region`?
- *
- * Free function, and shared by both consumers on purpose: the delete sweep
- * needs the probe's KIND as well as this verdict (to warn when a record may
- * have been left behind), and duplicating the mapping at that call site is
- * how the two would drift apart again.
- */
-function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean {
-  switch (probe.kind) {
-    case 'region':
-      return probe.region === region;
-    case 'no-region':
-      // `tryGetLegacy` hands this record to ANY region, so the sweep must
-      // accept it from any region too — issue #2550.
-      return true;
-    case 'absent':
-    case 'unreadable':
-      // A read that failed says nothing about who owns the record, and must
-      // never authorise a delete.
-      return false;
-  }
-}
-
-/**
- * go-to-k/cdkd#4705 review H-1: how far this machine's clock may be from S3's
- * before a kept resource's time is re-written with S3's (LastModified has
- * one-second resolution).
- */
-const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
-
-const ROLLBACK_JOURNAL_OBJECT_DESCRIPTION =
-  'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim';
-
-/** `objectDescription` for the write-ahead stack instance id (go-to-k/cdkd#5064). */
-const STACK_INSTANCE_OBJECT_DESCRIPTION =
-  "the write-ahead stack instance id, from which a stack's generated resource names derive";
-
-/** `objectDescription` for a stack's state record (go-to-k/cdkd#2346 sites 1-3). */
-const STATE_RECORD_OBJECT_DESCRIPTION =
-  "the stack's state record, which carries every resource's recorded properties and attributes";
+import {
+  errorDetail,
+  type StackStateRef,
+  type S3ClientOptions,
+  type VerifyBucketExistsOptions,
+  type LegacyStateProbe,
+  ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,
+  type RetainedResource,
+  REGISTRY_ROOT,
+} from './s3-state-backend/shared.js';
+import {
+  clientForScan,
+  warmConnections,
+  ensureClientForBucket,
+  headObject,
+} from './s3-state-backend/client.js';
+import {
+  verifyBucketExists,
+  stateExists,
+  stateExistsOwnedBy,
+  rawObjectExists,
+  getState,
+  saveState,
+  deleteState,
+  purgeDeletedStateHistory,
+  otherRegionHistoryState,
+  deleteLegacyState,
+} from './s3-state-backend/state-record.js';
+import {
+  listStacks,
+  listTopLevelPrefixes,
+  putRawObject,
+  earlierStateResources,
+  lockUnderPrefix,
+  getRawObject,
+  listRawKeys,
+  listRawObjects,
+  deleteRawObjects,
+  purgeNoncurrentVersions,
+} from './s3-state-backend/listing.js';
+import {
+  loadRetainedResources,
+  loadRetainedRecord,
+  ensureRetainedTombstone,
+  saveRetainedResources,
+  getRefactorMarker,
+  saveRefactorMarker,
+  getRegistryMarker,
+  claimRegistryMarker,
+  releaseRegistryMarker,
+} from './s3-state-backend/markers.js';
+import {
+  loadCreateTokenLedger,
+  saveCreateTokenLedger,
+  rotateCreateTokenNonce,
+  deleteCreateTokenLedger,
+  stackInstanceIdForFirstWrite,
+  stackInstanceSiblingError,
+  prefetchStackInstanceSibling,
+  readSiblingId,
+  readStackInstanceSibling,
+  deleteStackInstanceSibling,
+  dropStackInstanceSiblingAfterSave,
+} from './s3-state-backend/sidecars.js';
+import {
+  loadRollbackJournal,
+  appendRollbackJournalSegment,
+  setRollbackJournalFailedOperations,
+  dropRollbackJournalFailedOperations,
+  rewriteRollbackJournalFailedOperations,
+  reduceRollbackJournalToFailedOperations,
+  popRollbackJournalSegment,
+  markRollbackJournalSuperseded,
+  markRollbackJournalImported,
+  dropRollbackJournalSegments,
+  deleteRollbackJournal,
+} from './s3-state-backend/rollback-journal.js';
+import {
+  adoptKeyRegion,
+  probeLegacyState,
+  readLegacyRegion,
+  legacyBelongsToRegion,
+  tryGetLegacy,
+  parseStateBody,
+} from './s3-state-backend/legacy.js';
+export {
+  LEGACY_KEY_DEPTH,
+  parseRetainedResources,
+  REGISTRY_ROOT,
+  registryMarkerPrefix,
+} from './s3-state-backend/shared.js';
+export type {
+  StackStateRef,
+  S3ClientOptions,
+  VerifyBucketExistsOptions,
+  RetainedResource,
+} from './s3-state-backend/shared.js';
 
 /**
  * S3-based state backend using conditional writes for optimistic locking.
@@ -248,26 +151,39 @@ const STATE_RECORD_OBJECT_DESCRIPTION =
  * state-bucket S3 client is region-corrected.
  */
 export class S3StateBackend {
-  private logger = getLogger().child('S3StateBackend');
-  private s3Client: S3Client;
-  private config: StateBackendConfig;
-  private clientOpts: S3ClientOptions;
-  private clientResolved = false;
-  private scanClient: S3Client | undefined;
-  private resolveInFlight: Promise<void> | null = null;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  logger = getLogger().child('S3StateBackend');
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  s3Client: S3Client;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  config: StateBackendConfig;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  clientOpts: S3ClientOptions;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  clientResolved = false;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  scanClient: S3Client | undefined;
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  resolveInFlight: Promise<void> | null = null;
   /** Journal keys `loadRollbackJournal` found absent, untouched since. */
-  private readonly journalsReadAbsent = new Set<string>();
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  readonly journalsReadAbsent = new Set<string>();
   /** Per journal key, how many times a non-read access asked for it. */
-  private readonly journalTouches = new Map<string, number>();
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  readonly journalTouches = new Map<string, number>();
   /**
    * go-to-k/cdkd#5064: by sibling key, the id a `stack-instance.json` this
    * process read or wrote holds, until a state save carrying it deletes it.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private readonly pendingStackInstanceSiblings = new Map<string, string>();
+  readonly pendingStackInstanceSiblings = new Map<string, string>();
   /** {@link prefetchStackInstanceSibling}'s reads, by sibling key; each taken once. */
-  private readonly siblingPrefetches = new Map<string, Promise<string | null>>();
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  readonly siblingPrefetches = new Map<string, Promise<string | null>>();
   /** The version each sibling this process wrote got, by sibling key (go-to-k/cdkd#5200). */
-  private readonly siblingVersionsWritten = new Map<string, string>();
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  readonly siblingVersionsWritten = new Map<string, string>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -299,27 +215,9 @@ export class S3StateBackend {
     this.scanClient?.destroy();
   }
 
-  /**
-   * The S3 client the cross-prefix scan probes through (go-to-k/cdkd#4705): a
-   * second client for the same bucket region and credentials, so its up to
-   * `PROBE_CONCURRENCY` probes in flight hold sockets of THEIR pool, never
-   * the deploy's. A client whose region cannot be read (a test double) is used
-   * as it is.
-   */
-  private async clientForScan(): Promise<S3Client> {
-    await this.ensureClientForBucket();
-    if (this.scanClient !== undefined) return this.scanClient;
-    // Built the way a bucket-region rebuild builds one, and only from a real
-    // client: anything else (a test double) is used as it is.
-    if (!(this.s3Client instanceof S3Client)) return this.s3Client;
-    const region = await this.s3Client.config.region();
-    this.scanClient = new S3Client({
-      ...awsClientDefaults(this.clientOpts.profile ? { profile: this.clientOpts.profile } : {}),
-      ...s3ClientDefaults(),
-      region,
-      credentials: this.s3Client.config.credentials,
-    });
-    return this.scanClient;
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  clientForScan(): Promise<S3Client> {
+    return clientForScan.call(this);
   }
 
   get prefix(): string {
@@ -328,16 +226,20 @@ export class S3StateBackend {
 
   /**
    * Get the new (region-scoped) S3 key for a stack's state file.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private getStateKey(stackName: string, region: string): string {
+  getStateKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/state.json`;
   }
 
   /**
    * Get the legacy (pre-region-prefix) S3 key for a stack's state file.
    * Used for backwards-compatible reads and for the migration delete.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private getLegacyStateKey(stackName: string): string {
+  getLegacyStateKey(stackName: string): string {
     return `${this.config.prefix}/${stackName}/state.json`;
   }
 
@@ -347,8 +249,10 @@ export class S3StateBackend {
    * only ever written by journal-aware binaries, and the deploy failure path
    * migrates legacy-layout state before the journal write, so a legacy-key
    * journal can never exist.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private getRollbackJournalKey(stackName: string, region: string): string {
+  getRollbackJournalKey(stackName: string, region: string): string {
     // Every journal access but `loadRollbackJournal` comes through here, so a
     // writer -- present or future -- voids the "read absent" fact by asking
     // for the key.
@@ -358,7 +262,8 @@ export class S3StateBackend {
     return key;
   }
 
-  private rollbackJournalKey(stackName: string, region: string): string {
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  rollbackJournalKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/rollback-journal.json`;
   }
 
@@ -373,29 +278,8 @@ export class S3StateBackend {
     return this.journalsReadAbsent.has(this.rollbackJournalKey(stackName, region));
   }
 
-  /**
-   * Open `count` connections to the state bucket now, each with a HeadObject
-   * on the stack's state key (`s3:GetObject`, which every deploy already
-   * needs; a first deploy's 404 still completes the handshake). S3 closes a
-   * keep-alive socket left idle about five seconds, which a deploy's last
-   * resource usually outwaits, so the writes after it would each open a new
-   * TLS connection. Read-only; never throws.
-   */
-  async warmConnections(stackName: string, region: string, count: number): Promise<void> {
-    try {
-      await this.ensureClientForBucket();
-      const owner = await this.ownerParam();
-      const key = this.getStateKey(stackName, region);
-      await Promise.allSettled(
-        Array.from({ length: count }, () =>
-          this.s3Client.send(
-            new HeadObjectCommand({ Bucket: this.config.bucket, ...owner, Key: key })
-          )
-        )
-      );
-    } catch {
-      // Only a warm-up: the writes it serves open their own connections.
-    }
+  warmConnections(stackName: string, region: string, count: number): Promise<void> {
+    return warmConnections.call(this, stackName, region, count);
   }
 
   /**
@@ -413,59 +297,21 @@ export class S3StateBackend {
   /**
    * Get the create-token ledger S3 key -- a sibling of `state.json`
    * (go-to-k/cdkd#4438, `src/state/create-token-ledger.ts`).
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private getStackInstanceKey(stackName: string, region: string): string {
+  getStackInstanceKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/${STACK_INSTANCE_SIBLING_FILE}`;
   }
 
-  private getCreateTokenLedgerKey(stackName: string, region: string): string {
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  getCreateTokenLedgerKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/create-tokens.json`;
   }
 
-  /**
-   * Resolve the state bucket's actual region and, if it differs from the
-   * client's currently-configured region, replace the S3Client with one
-   * pointed at the bucket's region.
-   *
-   * This is idempotent: subsequent calls return immediately. Concurrent
-   * callers (e.g. when several public methods race during a parallel deploy)
-   * share a single in-flight resolution promise so we never issue more than
-   * one `GetBucketLocation` per backend.
-   *
-   * Errors from `GetBucketLocation` are deliberately swallowed by
-   * `resolveBucketRegion` — the resolver returns `fallbackRegion` so the
-   * caller can surface the more actionable downstream error (e.g. the
-   * `HeadBucket` 404 routed via `normalizeAwsError`).
-   */
-  private async ensureClientForBucket(): Promise<void> {
-    if (this.clientResolved) return;
-    if (this.resolveInFlight) return this.resolveInFlight;
-
-    this.resolveInFlight = (async (): Promise<void> => {
-      try {
-        // S3StateBackend OWNS its client and threads static `--profile` /
-        // credentials from its constructor `clientOpts` into both the probe
-        // and the rebuild; the replaced client is destroyed.
-        const replacement = await rebuildClientForBucketRegion(this.s3Client, this.config.bucket, {
-          ...(this.clientOpts.profile && { profile: this.clientOpts.profile }),
-          ...(this.clientOpts.credentials && { credentials: this.clientOpts.credentials }),
-          destroyOldClient: true,
-          onRebuild: ({ bucketRegion, currentRegion }) => {
-            this.logger.debug(
-              `State bucket '${this.config.bucket}' is in '${bucketRegion}' (client was '${String(currentRegion)}'); rebuilding S3 client.`
-            );
-          },
-        });
-        if (replacement) {
-          this.s3Client = replacement;
-        }
-        this.clientResolved = true;
-      } finally {
-        this.resolveInFlight = null;
-      }
-    })();
-
-    return this.resolveInFlight;
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  ensureClientForBucket(): Promise<void> {
+    return ensureClientForBucket.call(this);
   }
 
   /**
@@ -485,138 +331,30 @@ export class S3StateBackend {
    * ALLOWS this account would otherwise silently receive state
    * reads/writes). Best-effort: resolves to an empty object for
    * non-standard clients (test doubles) — see expected-bucket-owner.ts.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+  async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
     return expectedOwnerParam(this.s3Client);
   }
 
-  async verifyBucketExists(options: VerifyBucketExistsOptions = {}): Promise<void> {
-    // ALWAYS run — this is the `GetBucketLocation` + region-correct client
-    // rebuild that every later state operation depends on. Only the
-    // `HeadBucket` below is skippable.
-    await this.ensureClientForBucket();
-    if (options.existenceAlreadyProbed) {
-      this.logger.debug(
-        `Skipping the redundant HeadBucket on '${this.config.bucket}' — the default-name ` +
-          `resolution already confirmed it exists with these credentials.`
-      );
-      return;
-    }
-    try {
-      await this.s3Client.send(
-        new HeadBucketCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-        })
-      );
-    } catch (error) {
-      const name = (error as { name?: string }).name;
-      if (name === 'NotFound' || name === 'NoSuchBucket') {
-        throw new StateError(
-          `State bucket '${this.config.bucket}' does not exist. ` +
-            `Run 'cdkd bootstrap' to create it, or specify an existing bucket via ` +
-            `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`,
-          error instanceof Error ? error : undefined
-        );
-      }
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'HeadBucket',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to verify state bucket '${this.config.bucket}': ${text}`,
-            normalized
-          )
-      );
-    }
+  verifyBucketExists(options: VerifyBucketExistsOptions = {}): Promise<void> {
+    return verifyBucketExists.call(this, options);
   }
 
-  /**
-   * Check if state exists for a stack in the given region.
-   *
-   * Returns true for either layout: the new region-scoped key, or the legacy
-   * key when its embedded `region` matches the requested region. This lets
-   * `cdkd state orphan <stack> --region X` and `cdkd destroy <stack>` see legacy
-   * state without forcing a write-through migration first.
-   */
-  async stateExists(stackName: string, region: string): Promise<boolean> {
-    await this.ensureClientForBucket();
-    const newKey = this.getStateKey(stackName, region);
-
-    if (await this.headObject(newKey)) {
-      return true;
-    }
-
-    return this.legacyBelongsToRegion(stackName, region);
+  stateExists(stackName: string, region: string): Promise<boolean> {
+    return stateExists.call(this, stackName, region);
   }
 
-  /**
-   * {@link stateExists} for the CLI's region reconciliation
-   * (go-to-k/cdkd#2100), which must not read a region-less legacy record as
-   * "state in EVERY region".
-   *
-   * `stateExists` hands such a record to any region on purpose (it mirrors
-   * `tryGetLegacy`, issue #2550). The reconciliation asks a narrower question —
-   * WHICH region owns this stack — and for a region-less record the answer is
-   * the region the commands used for it before the question was asked:
-   * `regionlessOwner`. Without this, an inferred profile region would claim
-   * the record on its first probe and move a stack whose resources live in
-   * us-east-1.
-   */
-  async stateExistsOwnedBy(
-    stackName: string,
-    region: string,
-    regionlessOwner: string
-  ): Promise<boolean> {
-    await this.ensureClientForBucket();
-    if (await this.headObject(this.getStateKey(stackName, region))) return true;
-    const probe = await this.probeLegacyState(stackName);
-    if (probe.kind === 'no-region') return region === regionlessOwner;
-    // Fail CLOSED: "cannot read who owns it" must not become "nobody owns it",
-    // which would send the stack to the profile's region and re-create it.
-    if (probe.kind === 'unreadable') {
-      throw new Error(
-        `The legacy state record for ${this.displayName(stackName)} cannot be read ` +
-          `(${probe.reason}), so cdkd cannot tell which region it belongs to. ` +
-          `Name the region with AWS_REGION to proceed.`
-      );
-    }
-    return legacyProbeBelongsTo(probe, region);
+  stateExistsOwnedBy(stackName: string, region: string, regionlessOwner: string): Promise<boolean> {
+    return stateExistsOwnedBy.call(this, stackName, region, regionlessOwner);
   }
 
-  /**
-   * Whether an object exists under `key` in the state bucket, by HeadObject:
-   * the body is never downloaded. `false` on NotFound; other errors propagate.
-   */
-  async rawObjectExists(key: string): Promise<boolean> {
-    await this.ensureClientForBucket();
-    return this.headObject(key);
+  rawObjectExists(key: string): Promise<boolean> {
+    return rawObjectExists.call(this, key);
   }
 
-  /**
-   * Get state for a stack, transparently falling back to the legacy key.
-   *
-   * Lookup order:
-   * 1. `{prefix}/{stackName}/{region}/state.json` (current `version: 2` key).
-   * 2. `{prefix}/{stackName}/state.json` (legacy `version: 1` key) — only
-   *    accepted if its embedded `region` matches the requested region.
-   *
-   * When a legacy hit is returned, `migrationPending` is `true`. Callers that
-   * subsequently `saveState` automatically migrate by writing the new key and
-   * deleting the legacy one (see `saveState`'s `legacyMigration` argument).
-   *
-   * Note: S3 returns ETag with surrounding quotes (e.g., `"abc123"`). We
-   * preserve the quotes — they are required for `IfMatch` conditions.
-   *
-   * On the region-scoped path the returned `state.region` is ALWAYS the
-   * region of the key it was read from, whatever the body said — see
-   * {@link adoptKeyRegion}, which also reports a body that disagreed via
-   * `divergentBodyRegion`.
-   */
-  async getState(
+  getState(
     stackName: string,
     region: string
   ): Promise<{
@@ -637,129 +375,10 @@ export class S3StateBackend {
      */
     divergentBodyRegion?: unknown;
   } | null> {
-    await this.ensureClientForBucket();
-    const newKey = this.getStateKey(stackName, region);
-
-    // Every log line and refusal in this method takes the guard, as every
-    // other stack-name render in the file does since issue #3027. Hoisted above
-    // the `try` because the catch and the legacy-fallback branch below need
-    // them too.
-    const shownStackName = this.displayName(stackName);
-    const shownRegionName = displayIdent(region);
-
-    // 1. Try new region-scoped key first.
-    try {
-      this.logger.debug(`Getting state for stack: ${shownStackName} (${shownRegionName})`);
-
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: newKey,
-        })
-      );
-
-      // `region` is a raw `listStacks` key segment on the `state show` path and
-      // `stackName` reaches here the same way, so these three refusals take the
-      // same guard as the two in `parseStateBody` (issue #3003). The third one
-      // is the reachable one: a planted object whose storage class makes
-      // `GetObject` fail with something other than `NoSuchKey` lands the raw
-      // segment in the message.
-      if (!response.Body) {
-        throw new StateError(
-          `State file for stack ${shownStackName} (${shownRegionName}) has no body`
-        );
-      }
-      if (!response.ETag) {
-        throw new StateError(
-          `State file for stack ${shownStackName} (${shownRegionName}) has no ETag`
-        );
-      }
-
-      const bodyString = await response.Body.transformToString();
-      const parsed = this.parseStateBody(bodyString, stackName);
-      const { state, divergentBodyRegion } = this.adoptKeyRegion(
-        parsed,
-        region,
-        shownStackName,
-        shownRegionName
-      );
-      // State schema v12's token-free fast path: one substring test over the
-      // body already in hand, read by every pass that would otherwise walk the
-      // records for a `{{resolve:` token (`token-free-state.ts`). Marked on the
-      // object returned, which `adoptKeyRegion` may have copied.
-      if (!bodyMayCarryReferences(bodyString)) markTokenFreeState(state);
-      this.logger.debug(
-        `Retrieved state: ${shownStackName} (${shownRegionName}), ETag: ${response.ETag}`
-      );
-      return {
-        state,
-        etag: response.ETag,
-        ...(divergentBodyRegion !== undefined && { divergentBodyRegion }),
-      };
-    } catch (error) {
-      if (!isNoSuchKey(error)) {
-        if (error instanceof StateError) throw error;
-        // The ASCII allowlist. `parseStateBody`'s own `StateError` is
-        // rethrown above, so what reaches here is an AWS / stream failure.
-        throw this.wrapS3Failure(
-          error,
-          (text) =>
-            new StateError(
-              `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${text}`,
-              error instanceof Error ? error : undefined
-            )
-        );
-      }
-      this.logger.debug(`No state at new key for stack: ${shownStackName} (${shownRegionName})`);
-    }
-
-    // 2. Fall back to legacy key when it exists AND its region matches.
-    const legacy = await this.tryGetLegacy(stackName, region);
-    if (legacy) {
-      // A WARN, so it prints at default verbosity on the same `state show` /
-      // `state resources` path the refusals around it were guarded for -- and
-      // it names the stack twice, once inside a printed S3 key (issue #3003).
-      // The KEY is built from the real name and sanitized AFTER. Building it
-      // from the sanitized name substitutes a DIFFERENT name into the middle of
-      // the key, which is a wrong key rather than a redacted one.
-      const shownKey = displayIdent(this.getLegacyStateKey(stackName), {
-        maxCodePoints: STACK_REF_MAX_CODE_POINTS,
-      });
-      this.logger.warn(
-        `Loaded legacy state for stack ${shownStackName} from ${shownKey}. ` +
-          `It will be migrated to the region-scoped layout on next save.`
-      );
-      return { ...legacy, migrationPending: true };
-    }
-
-    return null;
+    return getState.call(this, stackName, region);
   }
 
-  /**
-   * Save state for a stack with optimistic locking.
-   *
-   * Always writes to the new region-scoped key. The state body is rewritten
-   * with `version: 2` and the supplied region.
-   *
-   * If the caller observed `migrationPending: true` from `getState`, it
-   * should pass the legacy ETag back via `expectedEtag` AND set
-   * `migrateLegacy: true`. After the new key is written successfully, the
-   * legacy key is deleted to complete migration. The legacy delete is a
-   * best-effort follow-up — a failure is logged but does not unwind the new
-   * write.
-   *
-   * @param stackName Stack name
-   * @param region Target region (load-bearing — part of the S3 key)
-   * @param state State to save
-   * @param options Optimistic-lock ETag + legacy-migration flag.
-   *   `deferCleanup`: the write-ahead stack instance id's sibling, which a
-   *   save carrying that id makes obsolete, is deleted in the background and
-   *   its promise handed here instead of awaited (go-to-k/cdkd#5200). The
-   *   caller awaits it before it releases the stack lock. It never rejects.
-   * @returns New ETag (with quotes, e.g., `"abc123"`)
-   */
-  async saveState(
+  saveState(
     stackName: string,
     region: string,
     state: StackState,
@@ -769,568 +388,36 @@ export class S3StateBackend {
       deferCleanup?: (cleanup: Promise<void>) => void;
     } = {}
   ): Promise<string> {
-    await this.ensureClientForBucket();
-    const newKey = this.getStateKey(stackName, region);
-    const { expectedEtag, migrateLegacy } = options;
-
-    // Normalize the body: schema version + region are load-bearing on disk.
-    const body: StackState = {
-      ...state,
-      ...stackInstanceIdCarriedFrom(state),
-      version: STATE_SCHEMA_VERSION_CURRENT,
-      stackName,
-      region,
-    };
-
-    try {
-      this.logger.debug(
-        `Saving state: ${this.stackRef(stackName, region)}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
-      );
-
-      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
-      const bodyString = timePhaseSync('state saves (every stack)', 'serialize', () =>
-        JSON.stringify(body, null, 2)
-      );
-      const response = await timePhase('state saves (every stack)', 'put state.json', async () =>
-        this.s3Client.send(
-          new PutObjectCommand({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Key: newKey,
-            Body: bodyString,
-            ContentLength: Buffer.byteLength(bodyString),
-            ContentType: 'application/json',
-            // The legacy ETag is for a different key; only forward it when we're
-            // updating in-place at the new key.
-            ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
-          })
-        )
-      );
-
-      if (!response.ETag) {
-        throw new StateError(
-          `No ETag returned after saving state for stack ${this.stackRef(stackName, region)}`
-        );
-      }
-      this.logger.debug(
-        `State saved: ${this.stackRef(stackName, region)}, new ETag: ${response.ETag}`
-      );
-
-      // Migration tail: best-effort delete of the legacy key. We don't fail
-      // the save if this errors — the new key is the source of truth and a
-      // residual legacy key is recoverable (next call will migrate again).
-      if (migrateLegacy) {
-        try {
-          await this.s3Client.send(
-            new DeleteObjectCommand({
-              Bucket: this.config.bucket,
-              ...(await this.ownerParam()),
-              Key: this.getLegacyStateKey(stackName),
-            })
-          );
-          this.logger.info(
-            `Migrated state for stack ${this.displayName(stackName)} to region-scoped layout (${displayIdent(region)})`
-          );
-        } catch (deleteError) {
-          this.logger.warn(
-            `Migrated stack ${this.displayName(stackName)} to new key, but failed to delete legacy key: ` +
-              `${errorDetail(deleteError)}`
-          );
-        }
-      }
-
-      // go-to-k/cdkd#5064: the record now carries the write-ahead id, so its
-      // sibling has done its job. Only when the saved body carries THAT id:
-      // a save without it leaves the sibling for the re-run to read. Started
-      // before the ledger mark below, which writes a different object.
-      // Never rejects.
-      const siblingKey = this.getStackInstanceKey(stackName, region);
-      const pendingId = this.pendingStackInstanceSiblings.get(siblingKey);
-      let siblingCleanup: Promise<void> | undefined;
-      if (pendingId !== undefined && body.stackInstanceId === pendingId) {
-        this.pendingStackInstanceSiblings.delete(siblingKey);
-        siblingCleanup = timePhase(
-          'state saves (every stack)',
-          'after save: drop instance-id sibling',
-          () => this.dropStackInstanceSiblingAfterSave(stackName, region)
-        );
-        if (options.deferCleanup !== undefined) options.deferCleanup(siblingCleanup);
-      }
-      // The create-token ledger records that this lineage has a state record
-      // (go-to-k/cdkd#4438). Never throws.
-      await timePhase('state saves (every stack)', 'after save: ledger mark', () =>
-        notifyStateSaved(stackName, region)
-      );
-      if (options.deferCleanup === undefined) await siblingCleanup;
-      return response.ETag;
-    } catch (error) {
-      if ((error as { name: string }).name === 'PreconditionFailed') {
-        throw new StateError(
-          `State has been modified by another process. Expected ETag: ${expectedEtag}, but state has changed.`,
-          error instanceof Error ? error : undefined
-        );
-      }
-
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'PutObject',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to save state for stack ${this.stackRef(stackName, region)}: ${text}`,
-            normalized
-          )
-      );
-    }
+    return saveState.call(this, stackName, region, state, options);
   }
 
-  /**
-   * Delete state for a stack in the given region.
-   *
-   * Removes both the new key and the legacy key (if present). Legacy removal
-   * is region-conditional: a legacy state file with a different `region`
-   * field is left alone.
-   *
-   * It leaves the record's EARLIER versions in place, as every caller but
-   * `cdkd state destroy` needs (go-to-k/cdkd#2346: the maintainer's decision
-   * is that `cdkd destroy`, `cdkd state orphan`, rollback, export and the
-   * v1 -> v2 migration tail keep versioning's recovery points). That command
-   * purges them afterwards with {@link purgeDeletedStateHistory}, once the
-   * destroy runner has written the stack's kept-resource record.
-   */
-  async deleteState(stackName: string, region: string): Promise<void> {
-    await this.ensureClientForBucket();
-    // go-to-k/cdkd#4438: the resources this record names are let go of
-    // (destroyed, or kept by RETAIN, or orphaned with the record), so the
-    // stack's next create must not send the tokens they hold. FIRST, and
-    // fail-closed: a ledger that outlived its record would hand a kept file
-    // system back to the next deploy, while a record that outlives its ledger
-    // only makes an interrupted create's re-run refuse.
-    await this.deleteCreateTokenLedger(stackName, region);
-    // go-to-k/cdkd#5064: the stack's lifetime ends with its record, so a
-    // write-ahead id that outlived it must not be read back by the stack's
-    // next first deploy. Fail-closed, like the ledger above: a surviving id
-    // would make the recreated stack ask for the names its predecessor held.
-    await this.deleteStackInstanceSibling(stackName, region);
-    try {
-      this.logger.debug(`Deleting state: ${this.stackRef(stackName, region)}`);
-
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: this.getStateKey(stackName, region),
-        })
-      );
-
-      // Sweep the legacy key only if it belongs to the same region.
-      const legacyProbe = await this.probeLegacyState(stackName);
-      if (legacyProbe.kind === 'unreadable') {
-        // Refusing here is right — a read that failed must not authorise a
-        // delete — but the outcome is issue #2550's symptom exactly: a record
-        // surviving a destroy that reported success. Say it at WARN so it is
-        // not a silent no-op the way the original bug was.
-        // Deliberately just the fact. Earlier drafts named the S3 key, built
-        // a pasteable `cdkd state orphan <name>` and prescribed a permission
-        // grant; every one of those clauses was a defect. The key embeds the
-        // raw stack name, so rendering it re-opened the injection the other
-        // clauses had sanitized. `displaySafe` keeps `'`, so the quoted
-        // command could be broken out of — and it maps non-ASCII to a space,
-        // so the name in it may not be the stack's. The remedy needs
-        // `s3:ListBucket`, which is the permission whose absence produces the
-        // commonest instance of this warning. The operator knows the stack
-        // they just destroyed; what they cannot see is that a record may have
-        // survived it.
-        const safeName = this.displayName(stackName);
-        this.logger.warn(
-          `Could not read the legacy state record for ${safeName} while cleaning up ` +
-            `(${legacyProbe.reason}). If one exists it was left in place. ` +
-            `Re-run with --verbose for the details.`
-        );
-      }
-      if (legacyProbeBelongsTo(legacyProbe, region)) {
-        await this.s3Client.send(
-          new DeleteObjectCommand({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Key: this.getLegacyStateKey(stackName),
-          })
-        );
-        this.logger.debug(`Deleted legacy state for stack: ${this.displayName(stackName)}`);
-      }
-
-      this.logger.debug(`State deleted: ${this.stackRef(stackName, region)}`);
-    } catch (error) {
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'DeleteObject',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to delete state for stack ${this.stackRef(stackName, region)}: ${text}`,
-            normalized
-          )
-      );
-    } finally {
-      // Sweep the rollback journal (issue #1183) so `cdkd destroy` /
-      // `cdkd state destroy` leave no dangling revert data behind.
-      //
-      // In a `finally`, NOT inside the try above, because of what the journal
-      // holds (issue #2346 site 4). It was reached only after both state
-      // deletes had succeeded, so a throttled or denied `DeleteObject` on
-      // `state.json` threw first and the journal — whose
-      // `failedOperations[].attemptedProperties` records the failed write's
-      // properties verbatim, measured once as a literal `MasterUserPassword` —
-      // survived with its CURRENT object and its whole history intact, no
-      // purge and no warning, while this method's own docs promised the sweep
-      // ran on every destroy path. That is the same exit-path class as the
-      // partial-delete gap `cdkd gc` closes with its own `finally`.
-      //
-      // A `finally` rather than moving it AHEAD of the state deletes: ordering
-      // it first would delete the revert data before the state it reverts,
-      // so an interrupted `cdkd destroy` would leave a state file with no
-      // journal — strictly worse than the reverse. `deleteRollbackJournal` is
-      // best-effort and never throws, so it cannot replace the in-flight
-      // StateError.
-      // The sibling's earlier versions go beside it (go-to-k/cdkd#5064);
-      // `purgeNoncurrentVersions` never throws either.
-      await Promise.all([
-        this.deleteRollbackJournal(stackName, region),
-        this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
-          objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
-        }),
-      ]);
-    }
+  deleteState(stackName: string, region: string): Promise<void> {
+    return deleteState.call(this, stackName, region);
   }
 
-  /**
-   * Purge the earlier versions of a state record {@link deleteState} has
-   * deleted (go-to-k/cdkd#2346 sites 1-3). `cdkd state destroy` only, through
-   * the destroy runner, AFTER the stack's kept-resource record is written: the
-   * generated-name guard reads earlier `state.json` versions only while that
-   * record is missing (`kept-in-history.ts`). A kept-record write that failed
-   * still purges; the next deploy then refuses to take a kept resource back by
-   * name and names `cdkd import`, the safe direction.
-   *
-   * The region-scoped key, unless it has a current body again (a concurrent
-   * deploy re-created the record, or the delete never happened): its history
-   * is then a live record's, and nothing is purged. The `IsLatest` filter
-   * alone would keep that body but take its recovery points.
-   *
-   * The legacy key only when its history can be this region's alone. Its
-   * versions carry no region in the key: a v1 record is migrated to whichever
-   * region next saves it, so another region of the stack may have written
-   * them. It is purged when it has versions at all, its current state is
-   * absent (this delete removed it, or a migration left a delete marker), and
-   * no OTHER region's `state.json` has any version, current or earlier: a
-   * region whose record `cdkd destroy` or `cdkd state orphan` removed keeps
-   * its history for recovery, and the legacy history may be part of it. When
-   * one does, or that cannot be determined, or the legacy body names another
-   * region (whose history may still hold this region's v1 bodies), the
-   * history is kept with a warning. An unreadable probe purges nothing and
-   * warns too: it is a second read, which can fail where the delete's did not.
-   *
-   * One accepted edge: a concurrent deploy migrating the legacy record into
-   * another region between the region scan and the purge can lose the
-   * pre-migration bodies (the legacy body's own delete had the same race
-   * before this purge existed).
-   *
-   * Never throws: the record is already gone, and a purge failure must not
-   * turn a finished destroy into a failed one. The shared helper warns with
-   * the IAM grants on a denial.
-   */
-  async purgeDeletedStateHistory(stackName: string, region: string): Promise<void> {
-    try {
-      await this.ensureClientForBucket();
-      const stateKey = this.getStateKey(stackName, region);
-      // `safeMsg`: the stack name reached here from an S3 listing.
-      const shown = displayStackName(stackName);
-      let recordBack: boolean;
-      try {
-        recordBack = await this.headObject(stateKey);
-      } catch {
-        recordBack = true;
-      }
-      if (recordBack) {
-        this.logger.warn(
-          safeMsg`Kept the earlier versions of the state record for ${shown}: the record exists again, or its absence could not be confirmed, so they may belong to a live record.`
-        );
-        return;
-      }
-      const keys = [stateKey];
-      const legacyKey = this.getLegacyStateKey(stackName);
-      const mayHave = (key: string): Promise<boolean> =>
-        keyMayHaveVersions(this.s3Client, this.config.bucket, () => this.ownerParam(), key);
-      // The cheap question first: no legacy history, no region scan.
-      if (await mayHave(legacyKey)) {
-        const legacyProbe = await this.probeLegacyState(stackName);
-        const keptBecause =
-          legacyProbe.kind === 'unreadable'
-            ? // Warned HERE too: this is a second GetObject, so a transient
-              // failure on it is not the one `deleteState` already reported.
-              `the legacy record could not be read (${legacyProbe.reason})`
-            : legacyProbe.kind !== 'absent'
-              ? 'its current body belongs to another record of the stack'
-              : await this.otherRegionHistoryState(stackName, region, mayHave);
-        if (keptBecause === 'none') {
-          keys.push(legacyKey);
-        } else {
-          const why =
-            keptBecause === 'exists'
-              ? "another region of the stack still has state record versions, current or earlier, and the legacy versions may be that region's"
-              : keptBecause === 'unknown'
-                ? "could not list the stack's other regions to confirm none of them still owns that history"
-                : keptBecause;
-          this.logger.warn(
-            safeMsg`Kept the earlier versions of the legacy state record for ${shown}: ${why}. cdkd state destroy purges them only once no other region of the stack has state record versions and the legacy record can be read; otherwise delete them by hand.`
-          );
-        }
-      }
-      await this.purgeNoncurrentVersions(keys, {
-        objectDescription: STATE_RECORD_OBJECT_DESCRIPTION,
-      });
-    } catch (error) {
-      this.logger.warn(
-        safeMsg`Could not purge the earlier versions of the state record for ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}. They remain readable via GetObject with a VersionId.`
-      );
-    }
+  purgeDeletedStateHistory(stackName: string, region: string): Promise<void> {
+    return purgeDeletedStateHistory.call(this, stackName, region);
   }
 
-  /**
-   * Does any region of `stackName` other than `region` have a `state.json`
-   * with any version or delete marker under this prefix? Regions are found by
-   * a version listing, so one with no current object is still seen.
-   * `'unknown'` when the listing failed (logged at debug); `mayHave` itself
-   * answers "yes" on a failure, so both err toward keeping the legacy history.
-   */
-  private async otherRegionHistoryState(
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  otherRegionHistoryState(
     stackName: string,
     region: string,
     mayHave: (key: string) => Promise<boolean>
   ): Promise<'none' | 'exists' | 'unknown'> {
-    const stackPrefix = `${this.config.prefix}/${stackName}/`;
-    try {
-      // A VERSION listing: a region whose keys are all behind delete markers
-      // (a removed record whose history is kept) has no current object, so an
-      // ordinary listing would never name it (go-to-k/cdkd#2346 review M3).
-      const regions = (
-        await listVersionedSubdirectories(
-          this.s3Client,
-          this.config.bucket,
-          () => this.ownerParam(),
-          stackPrefix
-        )
-      ).filter((segment) => segment !== region);
-      for (const other of regions) {
-        if (await mayHave(this.getStateKey(stackName, other))) return 'exists';
-      }
-      return 'none';
-    } catch (error) {
-      this.logger.debug(
-        safeMsg`Could not list the other regions of ${displayStackName(stackName)}: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
-      );
-      return 'unknown';
-    }
+    return otherRegionHistoryState.call(this, stackName, region, mayHave);
   }
 
-  /**
-   * Delete a legacy state file that names no region (issue #2537).
-   *
-   * `deleteState` cannot serve this case: it takes a region, keys the primary
-   * delete off it, and sweeps the legacy key only when that key's own `region`
-   * field matches. A `version: 1` blob whose body carries no `region` at all
-   * has nothing to match, so it falls through every branch there — which is
-   * how `cdkd state orphan` came to report a removal it never performed.
-   *
-   * Unconditional, and deliberately so — but NOT because the caller's ref
-   * proves the body names no region. `listStacks` derives that ref from
-   * `readLegacyRegion`, which also returns undefined on a swallowed 403 / 503
-   * / unparseable body, so a record that DOES name a region can surface
-   * region-less. The delete is still right there: the caller
-   * (`cdkd state orphan` with no `--stack-region`) means "every record for
-   * this name", and this key is one of them. A caller that means something
-   * narrower must not use this method.
-   *
-   * No rollback-journal sweep: journal keys exist only in the region-scoped
-   * layout (see `getRollbackJournalKey`), so a region-less record can have
-   * none.
-   */
-  async deleteLegacyState(stackName: string): Promise<void> {
-    await this.ensureClientForBucket();
-    const key = this.getLegacyStateKey(stackName);
-    try {
-      // Sanitized: `stackName` reaches here from an S3 key listing, and
-      // `formatError` prints a message verbatim — there is no central
-      // sanitization downstream (issue #2170's class).
-      // `key` embeds `stackName` verbatim, so logging it raw would defeat
-      // the sanitization on the line it sits in.
-      const safeStack = displayStackName(stackName);
-      this.logger.debug(
-        `Deleting legacy state: ${safeStack} (${displayIdent(key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })})`
-      );
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-      this.logger.debug(`Legacy state deleted: ${safeStack}`);
-    } catch (error) {
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'DeleteObject',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to delete legacy state for stack ${displayStackName(stackName)}: ${text}`,
-            normalized
-          )
-      );
-    }
+  deleteLegacyState(stackName: string): Promise<void> {
+    return deleteLegacyState.call(this, stackName);
   }
 
-  /**
-   * List all stacks with state in the bucket.
-   *
-   * Returns one `{stackName, region}` pair per state file. Both layouts
-   * are enumerated:
-   *
-   * - `{prefix}/{stackName}/{region}/state.json` (new) — `region` is the
-   *   path segment.
-   * - `{prefix}/{stackName}/state.json` (legacy) — `region` is read from the
-   *   state body when present, otherwise `undefined`.
-   *
-   * Pairs are deduplicated by `(stackName, region)` so a stack mid-migration
-   * shows up exactly once.
-   */
-  async listStacks(): Promise<StackStateRef[]> {
-    await this.ensureClientForBucket();
-    try {
-      this.logger.debug('Listing all stacks');
-
-      const prefix = `${this.config.prefix}/`;
-      const refs: StackStateRef[] = [];
-      const seen = new Set<string>();
-      let continuationToken: string | undefined;
-
-      do {
-        const response = await this.s3Client.send(
-          new ListObjectsV2Command({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Prefix: prefix,
-            // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
-            EncodingType: LISTING_ENCODING_TYPE,
-            ...(continuationToken && { ContinuationToken: continuationToken }),
-          })
-        );
-
-        for (const obj of response.Contents ?? []) {
-          const key = decodeListingKey(obj.Key); // go-to-k/cdkd#3313
-          if (!key) continue;
-          if (!key.endsWith('/state.json')) continue;
-
-          const rest = key.slice(prefix.length);
-          const segments = rest.split('/');
-
-          // New key: {stackName}/{region}/state.json
-          if (segments.length === NEW_KEY_DEPTH) {
-            const [stackName, region] = segments;
-            if (!stackName || !region) continue;
-            // {@link producerRecordKey}, not a separator. Both halves here are
-            // S3 key segments, and the probe on go-to-k/cdkd#3323 measured that
-            // S3 refuses to store a NUL-bearing key at all — so a NUL-separated
-            // key WAS injective, by an invariant about what S3 accepts rather
-            // than by anything this code states, tests, or would notice losing.
-            const dedupeKey = producerRecordKey(stackName, region);
-            if (!seen.has(dedupeKey)) {
-              seen.add(dedupeKey);
-              refs.push({ stackName, region });
-            }
-            continue;
-          }
-
-          // Legacy key: {stackName}/state.json
-          if (segments.length === LEGACY_KEY_DEPTH) {
-            const [stackName] = segments;
-            if (!stackName) continue;
-            const region = await this.readLegacyRegion(stackName);
-            // Same helper, and this arm is the one where the old invariant was
-            // already half gone: the region comes from the record BODY, which
-            // is JSON and may carry a NUL. Injectivity survived only because
-            // the LEFT half is still a key segment.
-            const dedupeKey = producerRecordKey(stackName, region ?? '');
-            if (!seen.has(dedupeKey)) {
-              seen.add(dedupeKey);
-              refs.push({ stackName, ...(region ? { region } : {}) });
-            }
-          }
-        }
-
-        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-      } while (continuationToken);
-
-      this.logger.debug(`Found ${refs.length} stack(s) across regions`);
-      return refs;
-    } catch (error) {
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'ListObjectsV2',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) => new StateError(`Failed to list stacks: ${text}`, normalized)
-      );
-    }
+  listStacks(): Promise<StackStateRef[]> {
+    return listStacks.call(this);
   }
 
-  /**
-   * The bucket's top-level key prefixes, decoded and without their trailing
-   * `/` (`ListObjectsV2` with `Delimiter: '/'`, every page). An empty
-   * `--state-prefix` keys records under `/`, which lists here as `''`. One
-   * that will not decode is skipped. Errors propagate (go-to-k/cdkd#4705).
-   */
-  async listTopLevelPrefixes(): Promise<string[]> {
-    const client = await this.clientForScan();
-    const out: string[] = [];
-    let continuationToken: string | undefined;
-    do {
-      const response = await client.send(
-        new ListObjectsV2Command({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Delimiter: '/',
-          EncodingType: LISTING_ENCODING_TYPE,
-          ...(continuationToken && { ContinuationToken: continuationToken }),
-        })
-      );
-      for (const cp of response.CommonPrefixes ?? []) {
-        // A prefix S3 returned in a form that will not decode cannot be
-        // addressed, so it is skipped rather than failing the whole scan.
-        let decoded: string | undefined;
-        try {
-          decoded = decodeListingKey(cp.Prefix);
-        } catch {
-          this.logger.debug(
-            safeMsg`Skipping a top-level prefix of bucket ${this.config.bucket} that is not valid URL encoding: ${cp.Prefix ?? ''}`
-          );
-          continue;
-        }
-        if (decoded === undefined || !decoded.endsWith('/')) continue;
-        // The registry's own root is no state prefix (go-to-k/cdkd#4705).
-        if (decoded === `${REGISTRY_ROOT}/`) continue;
-        out.push(decoded.slice(0, -1));
-      }
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-    } while (continuationToken);
-    return out;
+  listTopLevelPrefixes(): Promise<string[]> {
+    return listTopLevelPrefixes.call(this);
   }
 
   /**
@@ -1426,183 +513,42 @@ export class S3StateBackend {
     return recordCanOwnResources(record ?? { resources: {} }, journal) ? 'holder' : 'empty';
   }
 
-  /**
-   * Raw sidecar-object write under the state bucket. Used for non-state
-   * auxiliary files that share the bucket + region-resolution plumbing
-   * (e.g. deployment-event JSONL streams + their `index.json`, issue
-   * #808) without going through the state-schema validation that
-   * `saveState` applies. No optimistic locking — callers own their key
-   * uniqueness / last-writer-wins semantics.
-   */
-  async putRawObject(key: string, body: string, contentType = 'application/json'): Promise<void> {
-    await this.ensureClientForBucket();
-    await this.s3Client.send(
-      new PutObjectCommand({
-        Bucket: this.config.bucket,
-        ...(await this.ownerParam()),
-        Key: key,
-        Body: body,
-        ContentLength: Buffer.byteLength(body),
-        ContentType: contentType,
-      })
-    );
+  putRawObject(key: string, body: string, contentType = 'application/json'): Promise<void> {
+    return putRawObject.call(this, key, body, contentType);
   }
 
-  /**
-   * go-to-k/cdkd#4705: the `resources` maps of this stack's EARLIER records
-   * under this prefix -- the newest `max` noncurrent versions of its
-   * `state.json` on a versioned bucket (a destroy leaves a delete marker over
-   * the last one) -- newest first. Read only to prove that a resource holding
-   * a generated name is one this stack kept before `retained.json` existed.
-   * A version whose body will not parse is skipped; any request error throws.
-   */
-  async earlierStateResources(
+  earlierStateResources(
     stackName: string,
     region: string,
     max = 10
   ): Promise<EarlierStateRecord[]> {
-    await this.ensureClientForBucket();
-    return readEarlierStateResources(
-      this.s3Client,
-      this.config.bucket,
-      await this.ownerParam(),
-      this.getStateKey(stackName, region),
-      max
-    );
+    return earlierStateResources.call(this, stackName, region, max);
   }
 
   /** The key of a stack's retained-resource record (go-to-k/cdkd#4705). */
-  private getRetainedKey(stackName: string, region: string): string {
+  /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
+  getRetainedKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/retained.json`;
   }
 
-  /**
-   * The resources a destroy of this stack under THIS prefix kept
-   * (`DeletionPolicy: Retain`) that a later create of the same stack here may
-   * take back by name (go-to-k/cdkd#4705). A sibling of `state.json` that a
-   * destroy does not delete. `[]` when there is none. A body that will not read
-   * as such a record throws, naming the key.
-   */
-  async loadRetainedResources(stackName: string, region: string): Promise<RetainedResource[]> {
-    return (await this.loadRetainedRecord(stackName, region)) ?? [];
+  loadRetainedResources(stackName: string, region: string): Promise<RetainedResource[]> {
+    return loadRetainedResources.call(this, stackName, region);
   }
 
-  /**
-   * As {@link loadRetainedResources}, but `null` when there is NO record at
-   * all -- a stack this cdkd never destroyed or orphaned here, the only case
-   * in which an older cdkd's history may still license a kept resource. An
-   * empty record (`[]`) is the tombstone `state orphan` and a destroy that
-   * kept nothing write (go-to-k/cdkd#4705 review D-1).
-   */
-  async loadRetainedRecord(stackName: string, region: string): Promise<RetainedResource[] | null> {
-    const key = this.getRetainedKey(stackName, region);
-    let body: string | null;
-    try {
-      body = await this.getRawObject(key);
-    } catch (error) {
-      throw new CrossPrefixReadError(key, error);
-    }
-    if (body === null) return null;
-    const entries = parseRetainedResources(body);
-    if (entries === undefined) {
-      throw new CrossPrefixReadError(
-        key,
-        Object.assign(new Error('not a retained-resource record'), { name: 'MalformedRecord' })
-      );
-    }
-    return entries;
+  loadRetainedRecord(stackName: string, region: string): Promise<RetainedResource[] | null> {
+    return loadRetainedRecord.call(this, stackName, region);
   }
 
-  /**
-   * go-to-k/cdkd#4705 review P3: write the empty retained-resource record
-   * (the tombstone) only when there is none, in ONE conditional write
-   * (`If-None-Match: *`); an existing record is left as it is. An endpoint
-   * without conditional writes falls back to a read, then the write. Errors
-   * throw.
-   */
-  async ensureRetainedTombstone(stackName: string, region: string): Promise<void> {
-    await this.ensureClientForBucket();
-    const key = this.getRetainedKey(stackName, region);
-    const put = async (): Promise<unknown> =>
-      this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-          Body: JSON.stringify({ retainedVersion: 1, resources: [] }),
-          ContentType: 'application/json',
-          IfNoneMatch: '*',
-        })
-      );
-    try {
-      try {
-        await put();
-      } catch (error) {
-        // Review S-4: 409 ConditionalRequestConflict is a concurrent write
-        // in flight, not "a record exists": asked once more, it answers.
-        if (!isConditionalConflict(error)) throw error;
-        await put();
-      }
-    } catch (error) {
-      if (isConditionFailure(error) && !isConditionalConflict(error)) return;
-      if (!isNotImplemented(error)) throw error;
-      if ((await this.loadRetainedRecord(stackName, region)) === null) {
-        await this.saveRetainedResources(stackName, region, []);
-      }
-    }
+  ensureRetainedTombstone(stackName: string, region: string): Promise<void> {
+    return ensureRetainedTombstone.call(this, stackName, region);
   }
 
-  /**
-   * Replace the stack's retained-resource record with `entries`. An empty list
-   * is written, not deleted: it is the tombstone that ends the history license
-   * (go-to-k/cdkd#4705 review D-1). Errors throw.
-   */
-  async saveRetainedResources(
+  saveRetainedResources(
     stackName: string,
     region: string,
     entries: readonly RetainedResource[]
   ): Promise<void> {
-    await this.ensureClientForBucket();
-    const key = this.getRetainedKey(stackName, region);
-    const put = (resources: readonly RetainedResource[]) =>
-      this.ownerParam().then((owner) =>
-        this.s3Client.send(
-          new PutObjectCommand({
-            Bucket: this.config.bucket,
-            ...owner,
-            Key: key,
-            Body: JSON.stringify({ retainedVersion: 1, resources }),
-            ContentType: 'application/json',
-          })
-        )
-      );
-    const fresh = new Set(entries.filter((e) => e.keptAt === undefined));
-    // A new entry is written with this machine's clock (review F-1): a crash
-    // or a failure before the S3 stamp below then leaves a skewed bound,
-    // never no bound at all.
-    const provisional = Date.now();
-    await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt: provisional } : e)));
-    if (fresh.size === 0) return;
-    // Then S3's own clock (review E-8): the time of the write that recorded
-    // it, read back from the object. A holder created later is not the
-    // resource kept. Re-written only when this machine's clock is off by more
-    // than S3's one-second resolution allows (review H-1): usually one write
-    // and one HEAD.
-    try {
-      const head = await this.s3Client.send(
-        new HeadObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-      const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
-      if (keptAt === undefined) throw new Error('S3 reported no LastModified');
-      if (Math.abs(keptAt - provisional) <= KEPT_AT_CLOCK_TOLERANCE_MS) return;
-      await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt } : e)));
-    } catch (error) {
-      throw new RetainedTimeUnconfirmedError(error);
-    }
+    return saveRetainedResources.call(this, stackName, region, entries);
   }
 
   /**
@@ -1624,445 +570,71 @@ export class S3StateBackend {
     return `${this.config.prefix}/_refactor/pending.json`;
   }
 
-  /** The refactor marker with its ETag, or null when there is none. */
-  async getRefactorMarker(): Promise<{ body: unknown; etag: string } | null> {
-    await this.ensureClientForBucket();
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: this.refactorMarkerKey(),
-        })
-      );
-      const text = (await response.Body?.transformToString()) ?? '';
-      let body: unknown;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = undefined;
-      }
-      return { body, etag: response.ETag ?? '' };
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
-      throw error;
-    }
+  getRefactorMarker(): Promise<{ body: unknown; etag: string } | null> {
+    return getRefactorMarker.call(this);
   }
 
-  /**
-   * Write the refactor marker conditionally: create it when `etag` is null
-   * (`If-None-Match: *`), replace the version read otherwise (`If-Match`), and
-   * delete it (conditionally) when `body` lists nothing. `'conflict'` when
-   * another run changed it in between.
-   */
-  async saveRefactorMarker(
+  saveRefactorMarker(
     body: { moves: unknown[] },
     etag: string | null
   ): Promise<'saved' | 'conflict'> {
-    await this.ensureClientForBucket();
-    const key = this.refactorMarkerKey();
-    try {
-      if (body.moves.length === 0) {
-        if (etag === null) return 'saved';
-        await this.s3Client.send(
-          new DeleteObjectCommand({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Key: key,
-            IfMatch: etag,
-          })
-        );
-        return 'saved';
-      }
-      await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-          Body: JSON.stringify(body, null, 2),
-          ContentType: 'application/json',
-          ...(etag === null ? { IfNoneMatch: '*' } : { IfMatch: etag }),
-        })
-      );
-      return 'saved';
-    } catch (error) {
-      if (isConditionFailure(error)) return 'conflict';
-      throw error;
-    }
+    return saveRefactorMarker.call(this, body, etag);
   }
 
   registryMarkerKey(stackName: string, region: string): string {
     return `${REGISTRY_ROOT}/${region}/${stackName}.json`;
   }
 
-  /**
-   * The stack's registry marker, or `null` when there is none. A marker that
-   * does not read as `{ prefix: <a state prefix> }` throws a
-   * `CrossPrefixReadError` naming the key, as does any error but a 404 (a 403
-   * included: the caller tells "denied" from "failed").
-   */
-  async getRegistryMarker(
+  getRegistryMarker(
     stackName: string,
     region: string
   ): Promise<{ prefix: string; etag: string } | null> {
-    await this.ensureClientForBucket();
-    const key = this.registryMarkerKey(stackName, region);
-    let body: string | undefined;
-    let etag: string | undefined;
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({ Bucket: this.config.bucket, ...(await this.ownerParam()), Key: key })
-      );
-      body = await response.Body?.transformToString();
-      etag = response.ETag;
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
-      throw new CrossPrefixReadError(key, error);
-    }
-    const prefix = registryMarkerPrefix(body);
-    if (prefix === undefined || etag === undefined) {
-      throw new CrossPrefixReadError(
-        key,
-        Object.assign(new Error('not a registry marker'), { name: 'MalformedMarker' })
-      );
-    }
-    return { prefix, etag };
+    return getRegistryMarker.call(this, stackName, region);
   }
 
-  /**
-   * Point the stack's marker at THIS prefix: create it (`If-None-Match: *`),
-   * or, with `ifMatch`, replace exactly that version. `'conflict'` when the
-   * condition failed (another writer got there first). Other errors throw.
-   */
-  async claimRegistryMarker(
+  claimRegistryMarker(
     stackName: string,
     region: string,
     ifMatch?: string
   ): Promise<'claimed' | 'conflict'> {
-    await this.ensureClientForBucket();
-    const key = this.registryMarkerKey(stackName, region);
-    try {
-      await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-          Body: JSON.stringify({ prefix: this.config.prefix }),
-          ContentType: 'application/json',
-          ...(ifMatch === undefined ? { IfNoneMatch: '*' } : { IfMatch: ifMatch }),
-        })
-      );
-      return 'claimed';
-    } catch (error) {
-      if (isConditionFailure(error)) return 'conflict';
-      throw new CrossPrefixReadError(key, error);
-    }
+    return claimRegistryMarker.call(this, stackName, region, ifMatch);
   }
 
-  /**
-   * Delete the stack's marker when it points at THIS prefix, conditionally on
-   * the version read (`If-Match`), so another prefix's re-claim between the
-   * read and the delete is left alone (`'elsewhere'`). An endpoint that does
-   * not implement the condition gets a re-read of the same version right
-   * before an unconditional delete: the window then shrinks to one request,
-   * and a lost re-claim is re-made by that prefix's next guarded command (no
-   * marker is a scan, then a claim). Errors throw.
-   */
-  async releaseRegistryMarker(
+  releaseRegistryMarker(
     stackName: string,
     region: string,
     known?: { prefix: string; etag: string } | null
   ): Promise<'released' | 'absent' | 'elsewhere'> {
-    // The version this run already read (review P3): no second GET. Without
-    // its ETag (a marker this run claimed), read it.
-    const marker =
-      known !== undefined && (known === null || known.etag !== '')
-        ? known
-        : await this.getRegistryMarker(stackName, region);
-    if (marker === null) return 'absent';
-    if (marker.prefix !== this.config.prefix) return 'elsewhere';
-    const key = this.registryMarkerKey(stackName, region);
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-          IfMatch: marker.etag,
-        })
-      );
-      return 'released';
-    } catch (error) {
-      if (isConditionFailure(error)) return 'elsewhere';
-      if (!isNotImplemented(error)) throw error;
-    }
-    const again = await this.getRegistryMarker(stackName, region);
-    if (again === null) return 'absent';
-    if (again.prefix !== this.config.prefix || again.etag !== marker.etag) return 'elsewhere';
-    await this.s3Client.send(
-      new DeleteObjectCommand({
-        Bucket: this.config.bucket,
-        ...(await this.ownerParam()),
-        Key: key,
-      })
-    );
-    return 'released';
+    return releaseRegistryMarker.call(this, stackName, region, known);
   }
 
-  /**
-   * Does `prefix` (another prefix of this bucket) hold the stack's lock, in
-   * either layout? A 404 is no; any other error throws a
-   * `CrossPrefixReadError` naming the key.
-   */
-  async lockUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
-    await this.ensureClientForBucket();
-    const keys = [`${prefix}/${stackName}/${region}/lock.json`, `${prefix}/${stackName}/lock.json`];
-    const held = await Promise.all(
-      keys.map(async (key) => {
-        try {
-          return await this.headObject(key);
-        } catch (error) {
-          throw new CrossPrefixReadError(key, error);
-        }
-      })
-    );
-    return held.some(Boolean);
+  lockUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
+    return lockUnderPrefix.call(this, prefix, stackName, region);
   }
 
-  /**
-   * Raw sidecar-object read under the state bucket. Returns `null` when
-   * the key does not exist; other errors propagate.
-   */
-  async getRawObject(key: string): Promise<string | null> {
-    await this.ensureClientForBucket();
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-      return (await response.Body?.transformToString()) ?? null;
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') {
-        return null;
-      }
-      throw error;
-    }
+  getRawObject(key: string): Promise<string | null> {
+    return getRawObject.call(this, key);
   }
 
-  /**
-   * Raw key listing under an arbitrary key prefix in the state bucket
-   * (paginated). Used by `cdkd events` to discover regions / runs under
-   * `{prefix}/{stackName}/.../deployments/`.
-   */
-  async listRawKeys(keyPrefix: string): Promise<string[]> {
-    await this.ensureClientForBucket();
-    const keys: string[] = [];
-    let continuationToken: string | undefined;
-    do {
-      const response = await this.s3Client.send(
-        new ListObjectsV2Command({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Prefix: keyPrefix,
-          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
-          EncodingType: LISTING_ENCODING_TYPE,
-          ...(continuationToken && { ContinuationToken: continuationToken }),
-        })
-      );
-      for (const obj of response.Contents ?? []) {
-        const decoded = decodeListingKey(obj.Key); // go-to-k/cdkd#3313
-        if (decoded) keys.push(decoded);
-      }
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-    } while (continuationToken);
-    return keys;
+  listRawKeys(keyPrefix: string): Promise<string[]> {
+    return listRawKeys.call(this, keyPrefix);
   }
 
-  /**
-   * Raw sidecar-object listing WITH metadata under the state bucket.
-   *
-   * {@link listRawKeys}'s twin, and it exists because an age-guarded sweep
-   * needs `LastModified` and the reclaim plan needs `Size` — neither of which a
-   * key list carries. Used by `cdkd gc`'s custom-resource-response sweep
-   * (issue #2052), where the age is the only thing separating an abandoned
-   * placeholder from one a concurrent run is about to write to.
-   *
-   * `LastModified` / `Size` are omitted from the response only for a key S3
-   * did not return metadata for, which does not happen for `ListObjectsV2`
-   * `Contents` entries; an entry missing either is DROPPED rather than
-   * defaulted, because defaulting the date would either exempt an object from
-   * the age guard forever or expose it immediately, and both are wrong in a
-   * direction the caller cannot see.
-   */
-  async listRawObjects(
+  listRawObjects(
     keyPrefix: string
   ): Promise<Array<{ key: string; lastModified: Date; size: number }>> {
-    await this.ensureClientForBucket();
-    const objects: Array<{ key: string; lastModified: Date; size: number }> = [];
-    let continuationToken: string | undefined;
-    do {
-      const response = await this.s3Client.send(
-        new ListObjectsV2Command({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Prefix: keyPrefix,
-          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
-          EncodingType: LISTING_ENCODING_TYPE,
-          ...(continuationToken && { ContinuationToken: continuationToken }),
-        })
-      );
-      for (const obj of response.Contents ?? []) {
-        if (obj.Key === undefined || obj.LastModified === undefined || obj.Size === undefined) {
-          // Logged, not silently skipped. The caller gets a SHORTER list with
-          // no other signal, and its consumer is an age-guarded SWEEP, whose
-          // under-collection is indistinguishable from a clean bucket. This
-          // line is the only place the drop is ever observable.
-          const missing = [
-            obj.Key === undefined ? 'Key' : undefined,
-            obj.LastModified === undefined ? 'LastModified' : undefined,
-            obj.Size === undefined ? 'Size' : undefined,
-          ]
-            .filter((f) => f !== undefined)
-            .join(', ');
-          // Both keys embed a stack name (`{prefix}/{stack}/...`), so both
-          // take the identifier guard (issue #3027).
-          this.logger.debug(
-            `listRawObjects: dropping an entry under ${displayIdent(keyPrefix, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })} ` +
-              `(key: ${obj.Key === undefined ? '<none>' : displayIdent(decodeListingKey(obj.Key) ?? obj.Key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}) — ListObjectsV2 returned no ${missing}`
-          );
-          continue;
-        }
-        // go-to-k/cdkd#3313: the listing above asks for URL encoding, so the key
-        // is decoded before it leaves this method — its consumer is an
-        // age-guarded SWEEP that deletes by the value returned here.
-        objects.push({
-          key: decodeListingKey(obj.Key) ?? obj.Key,
-          lastModified: obj.LastModified,
-          size: obj.Size,
-        });
-      }
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-    } while (continuationToken);
-    return objects;
+    return listRawObjects.call(this, keyPrefix);
   }
 
-  /**
-   * Raw sidecar-object batch delete under the state bucket. Used by the
-   * deployment-events pruner (issue #885) to drop superseded `{runId}.jsonl`
-   * streams + their index. Chunked to the 1,000-key `DeleteObjects` ceiling.
-   * S3 `DeleteObjects` is idempotent — deleting a key that does not exist is
-   * not an error — so callers do not need to pre-filter for existence.
-   *
-   * `DeleteObjects` reports per-key failures (e.g. partial `AccessDenied`,
-   * `SlowDown`) in `response.Errors` rather than throwing — with `Quiet:
-   * true` only those error entries come back. We aggregate them across
-   * chunks and throw, so the explicit `cdkd events prune` purge does NOT
-   * report success while leaving orphaned streams behind (the writer's
-   * best-effort auto-prune swallows the throw via its write-chain catch).
-   */
-  async deleteRawObjects(keys: string[]): Promise<void> {
-    if (keys.length === 0) return;
-    await this.ensureClientForBucket();
-    const failures: string[] = [];
-    for (let i = 0; i < keys.length; i += 1000) {
-      const chunk = keys.slice(i, i + 1000);
-      const response = await this.s3Client.send(
-        new DeleteObjectsCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
-        })
-      );
-      for (const err of response.Errors ?? []) {
-        // The key embeds a stack name and S3 supplies the code and message, so
-        // all three are guarded before they reach a line (issue #3027). The
-        // thrown message names each key's failure by its CODE only: S3's
-        // per-key `Message` is AWS's own text, and goes to `debug`
-        // (go-to-k/cdkd#2319).
-        const shownKey =
-          err.Key === undefined
-            ? '<unknown>'
-            : displayIdent(err.Key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
-        const code = err.Code ?? 'Error';
-        const mask = currentLogLineMasker();
-        const shownCode =
-          displaySafe(mask ? mask(code) : code, { asciiOnly: true }) || UNRENDERABLE;
-        failures.push(`${shownKey} (${shownCode})`);
-        this.logger.debug(
-          safeMsg`DeleteObjects failed for ${shownKey} (${shownCode}): ${displaySafe(err.Message ?? '', { asciiOnly: true })}`
-        );
-      }
-    }
-    if (failures.length > 0) {
-      throw new StateError(
-        `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ` +
-          `${failures.join('; ')}. ${VERBOSE_POINTER}`
-      );
-    }
+  deleteRawObjects(keys: string[]): Promise<void> {
+    return deleteRawObjects.call(this, keys);
   }
 
-  /**
-   * Delete the NONCURRENT versions of raw sidecar keys in the state bucket
-   * (issue [#2340](https://github.com/go-to-k/cdkd/issues/2340)).
-   *
-   * The versioned-bucket companion to {@link deleteRawObjects}, and
-   * deliberately NOT folded into it: a purge needs IAM a plain delete does not
-   * (`s3:ListBucketVersions`, `s3:DeleteObjectVersion`), and it removes the
-   * recovery points versioning exists for, so each delete site opts in
-   * explicitly. Every `deleteRawObjects` caller does opt in today (`cdkd gc`'s
-   * custom-resource response sweep, `cdkd bootstrap destroy`'s marker, and the
-   * deployment-event store's prunes, issue
-   * [#2624](https://github.com/go-to-k/cdkd/issues/2624)), as does
-   * {@link deleteRollbackJournal}, which deletes through its own path. So does
-   * `cdkd scrub` after a PUT rather than a delete: the `state.json` it rewrites
-   * (and, under `--purge-history`, every record it examines and does not
-   * refuse) and the exports index of each region it wrote. The only other
-   * `state.json` purge is {@link purgeDeletedStateHistory}, which `cdkd state
-   * destroy` alone runs (go-to-k/cdkd#2346).
-   *
-   * It reaches only the keys it is given. A key already behind a delete marker
-   * is absent from an ordinary listing, so a caller that empties a whole
-   * prefix it owns uses {@link purgeNoncurrentVersionsUnderPrefix} instead.
-   *
-   * NEVER THROWS, and the try/catch below is what makes that true rather than
-   * the helper alone. `ensureClientForBucket()` and `ownerParam()` sit OUTSIDE
-   * the helper's guarantee and both reach AWS — `GetBucketLocation` can be
-   * denied or throttled. Without the wrap, that rejection escaped at
-   * `gc/command.ts`'s call site and skipped the `✓ Deleted ...` line after the delete
-   * had already succeeded, which is precisely the outcome the comment there
-   * says is impossible.
-   */
-  async purgeNoncurrentVersions(
+  purgeNoncurrentVersions(
     keys: string[],
     options: Omit<NoncurrentVersionPurgeOptions, 'requestFields' | 'logger'> = {}
   ): Promise<void> {
-    if (keys.length === 0) return;
-    try {
-      await this.ensureClientForBucket();
-      await purgeNoncurrentKeyVersions(this.s3Client, this.config.bucket, keys, {
-        ...options,
-        requestFields: await this.ownerParam(),
-        logger: this.logger,
-      });
-    } catch (error) {
-      // Carries the caller's `objectDescription` for the same reason the helper
-      // does (issue #2346): this arm fires when the purge could not even START,
-      // and a reader has exactly the same "which object?" question then. Falls
-      // back to naming nothing rather than to the helper's default, because
-      // repeating a generic phrase here would read as a description the caller
-      // supplied.
-      const describing = options.objectDescription ? ` (${options.objectDescription})` : '';
-      this.logger.warn(
-        `Could not purge noncurrent versions of ${keys.length} key(s) in bucket ` +
-          `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
-          `survive and remain readable via GetObject with a VersionId${describing}. Grant ` +
-          `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
-          `key(s) by hand. Underlying error: ${errorDetail(error)}`
-      );
-    }
+    return purgeNoncurrentVersions.call(this, keys, options);
   }
 
   /**
@@ -2118,810 +690,158 @@ export class S3StateBackend {
     }
   }
 
-  /**
-   * Read the stack's create-token ledger (go-to-k/cdkd#4438). `null` when
-   * there is none. A failed read, or a body this binary does not understand,
-   * throws.
-   */
-  async loadCreateTokenLedger(
-    stackName: string,
-    region: string
-  ): Promise<CreateTokenLedgerDoc | null> {
-    const body = await this.getRawObject(this.getCreateTokenLedgerKey(stackName, region));
-    if (body === null) return null;
-    const ledger = parseCreateTokenLedger(body);
-    if (ledger === null) {
-      // Not "no ledger": a body this binary cannot read -- a newer version's,
-      // or a damaged one -- must not be overwritten with a fresh nonce.
-      throw new Error(
-        `the create-token ledger of stack ${this.stackRef(stackName, region)} (create-tokens.json beside its state.json) is in a format this cdkd version cannot read; upgrade cdkd, or delete that object if it is damaged`
-      );
-    }
-    return ledger;
+  loadCreateTokenLedger(stackName: string, region: string): Promise<CreateTokenLedgerDoc | null> {
+    return loadCreateTokenLedger.call(this, stackName, region);
   }
 
-  /** Write the stack's create-token ledger. Every writer holds the stack lock. */
-  async saveCreateTokenLedger(
+  saveCreateTokenLedger(
     stackName: string,
     region: string,
     ledger: CreateTokenLedgerDoc
   ): Promise<void> {
-    await this.putRawObject(
-      this.getCreateTokenLedgerKey(stackName, region),
-      JSON.stringify(ledger, null, 2)
-    );
+    return saveCreateTokenLedger.call(this, stackName, region, ledger);
   }
 
-  /**
-   * Replace the ledger's nonce and drop the `sent` entries of `logicalIds`
-   * (go-to-k/cdkd#4438): `cdkd orphan` let those resources go while they still
-   * hold this stack's tokens, so the stack's next create of them must send a
-   * new one. OTHER logical ids keep the token they sent, which a re-run still
-   * reuses. No ledger, no-op: the stack's next create
-   * mints a fresh nonce anyway. Throws a `StateError` naming the stack when
-   * the ledger cannot be read or written, so `cdkd orphan` stops before
-   * dropping the record.
-   */
-  async rotateCreateTokenNonce(
+  rotateCreateTokenNonce(
     stackName: string,
     region: string,
     logicalIds: readonly string[]
   ): Promise<void> {
-    try {
-      const ledger = await this.loadCreateTokenLedger(stackName, region);
-      if (ledger === null) return;
-      ledger.nonce = randomUUID();
-      for (const logicalId of logicalIds) delete ledger.sent[logicalId];
-      await this.saveCreateTokenLedger(stackName, region, ledger);
-    } catch (error) {
-      // The SDK's own text (an AccessDenied names the object's ARN) carries
-      // the raw stack name: name the stack through `stackRef` instead.
-      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to renew the create-token ledger of stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
-              'The state record was left in place; re-run once the ledger can be written.',
-            normalized
-          )
-      );
-    }
+    return rotateCreateTokenNonce.call(this, stackName, region, logicalIds);
   }
 
-  /**
-   * Delete the stack's create-token ledger, so the stack's next create mints a
-   * fresh nonce. An absent ledger is fine; any other failure throws a
-   * `StateError`, so the caller stops before letting resources go with the
-   * ledger still naming their tokens.
-   */
-  async deleteCreateTokenLedger(stackName: string, region: string): Promise<void> {
-    await this.ensureClientForBucket();
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: this.getCreateTokenLedgerKey(stackName, region),
-        })
-      );
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'DeleteObject',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to delete the create-token ledger for stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
-              'The state record was left in place; re-run once the ledger can be deleted.',
-            normalized
-          )
-      );
-    }
+  deleteCreateTokenLedger(stackName: string, region: string): Promise<void> {
+    return deleteCreateTokenLedger.call(this, stackName, region);
   }
 
-  /**
-   * The stack instance id for a stack's FIRST state write (state schema v13,
-   * go-to-k/cdkd#5064). Call it only while the stack has no `state.json`,
-   * under the stack lock: an ordinary deploy, whose record carries the id
-   * (or none, as a legacy stack), never reaches here.
-   *
-   * A `stack-instance.json` sibling an earlier run wrote is READ BACK and its
-   * id returned: a re-run after a crash must never mint a fresh one. Without
-   * one a fresh `crypto.randomUUID()` is minted and, with `writeAhead`
-   * (a deploy, before its first create), written with `If-None-Match: *`; a
-   * lost race (412) reads the winner's back. `cdkd import` passes
-   * `writeAhead: false`: it creates nothing, and its state save is its first
-   * write. The first state save carrying the id deletes the sibling.
-   *
-   * Throws a `StateError` naming the stack (never the id) when the sibling
-   * cannot be read or written, or holds a body this binary cannot read, so
-   * the deploy stops before any create.
-   *
-   * INVARIANT: only a binary that also derives generated names from the id
-   * may mint one. A record carrying an id says its resources were named with
-   * it; an id minted beside the legacy `{stack}-{logicalId}` names would make
-   * the next binary derive different names, and an IAM provider re-deriving
-   * its name inside `update()` would replace the live resource.
-   */
-  async stackInstanceIdForFirstWrite(
+  stackInstanceIdForFirstWrite(
     stackName: string,
     region: string,
     options: { writeAhead: boolean }
   ): Promise<string> {
-    const key = this.getStackInstanceKey(stackName, region);
-    const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
-    // The first read only: a lost race below reads the winner back afresh.
-    const prefetched = this.siblingPrefetches.get(key);
-    this.siblingPrefetches.delete(key);
-    try {
-      const existing = await (prefetched ?? read());
-      if (existing !== null) {
-        this.pendingStackInstanceSiblings.set(key, existing);
-        this.logger.debug(
-          safeMsg`Reusing the write-ahead stack instance id of ${displayStackName(stackName)}`
-        );
-        return existing;
-      }
-      const minted = randomUUID();
-      if (!options.writeAhead) return minted;
-      await this.ensureClientForBucket();
-      const body = stackInstanceSiblingBody(minted);
-      const put = async (): Promise<{ VersionId?: string | undefined }> =>
-        this.s3Client.send(
-          new PutObjectCommand({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Key: key,
-            Body: body,
-            ContentLength: Buffer.byteLength(body),
-            ContentType: 'application/json',
-            IfNoneMatch: '*',
-          })
-        );
-      let written: { VersionId?: string | undefined } | undefined;
-      try {
-        try {
-          written = await put();
-        } catch (error) {
-          // 409 ConditionalRequestConflict is a concurrent write in flight, not
-          // "one exists": asked once more, it answers (as `ensureRetainedTombstone`).
-          if (!isConditionalConflict(error)) throw error;
-          written = await put();
-        }
-      } catch (error) {
-        if (isNotImplemented(error)) {
-          // An endpoint without conditional writes: the read above, under the
-          // stack lock, stands in for the condition.
-          await this.putRawObject(key, body);
-          this.pendingStackInstanceSiblings.set(key, minted);
-          return minted;
-        }
-        if (!isConditionFailure(error)) throw error;
-        // Another writer got there first: its id is the stack's.
-        const winner = await read();
-        if (winner === null) throw error;
-        this.pendingStackInstanceSiblings.set(key, winner);
-        return winner;
-      }
-      this.pendingStackInstanceSiblings.set(key, minted);
-      // The ONE version of the sibling, which this write created: the post-save
-      // drop removes exactly it (go-to-k/cdkd#5200).
-      const versionId = written?.VersionId;
-      if (typeof versionId === 'string' && versionId !== '' && versionId !== 'null') {
-        this.siblingVersionsWritten.set(key, versionId);
-      }
-      return minted;
-    } catch (error) {
-      if (error instanceof StateError) throw error;
-      throw this.stackInstanceSiblingError(stackName, region, error, 'write');
-    }
+    return stackInstanceIdForFirstWrite.call(this, stackName, region, options);
   }
 
-  /**
-   * The refusal for a sibling read (`read`) or a first write's read-or-write
-   * (`write`) that failed in S3. The SDK's own text can carry the raw key, so
-   * the stack is named through `stackRef`, and never the id.
-   */
-  private stackInstanceSiblingError(
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  stackInstanceSiblingError(
     stackName: string,
     region: string,
     error: unknown,
     access: 'read' | 'write'
   ): StateError {
-    const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
-    return this.wrapS3Failure(
-      normalized,
-      (text) =>
-        new StateError(
-          `Failed to ${access === 'write' ? 'read or write' : 'read'} the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
-            `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${withoutFinalPeriod(text)}. ` +
-            (access === 'write'
-              ? 'Nothing was created; re-run once the state bucket can be written.'
-              : 'Nothing was changed; re-run once the state bucket can be read.'),
-          normalized
-        )
-    );
+    return stackInstanceSiblingError.call(this, stackName, region, error, access);
   }
 
-  /**
-   * Start the read {@link stackInstanceIdForFirstWrite} opens with, so a
-   * first deploy's read overlaps its diff instead of waiting for the approval
-   * (go-to-k/cdkd#5200). The caller holds the stack lock, and only a lock
-   * holder writes the sibling, so the answer is still current when the write
-   * consults it. A failure is reported there, as an unprefetched read's is.
-   */
   prefetchStackInstanceSibling(stackName: string, region: string): void {
-    const key = this.getStackInstanceKey(stackName, region);
-    if (this.siblingPrefetches.has(key)) return;
-    const read = this.readSiblingId(key, stackName, region);
-    read.catch(() => undefined);
-    this.siblingPrefetches.set(key, read);
+    return prefetchStackInstanceSibling.call(this, stackName, region);
   }
 
-  /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
-  private async readSiblingId(
-    key: string,
-    stackName: string,
-    region: string
-  ): Promise<string | null> {
-    const body = await this.getRawObject(key);
-    if (body === null) return null;
-    const id = parseStackInstanceSibling(body);
-    if (id === null) {
-      throw new StateError(
-        `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
-          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json) is in a format this cdkd version ` +
-          'cannot read; upgrade cdkd, or delete that object if it is damaged'
-      );
-    }
-    return id;
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  readSiblingId(key: string, stackName: string, region: string): Promise<string | null> {
+    return readSiblingId.call(this, key, stackName, region);
   }
 
-  /**
-   * The id a stack's `stack-instance.json` sibling holds, READ ONLY: never
-   * mints, never writes, never marks the sibling for the post-save delete.
-   * For a caller that must RECOGNIZE a first deploy's generated names while
-   * the stack has no `state.json` (the Cloud Control pending-request settle,
-   * go-to-k/cdkd#5064); an ordinary deploy, whose record carries the id, never
-   * calls it. `undefined` when there is no sibling. Throws a `StateError`
-   * naming the stack (never the id) when it cannot be read or holds a body
-   * this binary cannot read.
-   */
-  async readStackInstanceSibling(stackName: string, region: string): Promise<string | undefined> {
-    try {
-      return (
-        (await this.readSiblingId(
-          this.getStackInstanceKey(stackName, region),
-          stackName,
-          region
-        )) ?? undefined
-      );
-    } catch (error) {
-      if (error instanceof StateError) throw error;
-      throw this.stackInstanceSiblingError(stackName, region, error, 'read');
-    }
+  readStackInstanceSibling(stackName: string, region: string): Promise<string | undefined> {
+    return readStackInstanceSibling.call(this, stackName, region);
   }
 
-  /**
-   * Delete the stack's `stack-instance.json`. An absent one is fine; any other
-   * failure throws a `StateError`, so {@link deleteState} stops before the
-   * record goes with the id still readable.
-   */
-  async deleteStackInstanceSibling(stackName: string, region: string): Promise<void> {
-    await this.ensureClientForBucket();
-    const key = this.getStackInstanceKey(stackName, region);
-    this.pendingStackInstanceSiblings.delete(key);
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
-      const normalized = normalizeAwsError(error, {
-        bucket: this.config.bucket,
-        operation: 'DeleteObject',
-      });
-      throw this.wrapS3Failure(
-        normalized,
-        (text) =>
-          new StateError(
-            `Failed to delete the write-ahead stack instance id for stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
-              'The state record was left in place; re-run once that object can be deleted.',
-            normalized
-          )
-      );
-    }
+  deleteStackInstanceSibling(stackName: string, region: string): Promise<void> {
+    return deleteStackInstanceSibling.call(this, stackName, region);
   }
 
-  /**
-   * After the first state save carrying the id: delete the sibling and purge
-   * its earlier versions. Best-effort and never throws: the record is
-   * authoritative now, and a sibling that survives is read only while the
-   * stack has no record, which {@link deleteState} (deleting it first) ends.
-   */
-  private async dropStackInstanceSiblingAfterSave(
-    stackName: string,
-    region: string
-  ): Promise<void> {
-    // go-to-k/cdkd#5200: a sibling this process wrote is deleted by the
-    // version its write created, which removes it without writing a delete
-    // marker. Its `If-None-Match: *` write succeeded, so nothing current sat
-    // under it (at most an earlier lifetime's delete marker), and removing it
-    // brings no older copy back. The purge below still runs, for versions an
-    // earlier lifetime's purge left. Any doubt takes the general path.
-    const key = this.getStackInstanceKey(stackName, region);
-    const versionId = this.siblingVersionsWritten.get(key);
-    this.siblingVersionsWritten.delete(key);
-    let deleted = false;
-    if (versionId !== undefined) {
-      try {
-        await this.ensureClientForBucket();
-        await this.s3Client.send(
-          new DeleteObjectCommand({
-            Bucket: this.config.bucket,
-            ...(await this.ownerParam()),
-            Key: key,
-            VersionId: versionId,
-          })
-        );
-        deleted = true;
-      } catch (error) {
-        this.logger.debug(
-          safeMsg`Could not delete the written version of the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
-        );
-      }
-    }
-    if (!deleted) {
-      try {
-        await this.deleteStackInstanceSibling(stackName, region);
-      } catch (error) {
-        this.logger.debug(
-          safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
-        );
-        return;
-      }
-    }
-    await this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
-      objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
-    });
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  dropStackInstanceSiblingAfterSave(stackName: string, region: string): Promise<void> {
+    return dropStackInstanceSiblingAfterSave.call(this, stackName, region);
   }
 
-  /**
-   * Load the rollback journal for a stack (issue #1183). Returns `null` when
-   * no journal exists (the common case — a journal only lives between a
-   * failed/interrupted deploy and its `cdkd rollback`). Throws
-   * {@link UnknownRollbackJournalVersionError} on a newer-version journal.
-   */
-  async loadRollbackJournal(stackName: string, region: string): Promise<RollbackJournal | null> {
-    const key = this.rollbackJournalKey(stackName, region);
-    const touches = this.journalTouches.get(key) ?? 0;
-    this.journalsReadAbsent.delete(key);
-    const body = await this.getRawObject(key);
-    if (body === null) {
-      // Only when no write went out while the read was in flight.
-      if ((this.journalTouches.get(key) ?? 0) === touches) this.journalsReadAbsent.add(key);
-      return null;
-    }
-    return parseRollbackJournal(body, stackName);
+  loadRollbackJournal(stackName: string, region: string): Promise<RollbackJournal | null> {
+    return loadRollbackJournal.call(this, stackName, region);
   }
 
-  /**
-   * Append one segment to the stack's rollback journal, creating it if
-   * absent. Existing segments are preserved (never overwritten) so
-   * consecutive failed deploys accumulate one segment each. Every writer
-   * holds the stack lock, so no optimistic locking is needed.
-   */
-  async appendRollbackJournalSegment(
+  appendRollbackJournalSegment(
     stackName: string,
     region: string,
     segment: RollbackJournalSegment
   ): Promise<void> {
-    const existing = await this.loadRollbackJournal(stackName, region);
-    const journal: RollbackJournal = existing ?? {
-      journalVersion: ROLLBACK_JOURNAL_VERSION,
-      stackName,
-      region,
-      segments: [],
-    };
-    journal.segments.push(segment);
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
+    return appendRollbackJournalSegment.call(this, stackName, region, segment);
   }
 
-  /**
-   * Replace the `failedOperations` list on the NEWEST journal segment
-   * (issue #1198) with the ops STILL pending after a `--revert-failed`
-   * replay — an empty list removes the field. Called right after the
-   * failed-op replay, BEFORE the segment's completed ops replay, so a later
-   * completed-op failure that keeps the segment for a re-run does not
-   * re-issue the already-applied failed-op reverts (the journal's
-   * `attemptedProperties` would generate a patch undoing changes that are no
-   * longer present, which can fail on patch-based providers). Per-op — a
-   * partially-successful replay strips only the handled ops. No-op when the
-   * journal / segment / field is absent.
-   */
-  async setRollbackJournalFailedOperations(
+  setRollbackJournalFailedOperations(
     stackName: string,
     region: string,
     remaining: FailedOperation[]
   ): Promise<void> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    const newest = journal?.segments[journal.segments.length - 1];
-    if (!journal || !newest || !newest.failedOperations) return;
-    if (remaining.length === 0) delete newest.failedOperations;
-    else newest.failedOperations = remaining;
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
+    return setRollbackJournalFailedOperations.call(this, stackName, region, remaining);
   }
 
-  /**
-   * Remove every failed op for which `drop` answers `true`, from ANY segment
-   * (go-to-k/cdkd#4584: `cdkd destroy` strips the journaled orphans it
-   * settled, so a re-run after a later failure does not re-send their
-   * deletes). A segment left with no failed op loses the field; segments
-   * themselves are kept. Writes nothing when nothing matched. Returns the
-   * number of ops removed.
-   */
-  async dropRollbackJournalFailedOperations(
+  dropRollbackJournalFailedOperations(
     stackName: string,
     region: string,
     drop: (op: FailedOperation, segment: RollbackJournalSegment) => boolean
   ): Promise<number> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal) return 0;
-    let removed = 0;
-    for (const segment of journal.segments) {
-      if (!segment.failedOperations) continue;
-      const kept = segment.failedOperations.filter((op) => !drop(op, segment));
-      removed += segment.failedOperations.length - kept.length;
-      if (kept.length === 0) delete segment.failedOperations;
-      else segment.failedOperations = kept;
-    }
-    if (removed === 0) return 0;
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return removed;
+    return dropRollbackJournalFailedOperations.call(this, stackName, region, drop);
   }
 
-  /**
-   * Replace failed ops in place, in ANY segment (go-to-k/cdkd#3252: a re-polled
-   * abandoned Cloud Control CREATE becomes a proven orphan or loses its token).
-   * `rewrite` returns the op unchanged (the same object) to keep it, a new op
-   * to replace it, or `null` to remove it; a segment left with no failed op
-   * loses the field. Writes nothing when nothing changed. Returns the number of
-   * ops changed.
-   */
-  async rewriteRollbackJournalFailedOperations(
+  rewriteRollbackJournalFailedOperations(
     stackName: string,
     region: string,
     rewrite: (op: FailedOperation, segment: RollbackJournalSegment) => FailedOperation | null
   ): Promise<number> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal) return 0;
-    let changed = 0;
-    for (const segment of journal.segments) {
-      if (!segment.failedOperations) continue;
-      const next: FailedOperation[] = [];
-      for (const op of segment.failedOperations) {
-        const out = rewrite(op, segment);
-        if (out !== op) changed++;
-        if (out !== null) next.push(out);
-      }
-      if (next.length === 0) delete segment.failedOperations;
-      else segment.failedOperations = next;
-    }
-    if (changed === 0) return 0;
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return changed;
+    return rewriteRollbackJournalFailedOperations.call(this, stackName, region, rewrite);
   }
 
-  /**
-   * Reduce the journal to the failed ops `keep` answers `true` for
-   * (go-to-k/cdkd#4600: a successful deploy whose journaled orphans could not
-   * all be deleted keeps only those). The deploy moved the baseline, so every
-   * completed op and every other failed op goes, a segment left with none is
-   * dropped, and a kept one no longer describes a first deploy
-   * (`initialDeploy: false`, no restored outputs). As a segment removal
-   * carries them, each kept segment records as `supersededLogicalIds` the ids
-   * of the completed ops removed from it and from every newer segment, plus
-   * `supersededLogicalIds` (the deploy's own completed ids), except a kept
-   * op's own id, which would demote it. Deletes the
-   * journal when nothing is kept. Returns the number of failed ops kept.
-   */
-  async reduceRollbackJournalToFailedOperations(
+  reduceRollbackJournalToFailedOperations(
     stackName: string,
     region: string,
     keep: (op: FailedOperation, segment: RollbackJournalSegment) => boolean,
     supersededLogicalIds: readonly string[] = [],
-    /**
-     * A kept op the caller's supersede pass demoted: it is written with
-     * `physicalIdRecoveredFromError: false`, since the evidence that demoted
-     * it may be among what this drops.
-     */
     demote: (op: FailedOperation, segment: RollbackJournalSegment) => boolean = () => false
   ): Promise<number> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal) return 0;
-    const carried = new Set(supersededLogicalIds);
-    const kept: RollbackJournalSegment[] = [];
-    let count = 0;
-    const keptBySegment = journal.segments.map((segment) =>
-      (segment.failedOperations ?? [])
-        .filter((op) => keep(op, segment))
-        .map((op) =>
-          op.physicalIdRecoveredFromError === true && demote(op, segment)
-            ? { ...op, physicalIdRecoveredFromError: false }
-            : op
-        )
+    return reduceRollbackJournalToFailedOperations.call(
+      this,
+      stackName,
+      region,
+      keep,
+      supersededLogicalIds,
+      demote
     );
-    // A kept op's own id is never carried: `demoteSupersededOrphans` reads a
-    // segment's `supersededLogicalIds` against its own ops too, so carrying it
-    // would demote the very entry this keeps on the next read.
-    const keptIds = new Set(keptBySegment.flat().map((op) => op.logicalId));
-    for (let s = journal.segments.length - 1; s >= 0; s--) {
-      const segment = journal.segments[s]!;
-      for (const op of segment.operations) carried.add(op.logicalId);
-      for (const id of segment.supersededLogicalIds ?? []) carried.add(id);
-      const failed = keptBySegment[s]!;
-      if (failed.length === 0) continue;
-      const reduced: RollbackJournalSegment = {
-        ...segment,
-        initialDeploy: false,
-        operations: [],
-        failedOperations: failed,
-      };
-      delete reduced.previousOutputs;
-      delete reduced.previousCrossStackReads;
-      addSupersededIds(
-        reduced,
-        [...carried].filter((id) => !keptIds.has(id) || segment.supersededLogicalIds?.includes(id))
-      );
-      kept.unshift(reduced);
-      count += failed.length;
-    }
-    if (kept.length === 0) {
-      await this.deleteRollbackJournal(stackName, region);
-      return 0;
-    }
-    journal.segments = kept;
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return count;
   }
 
-  /**
-   * Pop the newest segment off the stack's rollback journal after it has
-   * been fully replayed. When the last segment is removed, the journal
-   * object is deleted entirely. Returns the number of segments remaining.
-   */
-  async popRollbackJournalSegment(stackName: string, region: string): Promise<number> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal || journal.segments.length === 0) {
-      await this.deleteRollbackJournal(stackName, region);
-      return 0;
-    }
-    const popped = journal.segments.pop()!;
-    carrySupersededIds(popped, journal.segments[journal.segments.length - 1]);
-    if (journal.segments.length === 0) {
-      await this.deleteRollbackJournal(stackName, region);
-      return 0;
-    }
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return journal.segments.length;
+  popRollbackJournalSegment(stackName: string, region: string): Promise<number> {
+    return popRollbackJournalSegment.call(this, stackName, region);
   }
 
-  /**
-   * go-to-k/cdkd#4402: record `logicalIds` as superseded on the journal's
-   * newest segment — for a removal that could not delete the journal (a
-   * successful deploy whose delete failed): its completed ops supersede every
-   * older failed attempt of their ids. No journal or no ids: nothing written.
-   */
-  async markRollbackJournalSuperseded(
+  markRollbackJournalSuperseded(
     stackName: string,
     region: string,
     logicalIds: readonly string[]
   ): Promise<void> {
-    if (logicalIds.length === 0) return;
-    const journal = await this.loadRollbackJournal(stackName, region);
-    const newest = journal?.segments[journal.segments.length - 1];
-    if (!journal || !newest) return;
-    addSupersededIds(newest, logicalIds);
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
+    return markRollbackJournalSuperseded.call(this, stackName, region, logicalIds);
   }
 
-  /**
-   * go-to-k/cdkd#4523: record that `cdkd import` adopted `marks` (logical id,
-   * the physical id it wrote, and the type). Every segment holding a completed
-   * or failed op of a marked logical id gets that mark in `importedResources`
-   * (the replay then runs none of the segment's ops of the id: the matching
-   * ones are adopted, the rest displaced — see `splitImportedOps`). The newest
-   * segment also supersedes every marked id, since an import records the
-   * resource just as a completed op does. Returns the logical ids marked; no
-   * journal, or no segment naming one, writes nothing. Throws on a read or
-   * write failure — the caller refuses the import rather than leave the
-   * journal free to delete it.
-   */
-  async markRollbackJournalImported(
+  markRollbackJournalImported(
     stackName: string,
     region: string,
     marks: readonly ImportedResourceMark[]
   ): Promise<string[]> {
-    if (marks.length === 0) return [];
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal) return [];
-    const marked = new Set<string>();
-    for (const segment of journal.segments) {
-      const named = new Set(
-        [...segment.operations, ...(segment.failedOperations ?? [])].map((op) => op.logicalId)
-      );
-      const hits = marks.filter((m) => named.has(m.logicalId));
-      if (hits.length === 0) continue;
-      // A re-import replaces the id's earlier mark: the record names the
-      // NEW resource now.
-      const kept = (segment.importedResources ?? []).filter(
-        (k) => !hits.some((m) => m.logicalId === k.logicalId)
-      );
-      segment.importedResources = [...kept, ...hits.map((m) => ({ ...m }))];
-      for (const m of hits) marked.add(m.logicalId);
-    }
-    if (marked.size === 0) return [];
-    addSupersededIds(journal.segments[journal.segments.length - 1]!, [...marked]);
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return [...marked];
+    return markRollbackJournalImported.call(this, stackName, region, marks);
   }
 
-  /**
-   * Remove every segment for which `drop` answers `true` (issue #3754: a
-   * nested child's segments for one parent run, once that run's rollback no
-   * longer needs them). Deletes the journal — with its noncurrent-version
-   * purge — when nothing is left, and writes nothing when nothing matched.
-   * Returns the number of segments removed.
-   */
-  async dropRollbackJournalSegments(
+  dropRollbackJournalSegments(
     stackName: string,
     region: string,
     drop: (segment: RollbackJournalSegment) => boolean
   ): Promise<number> {
-    const journal = await this.loadRollbackJournal(stackName, region);
-    if (!journal) return 0;
-    const kept: RollbackJournalSegment[] = [];
-    for (const segment of journal.segments) {
-      if (!drop(segment)) kept.push(segment);
-      else carrySupersededIds(segment, kept[kept.length - 1]);
-    }
-    const removed = journal.segments.length - kept.length;
-    if (removed === 0) return 0;
-    if (kept.length === 0) {
-      await this.deleteRollbackJournal(stackName, region);
-      return removed;
-    }
-    journal.segments = kept;
-    await this.putRawObject(
-      this.getRollbackJournalKey(stackName, region),
-      JSON.stringify(journal, null, 2)
-    );
-    return removed;
+    return dropRollbackJournalSegments.call(this, stackName, region, drop);
   }
 
-  /**
-   * Delete the stack's rollback journal object (idempotent). Called on the
-   * deploy success path, after a clean rollback, and via {@link deleteState}
-   * so `cdkd destroy` / `cdkd state destroy` sweep it too.
-   *
-   * TWO steps, and the second is not housekeeping (issue
-   * [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 4). `cdkd
-   * bootstrap` turns VERSIONING ON for the state bucket, so the
-   * `DeleteObject` above only writes a DELETE MARKER and leaves every prior
-   * version of the journal readable through `GetObject` with a `VersionId`.
-   * The journal's `failedOperations[].attemptedProperties` is the PROPERTIES
-   * OF THE FAILED WRITE, verbatim — measured 2026-08-20 on
-   * `CdkdDeletionPolicySnapshotHeavyExample` as four surviving versions each
-   * carrying a literal `"MasterUserPassword": "Cdkdcf2f..."` after cdkd
-   * reported the state deleted (recorded in the `s3_stack_prefix` comment of
-   * `tests/integration/s3-versions.sh`, ~line 270). A
-   * delete-only cleanup therefore reports success while the credential stays
-   * retrievable by anyone holding `s3:GetObjectVersion`.
-   *
-   * Unlike `state.json` — whose noncurrent versions ARE the state-recovery
-   * capability versioning is enabled FOR, which is why {@link deleteState}
-   * keeps them and only `cdkd state destroy` purges them — the journal is TRANSIENT by design: it
-   * exists only between a failed / interrupted deploy and its `cdkd
-   * rollback`. There is no recovery capability to weigh against the purge.
-   *
-   * The purge runs UNCONDITIONALLY, including on the arm where the delete
-   * failed. `purgeNoncurrentKeyVersions` filters on `IsLatest`, so a key
-   * whose delete failed keeps its current version intact and only its history
-   * goes — the worst case is that the object survives while its old bodies do
-   * not, which is the safe direction. Skipping the purge when the delete
-   * threw would leave every readable version behind with no warning at all,
-   * the same partial-failure gap `cdkd gc` closed with its `finally`.
-   */
-  async deleteRollbackJournal(stackName: string, region: string): Promise<boolean> {
-    await this.ensureClientForBucket();
-    const key = this.getRollbackJournalKey(stackName, region);
-    // go-to-k/cdkd#4402: REPORTED, never thrown — `false` when the journal may
-    // survive (a DeleteObject failure other than not-found), so a caller that
-    // removes a segment by deleting the whole journal can keep its supersede.
-    let gone = true;
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-    } catch (error) {
-      // Best-effort: a missing journal is not an error; other failures warn.
-      // Neither arm RETURNS — an early return here used to skip the purge
-      // below, and a not-found CURRENT object says nothing about whether
-      // noncurrent versions of the key survive (on a versioned bucket a prior
-      // delete leaves a marker as current and every body still readable).
-      if (!isNoSuchKey(error) && (error as { name?: string }).name !== 'NotFound') {
-        gone = false;
-        this.logger.warn(
-          `Failed to delete rollback journal for ${this.stackRef(stackName, region)}: ${errorDetail(error)}`
-        );
-      }
-    }
-    // Delegated to the SHARED purge rather than open-coded, for the reason
-    // `s3-noncurrent-version-purge.ts` gives: a copy per call site is how one
-    // of them keeps the defect after the other is fixed. It never throws, so
-    // this method's best-effort contract holds by construction.
-    await this.purgeNoncurrentVersions([key], {
-      objectDescription: ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,
-    });
-    return gone;
+  deleteRollbackJournal(stackName: string, region: string): Promise<boolean> {
+    return deleteRollbackJournal.call(this, stackName, region);
   }
 
-  /**
-   * HeadObject probe — returns true on 200, false on NotFound. Other errors
-   * propagate so we don't accidentally swallow IAM denials.
-   */
-  private async headObject(key: string): Promise<boolean> {
-    try {
-      await this.s3Client.send(
-        new HeadObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-      return true;
-    } catch (error) {
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') {
-        return false;
-      }
-      throw error;
-    }
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  headObject(key: string): Promise<boolean> {
+    return headObject.call(this, key);
   }
 
   /**
@@ -2946,8 +866,10 @@ export class S3StateBackend {
    * Anything else -- `normalizeAwsError`'s rewrite of S3's body-less
    * `Unknown`, a transport error -- is cdkd- or Node-authored, and keeps its
    * text exactly as before.
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private wrapS3Failure(error: unknown, build: (text: string) => StateError): StateError {
+  wrapS3Failure(error: unknown, build: (text: string) => StateError): StateError {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return build(errorDetail(error));
     this.logger.debug(
@@ -2963,8 +885,10 @@ export class S3StateBackend {
    * A stack name safe to put in a log line. Names reach this class from S3
    * key segments, which anyone able to write the bucket controls, so every
    * message that renders one goes through here (issue #2170's class).
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private displayName(stackName: string): string {
+  displayName(stackName: string): string {
     // Bare when plain, otherwise one JSON string: callers write NO quotes of
     // their own around it (go-to-k/cdkd#3617).
     return displayStackName(stackName);
@@ -2976,562 +900,48 @@ export class S3StateBackend {
    * the read paths: `cdkd state destroy` hands `deleteState` a pair
    * `listStacks` read out of S3 key segments, and nothing here can tell that
    * caller from one passing a name the user typed (issue #3027).
+   *
+   * @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835).
    */
-  private stackRef(stackName: string, region: string): string {
+  stackRef(stackName: string, region: string): string {
     return `${this.displayName(stackName)} (${displayIdent(region)})`;
   }
 
-  /**
-   * Make the S3 KEY's region the region of the record read from it, and report
-   * a body that named a different one.
-   *
-   * The key is the authority, and that is not a new rule: `saveState`
-   * normalizes the body it writes against the same `region` argument
-   * `getStateKey` builds the key from, and has done since `83e5ddb66` — the
-   * commit that introduced the region-scoped layout (schema v2, PR
-   * [#57](https://github.com/go-to-k/cdkd/pull/57)). Key and body therefore
-   * agree by construction for every record any cdkd version has ever written,
-   * so this makes the READ symmetric with a write rule that already held
-   * rather than inventing a second one — and a divergence means the record was
-   * written by something that is not cdkd.
-   *
-   * It is not cosmetic. `region` is what `destroy-runner.ts` locks, saves and
-   * `deleteState`s against (`state.region ?? ctx.baseRegion`), and what
-   * `DeleteContext.expectedRegion` carries so a provider can tell "the
-   * resource is genuinely gone" from "I looked in the wrong region"
-   * (`src/provisioning/region-check.ts`). A divergent body aimed all of that
-   * at a region the record does not live in, and `cdkd state destroy` reported
-   * `✓ State deleted` having deleted nothing (issue
-   * [#3328](https://github.com/go-to-k/cdkd/issues/3328)). Normalizing HERE
-   * fixes every consumer at once, with no region threaded through any of them.
-   *
-   * REFUSING instead was rejected deliberately: this is the shared read path
-   * for deploy, destroy, rollback AND the recovery commands (`cdkd state
-   * orphan`, `cdkd state destroy`), which is the same reason `parseStateBody`
-   * validates nothing inside a well-formed root. A refusal would strand the
-   * record it was asked to clean up, leaving `aws s3 rm` as the only remedy.
-   *
-   * It REPLACES rather than defaults, which is the half `??` cannot do:
-   * `state.region ?? ctx.baseRegion` falls through only for `null` /
-   * `undefined`, so a `"region": ""` built the key `cdkd/<stack>//state.json`
-   * and a `"region": 123` reached `acquireLock` / `deleteState` as a region.
-   *
-   * **An ABSENT region is normalized too, and silently.** A body carrying no
-   * `region` makes no claim to contradict, and the key it was read from names
-   * one — which is the answer `legacyProbeBelongsTo` already gives one layout
-   * over, where a body naming no region belongs to ANY region (issue
-   * [#2550](https://github.com/go-to-k/cdkd/issues/2550)): "any region" plus
-   * "read under this key" is this key's region. It is also strictly better than
-   * what absence used to reach, which was `ctx.baseRegion` at the destroy —
-   * the CLI's region, which need not be the key's at all.
-   *
-   * **`null` and `''` are NOT folded in with absent here, unlike in
-   * `legacyProbeBelongsTo`**, and the difference is the key: the legacy key
-   * names no region, so a falsy field there has to mean "any". This key names
-   * one, so nothing needs inferring and the only question left is whether the
-   * body AGREES — which `null` and `''` do not. They are also two of the shapes
-   * `export.ts`'s nested-child refusal keys on, and folding them in would drop
-   * that refusal silently.
-   *
-   * The divergent value is REPORTED to the caller rather than only logged
-   * because one caller refuses on it: `walkCdkdStateStackTree` (`export.ts`)
-   * fails a nested child whose recorded region is not its parent's, and
-   * normalizing the state without reporting would have made that refusal
-   * unreachable rather than fixed.
-   */
-  private adoptKeyRegion(
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  adoptKeyRegion(
     state: StackState,
     region: string,
     shownStackName: string,
     shownRegionName: string
   ): { state: StackState; divergentBodyRegion?: unknown } {
-    const raw = (state as { region?: unknown }).region;
-    // The overwhelmingly common case: every record cdkd wrote. Returned as-is
-    // so the healthy path allocates nothing.
-    //
-    // STRICT equality, deliberately: `'US-EAST-1'` or `' us-east-1'` against a
-    // key of `us-east-1` is reported as a divergence, which on the destroy
-    // means a refusal over a record that is arguably fine. Accepted, and
-    // narrower than it looks — `saveState` writes the key's spelling verbatim,
-    // so no cdkd-written record can hold either — and the alternative is worse:
-    // a folding comparand here would have to agree with every consumer of the
-    // value, and `getStateKey` does not fold. `confirmDeleteTargetIdentity`
-    // folds because it compares two AWS-supplied regions, not a record against
-    // its own key.
-    if (raw === region) return { state };
-    if (raw === undefined) {
-      return { state: { ...state, ...stackInstanceIdCarriedFrom(state), region } };
-    }
-
-    // The VALUE is withheld from this warn, which prints at default verbosity.
-    // It is body content, and a region a record supplies is precisely the
-    // misdirection channel #3328 is about: a line reading
-    // `body region 'eu-west-1'` hands the operator a region to re-run a
-    // destructive command against. What is safe is its KIND — a bounded token,
-    // one of ten — which is the same judgement `probeLegacyState` reaches one
-    // branch over, for the reason its comment gives (it spells its own, pinned
-    // verbatim by a unit case; `describeRegionValueKind`'s doc says why the two
-    // are not collapsed).
-    const kind = describeRegionValueKind(raw);
-    this.logger.warn(
-      `State record for stack ${shownStackName} carries a 'region' of its own (${kind}) that ` +
-        `is not the region of the S3 key it was read from (${shownRegionName}). cdkd stamps ` +
-        `the key's region into every record it writes, so this record was not written by cdkd. ` +
-        `Continuing against ${shownRegionName} — the key is authoritative. Re-run with ` +
-        `--verbose to see the recorded value, where it has one to show.`
-    );
-    // Sanitized even at debug, for the reason `tryGetLegacy`'s sibling gives:
-    // debug is quieter than warn, not a different terminal. CAPPED as well: a
-    // planted `region` is unvalidated body content of any length, and an
-    // uncapped one floods the stream it is meant to explain.
-    //
-    // The EMPTY answer is spelled out rather than shown as `''` or
-    // `<unrenderable>`, because `displaySafe` maps BOTH `null` and `''` to the
-    // empty string — the two shapes the warn above singles out by kind — and a
-    // debug line that adds nothing for them would make the warn's
-    // "--verbose to see it" a false promise. The KIND is the whole answer for
-    // those two, and this says so instead of implying a value was withheld.
-    //
-    // A non-empty region renders through `displayIdent`, which carries its own
-    // cap and cut marker and a boundary of its own, never inside cdkd's quotes
-    // (go-to-k/cdkd#3617).
-    this.logger.debug(
-      `State record for stack ${shownStackName} carries body region ` +
-        (displaySafe(raw, { asciiOnly: true }) === ''
-          ? `${kind}, which renders as nothing — its kind above is the whole of it.`
-          : `${displayIdent(raw)}.`)
-    );
-    return {
-      state: { ...state, ...stackInstanceIdCarriedFrom(state), region },
-      divergentBodyRegion: raw,
-    };
+    return adoptKeyRegion.call(this, state, region, shownStackName, shownRegionName);
   }
 
-  /**
-   * Read the legacy key and classify what is there — {@link LegacyStateProbe}
-   * says what each answer means and which consumer acts on it.
-   */
-  private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: this.getLegacyStateKey(stackName),
-        })
-      );
-      if (!response.Body) {
-        this.logger.debug(
-          `Legacy state probe for ${this.displayName(stackName)}: response carried no body`
-        );
-        return { kind: 'unreadable', reason: 'the response carried no body' };
-      }
-      const bodyString = await response.Body.transformToString();
-      const state = JSON.parse(bodyString) as Partial<StackState>;
-      // Mirror `tryGetLegacy`'s gate — `if (state.region && state.region !==
-      // region)` — clause for clause, because the delete side has to accept
-      // exactly the records the read side hands out:
-      //
-      //   falsy (undefined / null / '')   gate passes  -> readable from ANY region
-      //   truthy string                   gate compares
-      //   truthy NON-string (123, [...])  gate refuses from EVERY region
-      //
-      // A `typeof === 'string'` test is not enough for the last one: it sorts
-      // a mangled `"region": 123` in with the region-less bodies, so the sweep
-      // would delete a record `getState` will not even read. That is issue
-      // #2550's read/delete asymmetry again, pointing the other way. `''` is
-      // the same trap mirrored: a string, but falsy, so the read accepts it
-      // from anywhere while an equality test would refuse to sweep it.
-      const raw = (state as { region?: unknown }).region;
-      if (!raw) return { kind: 'no-region' };
-      if (typeof raw !== 'string') {
-        // `typeof` only — never the value, which is body content. It is a
-        // bounded token (one of seven), so it is safe in `reason` too and
-        // tells the operator whether the field is a number, an array or an
-        // object without showing them any of it.
-        this.logger.debug(
-          `Legacy state probe for ${this.displayName(stackName)}: ` +
-            `'region' is ${typeof raw}, not a string`
-        );
-        return { kind: 'unreadable', reason: `its 'region' field is ${typeof raw}, not a string` };
-      }
-      return { kind: 'region', region: raw };
-    } catch (error) {
-      if (isNoSuchKey(error)) return { kind: 'absent' };
-      // Don't fail the whole list on a single bad legacy file — log & skip.
-      // `reason` is a BOUNDED value — an error class name, never a message.
-      //
-      // `describeAwsFailure().summary` is not safe here: it withholds AWS's
-      // own wording only for AWS-AUTHORED failures, and returns `error.message`
-      // verbatim for anything else. The failure that matters is `JSON.parse`
-      // on the body, whose V8 `SyntaxError` embeds ~30 characters OF THAT BODY
-      // in its message — so a principal able to write the state bucket could
-      // put terminal escapes, or a neighbouring plaintext property value, into
-      // a default-verbosity warn. A class name cannot carry either.
-      const { detail } = describeAwsFailure(error);
-      // Sanitized, unlike the usual detail-at-debug site: debug is quieter
-      // than warn, not a different terminal. (The `try` above spans
-      // `s3Client.send`, so this `detail` is AWS's own wording as well as a
-      // parse snippet -- an earlier revision claimed only the latter.)
-      this.logger.debug(
-        `Could not read legacy state region for ${this.displayName(stackName)}: ` +
-          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
-      );
-      const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
-      return { kind: 'unreadable', reason: displaySafe(cls, { asciiOnly: true }) || UNRENDERABLE };
-    }
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
+    return probeLegacyState.call(this, stackName);
   }
 
-  /**
-   * The region a legacy record should be listed under, or `undefined` when it
-   * names none / could not be read. Preserves `listStacks`'s behaviour across
-   * the {@link probeLegacyState} split.
-   */
-  private async readLegacyRegion(stackName: string): Promise<string | undefined> {
-    const probe = await this.probeLegacyState(stackName);
-    return probe.kind === 'region' ? probe.region : undefined;
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  readLegacyRegion(stackName: string): Promise<string | undefined> {
+    return readLegacyRegion.call(this, stackName);
   }
 
-  /**
-   * Whether an operation targeting `region` owns the legacy record — the
-   * DELETE-side counterpart of `tryGetLegacy`'s read gate, and issue #2550.
-   *
-   * The two must agree. `tryGetLegacy` accepts a body that names NO region
-   * from any region (`if (state.region && state.region !== region)` is false
-   * when the field is absent), so `cdkd destroy` reads such a record, deletes
-   * the AWS resources, and finishes. The old equality test here answered
-   * `undefined === 'us-east-1'` — false — so the record survived a successful
-   * destroy, kept appearing in `cdkd state list`, and the next deploy of that
-   * name planned updates against resources that were gone.
-   *
-   * `unreadable` is deliberately NOT treated as `no-region`: a 403, a 503 or a
-   * malformed body says nothing about who owns the record, and a read that
-   * failed must never authorise a delete. It collapsed into the same
-   * `undefined` as the other two before, which is why the one-line fix — make
-   * `undefined` match — was wrong: it would also have made `stateExists`
-   * report state for a stack that has none, since `absent` reads the same way.
-   */
-  private async legacyBelongsToRegion(stackName: string, region: string): Promise<boolean> {
-    return legacyProbeBelongsTo(await this.probeLegacyState(stackName), region);
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  legacyBelongsToRegion(stackName: string, region: string): Promise<boolean> {
+    return legacyBelongsToRegion.call(this, stackName, region);
   }
 
-  /**
-   * Try to read the legacy `version: 1` state. Returns null when the legacy
-   * key is missing or its embedded region does not match the caller's region.
-   */
-  private async tryGetLegacy(
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  tryGetLegacy(
     stackName: string,
     region: string
   ): Promise<{ state: StackState; etag: string } | null> {
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: this.getLegacyStateKey(stackName),
-        })
-      );
-
-      if (!response.Body || !response.ETag) {
-        return null;
-      }
-
-      const bodyString = await response.Body.transformToString();
-      const state = this.parseStateBody(bodyString, stackName);
-
-      // Region gate: the same `stackName` may have lived in a different region
-      // before the user changed `env.region`. We do NOT want to silently load
-      // that record for a different target region — that's the silent-failure
-      // bug PR 1 fixes.
-      if (state.region && state.region !== region) {
-        // Guarded like the sibling in `probeLegacyState`, and for the reason
-        // that one gives: debug is quieter than warn, not a different terminal.
-        // `state.region` here is state-BODY content, not just a key segment.
-        this.logger.debug(
-          `Legacy state for stack ${this.displayName(stackName)} has region ` +
-            `${displayIdent(state.region)}, not ${displayIdent(region)} — skipping legacy fallback.`
-        );
-        return null;
-      }
-
-      // The gate above SHORT-CIRCUITS on a falsy region, so `''` / `0` / `false`
-      // reach here as a DEFINED `state.region` that names no region at all — and
-      // that field is what `destroy-runner.ts` locks, saves and deletes against
-      // (`state.region ?? ctx.baseRegion`, which `''` is not nullish enough to
-      // escape). A `""` built the key `cdkd/<stack>//state.json` and a `0` built
-      // `cdkd/<stack>/0/state.json`, neither of which `listStacks` can see
-      // afterwards — the same two failures `adoptKeyRegion` replaces one branch
-      // over, arriving by the path it deliberately does not touch (go-to-k/cdkd#3328,
-      // review round 1).
-      //
-      // The repair is to DROP the field rather than adopt the caller's region:
-      // the legacy key names no region, so `undefined` is the honest value, and
-      // it is what the gate above already decided this record means (it accepted
-      // it from ANY region, which is `legacyProbeBelongsTo`'s `no-region` —
-      // go-to-k/cdkd#2550). Every consumer's `?? baseRegion` then reaches its
-      // fallback, which is the pre-v2 behaviour for a record that predates the
-      // region-scoped layout. Adopting `region` instead would arm
-      // `DeleteContext.expectedRegion` for a population
-      // `cloud-control-provider.ts`'s `confirmDeleteTargetIdentity` documents as
-      // arriving WITHOUT one.
-      const legacyRegion = (state as { region?: unknown }).region;
-      // ABSENT is the common legacy record and needs no rewrite — returned by
-      // identity so the ordinary path allocates nothing.
-      if (legacyRegion !== undefined && (typeof legacyRegion !== 'string' || legacyRegion === '')) {
-        this.logger.debug(
-          `Legacy state for stack ${this.displayName(stackName)} names no usable region ` +
-            `(${describeRegionValueKind(legacyRegion)}); reading it as region-less.`
-        );
-        // `region` is OPTIONAL on `StackState`, so the rest object is already
-        // assignable — no cast.
-        const { region: _dropped, ...withoutRegion } = state;
-        return { state: withoutRegion, etag: response.ETag };
-      }
-
-      return { state, etag: response.ETag };
-    } catch (error) {
-      if (isNoSuchKey(error)) return null;
-      // Same guard as the new-key path above, and reachable from the same
-      // command: `getState` falls back here, so a `state show` on a legacy
-      // record takes this refusal (issue #3003).
-      throw this.wrapS3Failure(
-        error,
-        (text) =>
-          new StateError(
-            `Failed to get legacy state for stack ${this.displayName(stackName)}: ${text}`,
-            error instanceof Error ? error : undefined
-          )
-      );
-    }
+    return tryGetLegacy.call(this, stackName, region);
   }
 
-  /**
-   * Parse a state body and validate the schema version. Future-proofs against
-   * a binary that predates schema version `N` reading a `version: N+1` blob:
-   * the old binary would otherwise treat unknown fields as defaults and
-   * silently lose data on the next save.
-   */
-  private parseStateBody(bodyString: string, stackName: string): StackState {
-    let root: unknown;
-    try {
-      root = JSON.parse(bodyString);
-    } catch (error) {
-      // V8's `SyntaxError` quotes a window of the offending INPUT, and before
-      // `cdkd scrub` this body holds plaintext property and output values, so
-      // the message names only the failure's offset and size (issue #5247;
-      // `describeJsonParseFailure` owns the rule). V8's full text goes to
-      // `debug` only, ASCII-allowlisted as `probeLegacyState` does its own
-      // (issue #3003: the body is writable by anyone with `s3:PutObject`, and
-      // an unsanitized newline forges a line).
-      this.logger.debug(
-        safeMsg`State file for stack ${this.displayName(stackName)} failed to parse: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
-      );
-      // `docs/troubleshooting-locks-state.md` quotes this message, and
-      // `scripts/check-docs-error-strings.ts` fails when it can no longer
-      // derive it from here: the checker is the authority, and it runs in CI.
-      //
-      // NO `cause`, deliberately (issue #5247): the `SyntaxError` carries the
-      // same body window, and `formatError` prints a cause on its `Caused by:`
-      // line while the CLI's last-resort handler inspects the whole chain. No
-      // reader keys on this cause -- `getState` rethrows a `StateError`
-      // unchanged, and the retry classifiers and `extractDeploymentEventError`
-      // look for AWS markers a `SyntaxError` never carries -- and a snippet-free
-      // wrapper would only print this message's own detail a second time.
-      throw new StateError(
-        `State file for stack ${this.displayName(stackName)} is not valid JSON: ` +
-          `${describeJsonParseFailure(error, utf8ByteLength(bodyString))}`
-      );
-    }
-
-    // Past the parse, a non-object ROOT is the one SHAPE refused here (issue
-    // #2947; the schema-version check below is a value check). A body that
-    // parses to `null`, an array or a primitive is usable by no consumer:
-    // `null` threw a raw `TypeError` at the `.version` read below, and the
-    // others passed it and reached every consumer as a record. Everything
-    // INSIDE a well-formed root is deliberately NOT validated at this boundary:
-    // this is the read path for deploy, destroy, rollback and the recovery
-    // commands (`state orphan`, `state destroy`), so a refusal here would make
-    // a broken record unreadable by every one of them AT ONCE, including the
-    // two whose job is to clean it up — and plain `cdkd state show --json`
-    // reads such a record today. That is an argument about what stays
-    // FIXABLE, not a claim about what works now: `state orphan` and
-    // `state destroy` still abort on a `null` resources bag at their own
-    // dereference, which is issue go-to-k/cdkd#3018's class, and each is one
-    // guard away precisely because the boundary let the record through.
-    // Normalising one here would be worse than either, though NOT for the
-    // reason it is tempting to give: the deploy path's `previousState` lookup
-    // already reads a `null` entry exactly as it reads an absent one (a
-    // truthiness test), so dropping the entry changes nothing at that lookup.
-    // What it changes is a consumer that enumerates KEYS — the destroy count,
-    // `state orphan`'s `id in resources` — for which a `null` entry keeps the
-    // logical id visible (nameable to a command, even though `state orphan`,
-    // like the diff, still refuses the entry at its own dereference today —
-    // go-to-k/cdkd#3018 again) while a dropped one erases it from the record
-    // silently. Inner shapes are tolerated where they are dereferenced instead.
-    if (root === null || typeof root !== 'object' || Array.isArray(root)) {
-      const got = root === null ? 'null' : Array.isArray(root) ? 'an array' : `a ${typeof root}`;
-      throw new StateError(
-        `State file for stack ${this.displayName(stackName)} is not a JSON object (it parses to ${got}), ` +
-          `so cdkd cannot read it as a state record.`
-      );
-    }
-    const parsed = root as StackState;
-
-    const v = parsed.version;
-    if (v !== undefined && !STATE_SCHEMA_VERSIONS_READABLE.includes(v)) {
-      // `displaySafe` rather than `String(v)`: the value is an unchecked cast, so
-      // a string one reached the terminal verbatim (issue #3003) and one whose
-      // coercion throws — an object whose `toString` is not callable — made the
-      // refusal itself throw a `TypeError` (issue #2947); `displaySafe` absorbs
-      // both. `null` is mapped to its word FIRST, because `displaySafe` renders
-      // an absent value empty, and the refusal would then say the `UNRENDERABLE`
-      // stand-in instead of the one precise word it has. The REFUSAL is
-      // unchanged: `includes` compares with SameValueZero, so no value is
-      // coerced to reach it.
-      const vShown: unknown = v;
-      const shown =
-        displaySafe(vShown === null ? 'null' : vShown, { asciiOnly: true }) || UNRENDERABLE;
-      throw new StateError(
-        `Unsupported state schema version ${shown} for stack ${this.displayName(stackName)}. ` +
-          `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +
-          `Upgrade cdkd to a version that supports schema ${shown}.`
-      );
-    }
-
-    return parsed;
+  /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
+  parseStateBody(bodyString: string, stackName: string): StackState {
+    return parseStateBody.call(this, bodyString, stackName);
   }
-}
-
-/**
- * Treat S3 NoSuchKey-equivalents uniformly. The SDK throws `NoSuchKey` from
- * `GetObject` and `{name: 'NoSuchKey'}` from low-level callsites; HeadObject
- * raises `{name: 'NotFound'}` instead.
- */
-/**
- * A resource a destroy kept that a later create of the same stack, under the
- * same prefix, may take back by its cdkd-generated name (go-to-k/cdkd#4705).
- */
-export interface RetainedResource {
-  logicalId: string;
-  resourceType: string;
-  physicalId: string;
-  /**
-   * When this stack let the resource go (epoch ms): S3's clock, the write
-   * that recorded it -- or, when that read-back failed, this machine's clock
-   * at the write. A holder created after it is not the resource that was kept
-   * (go-to-k/cdkd#4705 review D-2). cdkd always writes one; an entry without
-   * one (only a hand edit makes one) is trusted by name alone.
-   */
-  keptAt?: number;
-}
-
-/** The entries of a `retained.json` body, or `undefined` when it is not one. */
-export function parseRetainedResources(body: string): RetainedResource[] | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const doc = value as { retainedVersion?: unknown; resources?: unknown };
-  if (doc.retainedVersion !== 1 || !Array.isArray(doc.resources)) return undefined;
-  const out: RetainedResource[] = [];
-  for (const entry of doc.resources) {
-    const e = entry as Partial<RetainedResource> | null;
-    if (
-      typeof e?.logicalId === 'string' &&
-      typeof e.resourceType === 'string' &&
-      typeof e.physicalId === 'string' &&
-      e.physicalId !== ''
-    ) {
-      out.push({
-        logicalId: e.logicalId,
-        resourceType: e.resourceType,
-        physicalId: e.physicalId,
-        ...(typeof e.keptAt === 'number' && Number.isFinite(e.keptAt) && { keptAt: e.keptAt }),
-      });
-    }
-  }
-  return out;
-}
-
-/** The bucket-root segment registry markers live under (go-to-k/cdkd#4705). */
-export const REGISTRY_ROOT = '_cdkd-registry';
-
-/**
- * The state prefix a registry marker body names, or `undefined` when it is
- * not `{ "prefix": <string> }` with a prefix cdkd could have written: at most
- * 1024 characters, no control character, no `<` or `>` (the placeholder
- * `parseStatePrefix` refuses). Validated before it is used as a key or shown.
- */
-export function registryMarkerPrefix(body: string | undefined): string | undefined {
-  if (body === undefined) return undefined;
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const prefix = (value as { prefix?: unknown }).prefix;
-  if (typeof prefix !== 'string' || prefix.length > 1024) return undefined;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f<>]/.test(prefix)) return undefined;
-  return prefix;
-}
-
-/** S3's 409 ConditionalRequestConflict: a conflicting write is in flight. */
-function isConditionalConflict(error: unknown): boolean {
-  const name = (error as { name?: string } | null)?.name;
-  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
-    ?.httpStatusCode;
-  return name === 'ConditionalRequestConflict' || (status === 409 && name !== 'PreconditionFailed');
-}
-
-/** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
-function isConditionFailure(error: unknown): boolean {
-  const name = (error as { name?: string } | null)?.name;
-  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
-    ?.httpStatusCode;
-  return (
-    name === 'PreconditionFailed' ||
-    name === 'ConditionalRequestConflict' ||
-    status === 412 ||
-    status === 409
-  );
-}
-
-function isNoSuchKey(error: unknown): boolean {
-  if (error instanceof NoSuchKey) return true;
-  const name = (error as { name?: string } | null)?.name;
-  return name === 'NoSuchKey';
-}
-
-/**
- * go-to-k/cdkd#4402: record, on `older` (the nearest older segment that stays),
- * the logical ids whose earlier failed attempts `removed` superseded — its
- * completed ops' ids and any it carried itself. A completed op supersedes the
- * earlier attempts of its id because it RECORDED the resource, whether or not
- * the removal follows its revert (a clean rollback's settle, `cdkd rollback`,
- * a settled nested segment) or not (an orphaned nested segment discarded);
- * without this, removing it — a reverted adoption above all — would let the
- * attempt it superseded count as evidence again (`priorAttemptsInJournal`).
- * No older segment: nothing to supersede.
- */
-function carrySupersededIds(
-  removed: RollbackJournalSegment,
-  older: RollbackJournalSegment | undefined
-): void {
-  if (older === undefined) return;
-  addSupersededIds(older, [
-    ...removed.operations.map((op) => op.logicalId),
-    ...(removed.supersededLogicalIds ?? []),
-  ]);
-}
-
-/** Union `ids` into `segment.supersededLogicalIds`; writes nothing for none. */
-function addSupersededIds(segment: RollbackJournalSegment, ids: readonly string[]): void {
-  const merged = new Set([...(segment.supersededLogicalIds ?? []), ...ids]);
-  if (merged.size > 0) segment.supersededLogicalIds = [...merged];
 }

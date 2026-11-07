@@ -653,7 +653,7 @@ describe('docs error-string checker: fails against real code', () => {
    */
   const MUTABLE = [
     'docs/troubleshooting.md',
-    'src/state/s3-state-backend.ts',
+    'src/state/s3-state-backend/state-record.ts',
     'src/utils/error-handler/base-errors.ts',
     'scripts/check-docs-error-strings.ts',
   ] as const;
@@ -736,7 +736,7 @@ describe('docs error-string checker: fails against real code', () => {
   it('reports a source that drifts from the page', () => {
     // The direction that matters over time: the page was right when written.
     const { code, out } = runOnCopy((root) => {
-      const p = join(root, 'src/state/s3-state-backend.ts');
+      const p = join(root, 'src/state/s3-state-backend/state-record.ts');
       const text = readFileSync(p, 'utf8');
       writeFileSync(
         p,

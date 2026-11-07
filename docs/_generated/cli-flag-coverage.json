@@ -956,7 +956,6 @@
     {
       "flag": "--prefer-sdk-route",
       "integs": [
-        "docdb-neptune",
         "nested-stack-replace-guard",
         "s3-tables",
         "sdk-to-cc-autoroute",

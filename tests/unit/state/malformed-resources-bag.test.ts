@@ -278,8 +278,52 @@ describe("the refactor family's read order (go-to-k/cdkd#5835)", () => {
   });
 });
 
+/**
+ * `cdkd rollback` is `rollback.ts` plus every module under `rollback/`
+ * (go-to-k/cdkd#5835), keyed as ONE subject, {@link ROLLBACK}, the same way as
+ * {@link REFACTOR}. Its modules are read in {@link ROLLBACK_ORDER}, the order
+ * their declarations had in the one file before the split: the label and
+ * option helpers and the region guard above `rollbackCommand`, whose replay
+ * body (`replay.ts`, holding every container and row guard above its first
+ * read and its `saveState`) ran inside it, above the plan preview it calls. A
+ * module on disk that the list does not name fails the "read order" case by
+ * name.
+ */
+const ROLLBACK = 'src/cli/commands/rollback.ts';
+const ROLLBACK_DIR = 'src/cli/commands/rollback/';
+const ROLLBACK_ORDER = [
+  'render.ts',
+  'options.ts',
+  'guards.ts',
+  'command.ts',
+  'replay.ts',
+  'preview.ts',
+] as const;
+/** The modules under `rollback/`, the directory read recursively. */
+function rollbackModules(): string[] {
+  return readdirSync(join(repoRoot, ROLLBACK_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
+
+describe("the rollback family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(rollbackModules().sort()).toEqual([...ROLLBACK_ORDER].sort());
+  });
+});
+
 /** The repo-relative files a fence subject reads: every scrub module for {@link SCRUB}. */
 function subjectFiles(relPath: string): string[] {
+  if (relPath === ROLLBACK) {
+    const files = [ROLLBACK, ...ROLLBACK_ORDER.map((name) => `${ROLLBACK_DIR}${name}`)];
+    for (const file of files) {
+      // A per-file floor, for the reason the refactor family's carries.
+      if (readFileSync(join(repoRoot, file), 'utf8').trim().length === 0) {
+        throw new Error(`${file} is empty; update ROLLBACK_ORDER`);
+      }
+    }
+    return files;
+  }
   if (relPath === REFACTOR) {
     const files = [REFACTOR, ...REFACTOR_ORDER.map((name) => `${REFACTOR_DIR}${name}`)];
     for (const file of files) {
@@ -302,11 +346,13 @@ function subjectFiles(relPath: string): string[] {
 
 /**
  * The fence subject a `git grep` path belongs to: every scrub module is
- * {@link SCRUB}, every refactor module {@link REFACTOR}.
+ * {@link SCRUB}, every refactor module {@link REFACTOR}, every rollback module
+ * {@link ROLLBACK}.
  */
 function subjectOf(file: string): string {
   if (file.startsWith(REFACTOR_DIR)) return REFACTOR;
   if (file.startsWith(DEPLOY_FLOW_DIR)) return DEPLOY_FLOW;
+  if (file.startsWith(ROLLBACK_DIR)) return ROLLBACK;
   return file.startsWith('src/cli/commands/scrub/') ? SCRUB : file;
 }
 
@@ -3306,7 +3352,7 @@ const ORPHAN_READER_FILES = [
   'src/deployment/nested-child-journal.ts',
   // go-to-k/cdkd#4600: the success deploy's foreign-holder scan reads other
   // stacks' rollback-orphan records.
-  'src/deployment/rollback-executor/journaled-orphans.ts',
+  'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts',
   // go-to-k/cdkd#5201: `cdkd refactor` reads the records to keep their ids out
   // of a rename, and rewrites their references.
   'src/cli/commands/refactor.ts',
@@ -3335,7 +3381,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // Issue #3754: the nested-child revert saves the child record with the
     // orphans its replay minted.
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
-    'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts': 'state.orphans ?? []',
     'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   const SPELLINGS = [
@@ -3704,7 +3750,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     // The merge that keys on each row's `logicalId` (issue #3754).
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     // The success deploy's scan, which dereferences each row's `state`.
-    'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts': 'state.orphans ?? []',
     // The plan's id set, which dereferences each row's `logicalId`.
     'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
@@ -7665,7 +7711,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // cache) — all five through this module, so one count covers the file.
     ['src/cli/commands/scrub.ts', 5],
     ['src/cli/commands/local-state-loader.ts', 1],
-    ['src/state/s3-state-backend.ts', 2],
+    // `listStacks`, moved out of `s3-state-backend.ts` (go-to-k/cdkd#5835).
+    ['src/state/s3-state-backend/listing.ts', 2],
     // `state show --json`'s tree key, moved from `state.ts` (go-to-k/cdkd#5835).
     ['src/cli/commands/state/show.ts', 1],
     ['src/cli/commands/state-list-tree.ts', 1],
@@ -7781,7 +7828,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         're-spelled here.) See go-to-k/cdkd#3496',
     ],
     ['src/deployment/secret-redaction/cross-stack.ts', 1, 'CROSS_STACK_KEY_SEPARATOR: see the maskedOutputKey row above'],
-    ['src/deployment/secret-redaction/positions.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
+    ['src/deployment/secret-redaction/positions/skeleton.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
     [
       'src/provisioning/providers/idempotency-token.ts',
       2,

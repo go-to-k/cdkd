@@ -9,10 +9,8 @@
 # Never add a line here; split the file instead.
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/rollback.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/execute.ts
-src/deployment/deploy-engine/masking.ts
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/replacement.ts
 src/deployment/deploy-engine/rollback.ts
@@ -21,12 +19,8 @@ src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/rollback-executor.ts
-src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
 src/deployment/rollback-executor/replay-reverse-replacement.ts
-src/deployment/secret-redaction/positions.ts
-src/deployment/secret-redaction/redact-state.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/state/s3-state-backend.ts
 src/types/state.ts

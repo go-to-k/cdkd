@@ -10,6 +10,11 @@
 # delete-first fallback then destroys EVERY resource in the child stack. The
 # deploy must instead refuse before anything is touched.
 #
+# Phase 0: (issue #3866, go-to-k/cdkd#6012) add NotificationARNs, an
+#          SDK-unwired property of a type that cannot fall back to Cloud
+#          Control, and deploy WITHOUT --prefer-sdk-route on a fresh stack;
+#          assert the pre-flight refusal wording, a non-zero exit, and that
+#          nothing was provisioned (no state file, no child parameter).
 # Phase 1: deploy; record the child parameter's LastModifiedDate.
 # Phase 2: add StackName, deploy with the drop accepted AND `--replace`;
 #          assert the property-driven stateful refusal, a non-zero exit, and
@@ -84,6 +89,58 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
+
+# --- Phase 0: an SDK-unwired property is refused pre-flight -----------------
+# The refusal on a type Cloud Control cannot serve (issue #3866) has no live
+# subject on a NON_PROVISIONABLE type today (go-to-k/cdkd#6012; the unit test
+# non-provisionable-cc-route-refusal-3866.test.ts pins that reason arm). The
+# nested stack reaches the same refusal through NestedStackProvider's
+# disableCcApiFallback. It runs before Phase 1 so "nothing provisioned" is a
+# plain absence: the pre-run cleanup left no state behind.
+echo "==> Phase 0: add NotificationARNs, deploy without --prefer-sdk-route; must refuse pre-flight"
+for KEY in "${STATE_KEY}" "${CHILD_STATE_KEY}"; do
+  assert_gone "state file ${KEY} exists before Phase 0 (the pre-run cleanup did not remove it)" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KEY}"
+done
+assert_gone "child parameter ${PARAM} exists before Phase 0 (the pre-run cleanup did not remove it)" \
+  aws ssm get-parameter --name "${PARAM}" --region "${REGION}"
+set +e
+REFUSAL_OUT=$(CDKD_TEST_UPDATE=notificationarns node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+REFUSAL_RC=$?
+set -e
+REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+echo "${REFUSAL_PLAIN}"
+if [ "${REFUSAL_RC}" = "0" ]; then
+  echo "FAIL: Phase 0 deploy exited 0; NotificationARNs on AWS::CloudFormation::Stack must be refused" >&2
+  exit 1
+fi
+# The pre-flight check prefixes the refusal with the logical id (`Child: `).
+# The same refusal raised later by getProviderFor at create time would reach
+# the output through provision.ts's `Failed to create <id>: <message>` wrapper,
+# which these needles also match, so that wrapper's line is ruled out below.
+if grep -qF -- 'Failed to create Child:' <<<"${REFUSAL_PLAIN}"; then
+  echo "FAIL: Phase 0 refused at create time (provision.ts 'Failed to create Child:'), not pre-flight" >&2
+  exit 1
+fi
+for NEEDLE in \
+  'Child: AWS::CloudFormation::Stack uses properties' \
+  'cannot fall back to Cloud Control API' \
+  '(disableCcApiFallback)' \
+  '- NotificationARNs: ' \
+  '--prefer-sdk-route AWS::CloudFormation::Stack:NotificationARNs'; do
+  if ! grep -qF -- "${NEEDLE}" <<<"${REFUSAL_PLAIN}"; then
+    echo "FAIL: Phase 0 output lacks the pre-flight refusal wording: '${NEEDLE}'" >&2
+    exit 1
+  fi
+done
+for KEY in "${STATE_KEY}" "${CHILD_STATE_KEY}"; do
+  assert_gone "Phase 0 left a state file at ${KEY}; the refusal must precede provisioning" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KEY}"
+done
+assert_gone "Phase 0 created the child parameter ${PARAM}; the refusal must precede provisioning" \
+  aws ssm get-parameter --name "${PARAM}" --region "${REGION}"
+echo "    OK: refused pre-flight with rc=${REFUSAL_RC}, nothing provisioned"
 
 # --- Phase 1: baseline ------------------------------------------------------
 echo "==> Phase 1: deploy (no StackName)"
@@ -172,4 +229,4 @@ assert_gone "child state file ${CHILD_STATE_KEY} still exists after destroy" \
 echo "    OK: parameter and both state files gone"
 
 trap - EXIT INT TERM
-echo "[verify] PASS — nested-stack replacement refused without --force-stateful-recreation"
+echo "[verify] PASS — SDK-unwired property refused pre-flight; nested-stack replacement refused without --force-stateful-recreation"

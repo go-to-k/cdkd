@@ -44,6 +44,7 @@ import {
 } from '../../../local/docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from '../../../local/ecr-puller.js';
 import { invokeRie, waitForRieReady } from '../../../local/rie-client.js';
+import { resolveRieWrap } from '../../../local/rie-mount.js';
 import { singleFlight } from '../../../utils/single-flight.js';
 import {
   writeProfileCredentialsFile,
@@ -843,9 +844,9 @@ export async function resolveContainerImagePlan(
   // PR 6 (#232): container Lambdas reject `Layers` at deploy time on
   // the AWS side — layers are baked into the image at build time, not
   // overlaid at runtime. The lambda-resolver normalizes `lambda.layers`
-  // to `[]` for the IMAGE branch, so `extraMounts` is always empty here
+  // to `[]` for the IMAGE branch, so `extraMounts` never carries `/opt` here
   // (matches AWS's invoke-time behavior of silently ignoring layers on
-  // container Lambdas).
+  // container Lambdas); its only entry is the RIE mount below.
   //
   // Issue #440 — `EphemeralStorage.Size` is honored uniformly across
   // ZIP and IMAGE Lambdas. `--tmpfs /tmp:size=Nm` overlays on top of
@@ -853,13 +854,26 @@ export async function resolveContainerImagePlan(
   // there's no shape-divergence to gate on the `kind` discriminator.
   const tmpfs = resolveTmpfsForLambda(lambda);
 
+  // Issue #6018: run the image under a mounted Lambda RIE so an image on a
+  // non-AWS base (no emulator of its own) still answers the invoke endpoint.
+  // `undefined` keeps the pre-#6018 shape (already an RIE, or no binary).
+  const rie = await resolveRieWrap({
+    image: imageRef,
+    platform,
+    entryPoint: lambda.imageConfig.entryPoint,
+    command: lambda.imageConfig.command,
+    skipPull: options.pull === false,
+  });
+
   return {
     image: imageRef,
     mounts: [],
-    extraMounts: [],
-    cmd: lambda.imageConfig.command ?? [],
+    extraMounts: rie ? [rie.mount] : [],
+    cmd: rie ? rie.cmd : (lambda.imageConfig.command ?? []),
     platform,
-    ...(lambda.imageConfig.entryPoint &&
+    ...(rie && { entryPoint: rie.entryPoint }),
+    ...(!rie &&
+      lambda.imageConfig.entryPoint &&
       lambda.imageConfig.entryPoint.length > 0 && {
         entryPoint: lambda.imageConfig.entryPoint,
       }),

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   parseEcrUriMock: vi.fn(),
   loadManifestMock: vi.fn(),
   getDockerImageBySourceHashMock: vi.fn(),
+  resolveRieWrapMock: vi.fn(),
 }));
 const {
   buildContainerImageMock,
@@ -22,6 +23,7 @@ const {
   parseEcrUriMock,
   loadManifestMock,
   getDockerImageBySourceHashMock,
+  resolveRieWrapMock,
 } = mocks;
 
 vi.mock('../../../src/local/docker-image-builder.js', () => ({
@@ -31,6 +33,9 @@ vi.mock('../../../src/local/docker-image-builder.js', () => ({
 vi.mock('../../../src/local/ecr-puller.js', () => ({
   pullEcrImage: mocks.pullEcrImageMock,
   parseEcrUri: mocks.parseEcrUriMock,
+}));
+vi.mock('../../../src/local/rie-mount.js', () => ({
+  resolveRieWrap: mocks.resolveRieWrapMock,
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   AssetManifestLoader: vi.fn().mockImplementation(() => ({
@@ -70,6 +75,8 @@ describe('resolveContainerImagePlan', () => {
     loadManifestMock.mockReset();
     getDockerImageBySourceHashMock.mockReset();
     architectureToPlatformMock.mockReturnValue('linux/amd64');
+    resolveRieWrapMock.mockReset();
+    resolveRieWrapMock.mockResolvedValue(undefined);
   });
 
   it('asset hit returns kind=local-build (image is the locally-built tag)', async () => {
@@ -179,6 +186,45 @@ describe('resolveContainerImagePlan', () => {
 
     expect(plan.cmd).toEqual(['handler']);
     expect(plan.entryPoint).toEqual(['custom-ep', 'tail-arg']);
+    expect(plan.workingDir).toBe('/var/custom');
+  });
+
+  it('runs the image under the mounted RIE when one resolves (#6018)', async () => {
+    loadManifestMock.mockResolvedValue({ dockerImages: { abc: {} } });
+    getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc', asset: {} });
+    buildContainerImageMock.mockResolvedValue('local:abc');
+    const mount = {
+      hostPath: '/cache/lambda-rie/linux-amd64/aws-lambda-rie',
+      containerPath: '/var/rapid/aws-lambda-rie',
+      readOnly: true as const,
+    };
+    resolveRieWrapMock.mockResolvedValue({
+      mount,
+      entryPoint: ['/var/rapid/aws-lambda-rie'],
+      cmd: ['custom-ep', 'tail-arg', 'handler'],
+    });
+
+    const plan = await resolveContainerImagePlan(
+      makeImageLambda({
+        imageConfig: {
+          command: ['handler'],
+          entryPoint: ['custom-ep', 'tail-arg'],
+          workingDirectory: '/var/custom',
+        },
+      }),
+      { pull: false } as Parameters<typeof resolveContainerImagePlan>[1]
+    );
+
+    expect(resolveRieWrapMock).toHaveBeenCalledWith({
+      image: 'local:abc',
+      platform: 'linux/amd64',
+      entryPoint: ['custom-ep', 'tail-arg'],
+      command: ['handler'],
+      skipPull: true,
+    });
+    expect(plan.entryPoint).toEqual(['/var/rapid/aws-lambda-rie']);
+    expect(plan.cmd).toEqual(['custom-ep', 'tail-arg', 'handler']);
+    expect(plan.extraMounts).toEqual([mount]);
     expect(plan.workingDir).toBe('/var/custom');
   });
 

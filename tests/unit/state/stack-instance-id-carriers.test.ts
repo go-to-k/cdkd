@@ -340,14 +340,18 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
       'src/deployment/deploy-engine/execute.ts',
       'src/deployment/nested-child-journal.ts',
       'src/cli/commands/import/stack-state.ts',
-      'src/cli/commands/rollback.ts',
+      // Moved with the rollback split (go-to-k/cdkd#5835).
+      'src/cli/commands/rollback/replay.ts',
       'src/cli/commands/drift/accept.ts',
       'src/cli/commands/drift/revert.ts',
       'src/cli/commands/scrub/nested.ts',
       'src/cli/commands/scrub/stack-rewrite.ts',
       'src/cli/commands/destroy-runner.ts',
       'src/analyzer/orphan-rewriter/rewrite.ts',
-      'src/state/s3-state-backend.ts',
+      // `saveState` and `adoptKeyRegion`, moved out of `s3-state-backend.ts`
+      // (go-to-k/cdkd#5835).
+      'src/state/s3-state-backend/state-record.ts',
+      'src/state/s3-state-backend/legacy.ts',
     ]) {
       expect(files).toContain(file);
     }

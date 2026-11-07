@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { setStdinIsTty } from '../../../stdin-tty.js';
 import type { StackState } from '../../../../src/types/state.js';
 
@@ -194,6 +194,31 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
 const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 
 /**
+ * `cdkd rollback`'s source: `rollback.ts` plus every module under `rollback/`
+ * (go-to-k/cdkd#5835), read recursively, with the import and re-export
+ * statements the split added removed, so a reference total still counts uses
+ * and declarations rather than the modules' wiring. Order-free: the fences
+ * below count and match; none reads an order.
+ */
+function rollbackFamilySource(): string {
+  const entry = new URL('../../../../src/cli/commands/rollback.ts', import.meta.url);
+  const dir = new URL('../../../../src/cli/commands/rollback/', import.meta.url);
+  const modules = readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => new URL(name.split('\\').join('/'), dir));
+  // Floor: a derivation that lost the directory would read the entry alone.
+  expect(modules.length).toBeGreaterThan(2);
+  return [entry, ...modules]
+    .map((file) => {
+      const text = readFileSync(file, 'utf8');
+      // Per-file floor: a module read as nothing cannot pass for one read.
+      expect(text.trim().length, String(file)).toBeGreaterThan(0);
+      return text.replace(/^(?:import|export) (?:type )?\{[^}]*\} from '[^']+';$/gm, '');
+    })
+    .join('\n');
+}
+
+/**
  * `safeStack` renders in `src/cli/commands/rollback.ts`: every place a cdkd
  * state-record STACK NAME reaches a message. A LITERAL, not a number derived
  * from the file it guards -- a population computed from the subject cannot
@@ -288,7 +313,12 @@ const EXPECTED_STACK_NAME_RENDERS = 5;
 //
 // 49 -> 50 (go-to-k/cdkd#2631): the plan label for a replacement whose old
 // delete was not confirmed renders the op's logical id, as its siblings do.
-const EXPECTED_SAFE_REFERENCES = 50;
+//
+// 50 -> 49 with no render change (go-to-k/cdkd#5835): the one-file count also
+// matched the `'../../utils/display-safe.js'` import path, and the split's
+// family read drops import statements (`rollbackFamilySource`), so that
+// non-reference no longer counts. Every `safe` reference is where it was.
+const EXPECTED_SAFE_REFERENCES = 49;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of
@@ -2485,10 +2515,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     // The working shape counts BARE references against an EXACT total. An alias
     // or an object property is still a reference and still counts, so every
     // evasion above moves the number instead of slipping past a pattern.
-    const src = readFileSync(
-      new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
-      'utf8'
-    );
+    const src = rollbackFamilySource();
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
     // Prove the scan SAW its input first: a stripper that ate the code as well
@@ -2561,10 +2588,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     // journal field that escaped the predicate. The `previewState[op.logicalId]`
     // LOOKUPS are bracket access, not `${...}`, so they are not matched -- and
     // must not be.
-    const src = readFileSync(
-      new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
-      'utf8'
-    );
+    const src = rollbackFamilySource();
     const bare = src.match(/\$\{(?:op|fop)\.(?:logicalId|resourceType|changeType)\}/g) ?? [];
 
     expect(bare).toEqual([]);

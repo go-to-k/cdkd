@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -69,7 +69,10 @@ const sites: LockSite[] = [
     acquire: '.acquireLockWithRetry(',
   },
   {
-    file: 'src/cli/commands/rollback.ts',
+    // `rollback.ts` is split into `rollback/` (go-to-k/cdkd#5835); the
+    // lock-taking replay is `rollback/replay.ts`, and the family case below
+    // pins that no other module of the family takes the lock.
+    file: 'src/cli/commands/rollback/replay.ts',
     label: 'rollback',
     handler: 'sigintHandler',
     acquire: '.acquireLockWithRetry(',
@@ -151,6 +154,28 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
           `add the new site to \`sites\` (with its own SIGINT handler)`
       ).toBe(expected);
     }
+  });
+
+  it('the rollback family takes the lock only at its pinned site (go-to-k/cdkd#5835)', () => {
+    // The per-file count above reads only the module holding the pinned site,
+    // so an acquire added to any other module of the split command would
+    // inherit no pin. Read the entry and every module under `rollback/`,
+    // recursively.
+    const dir = 'src/cli/commands/rollback';
+    const family = [
+      'src/cli/commands/rollback.ts',
+      ...readdirSync(join(repoRoot, dir), { recursive: true, encoding: 'utf8' })
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => `${dir}/${name.split('\\').join('/')}`),
+    ];
+    // Floor: a derivation that lost the directory would read the entry alone.
+    expect(family.length).toBeGreaterThan(2);
+    const acquiring = Object.fromEntries(
+      family
+        .map((file) => [file, liveSource(file).split(/\.acquireLock(?:WithRetry)?\(/).length - 1])
+        .filter(([, n]) => n !== 0)
+    );
+    expect(acquiring).toEqual({ 'src/cli/commands/rollback/replay.ts': 1 });
   });
 
   it('destroy-runner takes the lock ONLY through the stack-lock guard (go-to-k/cdkd#2174)', () => {
