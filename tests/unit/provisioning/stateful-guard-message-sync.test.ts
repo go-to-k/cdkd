@@ -28,14 +28,14 @@ import { describe, it, expect } from 'vite-plus/test';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
-import { readEngineFamily } from '../_engine-family.js';
 import { hasNoCloudControlHandlers } from '../../../src/provisioning/unsupported-types.js';
+import { readEngineFamily } from '../_engine-family.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 // `DeployEngine`'s source: the class file plus the modules split out of it
-// (#4200), where the provisioning arms now live, read RECURSIVELY with a floor
-// per nested directory (`_engine-family.ts`, #5835). Joined, so
+// (#4200), where the provisioning arms now live. Joined, so
 // a phrase counted once is counted once across the whole engine.
+// The engine family read recursively (`_engine-family.ts`, go-to-k/cdkd#5835).
 const DEPLOY_ENGINE = readEngineFamily();
 const STATEFUL_TYPES_SRC = readFileSync(
   join(REPO_ROOT, 'src/provisioning/stateful-types.ts'),

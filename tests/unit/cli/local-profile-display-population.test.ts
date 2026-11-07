@@ -874,11 +874,42 @@ function unclosedSubstitutions(text: string): number {
   return open;
 }
 
+/**
+ * The wrappers a file IMPORTS by name from a relative module that proves them
+ * there, by the same {@link sanitizedLocals} walk over the declaring file.
+ *
+ * Added by go-to-k/cdkd#5835: splitting a file moves a function-declaration
+ * wrapper (`rollback/render.ts`'s `safeRoleArn`) away from the module that
+ * calls it (`rollback/replay.ts`), and a per-file proof then reads the call as
+ * undeclared. The proof is followed to the declaration rather than trusted by
+ * name: an unaliased named import only, resolved to its file, and proven in
+ * THAT file, so a wrapper whose body stops sanitizing un-proves every importer.
+ */
+function importedSanitizers(file: string, lines: string[]): Set<string> {
+  const proven = new Set<string>();
+  const source = lines.join('\n');
+  for (const m of source.matchAll(/^import\s+\{([^}]*)\}\s+from\s+'(\.[^']*)\.js';/gm)) {
+    const target = path.posix.join(path.posix.dirname(file), `${m[2]}.ts`);
+    let targetLines: string[];
+    try {
+      targetLines = readFileSync(target, 'utf8').split('\n');
+    } catch {
+      continue;
+    }
+    const there = sanitizedLocals(targetLines);
+    for (const spec of m[1]!.split(',')) {
+      const name = spec.trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name) && there.has(name)) proven.add(name);
+    }
+  }
+  return proven;
+}
+
 function collectSites(): Site[] {
   const sites: Site[] = [];
   for (const file of sourceFilesUnder('src')) {
     const lines = readFileSync(file, 'utf8').split('\n');
-    const proven = sanitizedLocals(lines);
+    const proven = new Set([...sanitizedLocals(lines), ...importedSanitizers(file, lines)]);
     for (let i = 0; i < lines.length; i++) {
       const text = lines[i] ?? '';
       if (isCommentLine(text)) continue;
@@ -1023,7 +1054,8 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
       // The `--assume-role` parser, split out of `src/cli/options.ts` (#5835).
       'src/cli/options/assume-role.ts',
       'src/cli/commands/drift/command.ts',
-      'src/cli/commands/rollback.ts',
+      // The `--role-arn` note moved with the rollback split (#5835).
+      'src/cli/commands/rollback/replay.ts',
       'src/utils/role-arn.ts',
       'src/deployment/intrinsic-resolver/stack-output.ts',
       'src/deployment/intrinsic-resolver/stack-state.ts',

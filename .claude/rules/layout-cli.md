@@ -116,7 +116,7 @@ Index of every area: [code-layout.md](code-layout.md).
   `cdkd destroy --purge-events` runs only after a CLEAN, non-interrupted destroy
   (a failed one keeps its events as post-mortem). Guide:
   [docs/deployment-events.md](../../docs/deployment-events.md).
-- **src/cli/commands/rollback.ts** - `cdkd rollback [STACK]`
+- **src/cli/commands/rollback.ts** (+ `rollback/`) - `cdkd rollback [STACK]`
   ([#1183](https://github.com/go-to-k/cdkd/issues/1183)): synth-free revert after
   a failed `--no-rollback` or interrupted deploy. Replays
   `rollback-journal.json` newest-first through `rollback-executor.ts`, saving

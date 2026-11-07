@@ -174,9 +174,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     ])
   ) as Record<keyof typeof SOURCE_PATHS, string>;
   // `engine` is `DeployEngine`'s whole source: the class file plus the
-  // modules split out of it (#4200), where the provisioning arms now live,
-  // read RECURSIVELY with a floor per nested directory (`_engine-family.ts`,
-  // #5835).
+  // modules split out of it (#4200), where the provisioning arms now live.
+  // Read recursively by `_engine-family.ts` (go-to-k/cdkd#5835).
   sources.engine = flattenWhitespace(readEngineFamily());
   const doc = readFileSync(docPath, 'utf8');
   const docBlocks = fencedTextBlocks(doc).map(flattenWhitespace);
