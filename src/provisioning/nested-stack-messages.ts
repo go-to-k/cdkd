@@ -5,7 +5,8 @@
  * **This module must stay a LEAF** — no imports, ever. It exists precisely so
  * the strings can be shared without dragging a module graph along: the obvious
  * home, `providers/nested-stack-provider.ts`, imports `destroy-runner.ts`
- * (it recurses into a child destroy), which imports `register-providers.ts`,
+ * through its companion `providers/nested-stack/delete.ts` (it recurses into
+ * a child destroy), which imports `register-providers.ts`,
  * which imports every provider in the tree — including `nested-stack-provider`
  * itself. Importing the builder from there therefore pulled the whole provider
  * registry into two unrelated unit tests and closed that cycle. It is harmless

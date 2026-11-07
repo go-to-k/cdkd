@@ -1715,7 +1715,7 @@ describe('invokePreDeleteHandler', () => {
   // Inline policy attachments are per-target (Roles / Users / Groups).
   // The handler walks each target list and issues the appropriate Delete
   // call. NoSuchEntityException is idempotent (matches IAMPolicyProvider.
-  // delete in src/provisioning/providers/iam-policy-provider.ts).
+  // delete in src/provisioning/providers/iam-policy/delete.ts).
 
   it('AWS::IAM::Policy handler walks Roles and issues DeleteRolePolicy per role', async () => {
     const sendCalls: { cmdName: string; input: Record<string, unknown> }[] = [];

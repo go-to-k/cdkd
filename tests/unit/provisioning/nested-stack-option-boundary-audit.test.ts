@@ -26,16 +26,36 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const DEPLOY_ENGINE_OPTIONS = readFileSync(
   join(REPO_ROOT, 'src/deployment/deploy-engine/options.ts'),
   'utf8'
 );
-const NESTED_STACK_PROVIDER = readFileSync(
-  join(REPO_ROOT, 'src/provisioning/providers/nested-stack-provider.ts'),
-  'utf8'
+const NESTED_STACK_PROVIDER_PATH = join(
+  REPO_ROOT,
+  'src/provisioning/providers/nested-stack-provider.ts'
 );
+/**
+ * The ONE file of the provider family (the provider and its companion
+ * directory, go-to-k/cdkd#5835) that holds the spread site, found by its
+ * marker rather than by name so a later move keeps the fence on it. Exactly
+ * one: a second copy of the marker would leave which one the case reads to
+ * file order.
+ */
+const BOUNDARY_MARKER = '// THIS SPREAD IS THE PARENT→CHILD OPTION BOUNDARY.';
+const NESTED_STACK_PROVIDER = ((): string => {
+  const holders = [NESTED_STACK_PROVIDER_PATH, ...companionFiles(NESTED_STACK_PROVIDER_PATH)]
+    .map((file) => readFileSync(file, 'utf8'))
+    .filter((src) => src.includes(BOUNDARY_MARKER));
+  if (holders.length !== 1) {
+    throw new Error(
+      `expected exactly one nested-stack provider file holding the boundary marker, found ${holders.length}`
+    );
+  }
+  return holders[0]!;
+})();
 
 /**
  * Every `DeployEngineOptions` member, as of the audit recorded at the spread
@@ -271,9 +291,7 @@ describe('the parent→child option boundary audit stays complete (#2567)', () =
     // real code a few lines below the spread, so a whole-file `toContain` could
     // not tell "the comment names it" from "the code mentions it" — deleting it
     // from the comment left this case green.
-    const commentStart = NESTED_STACK_PROVIDER.indexOf(
-      '// THIS SPREAD IS THE PARENT→CHILD OPTION BOUNDARY.'
-    );
+    const commentStart = NESTED_STACK_PROVIDER.indexOf(BOUNDARY_MARKER);
     expect(commentStart, 'the parent→child boundary comment was not found').toBeGreaterThan(-1);
     const commentEnd = NESTED_STACK_PROVIDER.indexOf(
       '...(parentCtx.options ?? {}),',
