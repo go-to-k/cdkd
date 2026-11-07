@@ -9,13 +9,26 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/rollback-executor');
 
+/**
+ * The `.ts` files under `rel` (relative to {@link SPLIT_DIR}), recursively: a
+ * family module split further into a nested directory of its own (#5835, e.g.
+ * `replay-reverse-replacement.ts` + `replay-reverse-replacement/`) keeps its
+ * moved code in the family.
+ */
+function familyFiles(rel: string): string[] {
+  return readdirSync(join(SPLIT_DIR, rel), { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) return familyFiles(path);
+      return entry.name.endsWith('.ts') ? [`src/deployment/rollback-executor/${path}`] : [];
+    });
+}
+
 /** Repo-relative paths, host first, then the split modules in name order. */
 export const ROLLBACK_FAMILY: readonly string[] = [
   'src/deployment/rollback-executor.ts',
-  ...readdirSync(SPLIT_DIR)
-    .filter((f) => f.endsWith('.ts'))
-    .sort()
-    .map((f) => `src/deployment/rollback-executor/${f}`),
+  ...familyFiles(''),
 ];
 
 // A floor at the host plus the eleven modules of #4426: a renamed directory or a
@@ -23,6 +36,19 @@ export const ROLLBACK_FAMILY: readonly string[] = [
 // ABSENCE over it would shrink silently rather than red.
 if (ROLLBACK_FAMILY.length < 12) {
   throw new Error(`the rollback family resolved to ${ROLLBACK_FAMILY.join(', ')} only`);
+}
+
+// A floor per nested directory (#5835): one the walk stopped descending into
+// would drop its modules without moving the total floor above.
+const NESTED_FLOORS: Readonly<Record<string, number>> = {
+  'replay-reverse-replacement': 4,
+};
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const prefix = `src/deployment/rollback-executor/${dir}/`;
+  const found = ROLLBACK_FAMILY.filter((rel) => rel.startsWith(prefix)).length;
+  if (found < floor) {
+    throw new Error(`the rollback family holds ${found} file(s) under ${prefix}, expected ${floor}+`);
+  }
 }
 
 /** Every family file's source, joined with a newline. */

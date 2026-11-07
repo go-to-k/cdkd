@@ -8,7 +8,8 @@ paths:
 # The replay-CREATE bag
 
 Both arms live in the `reverse-replacement` branch
-(`deployment/rollback-executor/replay-reverse-replacement.ts`): create-first,
+(`deployment/rollback-executor/replay-reverse-replacement.ts`, the re-create in
+`replay-reverse-replacement/recreate.ts`): create-first,
 and delete-new-first, reached from the name-collision catch or, up front, a
 journaled `oldDeletedBeforeCreate` (#4690).
 **`effectiveProperties` is honoured** (#1682): `create()` gets
