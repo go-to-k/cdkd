@@ -348,7 +348,9 @@ while :; do
   # go-to-k/cdkd#5945: the IPv6 planning pool needs the VPC's IPv6 block
   # monitored too, so the IPv4 rows (a dotted CIDR) and that block's row are
   # counted apart.
-  MONITORED6=$(jq --arg v "${SUBNET_VPC_ID}" --arg c "${IPV6_VPC_CIDR}" '[.IpamResourceCidrs[]? | select(.ResourceId == $v and .ResourceType == "vpc" and .ResourceCidr == $c)] | length' <<<"${MONITOR_JSON}")
+  # Any IPv6 row: the VPC holds one IPv6 block (asserted above), and a
+  # text-form compare would turn a different spelling into a 30-minute wait.
+  MONITORED6=$(jq --arg v "${SUBNET_VPC_ID}" '[.IpamResourceCidrs[]? | select(.ResourceId == $v and .ResourceType == "vpc" and ((.ResourceCidr // "") | contains(":")))] | length' <<<"${MONITOR_JSON}")
   MONITOR_LAG=$(( $(date +%s) - MONITOR_START ))
   if [ "${MONITORED}" -gt 0 ] && [ "${MONITORED6}" -gt 0 ]; then
     echo "    OK: IPAM monitors ${SUBNET_VPC_ID} after ${MONITOR_LAG}s (go-to-k/cdkd#5632 measurement)"
@@ -442,7 +444,8 @@ case "${IPV6_SUBNET_ID}|${IPV6_PLANNING_POOL_ID}" in
     exit 1
     ;;
 esac
-IPV6_SUBNET_ROUTE=$(jq -r '.resources.Ipv6Subnet.provisionedBy // "sdk"' <<<"${STATE}")
+# An SDK record may omit provisionedBy; a missing record is not the SDK path.
+IPV6_SUBNET_ROUTE=$(jq -r 'if .resources.Ipv6Subnet then (.resources.Ipv6Subnet.provisionedBy // "sdk") else "no state record" end' <<<"${STATE}")
 if [ "${IPV6_SUBNET_ROUTE}" != "sdk" ]; then
   echo "FAIL: the IPv6 subnet was provisioned by '${IPV6_SUBNET_ROUTE}', expected the SDK provider (issue #5945)" >&2
   exit 1
@@ -579,8 +582,13 @@ echo "    OK: ${SUBNET_ID} updated in place and still records CidrBlock ${SUBNET
 
 # go-to-k/cdkd#5945: the tag update leaves the IPv6 subnet and its block alone.
 P2_IPV6_SUBNET_ID=$(jq -r '.outputs.Ipv6SubnetId // ""' <<<"${STATE}")
+P2_IPV6_SUBNET_OUTPUT=$(jq -r '.outputs.Ipv6SubnetCidr // ""' <<<"${STATE}")
 if [ "${P2_IPV6_SUBNET_ID}" != "${IPV6_SUBNET_ID}" ]; then
   echo "FAIL: the tag update replaced the IPv6 subnet: '${IPV6_SUBNET_ID}' -> '${P2_IPV6_SUBNET_ID}' (issue #5945)" >&2
+  exit 1
+fi
+if [ "${P2_IPV6_SUBNET_OUTPUT}" != "${IPV6_SUBNET_CIDR}" ]; then
+  echo "FAIL: after the in-place update the Ipv6SubnetCidr Output (Fn::GetAtt Ipv6CidrBlocks) is '${P2_IPV6_SUBNET_OUTPUT}', expected ${IPV6_SUBNET_CIDR} (issue #5945)" >&2
   exit 1
 fi
 P2_IPV6_SUBNET_LIVE=$(aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}" \
@@ -649,6 +657,21 @@ if ! grep -qF "IPAM pool ${IPV6_PLANNING_POOL_ID} to release the allocation of d
   exit 1
 fi
 echo "    OK: the IPv6 subnet delete waited for ${IPV6_PLANNING_POOL_ID} to release its allocation"
+# The IPv6 pool CIDR is deleted after SubnetVpc (lib/), so its delete meets
+# the deleted VPC's lingering block and waits it out. Without that order it
+# meets a LIVE VPC's allocation and fails, and this line never prints.
+if ! grep -qE "IPAM pool ${IPV6_POOL_ID} still holds the allocations of deleted .*${SUBNET_VPC_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: the IPv6 pool CIDR delete printed no wait for deleted ${SUBNET_VPC_ID}'s block on ${IPV6_POOL_ID}; the destroy order or the wording changed (issue #5945)" >&2
+  exit 1
+fi
+echo "    OK: the IPv6 pool CIDR delete waited out deleted ${SUBNET_VPC_ID}'s block"
+# Which side finished the wait varies by run (the measured release, 1523 s,
+# sits at the subnet wait's 25-minute cap), so it is recorded, not asserted.
+if grep -qE "still holds the allocations of deleted .*${IPV6_SUBNET_ID}" <<<"${DESTROY_PLAIN}"; then
+  echo "    NOTE: ${IPV6_SUBNET_ID}'s release outlasted the subnet delete; the IPv6 planning pool CIDR delete waited out the rest (go-to-k/cdkd#5945 measurement)"
+else
+  echo "    NOTE: ${IPV6_SUBNET_ID}'s release finished inside the subnet delete's wait (go-to-k/cdkd#5945 measurement)"
+fi
 
 assert_gone "subnet '${SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}"
 assert_gone "IPv6 subnet '${IPV6_SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}"

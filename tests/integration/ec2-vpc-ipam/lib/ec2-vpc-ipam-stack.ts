@@ -109,10 +109,11 @@ export class Ec2VpcIpamStack extends cdk.Stack {
       ipamPoolId: ipv6Pool.attrIpamPoolId,
       cidr: IPV6_POOL_CIDR,
     });
-    // Deleted only after SubnetVpc: the pool keeps the VPC's allocation for
-    // a while after the block is disassociated, and the pool CIDR delete
-    // waits out the allocations of DELETED VPCs only (go-to-k/cdkd#5975).
-    ipv6PoolCidr.addDependency(subnetVpc);
+    // SubnetVpc depends on the IPv6 pool CIDR, so the destroy deletes the VPC
+    // first: the pool keeps the VPC's allocation for a while after the block
+    // is disassociated (1247 s measured), and the pool CIDR delete waits out
+    // the allocations of DELETED VPCs only (go-to-k/cdkd#5975).
+    subnetVpc.addDependency(ipv6PoolCidr);
     const subnetVpcIpv6 = new ec2.CfnVPCCidrBlock(this, 'SubnetVpcIpv6', {
       vpcId: subnetVpc.ref,
       ipv6IpamPoolId: ipv6Pool.attrIpamPoolId,
