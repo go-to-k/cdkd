@@ -40,7 +40,7 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
 
    **Import method** — copy the shape from a similar provider rather than
    writing it from scratch: `s3-bucket-provider.ts` for a tag-ARRAY service,
-   `lambda-function-provider.ts` for a tag-MAP one, `kms-provider.ts` for a
+   `lambda-function-provider.ts` for a tag-MAP one, `kms/read-state.ts` for a
    service with no template name property. The shape is: resolve an explicit
    physical id first (`resolveExplicitPhysicalId(input, '<NameField>')`, i.e.
    the `--resource` override or `Properties.<NameField>`) and verify it with a

@@ -278,7 +278,8 @@
 # "SecretFilter's 'Created resource' line does not withhold its physical id"
 # (with create()'s sink kept, step 6 fails the same way for its
 # 'Deleting resource' line).
-# Revert src/provisioning/providers/scheduler-schedule-provider.ts ALONE and
+# Revert src/provisioning/providers/scheduler-schedule-provider.ts (with its
+# companion directory scheduler-schedule/) ALONE and
 # step 4 fails naming "GroupName addresses the schedule" (go-to-k/cdkd#4275);
 # with only its delete arm reverted, step 6 fails: the destroy skips the
 # schedule ("redacted") and exits non-zero.
