@@ -190,14 +190,6 @@ export class DocdbNeptuneStack extends cdk.Stack {
     // Issue #1160: once the removal drops the Ref, this keeps `Sg` deleted
     // AFTER the cluster that may still hold it (DependencyViolation otherwise).
     docdbCluster.node.addDependency(sg);
-    // Issue #3866 refusal phase (verify.sh step 1b): `UseLatestRestorableTime`
-    // is a property the SDK provider does not handle, on a type Cloud Control
-    // has no handlers for, so cdkd must refuse the deploy pre-flight rather
-    // than route the cluster to Cloud Control. Never set on a deploy that
-    // succeeds.
-    if (process.env.CDKD_TEST_NONPROV_REFUSAL === 'true') {
-      docdbCluster.addPropertyOverride('UseLatestRestorableTime', true);
-    }
     // go-to-k/cdkd#2762: see the file header. Property overrides, so the fixture
     // does not depend on which of these the pinned L1 spells.
     docdbCluster.addPropertyOverride('AvailabilityZones', vpc.availabilityZones);

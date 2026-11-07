@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 /**
  * The rollback replay is split across modules (issue #4426): the entry points stay
@@ -11,12 +11,16 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/rollback-executor');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in name order. Read
+ * recursively: a family module split further keeps its own sibling directory
+ * (`journaled-orphans.ts` + `journaled-orphans/`, go-to-k/cdkd#5835).
+ */
 export const ROLLBACK_FAMILY: readonly string[] = [
   'src/deployment/rollback-executor.ts',
   ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
-    .map((f) => f.split('\\').join('/'))
+    .map((f) => f.split(sep).join('/'))
     .sort()
     .map((f) => `src/deployment/rollback-executor/${f}`),
 ];
@@ -28,31 +32,15 @@ if (ROLLBACK_FAMILY.length < 12) {
   throw new Error(`the rollback family resolved to ${ROLLBACK_FAMILY.join(', ')} only`);
 }
 
-// A floor per NESTED directory (#5835): a module split further into a
-// directory named after its stem keeps its bodies there, and a read that stops
-// recursing drops them from the family without taking it below the floor above.
-for (const entry of readdirSync(SPLIT_DIR, { withFileTypes: true })) {
-  if (!entry.isDirectory()) continue;
-  const prefix = `src/deployment/rollback-executor/${entry.name}/`;
-  if (!ROLLBACK_FAMILY.some((rel) => rel.startsWith(prefix))) {
-    throw new Error(`the rollback family holds no module under ${prefix}`);
+// A floor per nested directory (go-to-k/cdkd#5835): a recursive read that
+// stopped descending would drop these modules while the total above still
+// cleared its floor.
+const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2, 'plan/': 3 };
+for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
+  const found = ROLLBACK_FAMILY.filter((f) => f.startsWith(`src/deployment/rollback-executor/${dir}`));
+  if (found.length < floor) {
+    throw new Error(`the rollback family's ${dir} resolved to ${found.length} module(s), under its floor of ${floor}`);
   }
-}
-
-// And a cross-check by an independent directory walk: a module in a nested
-// split directory (#5835) that the listing above missed would drop out of
-// every family fence silently, since none of them counts an absence per file.
-const walkTs = (dir: string, rel: string): string[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory()
-      ? walkTs(join(dir, e.name), `${rel}${e.name}/`)
-      : e.name.endsWith('.ts')
-        ? [`src/deployment/rollback-executor/${rel}${e.name}`]
-        : []
-  );
-const missing = walkTs(SPLIT_DIR, '').filter((f) => !ROLLBACK_FAMILY.includes(f));
-if (missing.length > 0) {
-  throw new Error(`the rollback family is missing ${missing.join(', ')}`);
 }
 
 /** Every family file's source, joined with a newline. */

@@ -3340,7 +3340,7 @@ const ORPHAN_READER_FILES = [
   'src/deployment/nested-child-journal.ts',
   // go-to-k/cdkd#4600: the success deploy's foreign-holder scan reads other
   // stacks' rollback-orphan records.
-  'src/deployment/rollback-executor/journaled-orphans.ts',
+  'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts',
   // go-to-k/cdkd#5201: `cdkd refactor` reads the records to keep their ids out
   // of a rename, and rewrites their references.
   'src/cli/commands/refactor.ts',
@@ -3369,7 +3369,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // Issue #3754: the nested-child revert saves the child record with the
     // orphans its replay minted.
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
-    'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts': 'state.orphans ?? []',
     'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   const SPELLINGS = [
@@ -3732,7 +3732,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     // The merge that keys on each row's `logicalId` (issue #3754).
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     // The success deploy's scan, which dereferences each row's `state`.
-    'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/deployment/rollback-executor/journaled-orphans/foreign-holder-scan.ts': 'state.orphans ?? []',
     // The plan's id set, which dereferences each row's `logicalId`.
     'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
