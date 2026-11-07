@@ -14,7 +14,7 @@ paths:
 
 # Docker argv redaction
 
-Issue [#2440](https://github.com/go-to-k/cdkd/issues/2440). `execFile` folds the
+Issue #2440. `execFile` folds the
 command line into `err.message`, so a failure echoes the argv.
 
 - **COMPOSE, never hand-write.** Every docker failure text goes through
@@ -25,7 +25,7 @@ command line into `err.message`, so a failure echoes the argv.
   ALLOWLIST — a denylist carried `err.cmd`, the command line, verbatim.
 - **Masked**: the VALUE of `-e` / `--env` / `--opt` / `--label` /
   `--build-arg`, and every NON-LOCATOR param of `--cache-from` / `--cache-to`
-  (cache backends take credentials inline).
+  (cache backends take credentials inline, so those flags are NOT locators).
   KEYs and locator cache params survive. Every pass is structural — positional,
   never value-based — and covers **all four pflag spellings**: `--flag VALUE`,
   `--flag=VALUE`, and the cluster ATTACHED (`-itdeKEY=VALUE`) or SEPARATED

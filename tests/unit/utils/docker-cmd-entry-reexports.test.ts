@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, expectTypeOf, it } from 'vite-plus/test';
 import * as entry from '../../../src/utils/docker-cmd.js';
 import * as argvInText from '../../../src/utils/docker-cmd/argv-in-text.js';
 import * as argvRedaction from '../../../src/utils/docker-cmd/argv-redaction.js';
@@ -81,6 +81,14 @@ describe('docker-cmd.ts entry re-exports (#5835)', () => {
       expect((entry as Record<string, unknown>)[name]).toBe(mod[name]);
     }
   );
+
+  it('re-exports the four types as the companion types', () => {
+    // Type-only: `vp run typecheck:test` fails if the entry drops or rebinds one.
+    expectTypeOf<entry.SpawnResult>().toEqualTypeOf<spawn.SpawnResult>();
+    expectTypeOf<entry.SpawnError>().toEqualTypeOf<spawn.SpawnError>();
+    expectTypeOf<entry.RunDockerOptions>().toEqualTypeOf<spawn.RunDockerOptions>();
+    expectTypeOf<entry.ForegroundOptions>().toEqualTypeOf<spawn.ForegroundOptions>();
+  });
 
   it('keeps the companion-internal redaction constants out of the public surface', () => {
     expect(argvRedaction.REDACTED_ARGV_VALUE).toBe('***');

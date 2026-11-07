@@ -54,6 +54,10 @@ const SRC_WALK_TIMEOUT_MS = 60_000;
  */
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
 
+/** A top-level DECLARATION of a shared docker spawn helper (the definer's shape). */
+const SPAWN_HELPER_DECLARATION =
+  /^export (async )?function (runDockerStreaming|runDockerForeground|spawnStreaming)\(/m;
+
 /** Calls that produce an already-redacted failure text. */
 const COMPOSERS = [
   'describeDockerFailure(',
@@ -407,11 +411,15 @@ describe('docker argv redaction fence (issue #2440)', () => {
     // ALL of `src/` and requires every caller of a shared spawn helper to live
     // somewhere the derivation can reach.
     //
-    // `src/utils/docker-cmd.ts` and its `src/utils/docker-cmd/` companion
-    // directory (go-to-k/cdkd#5835) are the one exemption and it is
-    // structural, not a list entry: they DEFINE those helpers, so they name
-    // them by declaring them.
+    // The module that DEFINES those helpers is the one exemption, and it is
+    // structural, not a list entry: it names them by declaring them. Since the
+    // go-to-k/cdkd#5835 split that is a file under `src/utils/docker-cmd/`
+    // DECLARING one of them (today `spawn.ts`); the directory alone exempts
+    // nothing, so a new companion that CALLS a helper is still an offender.
+    // The entry `src/utils/docker-cmd.ts` only re-exports, so it needs no
+    // exemption.
     const offenders: string[] = [];
+    const definers: string[] = [];
     const walk = (relDir: string): void => {
       for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
         const rel = `${relDir}/${entry.name}`;
@@ -420,17 +428,23 @@ describe('docker argv redaction fence (issue #2440)', () => {
           continue;
         }
         if (!entry.name.endsWith('.ts')) continue;
-        if (rel === 'src/utils/docker-cmd.ts' || rel.startsWith('src/utils/docker-cmd/')) continue;
         if (SWEPT_DIRS.some((dir) => rel.startsWith(`${dir}/`))) continue;
         // Comments and string contents are blanked first, so a module merely
         // MENTIONING a helper in prose is not an offender.
         const src = neutralize(readFileSync(join(REPO_ROOT, rel), 'utf-8'));
+        if (rel.startsWith('src/utils/docker-cmd/') && SPAWN_HELPER_DECLARATION.test(src)) {
+          definers.push(rel);
+          continue;
+        }
         if (/\b(runDockerStreaming|runDockerForeground|spawnStreaming)\(/.test(src)) {
           offenders.push(rel);
         }
       }
     };
     walk('src');
+    // The exemption must match the real definer and nothing else; an empty
+    // list would mean the declaration predicate stopped matching.
+    expect(definers).toEqual(['src/utils/docker-cmd/spawn.ts']);
     expect(
       offenders,
       'This module spawns docker but sits outside SWEPT_DIRS, so the fence below cannot see it. Add its directory to SWEPT_DIRS (and the module to both floor tables).'
