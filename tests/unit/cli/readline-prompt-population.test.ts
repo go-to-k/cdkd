@@ -176,7 +176,8 @@ const FOLDED_FILES: readonly string[] = [
   'src/cli/commands/import/import-one.ts',
   'src/cli/commands/export/command-helpers.ts',
   'src/cli/commands/drift/plan.ts',
-  'src/cli/commands/retire-cfn-stack.ts',
+  // `confirmPrompt` moved with the retire-cfn-stack split (go-to-k/cdkd#5835).
+  'src/cli/commands/retire-cfn-stack/prepare.ts',
   'src/cli/commands/state-migrate.ts',
 ];
 
@@ -264,10 +265,10 @@ describe('readline interface population (issue #2275)', () => {
       'src/cli/commands/state/refresh-observed.ts',
     ]) {
       const text = readFileSync(join(REPO_ROOT, path), 'utf-8');
-      // `drift/plan.ts`, `export/command-helpers.ts`, `import/import-one.ts`
-      // and the two `state/` modules sit one directory below their siblings,
-      // so they reach the helper as `../`.
-      const spec = /^src\/cli\/commands\/(drift|export|import|state)\//.test(path)
+      // `drift/plan.ts`, `export/command-helpers.ts`, `import/import-one.ts`,
+      // `retire-cfn-stack/prepare.ts` and the two `state/` modules sit one
+      // directory below their siblings, so they reach the helper as `../`.
+      const spec = /^src\/cli\/commands\/(drift|export|import|retire-cfn-stack|state)\//.test(path)
         ? '../confirm-prompt.js'
         : './confirm-prompt.js';
       expect(text, `${path} no longer routes through confirmOrRefuse`).toContain(
