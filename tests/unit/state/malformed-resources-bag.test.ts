@@ -243,8 +243,44 @@ const SCRUB_STACK_FAMILY = [
   'src/cli/commands/scrub/stack-rewrite.ts',
 ] as const;
 
+/**
+ * `cdkd refactor` is `refactor.ts` plus every module under `refactor/`
+ * (go-to-k/cdkd#5835), keyed as ONE subject, {@link REFACTOR}, the same way as
+ * {@link SCRUB}. Its modules are read in {@link REFACTOR_ORDER}, the order the
+ * declarations had in the one file before the split: the planner (whose
+ * container and row guards precede its first orphans read and its first
+ * rename) above the apply, above the command that calls both. A module on disk
+ * that the list does not name fails the "read order" case by name.
+ */
+const REFACTOR = 'src/cli/commands/refactor.ts';
+const REFACTOR_DIR = 'src/cli/commands/refactor/';
+const REFACTOR_ORDER = ['plan.ts', 'apply.ts', 'command.ts'] as const;
+/** The modules under `refactor/`, the directory read recursively. */
+function refactorModules(): string[] {
+  return readdirSync(join(repoRoot, REFACTOR_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
+
+describe("the refactor family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(refactorModules().sort()).toEqual([...REFACTOR_ORDER].sort());
+  });
+});
+
 /** The repo-relative files a fence subject reads: every scrub module for {@link SCRUB}. */
 function subjectFiles(relPath: string): string[] {
+  if (relPath === REFACTOR) {
+    const files = [REFACTOR, ...REFACTOR_ORDER.map((name) => `${REFACTOR_DIR}${name}`)];
+    for (const file of files) {
+      // A per-file floor: a listed module that is gone or empty would read as
+      // nothing and let every dominance check below pass over it.
+      if (readFileSync(join(repoRoot, file), 'utf8').trim().length === 0) {
+        throw new Error(`${file} is empty; update REFACTOR_ORDER`);
+      }
+    }
+    return files;
+  }
   if (relPath !== SCRUB) return [relPath];
   const all = scrubSourcePaths();
   for (const file of SCRUB_STACK_FAMILY) {
@@ -254,8 +290,12 @@ function subjectFiles(relPath: string): string[] {
   return [...all.filter((file) => !family.includes(file)), ...family];
 }
 
-/** The fence subject a `git grep` path belongs to: every scrub module is {@link SCRUB}. */
+/**
+ * The fence subject a `git grep` path belongs to: every scrub module is
+ * {@link SCRUB}, every refactor module {@link REFACTOR}.
+ */
 function subjectOf(file: string): string {
+  if (file.startsWith(REFACTOR_DIR)) return REFACTOR;
   return file.startsWith('src/cli/commands/scrub/') ? SCRUB : file;
 }
 
@@ -3434,13 +3474,18 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
   it('pins the two exclusions the derivation above makes', () => {
     // `logical-id-rename.ts` is excluded because `refactor.ts`, its only
     // caller, guards both the container and its rows above every call.
-    const renameCallers = spawnSync('git', ['grep', '-l', 'applyLogicalIdRenames(', '--', 'src'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    })
-      .stdout.split('\n')
-      .filter(Boolean)
-      .sort();
+    // Every `refactor/` module folds onto `refactor.ts` ({@link subjectOf}).
+    const renameCallers = [
+      ...new Set(
+        spawnSync('git', ['grep', '-l', 'applyLogicalIdRenames(', '--', 'src'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+        })
+          .stdout.split('\n')
+          .filter(Boolean)
+          .map(subjectOf)
+      ),
+    ].sort();
     expect(renameCallers).toEqual([
       'src/cli/commands/refactor-move.ts',
       'src/cli/commands/refactor.ts',
