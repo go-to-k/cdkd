@@ -111,6 +111,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/recorded-reference-routes.ts',
   'src/deployment/intrinsic-resolver/clients.ts',
   'src/deployment/intrinsic-resolver/dynamic-refs.ts',
+  'src/deployment/intrinsic-resolver/dynamic-refs/log-twin-pass.ts',
   'src/deployment/intrinsic-resolver/dynamic-ref-lookups.ts',
   'src/deployment/intrinsic-resolver/string-functions.ts',
   'src/deployment/intrinsic-resolver/sub.ts',

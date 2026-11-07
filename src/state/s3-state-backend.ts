@@ -2031,7 +2031,7 @@ export class S3StateBackend {
    * the helper alone. `ensureClientForBucket()` and `ownerParam()` sit OUTSIDE
    * the helper's guarantee and both reach AWS — `GetBucketLocation` can be
    * denied or throttled. Without the wrap, that rejection escaped at
-   * `gc.ts`'s call site and skipped the `✓ Deleted ...` line after the delete
+   * `gc/command.ts`'s call site and skipped the `✓ Deleted ...` line after the delete
    * had already succeeded, which is precisely the outcome the comment there
    * says is impossible.
    */
