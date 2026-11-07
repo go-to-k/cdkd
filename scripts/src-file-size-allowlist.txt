@@ -31,7 +31,6 @@ src/deployment/inline-policy-claims.ts
 src/deployment/intrinsic-resolver/context.ts
 src/deployment/intrinsic-resolver/cross-stack.ts
 src/deployment/intrinsic-resolver/dynamic-refs.ts
-src/deployment/intrinsic-resolver/functions.ts
 src/deployment/intrinsic-resolver/getatt.ts
 src/deployment/intrinsic-resolver/stack-output.ts
 src/deployment/masked-property-fingerprints.ts

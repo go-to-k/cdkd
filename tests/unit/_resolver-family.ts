@@ -10,10 +10,16 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/intrinsic-resolver');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in name order.
+ * Recursive: a module split further into a nested directory named after its
+ * stem (issue #5835, e.g. `functions.ts` + `functions/`) keeps its bodies in
+ * the family.
+ */
 export const RESOLVER_FAMILY: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
-  ...readdirSync(SPLIT_DIR)
+  ...readdirSync(SPLIT_DIR, { recursive: true })
+    .map((f) => String(f).split('\\').join('/'))
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => `src/deployment/intrinsic-resolver/${f}`),

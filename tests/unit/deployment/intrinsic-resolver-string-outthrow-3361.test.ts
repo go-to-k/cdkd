@@ -322,7 +322,8 @@ describe('helpers that render a caught value (#3361)', () => {
 describe('src/deployment/intrinsic-resolver source scan (#3361)', () => {
   const DIR = join(process.cwd(), 'src/deployment/intrinsic-resolver');
   const files = [
-    ...readdirSync(DIR)
+    // Recursive: a module split into a nested directory (#5835) stays scanned.
+    ...readdirSync(DIR, { recursive: true, encoding: 'utf8' })
       .filter((f) => f.endsWith('.ts'))
       .map((f) => join(DIR, f)),
     join(process.cwd(), 'src/deployment/intrinsic-function-resolver.ts'),

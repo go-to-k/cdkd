@@ -33,7 +33,8 @@ const walk = (dir: string): string[] =>
 /** Repo-relative file -> the index of the family it belongs to. */
 const familyOf = new Map<string, number>(
   FAMILIES.flatMap(({ host, dir }, i) =>
-    [host, ...readdirSync(join(REPO_ROOT, dir)).map((f) => `${dir}/${f}`)].map(
+    // Recursive: a module split into a nested directory (#5835) is still family.
+    [host, ...walk(join(REPO_ROOT, dir)).map((p) => p.slice(REPO_ROOT.length + 1))].map(
       (file) => [file, i] as const
     )
   )
