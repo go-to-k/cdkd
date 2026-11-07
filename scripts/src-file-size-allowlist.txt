@@ -56,11 +56,9 @@ src/local/lambda-resolver.ts
 src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/provisioning/providers/stepfunctions-provider.ts
 src/provisioning/resource-name.ts
 src/state/lock-manager.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts
-src/utils/docker-cmd.ts
 src/utils/error-handler.ts

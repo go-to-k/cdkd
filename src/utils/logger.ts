@@ -106,7 +106,7 @@ export function releaseStdoutForPayload(): void {
  * Production callers exist, and the carve-out is narrow enough to state: a
  * writer that does NOT go through {@link ConsoleLogger} and therefore cannot
  * be routed by {@link ConsoleLogger.emit}. Two live in
- * `src/utils/docker-cmd.ts` — `spawnStreaming`, which mirrors a child's
+ * `src/utils/docker-cmd/spawn.ts` — `spawnStreaming`, which mirrors a child's
  * stdout live under `--verbose`, and `spawnForeground`, which hands the
  * child our fd 1 outright; issue
  * [#2410](https://github.com/go-to-k/cdkd/issues/2410) routed both to stderr

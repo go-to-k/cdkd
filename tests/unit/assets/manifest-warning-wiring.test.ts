@@ -15,9 +15,9 @@
 import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 
 const warns: string[] = [];
-// Spread the real module: `src/utils/docker-cmd.ts` holds a live binding to
-// `isStdoutReservedForPayload`, reached from here through
-// `redactDockerArgvValues`. Nothing in this file calls it today, but a
+// Spread the real module: `src/utils/docker-cmd/spawn.ts` holds a live binding
+// to `isStdoutReservedForPayload`, loaded here by the `docker-cmd.ts` entry
+// that `redactDockerArgvValues` is imported from. Nothing in this file calls it today, but a
 // getLogger-only mock makes the first extension toward a spawn path fail with
 // "No export is defined on the mock", pointing at the logger instead of at the
 // change.
