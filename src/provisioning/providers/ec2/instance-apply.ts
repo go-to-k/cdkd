@@ -200,7 +200,10 @@ export async function prepareInstanceMemberUpdates(
   // (a record an earlier --prefer-sdk-route deploy left without it).
   const placement = plan.placement;
   if (placement !== undefined) {
-    if (placement.Affinity !== undefined && instance?.Placement?.Affinity === placement.Affinity) {
+    // An instance off a Dedicated Host may report no Affinity: EC2's
+    // default, `default`.
+    const liveAffinity = instance?.Placement?.Affinity ?? 'default';
+    if (placement.Affinity !== undefined && liveAffinity === placement.Affinity) {
       delete placement.Affinity;
     }
     if (placement.HostId !== undefined && instance?.Placement?.HostId === placement.HostId) {

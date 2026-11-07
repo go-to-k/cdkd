@@ -29,6 +29,7 @@ import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import {
   enclaveOptionsRefusal,
   enclaveOptionsRequest,
+  instanceIdMemberRefusal,
   instanceIpv6AddressesRefusal,
   instanceLaunchTemplateRefusal,
   instanceLicenseSpecificationsRefusal,
@@ -407,11 +408,11 @@ export function buildLaunchOnlyInstanceOptions(
     ssmAssociationsAwsRefusal(properties, resourceType) ??
     // go-to-k/cdkd#5630: Dedicated Host placement, a PV kernel / RAM disk and
     // Nitro Enclaves the launch would otherwise silently drop.
-    configStringRefusal(properties, 'Affinity', '', resourceType) ??
-    configStringRefusal(properties, 'HostId', '', resourceType) ??
-    configStringRefusal(properties, 'HostResourceGroupArn', '', resourceType) ??
-    configStringRefusal(properties, 'KernelId', '', resourceType) ??
-    configStringRefusal(properties, 'RamdiskId', '', resourceType) ??
+    instanceIdMemberRefusal(properties, 'Affinity', resourceType) ??
+    instanceIdMemberRefusal(properties, 'HostId', resourceType) ??
+    instanceIdMemberRefusal(properties, 'HostResourceGroupArn', resourceType) ??
+    instanceIdMemberRefusal(properties, 'KernelId', resourceType) ??
+    instanceIdMemberRefusal(properties, 'RamdiskId', resourceType) ??
     enclaveOptionsRefusal(properties['EnclaveOptions'], resourceType);
   if (refusal !== undefined) {
     throw markNonRetryable(

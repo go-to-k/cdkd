@@ -306,6 +306,23 @@ export const INSTANCE_CREATE_ONLY_SENT = [
 export const INSTANCE_STOPPED_MEMBERS = ['Affinity', 'HostId', 'KernelId', 'RamdiskId'] as const;
 
 /**
+ * go-to-k/cdkd#5630: why a Dedicated Host / kernel / RAM disk member cannot be
+ * sent, or undefined when it can: absent, or a non-empty string. EC2 takes no
+ * empty id, and the create and update paths refuse the same values, so a
+ * rollback replay never meets a record value its update refuses.
+ */
+export function instanceIdMemberRefusal(
+  properties: Record<string, unknown>,
+  key: string,
+  resourceType: string
+): string | undefined {
+  return (
+    configStringRefusal(properties, key, '', resourceType) ??
+    (properties[key] === '' ? `${resourceType}.${key} must not be empty` : undefined)
+  );
+}
+
+/**
  * go-to-k/cdkd#5630: whether two sides hold the same value of one of
  * {@link INSTANCE_CREATE_ONLY_SENT}. `EnclaveOptions.Enabled` is compared as
  * the boolean RunInstances is sent (CloudFormation may spell it `"true"`);

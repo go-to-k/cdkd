@@ -29,6 +29,7 @@ import { isInterruptedWaitError } from '../../interrupt-watch.js';
 import {
   INSTANCE_CREATE_ONLY_SENT,
   INSTANCE_STOPPED_MEMBERS,
+  instanceIdMemberRefusal,
   type InstanceMemberPlan,
   type InstanceVolume,
   describedInstanceAttributes,
@@ -798,10 +799,15 @@ export function planInstanceStoppedMembers(
       );
     }
     if (standInSkips(key)) continue;
-    const refusal =
-      configStringRefusal(properties, key, '', resourceType) ??
-      (after === '' ? `${resourceType}.${key} must not be empty` : undefined);
+    const refusal = instanceIdMemberRefusal(properties, key, resourceType);
     if (refusal !== undefined) {
+      // A rollback revert keeps the live value, as for every member.
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): ${refusal}; the rollback leaves ${key} at its current AWS value.`
+        );
+        continue;
+      }
       throw refusedBeforeApplying(
         new ProvisioningError(
           `${refusal}. The instance ${logicalId} was not updated.`,

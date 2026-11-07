@@ -170,6 +170,13 @@ describe('AWS::EC2::Instance Dedicated Host / kernel / enclave create (#5630)', 
     ['HostResourceGroupArn', 42.5, /HostResourceGroupArn/],
     ['KernelId', true, /KernelId/],
     ['RamdiskId', { a: 1 }, /RamdiskId/],
+    // EC2 takes no empty id; update() refuses one too, so a rollback replay
+    // never meets a record value the create accepted and the update refuses.
+    ['Affinity', '', /Affinity must not be empty/],
+    ['HostId', '', /HostId must not be empty/],
+    ['HostResourceGroupArn', '', /HostResourceGroupArn must not be empty/],
+    ['KernelId', '', /KernelId must not be empty/],
+    ['RamdiskId', '', /RamdiskId must not be empty/],
   ])('refuses a malformed %s before RunInstances, non-retryably', async (key, value, says) => {
     const error = await new EC2Provider()
       .create('Inst', TYPE, { ...BASE, [key]: value })
@@ -226,10 +233,68 @@ describe('AWS::EC2::Instance Affinity / HostId / KernelId / RamdiskId update (#5
     ]);
   });
 
-  it('adds a member the record lacks with no stop when the instance already has it', async () => {
-    // A record an earlier --prefer-sdk-route deploy wrote without the value.
-    await update({ ...BASE, Affinity: 'default', HostId: 'h-old', KernelId: 'aki-old' }, BASE);
+  // A record an earlier --prefer-sdk-route deploy wrote without the value.
+  it.each([
+    ['Affinity', 'default'],
+    ['HostId', 'h-old'],
+    ['KernelId', 'aki-old'],
+    ['RamdiskId', 'ari-old'],
+  ])('adds a %s the record lacks with no stop when the instance already has it', async (key, value) => {
+    await update({ ...BASE, [key]: value }, BASE);
     expect(writes()).toEqual([]);
+  });
+
+  it('takes Affinity default as the value of an instance that reports none', async () => {
+    live.Placement = { AvailabilityZone: 'us-east-1a', Tenancy: 'default' };
+    await update({ ...BASE, Affinity: 'default' }, BASE);
+    expect(writes()).toEqual([]);
+  });
+
+  it('refuses a recorded stand-in on a forward update before any call', async () => {
+    const before = { ...BASE, KernelId: 'aki-old' };
+    const error = await update({ ...before, KernelId: '{{resolve:ssm:/kernel}}' }, before).catch(
+      (e: unknown) => e
+    );
+    expect((error as Error).message).toMatch(/KernelId holds a recorded stand-in/);
+    expect(isRefusedBeforeApplying(error, 'Inst')).toBe(true);
+    expect(writes()).toEqual([]);
+  });
+
+  it('keeps a stand-in member live on a rollback revert and still applies the others', async () => {
+    const before = { ...BASE, HostId: 'h-old', RamdiskId: 'ari-old' };
+    await update({ ...before, HostId: '{{resolve:ssm:/host}}', RamdiskId: 'ari-new' }, before, {
+      replayingState: true,
+    });
+    expect(sent(ModifyInstancePlacementCommand)).toEqual([]);
+    expect(sent(ModifyInstanceAttributeCommand)).toEqual([
+      { InstanceId: 'i-1', Ramdisk: { Value: 'ari-new' } },
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/records HostId as a stand-in/));
+  });
+
+  it('keeps the live value, with a warning, when a rollback revert restores an empty one', async () => {
+    const before = { ...BASE, KernelId: 'aki-new' };
+    await update({ ...BASE, KernelId: '' }, before, { replayingState: true });
+    expect(writes()).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KernelId must not be empty; the rollback leaves/));
+  });
+
+  it('starts the instance again when ModifyInstancePlacement fails after the stop', async () => {
+    const real = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof ModifyInstancePlacementCommand
+        ? Promise.reject(Object.assign(new Error('host full'), { name: 'InsufficientHostCapacity' }))
+        : real(cmd)
+    );
+    const before = { ...BASE, Tenancy: 'host', HostId: 'h-old' };
+    await expect(update({ ...before, HostId: 'h-new' }, before)).rejects.toThrow(/host full/);
+    expect(writes()).toEqual([
+      'StopInstancesCommand',
+      'ModifyInstancePlacementCommand',
+      'StartInstancesCommand',
+    ]);
+    expect(live.State?.Name).toBe('running');
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/the HostId change failed after instance i-1 was stopped; cdkd started it again/));
   });
 
   it('adds a member the instance does not have yet with a stop and a start', async () => {
