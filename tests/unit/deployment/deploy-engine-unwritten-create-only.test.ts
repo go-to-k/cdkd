@@ -54,19 +54,20 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
  * that replacement unless the user opted into it (`--replace`, or naming the
  * resource in `--recreate-via-cc-api`), before anything is deleted.
  *
- * `AWS::EC2::Subnet` / `AvailabilityZoneId` is the pair
- * `tests/integration/sdk-to-cc-autoroute/` deploys.
+ * `AWS::EC2::Subnet` / `OutpostArn` is a create-only SDK-unwired pair
+ * (`tests/integration/sdk-to-cc-autoroute/` deploys the same shape on an
+ * `AWS::EFS::AccessPoint`'s `ClientToken`).
  */
 describe('DeployEngine — a replacement driven only by an unwritten create-only drop (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
-  const CREATE_ONLY = 'AvailabilityZoneId';
+  const CREATE_ONLY = 'OutpostArn';
   const PLAIN = 'EnableLniAtDeviceIndex';
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
-  const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+  const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
   const ADDED: PropertyChange = {
     path: CREATE_ONLY,
     oldValue: undefined,
-    newValue: 'use1-az1',
+    newValue: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1',
     requiresReplacement: true,
   };
 
@@ -93,7 +94,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     };
   });
 
-  it('PREMISE: AvailabilityZoneId is a create-only drop, EnableLniAtDeviceIndex a plain one', () => {
+  it('PREMISE: OutpostArn is a create-only drop, EnableLniAtDeviceIndex a plain one', () => {
     const cov = getPropertyCoverage(TYPE);
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
@@ -255,10 +256,10 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
   });
 
   it('lets a replacement through when the template CHANGED the create-only value', async () => {
-    const desired = { ...DECLARED, [CREATE_ONLY]: 'use1-az2' };
+    const desired = { ...DECLARED, [CREATE_ONLY]: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-2' };
     await provision(makeEngine(), {
       desired,
-      changes: [{ ...ADDED, newValue: 'use1-az2' }],
+      changes: [{ ...ADDED, newValue: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-2' }],
     });
     expect(callOrder).toContain('create');
   });
@@ -298,7 +299,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     const err = await refusal(makeEngine(), { desired: { ...DECLARED, [PLAIN]: 1 } });
     expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
     expect(err!.cause?.message).toContain(
-      `--prefer-sdk-route ${TYPE}:${CREATE_ONLY},${TYPE}:${PLAIN}.`
+      `--prefer-sdk-route ${TYPE}:${PLAIN},${TYPE}:${CREATE_ONLY}.`
     );
   });
 

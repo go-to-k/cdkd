@@ -128,7 +128,7 @@ ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
 ec2-vpc	2026-11-03T18:37:59Z	PASS	145	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; EncryptedVpc drift-clean, orph clean
-ec2-vpc-ipam	2026-11-03T18:37:59Z	PASS	1185	verify.sh	PR #5719 0932f5dee rc 0, IPAM release wait on delete (measured 1092s), probe red pre-fix; VPC drift-clean, orph clean
+ec2-vpc-ipam	2026-11-07T08:40:09Z	PASS	3379	verify.sh	PR #5946 f7e8b6577 rc 0, VPC monitored by IPAM after 506s, VPC+subnet from IPAM pools, drift-clean, destroy waits ok; orph clean
 ecr	2026-11-05T03:57:45Z	PASS	40	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-11-04T19:21:11Z	PASS	57	verify.sh	rc ok, orph clean; no ECR repo leak
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
@@ -381,7 +381,7 @@ schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph cl
 schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph clean
 scrub-nested-child	2026-11-04T20:29:26Z	PASS	150	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions; us-east-1; own temp state bucket
 sdk-ccapi-crossref	2026-11-06T16:32:05Z	PASS	110	verify.sh	#5878 cloud-control split head; rc ok, orph clean
-sdk-to-cc-autoroute	2026-11-03T14:15:44Z	PASS	201	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
+sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 secret-derived-immutable-names	2026-10-26T18:58:44Z	PASS	953	verify.sh	PR #5370 (#5359) d8019e0f; step 5l discriminated (RED with the 65ed23dff name-on-every-update revert); destroy 0 errors, orph clean, own ephemeral bucket swept
 secrets-array-nested	2026-11-04T22:25:18Z	PASS	296	verify.sh	own state bucket, rc ok, orph clean
 secrets-dynamic-ref	2026-11-04T21:52:37Z	PASS	727	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean

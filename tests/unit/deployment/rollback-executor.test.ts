@@ -978,11 +978,11 @@ describe('replayRollback', () => {
     it('keeps a create-only key the SDK provider still drops', async () => {
       const record = await replayWith(
         'AWS::EC2::Subnet',
-        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' },
-        ['AvailabilityZoneId'],
+        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' },
+        ['OutpostArn'],
         'sdk'
       );
-      expect(record.acceptedCreateOnlyDrops).toEqual(['AvailabilityZoneId']);
+      expect(record.acceptedCreateOnlyDrops).toEqual(['OutpostArn']);
     });
 
     it('GAINS it when the old record had none but the SDK re-create still drops a create-only key', async () => {
@@ -992,7 +992,7 @@ describe('replayRollback', () => {
       ctx.providerRegistry = {
         getProviderFor: () => ({ provider: { create, delete: del }, provisionedBy: 'sdk' }),
       } as unknown as RollbackExecutorContext['providerRegistry'];
-      const properties = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+      const properties = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
       const prev = res({
         resourceType: 'AWS::EC2::Subnet',
         physicalId: 'phys-old',
@@ -1012,14 +1012,14 @@ describe('replayRollback', () => {
         B: res({ resourceType: 'AWS::EC2::Subnet', physicalId: 'phys-new', properties }),
       };
       expect((await replayRollback(ops, state, 'S', ctx)).failures).toBe(0);
-      expect(state.B!.acceptedCreateOnlyDrops).toEqual(['AvailabilityZoneId']);
+      expect(state.B!.acceptedCreateOnlyDrops).toEqual(['OutpostArn']);
     });
 
     it('clears it on a Cloud Control re-create, which sends the full bag', async () => {
       const record = await replayWith(
         'AWS::EC2::Subnet',
-        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' },
-        ['AvailabilityZoneId'],
+        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' },
+        ['OutpostArn'],
         'cc-api'
       );
       expect(record.acceptedCreateOnlyDrops).toBeUndefined();

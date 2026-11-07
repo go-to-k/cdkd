@@ -42,11 +42,11 @@ it('PREMISE: StorageClassConfiguration is HANDLED now, and the type has no creat
   expect(cov.createOnlyDrops.size).toBe(0);
 });
 
-it('PREMISE: on AWS::EC2::Subnet, CidrBlock is handled and top-level create-only, AvailabilityZoneId a create-only drop', () => {
+it('PREMISE: on AWS::EC2::Subnet, CidrBlock is handled and top-level create-only, OutpostArn a create-only drop', () => {
   const cov = getPropertyCoverage('AWS::EC2::Subnet');
   if (!cov) throw new Error('AWS::EC2::Subnet lost its property-coverage record');
   expect(cov.handled.has('CidrBlock')).toBe(true);
-  expect(cov.createOnlyDrops.has('AvailabilityZoneId')).toBe(true);
+  expect(cov.createOnlyDrops.has('OutpostArn')).toBe(true);
   expect(
     findHandledUnwrittenCreateOnly('AWS::EC2::Subnet', { CidrBlock: '10.0.0.0/24' }, new Set(['CidrBlock']))
   ).toEqual(['CidrBlock']);
@@ -152,18 +152,18 @@ describe('the refusal predicate (findUnwrittenCreateOnlyDrops / unwrittenCreateO
   });
 
   it('returns a still-dropped key and a handled one together, sorted', () => {
-    // AWS::EC2::Subnet still has AvailabilityZoneId as a create-only drop and
+    // AWS::EC2::Subnet still has OutpostArn as a create-only drop and
     // handles CidrBlock: a record naming both reports both.
-    const subnet = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+    const subnet = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
     expect(
       findUnwrittenCreateOnlyDrops(
         'AWS::EC2::Subnet',
         subnet,
         subnet,
         NONE,
-        new Set(['AvailabilityZoneId', 'CidrBlock'])
+        new Set(['OutpostArn', 'CidrBlock'])
       )
-    ).toEqual(['AvailabilityZoneId', 'CidrBlock']);
+    ).toEqual(['CidrBlock', 'OutpostArn']);
   });
 });
 
@@ -231,16 +231,16 @@ describe('the refusal text (unwrittenCreateOnlyRefusal)', () => {
   it('with a still-dropped key too, names the route and keeps only the drops in --prefer-sdk-route', () => {
     const msg = unwrittenCreateOnlyRefusal({
       ...base,
-      unwritten: ['AvailabilityZoneId', 'CidrBlock'],
+      unwritten: ['OutpostArn', 'CidrBlock'],
       routeDriving: ['AssignIpv6AddressOnCreation'],
       nowWritten: ['CidrBlock'],
     });
-    expect(msg).toContain('AvailabilityZoneId, CidrBlock are create-only');
+    expect(msg).toContain('OutpostArn, CidrBlock are create-only');
     expect(msg).toContain('--prefer-sdk-route does not cover AssignIpv6AddressOnCreation');
     expect(msg).toContain(
-      `remove CidrBlock from the template and re-run with --prefer-sdk-route ${TYPE}:AssignIpv6AddressOnCreation,${TYPE}:AvailabilityZoneId.`
+      `remove CidrBlock from the template and re-run with --prefer-sdk-route ${TYPE}:AssignIpv6AddressOnCreation,${TYPE}:OutpostArn.`
     );
-    // The import would erase AvailabilityZoneId's evidence too, which AWS
+    // The import would erase OutpostArn's evidence too, which AWS
     // really lacks, so it is not offered here.
     expect(msg).not.toContain('cdkd import');
   });
@@ -323,7 +323,7 @@ describe('the `cdkd diff` preview (findUnwrittenCreateOnlyRefusals)', () => {
 
   it('with a still-dropped key too, keeps only the drops in --prefer-sdk-route', () => {
     const SUBNET = 'AWS::EC2::Subnet';
-    const subnet = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+    const subnet = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', OutpostArn: 'arn:aws:outposts:us-east-1:123456789012:outpost/op-1' };
     const reasons = findUnwrittenCreateOnlyRefusals(
       new Map([
         [
@@ -334,7 +334,7 @@ describe('the `cdkd diff` preview (findUnwrittenCreateOnlyRefusals)', () => {
             resourceType: SUBNET,
             desiredProperties: subnet,
             currentProperties: { VpcId: 'vpc-1' },
-            propertyChanges: ['AvailabilityZoneId', 'CidrBlock'].map((path) => ({
+            propertyChanges: ['OutpostArn', 'CidrBlock'].map((path) => ({
               path,
               oldValue: undefined,
               newValue: subnet[path as keyof typeof subnet],
@@ -351,14 +351,14 @@ describe('the `cdkd diff` preview (findUnwrittenCreateOnlyRefusals)', () => {
           attributes: {},
           dependencies: [],
           provisionedBy: 'sdk',
-          acceptedCreateOnlyDrops: ['AvailabilityZoneId', 'CidrBlock'],
+          acceptedCreateOnlyDrops: ['OutpostArn', 'CidrBlock'],
         },
       }
     );
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain("This cdkd version's SDK provider writes CidrBlock");
     expect(reasons[0]).toContain(
-      `a deploy with CidrBlock removed from the template and --prefer-sdk-route ${SUBNET}:AvailabilityZoneId changes nothing.`
+      `a deploy with CidrBlock removed from the template and --prefer-sdk-route ${SUBNET}:OutpostArn changes nothing.`
     );
   });
 });

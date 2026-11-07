@@ -1,5 +1,11 @@
 import type { Subnet } from '@aws-sdk/client-ec2';
-import { coerceCfnBoolean, configBooleanRefusal, configStringRefusal } from '../../config-shape.js';
+import {
+  coerceCfnBoolean,
+  coerceCfnInteger,
+  configBooleanRefusal,
+  configIntegerRefusal,
+  configStringRefusal,
+} from '../../config-shape.js';
 
 /**
  * go-to-k/cdkd#5632: each `PrivateDnsNameOptionsOnLaunch` member and the
@@ -57,6 +63,62 @@ export function subnetPrivateDnsOptionsRefusal(block: unknown): string | undefin
     if (message !== undefined) return message;
   }
   return undefined;
+}
+
+/** go-to-k/cdkd#5632: the CreateSubnet placement and IPAM inputs a template declared. */
+export interface SubnetCreateInputs {
+  availabilityZoneId?: string;
+  ipv4PoolId?: string;
+  ipv4NetmaskLength?: number;
+  ipv6PoolId?: string;
+  ipv6NetmaskLength?: number;
+}
+
+/**
+ * go-to-k/cdkd#5632: `AvailabilityZoneId` and the four IPAM inputs, all
+ * create-only, read for CreateSubnet. Answers the refusal for a malformed
+ * value (a non-string, a BLANK string, or a netmask that is no integer in
+ * its family's range) or the inputs to send. A blank value reads as a
+ * value: dropping it would place or allocate the subnet somewhere the
+ * template never named.
+ */
+export function readSubnetCreateInputs(
+  properties: Record<string, unknown>,
+  resourceType: string
+): { refusal: string } | { inputs: SubnetCreateInputs } {
+  const stringRefusal = (key: string): string | undefined =>
+    configStringRefusal(properties, key, '', resourceType) ??
+    (properties[key] === '' ? `${resourceType}.${key} must not be blank` : undefined);
+  const refusal =
+    stringRefusal('AvailabilityZoneId') ??
+    stringRefusal('Ipv4IpamPoolId') ??
+    configIntegerRefusal(properties, 'Ipv4NetmaskLength', resourceType, 0, 32) ??
+    stringRefusal('Ipv6IpamPoolId') ??
+    configIntegerRefusal(properties, 'Ipv6NetmaskLength', resourceType, 0, 128);
+  if (refusal !== undefined) return { refusal };
+  const text = (key: string): string | undefined =>
+    typeof properties[key] === 'string' ? (properties[key] as string) : undefined;
+  const inputs: SubnetCreateInputs = {};
+  const availabilityZoneId = text('AvailabilityZoneId');
+  if (availabilityZoneId !== undefined) inputs.availabilityZoneId = availabilityZoneId;
+  const ipv4PoolId = text('Ipv4IpamPoolId');
+  if (ipv4PoolId !== undefined) inputs.ipv4PoolId = ipv4PoolId;
+  const ipv4NetmaskLength = coerceCfnInteger(properties['Ipv4NetmaskLength']);
+  if (ipv4NetmaskLength !== undefined) inputs.ipv4NetmaskLength = ipv4NetmaskLength;
+  const ipv6PoolId = text('Ipv6IpamPoolId');
+  if (ipv6PoolId !== undefined) inputs.ipv6PoolId = ipv6PoolId;
+  const ipv6NetmaskLength = coerceCfnInteger(properties['Ipv6NetmaskLength']);
+  if (ipv6NetmaskLength !== undefined) inputs.ipv6NetmaskLength = ipv6NetmaskLength;
+  return { inputs };
+}
+
+/**
+ * go-to-k/cdkd#5632: the prefix length of a CIDR, the readback of a
+ * declared `Ipv4NetmaskLength` / `Ipv6NetmaskLength`.
+ */
+export function cidrPrefixLength(cidr: string | undefined): number | undefined {
+  const prefix = cidr === undefined ? undefined : /\/(\d+)$/.exec(cidr)?.[1];
+  return prefix === undefined ? undefined : Number(prefix);
 }
 
 /** A usable member's wire value; `undefined` when the block does not declare it. */

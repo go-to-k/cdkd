@@ -1,7 +1,7 @@
 import type { Subnet } from '@aws-sdk/client-ec2';
 import { DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
 import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
-import { coerceCfnBoolean } from '../../config-shape.js';
+import { coerceCfnBoolean, coerceCfnInteger } from '../../config-shape.js';
 import type { ResourceNotFound, ReadCurrentStateContext } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import {
@@ -65,7 +65,9 @@ export async function readUnsettled(
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   // Bypass the ordinary read's not-found-message downgrade: recovery needs a
   // failed read to refuse the update, never to manufacture a removal.
-  if (resourceType === 'AWS::EC2::Subnet') return this.readSubnetCurrentState(physicalId, names);
+  if (resourceType === 'AWS::EC2::Subnet') {
+    return this.readSubnetCurrentState(physicalId, names, recordedProperties);
+  }
   return this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties);
 }
 
@@ -229,7 +231,7 @@ export async function readCurrentStateOnce(
       case 'AWS::EC2::VPC':
         return await this.readVpcCurrentState(physicalId, properties);
       case 'AWS::EC2::Subnet':
-        return await this.readSubnetCurrentState(physicalId);
+        return await this.readSubnetCurrentState(physicalId, undefined, properties);
       case 'AWS::EC2::InternetGateway':
         return await this.readInternetGatewayCurrentState(physicalId);
       case 'AWS::EC2::NatGateway':
@@ -353,6 +355,10 @@ export function getDriftUnknownPaths(
           : []),
       ];
     }
+    // go-to-k/cdkd#5632: DescribeSubnets names no IPAM pool either; each
+    // netmask is read back from its block's prefix length.
+    case 'AWS::EC2::Subnet':
+      return ['Ipv4IpamPoolId', 'Ipv6IpamPoolId'];
     case 'AWS::EC2::Route':
     case 'AWS::EC2::VPCGatewayAttachment':
     case 'AWS::EC2::SubnetRouteTableAssociation':
@@ -406,6 +412,9 @@ export function canonicalizeDesiredProperties(
       const value = coerceCfnBoolean(properties[key]);
       if (value !== undefined && value !== properties[key]) out = { ...out, [key]: value };
     }
+    // go-to-k/cdkd#5632: each create-only netmask is sent as the integer, so
+    // a `"28"` / `28` spelling flip is no replacement.
+    out = foldNetmaskSpellings(out, ['Ipv4NetmaskLength', 'Ipv6NetmaskLength']);
     const dnsKey = 'PrivateDnsNameOptionsOnLaunch';
     const dns = properties[dnsKey];
     if (
@@ -423,6 +432,10 @@ export function canonicalizeDesiredProperties(
       if (folded !== dns) out = { ...out, [dnsKey]: folded };
     }
     return out;
+  }
+  // go-to-k/cdkd#5632: the VPC's create-only netmask folds the same way.
+  if (resourceType === 'AWS::EC2::VPC') {
+    return foldNetmaskSpellings(properties, ['Ipv4NetmaskLength']);
   }
   if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
     // A no-op `onUnusable` rather than the logger: a diff must not throw, and
@@ -466,6 +479,19 @@ export function canonicalizeDesiredProperties(
   // Untouched unless the CFn-invalid multi-destination shape is present, so
   // an ordinary single-destination route compares byte-for-byte as before.
   return declared.length > 1 ? narrowed : properties;
+}
+
+/** Each integer-valued `keys` member as the integer the create sends; an unusable value stays. */
+function foldNetmaskSpellings(
+  properties: Record<string, unknown>,
+  keys: readonly string[]
+): Record<string, unknown> {
+  let out = properties;
+  for (const key of keys) {
+    const value = coerceCfnInteger(properties[key]);
+    if (value !== undefined && value !== properties[key]) out = { ...out, [key]: value };
+  }
+  return out;
 }
 
 /** The {@link EC2Provider} methods this module defines. */
