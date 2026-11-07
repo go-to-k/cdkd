@@ -10,7 +10,6 @@
 src/analyzer/diff-calculator.ts
 src/analyzer/orphan-rewriter.ts
 src/analyzer/outputs-diff.ts
-src/analyzer/replacement-rules.ts
 src/analyzer/security-changes.ts
 src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
