@@ -118,6 +118,7 @@ import ts from 'typescript-v6';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 import { isMalformedBagSourceFile, malformedBagSourceFiles } from './_malformed-resources-bag-source.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -178,6 +179,20 @@ describe("the diff-recursive family's read order (go-to-k/cdkd#5835)", () => {
 /** A file of that family stands for the barrel's path, under which it is fenced. */
 function asFencedPath(file: string): string {
   return file.startsWith(DIFF_RECURSIVE_DIR) ? DIFF_RECURSIVE : file;
+}
+
+/**
+ * The nested-stack provider and every companion file under its directory
+ * (go-to-k/cdkd#5835), comments stripped, for the premises that hold for the
+ * whole provider rather than for one body.
+ */
+function nestedStackProviderFamilyCode(): string {
+  const provider = 'src/provisioning/providers/nested-stack-provider.ts';
+  const companions = companionFiles(join(repoRoot, provider)).map((f) =>
+    f.slice(repoRoot.length + 1)
+  );
+  expect(companions.length, 'the nested-stack companion directory is empty').toBeGreaterThan(0);
+  return [provider, ...companions].map((f) => code(f)).join('\n');
 }
 
 /**
@@ -4349,11 +4364,14 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * records for this file.
    */
   it('src/provisioning/providers/nested-stack-provider.ts REFUSES a malformed CHILD resources bag', () => {
-    const file = 'src/provisioning/providers/nested-stack-provider.ts';
+    // `delete()`'s body lives in the provider's companion directory
+    // (go-to-k/cdkd#5835); the dominance below is within that one body.
+    const file = 'src/provisioning/providers/nested-stack/delete.ts';
     const src = code(file);
-    // The premise. If it ever writes state directly it belongs in REFUSE.
+    // The premise, over the WHOLE provider family. If it ever writes state
+    // directly it belongs in REFUSE.
     expect(
-      src.includes('saveState('),
+      nestedStackProviderFamilyCode().includes('saveState('),
       `${file} now writes state directly; move it into REFUSE.`
     ).toBe(false);
     expect(
@@ -4686,12 +4704,14 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * premise it actually rests on.
    */
   it('src/provisioning/providers/nested-stack-provider.ts REFUSES — its caller persists the result', () => {
-    const file = 'src/provisioning/providers/nested-stack-provider.ts';
+    // `readChildOutputsAsAttributes` lives in the provider's companion
+    // directory (go-to-k/cdkd#5835); the dominance below is within that body.
+    const file = 'src/provisioning/providers/nested-stack/outputs.ts';
     const src = code(file);
-    // The premise: it writes no state itself. If that ever stops being true it
-    // belongs in OUTPUTS_REFUSE with the rest.
+    // The premise, over the WHOLE provider family: it writes no state itself.
+    // If that ever stops being true it belongs in OUTPUTS_REFUSE with the rest.
     expect(
-      src.includes('saveState('),
+      nestedStackProviderFamilyCode().includes('saveState('),
       `${file} now writes state directly; move it into OUTPUTS_REFUSE.`
     ).toBe(false);
     expect(

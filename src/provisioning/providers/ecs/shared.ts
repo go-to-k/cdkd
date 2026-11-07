@@ -136,7 +136,7 @@ export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<Threshold
  * No "promote it if a third copy appears" trigger, because that already fired
  * long before this PR and adding it here would read as a new one. Grepped for
  * a standalone helper whose body is exactly this predicate: NINE across nine
- * files under six different names — `config-shape.ts`, `wafv2-provider.ts`,
+ * files under six different names — `config-shape.ts`, `wafv2/shared.ts`,
  * `s3-bucket/shared.ts` (`isPlainObject`), `emr-configuration.ts`,
  * `lambda-microvm-image-provider.ts` (`isRecord`),
  * `apigateway/shared.ts` (`isPlainObjectBlock`), `drift.ts`

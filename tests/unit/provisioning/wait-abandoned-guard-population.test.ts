@@ -96,7 +96,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   { file: 'provisioning/providers/ec2/tags-errors.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // `ecs-provider.ts`'s `isNotFoundException`, moved to its companion file.
   { file: 'provisioning/providers/ecs/convert-service.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `ElastiCacheProvider`'s `isNotFoundError`, moved to its companion file.
+  { file: 'provisioning/providers/elasticache/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // `ELBv2Provider`'s `isNotFoundError`, moved to its companion file.
   { file: 'provisioning/providers/elbv2/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // `NeptuneProvider`'s `isNotFoundError`, moved to its companion file.

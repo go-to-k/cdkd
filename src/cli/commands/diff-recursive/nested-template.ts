@@ -22,7 +22,7 @@ export const EMPTY_TEMPLATE: CloudFormationTemplate = { Resources: {} };
  * provisioning layer.
  *
  * A hardened variant of the guard in
- * `src/provisioning/providers/nested-stack-provider.ts` — in addition to
+ * `src/provisioning/providers/nested-stack/template.ts` — in addition to
  * `path.isAbsolute`, it also rejects Windows drive-letter (`C:\` / `C:/`)
  * and UNC (`\\server`) paths that `path.isAbsolute` misses when running on
  * a POSIX host. A future refactor could unify the two on this stricter form.

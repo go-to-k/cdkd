@@ -717,7 +717,8 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       'cli/commands/destroy.ts',
       // `cdkd state destroy`, moved out of `state.ts` (go-to-k/cdkd#5835).
       'cli/commands/state/destroy.ts',
-      'provisioning/providers/nested-stack-provider.ts',
+      // `NestedStackProvider.delete`, in its companion directory (go-to-k/cdkd#5835).
+      'provisioning/providers/nested-stack/delete.ts',
     ]);
     for (const file of files) {
       const source = readFileSync(`${root}/${file}`, 'utf-8');
