@@ -106,10 +106,15 @@ flags.
 
 **A container image built locally.** `--no-build` reuses the
 `cdkd-local-invoke-<hash>` image that an earlier run built. It is an error
-when that image is not in the local registry. `--no-pull` has no effect.
+when that image is not in the local registry. `--no-pull` affects only the
+Runtime Interface Emulator, as below.
 
 **A container image pulled from ECR.** `--no-pull` skips the pull. It is an
 error when the image is not cached. `--no-build` has no effect.
+
+**Either kind of container image.** `--no-pull` also skips pulling the image
+cdkd copies the Runtime Interface Emulator out of. See
+[Images without the Runtime Interface Emulator](#images-without-the-runtime-interface-emulator).
 
 ## Target resolution
 
@@ -140,7 +145,8 @@ that Lambda directly.
 ## Runtimes and images
 
 cdkd runs a ZIP Lambda in the AWS base image for its runtime, with your code
-mounted into it. A container-image Lambda runs in its own image.
+mounted into it. A container-image Lambda runs in its own image, under a
+Runtime Interface Emulator that cdkd mounts into it.
 
 ### Supported runtimes
 
@@ -199,12 +205,43 @@ cdkd applies the function's `ImageConfig` to the container:
 
 | Template field | Effect |
 | --- | --- |
-| `ImageConfig.Command` | Becomes the container `CMD`. |
-| `ImageConfig.EntryPoint` | Becomes `--entrypoint <first>`, with the rest as arguments. |
+| `ImageConfig.Command` | Replaces the image's own `CMD`. |
+| `ImageConfig.EntryPoint` | Replaces the image's own `ENTRYPOINT`. |
 | `ImageConfig.WorkingDirectory` | Becomes `--workdir`. |
 
-With no `EntryPoint`, the image's own entrypoint runs. A container-image
-Lambda ignores `Layers`, as it does on AWS.
+A field you leave out keeps the image's own value. A container-image Lambda
+ignores `Layers`, as it does on AWS.
+
+#### Images without the Runtime Interface Emulator
+
+cdkd invokes the function through the AWS Lambda Runtime Interface Emulator
+(RIE). The AWS Lambda base images ship one, but an image on any other base,
+such as distroless or Alpine with a Lambda runtime client, does not. So cdkd
+runs every container-image Lambda under an RIE of its own:
+
+- It mounts the RIE read-only at `/var/rapid/aws-lambda-rie` and makes it the
+  entrypoint.
+- It hands the RIE the image's `ENTRYPOINT` followed by its `CMD`, each
+  replaced by its `ImageConfig` field when set, as the program to run.
+- It leaves an image alone whose program already is an RIE: the first word
+  of that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
+
+An image whose entrypoint is a script that always starts its own RIE cannot
+be recognised, and its emulator then fails to bind port 8080. Start the RIE
+in such a script only when `AWS_LAMBDA_RUNTIME_API` is unset, as the AWS base
+images do.
+
+The RIE comes from `public.ecr.aws/lambda/provided:al2023`. On first use per
+architecture, cdkd pulls that image and copies the binary to
+`$XDG_CACHE_HOME/cdkd/lambda-rie/` (or `~/.cache/cdkd/lambda-rie/`). Later runs
+reuse the copy. Delete that directory to fetch a fresh one. Under `--no-pull`,
+the copy comes from a local `provided:al2023` image only.
+
+When cdkd cannot get the RIE, for example offline with nothing cached, it
+warns once and runs the image as built. An AWS base image still works then.
+
+An invoke that a server other than the RIE answers, with HTTP 404 or 405,
+fails with an error instead of returning that server's body as the result.
 
 ## Environment variables
 

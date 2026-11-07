@@ -106,7 +106,8 @@ Two of them need a word here:
 
 - `--container-host` is the IP that the Lambda containers' ports bind to. It
   is separate from `--host`, which is the address the API servers bind to.
-- `--no-pull` skips pulling the Lambda base image.
+- `--no-pull` skips pulling the Lambda base image, and the image cdkd copies
+  the Runtime Interface Emulator out of for container-image Lambdas.
 
 ## Target resolution
 
