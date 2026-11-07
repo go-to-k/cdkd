@@ -669,15 +669,16 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
 }
 
 /**
- * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration` is in the CFn
- * registry schema (2026-10-23 refresh, #5123) but in no
- * `@aws-sdk/client-lambda-core` release yet (installed 3.1159.0, latest
- * published 3.1160.0). The request below is built from explicit fields, so a
- * declared value would never reach Lambda Core and the deploy would report
- * success without it. It is refused on the template path instead.
+ * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration` appeared in the
+ * CFn registry schema in the 2026-10-23 refresh (#5123) and was withdrawn from
+ * it in the 2026-11-07 one; no `@aws-sdk/client-lambda-core` release models it
+ * (installed 3.1159.0, latest published 3.1164.0). The request below is built
+ * from explicit fields, so a declared value would never reach Lambda Core and
+ * the deploy would report success without it. It stays refused on the template
+ * path, which is also what CloudFormation now does with an undeclared member.
  * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
- * installed client sends the member: then forward it on create AND update,
- * read it back, and drop this refusal.
+ * installed client sends the member: forward it on create AND update, read it
+ * back, and drop this refusal only if the CFn schema declares it again.
  */
 const ELASTIC_IP_KEY = 'ElasticIpConfiguration';
 
