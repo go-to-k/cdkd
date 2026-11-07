@@ -13,7 +13,8 @@ const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/intrinsic-reso
 /** Repo-relative paths, host first, then the split modules in name order. */
 export const RESOLVER_FAMILY: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
-  ...readdirSync(SPLIT_DIR)
+  // Recursive: a split module may itself split into a nested directory (#5835).
+  ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => `src/deployment/intrinsic-resolver/${f}`),
