@@ -33,7 +33,7 @@ if (ROLLBACK_FAMILY.length < 12) {
 // A floor per nested directory (go-to-k/cdkd#5835): a recursive read that
 // stopped descending would drop these modules while the total above still
 // cleared its floor.
-const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2 };
+const NESTED_FLOORS: Record<string, number> = { 'journaled-orphans/': 2, 'replay-reverse-replacement/': 4 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
   const found = ROLLBACK_FAMILY.filter((f) => f.startsWith(`src/deployment/rollback-executor/${dir}`));
   if (found.length < floor) {

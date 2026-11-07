@@ -18,7 +18,6 @@ src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/rollback-executor/plan.ts
-src/deployment/rollback-executor/replay-reverse-replacement.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/types/state.ts
