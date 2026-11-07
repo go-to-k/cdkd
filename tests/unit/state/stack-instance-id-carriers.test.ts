@@ -346,7 +346,10 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
       'src/cli/commands/scrub/stack-rewrite.ts',
       'src/cli/commands/destroy-runner.ts',
       'src/analyzer/orphan-rewriter/rewrite.ts',
-      'src/state/s3-state-backend.ts',
+      // `saveState` and `adoptKeyRegion`, moved out of `s3-state-backend.ts`
+      // (go-to-k/cdkd#5835).
+      'src/state/s3-state-backend/state-record.ts',
+      'src/state/s3-state-backend/legacy.ts',
     ]) {
       expect(files).toContain(file);
     }
