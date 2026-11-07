@@ -141,6 +141,7 @@ import { withSharedDrainBudget } from '../../../src/deployment/drain-budget.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { redactOutputs as redactOutputsFn } from '../../../src/deployment/deploy-engine/masking.js';
+import { deployFlowSourceFiles } from './_deploy-flow-source.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { RESOLVER_FAMILY } from '../_resolver-family.js';
@@ -1861,7 +1862,9 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
 
 describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
   it.each([
-    ['src/deployment/deploy-engine/deploy-flow.ts', 'resolveOutputs', 1],
+    // The deploy flow is `deploy-flow.ts` plus `deploy-flow/**/*.ts`
+    // (go-to-k/cdkd#5835); the whole set is scanned.
+    ['src/deployment/deploy-engine/deploy-flow{,/**}.ts', 'resolveOutputs', 1],
     ['src/deployment/deploy-engine/execute.ts', 'resolveOutputs', 1],
     // `cdkd import` and `cdkd export` are `<name>.ts` plus `<name>/**/*.ts`;
     // the whole set is scanned.
@@ -1911,13 +1914,15 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     // Syntactic, like the fences above, and with the same limits: it asks
     // whether the call sits lexically inside a `withSharedDrainBudget(...)`
     // argument, not whether it runs inside one.
-    const files = file.startsWith('src/cli/commands/export{')
-      ? exportSourceFiles()
-      : file.startsWith('src/cli/commands/import{')
-        ? importSourceFiles().map((rel) => join(import.meta.dirname, '../../..', rel))
-        : file.startsWith('src/cli/commands/scrub{')
-          ? scrubSourceFiles()
-          : [join(import.meta.dirname, '../../..', file)];
+    const files = file.startsWith('src/deployment/deploy-engine/deploy-flow{')
+      ? deployFlowSourceFiles().map((rel) => join(import.meta.dirname, '../../..', rel))
+      : file.startsWith('src/cli/commands/export{')
+        ? exportSourceFiles()
+        : file.startsWith('src/cli/commands/import{')
+          ? importSourceFiles().map((rel) => join(import.meta.dirname, '../../..', rel))
+          : file.startsWith('src/cli/commands/scrub{')
+            ? scrubSourceFiles()
+            : [join(import.meta.dirname, '../../..', file)];
 
     const calls: { line: string; wrapped: boolean }[] = [];
     for (const abs of files) {

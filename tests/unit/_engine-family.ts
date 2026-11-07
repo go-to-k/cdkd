@@ -9,11 +9,18 @@ import { join } from 'node:path';
  */
 const SPLIT_DIR = join(import.meta.dirname, '../../src/deployment/deploy-engine');
 
-/** Repo-relative paths, host first, then the split modules in name order. */
+/**
+ * Repo-relative paths, host first, then the split modules in name order. The
+ * directory is read recursively: a module split further into a nested
+ * directory (`deploy-engine/deploy-flow/`, go-to-k/cdkd#5835) stays in the
+ * family. Name order is not run order: a fence that checks an order reads
+ * one file.
+ */
 export const ENGINE_FAMILY: readonly string[] = [
   'src/deployment/deploy-engine.ts',
-  ...readdirSync(SPLIT_DIR)
+  ...readdirSync(SPLIT_DIR, { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
+    .map((f) => f.split('\\').join('/'))
     .sort()
     .map((f) => `src/deployment/deploy-engine/${f}`),
 ];
@@ -22,6 +29,15 @@ export const ENGINE_FAMILY: readonly string[] = [
 // every fence counting an ABSENCE over it would shrink silently rather than red.
 if (ENGINE_FAMILY.length < 2) {
   throw new Error(`the engine family resolved to ${ENGINE_FAMILY.join(', ')} only`);
+}
+// And one per nested directory: a recursive read that stopped descending would
+// drop a whole subdirectory's modules while the top level kept the floor above.
+for (const sub of readdirSync(SPLIT_DIR, { withFileTypes: true })) {
+  if (!sub.isDirectory()) continue;
+  const prefix = `src/deployment/deploy-engine/${sub.name}/`;
+  if (!ENGINE_FAMILY.some((rel) => rel.startsWith(prefix))) {
+    throw new Error(`the engine family holds no module under ${prefix}`);
+  }
 }
 
 /** Every family file's source, joined with a newline. */
