@@ -296,8 +296,10 @@ export class AttributeFetcher {
         reason: `${reason}; state.attributes cache also has no value for '${attribute}'`,
       };
     }
-    // A cached value `servableRecordedAttribute` would not serve is not
-    // spliced here either (go-to-k/cdkd#4602): the splice lands in the
+    // A cached value in one of `servableRecordedAttribute`'s secret or
+    // not-a-value classes is not spliced here either (go-to-k/cdkd#4602;
+    // a freshness-only exclusion, such as an always-live attribute, is
+    // spliced with the warning below): the splice lands in the
     // referring resource's PERSISTED properties and `printRewriteSummary`
     // logs it at info, so a plaintext credential (`AWS::IAM::AccessKey`'s
     // `SecretAccessKey`, a custom resource's `Data`, a credential-named leaf)

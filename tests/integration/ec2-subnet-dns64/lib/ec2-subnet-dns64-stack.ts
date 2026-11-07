@@ -103,6 +103,13 @@ export class Ec2SubnetDns64Stack extends cdk.Stack {
     }
 
     new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+    // go-to-k/cdkd#5944: Subnet return values the SDK record lacks, read live.
+    // The prefix keeps the output non-empty once the IPv6 block is removed.
+    new cdk.CfnOutput(this, 'SubnetIpv6Blocks', {
+      value: cdk.Fn.join('', ['blocks:', cdk.Fn.join(',', subnet.attrIpv6CidrBlocks)]),
+    });
+    new cdk.CfnOutput(this, 'SubnetNaclAssociationId', { value: subnet.attrNetworkAclAssociationId });
+    new cdk.CfnOutput(this, 'SubnetVpcId', { value: subnet.attrVpcId });
     new cdk.CfnOutput(this, 'BlockSubnetId', { value: blockSubnet.ref });
     new cdk.CfnOutput(this, 'DnsSubnetId', { value: dnsSubnet.ref });
     new cdk.CfnOutput(this, 'DnsExpectedCidr', { value: dnsBlock });

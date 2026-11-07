@@ -436,6 +436,51 @@ describe('rewriteResourceReferences', () => {
     expect(result.state.resources['Other']?.properties).toEqual({ Value: ['2600:1f18::/56'] });
   });
 
+  it("takes the live answer over a Subnet's recorded always-live attributes, and the record for a create-only one (go-to-k/cdkd#5944)", async () => {
+    // The resolver never serves a recorded Subnet `Ipv6CidrBlocks` /
+    // `NetworkAclAssociationId` / `BlockPublicAccessStates` (a Cloud Control
+    // record's create-time copy goes stale), so the rewrite must not either.
+    const live: Record<string, unknown> = {
+      Ipv6CidrBlocks: ['2600:1f18:9::/64'],
+      NetworkAclAssociationId: 'aclassoc-0live',
+      BlockPublicAccessStates: { InternetGatewayBlockMode: 'block-ingress' },
+      AvailabilityZone: 'us-east-1z',
+    };
+    const getAttribute = vi.fn(async (_id: string, _type: string, name: string) => live[name]);
+    const state = baseState({
+      Subnet: {
+        physicalId: 'subnet-0123456789abcdef0',
+        resourceType: 'AWS::EC2::Subnet',
+        properties: {},
+        attributes: {
+          Ipv6CidrBlocks: ['2600:1f18:1::/64'],
+          NetworkAclAssociationId: 'aclassoc-0stale',
+          BlockPublicAccessStates: { InternetGatewayBlockMode: 'off' },
+          AvailabilityZone: 'us-east-1a',
+        },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: {
+          Blocks: { 'Fn::GetAtt': ['Subnet', 'Ipv6CidrBlocks'] },
+          Nacl: { 'Fn::GetAtt': ['Subnet', 'NetworkAclAssociationId'] },
+          Bpa: { 'Fn::GetAtt': ['Subnet', 'BlockPublicAccessStates'] },
+          Az: { 'Fn::GetAtt': ['Subnet', 'AvailabilityZone'] },
+        },
+      },
+    });
+    const result = await rewriteResourceReferences(state, ['Subnet'], fakeRegistry(getAttribute));
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Blocks: ['2600:1f18:9::/64'],
+      Nacl: 'aclassoc-0live',
+      Bpa: { InternetGatewayBlockMode: 'block-ingress' },
+      // Create-only: the recorded value still wins once the live read answered.
+      Az: 'us-east-1a',
+    });
+  });
+
   it("--force does NOT substitute a legacy '' security-group VpcId after a failed live read (#3097)", async () => {
     // A pre-#3097 record for a group declared without `VpcId` holds `''`,
     // which passes a bare `=== undefined` test; spliced into the referring
