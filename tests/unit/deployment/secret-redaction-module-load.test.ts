@@ -18,9 +18,11 @@ import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
-// RECURSIVE: a split module's own companion directory (`redact-path/`,
-// #5835) is part of the family and must load first too, and the entry that
-// imports it cannot load at all unless the copy below carries it.
+/**
+ * Recursive: a module split into a companion directory (`nested-stack.ts` +
+ * `nested-stack/`, #5835) imports its parts by relative specifier, so the
+ * transpiled copy must hold them too, and each part must load first on its own.
+ */
 const MODULES = readdirSync(DIR, { recursive: true, encoding: 'utf8' })
   .filter((f) => f.endsWith('.ts'))
   .map((f) => f.split(sep).join('/'))
@@ -88,7 +90,9 @@ describe('secret-redaction module load order', () => {
   it('finds the split modules (guards against passing by reading nothing)', () => {
     expect(MODULES.length).toBeGreaterThanOrEqual(12);
     expect(MODULES).toContain('rules.ts');
-    // A floor on the nested companion directory, so a non-recursive listing reds.
+    // Per-directory floors: the recursion reaches each companion directory.
+    expect(MODULES.filter((f) => f.startsWith('nested-stack/')).length).toBeGreaterThanOrEqual(6);
+    expect(MODULES.filter((f) => f.startsWith('redact-path/')).length).toBeGreaterThanOrEqual(6);
     expect(MODULES).toContain('redact-path/reference-tokens.ts');
   });
 

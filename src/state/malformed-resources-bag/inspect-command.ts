@@ -45,7 +45,7 @@ import {
  * tighten.
  *
  * {@link isPasteableIdent} is that gate and the codebase already spends it on
- * this question (`gc.ts` gates its own destructive hint on the same pair). It
+ * this question (`gc/scan.ts` gates its own destructive hint on the same pair). It
  * refuses a space and a quote outright while keeping every name CloudFormation
  * can produce, `Parent~Child` included, so no healthy record loses its
  * identity here.

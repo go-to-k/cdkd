@@ -10,7 +10,6 @@
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/refactor.ts
 src/cli/commands/rollback.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
@@ -22,15 +21,11 @@ src/deployment/deploy-engine/rollback.ts
 src/deployment/deploy-engine/update-in-place.ts
 src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
-src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
-src/deployment/intrinsic-resolver/dynamic-refs.ts
-src/deployment/masked-property-fingerprints.ts
 src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
 src/deployment/rollback-executor/replay-reverse-replacement.ts
-src/deployment/secret-redaction/nested-stack.ts
 src/deployment/secret-redaction/positions.ts
 src/deployment/secret-redaction/redact-state.ts
 src/provisioning/final-snapshot.ts

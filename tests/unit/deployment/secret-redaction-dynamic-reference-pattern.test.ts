@@ -23,7 +23,7 @@ import {
  * the `{{resolve:...}}` token pattern disagreed, and the strictest one persisted
  * PLAINTEXT.
  *
- * The authority is `resolveDynamicReferences (intrinsic-resolver/dynamic-refs.ts)`'s own
+ * The authority is `resolveDynamicReferencesWithLogTwin (intrinsic-resolver/dynamic-refs/log-twin-pass.ts)`'s own
  * scan, `/\{\{resolve:([^}]+)\}\}/g` — what cdkd will actually try to resolve.
  * `secret-redaction.ts`'s `isSingleDynamicReferenceToken` and `drift.ts`'s
  * `isWholeDynamicReference` both spelled the inner class `[^{}]*`, so a
@@ -70,7 +70,7 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     // AUTHORITY and does not export the pattern — a hand-copied literal here
     // would be a fourth spelling, which is the very thing being fenced.
     const resolverSource = readFileSync(
-      `${REPO_ROOT}src/deployment/intrinsic-resolver/dynamic-refs.ts`,
+      `${REPO_ROOT}src/deployment/intrinsic-resolver/dynamic-refs/log-twin-pass.ts`,
       'utf8'
     );
     const authority = /\/\\\{\\\{resolve:\(([^)]+)\)\\\}\\\}\/g/.exec(resolverSource);
@@ -128,7 +128,7 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     // an exempt-by-name list would have hidden a SECOND spelling appearing
     // there, and the resolver is precisely where that would matter most.
     const OWNERS: Record<string, number> = {
-      'src/deployment/intrinsic-resolver/dynamic-refs.ts': 1,
+      'src/deployment/intrinsic-resolver/dynamic-refs/log-twin-pass.ts': 1,
       // WHOLE_DYNAMIC_REFERENCE_PATTERN (rules.ts) and DYNAMIC_REFERENCE_TOKEN_SCAN
       // (redact-path.ts, moved to redact-path/reference-tokens.ts by #5835), split
       // from `secret-redaction.ts` (#4415).
