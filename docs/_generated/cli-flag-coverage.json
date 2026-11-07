@@ -1426,6 +1426,7 @@
         "docdb-neptune",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",
+        "ec2-vpc-ipam",
         "ecs-service-update-props",
         "emr-instance-configs",
         "eventbridge-pipes",

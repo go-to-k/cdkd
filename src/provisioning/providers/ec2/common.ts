@@ -109,7 +109,9 @@ export const ec2IdsCreatedByThisProcess = new RecentIdSet();
  * pool allocation to be released. AWS releases it late: measured 1092s (about
  * 18 minutes) after `DeleteVpc` returned (us-east-1, 2026-11-04, a /28 from an
  * advanced-tier private pool), so the cap is 25 minutes, under the default
- * 30-minute per-resource deadline. Exported so tests can shorten it.
+ * 30-minute per-resource deadline. A release has also taken longer than that
+ * (go-to-k/cdkd#5975); the pool CIDR's delete then waits again, under its own
+ * deadline (`ipamPoolCidrReleaseWait`). Exported so tests can shorten it.
  */
 export const vpcIpamReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 25 * 60_000 };
 
