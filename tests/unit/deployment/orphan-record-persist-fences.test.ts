@@ -29,7 +29,8 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readEngineFamily } from '../_engine-family.js';
 
 // The whole engine (#4200, #4350): the save sites holding these literals live in
-// the `deploy-engine/*.ts` modules, the redactor in the host.
+// the `deploy-engine/*.ts` modules, the redactor in `deploy-engine/state-persist.ts`
+// (#5835).
 const source = readEngineFamily();
 
 describe('orphans redaction fence (#2934)', () => {
@@ -37,15 +38,15 @@ describe('orphans redaction fence (#2934)', () => {
     // Anchored on the function body, not the whole file: a mention anywhere
     // else — a comment, an unrelated helper — would satisfy a bare
     // `source.includes`, which is how a fence stops discriminating.
-    const start = source.indexOf('private redactStateForPersist(');
+    const start = source.indexOf('export function redactStateForPersist(');
     expect(start).toBeGreaterThan(-1);
-    const body = source.slice(start, source.indexOf('\n  }', start));
+    const body = source.slice(start, source.indexOf('\n}\n', start));
     expect(body).toContain('state.orphans');
   });
 
   it('scrubs each record with the same helper that scrubs `resources`', () => {
-    const start = source.indexOf('private redactStateForPersist(');
-    const body = source.slice(start, source.indexOf('\n  }', start));
+    const start = source.indexOf('export function redactStateForPersist(');
+    const body = source.slice(start, source.indexOf('\n}\n', start));
     // `scrubResourceRecord` is what applies the secret needles. Reaching the
     // field but copying it verbatim would pass the case above and still leak,
     // so the fence names the call, not just the field.
@@ -54,8 +55,8 @@ describe('orphans redaction fence (#2934)', () => {
   });
 
   it('keys the needles on what the deploy RESOLVED, not on `state.resources`', () => {
-    const start = source.indexOf('private redactStateForPersist(');
-    const body = source.slice(start, source.indexOf('\n  }', start));
+    const start = source.indexOf('export function redactStateForPersist(');
+    const body = source.slice(start, source.indexOf('\n}\n', start));
     const orphanArm = body.slice(body.indexOf('state.orphans'));
 
     // An orphan is BY DEFINITION absent from `resources` — that is what makes
