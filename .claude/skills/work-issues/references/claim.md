@@ -94,7 +94,13 @@ sent off its CFn path (its own command, a renamed field) adds its
 command is sent more than once per resource (#5630); and the
 type's `docs/cli-deploy.md` wait-table row plus any `docs/cli-deploy-waits.md`
 section or destroy row and `docs/wait-modes.md` `--no-wait` bullet for it, as a
-newly sent member may need a wait (providers.md rule 5; #5719, #5780) — a
+newly sent member may need a wait (providers.md rule 5; #5719, #5780); a file
+MOVE or split adds EVERY hit of `grep -rln
+--exclude-dir={node_modules,cdk.out,_generated} '<old path>\|<old basename WITH
+extension>' src tests scripts .claude docs .github` (`paths:` globs and
+reviewer triggers stop firing on moved code, and a comment naming the old file
+is stale even when its symbol resolves; #5947 needed three amendments), plus
+every importer when no re-export stays behind — a
 narrower list stops the lane mid-run to ask (#1160).
 
 **Editing a file another contributor's CLAIM holds** (only on the maintainer's
