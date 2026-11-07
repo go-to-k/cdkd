@@ -4,6 +4,7 @@ paths:
   - 'src/deployment/intrinsic-function-resolver.ts'
   - 'src/deployment/intrinsic-resolver/**'
   - 'src/utils/error-handler.ts'
+  - 'src/utils/error-handler/**'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
   - 'src/cli/commands/scrub/**'

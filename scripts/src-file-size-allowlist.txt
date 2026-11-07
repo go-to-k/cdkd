@@ -7,7 +7,6 @@
 #   - a listed file that drops to the cap or below must be removed from this
 #     list in the same change (a stale entry fails the test).
 # Never add a line here; split the file instead.
-src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
@@ -25,8 +24,6 @@ src/deployment/deploy-engine/update-replace.ts
 src/deployment/deploy-engine/update.ts
 src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
-src/deployment/intrinsic-resolver/context.ts
-src/deployment/intrinsic-resolver/getatt.ts
 src/deployment/masked-property-fingerprints.ts
 src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
@@ -42,4 +39,3 @@ src/provisioning/providers/deletion-protection-compensation.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts
-src/utils/error-handler.ts

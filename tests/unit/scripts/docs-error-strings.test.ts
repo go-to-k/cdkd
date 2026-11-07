@@ -612,11 +612,11 @@ describe('docs error-string checker: the real tree', () => {
   });
 
   it('derives the error names from the real tree, not a list', () => {
-    const names = deriveErrorNames([join(ROOT, 'src/utils/error-handler.ts')]);
+    const names = deriveErrorNames([join(ROOT, 'src/utils/error-handler/base-errors.ts')]);
     expect(names.has('StateError')).toBe(true);
     expect(names.has('LockError')).toBe(true);
     expect(names.has('ProvisioningError')).toBe(true);
-    // Subclasses declared outside error-handler.ts must be picked up too.
+    // Subclasses declared outside error-handler/base-errors.ts must be picked up too.
     //
     // `report`, not a second `analyze(ROOT)`. The describe already scans the
     // whole tree once, at collection time, and re-scanning it INSIDE a case
@@ -654,7 +654,7 @@ describe('docs error-string checker: fails against real code', () => {
   const MUTABLE = [
     'docs/troubleshooting.md',
     'src/state/s3-state-backend.ts',
-    'src/utils/error-handler.ts',
+    'src/utils/error-handler/base-errors.ts',
     'scripts/check-docs-error-strings.ts',
   ] as const;
 
@@ -753,7 +753,7 @@ describe('docs error-string checker: fails against real code', () => {
 
   it('reports a class name the tree no longer assigns', () => {
     const { code, out } = runOnCopy((root) => {
-      const p = join(root, 'src/utils/error-handler.ts');
+      const p = join(root, 'src/utils/error-handler/base-errors.ts');
       const text = readFileSync(p, 'utf8');
       writeFileSync(p, text.replace("this.name = 'StateError';", "this.name = 'StateErrorX';"), 'utf8');
     });
@@ -781,7 +781,7 @@ describe('docs error-string checker: fails against real code', () => {
     const { code, out } = runOnCopy((root) => {
       // CredentialsProviderError is quoted on the proxy page and is NOT cdkd's.
       // Make the tree assign it, and the exemption must be reported stale.
-      const p = join(root, 'src/utils/error-handler.ts');
+      const p = join(root, 'src/utils/error-handler/base-errors.ts');
       const text = readFileSync(p, 'utf8');
       writeFileSync(
         p,
