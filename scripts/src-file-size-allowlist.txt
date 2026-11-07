@@ -7,7 +7,6 @@
 #   - a listed file that drops to the cap or below must be removed from this
 #     list in the same change (a stale entry fails the test).
 # Never add a line here; split the file instead.
-src/cli/commands/destroy-runner.ts
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/replacement.ts
 src/deployment/deploy-engine/rollback.ts

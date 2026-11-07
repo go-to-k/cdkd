@@ -970,6 +970,13 @@ stage_filter_hunk "src/cli/commands/destroy-runner.ts" \
 run_case "hunk filter: destroy-runner.ts delete symbol arms the gate" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# `destroyStackInRegion`'s body lives in `destroy-runner/` (#5835); the
+# `destroy-runner/.*\.ts` arm keeps it in scope.
+stage_filter_hunk "src/cli/commands/destroy-runner/delete-resource.ts" \
+  "  const order = plan.deleteOrder();"
+run_case "hunk filter: destroy-runner/ module delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 stage_filter_hunk "src/deployment/deploy-engine.ts" \
   "  await this.performRollback(failed);"
 run_case "hunk filter: deploy-engine.ts delete symbol arms the gate" 2 stale "$filter_repo" \

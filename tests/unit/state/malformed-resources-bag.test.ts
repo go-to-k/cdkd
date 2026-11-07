@@ -312,8 +312,172 @@ describe("the rollback family's read order (go-to-k/cdkd#5835)", () => {
   });
 });
 
+/**
+ * The shared destroy runner is `destroy-runner.ts` plus every module under
+ * `destroy-runner/` (go-to-k/cdkd#5835), keyed as ONE subject,
+ * {@link DESTROY_RUNNER}, the same way as {@link ROLLBACK}. Its modules are read
+ * in {@link DESTROY_RUNNER_ORDER} for the presence checks only. No dominance
+ * check reads that join: see {@link DESTROY_RUNNER_RUN}. A module on disk that
+ * the list does not name fails the "read order" case by name.
+ */
+const DESTROY_RUNNER = 'src/cli/commands/destroy-runner.ts';
+const DESTROY_RUNNER_DIR = 'src/cli/commands/destroy-runner/';
+const DESTROY_RUNNER_ORDER = [
+  'types.ts',
+  'helpers.ts',
+  'preflight.ts',
+  'run.ts',
+  'under-lock.ts',
+  'under-lock-steps.ts',
+  'delete-resource.ts',
+] as const;
+/** The modules under `destroy-runner/`, the directory read recursively. */
+function destroyRunnerModules(): string[] {
+  return readdirSync(join(repoRoot, DESTROY_RUNNER_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
+
+describe("the destroy-runner family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(destroyRunnerModules().sort()).toEqual([...DESTROY_RUNNER_ORDER].sort());
+  });
+});
+
+/**
+ * `destroyStackInRegion`'s module, the helper module holding its entry
+ * refusals, and the one CALL that runs them (go-to-k/cdkd#5835).
+ *
+ * The destroy runner's DOMINANCE checks never read {@link code}: it joins the
+ * modules in {@link DESTROY_RUNNER_ORDER}, which puts every refusal in
+ * `preflight.ts` above every read in `run.ts` whatever order `run.ts` calls
+ * them in, so a dominance check across that join passes over nothing (review
+ * of the split). They read `run.ts` ALONE through {@link dominanceView}, with the
+ * helper CALL standing for the refusals; that the helper refuses before it
+ * hands control back is pinned on its own body, in `preflight.ts` alone, by
+ * the "entry refusals" describe below.
+ */
+const DESTROY_RUNNER_RUN = `${DESTROY_RUNNER_DIR}run.ts`;
+const DESTROY_RUNNER_PREFLIGHT = `${DESTROY_RUNNER_DIR}preflight.ts`;
+const DESTROY_RUNNER_ENTRY_CALL = 'refuseMalformedRecordAndLoadJournaledOrphans(';
+
+/** One module, comments stripped, with a floor: an empty read passes every bound. */
+function strippedModule(relPath: string): string {
+  const src = strippedFile(relPath);
+  if (src.trim().length === 0) throw new Error(`${relPath} is empty; update DESTROY_RUNNER_ORDER`);
+  return src;
+}
+
+/**
+ * The text and guard spellings a dominance check reads for `file`. Every
+ * subject but the destroy runner reads {@link code} with its own spellings;
+ * the destroy runner reads `run.ts` alone with `runSpellings`, which default
+ * to the entry-helper call (see {@link DESTROY_RUNNER_RUN}).
+ */
+function dominanceView(
+  file: string,
+  spellings: readonly string[],
+  runSpellings: readonly string[] = [DESTROY_RUNNER_ENTRY_CALL]
+): { src: string; spellings: readonly string[] } {
+  if (file !== DESTROY_RUNNER) return { src: code(file), spellings };
+  return { src: strippedModule(DESTROY_RUNNER_RUN), spellings: runSpellings };
+}
+
+describe("destroy-runner's entry refusals, pinned per module (go-to-k/cdkd#5835)", () => {
+  /** The five container / row refusals the helper owes, each on the LOADED record. */
+  const ENTRY_REFUSALS = [
+    'refuseMalformedResourcesForDestroy(state,',
+    'refuseMalformedResourceEntriesForDestroy(state,',
+    'refuseMalformedResourcePropertiesForDestroy(state,',
+    'refuseMalformedOrphansForDestroy(state,',
+    'refuseMalformedOrphanRecordsForDestroy(state,',
+  ];
+
+  it('run.ts calls the entry helper ONCE, above its first read of the record and every later step', () => {
+    const run = strippedModule(DESTROY_RUNNER_RUN);
+    const callAt = run.indexOf(DESTROY_RUNNER_ENTRY_CALL);
+    expect(
+      callAt,
+      `${DESTROY_RUNNER_RUN} no longer calls \`${DESTROY_RUNNER_ENTRY_CALL}\`, so no entry ` +
+        `refusal runs before the destroy reads the record.`
+    ).toBeGreaterThan(-1);
+    // The `import` clause carries no `(`, so a second hit is a second CALL —
+    // and `indexOf` would then speak only for the first.
+    expect(run.indexOf(DESTROY_RUNNER_ENTRY_CALL, callAt + 1), 'a second entry-helper call').toBe(-1);
+    for (const read of [
+      // The record's own containers, each at its first read in this module.
+      'state.resources',
+      'state.orphans',
+      'supersededResourcesOf(',
+      'holdsSupersededResources(',
+      // The steps that act on the record: the empty-stack fast path, the
+      // pre-confirmation listing and the delete under the lock.
+      'destroyEmptyStack(',
+      'announceOrphansAndConfirm(',
+      'destroyStackUnderLock(',
+    ]) {
+      const readAt = run.indexOf(read);
+      expect(
+        readAt,
+        `${DESTROY_RUNNER_RUN} no longer contains \`${read}\`; this anchor is stale.`
+      ).toBeGreaterThan(-1);
+      expect(
+        callAt,
+        `${DESTROY_RUNNER_RUN} reaches \`${read}\` BEFORE it calls the entry refusals, so an ` +
+          `unreadable record is counted or acted on unrefused (go-to-k/cdkd#3161, #3379, #3500).`
+      ).toBeLessThan(readAt);
+    }
+  });
+
+  it('the helper refuses before it reads the record or hands control back', () => {
+    const preflight = strippedModule(DESTROY_RUNNER_PREFLIGHT);
+    const start = preflight.indexOf(`export async function ${DESTROY_RUNNER_ENTRY_CALL}`);
+    expect(start, `${DESTROY_RUNNER_PREFLIGHT} no longer defines the entry helper`).toBeGreaterThan(-1);
+    // The parameter list's closing brace is `}: EntryChecksFrame`, so the first
+    // column-0 `}` on its own line closes the BODY.
+    const end = preflight.indexOf('\n}\n', start);
+    expect(end, 'the entry helper body has no end').toBeGreaterThan(start);
+    const body = preflight.slice(start, end);
+    // Every way control or the record leaves the refusals' reach: an `await`
+    // yields to the caller, a `return` hands back, and a read of either
+    // container acts on what the refusals have not yet passed. `\b` keeps
+    // `Awaited` / `ReturnType` in the signature from matching.
+    const exits = [/\bawait\b/, /\breturn\b/, /state\.orphans/, /state\.resources/].map((re) => {
+      const at = body.search(re);
+      expect(at, `the entry helper body no longer contains ${re}; this bound is stale`).toBeGreaterThan(-1);
+      return at;
+    });
+    const firstExit = Math.min(...exits);
+    for (const refusal of ENTRY_REFUSALS) {
+      const at = body.indexOf(refusal);
+      expect(
+        at,
+        `the entry helper no longer calls \`${refusal}\`, so the record it guards reaches ` +
+          `${DESTROY_RUNNER_RUN} unrefused.`
+      ).toBeGreaterThan(-1);
+      expect(
+        at,
+        `the entry helper calls \`${refusal}\` after it awaits, returns or reads the record.`
+      ).toBeLessThan(firstExit);
+    }
+  });
+});
+
 /** The repo-relative files a fence subject reads: every scrub module for {@link SCRUB}. */
 function subjectFiles(relPath: string): string[] {
+  if (relPath === DESTROY_RUNNER) {
+    const files = [
+      DESTROY_RUNNER,
+      ...DESTROY_RUNNER_ORDER.map((name) => `${DESTROY_RUNNER_DIR}${name}`),
+    ];
+    for (const file of files) {
+      // A per-file floor, for the reason the refactor family's carries.
+      if (readFileSync(join(repoRoot, file), 'utf8').trim().length === 0) {
+        throw new Error(`${file} is empty; update DESTROY_RUNNER_ORDER`);
+      }
+    }
+    return files;
+  }
   if (relPath === ROLLBACK) {
     const files = [ROLLBACK, ...ROLLBACK_ORDER.map((name) => `${ROLLBACK_DIR}${name}`)];
     for (const file of files) {
@@ -347,9 +511,10 @@ function subjectFiles(relPath: string): string[] {
 /**
  * The fence subject a `git grep` path belongs to: every scrub module is
  * {@link SCRUB}, every refactor module {@link REFACTOR}, every rollback module
- * {@link ROLLBACK}.
+ * {@link ROLLBACK}, every destroy-runner module {@link DESTROY_RUNNER}.
  */
 function subjectOf(file: string): string {
+  if (file.startsWith(DESTROY_RUNNER_DIR)) return DESTROY_RUNNER;
   if (file.startsWith(REFACTOR_DIR)) return REFACTOR;
   if (file.startsWith(DEPLOY_FLOW_DIR)) return DEPLOY_FLOW;
   if (file.startsWith(ROLLBACK_DIR)) return ROLLBACK;
@@ -3373,7 +3538,9 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
    */
   const ANCHORS: Record<string, string> = {
     'src/deployment/deploy-engine/deploy-flow.ts': 'await engine.stateBackend.saveState(',
-    'src/cli/commands/destroy-runner.ts': 'state.orphans ?? []',
+    // `run.ts`'s own count, read against the entry-helper CALL (see
+    // `dominanceView`); the helper's body is pinned separately.
+    'src/cli/commands/destroy-runner.ts': '(state.orphans ?? []).length',
     'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
     'src/cli/commands/scrub.ts': 'state.orphans ?? []',
     'src/cli/commands/import.ts': 'orphansCarriedFrom(',
@@ -3392,8 +3559,8 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
   ];
 
   it.each(Object.keys(ANCHORS))('%s guards above its first container read', (file) => {
-    const src = code(file);
-    const positions = SPELLINGS.map((call) => src.indexOf(call)).filter((at) => at > -1);
+    const { src, spellings } = dominanceView(file, SPELLINGS);
+    const positions = spellings.map((call) => src.indexOf(call)).filter((at) => at > -1);
     expect(
       positions.length,
       `${file} contains none of the guard spellings this fence knows about, so it would pass ` +
@@ -3782,8 +3949,10 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     // measured exception the container fence pins: reachable only from the save
     // path below the guard.
     'src/deployment/deploy-engine/deploy-flow.ts': 'await adoptRollbackOrphans(',
-    // The pre-confirmation listing, the one thing a destroy does with the rows.
-    'src/cli/commands/destroy-runner.ts': 'displaySafe(entry.logicalId)',
+    // The pre-confirmation listing, the one thing a destroy does with the rows:
+    // `run.ts`'s CALL of it, read against the entry-helper call (see
+    // `dominanceView`).
+    'src/cli/commands/destroy-runner.ts': 'announceOrphansAndConfirm(',
     // The merge that keys on each row's `logicalId`.
     'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
     // The spread that copies every row verbatim into the saved record.
@@ -3864,22 +4033,25 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
    * both of its reads.
    */
   const ROW_PER_CALL_ANCHORS: Record<string, ReadonlyArray<readonly [string, string]>> = {
-    'src/cli/commands/destroy-runner.ts': [
-      // The entry read guards the pre-confirmation listing.
-      ['refuseMalformedOrphanRecordsForDestroy(state,', 'displaySafe(entry.logicalId)'],
+    // `preflight.ts` alone. The ENTRY read's guard is no longer a pair here:
+    // it sits in one function and the listing in another, so their text order
+    // says nothing (go-to-k/cdkd#5835). The "entry refusals" describe pins it
+    // at `run.ts`'s call site instead. This pair is one function's body.
+    'src/cli/commands/destroy-runner/preflight.ts': [
       // The under-lock re-read guards the count `stillEmpty` and `deleteState`
       // act on — a DIFFERENT object, which a concurrent writer can supply.
       [
-        // Wrapped since the account context joined its arguments (go-to-k/cdkd#3909).
-        'refuseMalformedOrphanRecordsForDestroy(\n          recheck.state,',
+        // Wrapped since the account context joined its arguments (go-to-k/cdkd#3909),
+        // indented as `destroyEmptyStack`'s body (go-to-k/cdkd#5835).
+        'refuseMalformedOrphanRecordsForDestroy(\n        recheck.state,',
         '(recheck.state.orphans ?? []).length',
       ],
     ],
   };
 
   it.each(Object.keys(ROW_ANCHORS))('%s guards above its first ROW walk', (file) => {
-    const src = code(file);
-    const positions = ROW_SPELLINGS.map((call) => src.indexOf(call)).filter((at) => at > -1);
+    const { src, spellings } = dominanceView(file, ROW_SPELLINGS);
+    const positions = spellings.map((call) => src.indexOf(call)).filter((at) => at > -1);
     expect(
       positions.length,
       `${file} contains none of the ROW guard spellings this fence knows about, so it would ` +
@@ -3915,7 +4087,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
   });
 
   it.each(Object.keys(ROW_PER_CALL_ANCHORS))('%s guards each row read separately', (file) => {
-    const src = code(file);
+    const src = strippedModule(file);
     for (const [call, anchor] of ROW_PER_CALL_ANCHORS[file]!) {
       const callAt = src.indexOf(call);
       expect(
@@ -4430,8 +4602,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // than every dereference index, so a fence reading a FIXED pair passed
       // over nothing on a file refusing through a third spelling — and
       // go-to-k/cdkd#3161 added two such files.
-      const positions = [...RESOURCES_REFUSAL_SPELLINGS, 'hasReadableResources(']
-        .map((call) => src.indexOf(call))
+      // The destroy runner reads `run.ts` alone against its entry-helper call
+      // (see `dominanceView`).
+      const view = dominanceView(file, [...RESOURCES_REFUSAL_SPELLINGS, 'hasReadableResources(']);
+      const positions = view.spellings
+        .map((call) => view.src.indexOf(call))
         .filter((at) => at > -1);
       expect(
         positions.length,
@@ -4441,7 +4616,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBeGreaterThan(0);
       const refusalAt = Math.max(...positions);
       const derefAt = FIRST_DEREF[file]!;
-      const derefIndex = src.indexOf(derefAt);
+      const derefIndex = view.src.indexOf(derefAt);
       expect(
         derefIndex,
         `${file} no longer contains its first bag dereference \`${derefAt}\`; this fence's ` +
@@ -4826,8 +5001,12 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // dereference index, so a fence reading a fixed pair would pass
       // VACUOUSLY on a file refusing through a third spelling. go-to-k/cdkd#3207
       // added exactly such a file.
-      const positions = [...REFUSAL_SPELLINGS, 'hasReadableOutputs(']
-        .map((call) => src.indexOf(call))
+      // The destroy runner's refusal is inline in `run.ts`, read alone with the
+      // same spellings (see `dominanceView`).
+      const outputsSpellings = [...REFUSAL_SPELLINGS, 'hasReadableOutputs('];
+      const view = dominanceView(file, outputsSpellings, outputsSpellings);
+      const positions = view.spellings
+        .map((call) => view.src.indexOf(call))
         .filter((at) => at > -1);
       expect(
         positions.length,
@@ -4836,7 +5015,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBeGreaterThan(0);
       const refusalAt = Math.max(...positions);
       const derefAt = FIRST_OUTPUTS_USE[file]!;
-      const derefIndex = src.indexOf(derefAt);
+      const derefIndex = view.src.indexOf(derefAt);
       expect(
         derefIndex,
         `${file} no longer contains its first outputs use \`${derefAt}\`; this fence's anchor ` +

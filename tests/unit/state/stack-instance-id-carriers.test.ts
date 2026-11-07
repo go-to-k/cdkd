@@ -346,7 +346,9 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
       'src/cli/commands/drift/revert.ts',
       'src/cli/commands/scrub/nested.ts',
       'src/cli/commands/scrub/stack-rewrite.ts',
-      'src/cli/commands/destroy-runner.ts',
+      // `buildDestroySnapshot`, moved with the destroy-runner split
+      // (go-to-k/cdkd#5835).
+      'src/cli/commands/destroy-runner/under-lock.ts',
       'src/analyzer/orphan-rewriter/rewrite.ts',
       // `saveState` and `adoptKeyRegion`, moved out of `s3-state-backend.ts`
       // (go-to-k/cdkd#5835).
