@@ -43,9 +43,8 @@ exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN under the
 budget the PARENT computed with that block, named per fixture in the brief
 (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
-its own, #5519), wait on ONE command exiting with that PID (no per-line
-Monitor: each line re-ends it, #5413) and stop every background Monitor
-before its final report (a keepalive outlives it, #5996), bans attribution
+its own, #5519), wait on ONE command exiting with that PID and stop every
+background Monitor before the final report (each Monitor line re-ends it, #5413), bans attribution
 lines in the ledger commit (#5104), relaunches only after `pgrep -f verify.sh`
 plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (a duplicate set FAILed,
 #5695), and STOPs on an unreadable state record, never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
