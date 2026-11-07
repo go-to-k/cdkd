@@ -13,7 +13,6 @@ src/cli/commands/rollback.ts
 src/deployment/deploy-engine.ts
 src/deployment/deploy-engine/deploy-flow.ts
 src/deployment/deploy-engine/execute.ts
-src/deployment/deploy-engine/masking.ts
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/replacement.ts
 src/deployment/deploy-engine/rollback.ts
