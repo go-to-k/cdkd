@@ -29,7 +29,6 @@ src/deployment/rollback-executor/replay-reverse-replacement.ts
 src/deployment/secret-redaction/positions.ts
 src/deployment/secret-redaction/redact-path.ts
 src/deployment/secret-redaction/redact-state.ts
-src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/state/s3-state-backend.ts
