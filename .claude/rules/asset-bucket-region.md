@@ -2,6 +2,7 @@
 description: Cross-region owned bucket: REFUSED for assets, TOLERATED for state
 paths:
   - 'src/assets/asset-storage.ts'
+  - 'src/assets/asset-storage/**'
   - 'src/cli/commands/bootstrap.ts'
   - 'src/cli/commands/bootstrap-destroy.ts'
   - 'src/cli/commands/gc.ts'

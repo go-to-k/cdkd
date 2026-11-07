@@ -601,6 +601,7 @@ describe('SDK client construction critic', () => {
         'src/utils/aws-region-resolver.ts',
         'src/utils/bucket-region-client.ts',
         'src/assets/asset-storage.ts',
+        'src/assets/asset-storage/verify.ts',
         'src/cli/config-loader.ts',
       ];
       expect(allowList.files.filter((file) => migrated.includes(file))).toEqual([]);
