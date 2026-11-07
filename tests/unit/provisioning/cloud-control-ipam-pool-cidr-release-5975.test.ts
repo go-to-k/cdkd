@@ -196,6 +196,7 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
     ['another account', { ResourceOwner: '210987654321' }],
     ['another region', { ResourceRegion: 'eu-west-1' }],
     ['no owner', { ResourceOwner: undefined }],
+    ['no region', { ResourceRegion: undefined }],
     ['a non-VPC holder', { ResourceType: 'ipam-pool' }],
   ])('does not wait on an allocation held from %s', async (_label, over) => {
     wireCc(['REFUSED', 'SUCCESS']);
@@ -232,7 +233,35 @@ describe('CloudControlProvider.delete: AWS::EC2::IPAMPoolCidr waits out the allo
       provider.delete('PoolCidr', POOL_CIDR_ID, 'AWS::EC2::IPAMPoolCidr')
     ).rejects.toThrow('The CIDR has one or more allocations.');
     expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand')).toHaveLength(1);
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('stopped waiting'));
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cdkd stopped waiting for AWS to release them')
+    );
+    // The pool CIDR's delete was refused, not accepted.
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('ACCEPTED'));
+  });
+
+  it('re-sends when the pool lists nothing on the first read', async () => {
+    // Released between the refusal and the read.
+    wireCc(['REFUSED', 'SUCCESS']);
+    wireEc2([[]]);
+
+    const result = await provider.delete('PoolCidr', POOL_CIDR_ID, 'AWS::EC2::IPAMPoolCidr');
+
+    expect(result).toBeUndefined();
+    expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand')).toHaveLength(2);
+  });
+
+  it('re-sends again when the handler lags the listing after a release', async () => {
+    // A live VPC elsewhere in the pool keeps the listing non-empty, so only
+    // the earlier release makes the second refusal worth another send.
+    const other = vpcAllocation({ ResourceId: 'vpc-0aaaaaaaaaaaaaaaa' });
+    wireCc(['REFUSED', 'REFUSED', 'SUCCESS']);
+    wireEc2([[vpcAllocation(), other], [other]], ['vpc-0aaaaaaaaaaaaaaaa']);
+
+    const result = await provider.delete('PoolCidr', POOL_CIDR_ID, 'AWS::EC2::IPAMPoolCidr');
+
+    expect(result).toBeUndefined();
+    expect(callsOf(mockCloudControlSend, 'DeleteResourceCommand')).toHaveLength(3);
   });
 
   it('shares one budget across re-sent deletes', async () => {

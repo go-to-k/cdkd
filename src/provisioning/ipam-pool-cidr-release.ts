@@ -93,27 +93,30 @@ export function ipamPoolIdOfPoolCidr(physicalId: string): string | undefined {
  * an empty `DescribeVpcs` / `DescribeSubnets` answer mean "deleted" rather
  * than "not visible from here". Any other allocation (a live resource, a
  * manual allocation, a child pool, another account's or region's resource)
- * is not one AWS is about to release, so it is not waited on. A listing cut
- * at the page cap answers with what it read.
+ * is not one AWS is about to release, so it is not waited on, and nor is one
+ * that names no region. A listing cut at the page cap answers with what it
+ * read. `total` counts every allocation listed, whoever holds it.
  */
 export async function lingeringIpamAllocations(
   ec2: EC2Client,
   poolId: string,
   accountId: string,
   region: string
-): Promise<string[]> {
+): Promise<{ lingering: string[]; total: number }> {
   const vpcIds = new Set<string>();
   const subnetIds = new Set<string>();
   let token: string | undefined;
   let pages = 0;
+  let total = 0;
   do {
     const page = await ec2.send(
       new GetIpamPoolAllocationsCommand({ IpamPoolId: poolId, NextToken: token })
     );
     for (const a of page.IpamPoolAllocations ?? []) {
+      total++;
       if (typeof a.ResourceId !== 'string' || a.ResourceId === '') continue;
       if (a.ResourceOwner !== accountId) continue;
-      if (a.ResourceRegion !== undefined && a.ResourceRegion !== region) continue;
+      if (a.ResourceRegion !== region) continue;
       if (a.ResourceType === 'vpc') vpcIds.add(a.ResourceId);
       else if (a.ResourceType === 'subnet') subnetIds.add(a.ResourceId);
     }
@@ -140,7 +143,7 @@ export async function lingeringIpamAllocations(
     ...[...vpcIds].filter((id) => !liveVpcs.has(id)),
     ...[...subnetIds].filter((id) => !liveSubnets.has(id)),
   ];
-  return lingering.sort();
+  return { lingering: lingering.sort(), total };
 }
 
 /**
@@ -151,9 +154,15 @@ export async function lingeringIpamAllocations(
  *
  * Answers:
  *  - `'released'`: there were such allocations and AWS has released them all;
- *    re-send the delete.
- *  - `'none'`: the first read found none, so the refusal is not the release
- *    lag (a live resource holds the CIDR); fail now, as before.
+ *    re-send the delete. Also when the first read finds none but the pool
+ *    lists no allocation at all, or `afterRelease` says this delete was just
+ *    re-sent on a release: the allocation went between the refusal and the
+ *    read, or the handler's own check lags the listing. That answer comes one
+ *    poll interval later, so a handler that keeps refusing is re-sent at that
+ *    pace, within the caller's budget.
+ *  - `'none'`: the first read found none while the pool lists allocations, so
+ *    the refusal is not the release lag (a live or foreign resource holds the
+ *    CIDR); fail now, as before.
  *  - `'not-released'`: the wait stopped first (its cap, a Ctrl-C, an
  *    unreadable listing), with `delete-gone-wait.ts`'s warning; fail.
  *
@@ -168,21 +177,27 @@ export async function waitForLingeringIpamAllocations(opts: {
   resourceType: string;
   logger: ReleaseLogger;
   maxWaitMs: number;
+  /** This delete was re-sent on an earlier `'released'` answer. */
+  afterRelease?: boolean;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<'released' | 'none' | 'not-released'> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let sawLingering = false;
   let released = false;
+  let lastTotal = 0;
   await waitForGoneAfterDelete({
     what: `the IPAM pool ${opts.poolId} allocations of deleted VPCs and subnets`,
+    stopped: `the IPAM pool ${opts.poolId} allocations of deleted VPCs and subnets: cdkd stopped waiting for AWS to release them`,
     resourceType: opts.resourceType,
     consequence: `the pool refuses to deprovision its CIDR ("${IPAM_CIDR_HAS_ALLOCATIONS}") until AWS releases them, so re-run the destroy once it has.`,
     describe: async () => {
-      const lingering = await lingeringIpamAllocations(
+      const { lingering, total } = await lingeringIpamAllocations(
         opts.ec2,
         opts.poolId,
         opts.accountId,
         opts.region
       );
+      lastTotal = total;
       if (lingering.length === 0) {
         released = true;
         return undefined;
@@ -200,8 +215,11 @@ export async function waitForLingeringIpamAllocations(opts: {
     logger: opts.logger,
     pollIntervalMs: ipamPoolCidrReleaseWait.pollIntervalMs,
     maxWaitMs: opts.maxWaitMs,
-    ...(opts.sleep !== undefined && { sleep: opts.sleep }),
+    sleep,
   });
   if (!released) return 'not-released';
-  return sawLingering ? 'released' : 'none';
+  if (sawLingering) return 'released';
+  if (lastTotal > 0 && opts.afterRelease !== true) return 'none';
+  await sleep(ipamPoolCidrReleaseWait.pollIntervalMs);
+  return 'released';
 }

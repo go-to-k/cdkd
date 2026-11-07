@@ -308,11 +308,13 @@ Each wait is there for a reason:
   on.
 - An IPAM pool CIDR whose delete is refused with
   `The CIDR has one or more allocations.` waits too, when the pool still lists
-  allocations of VPCs or subnets of your account that are already deleted.
-  cdkd waits up to another 25 minutes for AWS to release them, then deletes
-  the pool CIDR again. An allocation held by a live resource fails the delete
-  at once, as CloudFormation's own pool CIDR delete does. If the wait runs
-  out, the destroy stops at the pool CIDR and can be re-run.
+  allocations of VPCs or subnets that are already deleted, in your account and
+  the stack's region. cdkd waits up to another 25 minutes (or half the
+  `--resource-timeout` you set for the type) for AWS to release them, then
+  deletes the pool CIDR again. An allocation held by a live resource fails the
+  delete at once, as CloudFormation's own pool CIDR delete does. If the wait
+  runs out, or the role cannot call `ec2:GetIpamPoolAllocations`, cdkd warns,
+  the destroy stops at the pool CIDR, and it can be re-run.
 - A subnet whose IPv4 or IPv6 CIDR came from an IPAM pool holds its
   allocation past the delete the same way, so cdkd waits for each pool the
   subnet names to stop listing it. An IPv4 and an IPv6 pool share one

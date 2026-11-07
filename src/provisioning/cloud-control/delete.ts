@@ -468,6 +468,7 @@ export async function deleteThroughCloudControl(
   // go-to-k/cdkd#5975: when the first "has allocations" refusal started the
   // pool CIDR's release wait; one budget across every re-sent delete.
   let ipamReleaseWaitStartedAt: number | undefined;
+  let ipamReleased = false;
   for (let attempt = 1; ; attempt++) {
     try {
       // Issue #3455: an EBS volume is deleted with EC2 `DeleteVolume`, never
@@ -614,9 +615,13 @@ export async function deleteThroughCloudControl(
           logicalId,
           physicalId,
           resourceType,
-          ipamPoolCidrReleaseBudgetMs(resourceType) - (Date.now() - ipamReleaseWaitStartedAt)
+          ipamPoolCidrReleaseBudgetMs(resourceType) - (Date.now() - ipamReleaseWaitStartedAt),
+          ipamReleased
         );
-        if (verdict === 'released') continue;
+        if (verdict === 'released') {
+          ipamReleased = true;
+          continue;
+        }
       }
       // Issue #5225: what this arm kept must not be dropped one level up by
       // the engine's or the destroy runner's substring classifiers.
@@ -654,7 +659,8 @@ async function awaitIpamPoolCidrRelease(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  budgetMs: number
+  budgetMs: number,
+  afterRelease: boolean
 ): Promise<'released' | 'none' | 'not-released'> {
   const poolId = ipamPoolIdOfPoolCidr(physicalId);
   if (poolId === undefined || budgetMs <= 0) return 'none';
@@ -679,6 +685,7 @@ async function awaitIpamPoolCidrRelease(
     resourceType,
     logger: this.logger,
     maxWaitMs: budgetMs,
+    afterRelease,
     sleep: (ms) => this.sleep(ms),
   });
 }
