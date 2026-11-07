@@ -957,6 +957,14 @@ stage_filter_hunk "src/cli/commands/destroy.ts" \
 run_case "hunk filter: destroy.ts delete symbol arms the gate" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# `cdkd destroy`'s handler lives in `destroy/` (#5835); the `destroy/.*\.ts`
+# arm keeps it in scope. A real path, for the reason the deploy-engine/ case
+# below gives.
+stage_filter_hunk "src/cli/commands/destroy/command.ts" \
+  "  await runner.deleteStack({ stackName, force });"
+run_case "hunk filter: destroy/ module delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 stage_filter_hunk "src/cli/commands/destroy-runner.ts" \
   "  const order = plan.deleteOrder();"
 run_case "hunk filter: destroy-runner.ts delete symbol arms the gate" 2 stale "$filter_repo" \

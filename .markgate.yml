@@ -125,6 +125,8 @@ gates:
       # tests/unit/scripts/cross-cutting-list-sync.test.ts.
       - "src/provisioning/region-check.ts"
       - "src/cli/commands/destroy.ts"
+      # `cdkd destroy`'s handler and stack selection, split out of it (#5835).
+      - "src/cli/commands/destroy/**"
       - "src/cli/commands/destroy-runner.ts"
       - "src/deployment/deploy-engine.ts"
       # Split out of deploy-engine.ts (#4200) into deploy-engine/ (#4350); moving
