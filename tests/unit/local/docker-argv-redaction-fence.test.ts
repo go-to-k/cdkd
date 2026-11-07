@@ -100,10 +100,16 @@ const SWEPT_DIRS = ['src/local', 'src/assets'];
  *
  * An early version hand-listed paths while claiming there was no allowlist —
  * a hand-list is how a further module joins silently.
+ *
+ * The walk is RECURSIVE: a split module's sibling directory
+ * (`src/local/ecs-task-runner/`, go-to-k/cdkd#5835) holds the moved docker
+ * calls, and a top-level-only read would drop them from the population while
+ * the "outside SWEPT_DIRS" sweep below still counts them as inside.
  */
 function deriveDockerExecModules(): string[] {
   return SWEPT_DIRS.flatMap((relDir) =>
-    readdirSync(join(REPO_ROOT, relDir))
+    readdirSync(join(REPO_ROOT, relDir), { recursive: true, encoding: 'utf-8' })
+      .map((f) => f.split('\\').join('/'))
       .filter((f) => f.endsWith('.ts'))
       .map((f) => `${relDir}/${f}`)
       .filter((rel) => {
@@ -127,7 +133,12 @@ const MIN_REDACTION_SITES: Record<string, number> = {
   'src/local/docker-runner.ts': 7,
   'src/local/ecr-puller.ts': 2,
   'src/local/ecs-network.ts': 3,
-  'src/local/ecs-task-runner.ts': 9,
+  // Split across the entry and its sibling directory (go-to-k/cdkd#5835);
+  // the four sum to the single file's former 9.
+  'src/local/ecs-task-runner.ts': 1,
+  'src/local/ecs-task-runner/cleanup.ts': 3,
+  'src/local/ecs-task-runner/containers.ts': 2,
+  'src/local/ecs-task-runner/images.ts': 3,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
 };
 
@@ -394,7 +405,12 @@ const MIN_DOCKER_EXEC_CATCHES: Record<string, number> = {
   'src/local/docker-runner.ts': 5,
   'src/local/ecr-puller.ts': 2,
   'src/local/ecs-network.ts': 3,
-  'src/local/ecs-task-runner.ts': 6,
+  // Split across the entry and its sibling directory (go-to-k/cdkd#5835);
+  // the four sum to the single file's former 6.
+  'src/local/ecs-task-runner.ts': 1,
+  'src/local/ecs-task-runner/cleanup.ts': 1,
+  'src/local/ecs-task-runner/containers.ts': 2,
+  'src/local/ecs-task-runner/images.ts': 2,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
 };
 
@@ -445,6 +461,9 @@ describe('docker argv redaction fence (issue #2440)', () => {
       'src/local/ecr-puller.ts',
       'src/local/ecs-network.ts',
       'src/local/ecs-task-runner.ts',
+      'src/local/ecs-task-runner/cleanup.ts',
+      'src/local/ecs-task-runner/containers.ts',
+      'src/local/ecs-task-runner/images.ts',
       'src/local/invoke-agentcore-watch-loop.ts',
     ]);
     // Both directories are actually represented. Asserting only the sorted

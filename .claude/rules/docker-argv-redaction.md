@@ -4,6 +4,7 @@ paths:
   - 'src/utils/docker-cmd.ts'
   - 'src/local/docker-runner.ts'
   - 'src/local/ecs-task-runner.ts'
+  - 'src/local/ecs-task-runner/**'
   - 'src/local/ecs-network.ts'
   - 'src/local/ecr-puller.ts'
   - 'src/local/invoke-agentcore-watch-loop.ts'
