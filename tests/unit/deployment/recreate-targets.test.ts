@@ -2405,13 +2405,18 @@ describe('probeAndRevalidateStateful (#648)', () => {
 // #2558 too; the log-group client doubles the surface, so it is pinned here.
 describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
-  // Live lines only: a commented-out spelling must fail this pin, not satisfy
-  // it — the failure mode a whole-file `toContain` walks straight into.
-  const liveLines = src
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
-    .join('\n');
+  // `deploy.ts` split into `deploy/` (go-to-k/cdkd#5835): the probes are
+  // called in the per-stack deploy, and `stackAwsClients` is built by the
+  // handler that hands it there. Each module is read on its own.
+  const live = (file: string): string =>
+    readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy', file), 'utf8')
+      // Live lines only: a commented-out spelling must fail this pin, not
+      // satisfy it — the failure mode a whole-file `toContain` walks straight into.
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
+      .join('\n');
+  const liveLines = live('stack-deploy.ts');
+  const handlerLiveLines = live('command.ts');
 
   // Issue #3887: without this argument only the NON_PROVISIONABLE fallback
   // refuses, and a provider opting out via `disableCcApiFallback`
@@ -2442,9 +2447,9 @@ describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin
     // The discriminator: `stackAwsClients` must be constructed with
     // `stackRegion`. A probe issued against `baseRegion` would report an
     // us-east-1 log group empty while the stack deploys to another region.
-    const ctorIdx = liveLines.indexOf('const stackAwsClients = new AwsClients({');
+    const ctorIdx = handlerLiveLines.indexOf('const stackAwsClients = new AwsClients({');
     expect(ctorIdx, 'stackAwsClients construction not found').toBeGreaterThan(-1);
-    expect(liveLines.slice(ctorIdx, ctorIdx + 200)).toContain('region: stackRegion');
+    expect(handlerLiveLines.slice(ctorIdx, ctorIdx + 200)).toContain('region: stackRegion');
   });
 });
 

@@ -492,7 +492,9 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
     return out;
   };
 
-  it.each(['deploy.ts', 'publish-assets.ts', 'bootstrap.ts'])(
+  // `deploy/command.ts`: `cdkd deploy`'s handler, where both now live
+  // (go-to-k/cdkd#5835). Read on its own, so the order is the order it runs in.
+  it.each(['deploy/command.ts', 'publish-assets.ts', 'bootstrap.ts'])(
     '%s captures the raw spelling before folding',
     (file) => {
       const source = readFileSync(join(COMMANDS_DIR, file), 'utf8');
