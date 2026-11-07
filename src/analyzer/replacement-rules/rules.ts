@@ -656,6 +656,8 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       'PrivateIpAddress',
       'Ipv6AddressCount',
       'Ipv6Addresses',
+      'EnclaveOptions',
+      'HostResourceGroupArn',
     ]),
     // Issue #5446: InstanceType / UserData (a stop-modify-start),
     // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in

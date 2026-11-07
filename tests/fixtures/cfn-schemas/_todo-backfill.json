@@ -23,14 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::EC2::Instance": [
-      "Affinity",
-      "EnclaveOptions",
-      "HostId",
-      "HostResourceGroupArn",
-      "KernelId",
-      "RamdiskId"
-    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ],
@@ -38,7 +30,6 @@
       "AllocatedStorage",
       "DBClusterInstanceClass",
       "DBInstanceParameterGroupName",
-      "DBSystemId",
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
@@ -50,8 +41,7 @@
       "SourceDBClusterIdentifier",
       "SourceDbClusterResourceId",
       "SourceRegion",
-      "UseLatestRestorableTime",
-      "WithExpressConfiguration"
+      "UseLatestRestorableTime"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",

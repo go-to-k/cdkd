@@ -370,6 +370,22 @@ const DNS_THROWS: Record<string, Throw> = {
   'update-remove:PrivateDnsNameOptions.EnableResourceNameDnsAAAARecord': DNS_MEMBER_REMOVAL,
 };
 
+/**
+ * go-to-k/cdkd#5630: EC2 has no call that clears an instance's Affinity,
+ * HostId, kernel or RAM disk, and CloudFormation does not document what a
+ * removal does, so update() refuses one before any call
+ * (planInstanceStoppedMembers).
+ */
+const STOPPED_MEMBER_REMOVALS: Record<string, Throw> = Object.fromEntries(
+  ['Affinity', 'HostId', 'KernelId', 'RamdiskId'].map((key) => [
+    `update-remove:${key}`,
+    {
+      why: `EC2 has no call that clears ${key} on an existing instance and CloudFormation does not document a removal, so update() refuses it before any call (planInstanceStoppedMembers, go-to-k/cdkd#5630)`,
+      says: new RegExp(`${key} was removed from the template\\. EC2 has no call that clears it`),
+    },
+  ])
+);
+
 const INSTANCE_CASE: TypeCase = tc(
     'AWS::EC2::Instance',
     'i-1',
@@ -435,6 +451,13 @@ const INSTANCE_CASE: TypeCase = tc(
             { Device: '/dev/sdf', VolumeId: 'vol-1' },
             { Device: '/dev/sdg', VolumeId: 'vol-2' },
           ],
+          // go-to-k/cdkd#5630 (final slice).
+          Affinity: 'host',
+          HostId: 'h-1',
+          HostResourceGroupArn: 'arn:aws:resource-groups:us-east-1:123456789012:group/hosts',
+          KernelId: 'aki-1',
+          RamdiskId: 'ari-1',
+          EnclaveOptions: { Enabled: true },
         },
         variants: {
           UserData: 'ZWNobyAy',
@@ -447,6 +470,7 @@ const INSTANCE_CASE: TypeCase = tc(
           ...LT_UNNAMED('LaunchTemplateId'),
           ...VOLUMES_MEMBER_REQUIRED,
           ...DNS_THROWS,
+          ...STOPPED_MEMBER_REMOVALS,
           'update-remove:DisableApiTermination': {
             why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8088-8093)`,
             says: /DisableApiTermination was removed from the template, and CloudFormation fails that update/,
