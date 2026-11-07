@@ -63,7 +63,7 @@ describe('a split command is read with its directory', () => {
 
   it('finds the split commands — floor, so a derivation that matched nothing cannot pass', () => {
     expect(families).toEqual(
-      expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'local-start-api.ts', 'state.ts'])
+      expect.arrayContaining(['drift.ts', 'export.ts', 'gc.ts', 'import.ts', 'local-start-api.ts', 'state.ts'])
     );
   });
 

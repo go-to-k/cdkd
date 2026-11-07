@@ -31,7 +31,7 @@ form.
 `displayIdent` is not enough for a value going into a COMMAND. Every character
 of `--state-bucket=attacker` is a plain identifier character, so it renders
 BARE and is still an option once the operator strips the advisory quotes. Nor
-is quoting the alternative: quoting answers the shell-metacharacter question
+is quoting: it answers the shell-metacharacter question
 and none of the option case. The answer for a value failing the test is
 REFUSAL — name the value, withhold the command.
 
@@ -56,11 +56,11 @@ own logical-id charset, which admits nothing a shell treats specially.
 **That rule is WRONG for the import remedy.** cdkd validates no logical-id
 charset and never hands the template to CloudFormation, so a HYPHENATED id
 (`My-Table`) is legitimate and the command must still be emitted for it
-(#2847; pinned by
+([#2847](https://github.com/go-to-k/cdkd/issues/2847); pinned by
 `masked-record-remedy-shapes.test.ts`). `isPasteableIdent`'s allow-list
 (`[A-Za-z0-9][A-Za-z0-9~_.-]*`) is the one calibrated for cdkd's own id space:
 medial `~` / `_` / `.` / `-` admitted, a LEADING one refused, because the
 leading position is where the option and tilde-expansion shapes live.
 
 Do not unify the two. The narrower rule is right where it applies, and the
-wider one is right where cdkd's acceptance is wider than CloudFormation's.
+wider one where cdkd's acceptance is wider than CloudFormation's.

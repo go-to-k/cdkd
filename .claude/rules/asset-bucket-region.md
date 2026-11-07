@@ -12,7 +12,7 @@ paths:
 
 `BucketAlreadyOwnedByYou` (409) and a cross-region `HeadBucket` redirect are
 ACCOUNT-global signals while a bucket is REGIONAL
-(#2240). Only the 409 proves
+([#2240](https://github.com/go-to-k/cdkd/issues/2240)). Only the 409 proves
 ownership: a redirect fires before `ExpectedBucketOwner` is evaluated, so the
 refusal says "resolves to a bucket in X", not that cdkd owns it. Reachable
 because `--asset-bucket` takes a region-free name.
@@ -24,8 +24,7 @@ the account. `emptyAndDeleteBucket` serves both, so its check is an opt-in
 
 `assertAssetBucketRegion` reads `x-amz-bucket-region` off the error and falls
 back to `GetBucketLocation`, which can itself answer a redirect — re-read the
-region off THAT error before giving up. `isCrossRegionRedirect` is deliberately
-WIDER than the SDK's `regionRedirectMiddleware` (a `301` alone, header or not,
+region off THAT error. `isCrossRegionRedirect` is WIDER than the SDK's `regionRedirectMiddleware` (a `301` alone, header or not,
 and ANY header-carrying `400`): the SDK's extra conjunct only decides whether to
 silently RETRY, while the action here is REFUSE. Keep the STATUS check: a stray
 header on a `500` is not a redirect.

@@ -139,10 +139,10 @@ Index of every area: [code-layout.md](code-layout.md).
   images from ONE region's cdkd-owned asset storage, with names read from the
   bootstrap marker, not the naming convention (CDK bootstrap storage is
   never touched). It scans EVERY state file in the bucket for asset references;
-  guards are a lock.json abort, a malformed-state abort, the `--older-than` age
+  guards are lock.json and malformed-state aborts, the `--older-than` age
   guard (default 30d, inclusive-KEEP at the boundary) and `ExpectedBucketOwner`
   on every S3 call. It shares `state-file-keys.ts` with `bootstrap-destroy.ts` so
-  the two commands' discovery cannot drift. It also sweeps abandoned
+  the two commands' state discovery cannot drift. It also sweeps abandoned
   `custom-resource-responses/{requestId}.json` placeholders; that arm runs BEFORE
   the bootstrap-marker check, because the placeholders live in the STATE bucket,
   which exists whether or not the region opted in to asset storage. The prefix is
