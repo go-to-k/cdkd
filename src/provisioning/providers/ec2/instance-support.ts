@@ -1,4 +1,5 @@
 import {
+  type Affinity,
   type Instance,
   type HostnameType,
   type PrivateDnsNameOptionsRequest,
@@ -11,6 +12,7 @@ import { isSettledInstanceState } from '../../ec2-instance-state.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { markRefusedBeforeApplying } from '../../../deployment/prior-attempt-scope.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
+import { sameCreateOnlySent } from './common.js';
 
 /**
  * Issue #5446: the stop / start waits of an in-place InstanceType / UserData
@@ -117,6 +119,21 @@ export interface InstanceMemberPlan {
     recordUnreadable: boolean;
     create: InstanceSsmAssociation | undefined;
   };
+  /**
+   * go-to-k/cdkd#5630: the ModifyInstancePlacement members that changed.
+   * CloudFormation documents both as "Some interruptions", and EC2 changes
+   * them only on a stopped instance; `prepareInstanceMemberUpdates` drops a
+   * member the live instance already has.
+   */
+  placement?: { Affinity?: Affinity; HostId?: string };
+  /**
+   * go-to-k/cdkd#5630: the ModifyInstanceAttribute `Kernel` / `Ramdisk`
+   * values, on a stopped instance ("Some interruptions" in CloudFormation's
+   * documentation); dropped by `prepareInstanceMemberUpdates` when the live
+   * instance already has them.
+   */
+  kernelId?: string;
+  ramdiskId?: string;
 }
 
 /**
@@ -130,6 +147,10 @@ export function instanceStopMembers(plan: InstanceMemberPlan): string[] {
     plan.privateDnsNameOptions?.PrivateDnsHostnameType !== undefined
       ? 'PrivateDnsNameOptions.HostnameType'
       : '',
+    plan.placement?.Affinity !== undefined ? 'Affinity' : '',
+    plan.placement?.HostId !== undefined ? 'HostId' : '',
+    plan.kernelId !== undefined ? 'KernelId' : '',
+    plan.ramdiskId !== undefined ? 'RamdiskId' : '',
   ].filter(Boolean);
 }
 
@@ -269,7 +290,73 @@ export const INSTANCE_CREATE_ONLY_SENT = [
   // go-to-k/cdkd#5630: create-only in the schema; CloudFormation measured
   // (us-east-1): adding, changing or removing an entry creates a new instance.
   'LicenseSpecifications',
+  // go-to-k/cdkd#5630: create-only in the schema ("Replacement" in
+  // CloudFormation's documentation); unmeasured, since EnclaveOptions needs a
+  // 4-vCPU instance type and HostResourceGroupArn a Dedicated Host.
+  'EnclaveOptions',
+  'HostResourceGroupArn',
 ];
+
+/**
+ * go-to-k/cdkd#5630: the schema-mutable members CloudFormation's
+ * documentation marks "Some interruptions" and EC2 changes only on a stopped
+ * instance (ModifyInstancePlacement for the first two, ModifyInstanceAttribute
+ * `Kernel` / `Ramdisk` for the others). Planned by `planInstanceStoppedMembers`.
+ */
+export const INSTANCE_STOPPED_MEMBERS = ['Affinity', 'HostId', 'KernelId', 'RamdiskId'] as const;
+
+/**
+ * go-to-k/cdkd#5630: why a Dedicated Host / kernel / RAM disk member cannot be
+ * sent, or undefined when it can: absent, or a non-empty string. EC2 takes no
+ * empty id, and the create and update paths refuse the same values, so a
+ * rollback replay never meets a record value its update refuses.
+ */
+export function instanceIdMemberRefusal(
+  properties: Record<string, unknown>,
+  key: string,
+  resourceType: string
+): string | undefined {
+  return (
+    configStringRefusal(properties, key, '', resourceType) ??
+    (properties[key] === '' ? `${resourceType}.${key} must not be empty` : undefined)
+  );
+}
+
+/**
+ * go-to-k/cdkd#5630: whether two sides hold the same value of one of
+ * {@link INSTANCE_CREATE_ONLY_SENT}. `EnclaveOptions.Enabled` is compared as
+ * the boolean RunInstances is sent (CloudFormation may spell it `"true"`);
+ * every other key is compared by `sameCreateOnlySent`.
+ */
+export function sameInstanceCreateOnlySent(key: string, a: unknown, b: unknown): boolean {
+  if (key !== 'EnclaveOptions') return sameCreateOnlySent(key, a, b);
+  const fold = (v: unknown): unknown => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+    const block = v as Record<string, unknown>;
+    return { ...block, Enabled: coerceCfnBoolean(block['Enabled']) ?? block['Enabled'] };
+  };
+  return sameCreateOnlySent(key, fold(a), fold(b));
+}
+
+/**
+ * go-to-k/cdkd#5630: `EnclaveOptions` as RunInstances takes it (`Enabled`,
+ * the schema's only member), or undefined when the template sets none. Called
+ * once {@link enclaveOptionsRefusal} passed.
+ */
+export function enclaveOptionsRequest(value: unknown): { Enabled?: boolean } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const enabled = coerceCfnBoolean((value as Record<string, unknown>)['Enabled']);
+  return enabled === undefined ? {} : { Enabled: enabled };
+}
+
+/**
+ * go-to-k/cdkd#5630: why an `AWS::EC2::Instance EnclaveOptions` cannot be
+ * sent, or undefined when it can: an object whose `Enabled`, when present,
+ * is a boolean.
+ */
+export function enclaveOptionsRefusal(value: unknown, resourceType: string): string | undefined {
+  return configBooleanRefusal(value, 'Enabled', `${resourceType} EnclaveOptions`);
+}
 
 /**
  * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance

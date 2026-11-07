@@ -266,6 +266,9 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   'AWS::EC2::Instance': {
     members: {
       IamInstanceProfile: ['Name'],
+      // go-to-k/cdkd#5630: ModifyInstanceAttribute's spellings on update.
+      KernelId: ['Kernel'],
+      RamdiskId: ['Ramdisk'],
       'NetworkInterfaces.GroupSet': ['Groups'],
       // go-to-k/cdkd#5630: RunInstances' `Placement.GroupName`.
       PlacementGroupName: ['GroupName'],
