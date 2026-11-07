@@ -213,3 +213,5 @@ gates:
     hash: files
     include:
       - "src/types/state.ts"
+      # The state-shape interfaces moved to the sibling directory (#5835).
+      - "src/types/state/**"

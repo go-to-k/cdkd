@@ -3,6 +3,7 @@ description: cdkd S3 state schema - StackState v1-v15 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
+  - 'src/types/state/**'
 ---
 
 # State Schema

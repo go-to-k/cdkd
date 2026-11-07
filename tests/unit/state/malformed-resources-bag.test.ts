@@ -3422,7 +3422,15 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     ];
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(5);
     const readers = [...new Set(listed.map(asFencedPath))].filter((file) => {
-      if (isMalformedBagSourceFile(file) || file === 'src/types/state.ts') return false;
+      // `src/types/state.ts` declares the container and carries it forward; its
+      // record shapes and helpers live in `src/types/state/` (go-to-k/cdkd#5835).
+      if (
+        isMalformedBagSourceFile(file) ||
+        file === 'src/types/state.ts' ||
+        file.startsWith('src/types/state/')
+      ) {
+        return false;
+      }
       // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
       // rather than loading one, so its read is dominated by that file's guard.
       if (file === 'src/cli/commands/diff.ts') return false;
