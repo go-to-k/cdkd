@@ -875,7 +875,9 @@ describe('the rewriting-types table matches every caller of generateResourceName
         'deployment/replacement-name-holder/holder.ts',
         'deployment/replacement-name-holder/name-keys.ts',
         'deployment/replacement-name-holder/rewritten.ts',
-        'provisioning/resource-name.ts',
+        // The generator's own module (#5835 moved it out of `resource-name.ts`,
+        // which now only re-exports it).
+        'provisioning/resource-name/generate.ts',
         ...callerPaths,
       ].sort()
     );
@@ -887,13 +889,18 @@ describe('the rewriting-types table matches every caller of generateResourceName
     // provider applies the prefix rule by calling the inner generator.
     for (const f of (readdirSync(src, { recursive: true }) as string[]).filter((x) => x.endsWith('.ts'))) {
       const rel = f.split('\\').join('/');
-      if (rel === 'provisioning/resource-name.ts') continue;
+      if (rel === 'provisioning/resource-name/generate.ts') continue;
       const raw = readFileSync(join(src, f), 'utf8');
       expect(/generateResourceNameWithFallback\s+as\s/.test(raw), `${rel}: aliased import`).toBe(false);
-      const code = raw
+      let code = raw
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '')
         .replace(/^import\s[\s\S]*?;$/gm, '');
+      // The entry module re-exports the generator from its own module; that
+      // re-export statement is the one non-call mention it is allowed.
+      if (rel === 'provisioning/resource-name.ts') {
+        code = code.replace(/^export\s[^;]*?\bfrom\s+'\.\/resource-name\/generate\.js';$/gm, '');
+      }
       const mentions = code.split(/\bgenerateResourceNameWithFallback\b/).length - 1;
       const calls = code.split('generateResourceNameWithFallback(').length - 1;
       expect(mentions, `${rel}: a reference to the generator that is not a call`).toBe(calls);
