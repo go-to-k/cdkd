@@ -115,8 +115,14 @@ if [ "${REFUSAL_RC}" = "0" ]; then
   echo "FAIL: Phase 0 deploy exited 0; NotificationARNs on AWS::CloudFormation::Stack must be refused" >&2
   exit 1
 fi
-# `Child: ` is the logical-id prefix only the pre-flight check prints; the
-# same refusal raised later from getProviderFor carries no prefix.
+# The pre-flight check prefixes the refusal with the logical id (`Child: `).
+# The same refusal raised later by getProviderFor at create time would reach
+# the output through provision.ts's `Failed to create <id>: <message>` wrapper,
+# which these needles also match, so that wrapper's line is ruled out below.
+if grep -qF -- 'Failed to create Child:' <<<"${REFUSAL_PLAIN}"; then
+  echo "FAIL: Phase 0 refused at create time (provision.ts 'Failed to create Child:'), not pre-flight" >&2
+  exit 1
+fi
 for NEEDLE in \
   'Child: AWS::CloudFormation::Stack uses properties' \
   'cannot fall back to Cloud Control API' \
