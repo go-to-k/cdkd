@@ -25,7 +25,6 @@ src/deployment/deploy-engine/update.ts
 src/deployment/generated-name-guard.ts
 src/deployment/inline-policy-claims.ts
 src/deployment/intrinsic-resolver/dynamic-refs.ts
-src/deployment/masked-property-fingerprints.ts
 src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
