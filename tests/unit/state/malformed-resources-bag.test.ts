@@ -7810,7 +7810,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         're-spelled here.) See go-to-k/cdkd#3496',
     ],
     ['src/deployment/secret-redaction/cross-stack.ts', 1, 'CROSS_STACK_KEY_SEPARATOR: see the maskedOutputKey row above'],
-    ['src/deployment/secret-redaction/positions.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
+    ['src/deployment/secret-redaction/positions/skeleton.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
     [
       'src/provisioning/providers/idempotency-token.ts',
       2,
