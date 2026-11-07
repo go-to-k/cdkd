@@ -121,7 +121,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     why:
       'THE shared helpers. `confirmOrRefuse` carries issue #2275\'s guard; ' +
       '`promptYesNo` is the deliberate default-YES carve-out whose only caller ' +
-      '(`deploy.ts`) short-circuits on a non-TTY before reaching it.',
+      '(`deploy/command.ts`) short-circuits on a non-TTY before reaching it.',
   },
   'src/cli/commands/destroy-runner.ts': {
     sites: 1,

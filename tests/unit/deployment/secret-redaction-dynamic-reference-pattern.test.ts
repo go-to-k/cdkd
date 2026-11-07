@@ -130,9 +130,10 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     const OWNERS: Record<string, number> = {
       'src/deployment/intrinsic-resolver/dynamic-refs/log-twin-pass.ts': 1,
       // WHOLE_DYNAMIC_REFERENCE_PATTERN (rules.ts) and DYNAMIC_REFERENCE_TOKEN_SCAN
-      // (redact-path.ts), split from `secret-redaction.ts` (#4415).
+      // (redact-path.ts, moved to redact-path/reference-tokens.ts by #5835), split
+      // from `secret-redaction.ts` (#4415).
       'src/deployment/secret-redaction/rules.ts': 1,
-      'src/deployment/secret-redaction/redact-path.ts': 1,
+      'src/deployment/secret-redaction/redact-path/reference-tokens.ts': 1,
     };
 
     for (const [relative, expected] of Object.entries(OWNERS)) {

@@ -306,7 +306,7 @@ nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
 noecho-parameter-masking	2026-10-24T15:38:28Z	PASS	1283	verify.sh	PR #5265 (#2319) c10ed412; destroy 0 errors, orph clean, own ephemeral bucket swept; pre-fix probe FAILed at the Phase 2 class-only persisted-event arm
 opensearch-domain-getatt	2026-11-04T07:36:26Z	PASS	1744	verify.sh	rc ok, orph clean (own state bucket, wrasse)
-orphan-getatt-takeover	2026-11-04T20:44:53Z	PASS	65	verify.sh	rc ok; orphan substituted recorded RoleId, live Arn read in stack region; orph clean
+orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs
 orphan-resource	2026-11-04T05:17:34Z	PASS	99	standard	manual README flow (no verify.sh): deploy, orphan, state/bucket survive, import, destroy 0 errors; orph clean
 output-never-resolved-diff	2026-11-04T19:47:52Z	PASS	161	verify.sh	rc ok, orph clean
 outputs-only-export	2026-11-04T20:43:48Z	PASS	99	verify.sh	rc 0, all 13 checks passed, destroy 0 errors; orph clean
