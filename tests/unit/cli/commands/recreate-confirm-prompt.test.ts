@@ -477,7 +477,11 @@ describe('promptRecreateConfirm (#649)', () => {
 // mock in this file and would surface only against real AWS.
 describe('deploy.ts tells the prompt whether the probe ran (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+  // The per-stack deploy, split out of `deploy.ts` (go-to-k/cdkd#5835).
+  const src = readFileSync(
+    join(repoRoot, 'src', 'cli', 'commands', 'deploy', 'stack-deploy.ts'),
+    'utf8'
+  );
   // Live lines only: a commented-out spelling must fail this pin, not satisfy
   // it — the failure mode a whole-file `toContain` walks straight into.
   const liveLines = src

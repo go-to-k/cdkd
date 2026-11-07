@@ -74,9 +74,10 @@ describe('forwardSigtermToSigint', () => {
 describe('SIGTERM forwarding command wiring (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   // `cdkd state destroy` moved from `state.ts` into `state/destroy.ts` with the
-  // split (go-to-k/cdkd#5835), and `cdkd rollback`'s replay from `rollback.ts`
-  // into `rollback/replay.ts` with its own.
-  const files = ['deploy.ts', 'destroy.ts', 'state/destroy.ts', 'rollback/replay.ts'];
+  // split (go-to-k/cdkd#5835), `cdkd deploy`'s handler from `deploy.ts`
+  // into `deploy/command.ts`, and `cdkd rollback`'s replay from `rollback.ts`
+  // into `rollback/replay.ts` (go-to-k/cdkd#5835).
+  const files = ['deploy/command.ts', 'destroy.ts', 'state/destroy.ts', 'rollback/replay.ts'];
 
   it.each(files)('%s registers forwardSigtermToSigint and unregisters it', (file) => {
     const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', file), 'utf8');
@@ -99,7 +100,8 @@ describe('SIGTERM forwarding command wiring (source-level pin)', () => {
     // Without this gate, an interrupt landing before the engine registered
     // its SIGINT handler (during synth / asset publish) only set the flag and
     // the deploy proceeded into lock acquisition + provisioning.
-    const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+    // `runStackInner` lives in `cdkd deploy`'s handler module (go-to-k/cdkd#5835).
+    const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy', 'command.ts'), 'utf8');
     const liveLines = src
       .split('\n')
       .filter((line) => !line.trimStart().startsWith('//'))

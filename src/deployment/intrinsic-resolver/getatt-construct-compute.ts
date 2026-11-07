@@ -738,8 +738,10 @@ export const subnetIpv6AttributeWait = {
 /**
  * `Fn::GetAtt` on an `AWS::EC2::Subnet`, read live (go-to-k/cdkd#5944).
  *
- * The SDK provider records only `SubnetId` and `AvailabilityZone` at create,
- * and its `update()` returns no attributes, so every other CloudFormation
+ * The SDK provider records only `SubnetId`, `AvailabilityZone`,
+ * `AvailabilityZoneId`, `CidrBlock` and `VpcId` at create (the last three
+ * since go-to-k/cdkd#5946, so an older record lacks them), and its `update()`
+ * returns no attributes, so every other CloudFormation
  * return value used to land on `guardedPhysicalIdFallback` and serve the
  * SUBNET ID with a warning. `Ipv6CidrBlocks`, `NetworkAclAssociationId` and
  * `BlockPublicAccessStates` change on a live subnet (an `Ipv6CidrBlock`

@@ -27,6 +27,7 @@ import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-as
 import { createStateCommand } from '../../../src/cli/commands/state.js';
 import { buildProgram } from '../../../src/cli/program.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { readDeploySource } from './_deploy-source.js';
 
 /**
  * Collect every option flag string registered on a command (incl. hidden
@@ -831,10 +832,9 @@ describe('applyWaitFlagEnv (issue #1291 items 1 + 6)', () => {
   it('is the helper the deploy command actually calls (wiring pin)', () => {
     // A source-level pin: deploy.ts must route through applyWaitFlagEnv (not
     // hand-rolled env writes), so the projection cannot silently fork again.
-    const deploySrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '../../../src/cli/commands/deploy.ts'),
-      'utf8'
-    );
+    // `deploy.ts` plus every module under `deploy/` (go-to-k/cdkd#5835), so a
+    // hand-rolled env write in any of them still fails the negative half.
+    const deploySrc = readDeploySource();
     expect(deploySrc).toMatch(/applyWaitFlagEnv\(options\)/);
     expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO_WAIT|FULL_WAIT|WAIT_FLAGS_AVAILABLE)'\]\s*=/);
   });
@@ -1095,10 +1095,8 @@ describe('--prefer-sdk-route and its deprecated alias', () => {
  */
 describe('deploy merges both route-preference spellings', () => {
   it('reads both option names inside EACH merge expression', () => {
-    const raw = readFileSync(
-      new URL('../../../src/cli/commands/deploy.ts', import.meta.url),
-      'utf8'
-    );
+    // `deploy.ts` plus every module under `deploy/` (go-to-k/cdkd#5835).
+    const raw = readDeploySource();
     // COMMENT-STRIPPED. The first version of this fence scanned raw source, and
     // review measured it green while `--prefer-sdk-route` was completely inert
     // in deploy.ts: the reads had been replaced by a comment MENTIONING the
