@@ -279,6 +279,20 @@ describe('AWS::EC2::Instance Affinity / HostId / KernelId / RamdiskId update (#5
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KernelId must not be empty; the rollback leaves/));
   });
 
+  it('names the placement already applied when a later Kernel change fails', async () => {
+    const real = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof ModifyInstanceAttributeCommand
+        ? Promise.reject(Object.assign(new Error('kernel refused'), { name: 'InvalidParameterValue' }))
+        : real(cmd)
+    );
+    const before = { ...BASE, Tenancy: 'host', HostId: 'h-old', KernelId: 'aki-old' };
+    await expect(update({ ...before, HostId: 'h-new', KernelId: 'aki-new' }, before)).rejects.toThrow(
+      /kernel refused/
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/with the new HostId already applied/));
+  });
+
   it('starts the instance again when ModifyInstancePlacement fails after the stop', async () => {
     const real = mockSend.getMockImplementation()!;
     mockSend.mockImplementation((cmd: unknown) =>
