@@ -3,6 +3,7 @@ import {
   AssociateSubnetCidrBlockCommand,
   DisassociateSubnetCidrBlockCommand,
   DeleteSubnetCommand,
+  DescribeNetworkAclsCommand,
   DescribeSubnetsCommand,
   ModifySubnetAttributeCommand,
   DescribeNetworkInterfacesCommand,
@@ -475,6 +476,41 @@ export async function cleanupSubnetLambdaEnis(this: EC2Provider, subnetId: strin
   );
 }
 
+/** The `AWS::EC2::Subnet` return values {@link getSubnetAttribute} reads from `DescribeSubnets`. */
+const DESCRIBED_SUBNET_ATTRIBUTES = new Set([
+  'Ipv6CidrBlocks',
+  'AvailabilityZone',
+  'AvailabilityZoneId',
+  'CidrBlock',
+  'VpcId',
+  'OutpostArn',
+  'BlockPublicAccessStates',
+]);
+
+/**
+ * Every `AWS::EC2::Subnet` return value, read live (`cdkd orphan`'s rewriter
+ * reads through here first; go-to-k/cdkd#5968). The VALUES mirror the deploy
+ * resolver's `readSubnetAttributeLive` (`getatt-construct-compute.ts`), so
+ * what `cdkd orphan` splices into a sibling is what a deploy would resolve:
+ *
+ * - `Ipv6CidrBlocks`: the `associated` blocks, never an old `disassociated`
+ *   entry; `[]` for a subnet with no associated or associating block. One
+ *   still `associating` with none associated THROWS: the resolver waits for
+ *   it, and this single read cannot tell what it settles to.
+ * - `NetworkAclAssociationId`: from `DescribeNetworkAcls` filtered on
+ *   `association.subnet-id`.
+ * - `BlockPublicAccessStates` and its dotted `BlockPublicAccessStates.<member>`
+ *   spelling, walked over the live object by OWN keys only.
+ *
+ * A value AWS does not report (`undefined`, `null`, `''`), a subnet
+ * `DescribeSubnets` does not return or answers `InvalidSubnetID.NotFound`
+ * for, an unknown attribute name, or a physical id the
+ * `NetworkAclAssociationId` filter must not carry answers `undefined`, where
+ * the resolver refuses. Any other failed AWS read is NOT swallowed: it reaches
+ * the rewriter, which reports the reference unresolvable with the failure's
+ * text (a denied `ec2:DescribeNetworkAcls`).
+ * The rewriter is this method's only caller.
+ */
 export async function getSubnetAttribute(
   this: EC2Provider,
   physicalId: string,
@@ -482,22 +518,75 @@ export async function getSubnetAttribute(
 ): Promise<unknown> {
   if (attributeName === 'SubnetId') return physicalId;
 
+  if (attributeName === 'NetworkAclAssociationId') {
+    // The id goes into an EC2 FILTER value, where `*` / `?` are wildcards
+    // (the resolver refuses the same shape before any read). Every other
+    // arm sends it as a `SubnetIds` member, which EC2 rejects unless exact.
+    if (!/^subnet-[0-9a-f]+$/.test(physicalId)) return undefined;
+    const resp = await this.ec2Client.send(
+      new DescribeNetworkAclsCommand({
+        Filters: [{ Name: 'association.subnet-id', Values: [physicalId] }],
+      })
+    );
+    return present(
+      resp.NetworkAcls?.flatMap((acl) => acl.Associations ?? []).find(
+        (a) => a.SubnetId === physicalId
+      )?.NetworkAclAssociationId
+    );
+  }
+  const dotted = attributeName.startsWith('BlockPublicAccessStates.');
+  if (!dotted && !DESCRIBED_SUBNET_ATTRIBUTES.has(attributeName)) return undefined;
+
+  let subnet: Subnet | undefined;
   try {
     const response = await this.ec2Client.send(
       new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
     );
-    const subnet = response.Subnets?.[0];
-    if (!subnet) return undefined;
-
-    if (attributeName === 'AvailabilityZone') return subnet.AvailabilityZone;
-    // go-to-k/cdkd#5632: the other create-only members create() records.
-    if (attributeName === 'AvailabilityZoneId') return subnet.AvailabilityZoneId;
-    if (attributeName === 'CidrBlock') return subnet.CidrBlock;
-    if (attributeName === 'VpcId') return subnet.VpcId;
-    return undefined;
-  } catch {
-    return undefined;
+    subnet = response.Subnets?.[0];
+  } catch (error) {
+    // provider-rules.md: a `*NotFound` answers `undefined`; `--force` then
+    // falls back to the recorded value. Any other failure propagates.
+    if (isNamedError(error, SUBNET_NOT_FOUND_NAMES)) return undefined;
+    throw error;
   }
+  if (!subnet) return undefined;
+
+  if (dotted) {
+    let value: unknown = subnet.BlockPublicAccessStates;
+    for (const part of attributeName.split('.').slice(1)) {
+      value =
+        value !== null && typeof value === 'object' && Object.hasOwn(value, part)
+          ? (value as Record<string, unknown>)[part]
+          : undefined;
+    }
+    return present(value);
+  }
+  if (attributeName === 'Ipv6CidrBlocks') {
+    const associations = subnet.Ipv6CidrBlockAssociationSet ?? [];
+    const blocks = associations
+      .filter((a) => a.Ipv6CidrBlockState?.State === 'associated' && a.Ipv6CidrBlock)
+      .map((a) => a.Ipv6CidrBlock as string);
+    if (blocks.length > 0) return blocks;
+    if (associations.some((a) => a.Ipv6CidrBlockState?.State === 'associating')) {
+      throw new Error(SUBNET_IPV6_STILL_ASSOCIATING);
+    }
+    return [];
+  }
+  // go-to-k/cdkd#5632: AvailabilityZoneId / CidrBlock / VpcId are the other
+  // create-only members create() records.
+  return present(subnet[attributeName as keyof typeof subnet]);
+}
+
+/**
+ * Why `Ipv6CidrBlocks` has no value yet. Names no id: it reaches the
+ * rewriter's unresolvable report, which names the reference itself.
+ */
+const SUBNET_IPV6_STILL_ASSOCIATING =
+  "the subnet's IPv6 CIDR block is still associating; run cdkd orphan again once it is associated";
+
+/** A value the resolver would serve; what it refuses reads as absent. */
+function present(value: unknown): unknown {
+  return value === undefined || value === null || value === '' ? undefined : value;
 }
 
 /** The {@link EC2Provider} methods this module defines. */

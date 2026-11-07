@@ -20,6 +20,10 @@
 #      `{"Fn::GetAtt": [<role>, "RoleId"]}` again. The log-group-ARN
 #      parameter's row likewise, and the log group's recorded `Arn` is
 #      removed (a record that predates the attribute).
+#   1c. The two subnet-attribute parameters' rows likewise get a surviving
+#      `Fn::GetAtt [<subnet>, Ipv6CidrBlocks]` / `[..., NetworkAclAssociationId]`
+#      (issue #5968). Phase 1 already asserted the deployed values equal the
+#      live ones (the deploy resolver's read, #5944).
 #   2. Take the name over: delete the role out of band and create another under
 #      the same name. Assert its RoleId DIFFERS from the recorded one (premise).
 #   3. `cdkd orphan <stack>/Role`.
@@ -31,8 +35,14 @@
 #      builds the ARN from its client's region, which before the fix was the
 #      shell's. The second parameter's state row must hold the deployed ARN,
 #      in the stack's region.
-#   5. Destroy, delete the takeover role and the orphaned log group, assert
-#      nothing is left.
+#   4c. LOAD-BEARING (issue #5968): `cdkd orphan <stack>/V6Subnet`. The
+#      provider's `getAttribute` answered neither attribute, so the rewrite
+#      aborted as unresolvable. Each parameter row must hold the LIVE value:
+#      the associated IPv6 blocks as a list, and the subnet's default-ACL
+#      association id.
+#   5. Delete the orphaned subnet out of band (the VPC cannot go while it
+#      exists), destroy, delete the takeover role and the orphaned log group,
+#      assert nothing is left.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -81,6 +91,8 @@ ROLE_NAME="cdkd-orphan-getatt-takeover-role"
 PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/role-id"
 LOG_GROUP_NAME="/cdkd-integ/orphan-getatt-takeover/region-probe"
 LG_PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/log-group-arn"
+SN_BLOCKS_PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/subnet-ipv6-blocks"
+SN_NACL_PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/subnet-nacl-association"
 # Phase 4b's shell region: any region other than the stack's (issue #4937).
 if [ "${REGION}" = "us-west-2" ]; then OTHER_REGION="us-east-1"; else OTHER_REGION="us-west-2"; fi
 TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -94,6 +106,10 @@ ROLE_OWNED=0
 # Likewise for the log group: `cdkd orphan` leaves it in AWS, so the fixture
 # deletes it.
 LOG_GROUP_OWNED=0
+# The stack's subnet, once phase 1 read it from state. After phase 4c it is in
+# no state record, so the fixture deletes it BEFORE any destroy: the VPC's
+# delete fails while it exists.
+SUBNET_ID=""
 
 # Best-effort, subshell under `set +eu` so the trap never re-arms strict mode.
 delete_role_best_effort() {
@@ -108,6 +124,9 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +eu
+  if [ -n "${SUBNET_ID}" ]; then
+    aws ec2 delete-subnet --region "${REGION}" --subnet-id "${SUBNET_ID}" >/dev/null 2>&1
+  fi
   if [ "${DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
     AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
@@ -115,6 +134,8 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     aws ssm delete-parameter --region "${REGION}" --name "${PARAMETER_NAME}" >/dev/null 2>&1
     aws ssm delete-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}" >/dev/null 2>&1
+    aws ssm delete-parameter --region "${REGION}" --name "${SN_BLOCKS_PARAMETER_NAME}" >/dev/null 2>&1
+    aws ssm delete-parameter --region "${REGION}" --name "${SN_NACL_PARAMETER_NAME}" >/dev/null 2>&1
   fi
   # The fixed name covers the stack's role AND the takeover role: at most one
   # of them exists at a time.
@@ -158,6 +179,19 @@ log_group_count() {
   aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "${LOG_GROUP_NAME}" \
     --query "length(logGroups[?logGroupName=='${LOG_GROUP_NAME}'])" --output text
 }
+# The subnet's ASSOCIATED IPv6 blocks, sorted and comma-joined (issue #5968).
+live_subnet_blocks() {
+  aws ec2 describe-subnets --region "${REGION}" --subnet-ids "${SUBNET_ID}" \
+    --query "join(',', sort(Subnets[0].Ipv6CidrBlockAssociationSet[?Ipv6CidrBlockState.State=='associated'].Ipv6CidrBlock || \`[]\`))" \
+    --output text
+}
+# The subnet's network ACL association id.
+live_subnet_nacl_association() {
+  aws ec2 describe-network-acls --region "${REGION}" \
+    --filters "Name=association.subnet-id,Values=${SUBNET_ID}" \
+    --query "NetworkAcls[].Associations[] | [?SubnetId=='${SUBNET_ID}'].NetworkAclAssociationId | [0]" \
+    --output text
+}
 
 echo "==> Installing fixture deps"
 [ -d node_modules ] || pnpm install --ignore-workspace --prefer-offline
@@ -181,6 +215,12 @@ if ! gone_probe aws ssm get-parameter --region "${REGION}" --name "${LG_PARAMETE
   echo "FAIL: parameter ${LG_PARAMETER_NAME} already exists - clean up first." >&2
   exit 1
 fi
+for name in "${SN_BLOCKS_PARAMETER_NAME}" "${SN_NACL_PARAMETER_NAME}"; do
+  if ! gone_probe aws ssm get-parameter --region "${REGION}" --name "${name}"; then
+    echo "FAIL: parameter ${name} already exists - clean up first." >&2
+    exit 1
+  fi
+done
 LG_COUNT="$(log_group_count)"
 if [ "${LG_COUNT}" != "0" ]; then
   echo "FAIL: log group ${LOG_GROUP_NAME} already exists (count '${LG_COUNT}') - clean up first." >&2
@@ -234,6 +274,55 @@ if [ "${LG_PARAM_VALUE}" != "${RECORDED_LG_ARN}" ]; then
   exit 1
 fi
 echo "    OK: log group Arn ${RECORDED_LG_ARN} recorded and deployed into the second parameter"
+SUBNET_LID="$(logical_id_of_type 'AWS::EC2::Subnet')"
+VPC_ID="$(state_query "Object.values(st.resources).find((r) => r.resourceType === 'AWS::EC2::VPC')?.physicalId")"
+SN_BLOCKS_LID="$(logical_id_of_parameter "${SN_BLOCKS_PARAMETER_NAME}")"
+SN_NACL_LID="$(logical_id_of_parameter "${SN_NACL_PARAMETER_NAME}")"
+if [ -z "${SUBNET_LID}" ] || [ -z "${VPC_ID}" ] || [ -z "${SN_BLOCKS_LID}" ] || [ -z "${SN_NACL_LID}" ]; then
+  echo "FAIL: state lacks a row (subnet='${SUBNET_LID}', vpc='${VPC_ID}', blocks param='${SN_BLOCKS_LID}', nacl param='${SN_NACL_LID}')" >&2
+  exit 1
+fi
+# Checked before it becomes SUBNET_ID, which the trap deletes.
+SUBNET_PHYSICAL_ID="$(state_query "st.resources['${SUBNET_LID}'].physicalId")"
+case "${SUBNET_PHYSICAL_ID}" in
+  subnet-*) SUBNET_ID="${SUBNET_PHYSICAL_ID}" ;;
+  *)
+    echo "FAIL: premise: the subnet's physical id '${SUBNET_PHYSICAL_ID}' is not a subnet id" >&2
+    exit 1
+    ;;
+esac
+# Phase 4c tests the SDK provider's getAttribute; a Cloud Control record would
+# read through another provider and pass without exercising it.
+SUBNET_ROUTE="$(state_query "st.resources['${SUBNET_LID}'].provisionedBy")"
+if [ "${SUBNET_ROUTE}" != "sdk" ]; then
+  echo "FAIL: premise: ${SUBNET_LID} records provisionedBy '${SUBNET_ROUTE}', not the SDK provider ('sdk')" >&2
+  exit 1
+fi
+LIVE_BLOCKS="$(live_subnet_blocks)"
+case "${LIVE_BLOCKS}" in
+  *::/64) ;;
+  *)
+    echo "FAIL: premise: ${SUBNET_ID} has no associated IPv6 /64 ('${LIVE_BLOCKS}')" >&2
+    exit 1
+    ;;
+esac
+LIVE_NACL="$(live_subnet_nacl_association)"
+case "${LIVE_NACL}" in
+  aclassoc-*) ;;
+  *)
+    echo "FAIL: premise: ${SUBNET_ID} has no network ACL association ('${LIVE_NACL}')" >&2
+    exit 1
+    ;;
+esac
+SN_BLOCKS_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${SN_BLOCKS_PARAMETER_NAME}" \
+  --query 'Parameter.Value' --output text)"
+SN_NACL_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${SN_NACL_PARAMETER_NAME}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${SN_BLOCKS_VALUE}" != "${LIVE_BLOCKS}" ] || [ "${SN_NACL_VALUE}" != "${LIVE_NACL}" ]; then
+  echo "FAIL: the subnet parameters hold '${SN_BLOCKS_VALUE}' / '${SN_NACL_VALUE}', expected the live '${LIVE_BLOCKS}' / '${LIVE_NACL}'" >&2
+  exit 1
+fi
+echo "    OK: ${SUBNET_ID} Ipv6CidrBlocks ${LIVE_BLOCKS} and NetworkAclAssociationId ${LIVE_NACL} deployed into the subnet parameters"
 
 echo "==> Phase 1b: put the parameter row back into its unresolved-intrinsic shape"
 STATE_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
@@ -269,6 +358,28 @@ if [ -n "${LG_ARN_LEFT}" ]; then
   exit 1
 fi
 echo "    OK: ${LG_PARAM_LID}.Value = ${LG_PARAM_BEFORE}; ${LG_LID} records no Arn"
+
+echo "==> Phase 1c: the subnet parameters' rows read the subnet through a surviving Fn::GetAtt"
+STATE_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+printf '%s' "${STATE_BODY}" | node -e '
+  let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => {
+    const st = JSON.parse(s);
+    st.resources[process.argv[1]].properties.Value = { "Fn::GetAtt": [process.argv[3], "Ipv6CidrBlocks"] };
+    st.resources[process.argv[2]].properties.Value = { "Fn::GetAtt": [process.argv[3], "NetworkAclAssociationId"] };
+    process.stdout.write(JSON.stringify(st));
+  });' "${SN_BLOCKS_LID}" "${SN_NACL_LID}" "${SUBNET_LID}" > "${LOG}"
+aws s3 cp "${LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+for lid in "${SN_BLOCKS_LID}" "${SN_NACL_LID}"; do
+  BEFORE="$(state_query "JSON.stringify(st.resources['${lid}'].properties.Value)")"
+  case "${BEFORE}" in
+    *Fn::GetAtt*"${SUBNET_LID}"*) ;;
+    *)
+      echo "FAIL: premise: ${lid}'s state row holds no Fn::GetAtt on ${SUBNET_LID} (${BEFORE})" >&2
+      exit 1
+      ;;
+  esac
+  echo "    OK: ${lid}.Value = ${BEFORE}"
+done
 
 echo "==> Phase 2: take the role's name over out of band"
 aws iam delete-role --role-name "${ROLE_NAME}"
@@ -344,7 +455,36 @@ if [ "${LG_PARAM_AFTER}" != "${RECORDED_LG_ARN}" ]; then
 fi
 echo "    OK: ${LG_PARAM_LID}.Value = ${LG_PARAM_AFTER}"
 
-echo "==> Phase 5: destroy, then remove the takeover role and the orphaned log group"
+echo "==> Phase 4c (LOAD-BEARING, issue #5968): cdkd orphan ${STACK}/V6Subnet"
+AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" orphan "${STACK}/V6Subnet" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes > "${LOG}" 2>&1 || {
+  echo "FAIL: cdkd orphan of the subnet failed (before #5968: unresolvable Ipv6CidrBlocks / NetworkAclAssociationId)" >&2
+  tail -60 "${LOG}" >&2
+  exit 1
+}
+if [ -n "$(logical_id_of_type 'AWS::EC2::Subnet')" ]; then
+  echo "FAIL: the subnet row is still in state after 'cdkd orphan'" >&2
+  exit 1
+fi
+# Read live again: the expected value is what AWS holds NOW.
+LIVE_BLOCKS="$(live_subnet_blocks)"
+LIVE_NACL="$(live_subnet_nacl_association)"
+# A list, never a string that happens to print the same.
+SN_BLOCKS_AFTER="$(state_query "((v) => Array.isArray(v) ? [...v].sort().join(',') : 'NOT-A-LIST:' + JSON.stringify(v))(st.resources['${SN_BLOCKS_LID}'].properties.Value)")"
+if [ "${SN_BLOCKS_AFTER}" != "${LIVE_BLOCKS}" ]; then
+  echo "FAIL: ${SN_BLOCKS_LID}'s Value is '${SN_BLOCKS_AFTER}', expected the live list '${LIVE_BLOCKS}'" >&2
+  exit 1
+fi
+SN_NACL_AFTER="$(state_query "st.resources['${SN_NACL_LID}'].properties.Value")"
+if [ "${SN_NACL_AFTER}" != "${LIVE_NACL}" ]; then
+  echo "FAIL: ${SN_NACL_LID}'s Value is '${SN_NACL_AFTER}', expected the live '${LIVE_NACL}'" >&2
+  exit 1
+fi
+echo "    OK: ${SN_BLOCKS_LID}.Value = [${SN_BLOCKS_AFTER}]; ${SN_NACL_LID}.Value = ${SN_NACL_AFTER}"
+
+echo "==> Phase 5: delete the orphaned subnet, destroy, then remove the takeover role and the orphaned log group"
+# Left in AWS by `cdkd orphan`; the VPC's delete fails while it exists.
+aws ec2 delete-subnet --region "${REGION}" --subnet-id "${SUBNET_ID}"
 AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --force > "${LOG}" 2>&1 || {
   echo "FAIL: destroy failed" >&2
@@ -362,6 +502,15 @@ assert_gone "parameter ${PARAMETER_NAME} still exists after destroy" \
   aws ssm get-parameter --region "${REGION}" --name "${PARAMETER_NAME}"
 assert_gone "parameter ${LG_PARAMETER_NAME} still exists after destroy" \
   aws ssm get-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}"
+for name in "${SN_BLOCKS_PARAMETER_NAME}" "${SN_NACL_PARAMETER_NAME}"; do
+  assert_gone "parameter ${name} still exists after destroy" \
+    aws ssm get-parameter --region "${REGION}" --name "${name}"
+done
+assert_gone "subnet ${SUBNET_ID} still exists" \
+  aws ec2 describe-subnets --region "${REGION}" --subnet-ids "${SUBNET_ID}"
+assert_gone "VPC ${VPC_ID} still exists after destroy" \
+  aws ec2 describe-vpcs --region "${REGION}" --vpc-ids "${VPC_ID}"
+SUBNET_ID=""
 assert_gone "role ${ROLE_NAME} still exists" aws iam get-role --role-name "${ROLE_NAME}"
 LG_COUNT="$(log_group_count)"
 if [ "${LG_COUNT}" != "0" ]; then
@@ -371,4 +520,4 @@ fi
 
 trap - EXIT INT TERM
 rm -f "${LOG}"
-echo "[verify] PASS — cdkd orphan substituted the recorded RoleId after a name takeover, and read a live Arn in the stack's region"
+echo "[verify] PASS — cdkd orphan substituted the recorded RoleId after a name takeover, read a live Arn in the stack's region, and read a subnet's Ipv6CidrBlocks / NetworkAclAssociationId live"
