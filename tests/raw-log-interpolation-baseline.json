@@ -407,7 +407,7 @@
   "src/synthesis/macro-expander.ts": 7,
   "src/synthesis/stack-messages.ts": 3,
   "src/synthesis/synthesizer.ts": 6,
-  "src/utils/docker-cmd.ts": 1,
+  "src/utils/docker-cmd/sensitive-env.ts": 1,
   "src/utils/expected-bucket-owner.ts": 2,
   "src/utils/role-arn.ts": 4
 }
