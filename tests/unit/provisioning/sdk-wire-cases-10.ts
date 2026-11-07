@@ -417,12 +417,12 @@ const FLEET_CASE: TypeCase = {
       expectedSilent: Object.fromEntries(
         ['InstanceTypeConfigs', 'ResizeSpecifications'].map((key) => [
           `update-remove:${key}`,
-          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config-provider.ts:93-106)',
+          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config/shared.ts:48-60)',
         ])
       ),
       expectedRemovalThrows: {
         'create:ClusterId': REQUIRED(
-          'ClusterId is required: create() refuses a fleet without its cluster before any call (emr-instance-fleet-config-provider.ts:373-380)',
+          'ClusterId is required: create() refuses a fleet without its cluster before any call (emr-instance-fleet-config/create.ts:44-51)',
           /is missing ClusterId/
         ),
       },
@@ -747,12 +747,12 @@ const TARGET_GROUP_CASE: TypeCase = {
       },
       expectedSilent: {
         // The declared value is the one cdkd sends for an absent name
-        // (rds-dbproxy-targetgroup-provider.ts:256-261).
+        // (rds-dbproxy-targetgroup/create.ts:37-42).
         'create:TargetGroupName': DECLARED_DEFAULT,
       },
       expectedRemovalThrows: {
         'create:DBProxyName': REQUIRED(
-          'DBProxyName is required: create() refuses a target group without its proxy before any call (rds-dbproxy-targetgroup-provider.ts:248-255)',
+          'DBProxyName is required: create() refuses a target group without its proxy before any call (rds-dbproxy-targetgroup/create.ts:29-36)',
           /DBProxyName is required/
         ),
         ...RDS_TAG_KEY_THROWS,
