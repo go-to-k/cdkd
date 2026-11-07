@@ -1,22 +1,15 @@
 import {
   SFNClient,
   CreateStateMachineCommand,
-  UpdateStateMachineCommand,
   DeleteStateMachineCommand,
   DescribeStateMachineCommand,
-  ListTagsForResourceCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
   StateMachineDoesNotExist,
   type CreateStateMachineCommandInput,
-  type LoggingConfiguration,
-  type TracingConfiguration,
-  type EncryptionConfiguration,
   type Tag,
   type StateMachineType,
 } from '@aws-sdk/client-sfn';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
@@ -29,9 +22,8 @@ import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import { refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -42,20 +34,17 @@ import type {
   ResourceImportResult,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
-
-/**
- * CloudFormation's `StateMachineRevisionId` for a described state machine.
- * `DescribeStateMachine` omits `revisionId` until the machine is first
- * updated, and CloudFormation then reports `INITIAL` (measured live,
- * 2026-09-25, issue #3627), so the absent value maps to that.
- */
-function stateMachineRevisionId(described: { revisionId?: string | undefined }): string {
-  return described.revisionId ?? 'INITIAL';
-}
+import {
+  stateMachineRevisionId,
+  mapEncryptionConfiguration,
+  mapLoggingConfiguration,
+  mapTracingConfiguration,
+} from './stepfunctions/shared.js';
+import { update, applyTagDiff } from './stepfunctions/update.js';
+import { readCurrentState, importImpl } from './stepfunctions/read-state.js';
 
 /**
  * AWS Step Functions State Machine Provider
@@ -69,7 +58,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   private sfnClient?: SFNClient;
   private s3Client?: S3Client;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('StepFunctionsProvider');
+  logger: ConsoleLogger = getLogger().child('StepFunctionsProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -90,7 +79,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): SFNClient {
+  getClient(): SFNClient {
     if (!this.sfnClient) {
       this.sfnClient = new SFNClient({
         ...ambientClientDefaults(),
@@ -228,10 +217,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     }
   }
 
-  /**
-   * Update a Step Functions state machine
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -239,122 +225,15 @@ export class StepFunctionsProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Step Functions state machine ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#2613: a client in another region than the state record is not the one this
-    // state machine was written through, so the update would not be addressed to the machine
-    // the record names. Ahead of the definition build, whose `DefinitionS3Location` read goes
-    // through the same region. Refuse before any call; the client's region is resolved only
-    // when there is one to compare with.
-    assertRegionMatch(
-      context?.expectedRegion ? await this.getClient().config.region() : undefined,
-      context?.expectedRegion,
-      resourceType,
+    return update.call(
+      this,
       logicalId,
       physicalId,
-      'pre-update'
+      resourceType,
+      properties,
+      previousProperties,
+      context
     );
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    try {
-      const definitionString = await this.buildDefinitionString(properties);
-
-      // Translate every CFn-PascalCase nested object to the SDK's
-      // camelCase shape (see helpers below). All three mappers also fold
-      // the Class 2 empty-placeholder case to `undefined` so `cdkd drift
-      // --revert` round-trips through `update()` without AWS rejecting a
-      // structurally incomplete payload (`encryptionConfiguration` requires
-      // `type`; `loggingConfiguration` without `level` would silently
-      // disable logging).
-      //
-      // BEFORE THIS FIX `properties['LoggingConfiguration']` (CFn PascalCase
-      // from cdkd state) was cast straight to the SDK camelCase type — the
-      // cast is a no-op at runtime, so AWS received the wrong shape and
-      // silently ignored Level / IncludeExecutionData / Destinations, which
-      // surfaced as `cdkd drift --revert` reporting `✓ reverted` while the
-      // very next `cdkd drift` re-detected the same drift.
-      //
-      // REMOVAL-CLEAR (issue #978): `UpdateStateMachine` is patch-style — a
-      // field omitted from the request keeps its current AWS value. So when a
-      // config that WAS present in `previousProperties` is absent from the new
-      // `properties`, mapping from `properties` alone yields `undefined`, the
-      // field is omitted, and AWS silently keeps the old config (the removal is
-      // never applied). For each of the three configs we detect the
-      // prev-present / new-absent transition and send an explicit disable
-      // sentinel instead of `undefined`, mirroring Lambda ESM's
-      // `clearOnUpdateRemoval` / SQS's `SQS_ATTRIBUTE_REMOVAL_RESET`.
-      const encryptionConfiguration =
-        mapEncryptionConfiguration(properties['EncryptionConfiguration']) ??
-        disabledEncryptionConfigurationOnRemoval(
-          previousProperties['EncryptionConfiguration'],
-          properties['EncryptionConfiguration']
-        );
-      const loggingConfiguration =
-        mapLoggingConfiguration(properties['LoggingConfiguration']) ??
-        disabledLoggingConfigurationOnRemoval(
-          previousProperties['LoggingConfiguration'],
-          properties['LoggingConfiguration']
-        );
-      const tracingConfiguration =
-        mapTracingConfiguration(properties['TracingConfiguration']) ??
-        disabledTracingConfigurationOnRemoval(
-          previousProperties['TracingConfiguration'],
-          properties['TracingConfiguration']
-        );
-
-      await this.getClient().send(
-        new UpdateStateMachineCommand({
-          stateMachineArn: physicalId,
-          definition: definitionString,
-          roleArn: properties['RoleArn'] as string | undefined,
-          loggingConfiguration,
-          tracingConfiguration,
-          encryptionConfiguration,
-        })
-      );
-
-      this.logger.debug(`Updated Step Functions state machine ${physicalId}`);
-
-      // Apply tag diff. SFN uses lowercase camelCase shape:
-      // TagResource({ resourceArn, tags: [{ key, value }] }),
-      // UntagResource({ resourceArn, tagKeys: [...] }).
-      await this.applyTagDiff(
-        physicalId,
-        resourceType,
-        logicalId,
-        previousProperties['Tags'],
-        properties['Tags']
-      );
-
-      // Describe to get updated attributes
-      const describeResponse = await this.getClient().send(
-        new DescribeStateMachineCommand({ stateMachineArn: physicalId })
-      );
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          Arn: physicalId,
-          Name: describeResponse.name,
-          StateMachineRevisionId: stateMachineRevisionId(describeResponse),
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update Step Functions state machine ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
   /**
@@ -377,7 +256,7 @@ export class StepFunctionsProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
@@ -605,113 +484,12 @@ export class StepFunctionsProvider implements ResourceProvider {
     return [...new Set(aliases)];
   }
 
-  /**
-   * Read the AWS-current Step Functions state machine config in CFn-property
-   * shape.
-   *
-   * Issues a single `DescribeStateMachine` and surfaces:
-   *   - `StateMachineName` (`name`)
-   *   - `RoleArn` (`roleArn`)
-   *   - `StateMachineType` (`type`)
-   *   - `LoggingConfiguration` / `TracingConfiguration` / `EncryptionConfiguration`
-   *     (re-mapped to CFn PascalCase)
-   *   - `Definition` (parsed from JSON; cdkd state may hold either the
-   *     stringified `DefinitionString` or the object `Definition`, so we
-   *     surface as the object form — the comparator handles either side).
-   *
-   * `DefinitionSubstitutions` is omitted because they are applied by cdkd on
-   * create and update and not surfaced by `DescribeStateMachine` (the response
-   * carries the already-substituted definition).
-   *
-   * `Tags` is surfaced via a follow-up `ListTagsForResource(arn)` call.
-   * CDK's `aws:*` auto-tags are filtered out; the result key is omitted
-   * entirely when AWS reports no user tags.
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the state machine is gone (`StateMachineDoesNotExist`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let resp: {
-      name?: string;
-      roleArn?: string;
-      type?: string;
-      definition?: string;
-      loggingConfiguration?: LoggingConfiguration;
-      tracingConfiguration?: TracingConfiguration;
-      encryptionConfiguration?: EncryptionConfiguration;
-    };
-    try {
-      resp = (await this.getClient().send(
-        new DescribeStateMachineCommand({ stateMachineArn: physicalId })
-      )) as unknown as typeof resp;
-    } catch (err) {
-      if (err instanceof StateMachineDoesNotExist) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-
-    const result: Record<string, unknown> = {};
-    if (resp.name !== undefined) result['StateMachineName'] = resp.name;
-    if (resp.roleArn !== undefined) result['RoleArn'] = resp.roleArn;
-    if (resp.type !== undefined) result['StateMachineType'] = resp.type;
-    if (resp.definition !== undefined) {
-      try {
-        result['Definition'] = JSON.parse(resp.definition) as unknown;
-      } catch {
-        result['Definition'] = resp.definition;
-      }
-    }
-    {
-      const lc: Record<string, unknown> = {};
-      if (resp.loggingConfiguration?.level !== undefined) {
-        lc['Level'] = resp.loggingConfiguration.level;
-      }
-      if (resp.loggingConfiguration?.includeExecutionData !== undefined) {
-        lc['IncludeExecutionData'] = resp.loggingConfiguration.includeExecutionData;
-      }
-      if (resp.loggingConfiguration?.destinations) {
-        lc['Destinations'] = resp.loggingConfiguration.destinations.map((d) => {
-          const inner: Record<string, unknown> = {};
-          if (d.cloudWatchLogsLogGroup?.logGroupArn) {
-            inner['CloudWatchLogsLogGroup'] = {
-              LogGroupArn: d.cloudWatchLogsLogGroup.logGroupArn,
-            };
-          }
-          return inner;
-        });
-      }
-      result['LoggingConfiguration'] = lc;
-    }
-    result['TracingConfiguration'] = { Enabled: resp.tracingConfiguration?.enabled ?? false };
-    {
-      const ec: Record<string, unknown> = {};
-      if (resp.encryptionConfiguration?.type !== undefined) {
-        ec['Type'] = resp.encryptionConfiguration.type;
-      }
-      if (resp.encryptionConfiguration?.kmsKeyId !== undefined) {
-        ec['KmsKeyId'] = resp.encryptionConfiguration.kmsKeyId;
-      }
-      if (resp.encryptionConfiguration?.kmsDataKeyReusePeriodSeconds !== undefined) {
-        ec['KmsDataKeyReusePeriodSeconds'] =
-          resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds;
-      }
-      result['EncryptionConfiguration'] = ec;
-    }
-
-    // Tags via ListTagsForResource (state machine ARN is the physicalId).
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsForResourceCommand({ resourceArn: physicalId })
-      );
-      const tags = normalizeAwsTagsToCfn(tagsResp.tags);
-      result['Tags'] = tags;
-    } catch (err) {
-      if (!(err instanceof StateMachineDoesNotExist)) throw err;
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
   }
 
   /**
@@ -746,76 +524,25 @@ export class StepFunctionsProvider implements ResourceProvider {
     return resp.creationDate instanceof Date ? resp.creationDate.getTime() : undefined;
   }
 
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      try {
-        const resp = await this.getClient().send(
-          new DescribeStateMachineCommand({ stateMachineArn: input.knownPhysicalId })
-        );
-        // go-to-k/cdkd#4705: a machine being deleted holds nothing to take
-        // over (a create of its name waits the deletion out itself).
-        if (resp.status === 'DELETING') return null;
-        // Issue #3627: the map `create()` / `update()` record; the resolver
-        // served the ARN for `Name` and `StateMachineRevisionId`.
-        return {
-          physicalId: input.knownPhysicalId,
-          attributes: definedAttributes({
-            Arn: input.knownPhysicalId,
-            Name: resp.name,
-            StateMachineRevisionId: stateMachineRevisionId(resp),
-          }),
-        };
-      } catch (err) {
-        if (err instanceof StateMachineDoesNotExist) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // DescribeStackResources or the template's physical-name property; a state
-    // machine reaching here needs an explicit `--resource <id>=<arn>` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 
-  /**
-   * Apply a diff between old and new CFn-shape Tags arrays via SFN's
-   * `TagResource` / `UntagResource` APIs. SFN uses lowercase camelCase
-   * (`{ key, value }`) for tags. Both sides are read through `planTagDiff`
-   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
-   */
-  private async applyTagDiff(
+  applyTagDiff(
     stateMachineArn: string,
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown
   ): Promise<void> {
-    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
-    }
-    const tagsToAdd: Tag[] = [...plan.set].map(([k, v]) => ({ key: k, value: v }));
-    const tagsToRemove = plan.remove;
-
-    if (tagsToRemove.length > 0) {
-      await this.getClient().send(
-        new UntagResourceCommand({ resourceArn: stateMachineArn, tagKeys: tagsToRemove })
-      );
-      this.logger.debug(
-        `Removed ${tagsToRemove.length} tag(s) from SFN state machine ${stateMachineArn}`
-      );
-    }
-    if (tagsToAdd.length > 0) {
-      await this.getClient().send(
-        new TagResourceCommand({ resourceArn: stateMachineArn, tags: tagsToAdd })
-      );
-      this.logger.debug(
-        `Added/updated ${tagsToAdd.length} tag(s) on SFN state machine ${stateMachineArn}`
-      );
-    }
+    return applyTagDiff.call(
+      this,
+      stateMachineArn,
+      resourceType,
+      logicalId,
+      oldTagsRaw,
+      newTagsRaw
+    );
   }
 
   /**
@@ -839,7 +566,7 @@ export class StepFunctionsProvider implements ResourceProvider {
    * and inlines its contents as the `definition`. cdkd does the same: fetch
    * the object body, then apply `DefinitionSubstitutions` like any other body.
    */
-  private async buildDefinitionString(properties: Record<string, unknown>): Promise<string> {
+  async buildDefinitionString(properties: Record<string, unknown>): Promise<string> {
     const inline = inlineDefinitionBody(properties);
     if (inline !== undefined) return inline;
 
@@ -962,159 +689,4 @@ function maskSentinelLeaves(value: unknown): unknown {
     return Object.fromEntries(entries.map(([key, child]) => [key, maskSentinelLeaves(child)]));
   }
   return value;
-}
-
-/**
- * Translate a CFn-shape `EncryptionConfiguration` (PascalCase) into the SDK's
- * camelCase shape, or `undefined` if the value is absent / a Class 2
- * empty-object placeholder.
- *
- * `readCurrentState` always-emits `EncryptionConfiguration: {}` on state
- * machines with no encryption — the comparator's top-level walk is
- * state-keys-only, so the placeholder is required to detect a console-side
- * encryption attach.  `cdkd drift --revert` later round-trips that
- * placeholder back through `update()`. AWS rejects an `encryptionConfiguration`
- * whose required `type` field is missing ("Member must not be null"), so an
- * empty placeholder is folded to `undefined` here (no-op on the wire).
- */
-function mapEncryptionConfiguration(value: unknown): EncryptionConfiguration | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value !== 'object') return undefined;
-  const cfg = value as Record<string, unknown>;
-  // Class 2 sanitize: empty placeholder => no-op
-  if (cfg['Type'] === undefined) return undefined;
-  return {
-    type: cfg['Type'] as EncryptionConfiguration['type'],
-    kmsKeyId: cfg['KmsKeyId'] as string | undefined,
-    kmsDataKeyReusePeriodSeconds: cfg['KmsDataKeyReusePeriodSeconds'] as number | undefined,
-  };
-}
-
-/**
- * Translate a CFn-shape `LoggingConfiguration` (PascalCase) into the SDK's
- * camelCase shape, or `undefined` for the empty placeholder case (no `Level`).
- *
- * `readCurrentState` always-emits `LoggingConfiguration: {}` (no `Level`) on
- * state machines that never configured logging.  Forwarding that placeholder
- * to `UpdateStateMachine` would inadvertently set `level=OFF` and disable
- * logging on a state machine that has logging configured outside cdkd's
- * managed view — fold to `undefined` here so the placeholder round-trip is
- * a no-op.
- */
-function mapLoggingConfiguration(value: unknown): LoggingConfiguration | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value !== 'object') return undefined;
-  const cfg = value as Record<string, unknown>;
-  // Class 2 sanitize: empty placeholder (no Level) => no-op
-  if (cfg['Level'] === undefined) return undefined;
-  const result: LoggingConfiguration = {
-    level: cfg['Level'] as LoggingConfiguration['level'],
-  };
-  if (cfg['IncludeExecutionData'] !== undefined) {
-    result.includeExecutionData = cfg['IncludeExecutionData'] as boolean;
-  }
-  if (Array.isArray(cfg['Destinations'])) {
-    result.destinations = (cfg['Destinations'] as Array<Record<string, unknown>>).map((d) => {
-      const cwLogs = d['CloudWatchLogsLogGroup'] as Record<string, unknown> | undefined;
-      if (cwLogs?.['LogGroupArn'] !== undefined) {
-        return {
-          cloudWatchLogsLogGroup: { logGroupArn: cwLogs['LogGroupArn'] as string },
-        };
-      }
-      return {};
-    });
-  }
-  return result;
-}
-
-/**
- * Translate a CFn-shape `TracingConfiguration` (PascalCase) into the SDK's
- * camelCase shape.  `readCurrentState` always-emits `{ Enabled: false }` (the
- * AWS default), so no Class 2 sanitize is needed — the round-trip simply
- * reaffirms the existing tracing setting.
- */
-function mapTracingConfiguration(value: unknown): TracingConfiguration | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value !== 'object') return undefined;
-  const cfg = value as Record<string, unknown>;
-  if (cfg['Enabled'] === undefined) return undefined;
-  return { enabled: cfg['Enabled'] as boolean };
-}
-
-// ---------------------------------------------------------------------------
-// Removal-clear sentinels (issue #978)
-//
-// `UpdateStateMachine` is patch-style, so omitting a config field keeps the
-// current AWS value. These helpers turn a prev-present / new-absent transition
-// into the explicit disable payload AWS needs to actually clear the config.
-//
-// Each is only consulted when the corresponding `map*Configuration(properties[...])`
-// returned `undefined` (i.e. the new side carries no meaningful config). The
-// `wasMeaningfullyConfigured` guard distinguishes a genuine removal (the prop
-// was really set before) from the `readCurrentState` empty-placeholder round-trip
-// (`{}` / `{ Enabled: false }`), which must stay a no-op — sending a disable
-// sentinel there would spuriously reaffirm the AWS default on every drift-revert.
-// ---------------------------------------------------------------------------
-
-/**
- * Return the SDK disable payload for `EncryptionConfiguration` when it was
- * present+configured in the previous properties but is absent/placeholder in
- * the new ones; otherwise `undefined` (no clear needed). `AWS_OWNED_KEY` is
- * the AWS default, so this resets a customer-managed-key config back to default.
- */
-function disabledEncryptionConfigurationOnRemoval(
-  previous: unknown,
-  next: unknown
-): EncryptionConfiguration | undefined {
-  if (!wasMeaningfullyConfigured(previous, 'Type')) return undefined;
-  if (mapEncryptionConfiguration(next) !== undefined) return undefined;
-  return { type: 'AWS_OWNED_KEY' };
-}
-
-/**
- * Return the SDK disable payload for `LoggingConfiguration` when it was
- * present+configured in the previous properties but is absent/placeholder in
- * the new ones; otherwise `undefined`. `level: OFF` disables logging;
- * `destinations: []` clears the log destinations (only required when level is
- * not OFF, so an empty list is accepted alongside OFF).
- */
-function disabledLoggingConfigurationOnRemoval(
-  previous: unknown,
-  next: unknown
-): LoggingConfiguration | undefined {
-  if (!wasMeaningfullyConfigured(previous, 'Level')) return undefined;
-  if (mapLoggingConfiguration(next) !== undefined) return undefined;
-  return { level: 'OFF', includeExecutionData: false, destinations: [] };
-}
-
-/**
- * Return the SDK disable payload for `TracingConfiguration` when it was
- * present+enabled in the previous properties but is absent/placeholder in the
- * new ones; otherwise `undefined`. `enabled: false` turns X-Ray tracing off.
- *
- * Unlike logging/encryption, the "meaningful" signal here is `Enabled === true`
- * (a previous `{ Enabled: false }` is already the AWS default, so there is
- * nothing to clear).
- */
-function disabledTracingConfigurationOnRemoval(
-  previous: unknown,
-  next: unknown
-): TracingConfiguration | undefined {
-  if (previous === null || typeof previous !== 'object') return undefined;
-  const prevCfg = previous as Record<string, unknown>;
-  if (prevCfg['Enabled'] !== true) return undefined;
-  if (mapTracingConfiguration(next) !== undefined) return undefined;
-  return { enabled: false };
-}
-
-/**
- * True when `value` is an object that carries a defined `discriminatorKey`
- * field (`Level` for logging, `Type` for encryption) — i.e. it was a real,
- * non-placeholder config in the previous properties. The empty-placeholder
- * shape `{}` that `readCurrentState` emits has no discriminator, so it returns
- * false and no clear is emitted.
- */
-function wasMeaningfullyConfigured(value: unknown, discriminatorKey: string): boolean {
-  if (value === null || typeof value !== 'object') return false;
-  return (value as Record<string, unknown>)[discriminatorKey] !== undefined;
 }

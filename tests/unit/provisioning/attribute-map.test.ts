@@ -685,6 +685,8 @@ describe('no provider records an attribute as `?? \'\'` (issue #3077 fence)', ()
       expect.arrayContaining([
         'dynamodb-globaltable/create-commit.ts',
         'dynamodb-globaltable/update-indexes.ts',
+        'stepfunctions/update.ts',
+        'stepfunctions/read-state.ts',
       ])
     );
     expect(scan.hoistedResolved).toBeGreaterThanOrEqual(FLOORS.hoistedResolved);
