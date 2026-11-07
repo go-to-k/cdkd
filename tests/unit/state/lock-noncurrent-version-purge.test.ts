@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
-import { readdirSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
 // compiler API only under `typescript/unstable/*`. Same import every other
 // AST-based critic in this repo uses.
@@ -1027,6 +1027,67 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       walk(source, undefined);
       return n;
     };
+
+    /**
+     * The refusal above reads SOURCES only, so a file elsewhere under `src/`
+     * could import `deleteLock` and hand it back renamed (`export { deleteLock
+     * as zap }`). Nothing outside the class file reaches a companion module:
+     * count every static import / export and dynamic `import()` whose relative
+     * specifier resolves into the companion directory, outside SOURCES.
+     */
+    const companionImports = (file: string, text: string): number => {
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+      let n = 0;
+      const hits = (spec: ts.Node | undefined): boolean =>
+        spec !== undefined &&
+        ts.isStringLiteralLike(spec) &&
+        spec.text.startsWith('.') &&
+        resolve(dirname(file), spec.text).startsWith(COMPANION_DIR + '/');
+      const walk = (node: ts.Node): void => {
+        if (
+          ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+            hits(node.moduleSpecifier)) ||
+          (ts.isCallExpression(node) &&
+            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+            hits(node.arguments[0]))
+        ) {
+          n += 1;
+        }
+        node.forEachChild(walk);
+      };
+      walk(source);
+      return n;
+    };
+
+    it('no file outside the class and its companion modules imports a companion module', () => {
+      const all: string[] = [];
+      const collect = (dir: string): void => {
+        for (const name of readdirSync(dir)) {
+          const p = join(dir, name);
+          if (statSync(p).isDirectory()) collect(p);
+          else if (p.endsWith('.ts') && !p.endsWith('.d.ts')) all.push(p);
+        }
+      };
+      collect(join(process.cwd(), 'src'));
+      const outside = all.filter((p) => !SOURCES.includes(p));
+      // Floor: the walk saw the tree, and SOURCES is a strict subset of it.
+      expect(outside.length).toBeGreaterThan(100);
+      expect(SOURCES.every((p) => all.includes(p))).toBe(true);
+      const offenders = outside.filter((p) => companionImports(p, readFileSync(p, 'utf8')) > 0);
+      expect(offenders).toEqual([]);
+      // ...and the detector is not vacuous, for each of its three shapes.
+      const elsewhere = join(process.cwd(), 'src/state/elsewhere.ts');
+      expect(
+        companionImports(elsewhere, "import { deleteLock } from './lock-manager/release.js';")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "export { deleteLock as zap } from './lock-manager/release.js';")
+      ).toBe(1);
+      expect(
+        companionImports(elsewhere, "void import('./lock-manager/release.js');")
+      ).toBe(1);
+      expect(companionImports(elsewhere, "import { LockManager } from './lock-manager.js';")).toBe(0);
+    });
 
     it('refuses a direct call of the module function, which the walk cannot follow', () => {
       for (const file of SOURCES) {
