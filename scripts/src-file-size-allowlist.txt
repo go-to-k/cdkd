@@ -24,7 +24,6 @@ src/deployment/rollback-executor.ts
 src/deployment/rollback-executor/journaled-orphans.ts
 src/deployment/rollback-executor/plan.ts
 src/deployment/rollback-executor/replay-reverse-replacement.ts
-src/deployment/secret-redaction/positions.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/state/s3-state-backend.ts

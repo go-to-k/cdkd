@@ -96,6 +96,9 @@ describe('secret-redaction module load order', () => {
     expect(MODULES).toContain('redact-path/reference-tokens.ts');
     expect(MODULES.filter((f) => f.startsWith('redact-state/')).length).toBeGreaterThanOrEqual(1);
     expect(MODULES).toContain('redact-state/scrub-record.ts');
+    expect(MODULES.filter((f) => f.startsWith('positions/')).length).toBeGreaterThanOrEqual(2);
+    expect(MODULES).toContain('positions/skeleton.ts');
+    expect(MODULES).toContain('positions/spans.ts');
   });
 
   // Each case spawns a Node process, so it declares its own timeout.
