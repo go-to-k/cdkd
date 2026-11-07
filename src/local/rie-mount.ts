@@ -86,15 +86,15 @@ export function rieCacheDirectory(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 const inFlight = new Map<string, Promise<string>>();
-/** One warning per process for a binary that cannot be obtained: it hits every function. */
-let warnedNoBinary = false;
+/** One warning per platform for a binary that cannot be obtained: it hits every function of that architecture. */
+const warnedNoBinary = new Set<string>();
 
 /**
  * Resolve how to run `input.image` under a mounted RIE, or `undefined` when
  * the image must run as-is: the program it starts already IS an RIE (two
  * emulators would contend for `:8080`), its config could not be read (warned
  * for that image), or the RIE binary could not be obtained (warned once per
- * process, since it then applies to every function).
+ * platform, since it then applies to every function of that architecture).
  */
 export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | undefined> {
   const logger = getLogger().child('rie');
@@ -113,18 +113,19 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
     );
     return undefined;
   }
-  if (program.length > 0 && isRieExecutable(program[0]!)) {
-    logger.debug(
-      safeMsg`Image ${input.image} already starts ${program[0]}; not mounting another RIE`
-    );
+  // Any word, not just the first: an init wrapper (`ENTRYPOINT ["/tini", "--"]`)
+  // can start the image's own RIE from the CMD (go-to-k/cdkd#6027, matching cdk-local).
+  const ownRie = program.find(isRieExecutable);
+  if (ownRie !== undefined) {
+    logger.debug(safeMsg`Image ${input.image} already starts ${ownRie}; not mounting another RIE`);
     return undefined;
   }
   let hostPath: string;
   try {
     hostPath = await ensureRieBinary(input.platform, input.skipPull === true);
   } catch (err) {
-    if (!warnedNoBinary) {
-      warnedNoBinary = true;
+    if (!warnedNoBinary.has(input.platform)) {
+      warnedNoBinary.add(input.platform);
       logger.warn(
         safeMsg`Could not mount the Lambda Runtime Interface Emulator into container-image functions (${messageOf(err)}). ` +
           'They run as built, so only images that ship their own emulator (the AWS Lambda base images do) can be invoked.'
