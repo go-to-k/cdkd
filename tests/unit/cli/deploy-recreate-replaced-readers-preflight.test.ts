@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '../../../src/cli/commands/deploy.ts'), 'utf8');
+const source = readFileSync(join(here, '../../../src/cli/commands/deploy/stack-deploy.ts'), 'utf8');
 
 describe('deploy.ts names the replaced readers of a recreate target in its prompt (go-to-k/cdkd#4383)', () => {
   const errorsAt = source.indexOf("throw new CdkdError(errorBlock, 'RECREATE_TARGETS_INVALID');");
