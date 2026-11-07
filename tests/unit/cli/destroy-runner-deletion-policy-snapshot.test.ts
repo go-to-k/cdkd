@@ -719,7 +719,8 @@ describe('nested-stack --skip-final-snapshot threading (source pin)', () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(
       new URL(
-        '../../../src/provisioning/providers/nested-stack-provider.ts',
+        // `delete()`'s body, in the provider's companion directory (go-to-k/cdkd#5835).
+        '../../../src/provisioning/providers/nested-stack/delete.ts',
         import.meta.url
       ),
       'utf8'

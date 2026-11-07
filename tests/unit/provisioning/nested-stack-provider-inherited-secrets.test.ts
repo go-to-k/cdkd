@@ -300,7 +300,7 @@ describe('NestedStackProvider — inherited secrets + child-region provenance', 
     //
     // WHAT THIS CAN AND CANNOT DISCRIMINATE (review round 2). The title used to
     // say "the CHILD region", which this case cannot see: the provider assigns
-    // `childRegion = ctx.parentRegion` (nested-stack-provider.ts), so the two
+    // `childRegion = ctx.parentRegion` (nested-stack/create-update.ts), so the two
     // are the SAME VALUE and no assertion here could tell them apart. It will
     // become discriminating on its own the day cross-region nested stacks give
     // the child a region of its own.
