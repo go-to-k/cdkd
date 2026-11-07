@@ -4,6 +4,7 @@ paths:
   - 'src/utils/caller-credentials.ts'
   - 'src/utils/role-arn.ts'
   - 'src/cli/commands/local-invoke.ts'
+  - 'src/cli/commands/local-invoke/**'
   - 'src/cli/commands/local-start-api.ts'
   - 'src/cli/commands/local-start-api/**'
   - 'src/cli/commands/local-invoke-agentcore.ts'

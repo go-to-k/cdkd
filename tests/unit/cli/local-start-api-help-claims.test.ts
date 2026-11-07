@@ -348,8 +348,9 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
    * even if it evades `offends()`.
    */
   const EXPECTED_RAW_MATCHES: Record<string, number> = {
-    // `NOT same-region-only: pullEcrImage authenticates ...` — the fix's own wording.
-    'src/cli/commands/local-invoke.ts': 1,
+    // `NOT same-region-only: pullEcrImage authenticates ...` — the fix's own
+    // wording, in `local-invoke/command.ts` since the invoke split (go-to-k/cdkd#5835).
+    'src/cli/commands/local-invoke/command.ts': 1,
     // The fix's `NOT same-region-only`. Since the start-api split
     // (go-to-k/cdkd#5835) the unrelated `across same-region stacks` sits in
     // `local-start-api/command.ts`, which names no ECR pull, so it left the population.
