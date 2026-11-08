@@ -305,7 +305,12 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     // handlers live in `resolveOutputs`'s module. The family case below scans the rest.
     'src/deployment/deploy-engine/outputs/resolve.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
-    'src/deployment/deploy-engine/replacement.ts': { catchClause: 5 },
+    // The replacement arms, split into `replacement/` (go-to-k/cdkd#5835): the
+    // four modules holding its five handlers. The family case below scans the rest.
+    'src/deployment/deploy-engine/replacement/create-first.ts': { catchClause: 1 },
+    'src/deployment/deploy-engine/replacement/delete-first.ts': { catchClause: 2 },
+    'src/deployment/deploy-engine/replacement/delete-replaced.ts': { catchClause: 1 },
+    'src/deployment/deploy-engine/replacement/name-change.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/rollback.ts': { catchClause: 6 },
     // `updateInPlace`, split into `update-in-place/` (go-to-k/cdkd#5835): the
     // update's own handler stays in the entry, the fallback's two moved.
@@ -464,6 +469,24 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(8);
+  });
+
+  it('the entry and every module of src/deployment/deploy-engine/replacement/ (read recursively)', () => {
+    // As above, for `replacement.ts`'s split (go-to-k/cdkd#5835). The floor
+    // is the family's total on the pre-split file.
+    const dir = 'src/deployment/deploy-engine/replacement/';
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThanOrEqual(7);
+    const files = ['src/deployment/deploy-engine/replacement.ts', ...modules];
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(5);
   });
 
   it('the entry and every module of src/deployment/deploy-engine/outputs/ (read recursively)', () => {

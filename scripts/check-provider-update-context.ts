@@ -603,6 +603,30 @@ export function analyzeSource(
   return { classes, refusals };
 }
 
+/**
+ * Every `.ts` / `.mts` / `.cts` file (not `.d.ts`, not `.test.ts`) under a
+ * module split's sibling directory, recursively, sorted by path.
+ */
+function moduleSiblingFiles(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (
+        entry.isFile() &&
+        /\.(?:ts|mts|cts)$/.test(entry.name) &&
+        !entry.name.endsWith('.d.ts') &&
+        !entry.name.endsWith('.test.ts')
+      ) {
+        out.push(path);
+      }
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
 export function buildReport(providersDir: string): Report {
   const entries = readdirSync(providersDir, { withFileTypes: true });
   // `.mts` / `.cts` too: a `.ts`-only filter SKIPPED such a file outright, so a
@@ -619,11 +643,21 @@ export function buildReport(providersDir: string): Report {
   // Refusing the subdirectory makes that fail CLOSED: either flatten the file
   // back, or teach this checker to walk. A provider's COMPANION directory
   // (`<stem>/` beside `<stem>-provider.ts`, scripts/provider-companion-files.ts)
-  // is walked instead: its files are scanned like any other.
+  // is walked instead: its files are scanned like any other. So is a MODULE
+  // split's sibling directory (`<stem>/` beside a non-provider `<stem>.ts`,
+  // e.g. deletion-protection-compensation/, #5835): a provider written there
+  // is scanned, not refused, and a subdirectory with no sibling entry file is
+  // still refused.
   const companions = new Set<string>();
   for (const file of files) {
     for (const companion of companionFiles(join(providersDir, file))) {
       companions.add(relative(providersDir, companion).split(sep).join('/'));
+    }
+    const stem = file.replace(/\.(?:ts|mts|cts)$/, '');
+    if (!stem.endsWith('-provider') && entries.some((e) => e.isDirectory() && e.name === stem)) {
+      for (const moved of moduleSiblingFiles(join(providersDir, stem))) {
+        companions.add(relative(providersDir, moved).split(sep).join('/'));
+      }
     }
   }
   for (const entry of entries.filter((e) => e.isDirectory())) {
