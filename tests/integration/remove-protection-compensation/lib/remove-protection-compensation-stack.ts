@@ -18,10 +18,17 @@ import * as smsvoice from 'aws-cdk-lib/aws-smsvoice';
  *
  *  - `SdkInstance` — `DisableApiTermination: true`, every property handled by
  *    the SDK `EC2Provider`, so it deletes through `TerminateInstances`.
- *  - `CcInstance` — the same, plus `InstanceInitiatedShutdownBehavior`, which
- *    the SDK provider does not handle, so the #614 SDK-unwired rule routes the
- *    whole resource through Cloud Control (`provisionedBy: cc-api`).
- *    `'stop'` is the AWS default, so the property changes nothing else.
+ *  - `CcInstance` — the same, plus `ElasticGpuSpecifications: []`. The SDK
+ *    provider declares that property unwired by design (`unhandledByDesign`:
+ *    Elastic GPU is end-of-life with no replacement API), so the #614
+ *    SDK-unwired rule routes the whole resource through Cloud Control
+ *    (`provisionedBy: cc-api`). The rule keys on the property's PRESENCE, and
+ *    an empty list attaches no accelerator, so it changes nothing else. It
+ *    replaces `InstanceInitiatedShutdownBehavior`, which the SDK provider has
+ *    handled since #5630 (issue #6044); a unit test
+ *    (`remove-protection-compensation-cc-route-6044.test.ts`) pins this
+ *    choice, so the next routing change reds it rather than this fixture's
+ *    precondition.
  *  - `ProtectConfig` — `AWS::SMSVOICE::ProtectConfiguration`, a Cloud Control
  *    protection-registry type (`cc-protection-properties.ts`),
  *    `DeletionProtectionEnabled: true`.
@@ -67,7 +74,7 @@ export class RemoveProtectionCompensationStack extends cdk.Stack {
       instanceType: 't3.nano',
       subnetId,
       disableApiTermination: true,
-      instanceInitiatedShutdownBehavior: 'stop',
+      elasticGpuSpecifications: [],
       tags: [{ key: 'cdkd-integ', value: 'rp-compensation' }],
     });
 
