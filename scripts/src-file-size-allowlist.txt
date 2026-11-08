@@ -10,4 +10,3 @@
 src/deployment/deploy-engine/outputs.ts
 src/deployment/deploy-engine/rollback.ts
 src/deployment/deploy-engine/update-replace.ts
-src/provisioning/provider-registry.ts

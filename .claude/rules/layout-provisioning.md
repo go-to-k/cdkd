@@ -12,7 +12,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **register-providers.ts** - Which types HAVE an SDK provider (`provider-registry.ts` decides which one RUNS a resource), from the classes **provider-classes.ts** re-exports, loaded on demand (#4521).
 
-- **provider-registry.ts** - The ROUTING decision: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` (also `cdkd diff`'s) says otherwise (escapes: `STICKY_CC_MIGRATION_EXEMPT`, #2719; differing ids: strict normalizer, **sticky-exempt-physical-id.ts**, #5654); an SDK provider with no SDK-unwired property -> it; else -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic too**, `integ-destroy`-scoped.
+- **provider-registry.ts** - The ROUTING decision: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` (also `cdkd diff`'s) says otherwise (escapes: `STICKY_CC_MIGRATION_EXEMPT`, #2719; differing ids: strict normalizer, **sticky-exempt-physical-id.ts**, #5654); an SDK provider with no SDK-unwired property -> it; else -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic too**, `integ-destroy`-scoped. Method bodies live in **provider-registry/** (`routing.ts`, `validate.ts`, `report.ts`; #5835), same scope.
 
 - **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it.
 
