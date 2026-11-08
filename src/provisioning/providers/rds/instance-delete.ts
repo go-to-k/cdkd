@@ -12,14 +12,11 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  PROTECTION_FLIP_RETRY_WAIT_MS,
 } from '../deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
-import {
-  PROTECTION_FLIP_RETRY_WAIT_MS,
-  RDS_DELETE_WAIT_MS,
-  deleteAutomatedBackupsInput,
-} from './shared.js';
+import { RDS_DELETE_WAIT_MS, deleteAutomatedBackupsInput } from './shared.js';
 
 /** The compensation boundary for a DBInstance; see {@link deleteDBCluster}. */
 export async function deleteDBInstance(
