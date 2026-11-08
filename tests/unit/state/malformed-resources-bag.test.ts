@@ -3613,12 +3613,15 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
       // rather than loading one, so its read is dominated by that file's guard.
       if (file === 'src/cli/commands/diff.ts') return false;
-      // `deploy-engine/rollback.ts` (#4200) reads the container only inside
-      // `adoptRollbackOrphans`, reachable only through the deploy flow's
-      // `await adoptRollbackOrphans(` — the ROW anchor below, pinned under the
-      // engine's guard — and `settleJournalAfterSuccess` (#4600), reached only
+      // `deploy-engine/rollback.ts` (#4200; its bodies in `rollback/` since
+      // go-to-k/cdkd#5835) reads the container only inside
+      // `adoptRollbackOrphans` (`rollback/adopt-orphans.ts`), reachable only
+      // through the deploy flow's `await adoptRollbackOrphans(` — the ROW
+      // anchor below, pinned under the engine's guard — and
+      // `settleJournalAfterSuccess` (#4600, `rollback/settle.ts`), reached only
       // from the deploy flow below its guard. Pinned in the next case.
-      if (file === 'src/deployment/deploy-engine/rollback.ts') return false;
+      if (file === 'src/deployment/deploy-engine/rollback/adopt-orphans.ts') return false;
+      if (file === 'src/deployment/deploy-engine/rollback/settle.ts') return false;
       // The engine host reads the container only in `redactStateForPersist`
       // (its body in `deploy-engine/state-persist.ts`, go-to-k/cdkd#5835),
       // and `deploy-engine/execute.ts` only inside `executeDeployment` /
@@ -3865,11 +3868,14 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       execute.split('rollbackFailedDeploy(').length - 1,
       'execute.ts calls rollbackFailedDeploy outside executeDeployment'
     ).toBe(1);
-    // `deploy-engine/rollback.ts` is excluded because every container read it
-    // holds is inside `adoptRollbackOrphans`, whose only caller is the deploy
-    // flow's ROW-anchored `await adoptRollbackOrphans(`. A read anywhere else in that
-    // module is reachable some other way and owes its own anchor.
-    const rollback = code('src/deployment/deploy-engine/rollback.ts');
+    // `deploy-engine/rollback/adopt-orphans.ts` is excluded because every
+    // container read it holds is inside `adoptRollbackOrphans`, whose only
+    // caller is the deploy flow's ROW-anchored `await adoptRollbackOrphans(`.
+    // A read anywhere else in that module is reachable some other way and owes
+    // its own anchor. (Split out of `deploy-engine/rollback.ts`, go-to-k/cdkd#5835;
+    // every other module of the split is not excluded, so a read there reds
+    // the population case above.)
+    const rollback = code('src/deployment/deploy-engine/rollback/adopt-orphans.ts');
     const fnAt = rollback.indexOf('export async function adoptRollbackOrphans(');
     expect(fnAt, 'adoptRollbackOrphans moved or was renamed').toBeGreaterThan(-1);
     const fnEnd = rollback.indexOf('\n}\n', fnAt);
@@ -3878,21 +3884,28 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // go-to-k/cdkd#4600: `settleJournalAfterSuccess` reads the stack's own
     // container (guarded by the deploy flow, its only caller, below) and each
     // nested child's, which it guards itself with `hasReadableOrphans(`.
-    const settleAt = rollback.indexOf('export async function settleJournalAfterSuccess(');
+    const settle = code('src/deployment/deploy-engine/rollback/settle.ts');
+    const settleAt = settle.indexOf('export async function settleJournalAfterSuccess(');
     expect(settleAt, 'settleJournalAfterSuccess moved or was renamed').toBeGreaterThan(-1);
-    const settleBody = rollback.slice(settleAt, rollback.indexOf('\n}\n', settleAt));
+    const settleBody = settle.slice(settleAt, settle.indexOf('\n}\n', settleAt));
     const childRead = settleBody.indexOf('childState?.orphans');
     expect(childRead, 'the nested child read moved').toBeGreaterThan(-1);
     expect(settleBody.indexOf('hasReadableOrphans(childRecord)'), 'the child read lost its guard').toBeGreaterThan(-1);
     expect(settleBody.indexOf('hasReadableOrphans(childRecord)')).toBeLessThan(childRead);
     // The SAME pattern the population derivation matches (`reads` above), so
     // every shape the exclusion hides is counted.
-    expect(reads(rollback), 'deploy-engine/rollback.ts no longer reads the container').toBeGreaterThan(0);
+    expect(reads(rollback), 'deploy-engine/rollback/adopt-orphans.ts no longer reads the container').toBeGreaterThan(0);
+    expect(reads(settle), 'deploy-engine/rollback/settle.ts no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(rollback),
-      'deploy-engine/rollback.ts reads the orphans container outside adoptRollbackOrphans / ' +
-        'settleJournalAfterSuccess, on a path the engine anchor does not cover: give it its own ANCHORS entry.'
-    ).toBe(reads(fnBody) + reads(settleBody));
+      'deploy-engine/rollback/adopt-orphans.ts reads the orphans container outside adoptRollbackOrphans, ' +
+        'on a path the engine anchor does not cover: give it its own ANCHORS entry.'
+    ).toBe(reads(fnBody));
+    expect(
+      reads(settle),
+      'deploy-engine/rollback/settle.ts reads the orphans container outside settleJournalAfterSuccess, ' +
+        'on a path the engine anchor does not cover: give it its own ANCHORS entry.'
+    ).toBe(reads(settleBody));
     // A `deploy-flow/` module folds onto the flow ({@link subjectOf}), which
     // reads it in run order (go-to-k/cdkd#5835).
     const settleCallers = [
@@ -3908,8 +3921,12 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     ].sort();
     expect(settleCallers, 'settleJournalAfterSuccess gained a caller outside the deploy flow').toEqual([
       'src/deployment/deploy-engine/deploy-flow.ts',
-      'src/deployment/deploy-engine/rollback.ts',
+      'src/deployment/deploy-engine/rollback/settle.ts',
     ]);
+    expect(
+      settle.split('settleJournalAfterSuccess(').length - 1,
+      'deploy-engine/rollback/settle.ts calls settleJournalAfterSuccess itself, outside the deploy flow'
+    ).toBe(1);
     expect(flow.indexOf('settleJournalAfterSuccess('), 'the deploy flow lost its success settle').toBeGreaterThan(-1);
     expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('settleJournalAfterSuccess('));
     // ...and the premise that its ONLY caller is the engine's ROW-anchored call:
@@ -3924,11 +3941,11 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       .sort();
     expect(callers, 'adoptRollbackOrphans gained a caller outside the engine').toEqual([
       'src/deployment/deploy-engine/deploy-flow.ts',
-      'src/deployment/deploy-engine/rollback.ts',
+      'src/deployment/deploy-engine/rollback/adopt-orphans.ts',
     ]);
     expect(
       rollback.split('adoptRollbackOrphans(').length - 1,
-      'deploy-engine/rollback.ts calls adoptRollbackOrphans itself, outside the engine guard'
+      'deploy-engine/rollback/adopt-orphans.ts calls adoptRollbackOrphans itself, outside the engine guard'
     ).toBe(1);
     expect(
       code('src/deployment/deploy-engine/deploy-flow.ts').split('adoptRollbackOrphans(').length - 1,

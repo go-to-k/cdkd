@@ -71,6 +71,8 @@ const NESTED_FLOORS: Readonly<Record<string, number>> = {
   'update-replace': 4,
   // `outputs.ts`'s split body (#5835): 3 nested modules.
   outputs: 3,
+  // `deploy-engine/rollback.ts`'s split body (#5835): 8 nested modules.
+  rollback: 8,
 };
 for (const [dir, floor] of Object.entries(NESTED_FLOORS)) {
   const held = ENGINE_FAMILY.filter((rel) =>

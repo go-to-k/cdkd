@@ -12,7 +12,7 @@ import {
 import { isTerminalDeleteFailure } from '../../../src/provisioning/providers/deletion-protection-compensation.js';
 import type { StackState } from '../../../src/types/state.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -434,10 +434,33 @@ describe("no context but an explicit --remove-protection's strips protection (go
   // `destroyOptions` that flag sets, never from a deploy's context
   // (`tests/unit/deployment/nested-child-remove-protection-4703.test.ts`).
   it.each([
-    'src/deployment/deploy-engine/rollback.ts',
+    // `deploy-engine/rollback.ts` is split into `rollback/` (go-to-k/cdkd#5835):
+    // `rollback/context.ts` builds the context; the case below reads the rest.
+    'src/deployment/deploy-engine/rollback/context.ts',
   ])('%s builds a RollbackExecutorContext with no removeProtection', (file) => {
     const text = readFileSync(join(REPO_ROOT, file), 'utf8');
     expect(text).toContain('RollbackExecutorContext');
     expect(text).not.toContain('removeProtection');
+  });
+
+  it('no module of deploy-engine/rollback.ts or rollback/ (read recursively) sets removeProtection', () => {
+    // `performRollback` and the success settle spread the context and add
+    // fields of their own, so every module of the split is read, not only the
+    // one that builds it.
+    const dir = 'src/deployment/deploy-engine/rollback/';
+    const modules = readdirSync(join(REPO_ROOT, dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found too few modules').toBeGreaterThanOrEqual(8);
+    const files = ['src/deployment/deploy-engine/rollback.ts', ...modules];
+    const builders = files.filter((file) =>
+      readFileSync(join(REPO_ROOT, file), 'utf8').includes('RollbackExecutorContext')
+    );
+    expect(builders, 'the module building the context was not read').toContain(
+      'src/deployment/deploy-engine/rollback/context.ts'
+    );
+    for (const file of files) {
+      expect(readFileSync(join(REPO_ROOT, file), 'utf8'), file).not.toContain('removeProtection');
+    }
   });
 });
