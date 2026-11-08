@@ -301,7 +301,9 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/execute/provision-node.ts': { catchClause: 1 },
     'src/deployment/deploy-engine/execute/rollback-after-failure.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/observed-capture.ts': { thenRejection: 1 },
-    'src/deployment/deploy-engine/outputs.ts': { catchClause: 2 },
+    // The Outputs pass, split into `outputs/` (go-to-k/cdkd#5835): both of its
+    // handlers live in `resolveOutputs`'s module. The family case below scans the rest.
+    'src/deployment/deploy-engine/outputs/resolve.ts': { catchClause: 2 },
     'src/deployment/deploy-engine/provision.ts': { catchClause: 1 },
     // The replacement arms, split into `replacement/` (go-to-k/cdkd#5835): the
     // four modules holding its five handlers. The family case below scans the rest.
@@ -506,5 +508,38 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(offenders, file).toEqual([]);
     }
     expect(catchClauses).toBeGreaterThanOrEqual(3);
+  });
+
+  it('the entry and every module of src/deployment/deploy-engine/outputs/ (read recursively)', () => {
+    // The Outputs pass, split into `outputs/` (go-to-k/cdkd#5835). The pre-split
+    // file was scanned whole, so the `x instanceof Error ? ... : String(x)`
+    // ternary check still covers `handleOutputResolutionFailure`'s `error`
+    // PARAMETER in `failure.ts`, and a handler added to any file is scanned.
+    // Per-file floors: each named module must be among the files read (a
+    // rename cannot drop it), and the family's total is the pre-split file's.
+    const dir = 'src/deployment/deploy-engine/outputs/';
+    const entry = 'src/deployment/deploy-engine/outputs.ts';
+    const FLOORS: Readonly<Record<string, number>> = {
+      [entry]: 0,
+      [`${dir}failure.ts`]: 0,
+      [`${dir}resolve.ts`]: 2,
+      [`${dir}run-state.ts`]: 0,
+    };
+    const modules = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(modules.length, 'the directory read found no modules').toBeGreaterThanOrEqual(3);
+    const files = [entry, ...modules];
+    for (const named of Object.keys(FLOORS)) {
+      expect(files, 'a named module of the family was not read').toContain(named);
+    }
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(handlers.catchClause, file).toBeGreaterThanOrEqual(FLOORS[file] ?? 0);
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(2);
   });
 });
