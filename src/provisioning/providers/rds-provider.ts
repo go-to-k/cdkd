@@ -79,6 +79,7 @@ import {
   getDriftUnorderedPaths,
   getDriftUnknownPaths,
   canonicalizeDriftProperties,
+  canonicalizeDriftPair,
   canonicalizeUnsettledProperties,
 } from './rds/drift.js';
 import {
@@ -248,17 +249,9 @@ export class RDSProvider implements ResourceProvider {
         'DBSubnetGroupName',
         'PubliclyAccessible',
         'Tags',
-        // #609 backfill — 8 sibling props already handled on DBCluster.
-        // 6 mutable (DeletionProtection / EngineVersion / Port / MasterUserPassword /
-        // VPCSecurityGroups / AllocatedStorage ride both CreateDBInstance + ModifyDBInstance) +
-        // 2 create-only (StorageEncrypted is set at instance creation and immutable
-        // post-create per AWS RDS docs — absent from ModifyDBInstanceMessage;
-        // MasterUsername is also immutable post-create — AWS rejects changes via
-        // ModifyDBInstance). Two wire-format name flips: CFn `Port` → SDK `DBPortNumber`
-        // (different field name entirely on the DB instance), CFn `VPCSecurityGroups`
-        // → SDK `VpcSecurityGroupIds` (casing + suffix). `MasterUsername` +
-        // `AllocatedStorage` are AWS-required for standalone (non-cluster) DBInstance
-        // create — wired here so a standalone instance can SDK-route end-to-end.
+        // #609 backfill. StorageEncrypted and MasterUsername are create-only (not
+        // ModifyDBInstance members); the rest ride both calls. Renames: CFn `Port`
+        // -> `DBPortNumber` on modify, `VPCSecurityGroups` -> `VpcSecurityGroupIds`.
         'AllocatedStorage',
         'DeletionProtection',
         'EngineVersion',
@@ -334,6 +327,8 @@ export class RDSProvider implements ResourceProvider {
         // go-to-k/cdkd#5640: AddRoleToDBInstance / RemoveRoleFromDBInstance
         // once the instance is `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
+        // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`).
+        'SourceDBInstanceIdentifier',
       ]),
     ],
   ]);
@@ -909,6 +904,13 @@ export class RDSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Record<string, unknown> {
     return canonicalizeDriftProperties.call(this, resourceType, properties);
+  }
+  canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    return canonicalizeDriftPair.call(this, resourceType, baseline, aws);
   }
   canonicalizeUnsettledProperties(
     resourceType: string,

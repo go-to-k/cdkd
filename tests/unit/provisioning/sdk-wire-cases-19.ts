@@ -49,6 +49,9 @@ const CLUSTER_ID = 'cluster-1';
 const CLUSTER_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:cluster:${CLUSTER_ID}`;
 const INSTANCE_ID = 'instance-1';
 const INSTANCE_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:db:${INSTANCE_ID}`;
+/** go-to-k/cdkd#5640: a read replica's source, as a CDK template names it (by ARN). */
+const INSTANCE_ID_SOURCE = 'source-1';
+const SOURCE_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:db:${INSTANCE_ID_SOURCE}`;
 const DEFAULT_SG = 'sg-default';
 
 /** Two associations, each its own role for its own feature (go-to-k/cdkd#5639 / #5640). */
@@ -576,10 +579,18 @@ const CLUSTER_CASE: TypeCase = {
 function armInstance(_physicalId?: string, live: Bag = {}): void {
   let logs = liveLogs(live);
   const roles = { current: liveRoles(live) };
+  // go-to-k/cdkd#5640: a bag declaring a source reads as a PostgreSQL read
+  // replica (the engine it inherits) until PromoteReadReplica.
+  const replica = live['SourceDBInstanceIdentifier'] != null;
+  let replicaSource = replica ? INSTANCE_ID_SOURCE : undefined;
   setOutputOverrides({
     ...roleCallOverrides('AddRoleToDBInstanceCommand', 'RemoveRoleFromDBInstanceCommand', roles),
     ModifyDBInstanceCommand: (input) => {
       logs = applyLogDelta(logs, input);
+      return {};
+    },
+    PromoteReadReplicaCommand: () => {
+      replicaSource = undefined;
       return {};
     },
     DescribeDBInstancesCommand: () => ({
@@ -594,6 +605,10 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
           }),
           EnabledCloudwatchLogsExports: logs,
           AssociatedRoles: roles.current,
+          ...(replica && { Engine: 'postgres' }),
+          ...(replicaSource !== undefined && {
+            ReadReplicaSourceDBInstanceIdentifier: replicaSource,
+          }),
         },
       ],
     }),
@@ -844,6 +859,34 @@ const INSTANCE_CASE: TypeCase = {
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
         'update-remove:MasterUserAuthenticationType': CFN_DIFF_KEPT('MasterUserAuthenticationType'),
+      },
+    },
+    {
+      name: 'a read replica, with members its create cannot carry (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.micro',
+        SourceDBInstanceIdentifier: SOURCE_ARN,
+        AllocatedStorage: '100',
+        StorageType: 'gp3',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        MaxAllocatedStorage: 1000,
+      },
+      expectedRemovalThrows: {
+        'update-add:SourceDBInstanceIdentifier': {
+          why: `an instance becomes a read replica only when it is created, and CloudFormation fails an added source as "Resource is immutable", so update() refuses it before any call (replicaSourceChange in ${SRC}, go-to-k/cdkd#5640)`,
+          says: /SourceDBInstanceIdentifier cannot be added or changed on an existing DB instance/,
+        },
+      },
+      expectedSilent: {
+        'update-vary:SourceDBInstanceIdentifier': `refused like its addition: a changed source throws before a call (replicaSourceChange in ${SRC}, go-to-k/cdkd#5640)`,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        ...Object.fromEntries(
+          ['AllocatedStorage', 'StorageType', 'PreferredMaintenanceWindow'].map((key) => [
+            `update-remove:${key}`,
+            CFN_DIFF_KEPT(key),
+          ])
+        ),
       },
     },
   ],

@@ -360,6 +360,21 @@ export async function readCurrentStateDBInstance(
   if (inst.EngineLifecycleSupport !== undefined && inst.DBClusterIdentifier === undefined) {
     result['EngineLifecycleSupport'] = inst.EngineLifecycleSupport;
   }
+  // go-to-k/cdkd#5640: the source of a read replica, always as an ARN, as a
+  // CDK template names it. RDS reports a same-region source by its bare
+  // identifier, which names an instance in the replica's own region and
+  // account, so it takes the replica's own ARN prefix (`DBInstanceArn`); a
+  // cross-region source already reads as its ARN. Drift then compares region,
+  // account and name (`canonicalizeDriftPair`). Absent once promoted, so a
+  // promotion outside cdkd reads as a removal.
+  const liveSource = inst.ReadReplicaSourceDBInstanceIdentifier;
+  if (liveSource !== undefined && liveSource !== '') {
+    const ownArn = inst.DBInstanceArn;
+    result['SourceDBInstanceIdentifier'] =
+      liveSource.startsWith('arn:') || ownArn === undefined || !ownArn.startsWith('arn:')
+        ? liveSource
+        : `${ownArn.slice(0, ownArn.lastIndexOf(':') + 1)}${liveSource}`;
+  }
   // go-to-k/cdkd#5640: always a list, so a role lost out of band reads as a
   // change against the recorded list (`Status` is not a template member).
   result['AssociatedRoles'] = associatedRolesReadback(inst.AssociatedRoles);

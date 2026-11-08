@@ -275,5 +275,57 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
             ],
           }),
     });
+
+    // go-to-k/cdkd#5640 (SourceDBInstanceIdentifier): two same-region read
+    // replicas, declared from phase 2d on (CDKD_TEST_REPLICA `create`, then
+    // `promote`), of a dedicated small PostgreSQL source declared with them.
+    // Not BackfillInstance: RDS refuses a replica of a PostgreSQL instance
+    // whose ManageMasterUserPassword is on ("Creating read replicas for source
+    // instance with engine postgres where ManageMasterUserPassword is enabled
+    // is not supported.", InvalidParameterValue, us-east-1), so the source
+    // takes a literal, non-secret password, and backups on, which a replica
+    // needs. It is deleted plainly (RemovalPolicy.DESTROY). Each replica names
+    // the source by ARN, as CDK's DatabaseInstanceReadReplica does, and
+    // declares a maintenance window CreateDBInstanceReadReplica cannot carry:
+    // CloudFormation's after-create ModifyDBInstance applies it. Phase 2e
+    // (`promote`) drops ReadReplicaPromoted's source, which promotes it
+    // (PromoteReadReplica) with the backup settings it declares from then on.
+    // ReadReplicaKept stays a replica, so the destroy deletes it without a
+    // final snapshot, as CloudFormation ignores a replica's DeletionPolicy
+    // (both are policy-less, whose default is Snapshot). Before #5640 a
+    // declared source routed the replica to Cloud Control (verify.sh's
+    // provisionedBy=sdk guard catches it).
+    const replicaMode = process.env.CDKD_TEST_REPLICA;
+    if (replicaMode === 'create' || replicaMode === 'promote') {
+      const promoted = replicaMode === 'promote';
+      const source = new rds.CfnDBInstance(this, 'ReplicaSourceInstance', {
+        dbInstanceClass: 'db.t3.micro',
+        engine: 'postgres',
+        masterUsername: 'postgres',
+        masterUserPassword: 'CdkdIntegNotASecret5640',
+        allocatedStorage: '20',
+        storageType: 'gp3',
+        backupRetentionPeriod: 1,
+        dbSubnetGroupName: subnetGroup.subnetGroupName,
+        vpcSecurityGroups: [securityGroup.securityGroupId],
+      });
+      source.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      new rds.CfnDBInstance(this, 'ReadReplicaKept', {
+        sourceDbInstanceIdentifier: source.attrDbInstanceArn,
+        dbInstanceClass: 'db.t3.micro',
+        dbSubnetGroupName: subnetGroup.subnetGroupName,
+        vpcSecurityGroups: [securityGroup.securityGroupId],
+        preferredMaintenanceWindow: 'mon:06:00-mon:06:30',
+      });
+      new rds.CfnDBInstance(this, 'ReadReplicaPromoted', {
+        ...(promoted
+          ? { backupRetentionPeriod: 2, preferredBackupWindow: '04:00-04:30' }
+          : { sourceDbInstanceIdentifier: source.attrDbInstanceArn }),
+        dbInstanceClass: 'db.t3.micro',
+        dbSubnetGroupName: subnetGroup.subnetGroupName,
+        vpcSecurityGroups: [securityGroup.securityGroupId],
+        preferredMaintenanceWindow: 'tue:06:00-tue:06:30',
+      });
+    }
   }
 }

@@ -398,6 +398,10 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // Issue #1160: phase 2 resolves the L2 cluster's generated master
       // password into an L1 cluster; the fixture sweeps the prefix.
       'rds-aurora',
+      // go-to-k/cdkd#5640: a literal master password on the L1 source of the
+      // read replicas, which the state records carry; the fixture sweeps the
+      // prefix.
+      'rds-dbinstance-backfill',
       // Issue #4606: a literal master password on an L1 cluster and instance,
       // which the failed CREATE's journal carries; the fixture sweeps the prefix.
       'rds-fix-forward-orphan',

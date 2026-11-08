@@ -146,10 +146,15 @@ first, waits for it, and then deletes.
 | `AWS::Redshift::Cluster` | `CreateClusterSnapshot`, waited to `available`, then the delete |
 | `AWS::ElastiCache::ReplicationGroup` | ElastiCache `CreateSnapshot`, waited to `available`, then the delete |
 
-Three limits apply:
+Four limits apply:
 
 - An RDS instance that is a member of a cluster is deleted without a snapshot,
   as in CloudFormation.
+- An RDS read replica (`SourceDBInstanceIdentifier`) that cdkd manages through
+  its own code is deleted without a snapshot too, as in CloudFormation: RDS
+  takes none of a replica. One promoted to a standalone instance takes its
+  snapshot. A replica deployed through Cloud Control is refused instead; pass
+  `--skip-final-snapshot` to delete it.
 - The two ElastiCache types take a snapshot for the Redis engine only. A
   Memcached cache cluster or replication group fails with AWS's rejection.
 - A node type that cannot snapshot fails the same way.

@@ -1,4 +1,4 @@
-import { ModifyDBInstanceCommand } from '@aws-sdk/client-rds';
+import { ModifyDBInstanceCommand, PromoteReadReplicaCommand } from '@aws-sdk/client-rds';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -35,6 +35,15 @@ import {
   instanceAvailabilityZoneKept,
   withPreviousAvailabilityZone,
 } from './instance-members.js';
+import {
+  isLiveReadReplica,
+  refuseMalformedReplicaSource,
+  replicaSourceChange,
+  ownScopeOf,
+  sameReplicaSource,
+  replicaSourceOf,
+  withPreviousReplicaSource,
+} from './read-replica.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -109,7 +118,99 @@ export async function updateDBInstance(
     );
   }
 
+  // go-to-k/cdkd#5640: the read replica's source (`./read-replica.ts`).
+  refuseMalformedReplicaSource(properties, resourceType, logicalId, physicalId);
+  const sourceChange = replicaSourceChange(properties, previousProperties);
+
   try {
+    // go-to-k/cdkd#5640: an added or changed source is refused before any
+    // change, as CloudFormation fails the update ("Resource is immutable"),
+    // unless the live instance already replicates the declared source (a
+    // record that lacks it). A rollback replay or a `drift --revert` cannot
+    // make an instance a replica again: it warns, leaves the source as it is
+    // and records what the instance kept.
+    const { mask: sourceMask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['DBInstanceIdentifier'], physicalId]]
+    );
+    let sourceKept = sourceChange !== 'immutable';
+    let liveSourceRead = 'read' as 'read' | 'not-found' | 'unreadable';
+    if (!sourceKept) {
+      const live = await this.describeDBInstance(physicalId).then(
+        (instance) => {
+          if (instance === undefined) liveSourceRead = 'not-found';
+          return instance;
+        },
+        (err: unknown) => {
+          liveSourceRead =
+            (err as { name?: unknown } | null)?.name === 'DBInstanceNotFoundFault'
+              ? 'not-found'
+              : 'unreadable';
+          this.logger.debug(
+            sourceMask(
+              safeMsg`DBInstance ${logicalId}: could not read the live replica source: ${describeAwsFailure(err).summary}`
+            )
+          );
+          return undefined;
+        }
+      );
+      const liveSource = live?.ReadReplicaSourceDBInstanceIdentifier;
+      const desiredSource = replicaSourceOf(properties);
+      sourceKept =
+        liveSource !== undefined &&
+        liveSource !== '' &&
+        desiredSource !== undefined &&
+        sameReplicaSource(liveSource, desiredSource, ownScopeOf(live?.DBInstanceArn));
+    }
+    const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    if (!sourceKept && !stateBorne) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        sourceMask(
+          `SourceDBInstanceIdentifier cannot be added or changed on an existing DB instance — ` +
+            `an instance becomes a read replica only when it is created, and CloudFormation ` +
+            `refuses the same update ("Resource is immutable"). Removing it promotes the ` +
+            `replica instead. Nothing was applied to DB instance ${physicalId}. ` +
+            (liveSourceRead === 'not-found'
+              ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +
+                `record no longer matches AWS. `
+              : liveSourceRead === 'unreadable'
+                ? `cdkd could not read the instance's live replica source (an AWS read ` +
+                  `failed), so it could not tell whether the instance already replicates the ` +
+                  `declared source; a re-run may succeed. `
+                : '') +
+            `To keep the instance as it is, declare the source the previous deploy declared ` +
+            `(or none, if it declared none). To replace it with a new read replica, ` +
+            (String(previousProperties['DeletionProtection']) === 'true'
+              ? protectedReplacementAdvice({
+                  evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
+                  replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                  disable: {
+                    before: 'aws rds modify-db-instance --db-instance-identifier',
+                    identifier: physicalId,
+                    after: '--no-deletion-protection --apply-immediately',
+                    maskSecrets: sourceMask,
+                  },
+                })
+              : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
+                'cdkd deploy --replace --force-stateful-recreation (this deletes the instance ' +
+                'and its data). The replace flags apply to the WHOLE deploy, so run them with ' +
+                'nothing else pending')
+        )
+      );
+    }
+    if (!sourceKept) {
+      this.logger.warn(
+        sourceMask(
+          safeMsg`DBInstance ${logicalId} (${physicalId}): SourceDBInstanceIdentifier cannot be ` +
+            safeMsg`added or changed in place (an instance becomes a read replica only when it is ` +
+            safeMsg`created), so the instance keeps its current replication and cdkd records that.`
+        )
+      );
+    }
+
     // go-to-k/cdkd#5640: a zone ModifyDBInstance cannot apply is refused
     // before any change, as CloudFormation refuses the update. A rollback
     // replay hands over a STATE record the template cannot fix: it warns,
@@ -215,9 +316,63 @@ export async function updateDBInstance(
         )
       );
     }
-    const effectiveProperties = zoneKept
+    // go-to-k/cdkd#5640: a removed source promotes the replica before the
+    // ModifyDBInstance, as CloudFormation's update handler does, carrying the
+    // declared backup settings the promoted instance starts with. It runs
+    // after every refusal above: a promotion cannot be undone, and the handler
+    // refuses an immutable change before it promotes. An instance already
+    // standalone (promoted outside cdkd, or by an earlier attempt of this
+    // update) is not promoted again: RDS refuses that. A rollback replay never
+    // promotes: a forward update could only have ADDED a source the live
+    // instance already replicated, so the instance was a replica before that
+    // deploy too; it warns and records the source the instance keeps.
+    let promotionSkipped = false;
+    if (sourceChange === 'promote') {
+      const live = await this.describeDBInstance(physicalId);
+      if (isLiveReadReplica(live) && context?.replayingState === true) {
+        promotionSkipped = true;
+        this.logger.warn(
+          sourceMask(
+            safeMsg`DBInstance ${logicalId} (${physicalId}): the rollback does not promote the read replica (a promotion cannot be undone, and the instance was a replica before this deploy), so cdkd records its source.`
+          )
+        );
+      } else if (isLiveReadReplica(live)) {
+        this.logger.info(
+          safeMsg`Promoting DBInstance ${logicalId} to a standalone instance (SourceDBInstanceIdentifier was removed), as CloudFormation does`
+        );
+        await this.getClient().send(
+          new PromoteReadReplicaCommand({
+            DBInstanceIdentifier: physicalId,
+            ...(properties['BackupRetentionPeriod'] != null && {
+              BackupRetentionPeriod: Number(properties['BackupRetentionPeriod']),
+            }),
+            ...(properties['PreferredBackupWindow'] != null && {
+              PreferredBackupWindow: properties['PreferredBackupWindow'] as string,
+            }),
+          })
+        );
+        // The ModifyDBInstance below needs the promotion finished, so this
+        // waits under --no-wait too.
+        await this.waitForInstanceState(
+          logicalId,
+          physicalId,
+          (instance) => instance.DBInstanceStatus === 'available' && !isLiveReadReplica(instance),
+          'promotion to a standalone instance'
+        );
+      } else {
+        this.logger.debug(
+          safeMsg`DBInstance ${logicalId} is no longer a read replica; nothing to promote`
+        );
+      }
+    }
+
+    const zoneEffective = zoneKept
       ? undefined
       : withPreviousAvailabilityZone(properties, previousProperties);
+    const effectiveProperties =
+      sourceKept && !promotionSkipped
+        ? zoneEffective
+        : withPreviousReplicaSource(zoneEffective ?? properties, previousProperties);
     // #609 backfill — 6 mutable sibling props matching DBCluster.
     // StorageEncrypted + MasterUsername are create-only per AWS RDS docs
     // and intentionally NOT forwarded here; a template change to either
