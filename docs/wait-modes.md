@@ -38,6 +38,7 @@ A deploy passes three points in order, and each mode returns at one of them:
         ▼
   Everything CloudFormation waits for has settled
     CloudFront distribution: Deployed
+    RDS Multi-AZ DB cluster after a class or storage change: available
                                        ◀── --full-wait returns here
 ```
 
@@ -50,10 +51,15 @@ Take a stack with a NAT gateway and a CloudFront distribution:
 - With `--full-wait`, the deploy also waits until the distribution is
   `Deployed`, as CloudFormation does.
 
-The default skips one wait: a CloudFront distribution propagating to the
-edge, which takes 3 to 15 minutes. Every other wait stays in the default,
-because a later step needs the finished resource or because the wait is how a
-failure gets reported.
+The default skips two waits: a CloudFront distribution propagating to the
+edge, which takes 3 to 15 minutes, and a Multi-AZ RDS DB cluster optimizing its
+storage after an instance class or storage change, which can take hours while
+the cluster already serves on its new class and storage. With `--full-wait`,
+raise that cluster's limit for a long optimization, such as
+`--resource-timeout AWS::RDS::DBCluster=6h`: the wait otherwise ends at the
+90-minute limit and fails the update. Every other wait stays in the
+default, because a later step needs the finished resource or because the wait
+is how a failure gets reported.
 
 ## Why the default waits for ECS but not CloudFront
 
@@ -92,7 +98,8 @@ runs on a laptop or in CI does not matter.
   preview environment, or a CI job where you pay for every minute. Resources
   may still be coming up when the command exits.
 - **Use the default** for ordinary work. Everything is ready except that a
-  CloudFront distribution may not be serving yet.
+  CloudFront distribution may not be serving yet, and a Multi-AZ RDS DB
+  cluster may still be optimizing its storage.
 - **Use `--full-wait`** when a smoke test, a DNS cutover or a follow-on job
   starts as soon as the deploy returns. The deploy takes the extra minutes
   CloudFormation would also take.

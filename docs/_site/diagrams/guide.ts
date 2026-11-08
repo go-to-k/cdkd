@@ -6,7 +6,7 @@ const waitModes: Diagram = {
   id: 'guide-wait-modes',
   title: 'Where each wait mode returns',
   description:
-    'A deploy passes three points in order. First, AWS accepts the create or update call: --no-wait returns here. Second, every outcome still open after that call is decided, such as an RDS instance, a NAT gateway, an EC2 instance or a load balancer being available, an ACM certificate being issued and an ECS service reaching steady state: the default returns here. Third, everything CloudFormation waits for has settled, which adds CloudFront Deployed: --full-wait returns here.',
+    'A deploy passes three points in order. First, AWS accepts the create or update call: --no-wait returns here. Second, every outcome still open after that call is decided, such as an RDS instance, a NAT gateway, an EC2 instance or a load balancer being available, an ACM certificate being issued and an ECS service reaching steady state: the default returns here. Third, everything CloudFormation waits for has settled, which adds CloudFront Deployed and a Multi-AZ RDS DB cluster being available after a class or storage change: --full-wait returns here.',
   rows: [['accepted'], ['ready'], ['settled']],
   nodes: [
     {
@@ -29,7 +29,10 @@ const waitModes: Diagram = {
     {
       id: 'settled',
       title: 'Everything CloudFormation waits for has settled',
-      detail: ['CloudFront distribution: Deployed'],
+      detail: [
+        'CloudFront distribution: Deployed',
+        'RDS Multi-AZ DB cluster after a class or storage change: available',
+      ],
       note: '--full-wait returns here.',
     },
   ],

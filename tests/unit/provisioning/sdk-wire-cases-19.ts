@@ -230,6 +230,11 @@ function armCluster(_physicalId: string, bag: Bag): void {
   let logs = liveLogs(bag);
   let httpEndpoint = bag['EnableHttpEndpoint'] === true;
   let forwarding = bag['EnableLocalWriteForwarding'] === true;
+  // go-to-k/cdkd#5639: a Multi-AZ DB cluster's class and storage, as the last
+  // ModifyDBCluster sent them (applied at once), so the wait settles.
+  let instanceClass = bag['DBClusterInstanceClass'] as string | undefined;
+  let allocatedStorage = bag['AllocatedStorage'] as number | undefined;
+  let iops = bag['Iops'] as number | undefined;
   const roles = { current: liveRoles(bag) };
   let detached = false;
   setOutputOverrides({
@@ -255,6 +260,9 @@ function armCluster(_physicalId: string, bag: Bag): void {
       logs = applyLogDelta(logs, input);
       const sentForwarding = input['EnableLocalWriteForwarding'] as boolean | undefined;
       if (sentForwarding !== undefined) forwarding = sentForwarding;
+      instanceClass = (input['DBClusterInstanceClass'] as string | undefined) ?? instanceClass;
+      allocatedStorage = (input['AllocatedStorage'] as number | undefined) ?? allocatedStorage;
+      iops = (input['Iops'] as number | undefined) ?? iops;
       return {};
     },
     DescribeDBClustersCommand: () => ({
@@ -271,6 +279,9 @@ function armCluster(_physicalId: string, bag: Bag): void {
           HttpEndpointEnabled: httpEndpoint,
           LocalWriteForwardingStatus: forwarding ? 'enabled' : 'disabled',
           AssociatedRoles: roles.current,
+          ...(instanceClass !== undefined && { DBClusterInstanceClass: instanceClass }),
+          ...(allocatedStorage !== undefined && { AllocatedStorage: allocatedStorage }),
+          ...(iops !== undefined && { Iops: iops }),
         },
       ],
     }),
@@ -563,6 +574,28 @@ const CLUSTER_CASE: TypeCase = {
       // A removed Port sends 3306, as CloudFormation does; RDS refuses it on a
       // Multi-AZ DB cluster (go-to-k/cdkd#1160 A/B), so it is no longer silent.
       expectedSilent: CLUSTER_ENGINE_SILENT,
+    },
+    {
+      name: 'Multi-AZ DB cluster (postgres) instance class and provisioned IOPS storage (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'postgres',
+        MasterUsername: 'admin',
+        DBClusterInstanceClass: 'db.m6gd.large',
+        StorageType: 'io1',
+        AllocatedStorage: 100,
+        Iops: 1000,
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        'update-remove:StorageType': CLUSTER_BACKFILL_KEPT['update-remove:StorageType']!,
+        ...Object.fromEntries(
+          ['DBClusterInstanceClass', 'AllocatedStorage', 'Iops'].map((key) => [
+            `update-remove:${key}`,
+            `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's handler (Translator.modifyDbClusterRequest) sends null for a removed ${key} with no default filled, read from the handler source, not measured (${SRC} clusterModifyMultiAzMembers)`,
+          ])
+        ),
+      },
     },
   ],
 };

@@ -82,6 +82,14 @@ const SLOW_CC_OPERATION_TIMEOUTS: Record<string, SlowOperationTimeouts> = {
   },
   'AWS::RDS::DBCluster': {
     create: 60 * MINUTE_MS,
+    // A Multi-AZ DB cluster's instance class or storage change is an in-place
+    // update the provider waits out (go-to-k/cdkd#5639). RDS rolls it across
+    // the three member instances one at a time, with a failover; a
+    // db.c6gd.medium to large change was still on its third instance after 30
+    // minutes (rds-multiaz-cluster integ, us-east-1). 90 minutes leaves
+    // headroom for larger classes; CloudFormation's own update handler allows
+    // 36 hours (schema `handlers.update.timeoutInMinutes` 2160).
+    update: 90 * MINUTE_MS,
     delete: 60 * MINUTE_MS,
   },
   // A TimeToLive change inside DynamoDB's TTL rate-limit interval is re-sent

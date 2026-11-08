@@ -156,10 +156,13 @@ export async function waitForClusterState(
   logicalId: string,
   dbClusterIdentifier: string,
   done: (cluster: DBCluster) => boolean,
-  change: string
+  change: string,
+  // The limit with no enclosing resource deadline (a rollback replay or
+  // `drift --revert` runs without one).
+  unboundedMaxWaitMs = 1_800_000
 ): Promise<void> {
   const remaining = enclosingDeadlineRemainingMs();
-  const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
+  const maxWaitMs = Number.isFinite(remaining) ? remaining : unboundedMaxWaitMs;
   const startTime = Date.now();
   let delay = 5_000;
   while (Date.now() - startTime < maxWaitMs) {

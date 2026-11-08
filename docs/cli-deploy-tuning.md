@@ -13,7 +13,7 @@ deploy flags, see [cdkd deploy](cli-deploy.md#options).
 ```bash
 # abort a stuck resource sooner
 cdkd deploy MyStack --resource-timeout 10m
-cdkd deploy MyStack --resource-timeout AWS::RDS::DBCluster=1h30m
+cdkd deploy MyStack --resource-timeout AWS::RDS::DBCluster=2h
 
 # prefix declared names with the stack name
 cdkd deploy MyStack --prefix-user-supplied-names
@@ -62,7 +62,7 @@ cdkd deploy MyStack --resource-warn-after 90s --resource-timeout 10m
 # Keep the default, and raise it only for types known to take longer
 cdkd deploy MyStack \
   --resource-timeout AWS::CloudFront::Distribution=1h \
-  --resource-timeout AWS::RDS::DBCluster=1h30m
+  --resource-timeout AWS::RDS::DBCluster=2h
 ```
 
 When an operation passes the `--resource-warn-after` threshold, its progress
@@ -113,7 +113,8 @@ the two.
 | --- | --- |
 | `AWS::CloudFormation::CustomResource` | 1 hour |
 | `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes; 75 minutes for an update |
-| Slow types such as `AWS::OpenSearchService::Domain`, and Redshift, ElastiCache and RDS clusters | 60 minutes |
+| `AWS::RDS::DBCluster` | 60 minutes; 90 minutes for an update |
+| Slow types such as `AWS::OpenSearchService::Domain`, and Redshift and ElastiCache clusters | 60 minutes |
 
 The minimums exist for these reasons:
 
@@ -128,6 +129,9 @@ The minimums exist for these reasons:
 - Deleting one of the slow types routinely takes 15 to 30 minutes.
 - Changing an ElastiCache cache cluster's node type is an in-place update
   that cdkd waits out, and a large node can scale for longer than 30 minutes.
+- Changing a Multi-AZ RDS DB cluster's instance class or storage is an
+  in-place update that cdkd waits out. RDS applies it to the three instances
+  one at a time, with a failover, which can take longer than 30 minutes.
 
 The default is `30m` and not `1h` so that one stuck resource of an ordinary
 type does not hold the stack for an hour.
@@ -155,13 +159,14 @@ type does not hold the stack for an hour.
 
 `--resource-timeout` also reaches the [ECS service steady-state
 wait](cli-deploy-waits.md#ecs-service-steady-state) the default runs and the
-wait [`--full-wait`](cli-deploy-waits.md#what-full-wait-adds) adds, so that a
+waits [`--full-wait`](cli-deploy-waits.md#what-full-wait-adds) adds, so that a
 wait does not give up before the limit you raised:
 
 | Wait | Limit |
 | --- | --- |
 | ECS service steady state (default and `--full-wait`) | The larger of 600 seconds and the resolved `--resource-timeout`. |
 | CloudFront `Deployed` (`--full-wait`) | The larger of 20 minutes and the resolved `--resource-timeout`. |
+| Multi-AZ RDS DB cluster `available` after a class or storage change (`--full-wait`) | The larger of 90 minutes and a bare `--resource-timeout`; a `TYPE=DURATION` value for `AWS::RDS::DBCluster` replaces it. A storage optimization can take hours: raise it, such as `--resource-timeout AWS::RDS::DBCluster=6h`. |
 
 ## `--prefix-user-supplied-names`
 

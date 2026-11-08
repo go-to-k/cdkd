@@ -147,12 +147,13 @@ describe('wait-table parser', () => {
     const fromText = parseWaitTable(readFileSync(deployDocPath, 'utf8'));
     expect(fromPath).toEqual(fromText);
     // Anti-vacuity: the shipped table carries eleven rows today, and at least
-    // one of them must be a type `--full-wait` actually changes (CloudFront;
-    // ECS Service's wait is the default since go-to-k/cdkd#5571), while the
-    // rest read "same as default" — both cell shapes are parsed.
+    // one of them must be a type `--full-wait` actually changes (CloudFront,
+    // and the RDS DBCluster / DBInstance row since go-to-k/cdkd#5639; ECS
+    // Service's wait is the default since go-to-k/cdkd#5571), while the rest
+    // read "same as default" — both cell shapes are parsed.
     expect(fromPath.length).toBeGreaterThanOrEqual(11);
     const changed = fromPath.filter((r) => r.fullWait.toLowerCase() !== 'same as default');
     expect(changed.map((r) => r.type)).toContain('AWS::CloudFront::Distribution');
-    expect(fromPath.length - changed.length).toBeGreaterThanOrEqual(10);
+    expect(fromPath.length - changed.length).toBeGreaterThanOrEqual(9);
   });
 });

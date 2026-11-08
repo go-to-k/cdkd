@@ -2204,6 +2204,11 @@
       ]
     },
     {
+      "name": "rds-multiaz-cluster",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "recreate-mixed-direction",
       "annotated": false,
       "scenarios": []
@@ -3734,6 +3739,7 @@
     "profile-region-default",
     "rds-dbinstance-backfill",
     "rds-fix-forward-orphan",
+    "rds-multiaz-cluster",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",
     "recreate-parent-child-permission",

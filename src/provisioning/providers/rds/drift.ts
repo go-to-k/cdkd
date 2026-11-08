@@ -63,7 +63,8 @@ export function getDriftUnknownPaths(
 
 /**
  * go-to-k/cdkd#5639: a raw CFn template may spell the DBCluster booleans as
- * `'true'` / `'false'` and the retention period as a numeric string, while
+ * `'true'` / `'false'` and the retention period, backtrack window, storage
+ * size and IOPS as numeric strings, while
  * `readCurrentState` answers a boolean and a number. On a baseline taken
  * from the recorded `properties` (no `observedProperties`) the two would
  * read as drift; both sides fold to the readback's type. Anything else is
@@ -94,7 +95,12 @@ export function canonicalizeDriftProperties(
     const value = properties[key];
     if (value === 'true' || value === 'false') set(key, value === 'true');
   }
-  for (const key of ['PerformanceInsightsRetentionPeriod', 'BacktrackWindow']) {
+  for (const key of [
+    'PerformanceInsightsRetentionPeriod',
+    'BacktrackWindow',
+    'AllocatedStorage',
+    'Iops',
+  ]) {
     const value = properties[key];
     if (typeof value === 'string') {
       const parsed = retentionPeriodValue(value);

@@ -162,7 +162,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['requireClusterWhileWaiting', 'waits', 'requireClusterWhileWaiting', 3],
   ['waitForClusterPortApplied', 'waits', 'waitForClusterPortApplied', 4],
   ['waitForSecurityGroupsApplied', 'waits', 'waitForSecurityGroupsApplied', 4],
-  ['waitForClusterState', 'waits', 'waitForClusterState', 4],
+  ['waitForClusterState', 'waits', 'waitForClusterState', 5],
   ['sendHttpEndpointChange', 'calls', 'sendHttpEndpointChange', 4],
   ['deleteAfterProtectionFlip', 'cluster-delete', 'deleteAfterProtectionFlip', 3],
   ['deleteInstanceAfterProtectionFlip', 'instance-delete', 'deleteInstanceAfterProtectionFlip', 3],
@@ -203,6 +203,7 @@ const RDS_DIR = join(
 const DEFAULTED: ReadonlyArray<readonly [string, string, number, readonly unknown[]]> = [
   ['waitForMemberAfterClusterChange', 'waitForMemberAfterClusterChange', 4, [1_800_000]],
   ['waitForClusterPortApplied', 'waitForClusterPortApplied', 3, [1_800_000]],
+  ['waitForClusterState', 'waitForClusterState', 4, [1_800_000]],
   ['waitForSecurityGroupsApplied', 'waitForSecurityGroupsApplied', 3, [1_800_000]],
   ['waitForClusterAvailable', 'waitForClusterAvailable', 2, [1_800_000, 'being created']],
   ['waitForClusterDeleted', 'waitForClusterDeleted', 2, [1_800_000]],

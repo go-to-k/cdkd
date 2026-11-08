@@ -143,6 +143,228 @@ export function clusterModifyBackfillMembers(
 }
 
 /**
+ * go-to-k/cdkd#5639: the Multi-AZ DB cluster (non-Aurora `mysql` /
+ * `postgres`) compute and storage members, under their CFn names on both
+ * CreateDBCluster and ModifyDBCluster.
+ */
+type ClusterMultiAzMembers = Pick<
+  ModifyDBClusterCommandInput,
+  'DBClusterInstanceClass' | 'AllocatedStorage' | 'Iops'
+>;
+
+/**
+ * go-to-k/cdkd#5639: a Multi-AZ DB cluster `AllocatedStorage` or `Iops` read
+ * off a bag: `undefined` when absent, the whole number (a number or its
+ * numeric-string spelling), or `'malformed'`, which the create and update
+ * refuse before any call (a replay skips it) rather than send as NaN.
+ */
+export function clusterSizeValue(value: unknown): number | undefined | 'malformed' {
+  return retentionPeriodValue(value);
+}
+
+/**
+ * go-to-k/cdkd#5639: a `DBClusterInstanceClass` that is present but not a
+ * string, which the create and update refuse before any call (a replay skips
+ * it) rather than send as whatever it stringifies to.
+ */
+export function malformedInstanceClass(value: unknown): boolean {
+  return value != null && typeof value !== 'string';
+}
+
+/** Whether a recorded `DBClusterInstanceClass` can stand in for a skipped one. */
+export const usableInstanceClass = (value: unknown): boolean => typeof value === 'string';
+
+/** Whether a recorded `AllocatedStorage` / `Iops` can stand in for a skipped one. */
+export const usableClusterSize = (value: unknown): boolean =>
+  typeof clusterSizeValue(value) === 'number';
+
+/**
+ * go-to-k/cdkd#5639: the Multi-AZ DB cluster members CreateDBCluster sends,
+ * each one the template declares, as CloudFormation's create translation
+ * (`Translator.createDbClusterRequest`) sends each declared value. A
+ * malformed size is refused or skipped before the call (`clusterSizeValue`).
+ */
+export function clusterCreateMultiAzMembers(
+  properties: Record<string, unknown>
+): ClusterMultiAzMembers {
+  const members: ClusterMultiAzMembers = {};
+  const instanceClass = properties['DBClusterInstanceClass'];
+  if (typeof instanceClass === 'string') members.DBClusterInstanceClass = instanceClass;
+  const allocated = clusterSizeValue(properties['AllocatedStorage']);
+  if (typeof allocated === 'number') members.AllocatedStorage = allocated;
+  const iops = clusterSizeValue(properties['Iops']);
+  if (typeof iops === 'number') members.Iops = iops;
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#5639: the ModifyDBCluster Multi-AZ DB cluster members for an
+ * update. CloudFormation's update translation (`Translator.
+ * modifyDbClusterRequest`) sends the desired `DBClusterInstanceClass`,
+ * `AllocatedStorage`, `Iops` and `StorageType` on every update, `null`
+ * (unsent) for a removed key, and `ModelAdapter.setDefaults` fills none of
+ * them (read from the `aws-cloudformation-resource-providers-rds` source, not
+ * measured). So:
+ *
+ * - A changed `DBClusterInstanceClass` is sent; an unchanged one is not, that
+ *   re-send being a no-op.
+ * - The storage members travel together: a changed `AllocatedStorage`,
+ *   `Iops` or `StorageType` sends the declared `AllocatedStorage` and `Iops`
+ *   (`StorageType` itself rides `clusterModifyBackfillMembers`), as the
+ *   handler always sends the set; RDS reads `Iops` against the storage size
+ *   (0.5 to 50 IOPS per GiB) and needs it beside a Multi-AZ `StorageType`.
+ * - A removal sends nothing and RDS keeps the live value.
+ * - A rollback replay (`replayingState`) or a `drift --revert`
+ *   (`desiredFromAwsReadback`) never sends an `AllocatedStorage` smaller than
+ *   the previous one: RDS storage cannot shrink, so the revert would refuse
+ *   the whole ModifyDBCluster and leave every other member unreverted; the
+ *   larger size is kept and `onShrinkSkipped` is told. CloudFormation's
+ *   cluster handler has no such arm (its DB instance handler does; unlike
+ *   that rule there is no live read, a Multi-AZ DB cluster having no storage
+ *   autoscaling). A template-path update sends the smaller size, which RDS
+ *   refuses, as it does under CloudFormation.
+ */
+export function clusterModifyMultiAzMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined,
+  onShrinkSkipped: (desired: number, previous: number) => void = () => {}
+): ClusterMultiAzMembers {
+  const changed = (key: string): boolean =>
+    instanceValueChanged(properties, previousProperties, key, context);
+  const members: ClusterMultiAzMembers = {};
+  // A malformed one is refused or skipped before any call.
+  const instanceClass = properties['DBClusterInstanceClass'];
+  if (typeof instanceClass === 'string' && changed('DBClusterInstanceClass')) {
+    members.DBClusterInstanceClass = instanceClass;
+  }
+  // A malformed one is refused or skipped before any call.
+  const allocated = clusterSizeValue(properties['AllocatedStorage']);
+  const previousAllocated = clusterSizeValue(previousProperties['AllocatedStorage']);
+  const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
+  const shrinkSkipped =
+    stateBorne &&
+    changed('AllocatedStorage') &&
+    typeof allocated === 'number' &&
+    typeof previousAllocated === 'number' &&
+    allocated < previousAllocated;
+  if (shrinkSkipped) onShrinkSkipped(allocated, previousAllocated);
+  // A skipped shrink is no storage change of its own: with nothing else
+  // changed, no storage member is sent. Otherwise the kept (larger) size
+  // rides beside the IOPS, keeping the pair CloudFormation always sends.
+  if (
+    (changed('AllocatedStorage') && !shrinkSkipped) ||
+    changed('Iops') ||
+    changed('StorageType')
+  ) {
+    if (shrinkSkipped) members.AllocatedStorage = previousAllocated as number;
+    else if (typeof allocated === 'number') members.AllocatedStorage = allocated;
+    const iops = clusterSizeValue(properties['Iops']);
+    if (typeof iops === 'number') members.Iops = iops;
+  }
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#5639: the statuses a Multi-AZ DB cluster settles in after an
+ * instance class or storage change. CloudFormation's update stabilizes only on
+ * `available` with no pending `AllocatedStorage`, `Iops` or `StorageType`
+ * (`BaseHandlerStd.isDBClusterStabilized` / `isNoPendingChanges`), and so
+ * does `--full-wait`. By default `storage-optimization` counts too: RDS can
+ * hold a cluster there for hours after the new size is in place, and the
+ * cluster serves meanwhile, as a CloudFront distribution serves before it is
+ * `Deployed` (docs/wait-modes.md).
+ */
+export function multiAzSettledStatuses(fullWait: boolean): ReadonlySet<string> {
+  return new Set(fullWait ? ['available'] : ['available', 'storage-optimization']);
+}
+
+/**
+ * go-to-k/cdkd#5639: whether the Multi-AZ members an update sent have
+ * applied, read once. The cluster is in a settled status
+ * (`multiAzSettledStatuses`), no storage change is pending, and the values sent
+ * read back: the instance class (RDS lists no pending class), the size, and
+ * the IOPS on `io1` / `io2` storage, where it is the value provisioned.
+ * Comparing what was sent, beyond CloudFormation's pending-only check, also
+ * covers a read taken before RDS lists the change as pending. Off `io1` /
+ * `io2`, an IOPS that does not read back is settled by `multiAzAppliedProbe`.
+ */
+export function multiAzMembersApplied(
+  cluster: DBCluster,
+  sent: ClusterMultiAzMembers,
+  fullWait = false
+): boolean {
+  return multiAzReadState(cluster, sent, fullWait) === 'applied';
+}
+
+type MultiAzReadState = 'applied' | 'pending' | 'iops-unconfirmed';
+
+function multiAzReadState(
+  cluster: DBCluster,
+  sent: ClusterMultiAzMembers,
+  fullWait: boolean
+): MultiAzReadState {
+  if (
+    sent.DBClusterInstanceClass === undefined &&
+    sent.AllocatedStorage === undefined &&
+    sent.Iops === undefined
+  ) {
+    return 'applied';
+  }
+  if (!multiAzSettledStatuses(fullWait).has(cluster.Status ?? '')) return 'pending';
+  if (
+    sent.DBClusterInstanceClass !== undefined &&
+    cluster.DBClusterInstanceClass !== sent.DBClusterInstanceClass
+  ) {
+    return 'pending';
+  }
+  if (sent.AllocatedStorage === undefined && sent.Iops === undefined) return 'applied';
+  if (sent.AllocatedStorage !== undefined && cluster.AllocatedStorage !== sent.AllocatedStorage) {
+    return 'pending';
+  }
+  const pending = cluster.PendingModifiedValues;
+  if (
+    pending?.AllocatedStorage !== undefined ||
+    pending?.Iops !== undefined ||
+    pending?.StorageType !== undefined
+  ) {
+    return 'pending';
+  }
+  if (sent.Iops === undefined || cluster.Iops === sent.Iops) return 'applied';
+  const provisionedIops = ['io1', 'io2'].includes(cluster.StorageType?.toLowerCase() ?? '');
+  return provisionedIops ? 'pending' : 'iops-unconfirmed';
+}
+
+/** Consecutive settled reads that accept an IOPS that did not read back (gp3). */
+export const MULTI_AZ_IOPS_CONFIRM_READS = 3;
+
+/**
+ * go-to-k/cdkd#5639: the stateful wait predicate for one update. On storage
+ * other than `io1` / `io2` RDS may report a different IOPS figure than the
+ * one sent, which a plain comparison would wait on until the deadline, while
+ * accepting the first settled read could return before RDS lists the change
+ * as pending. So an IOPS that does not read back is accepted only once
+ * `MULTI_AZ_IOPS_CONFIRM_READS` settled reads in a row agree, the same
+ * consecutive-probe count CloudFormation's stabilization uses
+ * (`Probing.withProbing(..., 3, ...)`).
+ */
+export function multiAzAppliedProbe(
+  sent: ClusterMultiAzMembers,
+  fullWait: boolean
+): (cluster: DBCluster) => boolean {
+  let unconfirmedReads = 0;
+  return (cluster) => {
+    const state = multiAzReadState(cluster, sent, fullWait);
+    if (state !== 'iops-unconfirmed') {
+      unconfirmedReads = 0;
+      return state === 'applied';
+    }
+    unconfirmedReads += 1;
+    return unconfirmedReads >= MULTI_AZ_IOPS_CONFIRM_READS;
+  };
+}
+
+/**
  * go-to-k/cdkd#5639: the `AWS::RDS::DBCluster` scalars that ride
  * CreateDBCluster and ModifyDBCluster, as the SDK names them. Two are renamed:
  * CFn `PerformanceInsightsEnabled` is `EnablePerformanceInsights` and CFn
