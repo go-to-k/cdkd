@@ -126,10 +126,11 @@ deterministic by shrinking that wait with a per-type `--resource-timeout
 the competing resource's budget too), plus a verdict that the shrink took
 effect (#5975). A NEEDLE (hint, retry regex,
 fixture refusal grep) is copied from cdkd's red output on EACH route, never
-reasoned nor the `aws` CLI's (#4336, #5592; #5680: masked account ids,
-code-only SDK errors); a refusal the
+reasoned nor the `aws` CLI's (#4336, #5592, #5680); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
-`s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
+`s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`; when that holds
+only the code, AWS's text is the CloudTrail event's `errorMessage` (`aws
+cloudtrail lookup-events ... --output json`; `text` breaks the parse). **Revert in a
 THROWAWAY detached tree at the PUSHED final sha, never the lane's** — the lane
 tree then has nothing to restore (a SECOND probe in the throwaway tree restores
 the first's edit with `CDKD_ALLOW_DIRTY_RESTORE=1`, never `git show >` around
