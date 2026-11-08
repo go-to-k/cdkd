@@ -71,7 +71,9 @@ export interface InferCrossStackStackDepsOptions {
  * deploy). It returns, per consumer stackName, the set of OTHER stackNames in
  * the SAME input set that it depends on (consumer → producer edges).
  *
- * Rules (mirroring deploy.ts's existing `if (stackMap.has(depName))` guard):
+ * Rules (mirroring `stacksForDependency` in `src/cli/stack-matcher.ts`, which
+ * resolves a manifest dependency only to stacks in the pool
+ * `src/cli/commands/deploy/command.ts` hands it):
  * - Edges are only added between stacks BOTH present in the input set. A
  *   producer outside the set = no edge — its export resolves at runtime from
  *   already-deployed state, which is correct.

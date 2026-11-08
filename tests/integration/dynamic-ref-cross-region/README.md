@@ -120,24 +120,29 @@ A and `SECOND_REGION` (default `us-west-2`) region B.
 The deploy in this fixture is serial and **must stay serial**. That is a safety
 requirement rather than a leftover from #1933.
 
-cdkd installs the per-stack region-pinned AWS clients into a process-global
-singleton (`setAwsClients` in `src/cli/commands/deploy.ts`) and re-points
-`process.env.AWS_REGION` alongside it, which `deploy.ts` itself notes "races
-under `--stack-concurrency > 1` with multi-region stacks". #1957 fixed the
+When this fixture was written, cdkd installed the per-stack region-pinned AWS
+clients into the process-global `setAwsClients` singleton and re-pointed
+`process.env.AWS_REGION` alongside it, which raced under
+`--stack-concurrency > 1` with multi-region stacks. #1957 fixed the
 RESOLVER's use of that singleton — every dynamic-reference lookup is now bound
 to its own resolver's region — but it deliberately did not touch the
 PROVISIONING side, where 42 provider files read `getAwsClients()` and
-`SSMParameterProvider` captures its client in the CONSTRUCTOR, a few lines after
+`SSMParameterProvider` captured its client in the CONSTRUCTOR, a few lines after
 the `setAwsClients` call. A lost race there does not merely resolve the wrong
 value: it CREATES this fixture's echo parameters in the wrong region, where the
 script's region-keyed cleanup will not find them. That is a billed orphan
 produced by a run whose purpose is to prove correctness, so the concurrent
 deploy arm stays unbuilt until the provisioning half is fixed too — filed as
-issue [#1981](https://github.com/go-to-k/cdkd/issues/1981).
+issue [#1981](https://github.com/go-to-k/cdkd/issues/1981). That issue has
+since replaced the per-stack re-pointing: `src/cli/commands/deploy/command.ts`
+runs each stack's deploy inside `runWithStackAwsClients`
+(`src/utils/aws-clients.ts`, scope in `src/utils/stack-aws-scope.ts`), so a
+provider reads its own stack's clients and region across an `await`. The
+deploy here still runs serially.
 
 `cdkd scrub` reaches the SAME defect without any of that risk, and more
 strictly. It installs its clients ONCE from the CLI region
-(`src/cli/commands/scrub.ts:126`) and then resolves stacks in several regions,
+(`src/cli/commands/scrub/command.ts:176`) and then resolves stacks in several regions,
 so the wrong-region read is structural rather than timing-dependent — a
 deterministic discriminator, not a probabilistic one — and the command writes no
 AWS resources at all, so a failure cannot orphan anything. What it catches is
