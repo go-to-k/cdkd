@@ -53,7 +53,7 @@ import {
  * is a different parameter in another region or account, so a verdict read in
  * one says nothing about the other.
  *
- * The region is {@link explicitRegion}, the one `ResolverClients.clientsForRegion` binds
+ * The region is `explicitRegion`, the one `ResolverClients.clientsForRegion` binds
  * the lookup to, and `''` when none was named — the AMBIENT clients answer
  * then, in whatever region they point at, which a per-stack region switch can
  * change. Such resolvers share the one `''` scope, exactly as every resolver
@@ -73,7 +73,7 @@ function secretVerdictScope(resolver: IntrinsicFunctionResolver): string {
 /**
  * Record one SECRET resolution's provenance (state schema v12,
  * go-to-k/cdkd#4847 / #4852) into the context's bag and its provenance sink:
- * the region of the resolver that answered ({@link explicitRegion}, the one
+ * the region of the resolver that answered (`explicitRegion`, the one
  * `ResolverClients.clientsForRegion` bound the lookup to; unknown when none was named),
  * the version id the response carried, and the context's route. A
  * region-pinned sibling records its own region, since it is the resolver
@@ -105,7 +105,7 @@ function recordProvenanceOfResolution(
 }
 
 /**
- * {@link resolveDynamicReferences}, also returning the LOG TWIN of the result
+ * `resolveDynamicReferences`, also returning the LOG TWIN of the result
  * (issue [#3100](https://github.com/go-to-k/cdkd/issues/3100), see
  * `LogTwin`). `logTwin` is the caller's twin of `value`, which may already
  * mask spans an earlier write put there.
@@ -135,7 +135,7 @@ export async function resolveDynamicReferencesWithLogTwin(
   // registers for its result is the one it registered before.
   inherited?: { tokenLogText: string; nameLogText: (name: string) => string },
   // PERSISTED text rather than a template leaf: neither the unsupported-service
-  // arm nor the secret-assembled refusal (issue #4166) refuses it. Set by {@link resolveDynamicReferences} alone, so the
+  // arm nor the secret-assembled refusal (issue #4166) refuses it. Set by `resolveDynamicReferences` alone, so the
   // default -- every internal route -- is the refusing one.
   persistedText = false
 ): Promise<DynamicReferencePass> {
@@ -715,7 +715,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // BOTH halves are skipped for persisted text, explicitly. Only the
         // needle half can fire there (that entry point passes the value as
         // its own twin, so every token pairs with itself), and it is the one
-        // that must not: see {@link resolveDynamicReferences}.
+        // that must not: see `resolveDynamicReferences`.
         if (
           !persistedText &&
           tokenAssembledFromSecret(resolver, fullMatch, tokenLogText, context)

@@ -191,7 +191,7 @@ export interface CommandInterruptWatch {
  * flags answer different questions and both are kept, one owner each:
  *
  *  - PER-STACK, "did THIS stack finish, or is there work left in it?" —
- *    `DestroyRunnerResult.interrupted`, owned by `destroy-runner.ts`. It has FOUR
+ *    `DestroyRunnerResult.interrupted`, owned by `destroy-runner/types.ts`. It has FOUR
  *    consumers: that stack's state preservation, its summary line,
  *    `destroy.ts`'s `--purge-events` skip, and — the one earlier revisions of
  *    this list omitted — `NestedStackProvider.delete`, which reads the CHILD's

@@ -49,7 +49,7 @@ export class ReplacementRunState {
    *
    * Written by every engine path that skips the post-replacement delete, read
    * once at the `completedOperations.push` site to stamp
-   * {@link CompletedOperation.oldResourceRetained}. It exists because the
+   * `CompletedOperation.oldResourceRetained`. It exists because the
    * rollback classifier used to re-derive the verdict from
    * `previousState.updateReplacePolicy` — a DIFFERENT source than the
    * template read the engine decides from — so the two disagreed on exactly
@@ -78,7 +78,7 @@ export class ReplacementRunState {
    * go-to-k/cdkd#2631: logical ids whose replacement's cleanup delete of the
    * OLD resource did not confirm it gone (failed, deferred, skipped, or
    * blocked by a failed final snapshot), with the verdict stamped as
-   * {@link CompletedOperation.oldResourceMaySurvive}, which makes the rollback
+   * `CompletedOperation.oldResourceMaySurvive`, which makes the rollback
    * read AWS for the old resource before re-creating it. Cleared per
    * `deploy()`.
    */

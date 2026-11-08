@@ -310,7 +310,7 @@ export async function updateTable(
   // UPDATE only WARNS where create REFUSES, and the asymmetry is deliberate.
   //
   // Rollback restores a resource from cdkd STATE, not from the template
-  // (`rollback-executor.ts` calls `provider.update(..., op.previousState.properties)`).
+  // (`rollback-executor/replay-revert.ts` calls `provider.update(..., op.previousState.properties)`).
   // A table created by a cdkd build older than #1390 succeeded with the
   // property silently dropped by the SDK serializer, so its state record
   // still carries the key. Refusing here would hard-fail both any UPDATE to

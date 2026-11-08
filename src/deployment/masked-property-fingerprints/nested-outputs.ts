@@ -324,7 +324,7 @@ async function attributeClass(
 /**
  * The class of one expression inside a child template: the worst class of
  * every input it reads. Every read is awaited in turn (no `Promise.all`), as
- * the parent side's {@link inputForms} is, so the memo and the step budget
+ * the parent side's `inputForms` is, so the memo and the step budget
  * are spent in template order.
  */
 async function expressionClass(value: unknown, scope: OutputScope): Promise<NestedOutputClass> {
@@ -511,7 +511,7 @@ export type PassedParameterClass = 'clean' | 'secret' | 'unknown';
  * `Parameters` object), classified over the PARENT's template with the
  * parent's sources. A passed parameter missing here reads as `secret` in the
  * child, even when it equals the child's `Default` (see
- * {@link parameterInputsFor}).
+ * `parameterInputsFor`).
  */
 export async function classifyPassedParameters(
   parameters: unknown,

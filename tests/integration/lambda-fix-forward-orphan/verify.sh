@@ -657,7 +657,7 @@ assert_record BaseFn "${BASE_FN}"
 # below only confirm the deploy's account of it, so a reworded line fails
 # here, never silently above.
 FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' | tr -s ' ')"
-# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# The settle's keep warnings (journaled-orphans/success-rule.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
 for lid in OrphanA OrphanD; do
   if ! grep -qF "deleting partially-created ${lid}" <<<"${FF_FLAT}"; then

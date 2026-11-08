@@ -40,7 +40,7 @@ import {
  * Two independent signals identify such a record, and BOTH are needed:
  *
  * - the desired side is still a secret-bearing expression per
- *   {@link isSecretReferenceText} (this resolver runs with
+ *   `isSecretReferenceText` (this resolver runs with
  *   `skipDynamicReferences`, so a `SecureString` ssm token counts, issue
  *   #4056) while the stored side is not; and
  * - `secretSourceKeys` — the template itself declares the key's value as such a
@@ -139,11 +139,11 @@ export function computeOutputsDiff(
      * evidence only its resolved value held is gone.
      */
     forceLegacyRecord?: boolean;
-    /** {@link ResolvedTemplateOutputs.secretBearingExportNames} (issue #4015). */
+    /** `ResolvedTemplateOutputs.secretBearingExportNames` (issue #4015). */
     secretBearingExportNames?: readonly string[];
-    /** {@link ResolvedTemplateOutputs.refusedNoEchoExportNames} (go-to-k/cdkd#4657). */
+    /** `ResolvedTemplateOutputs.refusedNoEchoExportNames` (go-to-k/cdkd#4657). */
     refusedNoEchoExportNames?: readonly string[];
-    /** {@link ResolvedTemplateOutputs.exportNameReadsNoEcho} (go-to-k/cdkd#4723). */
+    /** `ResolvedTemplateOutputs.exportNameReadsNoEcho` (go-to-k/cdkd#4723). */
     exportNameReadsNoEcho?: boolean;
     /**
      * The record's `exportNames` (schema v9+), or `undefined` when it records

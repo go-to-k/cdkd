@@ -465,7 +465,7 @@ if ! grep -qF 'deleting partially-created OrphanA' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
-# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# The settle's keep warnings (journaled-orphans/success-rule.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
 if grep -qF 'OrphanA (AWS::DynamoDB::Table), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2

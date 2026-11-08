@@ -167,7 +167,7 @@ export async function rawObjectExists(this: S3StateBackend, key: string): Promis
  *
  * On the region-scoped path the returned `state.region` is ALWAYS the
  * region of the key it was read from, whatever the body said — see
- * {@link adoptKeyRegion}, which also reports a body that disagreed via
+ * `adoptKeyRegion`, which also reports a body that disagreed via
  * `divergentBodyRegion`.
  */
 export async function getState(
@@ -181,7 +181,7 @@ export async function getState(
   /**
    * The `region` the BODY carried, present only when the region-scoped
    * record named one that is not the key's — i.e. exactly when
-   * {@link adoptKeyRegion} replaced it. Never `undefined` when the key is
+   * `adoptKeyRegion` replaced it. Never `undefined` when the key is
    * present, so `!== undefined` is the divergence test.
    *
    * Typed `unknown` because the body is unvalidated past its root: the

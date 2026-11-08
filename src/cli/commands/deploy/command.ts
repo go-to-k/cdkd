@@ -159,7 +159,7 @@ export async function deployCommand(
   // (issue #1820), so a marker may exist under a raw key, and folding
   // unconditionally would stop `AssetModeResolver` ever probing it. Same split
   // `gc.ts` / `bootstrap-destroy.ts` already keep, and the same shape as
-  // `local-invoke.ts`'s `rawStackRegion`.
+  // `local-invoke/command.ts`'s `rawStackRegion`.
   const rawNamedRegion = rawCliRegion(options.region);
   foldRegionOption(options);
 
@@ -734,7 +734,7 @@ export async function deployCommand(
     // than thrown per stack so a multi-stack deploy still runs its remaining
     // stacks: neither case is a resource FAILURE, and stopping the run would
     // be a bigger behavior change than the exit code this counter feeds.
-    // Mirrors `totalSkipped` in src/cli/commands/destroy.ts, which has driven
+    // Mirrors `totalSkipped` in src/cli/commands/destroy/command.ts, which has driven
     // destroy's exit 2 for the identical outcome since #1752.
     //
     // Nested stacks included (issue #1989): a top-level engine's
@@ -883,7 +883,7 @@ export async function deployCommand(
     // only the exit code would be told the template was applied when it was
     // not. Placed AFTER `workGraph.execute` so a genuine deploy failure (which
     // rejects out of `execute` and exits 1) keeps precedence: the same order
-    // destroy.ts uses, where `totalErrors` is checked before `totalSkipped`.
+    // destroy/command.ts uses, where `totalErrors` is checked before `totalSkipped`.
     if (totalUnaddressed > 0 && !options.allowUnaddressed) {
       throw new PartialFailureError(
         `Deploy left ${totalUnaddressed} resource(s) unaddressed, so they may still exist in ` +

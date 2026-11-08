@@ -575,7 +575,7 @@ export async function materializeLambdaLayers(
       // Merged in template order with AWS's "last layer wins" semantic, mode
       // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
       // the ways a bare `cpSync` breaks it, are written once on
-      // `copyLayerTreeLastWins` (issue #3106); `local-invoke.ts`'s
+      // `copyLayerTreeLastWins` (issue #3106); `local-invoke/image-plan.ts`'s
       // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
       // fixture exercises it end-to-end.
       copyLayerTreeLastWins(layer.assetPath, dir);

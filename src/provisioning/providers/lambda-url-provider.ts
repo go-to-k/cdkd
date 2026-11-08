@@ -304,7 +304,7 @@ export class LambdaUrlProvider implements ResourceProvider {
     // changed: once the early return above is passed, `AuthType` goes out on
     // the `UpdateFunctionUrlConfig` below, so it is always pending. The refusal
     // is DOWNGRADED to a warning (issue #1551) only for the two state-borne
-    // callers: `rollback-executor.ts`'s revert arms (`replayingState`) replay
+    // callers: `rollback-executor/replay-revert.ts`'s and `replay-failed.ts`'s revert arms (`replayingState`) replay
     // `update(..., previousState.properties, ...)` and `cdkd drift --revert`
     // (`desiredFromAwsReadback`) does the same with a readback, so their bag
     // is one the user cannot edit from the template. A hard refusal there

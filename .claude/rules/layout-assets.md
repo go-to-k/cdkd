@@ -37,7 +37,7 @@ paths:
   "no transposable adjacent same-typed pair", not "both twins look alike".
   **That invariant is stated for the RESOLVER BOUNDARY — the functions that
   turn a manifest-supplied string into a real path — and it holds there**:
-  `resolveAssetCodeDirectory` in `src/local/lambda-resolver.ts` carried the
+  `resolveAssetCodeDirectory` in `src/local/lambda-resolver/asset-code.ts` carried the
   same pair on the same decision, for a value that gets bind-mounted, and took
   the whole call into an `AssetCodeResolveOptions` bag
   ([#3549](https://github.com/go-to-k/cdkd/issues/3549)).

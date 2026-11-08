@@ -33,7 +33,7 @@ import { type LegacyStateProbe, legacyProbeBelongsTo, isNoSuchKey } from './shar
  * rather than inventing a second one — and a divergence means the record was
  * written by something that is not cdkd.
  *
- * It is not cosmetic. `region` is what `destroy-runner.ts` locks, saves and
+ * It is not cosmetic. `region` is what `destroy-runner/run.ts` and `under-lock.ts` lock, saves and
  * `deleteState`s against (`state.region ?? ctx.baseRegion`), and what
  * `DeleteContext.expectedRegion` carries so a provider can tell "the
  * resource is genuinely gone" from "I looked in the wrong region"

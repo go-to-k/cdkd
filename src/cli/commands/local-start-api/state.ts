@@ -46,8 +46,8 @@ export interface StackStateBundle {
  * CFn intrinsic (non-primitive). Used to gate the pseudo-parameter STS
  * hop inside the `--from-state` flow: literal-only env maps don't need
  * the pseudo-parameter bag and shouldn't pay for an STS call. Mirrors
- * the same gating in `local-invoke.ts` (`envHasIntrinsicValue`) and
- * `ecs-task-resolver.ts` (`containerHasIntrinsicEnvOrSecret`).
+ * the same gating in `local-invoke/template-env.ts` (`envHasIntrinsicValue`) and
+ * `ecs-task-resolver/needs.ts` (`containerHasIntrinsicEnvOrSecret`).
  */
 export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | undefined): boolean {
   if (!templateEnv) return false;

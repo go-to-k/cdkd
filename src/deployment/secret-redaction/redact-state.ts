@@ -38,7 +38,7 @@ import { physicalNameCopiesOf, physicalNameSpans } from './physical-name-copies.
  * {@link flattenEmbeddedNoEchoLeaves}.
  *
  * `bagIsSameGeneration` is the writer's claim that `bag` is THIS pass's own
- * resolution of `source` (see {@link markSameGenerationBag} for what it
+ * resolution of `source` (see `markSameGenerationBag` for what it
  * licenses). It defaults to `false`, the safe direction: unclaimed, a sub-floor
  * embedded secret keeps the value scan's answer. The walk never reads a mark
  * off the bag (go-to-k/cdkd#5047); `redactForState` and `redactAtProvenance`
@@ -133,7 +133,7 @@ function redactSecretsForStatePasses<T>(
     //
     // `secrets`, NOT the derived map, and this is the one line where the
     // distinction can turn a fix into a disclosure. The refusal pass reads its
-    // map for exactly one decision — {@link mixedLeafMayCarryPublicReference} —
+    // map for exactly one decision — `mixedLeafMayCarryPublicReference` —
     // and that predicate SPLITS on whether a map exists: a non-empty map means
     // "a resolution pass ran, so absence from the verdict store is evidence of
     // a PUBLIC parameter, keep the resolved value". A DERIVED map satisfies
@@ -386,7 +386,7 @@ function redactSecretsForStatePasses<T>(
       // {@link spanNamesResolvableService}.
       if (isSingleDynamicReferenceToken(value) && spanNamesResolvableService(value)) return value;
       // No needle can be a token-shaped plaintext either: the shortest possible
-      // `{{resolve:x}}` is far longer than {@link MIN_NEEDLE_LENGTH}, so an
+      // `{{resolve:x}}` is far longer than `MIN_NEEDLE_LENGTH`, so an
       // absent regex means nothing in this leaf can be rewritten at all.
       if (!regex) return value;
       // `.test` on a `/g` pattern ADVANCES `lastIndex`, so it is reset before

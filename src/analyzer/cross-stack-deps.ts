@@ -22,7 +22,7 @@ export interface CrossStackScanStack {
  *   unselected producer into the deploy.
  *
  * See `docs/cross-stack-references.md` (strong) and
- * `src/types/state.ts` `outputReads` (weak) for the full semantics.
+ * `src/types/state/stack-state.ts` `outputReads` (weak) for the full semantics.
  */
 export type CrossStackRefKind = 'ImportValue' | 'GetStackOutput';
 

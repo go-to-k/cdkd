@@ -281,7 +281,7 @@ grep -q '"inlineEcho":{"hi":"there"}' <<<"${RESULT_5}" || {
 # Test 6 — the container's own AWS_REGION arrives CANONICAL (issue #1836)
 #
 # COVERAGE LIMIT, stated rather than implied: this arm exercises the DEFAULT
-# credential path only (`forwardAwsEnv` in src/cli/commands/local-invoke.ts).
+# credential path only (`forwardAwsEnv` in src/cli/commands/local-invoke/credentials.ts).
 # The `--assume-role` STS chain is deliberately NOT exercised here — it needs a
 # real assumable IAM role, and this fixture deploys nothing to AWS at all. That
 # chain is covered by the feared-shape unit assertions in

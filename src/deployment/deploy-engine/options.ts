@@ -159,7 +159,7 @@ export interface DeployEngineOptions {
   /**
    * Secrets the PARENT already resolved on this child's behalf (issue
    * [#1903](https://github.com/go-to-k/cdkd/issues/1903)) — the seed map
-   * `NestedStackProvider` hands the child {@link DeployEngine} it builds.
+   * `NestedStackProvider` hands the child `DeployEngine` it builds.
    *
    * WHY A CHILD ENGINE NEEDS ONE AT ALL. cdkd's secret redaction rests on the
    * resolver recording `plaintext -> {{resolve:...}} expression` into

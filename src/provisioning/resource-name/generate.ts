@@ -96,7 +96,7 @@ export const PATTERN_B_NAME_OPTIONS: Readonly<Record<string, ResourceNameOptions
  * with nothing drifted. Neither the prefix flag nor the stack a deploy ran
  * under is recorded, so both settings are tried, through the same
  * sanitize / truncate pipeline the provider ran. Call it inside the stack's
- * {@link withStackScope}: with no stack name in scope the prefixed arm
+ * `withStackScope`: with no stack name in scope the prefixed arm
  * derives the bare name, and only a sanitize rewrite (`my_role` -> `my-role`)
  * is recognized.
  *

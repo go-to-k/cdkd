@@ -49,7 +49,7 @@ export async function resolveGetAZs(
    *
    * When the template names a region explicitly, THAT is the region to talk
    * to. Otherwise fall back to the resolver's own — but only when it was
-   * given explicitly (see {@link explicitRegion}).
+   * given explicitly (see `explicitRegion`).
    */
   let clientRegion: string | undefined;
   // How `region` is printed (issue #3150): a template-supplied region takes
@@ -88,7 +88,7 @@ export async function resolveGetAZs(
       // — a measured 80-character secret printed its first 64 characters at
       // default verbosity with the needle recorded and a boundary mask
       // applied. Masking the RAW value also reaches the whole-value arm,
-      // which has no {@link MIN_NEEDLE_LENGTH} floor.
+      // which has no `MIN_NEEDLE_LENGTH` floor.
       throw markNonRetryable(
         new Error(
           // `the value` LEADS the clause: after `: ` a quoted value would be

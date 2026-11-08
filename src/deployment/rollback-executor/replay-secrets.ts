@@ -112,8 +112,8 @@ export class ReplayResolvers {
  * The refusal an `ambiguous` replay reference throws (issue #2057).
  *
  * A plain throw, like the final-snapshot refusals in `names.ts` and for the same
- * reason: the per-op catch in {@link replaySingle} /
- * {@link replayFailedOperations} counts it as a failure, which keeps the
+ * reason: the per-op catch in `replaySingle` /
+ * `replayFailedOperations` counts it as a failure, which keeps the
  * journal segment and lets the user re-run once the reference is disambiguated
  * (a failed-CREATE orphan's content-checked delete settles instead, since it
  * re-resolves the journaled bag as it is, go-to-k/cdkd#4612).

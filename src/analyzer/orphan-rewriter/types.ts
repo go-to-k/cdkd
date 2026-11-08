@@ -7,7 +7,7 @@ import type { StackState } from '../../types/state.js';
  *
  * - `kind: 'ref'` — a `{Ref: O}` was replaced with the value CFn's `Ref`
  *   returns for O (its physicalId for most types; see
- *   {@link cfnRefValueFromPhysicalId} for the exceptions).
+ *   `cfnRefValueFromPhysicalId` for the exceptions).
  * - `kind: 'getAtt'` — a `{Fn::GetAtt: [O, attr]}` (array OR string form)
  *   was replaced with the attribute value: the recorded one when servable,
  *   otherwise a live read.
@@ -57,7 +57,7 @@ export interface UnresolvableReference {
 }
 
 /**
- * Result of {@link rewriteResourceReferences}.
+ * Result of `rewriteResourceReferences`.
  *
  * `state` is a brand-new `StackState` value (input is not mutated). When
  * `unresolvable` is non-empty the caller decides whether to abort

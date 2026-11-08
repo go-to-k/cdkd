@@ -11,8 +11,8 @@
  * cdkd's own code: cdkd has no runtime dependency on a CDK library.
  * `tests/unit/analyzer/security-changes-parity.test.ts` runs both over the same
  * templates (the package is a devDependency for that alone) and
- * its last case holds {@link RESOURCE_SCRUTINY} /
- * {@link PROPERTY_SCRUTINY} to the service-spec database they were read from.
+ * its last case holds `RESOURCE_SCRUTINY` /
+ * `PROPERTY_SCRUTINY` to the service-spec database they were read from.
  */
 
 import { propertyScrutinies, resourceScrutiny } from './security-changes/scrutiny.js';

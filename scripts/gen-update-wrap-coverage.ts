@@ -21,7 +21,7 @@
  * -------------------------------------------
  * A wrap that swallows cdkd's OWN typed errors is its own defect. The deploy
  * engine matches {@link ResourceUpdateNotSupportedError} BY CLASS to fall back
- * to replacement (`deploy-engine.ts`'s `updateError instanceof
+ * to replacement (`deploy-engine/update-in-place/replace-fallback.ts`'s `updateError instanceof
  * ResourceUpdateNotSupportedError`), so a `catch` that re-labels it as a
  * `ProvisioningError` silently turns a recoverable class change into a hard
  * failure. PR #1268 hit exactly this on `LogsLogGroupProvider`. So a wrapping
@@ -125,8 +125,8 @@ const OUT_MD = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.md');
  * guard actually COVERS.
  *
  * `ProvisioningError` and `ResourceUpdateNotSupportedError` are SIBLINGS — both
- * extend `CdkdError`, neither extends the other (`src/utils/error-handler.ts`
- * :85 / :248). So `if (error instanceof ProvisioningError) throw error;` does
+ * extend `CdkdError`, neither extends the other (`src/utils/error-handler/`
+ * `base-errors.ts` / `deploy-errors.ts`). So `if (error instanceof ProvisioningError) throw error;` does
  * NOT re-throw a `ResourceUpdateNotSupportedError`. Treating the guard set as a
  * flat "any of these counts" list silently accepted exactly that mismatch: a
  * provider guarding only `ProvisioningError` while its try can raise the

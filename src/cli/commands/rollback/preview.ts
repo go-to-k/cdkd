@@ -35,7 +35,7 @@ import type { RollbackOptions } from './options.js';
 
 /**
  * What {@link printRollbackPlanSegments} reads from the enclosing
- * {@link runRollbackReplay} call.
+ * `runRollbackReplay` call.
  */
 export interface RollbackPlanPreviewContext {
   journal: RollbackJournal;
@@ -224,7 +224,7 @@ export async function previewNestedChildRevert(
 /**
  * Will the replay REFUSE this planned Snapshot delete instead of performing
  * it (issue #1368)? The preview must not unwind a record for an op that
- * never runs — the same question {@link snapshotNote} answers for the label,
+ * never runs — the same question `snapshotNote` answers for the label,
  * asked with the same predicate and the same route, so the label and the
  * previewed state cannot disagree.
  */

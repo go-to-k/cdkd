@@ -251,7 +251,7 @@ export async function deleteImpl(
   //
   //  - Interrupted: the child stopped early because the user pressed
   //    Ctrl-C, and a retry would start a FRESH child destroy with the
-  //    interrupt forgotten (`destroy-runner.ts` reads `lock.interrupted`
+  //    interrupt forgotten (`destroy-runner/delete-resource.ts` reads `lock.interrupted`
   //    from a per-INVOCATION stack-lock guard) — resuming work the user
   //    just aborted.
   //  - NOT interrupted: a whole-child re-destroy COULD heal a resource that

@@ -16,7 +16,7 @@ import { isTypeChangeOp } from './classify.js';
 /**
  * Classify what reverting a FAILED in-flight op (issue #1198) will do
  * against the current state, without touching AWS. Pure — used by both the
- * command's `--revert-failed` plan preview and {@link replayFailedOperations}.
+ * command's `--revert-failed` plan preview and `replayFailedOperations`.
  */
 export function classifyFailedOp(
   op: FailedOperation,

@@ -4,7 +4,7 @@ import { displayIdent, isPasteableIdent } from '../../../utils/display-safe.js';
 import { commandHole, pasteableCommand, shellQuote } from '../../../utils/pasteable-command.js';
 
 /**
- * The remedy clause of {@link refuseRedactedAttributeReads}'s import arm,
+ * The remedy clause of `refuseRedactedAttributeReads`'s import arm,
  * derived from the `reads` entries rather than described in prose.
  *
  * `ResolverContext.redactedAttributeReads` is HETEROGENEOUS, and the split
@@ -88,7 +88,7 @@ export function maskedRecordRemedyFor(
   reads: readonly RedactedAttributeRead[],
   resources: Record<string, { readonly resourceType?: string }>,
   /**
-   * True only from {@link refuseRedactedAttributeReads}, whose message numbers
+   * True only from `refuseRedactedAttributeReads`, whose message numbers
    * its causes: the re-import lead-ins then say they are for cause (3), and
    * the custom-resource arm points back at cause (1). `refuseMaskedOutputReads`
    * lists no causes and reaches only `ref-state-key` reads, where a re-import

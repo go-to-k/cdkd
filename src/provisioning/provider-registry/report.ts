@@ -22,7 +22,7 @@ import {
  * `--allow-unsupported-properties` (forced SDK path, the property will
  * be dropped). Does not mutate state; throws ONLY for the CC-route
  * viability guard (un-allowed SDK-unwired properties on a type Cloud Control cannot
- * manage — see {@link buildUnroutableSdkUnwiredMessage}).
+ * manage — see `buildUnroutableSdkUnwiredMessage`).
  *
  * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
  * pre-v0.16x throw path: SDK-unwired properties are now a routing signal, not an
@@ -417,7 +417,7 @@ export function reportUnrecognizedProperties(
  * Pure-functional discovery of every resource whose template uses one or
  * more SDK-unwired properties that are NOT in the
  * `--allow-unsupported-properties` allow set — i.e. every resource that
- * {@link getProviderFor} would auto-route via Cloud Control. Returned
+ * `getProviderFor` would auto-route via Cloud Control. Returned
  * entries carry the SDK-unwired property names so plan / diff renderers
  * can show `[via CC API: Body]`.
  *

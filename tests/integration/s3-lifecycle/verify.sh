@@ -570,8 +570,8 @@ assert_gone_eventually "phase 0 teardown: ${XR_ARM_BUCKET} survived cleanup in $
 # one. That is the defect's actual premise: a record written by a cdkd build
 # from before the guards existed, whose `physicalId` names a bucket that is ours
 # but lives elsewhere (a cdkd-GENERATED name carries no region or account --
-# `src/provisioning/resource-name.ts:240` builds `{stackName}-{name}`, and the
-# prefix is dropped only when BOTH halves of `:239` hold, a user-supplied name
+# `src/provisioning/resource-name/generate.ts:249` builds `{stackName}-{name}`, and the
+# prefix is dropped only when BOTH halves of `:248` hold, a user-supplied name
 # AND an active `getCurrentSkipPrefix()` -- so the same stack deployed to two
 # regions produces the same bucket name). It also leaves the CDK app completely untouched, so every
 # other phase synthesizes exactly the stack it always did.

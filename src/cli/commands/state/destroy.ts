@@ -211,7 +211,7 @@ async function stateDestroyCommand(
 
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
   // through the destroy-runner's graceful-SIGINT drain (issue #816). Guarded
-  // against a throw for the same reason as the twin in `destroy.ts` — which
+  // against a throw for the same reason as the twin in `destroy/command.ts` — which
   // also records why the interrupt SCOPE half is unwound inside the helper.
   let unforwardSigterm: () => void;
   try {
@@ -264,14 +264,14 @@ async function stateDestroyCommand(
     // Set true when a per-stack destroy was gracefully interrupted (issue
     // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
-    // Issue #2117 — see the twin in `destroy.ts` for why the loop and the exit
+    // Issue #2117 — see the twin in `destroy/command.ts` for why the loop and the exit
     // code ask the COMMAND-level question instead, why this stays a call
     // rather than becoming a local, and why the `interrupted ||` disjunct is
     // kept rather than folded into the watch (it fences the CALLEE's reported
     // outcome, which a probe showed is not subsumed).
     const runInterrupted = (): boolean => interrupted || interruptWatch.interrupted();
     // Set only where a `break` leaves at least one target UNPROCESSED — see
-    // the twin in `destroy.ts` for why the exit code asks this rather than
+    // the twin in `destroy/command.ts` for why the exit code asks this rather than
     // `runInterrupted()` (a signal in the run's tail must not report a
     // completed destroy as unfinished).
     let stoppedEarly = false;
@@ -415,7 +415,7 @@ async function stateDestroyCommand(
         }
 
         // Issue #2117 — the last check before any delete is issued; see the
-        // twin in `destroy.ts`. Unconditionally `stoppedEarly`: THIS target is
+        // twin in `destroy/command.ts`. Unconditionally `stoppedEarly`: THIS target is
         // the one left undestroyed, whether or not any follow it.
         if (runInterrupted()) {
           stoppedEarly = true;
@@ -564,7 +564,7 @@ async function stateDestroyCommand(
         totalOrphanSkips += result.journaledOrphanSkips;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
-        // Issue #2117: read LIVE — see the twin in `destroy.ts`. `stoppedEarly`
+        // Issue #2117: read LIVE — see the twin in `destroy/command.ts`. `stoppedEarly`
         // only when a target of THIS stack actually remains; the outer break
         // below decides the same question for the remaining stacks.
         if (runInterrupted()) {
@@ -600,7 +600,7 @@ async function stateDestroyCommand(
       // preserved (trimmed), and the lock was released. Surface a non-zero
       // exit so scripts / CI see the destroy did not complete.
       //
-      // NOT `runInterrupted()` — see the twin in `destroy.ts`: a signal in the
+      // NOT `runInterrupted()` — see the twin in `destroy/command.ts`: a signal in the
       // tail of a run that destroyed every target must not report unfinished
       // work there is none of.
       throw new PartialFailureError(

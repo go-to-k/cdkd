@@ -24,13 +24,13 @@ export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  * child's PARAMETER NAME (issue
  * [#2291](https://github.com/go-to-k/cdkd/issues/2291)).
  *
- * WHY A THIRD STORE, when {@link crossStackAssociations} already holds
+ * WHY A THIRD STORE, when `crossStackAssociations` already holds
  * per-leaf associations. This one is OUTBOUND: it is written against the
  * PARENT's bag and describes leaves of the CHILD's template, so it has to be
  * transported across the engine boundary before any reader can use it. The
  * child's per-resource bag then receives those entries as ORDINARY
- * {@link crossStackAssociations} rows (see
- * {@link inheritNestedStackParameterAssociations}), which is what lets the
+ * `crossStackAssociations` rows (see
+ * `inheritNestedStackParameterAssociations`), which is what lets the
  * existing three-condition reader answer for them with no new arm.
  *
  * KEEPING THE TWO TABLES SEPARATE IS LOAD-BEARING, not tidiness. A child engine
@@ -44,7 +44,7 @@ export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  * impossible rather than unlikely.
  *
  * A `WeakMap` keyed by the parent pass's own bag, for the reason
- * {@link crossStackAssociations} gives: the entries hold PLAINTEXT, and they
+ * `crossStackAssociations` gives: the entries hold PLAINTEXT, and they
  * must not outlive the pass that fetched them.
  */
 export const nestedStackParameterExpressions = new WeakMap<
@@ -62,11 +62,11 @@ export const nestedStackParameterExpressions = new WeakMap<
  * reader asks a different question: that table certifies a value that IS a
  * recorded plaintext (or the sub-floor carry's entry), this one a value that
  * merely CONTAINS plaintexts, by re-rendering the spelling
- * ({@link rendersLiteralTo}). It is never inherited into the child's
- * {@link crossStackAssociations}, whose readers require a whole plaintext; it is
- * read only through {@link renderedParameterSpelling}: by
- * {@link inheritedParameterExpression} (the diff side, a `{Ref}` leaf, the
- * carry) and by {@link inheritedRenderedSpan} (a child leaf EMBEDDING the
+ * (`rendersLiteralTo`). It is never inherited into the child's
+ * `crossStackAssociations`, whose readers require a whole plaintext; it is
+ * read only through `renderedParameterSpelling`: by
+ * `inheritedParameterExpression` (the diff side, a `{Ref}` leaf, the
+ * carry) and by `inheritedRenderedSpan` (a child leaf EMBEDDING the
  * parameter, which the diff side renders from that same binding). A name
  * recorded twice against a different entry is POISONED rather than
  * overwritten.
@@ -77,7 +77,7 @@ export const renderedParameterSpellings = new WeakMap<
 >();
 
 /**
- * Condition (iv)'s key (see {@link recordNestedStackParameterExpressions}) for
+ * Condition (iv)'s key (see `recordNestedStackParameterExpressions`) for
  * a `Parameters` spelling that is not a single-span literal frame of its
  * resolved value carrying this pass's pair for its token: an object source, a
  * plain literal, a two-span literal, a bag equal to its source, and a frame

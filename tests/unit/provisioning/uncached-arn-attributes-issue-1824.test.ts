@@ -673,7 +673,7 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
     it('DEGRADES an update by dropping Arn while KEEPING the freshly-sent Type / Value', async () => {
       // The deliberate half of the trade-off `buildParameterArn`'s note records.
       // An update result's `attributes` REPLACE the state record's
-      // (`deploy-engine.ts`: `result.attributes ?? (wasReplaced ? undefined :
+      // (`deploy-engine/update-in-place.ts`: `result.attributes ?? (wasReplaced ? undefined :
       // currentResource.attributes)`), so a degraded update has exactly two
       // options and BOTH cost something:
       //

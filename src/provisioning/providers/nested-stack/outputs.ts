@@ -198,7 +198,7 @@ export async function readChildOutputsAsAttributes(
  *
  * It is NOT answered for every reader of `ResourceState.attributes` in the
  * codebase, and an earlier revision of this note claimed it was.
- * `AttributeFetcher.cacheFallback` in `src/analyzer/orphan-rewriter.ts` reads
+ * `AttributeFetcher.cacheFallback` in `src/analyzer/orphan-rewriter/attribute-fetcher.ts` reads
  * `orphan.attributes?.[attribute]` directly under `cdkd orphan --force` and
  * has no resolver context to re-resolve with, so it splices the token
  * verbatim into the referring resource's state and warns about exactly that.

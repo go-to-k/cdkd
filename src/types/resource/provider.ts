@@ -187,7 +187,7 @@ export interface ResourceProvider {
    *   template-side remedy (issue #1463). See `CreateContext` in
    *   this file for the full contract, and `docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards`
    *   for when a refusal is allowed at all. It ALSO carries `maskSecrets` (see
-   *   {@link SecretMaskingContext}) — a provider that interpolates a resolved
+   *   `SecretMaskingContext`) — a provider that interpolates a resolved
    *   property value into a log line MUST run the message through it.
    * @returns Physical resource ID and attributes
    */
@@ -206,7 +206,7 @@ export interface ResourceProvider {
    * @param properties Updated properties
    * @param previousProperties Previous properties (for comparison)
    * @param context Where the DESIRED bag came from — see {@link UpdateContext}
-   *   — plus `maskSecrets` (see {@link SecretMaskingContext}), which a provider
+   *   — plus `maskSecrets` (see `SecretMaskingContext`), which a provider
    *   that interpolates a resolved property value into a log line MUST run the
    *   message through. The update path carries the same resolved bag as
    *   `create()`, so the requirement is identical on both.
@@ -232,7 +232,7 @@ export interface ResourceProvider {
    *   `NotFound` as idempotent success when the AWS client's region does not
    *   match the region the resource was deployed to. See
    *   `src/provisioning/region-check.ts` for the shared verification helper.
-   *   Also `maskSecrets` (see {@link SecretMaskingContext}), which a provider
+   *   Also `maskSecrets` (see `SecretMaskingContext`), which a provider
    *   applies to any line naming a bag value or the physical id.
    * @returns Nothing (back-compat: means the resource was deleted), or a
    *   {@link ResourceDeleteResult} when the provider needs to say it did NOT
@@ -284,7 +284,7 @@ export interface ResourceProvider {
    * resource. This mirrors the optional `import` method: providers add
    * support incrementally without forcing a sweep across the whole tree.
    *
-   * Returns {@link RESOURCE_NOT_FOUND} when AWS reports the resource does not
+   * Returns `RESOURCE_NOT_FOUND` when AWS reports the resource does not
    * exist, which `cdkd drift` reports as `deleted` (go-to-k/cdkd#4283) — never
    * `undefined` for that case.
    *
@@ -307,7 +307,7 @@ export interface ResourceProvider {
    *                   via `Roles: [role]` / `Users: [u]` / `Groups: [g]`).
    *                   Most providers ignore it.
    * @returns AWS-current properties scoped to the provider's managed set,
-   *          {@link RESOURCE_NOT_FOUND} when the resource is gone, or
+   *          `RESOURCE_NOT_FOUND` when the resource is gone, or
    *          `undefined` when not implemented
    */
   readCurrentState?(
@@ -428,7 +428,7 @@ export interface ResourceProvider {
    * Build it from an immutable AWS-generated id where the type has one (an
    * RDS `DbClusterResourceId`), else from the ARN plus the creation time,
    * since a name-built ARN alone repeats when the name is reused. Return
-   * {@link RESOURCE_NOT_FOUND} only on AWS's not-found answer, and `undefined`
+   * `RESOURCE_NOT_FOUND` only on AWS's not-found answer, and `undefined`
    * whenever the read cannot name the resource: an id form the provider does
    * not recognise, a client in another region than `expectedRegion`, a
    * response without the fields. Errors may throw; callers treat a throw as
@@ -484,7 +484,7 @@ export interface ResourceProvider {
    * safe on a historical record it did not produce.
    *
    * Implement it if — and only if — the provider returns
-   * {@link EffectivePropertiesResult.effectiveProperties}: the two are halves
+   * `EffectivePropertiesResult.effectiveProperties`: the two are halves
    * of one decision. `effectiveProperties` makes STATE describe what AWS holds;
    * this makes the comparison describe the same thing, so the narrowing does
    * not read back as a change the user made. With only the first half, the

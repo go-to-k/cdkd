@@ -58,7 +58,7 @@ import { replayReverseReplacement } from './replay-reverse-replacement.js';
  * - `afterOp` is invoked after each op that MUTATED state (so the command can
  *   persist state incrementally, mirroring `saveStateAfterResource`).
  *   Standalone `cdkd rollback` and a nested child's journal replay
- *   (`nested-child-journal.ts`) pass one; `performRollback` (`deploy-engine/rollback.ts`)
+ *   (`nested-child-journal.ts`) pass one; `performRollback` (`deploy-engine/rollback/perform.ts`)
  *   passes none, and its caller saves state once at the end.
  * - `isInterrupted` is polled between ops; when it flips true, replay stops
  *   (the pending op is left for a re-run).
@@ -141,7 +141,7 @@ export async function replayRollbackUnbound(
   // ONE resolver for the whole replay, mirroring `replayFailedOperations`.
   // It re-resolves the redacted `{{resolve:secretsmanager:...}}` expressions the
   // journal / state store back to the concrete secret for the provider replay
-  // (GHSA fix) — see {@link resolveReplayProps}.
+  // (GHSA fix) — see `resolveReplayProps`.
   //
   // Hoisted out of `replaySingle` by issue #1933: that fix moved the resolved-
   // value cache from module scope onto the resolver INSTANCE, so a resolver per
@@ -347,13 +347,13 @@ export async function replaySingle(
    * The caller's resolver, SHARED across every op of the replay (issue #1933).
    * Constructing one here would cost a fresh secret lookup per op now that the
    * resolved-value cache lives on the instance — see the construction site in
-   * {@link replayRollback}.
+   * `replayRollback`.
    */
   resolver: ReplayResolvers,
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
   onOrphan: ((record: StackOrphanRecord) => void) | undefined,
-  /** go-to-k/cdkd#4225: the replay's completed writes ({@link replayRollback}). */
+  /** go-to-k/cdkd#4225: the replay's completed writes (`replayRollback`). */
   inlinePolicyWriters: RollbackInlinePolicyWriters,
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean,
@@ -366,7 +366,7 @@ export async function replaySingle(
   const { logger } = ctx;
   /**
    * This op's `plaintext -> {{resolve:...}}expression` bag, filled by
-   * {@link resolveReplayProps} on whichever arm runs (issues
+   * `resolveReplayProps` on whichever arm runs (issues
    * [#2038](https://github.com/go-to-k/cdkd/issues/2038) /
    * [#2031](https://github.com/go-to-k/cdkd/issues/2031)).
    *

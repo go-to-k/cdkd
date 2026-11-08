@@ -596,7 +596,7 @@ describe('buildCrossStackResolver', () => {
   /**
    * Issue [#1836](https://github.com/go-to-k/cdkd/issues/1836) review fix 6: the
    * index-miss fallback's same-region filter was a raw `!==`, and
-   * `consumerRegion` is the state RECORD's own spelling (`local-invoke.ts` passes
+   * `consumerRegion` is the state RECORD's own spelling (`local-invoke/command.ts` passes
    * `loaded.region`). `loadStateForStack`'s exact-then-folded match makes an
    * upper-cased record reachable, so an upper-cased consumer record made the
    * filter skip EVERY ref — the fallback resolved nothing and each affected env

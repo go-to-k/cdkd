@@ -174,7 +174,7 @@ export function scrubResourceRecord<
         //
         // So the arm asks the question those two answer by construction: is
         // this bag one THIS RUN PRODUCED? The caller's `claims.observed`
-        // answers it — the deploy engine states {@link markSameGenerationBag}'s
+        // answers it — the deploy engine states `markSameGenerationBag`'s
         // mark there — and the mark is put on precisely the bag the refusal
         // exists for — `DeployEngine.observedCapture.drainObservedCaptures` marks EVERY drained
         // READBACK, and it is the only writer of `observedProperties` on the

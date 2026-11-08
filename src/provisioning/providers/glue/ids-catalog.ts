@@ -225,7 +225,7 @@ export function catalogIdForApi(value: unknown): string | undefined {
  * `as string | undefined` cast: the deploy engine resolves intrinsics before
  * the provider sees them, so guarding there is the separate issue-#1513
  * decision that #1651 already recorded. The one residual is a rollback replay
- * (`rollback-executor.ts` calls `update(..., previousState.properties, ...)`),
+ * (`rollback-executor/replay-revert.ts` calls `update(..., previousState.properties, ...)`),
  * where an IMPORTED stack's raw bag does reach the update path — narrow enough
  * to leave to #1513 rather than widen this change into the deploy path.
  */

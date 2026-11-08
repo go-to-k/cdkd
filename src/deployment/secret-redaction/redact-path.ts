@@ -177,7 +177,7 @@ export function redactByPath(
       // comment said: a needle that STRADDLES or CONTAINS a span does consume
       // span text, deliberately, because refusing it left the plaintext in
       // state. The exception is about a match SHORTER than the span it sits
-      // in — see {@link scanLeaf}'s own table. Both guards are still spelled
+      // in — see `scanLeaf`'s own table. Both guards are still spelled
       // out, and neither may be removed by editing only the other: each has its
       // own probe.
       //
@@ -449,7 +449,7 @@ export function redactByPath(
   // `hasPlainPrototype` for issue
   // [#2869](https://github.com/go-to-k/cdkd/issues/2869): this is the FIRST of
   // the two position walks, so a `Date` an AWS readback carries reached here
-  // before {@link refuseUncertifiedReadbackPositions} ever saw it, and
+  // before `refuseUncertifiedReadbackPositions` ever saw it, and
   // `Object.entries(new Date())` being `[]` rebuilt it as `{}` — a baseline AWS
   // never reported, which `cdkd drift --revert` can push. Guarding only the
   // second walk moved the flattening rather than removing it (measured: the
@@ -457,7 +457,7 @@ export function redactByPath(
   // divergence arm below, whose value scan returns a `Date` BY IDENTITY — on
   // the empty-map readback paths trivially, and with a POPULATED map since
   // issue [#2427](https://github.com/go-to-k/cdkd/issues/2427) (see
-  // {@link isOrdinaryDate}).
+  // `isOrdinaryDate`).
   if (isPlainObject(bag) && hasPlainPrototype(bag) && isPlainObject(source)) {
     // `Object.create(null)` (issue #1943's class): `JSON.parse` of an AWS
     // readback can produce an OWN `__proto__` key, and `out[k] = ...` on a

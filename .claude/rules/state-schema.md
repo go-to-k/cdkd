@@ -78,7 +78,7 @@ Neither field hashes a secret-derived value. The input field is SEPARATE so an o
 
 `outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`).
 
-Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
+Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state/helpers.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
 
 ## `stackInstanceId` and name generations (v13+, #5064)
 

@@ -323,7 +323,7 @@ export interface UpdateContext extends SecretMaskingContext {
    * Issue #1160: the top-level properties the previous TEMPLATE declared and
    * the desired one omits, computed once by the caller
    * (`prepareRemovalForUpdate`, `src/provisioning/update-removal.ts`), which
-   * has ALREADY injected each one {@link ResourceProvider.removalDefaults}
+   * has ALREADY injected each one `ResourceProvider.removalDefaults`
    * declares into the desired bag. Set by every `update()` caller: the deploy's
    * in-place UPDATE, both rollback revert arms (state record vs state record),
    * and `drift --revert`, where it is EMPTY: its previous side is an AWS
@@ -437,7 +437,7 @@ export type InlinePolicyClaimed = (
 /**
  * Context passed to a provider's `create` method (issue #1463).
  *
- * The sibling of {@link DeleteContext}: optional, so a provider that does not
+ * The sibling of `DeleteContext`: optional, so a provider that does not
  * care about it needs no change, and absent means "assume the historical
  * behavior". Unlike `DeleteContext` — which lives in
  * `src/provisioning/region-check.ts` because its `expectedRegion` feeds that

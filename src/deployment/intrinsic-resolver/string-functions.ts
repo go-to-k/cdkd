@@ -361,7 +361,7 @@ export async function resolveSelect(
     // escapes a leaf holding `"` / `\` / a control character, and a needle
     // matches literally — so a mask over the ENCODED text misses exactly the
     // secrets that carry those bytes. Leaf-masking also reaches the
-    // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
+    // whole-value arm, which has no `MIN_NEEDLE_LENGTH` floor.
     `Resolved Fn::Select: index ${loggedPosition} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
   );
   return result;

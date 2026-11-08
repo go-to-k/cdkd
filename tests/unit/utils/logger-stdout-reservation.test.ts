@@ -17,7 +17,7 @@ import {
  * stdout from modules a command's own file does not own — `applyRoleArnIfSet`'s
  * `Assumed role ...` line (`src/utils/role-arn.ts:286`) and
  * `S3StateBackend.saveState`'s legacy-migration notice
- * (`src/state/s3-state-backend.ts:448`) both fire on the `cdkd drift --json`
+ * (`src/state/s3-state-backend/state-record.ts:387`) both fire on the `cdkd drift --json`
  * path through a `child()` logger. The child case below is the one that says
  * those lines are covered; a per-call-site fix in `drift.ts` could not move them
  * at all.

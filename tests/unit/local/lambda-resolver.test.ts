@@ -908,7 +908,7 @@ describe('resolveLambdaTarget', () => {
 
   it('preserves order across multiple literal-ARN layer entries (last-wins relies on order)', () => {
     // PR #491 review MUST-FIX 2: the materialization pass in
-    // `local-invoke.ts` / `local-start-api.ts` walks `lambda.layers`
+    // `local-invoke/image-plan.ts` / `local-start-api/container-spec.ts` walks `lambda.layers`
     // sequentially and `cpSync({force: true})`-merges them in order;
     // AWS's "last layer wins" file-collision semantic ONLY works if the
     // resolver hands us the array in template order. This pins it for

@@ -720,7 +720,7 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     // argument, which is about lockout and which normalising would not
     // break. Keeping it honest about what it costs: today a journal's
     // `provisionedBy` WINS over the state record's at
-    // `rollback-executor.ts`'s `op.provisionedBy ?? current.provisionedBy`,
+    // `rollback-executor/replay-failed.ts`'s `op.provisionedBy ?? current.provisionedBy`,
     // so a planted value beats a `cc-api` record and routes to the SDK. A
     // later change that wants to normalise here must decide that precedence
     // at the same time, which is exactly why this is pinned rather than left

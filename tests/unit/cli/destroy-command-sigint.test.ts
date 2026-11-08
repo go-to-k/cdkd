@@ -124,7 +124,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 }));
 
 /**
- * Issue #2117 pins what `destroy.ts` PASSES to `purgeEventsAfterDestroy`, not
+ * Issue #2117 pins what `destroy/command.ts` PASSES to `purgeEventsAfterDestroy`, not
  * just what that helper does with it. `destroy-purge-events.test.ts` covers the
  * helper against a flag handed in; nothing covered the caller, so reverting the
  * call site to the stale per-stack `interrupted` local passed every suite while

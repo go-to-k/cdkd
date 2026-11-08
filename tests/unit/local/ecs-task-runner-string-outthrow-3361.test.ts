@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 /**
  * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361), the
- * `src/local/ecs-task-runner.ts` slice: `cleanupEcsRun`'s per-step handlers
+ * `src/local/ecs-task-runner/cleanup.ts` slice: `cleanupEcsRun`'s per-step handlers
  * stringified their caught value with `x instanceof Error ? x.message :
  * String(x)`, and `String(Object.create(null))` throws
  * `TypeError: Cannot convert object to primitive value` -- so the handler threw

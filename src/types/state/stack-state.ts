@@ -151,8 +151,8 @@ export interface StackState {
    * nothing. Writers that re-resolve outputs therefore always emit the
    * field, empty included (unlike `imports` / `outputReads`, where absent
    * and empty are the same record); writers that carry a bag forward carry
-   * this field with it, through {@link exportNamesCarriedFrom}. Read
-   * through {@link importableOutputKeys} rather than directly, so the
+   * this field with it, through `exportNamesCarriedFrom`. Read
+   * through `importableOutputKeys` rather than directly, so the
    * legacy rule lives in one place.
    */
   exportNames?: string[];
@@ -195,7 +195,7 @@ export interface StackState {
    * template, drops out) — the no-change path included, even when it keeps
    * the previous bag because an output failed; a failed deploy's partial saves
    * carry `outputs` forward WITHOUT re-resolving and carry this field with it,
-   * through {@link skippedOutputsCarriedFrom}, and a partial-destroy snapshot
+   * through `skippedOutputsCarriedFrom`, and a partial-destroy snapshot
    * carries it through its `...rest` spread, which the next deploy re-decides.
    *
    * Every writer that rebuilds state OUTSIDE a deploy DROPS the field — with
@@ -285,7 +285,7 @@ export interface StackState {
    *
    * Each entry carries the `ResourceState` the rollback discarded, VERBATIM.
    * That is load-bearing: its `properties` are the failed deploy's resolved
-   * TEMPLATE values, which is what {@link DiffCalculator} expects on the old
+   * TEMPLATE values, which is what `DiffCalculator` expects on the old
    * side (`state.properties` holds template values; AWS-observed defaults live
    * in `observedProperties`). Re-adopting from an AWS readback instead would
    * put keys in the bag that the template omits — a generated `RoleName`,
@@ -301,7 +301,7 @@ export interface StackState {
    * this field can drive a STOP, so that downgrade is a stated consequence
    * rather than an assumed-harmless one.
    *
-   * **Every writer must carry it forward through {@link orphansCarriedFrom}.**
+   * **Every writer must carry it forward through `orphansCarriedFrom`.**
    * The `StackState` literals are field-enumerated, so a save that forgets it
    * DELETES the record silently, and the resource becomes untrackable.
    *
@@ -333,7 +333,7 @@ export interface StackState {
    * scrubs it the same way. Additive, so NO schema bump: an older binary
    * drops the field on its next save, which degrades to the pre-#5111
    * behaviour (the old resource left untracked). Carried by every writer
-   * through {@link stackInstanceIdCarriedFrom}. Read through
+   * through `stackInstanceIdCarriedFrom`. Read through
    * `supersededResourcesOf` (`src/deployment/superseded-resources.ts`).
    */
   supersededResources?: SupersededResourceRecord[];
@@ -388,7 +388,7 @@ export interface StackState {
    * written before v13), which stays legacy: nothing mints one for a stack that
    * already has a record. Read through `stackInstanceIdOf`
    * (`src/state/stack-instance-id.ts`); carried by every field-enumerating
-   * writer through {@link stackInstanceIdCarriedFrom}. Never logged.
+   * writer through `stackInstanceIdCarriedFrom`. Never logged.
    */
   stackInstanceId?: string;
 
@@ -400,7 +400,7 @@ export interface StackState {
    * next generation, so a re-added resource never asks for a name an earlier
    * copy held -- CloudFormation's random suffix gives the same guarantee.
    * Written only on a stack with a `stackInstanceId`; carried with it through
-   * {@link stackInstanceIdCarriedFrom}. Read through
+   * `stackInstanceIdCarriedFrom`. Read through
    * `retiredNameGenerationsOf` (`src/state/name-generation.ts`).
    */
   retiredNameGenerations?: Record<string, number>;
@@ -417,7 +417,7 @@ export interface StackState {
    *
    * Additive, NO schema bump (the `orphans` precedent): an older binary drops
    * the field on its next save and does not refuse, a stated consequence.
-   * Carried by every writer through {@link stackInstanceIdCarriedFrom}. Read
+   * Carried by every writer through `stackInstanceIdCarriedFrom`. Read
    * through `pendingMovesOutOf` (`src/state/pending-moves.ts`).
    */
   pendingMovesOut?: PendingMoveOut[];
@@ -432,7 +432,7 @@ export interface StackState {
    *
    * Additive, NO schema bump (the `orphans` precedent): an older binary drops
    * the field on its next save and does not refuse, a stated consequence.
-   * Carried by every non-deploy writer through {@link stackInstanceIdCarriedFrom}.
+   * Carried by every non-deploy writer through `stackInstanceIdCarriedFrom`.
    */
   terminationProtection?: true;
 

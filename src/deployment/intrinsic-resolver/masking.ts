@@ -43,7 +43,7 @@ import {
  * hazard visible at the BINDING rather than at the render: `const x =
  * maskSecretsRaw(resolver, ...)` states that more work is owed.
  *
- * Reachable from ONE place, {@link maskThenStripThenMask}, which is itself
+ * Reachable from ONE place, `maskThenStripThenMask`, which is itself
  * reachable only from {@link displayMasked}. That containment is the whole
  * mechanism. It used to be enforced by an AST walk that resolved an
  * interpolated identifier to its declaration; go-to-k/cdkd#3435 deleted that
@@ -58,7 +58,7 @@ import {
  *
  * A value with a registered LOG TWIN prints as its twin first (issue
  * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). The needle mask
- * matches a secret under {@link MIN_NEEDLE_LENGTH} only as the whole text,
+ * matches a secret under `MIN_NEEDLE_LENGTH` only as the whole text,
  * so a name an `Fn::Sub` assembled around a 1-3 character secret (a map key,
  * a stack or output name, an attribute name, the secret id of a dynamic
  * reference) printed in the clear at every site that handed its RAW value

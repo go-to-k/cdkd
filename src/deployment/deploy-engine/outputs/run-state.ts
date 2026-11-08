@@ -6,7 +6,7 @@ import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolve
 import type { RecordedSecretValues } from '../../secret-redaction.js';
 
 /**
- * What {@link resolveOutputs} / {@link handleOutputResolutionFailure} read
+ * What `resolveOutputs` / `handleOutputResolutionFailure` read
  * from the engine beyond {@link OutputsRunState} — the live engine members,
  * built at each call site as `DeployEngine.outputsDeps()` so a forwarded METHOD
  * (`buildResolverContext`, `noEchoPositionSources`) stays bound to the
@@ -21,7 +21,7 @@ export interface OutputsDeps {
 }
 
 /**
- * One deploy's Outputs-pass state: the ten fields {@link resolveOutputs}, the
+ * One deploy's Outputs-pass state: the ten fields `resolveOutputs`, the
  * no-change merge (`deploy-flow.ts`), the exports-redaction fold
  * (`masking.ts`), the `NoEcho` position scan (`noecho.ts`) and the
  * nested-pending-parent journal snapshot (`rollback.ts`) read and write

@@ -31,8 +31,8 @@
  *    LINE, and there the read ends a line while the TEMPLATE is last — the
  *    rule `.claude/rules/state-malformed-containers.md` states for
  *    go-to-k/cdkd#3516, and a shape this module already serves twice:
- *    `deploy-engine.ts`'s `Inspect it with:` / `Drop the record with:` pair,
- *    and `destroy-runner.ts`'s through `hintFor`. In both, the read command is
+ *    `deploy-engine/delete.ts`'s `Inspect it with:` / `Drop the record with:` pair,
+ *    and `destroy-runner/under-lock-steps.ts`'s through `hintFor`. In both, the read command is
  *    correctly NOT last. Collapsing such a pair onto one line is the defect
  *    that rule names: the read must end a line, and the template must be last
  *    with no substituted value after it.

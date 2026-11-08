@@ -195,7 +195,7 @@ export function malformedStateRefusalMessage(
  * **That remedy is a TEMPLATE, not a substituted command, and the asymmetry
  * with the `cdkd state show` line above it is the point.** `state orphan`
  * DELETES a record; `state show` reads one. The `region` this function is
- * handed comes from `destroy-runner.ts`'s `state.region ?? ctx.baseRegion` —
+ * handed comes from `destroy-runner/run.ts`'s `state.region ?? ctx.baseRegion` —
  * which WAS record-body content `getState` did not check against the key it
  * loaded from, measured 2026-09-17: a record planted at
  * `.../us-east-1/state.json` carrying `"region": "eu-west-1"` rendered a

@@ -139,7 +139,7 @@ export function recordedNameMask(
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
- * `finalSnapshotDelays` in ../final-snapshot.ts). Unit tests stub `sleep`
+ * `finalSnapshotDelays` in ../final-snapshot/shared.ts). Unit tests stub `sleep`
  * so the poll runs without wall-clock delay.
  */
 export const capacityReservationDelays = {

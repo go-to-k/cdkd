@@ -19,7 +19,7 @@ import {
  * point's `observedProperties` walk — the issue-1900 unchanged-resource path,
  * whose bag is a readback `DeployEngine.observedCapture.drainObservedCaptures` just took and
  * installed. That site installs it through `markSameGenerationBag`
- * (`src/deployment/deploy-engine.ts`, the single `observedProperties` writer on
+ * (`src/deployment/deploy-engine/observed-capture.ts`, the single `observedProperties` writer on
  * the deploy path), the persist choke point states that mark as
  * `claims.observed` (go-to-k/cdkd#5047), and since issue
  * [#2906](https://github.com/go-to-k/cdkd/issues/2906) the derivation's

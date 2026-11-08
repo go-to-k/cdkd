@@ -266,7 +266,7 @@ export class AttributeHealer {
  * because a deploy only REPLACES entries of the loaded map, never mutates a
  * record object in place: `deploy-flow.ts` (`currentState.resources[id] =
  * withRebaselinedFingerprints(record, ...)`, which returns `record` or a copy)
- * and `deploy-engine/rollback.ts` (`currentState.resources[id] = record` for an
+ * and `deploy-engine/rollback/adopt-orphans.ts` (`currentState.resources[id] = record` for an
  * adopted orphan); a replaced entry is a new object, so it is judged afresh.
  * A judging bag other than the one the judge was built with (the deploy binds
  * its `NoEcho` values after it loads the map) builds a new judge;

@@ -30,7 +30,7 @@ export interface CachedAccountIdentity {
 
 /**
  * The real account identity, per CREDENTIAL IDENTITY: keyed by
- * {@link credentialFingerprint} of the active `AwsClients`' credential
+ * `credentialFingerprint` of the active `AwsClients`' credential
  * configuration (issue [#3660](https://github.com/go-to-k/cdkd/issues/3660)).
  *
  * Process-wide, and a CLI run has one identity, so for the CLI this holds one
@@ -76,7 +76,7 @@ export interface CachedDynamicReference {
   version?: string;
 }
 
-/** What `namedRequestMasks` (`stack-output.ts`) returns (go-to-k/cdkd#3171). */
+/** What `namedRequestMasks` (`stack-output/name-masks.ts`) returns (go-to-k/cdkd#3171). */
 export interface NamedRequestMasks {
   /** A masked clone of `error` and its whole cause chain; classification survives. */
   error: (error: unknown) => unknown;
@@ -173,7 +173,7 @@ export const cachedEc2InstanceAttributes: Record<string, string> = Object.create
  * so the key names one resource in that region, and the value — a default
  * security group id, a distribution hostname, a security group's VPC —
  * never changes; like the instance cache, a refusal caches nothing. Same
- * process lifetime, cleared together with it by {@link resetAccountInfoCache}.
+ * process lifetime, cleared together with it by `resetAccountInfoCache`.
  * The RDS `DBProxy` / `DBProxyEndpoint` `VpcId` arms have no cache because
  * they have no live read: `AwsClients` exposes no RDS client and this file
  * imports none, so those two arms refuse outright (see

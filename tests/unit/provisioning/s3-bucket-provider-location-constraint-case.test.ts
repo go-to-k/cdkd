@@ -227,7 +227,7 @@ describe('S3BucketProvider create() CreateBucketConfiguration region case (issue
    * awsClients.s3`, and `getRegion()` reads `this.s3Client.config.region()`),
    * so the create goes to that region's REGIONAL endpoint, where an omitted
    * `LocationConstraint` answers `IllegalLocationConstraintException` --
-   * `src/assets/asset-storage.ts:775` states the same rule for the sibling
+   * `src/assets/asset-storage/ensure.ts:221` states the same rule for the sibling
    * call site. The `us-east-1` default is a property of the GLOBAL
    * `s3.amazonaws.com` endpoint, which this path never uses, and a genuinely
    * region-less client THROWS (`Error: Region is missing`) rather than

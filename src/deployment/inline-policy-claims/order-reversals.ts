@@ -53,7 +53,7 @@ function recordInlinePolicyKeys(record: ResourceState | undefined): string[] {
 }
 
 /**
- * go-to-k/cdkd#4821: the rollback twin of {@link orderInlinePolicyWriters}.
+ * go-to-k/cdkd#4821: the rollback twin of `orderInlinePolicyWriters`.
  * A rollback replays a segment's completed updates and replacements one at a
  * time, newest first (`replay`, in that order). Reversing a standalone inline
  * policy's replacement RE-CREATES its old name, which Cloud Control refuses

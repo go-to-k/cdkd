@@ -207,7 +207,7 @@ export interface EcsRunState {
    */
   logStreams: { containerId: string; stream: ContainerLogStream }[];
   /**
-   * Set once {@link cleanupEcsRun} begins: from then on `runEcsTask` creates
+   * Set once `cleanupEcsRun` begins: from then on `runEcsTask` creates
    * nothing more (issue #4495).
    */
   closing?: boolean;
@@ -221,7 +221,7 @@ export interface EcsRunState {
 }
 
 /**
- * One in-flight docker step of {@link runEcsTask}. `settled` never rejects, and
+ * One in-flight docker step of `runEcsTask`. `settled` never rejects, and
  * settles only once what the step created is recorded in the state, where
  * cleanup finds it. `abandon` removes it by its docker name, for a step that
  * does not settle within {@link IN_FLIGHT_STEP_TIMEOUT_MS}.
@@ -244,7 +244,7 @@ export interface InFlightDockerStep {
 }
 
 /**
- * How long {@link cleanupEcsRun} waits for an in-flight docker step before
+ * How long `cleanupEcsRun` waits for an in-flight docker step before
  * removing what it creates by name. `docker run` has no timeout of its own and
  * a terminal ^C does not interrupt it, so a hung daemon would otherwise hold
  * the ^C forever.
@@ -276,7 +276,7 @@ export function createEcsRunState(): EcsRunState {
 }
 
 /**
- * {@link runEcsTask} stopped because {@link cleanupEcsRun} began while it ran
+ * `runEcsTask` stopped because `cleanupEcsRun` began while it ran
  * (a ^C). The caller's cleanup owns the exit; this is not a failure to report.
  */
 export class EcsTaskInterruptedError extends EcsTaskRunnerError {

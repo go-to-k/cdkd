@@ -22,7 +22,7 @@ import { buildResolverContext, type ResolverContextDeps } from './resolver-conte
 import { noEchoPositionSources, type NoEchoDeps } from './noecho.js';
 
 /**
- * A fresh {@link observedCapture} over this engine's deps, for the
+ * A fresh `observedCapture` over this engine's deps, for the
  * constructor and `deploy()`'s per-run reset.
  * @internal
  */

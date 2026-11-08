@@ -56,7 +56,7 @@ export interface ParameterDefinition {
  * ONE predicate, consulted VERBATIM by the two sites that ask this same
  * question, rather than two spellings that agree until they do not:
  *
- *  - {@link IntrinsicFunctionResolver.resolveParameters} raises
+ *  - `IntrinsicFunctionResolver.resolveParameters` raises
  *    `Parameter <name> is required ...` for exactly this population. It is the
  *    UPFRONT validation, and it runs on every path that binds parameters at
  *    all (`deploy-engine`'s step 2.5, `diff-recursive`, `scrub`, `import`), so

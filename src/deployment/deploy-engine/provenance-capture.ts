@@ -69,7 +69,7 @@ export interface ProvenanceCaptureDeps {
  * (go-to-k/cdkd#4847 / go-to-k/cdkd#4852), holding its in-flight tasks keyed
  * by logical id until they are drained with the observed captures before a
  * save. ENGINE-instance state, never module-global, for the same reason as
- * {@link AttributeHealer}: one engine deploys one stack, and
+ * `AttributeHealer`: one engine deploys one stack, and
  * `--stack-concurrency` runs several at once.
  */
 export class ProvenanceCapture {

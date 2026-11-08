@@ -34,18 +34,18 @@ export {
  * by writing that token into the frame the source states (issue
  * [#2745](https://github.com/go-to-k/cdkd/issues/2745)).
  *
- * This is the intrinsic twin of {@link positionByEmbeddedSpan}, and the shape
+ * This is the intrinsic twin of `positionByEmbeddedSpan`, and the shape
  * is the DOMINANT one rather than a corner: `'port:' + secret.secretValueFromJson('pin')`
  * renders the secret ARN as a `Ref`, so CDK emits
  * `{"Fn::Join": ["", ["port:{{resolve:secretsmanager:", {"Ref": ...}, ":SecretString:pin::}}"]]}`
  * — the prefix FUSED into the token's opening part, the `Ref` INSIDE the
  * token. Before this arm such a leaf had no positioning route at all:
- * {@link positionByIntrinsicSkeleton} refuses unless the WHOLE bag is a
- * recorded plaintext (its condition 1), and {@link positionByEmbeddedSpan}
+ * `positionByIntrinsicSkeleton` refuses unless the WHOLE bag is a
+ * recorded plaintext (its condition 1), and `positionByEmbeddedSpan`
  * needs a source STRING to copy its frame from. So it fell to the value scan,
  * which for a 4+ character middle writes the map's SURVIVOR (a same-plaintext
  * sibling's spelling, the #1904 / #2485 class) and for a 1-3 character middle
- * writes NOTHING — {@link buildNeedleRegex} drops it from the alternation —
+ * writes NOTHING — `buildNeedleRegex` drops it from the alternation —
  * and `port:q7` was persisted in plaintext.
  *
  * HOW THE FRAME IS FOUND. The source is rendered to text by
@@ -57,8 +57,8 @@ export {
  * of the `secrets-dynamic-ref` fixture) means the source cannot establish
  * where the middle ends, and the leaf is REFUSED — the nonliteral-frame shape
  * #2745 deliberately defers. Inside the token a placeholder becomes a
- * {@link SKELETON_WILDCARD}, capped by {@link MAX_SKELETON_WILDCARDS} through
- * the same {@link joinSkeletonSegments}, so the token pattern is the skeleton
+ * `SKELETON_WILDCARD`, capped by `MAX_SKELETON_WILDCARDS` through
+ * the same `joinSkeletonSegments`, so the token pattern is the skeleton
  * arm's pattern restricted to the token's own extent.
  *
  * THE EVIDENCE, three checks and each removes a different way of being wrong:
@@ -69,7 +69,7 @@ export {
  *    ({@link resolvedExpressionsOf}; the code says why), and the same
  *    {@link plaintextIndexOf} poisoning rule, with `middle` in the role the
  *    whole bag plays there.
- * 2. THIS PASS resolved that candidate to the middle ({@link recordResolvedPair},
+ * 2. THIS PASS resolved that candidate to the middle (`recordResolvedPair`,
  *    per map instance) — the literal arm's evidence, and what a
  *    shape-plausible expression this pass never resolved to the middle
  *    (another resource's, typically) cannot satisfy. What it does NOT prove
@@ -119,7 +119,7 @@ export {
  *
  * One shape reaches this arm that a reader may not expect, the literal arm's
  * own: a WHOLE-token source, i.e. an EMPTY frame, where the leaf IS the
- * middle. {@link positionByIntrinsicSkeleton} runs first and answers for
+ * middle. `positionByIntrinsicSkeleton` runs first and answers for
  * every such leaf it can; what falls through is its REFUSAL, and this arm
  * re-asks over a wider candidate set — the pair table names a token this pass
  * resolved but never pinned (an `ssm` reference whose type came back

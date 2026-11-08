@@ -65,7 +65,7 @@ describe('the verb table is read off the real Commander tree', () => {
     walk('src');
     // Floor: the census found 17 distinct verbs; a broken scan must not pass.
     // It sees only a LITERAL first argument: a site passing the verb through a
-    // variable (`destroy-runner.ts`'s `hintCommand`) is covered only while its
+    // variable (`destroy-runner/under-lock-steps.ts`'s `hintCommand`) is covered only while its
     // verbs are also spelled literally somewhere, as they are today.
     expect(verbs.size).toBeGreaterThanOrEqual(16);
     const unknown = [...verbs].filter((v) => pasteableVerbFlags(v) === undefined);

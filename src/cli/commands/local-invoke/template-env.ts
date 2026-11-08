@@ -19,7 +19,7 @@ import { type LocalInvokeOptions } from './types.js';
  * CFn intrinsic (non-primitive). Used to gate the `sts:GetCallerIdentity`
  * call inside the `--from-state` flow: literal-only env maps don't need
  * the pseudo-parameter bag and shouldn't pay for an STS hop. Mirrors the
- * ECS `containerHasIntrinsicEnvOrSecret` gating in `ecs-task-resolver.ts`.
+ * ECS `containerHasIntrinsicEnvOrSecret` gating in `ecs-task-resolver/needs.ts`.
  */
 export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | undefined): boolean {
   if (!templateEnv) return false;

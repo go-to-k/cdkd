@@ -134,7 +134,7 @@ export type ResolvedEcsImage =
    * or the repository is absent from it). A deployed-registry pin like `ecr`,
    * so `--image-override` can replace it with a local build; a container left
    * uncovered fails with `unresolvedReason` before anything starts
-   * ({@link assertEcsTaskImagesResolvable}; go-to-k/cdkd#5768, mirroring
+   * (`assertEcsTaskImagesResolvable`; go-to-k/cdkd#5768, mirroring
    * go-to-k/cdk-local#847).
    */
   | { kind: 'same-stack-ecr'; repoLogicalId: string; unresolvedReason: string };

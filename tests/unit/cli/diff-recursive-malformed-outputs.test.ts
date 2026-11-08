@@ -195,7 +195,7 @@ describe('cdkd diff over a malformed outputs bag (issue go-to-k/cdkd#3189)', () 
    * class, and NOT an `outputs` bag at all, which is why the guard at this
    * load does not reach it and the comment beside that guard says so.
    *
-   * `importableOutputKeys` in `src/types/state.ts` called
+   * `importableOutputKeys` in `src/types/state/helpers.ts` called
    * `state.exportNames.filter(...)` unconditionally, so a hand-edited
    * non-array threw `TypeError: state.exportNames.filter is not a function` —
    * a bare TypeError naming no stack, field or remedy, from `cdkd diff`, at

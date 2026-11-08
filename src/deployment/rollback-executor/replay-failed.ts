@@ -75,7 +75,7 @@ import { runDeleteAttempt } from '../../provisioning/providers/deletion-protecti
  * deliberate user decision, never the default. Runs BEFORE the segment's
  * completed ops (the failed op is the newest work of the failed deploy).
  *
- * Best-effort like {@link replayRollback}: per-op failures are caught,
+ * Best-effort like `replayRollback`: per-op failures are caught,
  * warned, and counted.
  */
 export async function replayFailedOperationsUnbound(

@@ -15,7 +15,7 @@ paths:
 # Intrinsic-resolution refusals
 
 Issue #1740. Per-site reasons:
-`IntrinsicResolutionRefusalError`'s JSDoc in `error-handler.ts`.
+`IntrinsicResolutionRefusalError`'s JSDoc in `utils/error-handler/refusal-errors.ts`.
 
 - Warn-and-keep-the-raw-`${...}` answers an unknown `Fn::Sub` variable, and must
   NEVER answer a deliberate refusal: that ships a literal

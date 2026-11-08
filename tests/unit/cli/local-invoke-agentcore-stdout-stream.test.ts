@@ -1109,7 +1109,7 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
    * emitters keep writing to stdout while reserved, and that frames ALREADY
    * on stdout stay byte-exact and in order with the terminators appended
    * after them. It does NOT reach the real chunk sinks: the frames below are
-   * written by the test body, so `local-invoke-agentcore.ts`'s own `onChunk`
+   * written by the test body, so `local-invoke-agentcore/command.ts`'s own `onChunk`
    * / `onMessage` closures are never entered and routing THEM to stderr would
    * red nothing here. Those are covered by the COMMAND cases instead: the SSE
    * case ABOVE drives the real `onChunk` through a mocked `invokeAgentCore`,

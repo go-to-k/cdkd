@@ -392,7 +392,7 @@ export function rememberRecoverableMaskedOutputs(
  * nothing resolved is not recorded, and is not touched.
  *
  * Run by every {@link redactOutputs}, AND by
- * {@link crossStackReadKeyNormalizer} (issue
+ * `crossStackReadKeyNormalizer` (issue
  * [#3289](https://github.com/go-to-k/cdkd/issues/3289)), which needs the
  * same bag and runs BEFORE the persist walk. Calling it twice in one save
  * is safe and MEASURED rather than assumed: the entry fold re-sets equal

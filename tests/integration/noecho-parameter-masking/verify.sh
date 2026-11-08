@@ -133,7 +133,7 @@
 # NoEchoSnapshotGroup's final-snapshot base in plaintext": the engine judges
 # the state record's plaintext id from the stack's NoEcho values and masks the
 # whole id, which the snapshot name no longer spells (not yet measured on real
-# AWS). Revert the `noEchoValues` that src/cli/commands/destroy-runner.ts
+# AWS). Revert the `noEchoValues` that src/cli/commands/destroy-runner/under-lock-steps.ts
 # passes to `secretNamePrintingBags` and Phase 5 fails "prints a name taken
 # from the NoEcho value in plaintext" (not yet measured on real AWS).
 # Make `recordedNoEchoValuesOf` in src/deployment/secret-redaction/noecho-leaves.ts

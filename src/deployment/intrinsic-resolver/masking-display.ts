@@ -20,11 +20,11 @@ export type ResolverMasker = IntrinsicFunctionResolver;
  * [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
  *
  * `stringifyValue` / `JSON.stringify` ESCAPE a leaf containing `"`, `\` or a
- * control character, and {@link maskSecretsInText} matches a needle
+ * control character, and `maskSecretsInText` matches a needle
  * LITERALLY — so masking the ENCODED text misses exactly the plaintexts the
  * encoder rewrote (`pa"ss\word12` encodes to `["pa\"ss\\word12"]`, which no
  * needle matches). Masking each leaf first also buys the WHOLE-VALUE arm,
- * which has no {@link MIN_NEEDLE_LENGTH} floor, for a leaf that IS the
+ * which has no `MIN_NEEDLE_LENGTH` floor, for a leaf that IS the
  * plaintext.
  *
  * Returns the STRUCTURE rather than a rendered string, deliberately: each

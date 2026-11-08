@@ -649,7 +649,7 @@ assert_record() { # usage: assert_record <logicalId> <physical id>
 assert_record OrphanA "${P_A_B}"
 assert_record OrphanC "${P_C_B}"
 assert_record BasePipe "${P_BASE}"
-# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# The settle's keep warnings (journaled-orphans/success-rule.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
 if ! grep -qF "deleting partially-created OrphanA" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2

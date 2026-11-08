@@ -145,7 +145,7 @@ export function getProviderFor(
  * properties on a type where the Cloud Control auto-route (issue #614) is
  * NOT viable — `ProvisioningType: NON_PROVISIONABLE` (no CC handlers) or a
  * provider-level `disableCcApiFallback` opt-out; `reason` is
- * {@link ccRouteUnavailableReason}'s answer. Includes each property's
+ * `ccRouteUnavailableReason`'s answer. Includes each property's
  * `unhandledByDesign` rationale so the user sees WHY it is unhandled, plus
  * the `--allow-unsupported-properties` escape hatch (which forces the SDK
  * path and leaves the property unwritten — the provider may still reject the resource

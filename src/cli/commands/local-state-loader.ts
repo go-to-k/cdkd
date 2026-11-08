@@ -648,8 +648,8 @@ export async function buildCrossStackResolver(
   //
   // What the caller must pass is the STATE RECORD's own spelling — that is the
   // contract, and round 3 of the #1836 review found `local-run-task.ts` handing
-  // over a FOLDED chain value instead while `local-invoke.ts` /
-  // `local-invoke-agentcore.ts` passed `loaded.region`, so the two commands keyed
+  // over a FOLDED chain value instead while `local-invoke/command.ts` /
+  // `local-invoke-agentcore/env.ts` passed `loaded.region`, so the two commands keyed
   // the same index differently. The record's spelling is load-bearing for a
   // reason no comment stated: on an index-key miss `ExportIndexStore.load`
   // REBUILDS from the per-stack state files, and its rebuild filter is a raw
@@ -713,7 +713,7 @@ export async function buildCrossStackResolver(
         return undefined;
       }
       // Issue #1836: the same-region scope filter folds BOTH sides. The caller's
-      // `consumerRegion` is the RECORD's own spelling (`local-invoke.ts` passes
+      // `consumerRegion` is the RECORD's own spelling (`local-invoke/command.ts` passes
       // `loaded.region`), which `loadStateForStack`'s exact-then-folded match
       // makes reachable in an upper-cased form — and a raw `!==` then skipped
       // EVERY ref, so the `Fn::ImportValue` index-miss fallback resolved nothing

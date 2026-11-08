@@ -6,8 +6,8 @@ import { dynamicReferenceSpans } from '../redact-path.js';
 
 /**
  * The ONE-span frame shared by {@link positionByEmbeddedSpan},
- * {@link positionByIntrinsicFrame} (over the source's rendered text) and
- * {@link learnMixedLeafNeedle}: a source holding exactly one `{{resolve:...}}`
+ * `positionByIntrinsicFrame` (over the source's rendered text) and
+ * `learnMixedLeafNeedle`: a source holding exactly one `{{resolve:...}}`
  * token, and a bag that starts with the source's prefix and ends with its
  * suffix with something non-empty between them that is NOT itself a complete
  * token (an already-redacted record is a persisted answer, not a plaintext).
@@ -43,19 +43,19 @@ export function singleSpanFrame(
  * expression for the value, so the embedded leaf persists the versioned
  * spelling for a template that spells `NAME`, and the deploy diff — expression
  * against expression — reports that leaf on every run. The whole-token arm of
- * {@link redactByPath} is immune because it copies its own source; this arm
+ * `redactByPath` is immune because it copies its own source; this arm
  * gives the one-span literal leaf the same immunity.
  *
  * THE EVIDENCE, and why the shape of the frame is not enough on its own: the
  * frame check (`bag` starts with the source's prefix and ends with its suffix,
- * with something between) is what {@link learnMixedLeafNeedle} already uses to
+ * with something between) is what `learnMixedLeafNeedle` already uses to
  * LEARN a needle, and it proves only that the bag has the source's shape. The
  * bag can also be a PREVIOUS generation's (`cdkd scrub`, a state-sourced walk)
  * with an earlier plaintext framed exactly like this, and writing today's
  * token over it would record an expression that was never deployed at that
  * position — the hazard `sourceIsSameGeneration` exists for on the whole-token
  * arm. So the middle must EQUAL what THIS pass recorded the source token
- * resolving to ({@link recordResolvedPair}, per map instance): that is evidence
+ * resolving to (`recordResolvedPair`, per map instance): that is evidence
  * of this resolution, not of shape, and it is absent by construction for every
  * bag this pass did not produce. It is also what keeps a PUBLIC `ssm` token
  * resolved (issue #1901) — the resolver records only secret verdicts — and what
@@ -82,7 +82,7 @@ export function singleSpanFrame(
  * cross-generation cases in `secret-redaction-embedded-span.test.ts`.
  *
  * BELOW THE NEEDLE FLOOR the scan makes no claim at all (issue
- * [#2516](https://github.com/go-to-k/cdkd/issues/2516)): {@link buildNeedleRegex}
+ * [#2516](https://github.com/go-to-k/cdkd/issues/2516)): `buildNeedleRegex`
  * drops every plaintext shorter than `MIN_NEEDLE_LENGTH` (`rules.ts`) from its
  * alternation, so an embedded 1-3 character secret is left in plaintext by
  * the scan, with or without a same-plaintext sibling. Accepting the scan's
@@ -94,7 +94,7 @@ export function singleSpanFrame(
  * expression, which round-trips today and, after a rotation, reports a drift
  * that never happened. So that arm is admitted only for a bag whose
  * generation IS proven: `bagIsSameGeneration`, the writer's claim, an argument
- * stated from the object-level mark {@link markSameGenerationBag} puts on the
+ * stated from the object-level mark `markSameGenerationBag` puts on the
  * bags the deploy engine hands to
  * redaction on a success path (the record's `properties`, which are the
  * resolved bag or the subset of it the SDK route writes; EVERY
@@ -105,7 +105,7 @@ export function singleSpanFrame(
  * copies of the resolver's own output that the record never holds. That
  * function's contract is the authority — the conditions differ per site and
  * do not survive being stated once. Threaded down from
- * {@link redactSecretsForState} for exactly the object it was handed. With
+ * `redactSecretsForState` for exactly the object it was handed. With
  * the mark AND the pair, `recorded === middle` says this pass resolved the
  * source token to the middle and the bag is this pass's own, so
  * `prefix + token + suffix` is what the template says at that leaf and what
@@ -125,7 +125,7 @@ export function singleSpanFrame(
  * that is itself a recorded plaintext, say) has its frame rewritten and its
  * sub-floor middle left in plaintext. This arm positions a LITERAL source
  * leaf; an `Fn::Join` / `Fn::Sub` source rendering the same `port:` + token
- * — the dominant CDK shape — is {@link positionByIntrinsicFrame}'s (issue
+ * — the dominant CDK shape — is `positionByIntrinsicFrame`'s (issue
  * #2745), which shares this arm's bound and mark and refuses a frame that is
  * not wholly literal (a region `Ref` OUTSIDE the token), where a sub-floor
  * secret still falls to the value scan and persists in plaintext. `cdkd
@@ -162,16 +162,16 @@ export function singleSpanFrame(
  *
  * Everything else keeps the pre-#2485 fall-through: a multi-span source that
  * certificate refuses, a frame mismatch, a middle that is itself a complete token (an
- * already-redacted record, per the same refusal {@link learnMixedLeafNeedle}
+ * already-redacted record, per the same refusal `learnMixedLeafNeedle`
  * makes), and a middle this pass cannot vouch for. An `Fn::Sub` / `Fn::Join`
  * source (an object, not this arm at all) is
  * `positionByParameterPlaceholders` (`placeholder-positions.ts`)'s over a nested child's parameters
- * (issue #2320) and {@link positionByIntrinsicFrame}'s since #2745, and
+ * (issue #2320) and `positionByIntrinsicFrame`'s since #2745, and
  * reaches the value scan only where both refuse.
  *
  * The frame is copied from the SOURCE, not scanned. A needle occurring in the
  * literal frame would be a reference the template never had at that offset —
- * the fabricated-baseline direction {@link preferPositionDecisions} refuses —
+ * the fabricated-baseline direction `preferPositionDecisions` refuses —
  * and the whole-token arm returns its source unscanned for the same reason.
  *
  * RETURNS THE VALUE SCAN'S ANSWER ON EVERY REFUSAL, not `undefined`: the two
@@ -210,7 +210,7 @@ export function positionByEmbeddedSpan(
 
 /**
  * Each `{{resolve:...}}` span of a LITERAL `source` with the plaintext the
- * pass owning `secrets` resolved its token to ({@link recordResolvedPair}), or
+ * pass owning `secrets` resolved its token to (`recordResolvedPair`), or
  * `undefined` when the source holds no token or ANY token lacks a pair. The
  * pair table holds only what the resolver resolved as SECRET -- a collapsed
  * loser and an unpinned `ssm` token included -- so a PUBLIC token (never
@@ -279,7 +279,7 @@ function renderSpans(
  * EXACTLY `value` -- and is its literal text free of every plaintext `secrets`
  * would rewrite (issue [#4644](https://github.com/go-to-k/cdkd/issues/4644))?
  *
- * The certificate `mixedLeafProvenPublic` (`redact-path.ts`) applies to a
+ * The certificate `mixedLeafProvenPublic` (`redact-path/reference-tokens.ts`) applies to a
  * public readback, over secret pairs: every character of the value is either
  * text the spelling states or the plaintext THIS pass resolved the token at
  * that span to. Exact equality only -- no search, no substring, nothing taken
@@ -509,7 +509,7 @@ function certifyMixedLiteral(
  * the scan's answer on every refusal.
  *
  * ONE helper for {@link positionByEmbeddedSpan} (a literal source, issue
- * #2485) and {@link positionByIntrinsicFrame} (an `Fn::Join` / `Fn::Sub`
+ * #2485) and `positionByIntrinsicFrame` (an `Fn::Join` / `Fn::Sub`
  * source, issue #2745), for the reason {@link singleSpanFrame} is one: the
  * bound and the mark are the two claims this module makes about a FRAMED
  * leaf, and two copies are two places for one of them to be relaxed alone.

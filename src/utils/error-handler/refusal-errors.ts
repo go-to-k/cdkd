@@ -86,7 +86,7 @@ import { CdkdError } from './base-errors.js';
  *    subclass, never on this class.
  *
  * The class is deliberately NOT `markNonRetryable` at construction, unlike
- * {@link ResourceUpdateNotSupportedError}: two kinds of throw site are
+ * `ResourceUpdateNotSupportedError`: two kinds of throw site are
  * genuinely time-dependent — the unknown-account guard, where
  * `getAccountInfo` never caches a failed lookup precisely so a later attempt
  * can heal, and since issue #3096 the LIVE-READ refusals

@@ -32,7 +32,7 @@ import {
  * a given parameter came from returns the SURVIVOR for both. What has not
  * collapsed is the parent's own template: `Properties.Parameters.<Name>` still
  * holds each entry's own source leaf. So this walks the parent's resolved
- * parameter bag against that source with {@link redactSecretsForState}, which
+ * parameter bag against that source with `redactSecretsForState`, which
  * is exactly the machinery the parent's persist path already uses and which
  * certifies PER LEAF (measured on this issue: the parent's own two properties
  * come out correct while the child's collapse onto one). Deriving the answer
@@ -56,7 +56,7 @@ import {
  * decide here is `sourceIsSameGeneration`, which a token-shaped plaintext
  * reaches (fenced by the replay call sites' own file).
  *
- * "No public expressions" carries the carve-out {@link PathSourceRules} states
+ * "No public expressions" carries the carve-out `PathSourceRules` states
  * and this note must not restate without it: `cdkd import` warns and persists
  * the RAW template intrinsic, so a public `ssm:` token CAN sit in a record. The
  * replay's POSITION pass then certifies one the deploy default would refuse;
@@ -65,7 +65,7 @@ import {
  * value scan. Before that the cost was bounded to the issue #1901 class — a
  * spurious UPDATE over a value state should hold resolved, never a
  * disclosure, since an expression is what gets persisted either way. See the
- * replay call sites for why gating on {@link isKnownSecretExpression} is the
+ * replay call sites for why gating on `isKnownSecretExpression` is the
  * wrong way to close it.
  *
  * FIVE REFUSALS, each degrading to today's behaviour (the child leaf falls to
@@ -77,7 +77,7 @@ import {
  *    It also bounds what this store HOLDS: an entry carries a plaintext, and
  *    remembering one this pass never resolved has no purpose.
  * 2. REFUSAL — the expression is not a single complete `{{resolve:...}}` token.
- *    The same test {@link recordCrossStackExpression} applies at its own
+ *    The same test `recordCrossStackExpression` applies at its own
  *    boundary, spelled here because this writer populates a DIFFERENT table.
  *    This is what rejects an embedded case that survived refusal 1 (a value
  *    scan produced `postgres://u:{{resolve:...}}@host`, which is not a token).
@@ -96,10 +96,10 @@ import {
  *    [#1917](https://github.com/go-to-k/cdkd/issues/1917) family: a
  *    SELF-REFERENTIAL secret, whose stored VALUE is byte-identical to its own
  *    `{{resolve:...}}` text, so the pass records `SELF -> SELF`. The route is
- *    NOT the value scan the old note named. It is {@link redactByPath}'s
+ *    NOT the value scan the old note named. It is `redactByPath`'s
  *    `!sourceIsSameGeneration && isSingleDynamicReferenceToken(bag)` arm, which
  *    returns `secrets.get(bag) ?? bag` -- and for a self-referential secret
- *    that IS the bag. Under {@link STATE_DERIVED_RULES} the same input arrives
+ *    that IS the bag. Under `STATE_DERIVED_RULES` the same input arrives
  *    by the other door (`sourceIsSameGeneration` is true, so the arm takes
  *    `return source`, which is the same string again), so both callers reach it.
  *    Fenced by the self-referential case in
@@ -114,7 +114,7 @@ import {
  * ways and the child persisted `port:q7`. This recorder is the only point
  * holding the literal frame beside the pair, so the carry is written HERE:
  * the position pass runs over a MARKED shallow copy, on which
- * {@link positionByEmbeddedSpan} writes the frame on pair evidence, and a
+ * `positionByEmbeddedSpan` writes the frame on pair evidence, and a
  * second walk records `resolvedValue -> sourceLeaf`
  * (`'port:q7' -> 'port:{{resolve:...}}'`) as an ordinary WHOLE-VALUE entry of
  * the parent's own bag, under five conditions:
@@ -231,7 +231,7 @@ import {
  * red on the order, and it is kept so (ii)'s reading of the map cannot come
  * to depend on iteration order. No pair and no pin are recorded for the
  * entry: it is not a token
- * ({@link recordedExpressionsOf} names the class), and no consumer needs one
+ * (`recordedExpressionsOf` names the class), and no consumer needs one
  * -- the child's carry, the child's persist (the floorless whole-value arm),
  * the diff side (`redactParametersForDiff`'s fallback) and the parent's
  * rollback record all read the map by whole value. Refusal 3's
@@ -248,8 +248,8 @@ import {
  * and (v) -- the survivor's and the loser's alike, and whether or not (iii)
  * let its entry through -- is recorded BY NAME into {@link nestedStackParameterExpressions}, the table
  * the whole-token walk above fills, as `name -> (its own frame, the value)`.
- * The child inherits it ({@link inheritNestedStackParameterAssociations})
- * and reads it through {@link certifiedExpressionForLeaf} at all three
+ * The child inherits it (`inheritNestedStackParameterAssociations`)
+ * and reads it through `certifiedExpressionForLeaf` at all three
  * sites: the carry (`recordInheritedParameterSecrets` asks per plaintext),
  * the persist walk (`positionByCrossStackSource` on the `{Ref}` source) and
  * the diff side (`redactParametersForDiff`). Each requires the bag to HOLD
@@ -266,7 +266,7 @@ import {
  * persisted, which is exactly what the entry would have written.
  *
  * WHAT STAYS OPEN, weighed against the three live consumers named on
- * {@link positionByIntrinsicFrame} (`cdkd rollback`, `drift --revert`, a
+ * `positionByIntrinsicFrame` (`cdkd rollback`, `drift --revert`, a
  * consumer's cross-stack read). (a) CLOSED by the association above (was:
  * the loser's child leaf took the survivor's frame, or stayed plaintext
  * under a different frame -- the second half closed by (iii)'s second arm).
@@ -298,7 +298,7 @@ import {
  * the leaf through the entry, and since issue #3306 for a token spelled inside
  * a nested `Fn::Join` / `Fn::Sub` / `Fn::If` part, held by a used `Fn::Sub`
  * variable, or inside an `Fn::If` around the frame, whose records lend the
- * outer object the token raw (see {@link IntrinsicLeafResolution}). What
+ * outer object the token raw (see `IntrinsicLeafResolution`). What
  * remains of it, each a refusal of a wrong reference or of a carried
  * plaintext: a leaf resolved two different ways in one pass (an `Fn::If` that
  * selected different branches included), one whose replacement took a public
@@ -349,7 +349,7 @@ export function recordNestedStackParameterExpressions(
   // A shallow copy walked under a same-generation CLAIM (issue #2745, the
   // nested-stack site): the copy is this pass's own, so
   // `positionByEmbeddedSpan` may write a sub-floor middle as the token this
-  // pass resolved it from. The seventh site on {@link markSameGenerationBag}'s
+  // pass resolved it from. The seventh site on `markSameGenerationBag`'s
   // list, which states the claim and why it holds at every caller of this
   // function, under either provenance. The claim is an argument
   // (go-to-k/cdkd#5047), so nothing is marked -- what the record holds is the
@@ -367,7 +367,7 @@ export function recordNestedStackParameterExpressions(
   // token and that the position pass returned VERBATIM -- the identity proof
   // refusal 2b reads -- which for an embedding literal means the span arm or
   // the multi-span render certificate fired (`positionByEmbeddedSpan`). Only
-  // the spelling is recorded here; {@link inheritedParameterExpression}
+  // the spelling is recorded here; `inheritedParameterExpression`
   // re-asks {@link rendersLiteralTo} of this bag at every read. A two-token
   // value has no per-name answer otherwise (refusal 2 below, and the
   // sub-floor carry's single span), so the child's `{Ref}` leaf and the diff
@@ -430,7 +430,7 @@ export function recordNestedStackParameterExpressions(
     // an entry it lets through on that coincidence is the survivor, which every
     // reader produces on a refusal anyway. Found by the `rules` probe: an `ssm`
     // reference whose `SecureString` verdict this process has not pinned fails
-    // `isKnownSecretExpression` under {@link TEMPLATE_DERIVED_RULES}, takes the
+    // `isKnownSecretExpression` under `TEMPLATE_DERIVED_RULES`, takes the
     // public-reference branch, and value-scanned its way to the sibling's
     // expression — so the losing parameter of an unpinned ssm pair was recorded
     // against the WRONG reference.
@@ -447,7 +447,7 @@ export function recordNestedStackParameterExpressions(
     // Refusal 4 — this pass SAW this expression resolve to something ELSE
     // (issue [#2327](https://github.com/go-to-k/cdkd/issues/2327) review).
     //
-    // This is {@link certifiedExpressionForLeaf}'s condition 3, moved to WRITE
+    // This is `certifiedExpressionForLeaf`'s condition 3, moved to WRITE
     // time, and the move is the whole point rather than an optimisation. That
     // condition reads the bag's VALUES through {@link plaintextIndexOf}, and
     // the two readers of this table hold DIFFERENT bags: the DIFF side gets the
@@ -475,7 +475,7 @@ export function recordNestedStackParameterExpressions(
     // before this arm existed.
     //
     // The read-time condition 3 STAYS. It still serves
-    // {@link crossStackAssociations}'s other writers, which have no second
+    // `crossStackAssociations`'s other writers, which have no second
     // reader and no write-time twin, and for THIS family it is now belt and
     // braces -- on the diff side it is vacuous (same bag, same verdict), and on
     // the persist side it can only refuse, which the sweep below finds no
@@ -518,7 +518,7 @@ export function recordNestedStackParameterExpressions(
     // with its own review).
     //
     // REFUSAL 4 IS NOT SUBSUMED BY THIS ONE. On an intrinsic source the
-    // reader's own condition 3 ({@link certifiedExpressionForLeaf}, same bag,
+    // reader's own condition 3 (`certifiedExpressionForLeaf`, same bag,
     // same index) has already refused what refusal 4 would. On a STRING
     // source in a bag whose map entries carry no pairs -- a child engine's,
     // inherited entries beside the child's own paired resolutions -- an
@@ -816,7 +816,7 @@ export function recordNestedStackParameterExpressions(
     }
     if (embedded) continue;
     // The association: this leaf's own frame, whatever the map's survivor for
-    // the middle is. Its readers ({@link certifiedExpressionForLeaf}, through
+    // the middle is. Its readers (`certifiedExpressionForLeaf`, through
     // the child's carry, its persist walk and `redactParametersForDiff`) each
     // require the bag to HOLD the value, which the entry below provides (or
     // the child's own resolution of the same plaintext, answered with this

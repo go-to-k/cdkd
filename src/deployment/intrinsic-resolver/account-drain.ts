@@ -155,11 +155,11 @@ export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void
  * x 2 s), which makes it a hang guard rather than a schedule — not a
  * guarantee that healthy work fits inside it; see the function's own note.
  *
- * It is the budget for one CALL of {@link IntrinsicFunctionResolver.resolve}
+ * It is the budget for one CALL of `IntrinsicFunctionResolver.resolve`
  * and everything nested under it: nested drains share the REMAINING wait, so
  * a template's nesting depth cannot multiply it. It is NOT a bound on a caller
  * that resolves in a LOOP -- each iteration opens its own budget unless the
- * caller wraps the loop in {@link withSharedDrainBudget}, which the outputs
+ * caller wraps the loop in `withSharedDrainBudget`, which the outputs
  * pass does and `evaluateConditions` deliberately does not (its aggregate is
  * `#conditions x` this, before any resource is provisioned but with the
  * deploy lock already held).
@@ -444,7 +444,7 @@ export async function allSettledKeepingFirstRejection<T>(
     // the request's names (an AccessDenied naming an `Fn::Sub`-assembled
     // SecretId included), so what arrives here from that route is already
     // masked. The downstream boundary masks stay as the layer for every other
-    // error: `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`) and the `cdkd import`
+    // error: `handleOutputResolutionFailure` (`deploy-engine/outputs/failure.ts`) and the `cdkd import`
     // boundary (issues #2728 / #2803).
     if (rejection !== undefined) {
       // Inputs still running here means the CAP won the race: report them,
@@ -503,8 +503,8 @@ export async function allSettledKeepingFirstRejection<T>(
 }
 
 /**
- * The key for the resolver's per-region SDK client caches ({@link
- * IntrinsicFunctionResolver}'s `cfnClients`, `regionScopedClients` and
+ * The key for the resolver's per-region SDK client caches (
+ * `IntrinsicFunctionResolver`'s `cfnClients`, `regionScopedClients` and
  * `serviceDiscoveryClients`): the region PLUS the credential fingerprint of the
  * configuration the cached client was built from (issue
  * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). Encoded through

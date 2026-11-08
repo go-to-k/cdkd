@@ -219,7 +219,8 @@ function rollbackFamilySource(): string {
 }
 
 /**
- * `safeStack` renders in `src/cli/commands/rollback.ts`: every place a cdkd
+ * `safeStack` renders in `src/cli/commands/rollback.ts` and the modules under
+ * `rollback/`: every place a cdkd
  * state-record STACK NAME reaches a message. A LITERAL, not a number derived
  * from the file it guards -- a population computed from the subject cannot
  * notice the subject shrinking.

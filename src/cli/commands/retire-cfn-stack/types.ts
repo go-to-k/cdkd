@@ -67,7 +67,7 @@ export interface CfnStackResourceTree {
 /**
  * UpdateStack TemplateBody hard limit (51,200 bytes). Templates larger than
  * this are uploaded to cdkd's state S3 bucket and submitted via `TemplateURL`
- * instead — see {@link uploadTemplateForUpdateStack}.
+ * instead — see `uploadTemplateForUpdateStack`.
  *
  * Re-exported from `upload-cfn-template.ts` as the shared source of truth.
  */
@@ -116,7 +116,7 @@ export interface RetireCloudFormationStackOptions {
    * of retiring the parent.
    *
    * When omitted, the retire flow builds the tree lazily via
-   * {@link getCloudFormationResourceTree} on first need — adding at most one
+   * `getCloudFormationResourceTree` on first need — adding at most one
    * `DescribeStackResources` round-trip per nesting level, and zero overhead
    * for the non-nested case. `cdkd import`'s migration path always supplies
    * the tree, so since `cdkd migrate` was removed (issue #2572) the lazy arm
@@ -130,12 +130,12 @@ export interface RetireCloudFormationStackOptions {
 }
 
 /**
- * What {@link prepareCloudFormationStackRetirement} left behind.
+ * What `prepareCloudFormationStackRetirement` left behind.
  *
  * - `cancelled`: the operator declined; the stack is untouched and must not be
  *   deleted.
  * - `ready`: every resource now carries `DeletionPolicy: Retain`, so
- *   {@link deleteRetiredCloudFormationStack} may run. `templateUpdated` says
+ *   `deleteRetiredCloudFormationStack` may run. `templateUpdated` says
  *   whether an `UpdateStack` actually completed — only then can CloudFormation
  *   have REPLACED a resource, so only then must the caller re-read the
  *   physical ids before it writes state (issue #4873).

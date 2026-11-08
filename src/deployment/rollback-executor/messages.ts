@@ -156,7 +156,7 @@ export const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * What issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) changed is
  * that the INFORMATION now exists on that path — `UpdateContext` carries its
  * own `replayingState`, set by both revert arms (`replay-revert.ts` and the
- * failed-operations replay in `rollback-executor.ts`) — so such a provider
+ * failed-operations replay in `replay-failed.ts`) — so such a provider
  * could build a `CreateContext` from it instead of relying on the constraint.
  * None does today: none of the five sites forwards `replayingState`. Read
  * that as a route that opened, not as a constraint that lifted.
@@ -168,7 +168,7 @@ const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
  * in (issue #1932 item 3).
  *
  * The rollback path needs this MORE than the forward deploy does, not less:
- * {@link resolveReplayProps} deliberately re-resolves every redacted
+ * `resolveReplayProps` deliberately re-resolves every redacted
  * `{{resolve:...}}` expression back to plaintext before handing the bag to a
  * provider, so a replayed bag is guaranteed to carry the concrete secret
  * whenever the resource has one. Leaving the masker off here would have left
@@ -201,7 +201,7 @@ export function replayingStateCreateContext(secrets: RecordedSecretValues): Crea
  * replay's re-resolved secrets, so without this the plaintext the terminal
  * line masks is persisted one statement later.
  *
- * The in-process caller (`deploy-engine/rollback.ts`'s `rollbackExecutorContext`) routes through
+ * The in-process caller (`deploy-engine/rollback/context.ts`'s `rollbackExecutorContext`) routes through
  * `maskSecretsInEvent`, but that masks with the DEPLOY's `perResourceSecrets`
  * for the resource — a different bag from the one this replay re-resolved from
  * the JOURNAL, which can name a different secret version or a reference the
@@ -810,7 +810,7 @@ export function rerunRollbackPhrase(
  * being reverted. Recorded as a scope decision on issue #1354.
  *
  * NOT the same call as the rolled-back-CREATE path
- * ({@link prepareCreateRollbackFinalSnapshot}, issue #1358): there the
+ * (`prepareCreateRollbackFinalSnapshot`, issue #1358): there the
  * resource is being deleted under `DeletionPolicy` and a shape cdkd cannot
  * snapshot is REFUSED rather than plain-deleted, because the user is losing
  * a resource that existed before this op — nothing downstream depends on

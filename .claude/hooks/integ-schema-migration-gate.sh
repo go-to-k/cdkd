@@ -44,7 +44,7 @@
 #      activates ONLY on a real schema bump.
 #   2. For schema-bump PRs, `markgate verify integ-schema-migration`
 #      must pass. The `integ-schema-migration` gate's include scope is
-#      `src/types/state.ts` so file-level changes invalidate the
+#      `src/types/state.ts` (plus `src/types/state/**`) so file-level changes invalidate the
 #      marker too; the second-pass grep ensures we only ENFORCE on
 #      bumps. The marker also carries the same 14d TTL as
 #      integ-destroy / integ-broad / integ-local so AWS-side / binary
@@ -164,9 +164,10 @@ fi
 
 cd "$target_dir" 2>/dev/null || exit 0
 
-# Schema scope: the single file carrying the StackState.version
-# literal type + STATE_SCHEMA_VERSIONS_READABLE constant + every
-# state-shape interface.
+# Schema scope: the single file carrying the StateSchemaVersion
+# literal type + STATE_SCHEMA_VERSIONS_READABLE constant (the
+# state-shape interfaces live under src/types/state/ since #5835;
+# a version bump never edits them).
 SCHEMA_FILE='src/types/state.ts'
 
 # --- Extract PR number from the `gh pr merge` command (same pattern

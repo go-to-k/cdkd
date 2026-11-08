@@ -53,7 +53,7 @@ export const ATOMIC_FINAL_SNAPSHOT_TYPES: ReadonlySet<string> = new Set([
 /**
  * Types with no atomic delete parameter, where cdkd snapshots explicitly
  * BEFORE the (routing-layer-agnostic) delete via
- * {@link createPreDeleteFinalSnapshot}. All three are CC-API-routed (no SDK
+ * `createPreDeleteFinalSnapshot`. All three are CC-API-routed (no SDK
  * provider), so the pre-delete snapshot lives at the delete call sites, not
  * in a provider: `AWS::EC2::Volume` (EC2 `CreateSnapshot`, issue #1352),
  * `AWS::Redshift::Cluster` (`CreateClusterSnapshot`, issue #1353), and
@@ -116,7 +116,7 @@ export function replacementDeletePolicy(updateReplacePolicy: string | undefined)
  *   - `atomic-delete-parameter`: the provider's delete call takes the
  *     identifier ({@link ATOMIC_FINAL_SNAPSHOT_TYPES} on the SDK route).
  *   - `pre-delete-snapshot`: cdkd snapshots explicitly first via
- *     {@link createPreDeleteFinalSnapshot}, then deletes plainly.
+ *     `createPreDeleteFinalSnapshot`, then deletes plainly.
  *   - `refuse-cc-routed`: an atomic type routed through Cloud Control, whose
  *     `DeleteResource` has no final-snapshot parameter
  *     ({@link ccRoutedFinalSnapshotError}).

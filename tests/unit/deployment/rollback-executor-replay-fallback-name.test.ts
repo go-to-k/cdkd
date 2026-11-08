@@ -249,8 +249,8 @@ describe('the fill must NOT fire (#3199)', () => {
 describe('the properties that make the fill CORRECT, not merely present (#3199)', () => {
   it('the replayed name is byte-identical to what the forward create would mint', async () => {
     // Not a restatement of the first case's literal. Both rollback entry points
-    // bind `withStackScope` (`cli/commands/rollback.ts` for the standalone
-    // command, `deploy-engine.ts` around `doDeploy` for the in-process one), so
+    // bind `withStackScope` (`cli/commands/rollback/replay.ts` for the standalone
+    // command, `deploy-engine/deploy-flow.ts` for the in-process one), so
     // the replay resolves the SAME AsyncLocalStorage-scoped stack name the
     // forward create did. Were that scope absent, the fill would mint an
     // UNPREFIXED name and re-create the resource under a name that never

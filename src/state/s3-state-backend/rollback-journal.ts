@@ -26,7 +26,7 @@ import {
  * Load the rollback journal for a stack (issue #1183). Returns `null` when
  * no journal exists (the common case — a journal only lives between a
  * failed/interrupted deploy and its `cdkd rollback`). Throws
- * {@link UnknownRollbackJournalVersionError} on a newer-version journal.
+ * `UnknownRollbackJournalVersionError` on a newer-version journal.
  */
 export async function loadRollbackJournal(
   this: S3StateBackend,
@@ -372,7 +372,7 @@ export async function dropRollbackJournalSegments(
 
 /**
  * Delete the stack's rollback journal object (idempotent). Called on the
- * deploy success path, after a clean rollback, and via {@link deleteState}
+ * deploy success path, after a clean rollback, and via `deleteState`
  * so `cdkd destroy` / `cdkd state destroy` sweep it too.
  *
  * TWO steps, and the second is not housekeeping (issue
@@ -390,7 +390,7 @@ export async function dropRollbackJournalSegments(
  * retrievable by anyone holding `s3:GetObjectVersion`.
  *
  * Unlike `state.json` — whose noncurrent versions ARE the state-recovery
- * capability versioning is enabled FOR, which is why {@link deleteState}
+ * capability versioning is enabled FOR, which is why `deleteState`
  * keeps them and only `cdkd state destroy` purges them — the journal is TRANSIENT by design: it
  * exists only between a failed / interrupted deploy and its `cdkd
  * rollback`. There is no recovery capability to weigh against the purge.

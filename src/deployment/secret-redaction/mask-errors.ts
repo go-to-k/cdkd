@@ -323,7 +323,7 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
  *   not an `Error` (a string, a plain object) is such a field and is masked
  *   the same way (go-to-k/cdkd#4190).
  *
- * **Why an error and not just its text.** `formatError` (`src/utils/error-handler.ts`)
+ * **Why an error and not just its text.** `formatError` (`src/utils/error-handler/format.ts`)
  * renders a `CdkdError`'s CAUSE as `Caused by: <cause.message>`, and `handleError`
  * logs that at `error` level for any failure that escapes a command — so a raw
  * provider error attached as a `ProvisioningError`'s cause reaches the terminal

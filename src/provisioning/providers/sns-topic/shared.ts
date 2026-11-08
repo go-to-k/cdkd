@@ -180,7 +180,7 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  *
  * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted here
  * by issue #1997), threaded from `CreateContext` / `UpdateContext` — see
- * `SecretMaskingContext` in `src/types/resource.ts`. Every warning below names a
+ * `SecretMaskingContext` in `src/types/resource/contexts.ts`. Every warning below names a
  * RESOLVED property value: `DeliveryStatusLogging` reaches this function already
  * resolved, so a `{{resolve:secretsmanager:...}}` scalar inside it is plaintext,
  * and cdkd's other masking boundaries (the deploy engine's error / reason text
@@ -192,7 +192,7 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * first cut of this change got it backwards. It claimed a thrown message travels
  * to the deploy engine "which already runs it through `maskSecretsInText`" —
  * FALSE. The engine masks an error message on ONE path only, the events store
- * (`deploy-engine.ts`'s per-event masker); its CLI path logs `error.message`
+ * (`deploy-engine/event-masking.ts`'s per-event masker); its CLI path logs `error.message`
  * RAW to `logger.error`. So an unmasked throw here printed the resolved bag
  * straight to the terminal at default verbosity, which is a worse exposure than
  * the warn arms this change was written for, not a covered one. Both throw sites

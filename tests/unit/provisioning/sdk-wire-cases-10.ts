@@ -627,7 +627,7 @@ function armEndpoint(): void {
 /**
  * The schema lists no create-only `TargetRole`, but `ModifyDBProxyEndpoint`
  * takes no such member: the engine's replacement rules replace on a change
- * (src/analyzer/replacement-rules.ts:790-799), and `update()` refuses one
+ * (src/analyzer/replacement-rules/rules.ts:524-537), and `update()` refuses one
  * before any call as defence in depth (rds-dbproxy-endpoint-provider.ts:336-357).
  */
 const TARGET_ROLE_REFUSED = REQUIRED(

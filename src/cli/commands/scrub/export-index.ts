@@ -53,7 +53,7 @@ export interface ExportIndexRepairPlan {
  *
  * The lookup runs in ONE direction, and the inverse is not available: an
  * `Export.Name` alias is written into the outputs bag itself
- * (`deploy-engine.ts`, beside `resolvedExportNames.push(exportName)`), so an
+ * (`deploy-engine/outputs/resolve.ts`, beside `resolvedExportNames.push(exportName)`), so an
  * index entry NAME is a key of that bag — while `ExportIndexEntry` carries no
  * output-key field, so nothing maps an entry back to the output it came from.
  *

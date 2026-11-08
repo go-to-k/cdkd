@@ -345,7 +345,7 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   }
   // The NESTED records (issue #3149), each TYPE-when-present rather than
   // required: `previousState` is forwarded verbatim from the state record
-  // (`deploy-engine.ts`'s `currentState.resources[logicalId]`), which
+  // (`deploy-engine/execute.ts`'s and `deploy-engine/execute/provision-node.ts`'s `currentState.resources[logicalId]`), which
   // `parseStateBody` deliberately does not validate, so requiring a field to
   // be PRESENT here would turn a state-side tolerance into a journal-side
   // refusal of a journal cdkd itself wrote.

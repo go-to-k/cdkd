@@ -248,7 +248,7 @@ export async function create(
     // `getRegion()` reads `this.s3Client.config.region()`), so a `ca-west-1`
     // create is issued against the `ca-west-1` REGIONAL endpoint, where an
     // omitted `LocationConstraint` answers `IllegalLocationConstraintException`
-    // rather than succeeding. `src/assets/asset-storage.ts:775` already
+    // rather than succeeding. `src/assets/asset-storage/ensure.ts:221` already
     // states the same rule for the sibling call site ("For regions other than
     // us-east-1, LocationConstraint is required"), and
     // `.claude/rules/asset-bucket-region.md` names the exception.

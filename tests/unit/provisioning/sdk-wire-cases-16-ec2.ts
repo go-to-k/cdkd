@@ -107,7 +107,7 @@ const VPC_CIDR_SOURCE_REQUIRED = (top: string): Throw => ({
 
 /**
  * Declaring a non-default `InstanceTenancy` on a VPC that lacks it is a
- * replacement (`vpcInstanceTenancyChangeReplaces`, replacement-rules.ts:53,
+ * replacement (`vpcInstanceTenancyChangeReplaces`, replacement-rules/predicates.ts:13,
  * CloudFormation measured, go-to-k/cdkd#5449); only `drift --revert` reaches
  * `update()` with it, which refuses before any call.
  */
@@ -275,7 +275,7 @@ const INSTANCE_KEPT = (member: string): string =>
 /**
  * A BlockDeviceMappings change other than a DeleteOnTermination-only one is a
  * replacement (`instanceBlockDeviceMappingsChangeReplaces`,
- * replacement-rules.ts:96, 1098; CloudFormation measured, go-to-k/cdkd#5446),
+ * replacement-rules/predicates.ts:102, rules.ts:667; CloudFormation measured, go-to-k/cdkd#5446),
  * so `update()` never applies it (${SRC}:8371-8381). The DeleteOnTermination
  * flips themselves reach the wire (ModifyInstanceAttribute), which the
  * update-add / update-remove probes of `Ebs.DeleteOnTermination` observe; its
@@ -658,7 +658,7 @@ const INSTANCE_CASE: TypeCase = tc(
         }),
     }
   );
-// An EbsOptimized change is a replacement (replacement-rules.ts:1062-1083: it
+// An EbsOptimized change is a replacement (replacement-rules/rules.ts:620-642: it
 // is accepted only on a STOPPED instance), so the update probes skip it, as
 // the engine's replacement would.
 // A Tenancy change is a replacement too (replacement-rules.ts; CloudFormation

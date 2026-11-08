@@ -330,7 +330,7 @@ export async function readStackInstanceSibling(
 
 /**
  * Delete the stack's `stack-instance.json`. An absent one is fine; any other
- * failure throws a `StateError`, so {@link deleteState} stops before the
+ * failure throws a `StateError`, so `deleteState` stops before the
  * record goes with the id still readable.
  */
 export async function deleteStackInstanceSibling(
@@ -371,7 +371,7 @@ export async function deleteStackInstanceSibling(
  * After the first state save carrying the id: delete the sibling and purge
  * its earlier versions. Best-effort and never throws: the record is
  * authoritative now, and a sibling that survives is read only while the
- * stack has no record, which {@link deleteState} (deleting it first) ends.
+ * stack has no record, which `deleteState` (deleting it first) ends.
  */
 export async function dropStackInstanceSiblingAfterSave(
   this: S3StateBackend,

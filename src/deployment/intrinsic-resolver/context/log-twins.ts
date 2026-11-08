@@ -9,7 +9,7 @@ import type { AbandonedResolution } from './refusals.js';
  * A resolved string beside its LOG TWIN (issue
  * [#3100](https://github.com/go-to-k/cdkd/issues/3100)): the same string with
  * every span a recorded secret was WRITTEN into replaced by
- * {@link SECRET_MASK}. `resolveJoin` / `resolveSub` build it alongside the
+ * `SECRET_MASK`. `resolveJoin` / `resolveSub` build it alongside the
  * value and log the twin, never the value.
  *
  * It exists because the NEEDLE mask (`maskNeedlesForLog`) masks a 1-3

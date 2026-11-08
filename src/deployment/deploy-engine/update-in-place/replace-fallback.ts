@@ -256,7 +256,7 @@ export async function replaceFallbackFor(
         // only place that rejection is retained.
         //
         // Where it actually SURFACES is narrower than the terminal
-        // output: `formatError` (`src/utils/error-handler.ts`)
+        // output: `formatError` (`src/utils/error-handler/format.ts`)
         // renders exactly ONE `Caused by:` level, and the error the
         // CLI prints is the `ProvisioningError` this method's catch
         // wraps the refusal in — so that one level is the refusal's
@@ -356,7 +356,7 @@ export async function replaceFallbackFor(
     // `Delete`). State is the fallback for a template that omits
     // the attribute, and this is the ONLY snapshot read on the
     // replacement paths that has one: every other site passes
-    // the shared `updateReplacePolicy` binding (read in `update.ts`), which is template-only.
+    // the shared `updateReplacePolicy` binding (read in `update/finish.ts`), which is template-only.
     // The divergence is deliberate — omitting a promised snapshot is
     // destructive, so this read is conservative, while the `Retain`
     // decision in `update.ts` only describes what the user is applying now.
@@ -566,7 +566,7 @@ export async function replaceFallbackFor(
       // destroyed the old resource and then failed" — which is
       // exactly what decides whether a re-run is safe and whether
       // anything downstream is now dangling. `--replace`'s
-      // delete-first fallback (`replaceDeleteFirstAndRecreate` (`replacement.ts`))
+      // delete-first fallback (`replaceDeleteFirstAndRecreate` (`replacement/delete-first.ts`))
       // wraps the identical situation, so this is the same
       // contract, not a new one -- but NOT the same sentence, and
       // the difference is deliberate: that sibling still says

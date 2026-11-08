@@ -151,7 +151,7 @@ export async function loadStateOrEmpty(
     // Scoped to the BAG, deliberately, and still is: the Outputs flow also
     // reads `state.exportNames`, which this call does not touch. That half is
     // now guarded where it is READ rather than here —
-    // `importableOutputKeys` (`src/types/state.ts`) used to call
+    // `importableOutputKeys` (`src/types/state/helpers.ts`) used to call
     // `state.exportNames.filter(...)` unconditionally and threw a raw
     // `TypeError` from the `mergeNoChangeOutputs` call below on a hand-edited
     // non-array; it reads a non-array as an EMPTY export set now

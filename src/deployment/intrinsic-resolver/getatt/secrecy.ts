@@ -138,7 +138,7 @@ export function publicNoEchoTokens(
  * persisted `properties` leaf, which a mask-only needle masks whole
  * (go-to-k/cdkd#2936: the VPC `CidrBlock` and Events rule `Arn` arms) — and
  * that is not a shape a compiler can enforce. A branch serving `attributes`
- * also hands what it serves through {@link reresolveRecordedReferences}
+ * also hands what it serves through `reresolveRecordedReferences`
  * (go-to-k/cdkd#4800); the VPC `CidrBlock` and Events rule `Arn` arms do not,
  * since no physical id proves which generation of their value AWS holds. `constructGuardedAttribute`'s return is deliberately outside it:
  * that value is fetched from AWS in this run, not read back from state, so

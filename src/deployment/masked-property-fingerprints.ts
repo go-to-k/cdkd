@@ -16,18 +16,18 @@
  * (go-to-k/cdkd#4543, below).
  *
  * TWO FIELDS.
- * - `maskedPropertyFingerprints` (`sha256:`, {@link maskedPropertyFingerprint}):
+ * - `maskedPropertyFingerprints` (`sha256:`, `maskedPropertyFingerprint`):
  *   the template value's TEXT, exactly as #4451 wrote it, so an older cdkd
  *   still reads it and still sends a template edit.
  * - `maskedPropertyInputFingerprints` (`inputs-sha256:<hex>+sha256:<hex>`,
- *   {@link maskedInputFingerprint}): the template value with each NON-SECRET
+ *   `maskedInputFingerprint`): the template value with each NON-SECRET
  *   input replaced by what it resolved to (a parameter's bound value, a
  *   `Ref` / `Fn::GetAtt` result, the branch an evaluated condition selects),
  *   then the text hash it is BOUND to. A `NoEcho` parameter, a
  *   `{{resolve:...}}` reference, and any input derived from one stay in their
  *   UNRESOLVED (template) form: the hash is computed from no secret value, so
  *   it is no confirm oracle (`.claude/rules/layout-deployment-secrets.md`).
- *   The classes are in {@link parameterInputsFor} and `inputForm` below.
+ *   The classes are in `parameterInputsFor` and `inputForm` below.
  *   Non-`NoEcho` parameter values and cross-stack outputs are treated as
  *   public, so a low-entropy one may be recoverable from the hash: declare a
  *   sensitive one `NoEcho`.
@@ -35,7 +35,7 @@
  * The one way a secret can still reach either hash is a template LITERAL
  * equal to a `NoEcho` parameter's value or to a value the same resource
  * resolved as a secret; such a property is refused a hash
- * ({@link REFUSED_FINGERPRINT}) and keeps the pre-#4451 comparison. The
+ * (`REFUSED_FINGERPRINT`) and keeps the pre-#4451 comparison. The
  * parameter values are known from deploy start (backfill and every save); a
  * resolved value only to a save that resolved the resource.
  *

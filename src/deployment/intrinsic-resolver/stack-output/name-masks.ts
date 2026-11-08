@@ -240,7 +240,7 @@ export function maskNamedError(
  * (go-to-k/cdkd#3150), but an SDK rejection QUOTES the name it refused back —
  * `ParameterNotFound: <name>`, a region in a describe failure — and that
  * text reached only the needle mask, whose substring arm has the
- * {@link MIN_NEEDLE_LENGTH} floor. A name an `Fn::Sub` assembled around a
+ * `MIN_NEEDLE_LENGTH` floor. A name an `Fn::Sub` assembled around a
  * 1-3 character secret printed masked in the resolver's own words and in the
  * clear a few characters later, in the SDK's.
  *

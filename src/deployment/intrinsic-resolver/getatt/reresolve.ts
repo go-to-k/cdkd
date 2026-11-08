@@ -44,7 +44,7 @@ import { reresolveCrossStackValue } from '../cross-stack.js';
  * keeps the secret's spelling, comparing expression with expression.
  *
  * Unchanged: a value carrying no reference; one carrying the MASK, which
- * {@link noteAttributeSecrecy} already reported for the deploy to refuse; a
+ * `noteAttributeSecrecy` already reported for the deploy to refuse; a
  * value with a token not proven local, or whose resolution the producer's
  * physical id does not contain ({@link referencesMatchPhysicalId}: a rotated
  * secret, or a value that is no name), served as before with a warning; and

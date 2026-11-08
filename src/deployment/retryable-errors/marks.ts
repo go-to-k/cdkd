@@ -172,7 +172,7 @@ export function hasRedactedCause(error: unknown): boolean {
  * retry alone.
  *
  * The known live instance this JSDoc used to flag as uncovered —
- * `ResourceUpdateNotSupportedError` (`src/utils/error-handler.ts`), which
+ * `ResourceUpdateNotSupportedError` (`src/utils/error-handler/deploy-errors.ts`), which
  * interpolates the logical id and is thrown by ~20 providers from inside the
  * retried `update()` in `deploy-engine.ts` — IS covered as of issue
  * [#1838](https://github.com/go-to-k/cdkd/issues/1838): it marks itself in its

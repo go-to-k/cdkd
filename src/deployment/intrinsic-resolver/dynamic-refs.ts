@@ -102,7 +102,7 @@ export class DynamicReferenceCache {
  * out of a state record, a rollback journal or a producer stack's outputs.
  * That is what every caller of this method hands it (`cdkd drift`, the
  * rollback replay, `cdkd scrub`'s per-token delegation, the cross-stack
- * re-resolution); a TEMPLATE leaf goes through {@link resolve}, which takes
+ * re-resolution); a TEMPLATE leaf goes through `resolve`, which takes
  * {@link resolveTemplateLeafReferences}.
  *
  * The distinction is load-bearing for two refusals. A token of a

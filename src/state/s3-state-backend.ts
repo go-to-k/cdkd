@@ -320,7 +320,7 @@ export class S3StateBackend {
    * Called early in deploy/destroy to fail fast before expensive work
    * (asset publishing, Docker builds) runs against a missing bucket.
    *
-   * Errors are routed through {@link normalizeAwsError} so the AWS SDK v3
+   * Errors are routed through `normalizeAwsError` so the AWS SDK v3
    * synthetic `UnknownError` (e.g. cross-region HEAD) becomes a concrete
    * "Bucket does not exist" / "Access denied" / "different region" message.
    */

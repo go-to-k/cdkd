@@ -136,9 +136,9 @@ export function identityKeyFor(
  * 1. REFUSAL — a source leaf `crossStackSourceKey` (`cross-stack.ts`) cannot key, or one
  *    this pass recorded no association for. Both fall to the value scan, i.e.
  *    to today's behaviour.
- * 2. REFUSAL — `positionByIntrinsicSkeleton` (`positions.ts`) is deliberately NOT tried
+ * 2. REFUSAL — `positionByIntrinsicSkeleton` (`positions/skeleton.ts`) is deliberately NOT tried
  *    element-wise, and the asymmetry with the string arm is structural rather
- *    than caution. `intrinsicSkeletonPattern` (`positions.ts`) accepts exactly `Fn::Join`
+ *    than caution. `intrinsicSkeletonPattern` (`positions/skeleton.ts`) accepts exactly `Fn::Join`
  *    and `Fn::Sub`, both of which produce a STRING; an array bag beside one of
  *    them is a SHAPE DIVERGENCE, not a position. Matching a per-element pattern
  *    built from text that describes the whole joined string would be a guess of

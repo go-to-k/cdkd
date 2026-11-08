@@ -166,7 +166,7 @@ export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'export
 }
 
 /**
- * The record's {@link ResourceState.acceptedCreateOnlyDrops} as a set. A
+ * The record's `ResourceState.acceptedCreateOnlyDrops` as a set. A
  * missing field, a non-array, or a non-string entry is NO evidence: the field
  * licenses a refusal, so an unreadable one must not.
  */

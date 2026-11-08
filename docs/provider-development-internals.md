@@ -433,7 +433,7 @@ drop answer, ask what your readback emits for the UNCONFIGURED resource.
 
 ## `isSameResource` and `resourceIdentity`
 
-Both are optional members of `ResourceProvider` (`src/types/resource.ts`). They
+Both are optional members of `ResourceProvider` (`src/types/resource/provider.ts`). They
 let a successful deploy delete a resource that an earlier failed create left
 behind under the same logical id.
 

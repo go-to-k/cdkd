@@ -650,7 +650,7 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
  * `addTask`, which already ran with the (wrong) `Replacing` verb. That
  * downgrade's routing tag goes through
  * `peekRoutingForLabel(this.providerRegistry, this.options, ...)` with
- * `needsReplacement: false` (`update.ts` ~1636), and `this.options.pinCcApi`
+ * `needsReplacement: false` (`update/finish.ts`), and `this.options.pinCcApi`
  * is the ONLY input left that can still color it `cc-api`.
  *
  * The real diff ALSO flags this exact shape (a create-only property fed by a

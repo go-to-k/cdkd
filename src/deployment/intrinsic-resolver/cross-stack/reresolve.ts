@@ -43,12 +43,12 @@ import { physicalIdsOf, producerStateOnce } from './producer-state.js';
  * import edge was the one that was missed, because the redaction and the
  * consumption live in different stacks and often different runs.
  *
- * `{{resolve:` re-resolution in {@link resolveValue} could not cover it: that
+ * `{{resolve:` re-resolution in `resolveValue` could not cover it: that
  * arm fires for a leaf INPUT string, and an intrinsic's RETURN value is never
  * fed back through it.
  *
- * WHICH REGION RESOLVES IT — the producer's, via {@link
- * resolverForProducerRegion}. The expression was resolved BY the producer IN
+ * WHICH REGION RESOLVES IT — the producer's, via
+ * `resolverForProducerRegion`. The expression was resolved BY the producer IN
  * the producer's region, so that is the only region whose answer reproduces
  * the value the producer exported; a Secrets Manager secret or an SSM
  * parameter of the same NAME in two regions is two independent values (issue
@@ -129,7 +129,7 @@ export async function reresolveCrossStackValue(
      * confusion for a redacted DYNAMIC REFERENCE, and its reasoning ("a
      * same-named secret in the consumer account would answer instead")
      * transfers verbatim. It does not fire here only because
-     * {@link SECRET_MASK} is not a dynamic reference, so that guard's
+     * `SECRET_MASK` is not a dynamic reference, so that guard's
      * `carriesDynamicReference` test is false and this path falls through it.
      */
     crossAccount?: boolean;
@@ -220,7 +220,7 @@ export async function reresolveCrossStackValue(
       // from `attributeName` / `exportName` / `outputName` / `stackName` /
       // `region`, and this PR masks every one of those elsewhere. The comment
       // above used to assert `origin` "carries no resolved value"; that was
-      // false, and the value travels — `refuseRedactedAttributeReads` (deploy-engine/masking.ts)
+      // false, and the value travels — `refuseRedactedAttributeReads` (deploy-engine/masking/noecho-attributes.ts)
       // joins this array into a throw at DEFAULT verbosity.
       //
       // Masked BEFORE the dedup, not after: the dedup compares `display`, so

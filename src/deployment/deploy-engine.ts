@@ -802,7 +802,7 @@ export class DeployEngine {
    * `logicalId`-keyed read is the only thing available there. The two
    * `--replace` sites do hold their caller's bag and use
    * {@link maskingRetryLoggerFor} instead; see the note on
-   * `replacement.ts`'s `replaceDeleteFirstAndRecreate` `secrets` parameter for why binding
+   * `replacement/delete-first.ts`'s `replaceDeleteFirstAndRecreate` `secrets` parameter for why binding
    * the bag beats looking it up whenever the bag is in scope.
    *
    * Do NOT restate that the engine "already masked its own error text" — an
@@ -823,7 +823,7 @@ export class DeployEngine {
    *
    * Preferred over {@link maskingRetryLogger} wherever the resolution pass's
    * own `RecordedSecretValues` is in scope, for the reason
-   * `replacement.ts`'s `replaceDeleteFirstAndRecreate` parameter list already states about
+   * `replacement/delete-first.ts`'s `replaceDeleteFirstAndRecreate` parameter list already states about
    * the masker it threads: a map looked up by logical id is a DIFFERENT thing
    * from the bag this call resolved with, and one file must not argue both
    * sides. It delegates to the shared `masking-retry-logger.ts` so the deploy

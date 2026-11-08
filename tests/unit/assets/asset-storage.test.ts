@@ -550,7 +550,7 @@ describe('ensureAssetStorage', () => {
   // The row above pins `ap-northeast-1`, which IS a member of the SDK's
   // `BucketLocationConstraint` enum -- so it stays GREEN under the one
   // regression this cast invites, and the site LOOKS covered while being
-  // inert. `src/assets/asset-storage.ts:778` casts with
+  // inert. `src/assets/asset-storage/ensure.ts:224` casts with
   // `as BucketLocationConstraint` exactly as the S3 provider does; a future
   // "soundness fix" filtering the region to enum members would omit
   // `CreateBucketConfiguration` here, and on a REGIONAL endpoint an omitted

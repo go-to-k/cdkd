@@ -20,7 +20,7 @@ import type { JournaledOrphans } from '../journaled-orphans.js';
 import type { ForeignHolding } from './foreign-holder-scan.js';
 
 /**
- * The success-path rule (see {@link settleJournaledOrphansOnSuccess}): demote
+ * The success-path rule (see `settleJournaledOrphansOnSuccess`): demote
  * every proven orphan this deploy's outcome may own, and return those whose
  * ownership could not be read (kept, not acted on), those settled without
  * a delete: a record of this stack tracks them, or AWS reports them gone
