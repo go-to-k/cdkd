@@ -2,6 +2,7 @@
 description: Why cdkd destroy and cdkd deploy REFUSE a record whose root resources map a hand edit left unreadable, and why repairing it is not the safe half there
 paths:
   - 'src/cli/commands/destroy-runner.ts'
+  - 'src/cli/commands/destroy-runner/**'
 ---
 
 # The `resources` root bag at the two gated commands
@@ -13,7 +14,8 @@ Sibling containers:
 
 ## FOUR call sites
 
-`destroy-runner.ts`, `deployment/deploy-engine/deploy-flow.ts`,
+`destroy-runner.ts`, `deployment/deploy-engine/deploy-flow.ts` (the guard in
+`deployment/deploy-engine/deploy-flow/load-checks.ts`, go-to-k/cdkd#5835),
 `src/provisioning/providers/nested-stack-provider.ts` — that `delete()` counts the
 CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
 runner's guard alone cannot see a `null` or absent child bag — the bare `TypeError`

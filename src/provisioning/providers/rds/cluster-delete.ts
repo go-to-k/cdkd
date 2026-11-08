@@ -20,12 +20,12 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  PROTECTION_FLIP_RETRY_WAIT_MS,
 } from '../deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { isClusterBusyRefusal } from './cluster-members.js';
 import {
-  PROTECTION_FLIP_RETRY_WAIT_MS,
   RDS_DELETE_WAIT_MS,
   deleteAutomatedBackupsInput,
   recordedGlobalClusterIdentifier,

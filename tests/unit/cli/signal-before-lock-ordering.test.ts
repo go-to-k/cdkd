@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { destroyRunnerSourceFiles } from './_destroy-runner-source.js';
 
 // Source-level ordering pins (issue #1348): every lock-taking interrupt-
 // sensitive code path must register its SIGINT handler BEFORE acquiring the
@@ -183,7 +184,11 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
     // site, so a hand-rolled acquire re-added here would inherit no pin at
     // all — the duplicated contract #2174 removed. Both former sites must call
     // the guard instead.
-    const live = liveSource('src/cli/commands/destroy-runner.ts');
+    // The runner and every module split out of it (go-to-k/cdkd#5835), read
+    // recursively; the floor fails a derivation that lost the directory.
+    const files = destroyRunnerSourceFiles();
+    expect(files.length).toBeGreaterThanOrEqual(8);
+    const live = files.map(liveSource).join('\n');
     expect(live.split(/\.acquireLock(?:WithRetry)?\(/).length - 1).toBe(0);
     expect(live.includes(`process.on('SIGINT'`)).toBe(false);
     // The empty-state cleanup, the main destroy, and the settle of an abandoned

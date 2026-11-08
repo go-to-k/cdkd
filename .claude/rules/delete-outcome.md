@@ -7,6 +7,7 @@ paths:
   - 'src/deployment/rollback-executor.ts'
   - 'src/deployment/rollback-executor/**'
   - 'src/cli/commands/destroy-runner.ts'
+  - 'src/cli/commands/destroy-runner/**'
   - 'src/provisioning/cloud-control-provider.ts'
   - 'src/provisioning/cloud-control/**'
 ---

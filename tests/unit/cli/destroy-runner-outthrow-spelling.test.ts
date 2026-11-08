@@ -28,8 +28,11 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { destroyRunnerSourceFiles } from './_destroy-runner-source.js';
 
-const RUNNER = join(process.cwd(), 'src/cli/commands/destroy-runner.ts');
+// The runner and its `destroy-runner/` modules, read recursively
+// (go-to-k/cdkd#5835).
+const RUNNER_FILES = destroyRunnerSourceFiles().map((file) => join(process.cwd(), file));
 // The runner's lock + SIGINT catches moved here (go-to-k/cdkd#2174); they are
 // still on the destroy path, so the bare-String() sweep below reads both.
 const LOCK_GUARD = join(process.cwd(), 'src/cli/commands/stack-lock-guard.ts');
@@ -49,7 +52,12 @@ function codeOf(file: string): string {
 }
 
 describe('destroy-runner keeps each caught-value read on the helper matching its form', () => {
-  const source = codeOf(RUNNER);
+  // Floor: the split's entry plus its seven modules, so a reader that lost the
+  // directory fails here rather than scanning only the re-export entry.
+  it('reads the whole runner family', () => {
+    expect(RUNNER_FILES.length).toBeGreaterThanOrEqual(8);
+  });
+  const source = RUNNER_FILES.map(codeOf).join('\n');
 
   it('reads the operator-facing delete-failure line with safeStringify, not .detail', () => {
     // TWO lines carry this prefix, and only one is a caught-value read: the
@@ -85,7 +93,7 @@ describe('destroy-runner keeps each caught-value read on the helper matching its
     // proved it vacuous by renaming the binding to `caught` and restoring the
     // exact pre-fix defect -- the fence stayed green. A name list cannot fence
     // a population that chooses its own names.
-    const files = [RUNNER, LOCK_GUARD].map((file) => ({ file, code: codeOf(file) }));
+    const files = [...RUNNER_FILES, LOCK_GUARD].map((file) => ({ file, code: codeOf(file) }));
     const bindings = files.flatMap(({ code }) =>
       [...code.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((m) => m[1]!)
     );

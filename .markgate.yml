@@ -128,6 +128,9 @@ gates:
       # `cdkd destroy`'s handler and stack selection, split out of it (#5835).
       - "src/cli/commands/destroy/**"
       - "src/cli/commands/destroy-runner.ts"
+      # Its bodies, split out of it (#5835); moving code must not take it out
+      # of scope.
+      - "src/cli/commands/destroy-runner/**"
       - "src/deployment/deploy-engine.ts"
       # Split out of deploy-engine.ts (#4200) into deploy-engine/ (#4350); moving
       # code must not take it out of scope. `deploy-value-equality.ts` decides whether a
@@ -213,3 +216,5 @@ gates:
     hash: files
     include:
       - "src/types/state.ts"
+      # The state-shape interfaces moved to the sibling directory (#5835).
+      - "src/types/state/**"
