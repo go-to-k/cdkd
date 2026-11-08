@@ -673,6 +673,31 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     expect(result.stderr).toContain('not recursive');
   }, SPAWN_TIMEOUT_MS);
 
+  it('a provider in a MODULE split sibling directory is scanned, not skipped (#5835)', () => {
+    // `deletion-protection-compensation.ts` + `deletion-protection-compensation/`
+    // is walked rather than refused; a provider written there must still be seen.
+    const dir = copyProvidersTree();
+    writeFileSync(
+      join(dir, 'deletion-protection-compensation', 'nested-hidden-provider.ts'),
+      `export class ModuleSiblingHiddenProvider {
+  async create(a: string): Promise<void> {}
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<void> {}
+  async delete(a: string): Promise<void> {}
+}
+`
+    );
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('[new-omitting]');
+    expect(result.stderr).toContain('ModuleSiblingHiddenProvider');
+  }, SPAWN_TIMEOUT_MS);
+
   it('two provider classes sharing a name fail — the list cannot address either', () => {
     const dir = copyProvidersTree();
     mutate(
