@@ -163,7 +163,7 @@ module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
   AND offers a destructive remedy needs both halves: the template, and the gate
   on the clause above it.**
 - **`cdkd rollback` refuses the same record with its OWN message**
-  (`refuseDivergentRecordRegionForRollback` in `rollback.ts`,
+  (`refuseDivergentRecordRegionForRollback` in `cli/commands/rollback/guards.ts`,
   go-to-k/cdkd#3370), not this builder — whose opening, consequence and remedy
   speak about a DESTROY. Same conjunction, same code, kind-only; it offers no
   command, so it needs no exactness gate. ONE command-level refusal covers every
@@ -249,7 +249,7 @@ comes from, and an S3 key segment cannot carry a NUL while an exports-index
 string can (go-to-k/cdkd#3323, `docs/design/3323-composite-record-keys.md`).
 Derive the call sites with `grep -rn "producerRecordKey(\|producerCoordinateKey(" src/`.
 
-## `isReadableBag` is defined in `src/types/state.ts`, not here
+## `isReadableBag` is defined in `src/types/state/helpers.ts`, not here
 
 It is only RE-EXPORTED, so no importer moved. It came down when
 `importableOutputKeys` needed it: `src/types/**` imports nothing and is imported

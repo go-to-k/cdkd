@@ -112,7 +112,7 @@ export async function resolveCidr(
   // needle part the leaf arm is `displayMasked`,
   // so the only thing that could separate per-leaf from whole-JSON masking is
   // `maskSecretsInText`'s asymmetry — the whole-string arm has no floor while
-  // the substring arm is floored at {@link MIN_NEEDLE_LENGTH} = 4 — and
+  // the substring arm is floored at `MIN_NEEDLE_LENGTH` = 4 — and
   // reaching it needs a needle of 3 characters or fewer equal to a WHOLE leaf.
   // `results` holds only values this method COMPUTED: dotted-decimal (min 9
   // characters, `0.0.0.0/0`) or colon-hex (min 17, `bigIntToIPv6` never

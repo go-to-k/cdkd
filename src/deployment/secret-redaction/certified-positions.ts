@@ -40,7 +40,7 @@ import { redactForState } from './context.js';
  * iterating it never yields one plaintext twice and a second sighting of an
  * expression is always a DIFFERENT plaintext.
  *
- * SHARED by `positionByIntrinsicSkeleton` (`positions.ts`),
+ * SHARED by `positionByIntrinsicSkeleton` (`positions/skeleton.ts`),
  * {@link positionByCrossStackSource} (issue #2059) and
  * `positionByIntrinsicFrame` (`positions.ts`) (issue #2745) rather than copied: the
  * poisoning rule is the subtle half of condition 3, and every copy is another
@@ -187,14 +187,14 @@ export function associationForSource(
  * association the RESOLVER recorded while it read the producer (issue
  * [#2059](https://github.com/go-to-k/cdkd/issues/2059)).
  *
- * This is the residual `positionByIntrinsicSkeleton` (`positions.ts`) leaves behind, and
+ * This is the residual `positionByIntrinsicSkeleton` (`positions/skeleton.ts`) leaves behind, and
  * it needs a different mechanism rather than one more skeleton arm.
- * `intrinsicSkeletonPattern` (`positions.ts`) is a TEXT matcher over the source leaf's
+ * `intrinsicSkeletonPattern` (`positions/skeleton.ts`) is a TEXT matcher over the source leaf's
  * literals, and these two intrinsics carry no text about their expression at
  * all: `Fn::ImportValue`'s only literal is the export NAME, and
  * `Fn::GetStackOutput`'s are `StackName` / `OutputName` / `Region`, none of
  * which bears any relation to the producer's `{{resolve:...}}` string. A
- * pure-wildcard skeleton is not a fallback either — `SKELETON_WILDCARD` (`positions.ts`)
+ * pure-wildcard skeleton is not a fallback either — `SKELETON_WILDCARD` (`positions/skeleton.ts`)
  * is `[^}]*`, which cannot cross a token's own `}}` — so it would match zero
  * candidates and always refuse, i.e. degrade to the collapse. The association
  * has to come from the one place that holds both halves at once, which is
@@ -223,7 +223,7 @@ export function associationForSource(
  * leaf identity; the arm fires only for the spellings
  * {@link crossStackSourceKey} can key; and
  * condition 1 still demands that the bag leaf be a plaintext this pass
- * resolved. Every rejection degrades to `positionByIntrinsicSkeleton` (`positions.ts`),
+ * resolved. Every rejection degrades to `positionByIntrinsicSkeleton` (`positions/skeleton.ts`),
  * `positionByIntrinsicFrame` (`positions.ts`) and then to the value scan, i.e. to today's
  * behavior.
  */

@@ -486,7 +486,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       // The first two write the mask into `properties` as well, so the
       // sibling refusals reach that population too: `export.ts`'s
       // blocker, `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`
-      // and `deploy-engine/masking.ts`'s `refuseRedactedAttributeReads`
+      // and `deploy-engine/masking/noecho-attributes.ts`'s `refuseRedactedAttributeReads`
       // name the `Fn::Base64` writer with a remedy of their own (issue
       // #2881).
       tally.totalUnresolvable++;

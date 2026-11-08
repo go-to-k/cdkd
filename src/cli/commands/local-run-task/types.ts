@@ -89,7 +89,7 @@ export interface LocalRunTaskOptions {
    * (go-to-k/cdkd#5768). The task definition's representative container is
    * rebuilt from a local Dockerfile when its image is a deployed-registry pin
    * (ECR, public, or a same-stack ECR repository with no state); see
-   * {@link resolveRunTaskImageOverride}.
+   * `resolveRunTaskImageOverride`.
    */
   imageOverride?: string[];
   imageBuildArg?: string[];

@@ -106,7 +106,7 @@ export async function resolveBase64(
   // `{{resolve:...}}` reference), and base64 of a string that merely
   // CONTAINS a secret decodes back to that secret just as completely. TWO
   // maskers ask it, and each sees what the other cannot: the NEEDLE mask
-  // catches a plaintext at or above {@link MIN_NEEDLE_LENGTH} wherever it
+  // catches a plaintext at or above `MIN_NEEDLE_LENGTH` wherever it
   // sits, and the POSITION mask (`logTextOfLeaf`, issue #3100) catches a
   // sub-floor plaintext an earlier write of this pass put into the input,
   // which the substring arm is blind to by design (issues #2516 / #2745).

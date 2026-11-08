@@ -49,7 +49,7 @@ export async function updateWithRollbackRetry(
   logger: RollbackExecutorContext['logger'],
   isInterrupted: (() => boolean) | undefined,
   secrets: RecordedSecretValues,
-  /** The op's masker ({@link createOpMasker}) for the retry lines. */
+  /** The op's masker (`createOpMasker`) for the retry lines. */
   mask: MaskerFn
 ): Promise<ResourceUpdateResult | undefined> {
   // Issue #1160, for BOTH revert arms: each hands over two state records, so
@@ -224,7 +224,7 @@ export async function createWithRollbackRetry(
   logicalId: string,
   logger: RollbackExecutorContext['logger'],
   isInterrupted: (() => boolean) | undefined,
-  /** The op's masker ({@link createOpMasker}) for the retry lines. */
+  /** The op's masker (`createOpMasker`) for the retry lines. */
   mask: MaskerFn,
   outer: {
     /**

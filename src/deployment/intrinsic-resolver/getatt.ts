@@ -539,7 +539,7 @@ export async function resolveGetAtt(
 /**
  * Refuse a pre-#1681 PLACEHOLDER ARN served from the cached attribute map
  * (issue #1729) — the `Fn::GetAtt` half of the guard
- * {@link cfnRefValueFromPhysicalId} applies to `Ref`.
+ * `cfnRefValueFromPhysicalId` applies to `Ref`.
  *
  * `Ref` and `Fn::GetAtt` read the SAME recorded attribute, and #1681 treated
  * only the `Ref` side: for an `AWS::AppSync::*` child created by a pre-#1681
@@ -547,11 +547,11 @@ export async function resolveGetAtt(
  * to `arn:aws:appsync:*:*:apis/.../datasources/...` — structurally valid,
  * unusable, and indistinguishable downstream from a real ARN.
  *
- * Scoped to the {@link REF_RETURNS_ARN_FROM_STATE} types AND their declared
+ * Scoped to the `REF_RETURNS_ARN_FROM_STATE` types AND their declared
  * ARN attribute names, the narrowest form of the fix: a wildcard-bearing ARN
  * is only KNOWN to be a placeholder for these three attributes, and some
  * other type could legitimately cache an ARN-shaped string carrying a `*` in
- * a position {@link isPlaceholderArn} inspects. Every other attribute of
+ * a position `isPlaceholderArn` inspects. Every other attribute of
  * these same types (`AWS::AppSync::ApiKey`'s `ApiKey`,
  * `AWS::AppSync::DataSource`'s `Name`) is untouched.
  *
@@ -610,7 +610,7 @@ export function rejectPlaceholderArnAttribute(
  * Many CloudFormation attributes are not returned by Cloud Control API,
  * so we need to construct them manually.
  *
- * Reached only through {@link constructGuardedAttribute}, which vets the
+ * Reached only through `constructGuardedAttribute`, which vets the
  * result. Keep this method's NAME — `scripts/gen-sdk-attr-coverage.ts` reads
  * the resource types it and its `constructAttributeFor*` helpers reference.
  */

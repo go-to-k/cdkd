@@ -6,7 +6,7 @@
  * stayed byte-identical previewed as "No changes detected" and `--fail` exited
  * 0 — while the apply wrote new outputs and republished the exports index.
  *
- * The fix deliberately does NOT share code with `resolveOutputs` (`deploy-engine/outputs.ts`)
+ * The fix deliberately does NOT share code with `resolveOutputs` (`deploy-engine/outputs/resolve.ts`)
  * (that file is in the `integ-destroy` gate scope and was held
  * by a parallel lane). The last describe block is the anti-drift fence that
  * trade requires: it watches the deploy-side semantics this module
@@ -1343,7 +1343,7 @@ describe('anti-drift fence vs resolveOutputs (issue #1921)', () => {
     // The predicate MOVED (issue #1919): the deploy engine now shares it with
     // `cdkd scrub` through `outputs-export-alias.ts`, because the outputs bag
     // has two key writers that must agree about which outputs are published.
-    // Behavior is unchanged — `outputs-diff.ts:283` still spells it inline, and
+    // Behavior is unchanged — `outputs-diff/resolve.ts:343` still spells it inline, and
     // this fence still watches exactly that parity — so the fence follows the
     // predicate rather than being relaxed. BOTH halves are asserted: the rule
     // itself, and that the deploy engine still calls it. Either one moving on

@@ -60,7 +60,7 @@ import { type RollbackExecutorContext, type CompletedOperation } from './types.j
  *   segment pops, and the operator re-converges with `cdkd deploy`.
  * - PRESENT but unusable (`null`, a string, an array): something was recorded
  *   and only its shape is wrong. REFUSED by throwing, like
- *   {@link refuseMaskedReplayBaseline}, whose case is the same class (a
+ *   `refuseMaskedReplayBaseline`, whose case is the same class (a
  *   desired bag that exists and cannot be used): the op counts as a FAILURE,
  *   which keeps the segment from popping so a repaired record can be retried.
  *   "Repairable" is the conservative reading rather than a promise -- the
@@ -75,13 +75,13 @@ import { type RollbackExecutorContext, type CompletedOperation } from './types.j
  * Reachability, because it decides what the message may promise, and it is NOT
  * uniform across the three arms:
  *
- * - The two {@link replaySingle} arms are reached from the AUTOMATIC rollback
- *   (`deploy-engine.ts` calls `replayRollback` directly), whose ops come from
+ * - The two `replaySingle` arms are reached from the AUTOMATIC rollback
+ *   (`deploy-engine/rollback/perform.ts` calls `replayRollback` directly), whose ops come from
  *   `state.json` and pass no parser. That is where the throw has a live
  *   producer. On the `cdkd rollback` path go-to-k/cdkd#3149 refuses the same
  *   record at `parseRollbackJournal` first, with its own remedy.
  * - The failed-op arm has NO such producer for its THROW.
- *   `replayFailedOperations` has ONE caller (`src/cli/commands/rollback.ts`),
+ *   `replayFailedOperations` has ONE caller (`src/cli/commands/rollback/replay.ts`),
  *   and that path is fed by `parseRollbackJournal`, whose
  *   `refuseMalformedOperation` runs over `failedOperations[]` as well and
  *   already rejects a non-object `previousState.properties`. So its throw, its
@@ -608,10 +608,10 @@ function isRestorableBag(bag: unknown): bag is Record<string, unknown> {
 
 /**
  * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
- * executor's copy of `deploy-engine/replacement.ts`'s `prepareFinalSnapshotForDelete`
+ * executor's copy of `deploy-engine/replacement/delete-context.ts`'s `prepareFinalSnapshotForDelete`
  * mechanism matrix, run BEFORE the delete. Shared with the FAILED in-flight
  * CREATE's delete (`--revert-failed`, issue #1362) so the two sibling paths
- * cannot drift; that caller's op is a {@link FailedOperation}, hence the
+ * cannot drift; that caller's op is a `FailedOperation`, hence the
  * structural parameter type:
  *
  *   - atomic type, SDK-routed → returns the generated identifier for the

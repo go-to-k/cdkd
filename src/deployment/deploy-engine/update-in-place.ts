@@ -65,7 +65,7 @@ import { buildResolverContext } from './resolver-context.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 import { replaceFallbackFor } from './update-in-place/replace-fallback.js';
 
-/** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
+/** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateInPlace(
   engine: DeployEngine,
   {
@@ -284,7 +284,7 @@ export async function updateInPlace(
     }
   }
   // go-to-k/cdkd#5380: the keys an earlier failed update left unsettled, which
-  // `update.ts` already counted in `changedProperties`; the provider is told
+  // `update/finish.ts` already counted in `changedProperties`; the provider is told
   // which of them to converge against AWS.
   const unsettled = unsettledPropertiesOf(currentResource);
   // go-to-k/cdkd#5498: what the failed update had been accepted for adding.

@@ -56,7 +56,7 @@ export const EXPORT_NAME_SCOPE: LiveScopePolicy = {
 
 /**
  * What a failed Output resolution does, shared by both passes of
- * {@link resolveOutputs} so they cannot drift — the alias pass reports the
+ * `resolveOutputs` so they cannot drift — the alias pass reports the
  * SAME failure for a name it could not resolve as the value pass does for a
  * value, which is what the single-pass shape did when both lived in one
  * `try`.

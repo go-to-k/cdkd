@@ -905,9 +905,9 @@ at template-authoring time.
 
 ## Source map
 
-- Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts)
+- Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) (version constants) and [`src/types/state/`](https://github.com/go-to-k/cdkd/tree/main/src/types/state) (the state-shape interfaces)
 - Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
-- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts); `Fn::ImportValue` in [`src/deployment/intrinsic-resolver/cross-stack.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cross-stack.ts), `Fn::GetStackOutput` in [`stack-output.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/stack-output.ts), the CloudFormation fallback in [`cfn-fallback.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cfn-fallback.ts)
+- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts); `Fn::ImportValue` in [`src/deployment/intrinsic-resolver/cross-stack/import-value.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cross-stack/import-value.ts), `Fn::GetStackOutput` in [`stack-output.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/stack-output.ts), the CloudFormation fallback in [`cfn-fallback.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cfn-fallback.ts)
 - Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
 - Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
 

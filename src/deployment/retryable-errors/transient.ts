@@ -342,7 +342,7 @@ export interface RetryClassificationSignals {
  * stacked SDK errors -- but it is the same "must not contradict the
  * classifier" case one link further out, and is the thing to revisit if such a
  * chain is ever observed. A cdkd module deliberately importing no other module, this one
- * cannot ask `error instanceof CdkdError` directly: `error-handler.ts` imports
+ * cannot ask `error instanceof CdkdError` directly: `error-handler/deploy-errors.ts` imports
  * `markNonRetryable` from here, so the dependency only runs one way.
  */
 export function describeRetryClassificationSignals(error: unknown): RetryClassificationSignals {

@@ -4,8 +4,8 @@ import type { ResourceNameOptions } from './generate.js';
  * How cdkd names one type's resource when the template does not.
  *
  * The ONE generator per type (go-to-k/cdkd#5095): the SDK provider calls
- * {@link generatedNameFor} and a Cloud Control create fills the same name
- * through {@link applyDefaultNameForFallback}, so a resource gets the same
+ * `generatedNameFor` and a Cloud Control create fills the same name
+ * through `applyDefaultNameForFallback`, so a resource gets the same
  * name on either route. The only differences are `legacy`'s, each kept so
  * that no stack without an instance id changes a name it already generates.
  */
@@ -48,7 +48,7 @@ export interface GeneratedNameRule {
   };
   /**
    * The entry does not admit its type to orphan adoption
-   * ({@link explicitNamePropertyFor}): a type added for its generated name
+   * (`explicitNamePropertyFor`): a type added for its generated name
    * alone, never checked against `ADOPTION_REFUSED_TYPES`' three tests.
    */
   notAdopted?: true;

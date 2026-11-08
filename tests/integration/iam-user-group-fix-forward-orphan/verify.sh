@@ -683,7 +683,7 @@ assert_record BaseUser "${BASE_USER}"
 # corroborate. What detects a wrong delete of a C is the exit code (2), the
 # log lines below (no delete of it, its "another one" warning), and step 4's
 # plain `delete-user` / `delete-group` of it, which fails the run if it is gone.
-# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# The settle's keep warnings (journaled-orphans/success-rule.ts, `applySuccessRule`) open
 # with the logical id and type: none may name an A.
 for pair in "UserA AWS::IAM::User" "GroupA AWS::IAM::Group"; do
   set -- ${pair}

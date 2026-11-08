@@ -594,7 +594,7 @@ assert_record BaseRole "${BASE_ROLE}"
 # corroborate. What detects a wrong delete of OrphanC is the exit code (2), the
 # log lines below (no delete of OrphanC, its "another one" warning), and step
 # 4's plain `delete-role` of it, which fails the run if the role is gone.
-# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# The settle's keep warnings (journaled-orphans/success-rule.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
 if ! grep -qF "deleting partially-created OrphanA" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2

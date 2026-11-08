@@ -584,7 +584,7 @@ export function warmThroughputOpFor(
  * on the `drift --revert` path — nothing is recorded, so the observed
  * baseline still holds the declared value — and FALSE on the DEPLOY path.
  * A successful deploy re-captures `observedProperties` through this same
- * `readCurrentState` (`deploy-engine.ts`'s `kickOffObservedCapture`), which
+ * `readCurrentState` (`deploy-engine/observed-capture.ts`'s `kickOffObservedCapture`), which
  * for a DECLARING template emits AWS's CURRENT value, so the very deploy
  * that warned equalises the comparison and the next `cdkd drift` reports the
  * resource clean. The message therefore says the warning may be the only

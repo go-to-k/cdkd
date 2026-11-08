@@ -42,12 +42,12 @@ export interface CompletedOperation {
    *
    * Stamped on EVERY completed UPDATE, not only a replacement: a plain
    * in-place update records `false`, which is both true and inert, because the
-   * only reader is {@link classifyRollbackOp}'s replacement arm. Recording it
+   * only reader is `classifyRollbackOp`'s replacement arm. Recording it
    * unconditionally is what keeps ABSENT meaning "written by a binary that
    * predates this field" and nothing else.
    *
    * The verdict the engine ACTED ON, recorded at the moment it acted, rather
-   * than something {@link classifyRollbackOp} re-derives. The engine reads
+   * than something `classifyRollbackOp` re-derives. The engine reads
    * `UpdateReplacePolicy` from the TEMPLATE being applied ("what is the user
    * applying now?"); the classifier used to read it from
    * `previousState.updateReplacePolicy` ("what did the last deploy record?"),
@@ -106,7 +106,7 @@ export interface CompletedOperation {
    * only the NEW resource. A replacement has two halves with two types: the
    * replay re-creates the OLD resource through THIS type's provider and deletes
    * the new one through {@link resourceType}'s. Read through
-   * {@link resolveReplacementOldType}, never directly.
+   * `resolveReplacementOldType`, never directly.
    *
    * ADDITIVE, no `journalVersion` bump — same precedent as
    * {@link oldResourceRetained}: an older binary ignores it, and an ABSENT
@@ -295,7 +295,7 @@ export interface RollbackExecutorContext {
    * calls a `DeletionPolicy: Snapshot` CREATE rollback makes (issue #1358).
    * Structurally satisfied by `AwsClients`. Absent falls back to the
    * `getAwsClients()` process-global — see
-   * {@link prepareCreateRollbackFinalSnapshot} for why pinning matters.
+   * `prepareCreateRollbackFinalSnapshot` for why pinning matters.
    */
   finalSnapshotClients?: PreDeleteSnapshotClients | undefined;
   /**
@@ -364,10 +364,10 @@ export interface RollbackExecutorContext {
   /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
-   * as produced by {@link producerRegionsFromState} (issue
+   * as produced by `producerRegionsFromState` (issue
    * [#2057](https://github.com/go-to-k/cdkd/issues/2057)).
    *
-   * Read ONLY by {@link classifyReplaySecretRegion}, and only to answer one
+   * Read ONLY by `classifyReplaySecretRegion`, and only to answer one
    * question: could a region-LESS `{{resolve:...}}` expression in a replayed bag
    * have come from a region other than {@link RollbackExecutorContext.region}?
    * Since #1934 a cross-stack consumer resolves a redacted secret expression in
@@ -388,7 +388,7 @@ export interface RollbackExecutorContext {
    *  - `cdkd rollback` (`src/cli/commands/rollback.ts`) passes
    *    `producerRegionsFromState(baseState)` — whatever the last save
    *    persisted.
-   *  - `rollbackExecutorContext(deps, previousState, stackName)` (`deploy-engine/rollback.ts`) passes the UNION
+   *  - `rollbackExecutorContext(deps, previousState, stackName)` (`deploy-engine/rollback/context.ts`) passes the UNION
    *    of the pre-deploy snapshot and THIS session's `recordedImports` /
    *    `recordedOutputReads` (`crossStackReadsForPartialSave`). That union is
    *    not belt-and-braces: a rollback journal exists only after a FAILED
@@ -526,7 +526,7 @@ export interface RollbackPlanItem extends PlannedRoute {
 }
 
 /**
- * Outcome of {@link replayFailedOperations}: the shared counters plus the
+ * Outcome of `replayFailedOperations`: the shared counters plus the
  * failed ops that are STILL pending (revert threw, or unprocessed due to an
  * interrupt). The command persists this list back onto the journal segment
  * so a re-run only re-attempts what is genuinely outstanding — a
@@ -576,7 +576,7 @@ export interface RollbackReplayResult {
    *
    * Returned rather than written here because this module owns no state
    * backend: BOTH callers — the engine's automatic rollback and the standalone
-   * `cdkd rollback` — persist it onto {@link StackState.orphans} themselves.
+   * `cdkd rollback` — persist it onto `StackState.orphans` themselves.
    * The next deploy re-adopts the resource instead of colliding with the
    * deterministic name it still holds.
    *

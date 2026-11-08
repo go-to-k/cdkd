@@ -23,7 +23,7 @@ export type ProtectionLocator =
   | ((bag: Record<string, unknown>, region: string | undefined) => unknown);
 
 /**
- * The protection flag per type. `countProtectedResources` (`destroy-runner.ts`)
+ * The protection flag per type. `countProtectedResources` (`destroy-runner/helpers.ts`)
  * reads it the same way in `properties` and then `observedProperties`, and so
  * does {@link recordedProtectionEvidence} (`recorded-protection.ts`).
  */

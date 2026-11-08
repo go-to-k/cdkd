@@ -241,7 +241,7 @@ export function refuseRedactedAttributeReads(
   // reading it from state lands here through `noteAttributeSecrecy`
   // (`deploy-engine-base64-attribute-refusal.test.ts` drives that route end
   // to end). An Output built over the encoding is the cross-stack twin: the
-  // outputs pass records the needle into the bag {@link redactOutputs} folds
+  // outputs pass records the needle into the bag `redactOutputs` folds
   // in, so a consumer deployed in a LATER run reads `***` through
   // `reresolveCrossStackValue`. The encoding is never recorded, so a deploy
   // that leaves its holder unchanged reads the mask again, and a re-import

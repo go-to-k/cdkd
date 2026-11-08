@@ -52,7 +52,7 @@ import {
  * only the first is about #2057:
  *
  *  1. A rollback journal exists only after a FAILED deploy, so
- *     {@link producerRegionsFromState} saw an empty list on exactly the deploy
+ *     `producerRegionsFromState` saw an empty list on exactly the deploy
  *     that introduces a cross-region secret read — and
  *     `classifyReplaySecretRegion` answered `local`, resolving the producer's
  *     region-less expression in the consumer's region. The refusal was inert

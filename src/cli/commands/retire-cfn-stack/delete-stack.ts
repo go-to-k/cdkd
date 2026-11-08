@@ -8,7 +8,7 @@ import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { cfnFailureText } from './failure-text.js';
 
 /**
- * Step 4 of the retirement {@link prepareCloudFormationStackRetirement}
+ * Step 4 of the retirement `prepareCloudFormationStackRetirement`
  * describes: `DeleteStack`, after the caller has written cdkd state from the
  * physical ids CloudFormation holds once the Retain update completed. Every
  * resource carries `DeletionPolicy: Retain` by then, so CloudFormation deletes

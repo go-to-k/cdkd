@@ -28,7 +28,7 @@ import {
  *
  * Extracted from `localInvokeCommand`'s body by issue
  * [#1836](https://github.com/go-to-k/cdkd/issues/1836) and shaped to mirror
- * `applyAgentCoreCredentialEnv` in `local-invoke-agentcore.ts` (the sibling
+ * `applyAgentCoreCredentialEnv` in `local-invoke-agentcore/env.ts` (the sibling
  * issue [#1814](https://github.com/go-to-k/cdkd/issues/1814) fixed), so a unit
  * test can lock the STS-client region binding with a mocked STS instead of
  * driving the full synth + docker pipeline.

@@ -68,7 +68,7 @@ async function drainTemplateUploads(
 
 /**
  * Steps 1-3 of retiring a CloudFormation stack whose resources cdkd is about
- * to adopt; {@link deleteRetiredCloudFormationStack} is step 4. The procedure
+ * to adopt; `deleteRetiredCloudFormationStack` is step 4. The procedure
  * is the one AWS recommends for handing resources between management tools
  * without deleting them:
  *

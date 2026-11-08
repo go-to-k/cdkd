@@ -3585,7 +3585,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // Derived from the tree, never from the list above: a file that starts
     // reading the container and is not anchored fails here. Read from
     // COMMENT-STRIPPED code — `orphan-adoption.ts` and `rollback-executor/types.ts`
-    // name `StackState.orphans` in prose only, and `orphan-rewriter.ts` holds
+    // name `StackState.orphans` in prose only, and `orphan-rewriter/attribute-fetcher.ts` holds
     // an unrelated `this.orphans` field — so a prose mention cannot add a file
     // and, more importantly, cannot excuse one.
     const listed = [

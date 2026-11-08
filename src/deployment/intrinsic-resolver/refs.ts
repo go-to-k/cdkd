@@ -380,14 +380,14 @@ export async function resolveRef(
  * stores. But for a few types CFn's `Ref` returns a sub-component of the
  * physical id, and returning the raw physical id breaks downstream consumers.
  *
- * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types store a COMPOUND physical
+ * The `REF_RETURNS_SEGMENT_AFTER_PIPE` types store a COMPOUND physical
  * id `<parentId>|<ref>` while CFn's `Ref` returns only the trailing `<ref>`
  * segment. Most are compound because Cloud Control provisions them (either
  * they have no SDK provider, or the #614 SDK-unwired routing sent an
  * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
  * — `AWS::S3Tables::Namespace` — are compound because their own SDK provider
  * packs the segments. (`AWS::Glue::Table` builds one too, but
- * takes {@link glueTableRefFromPhysicalId}: either of its segments may
+ * takes `glueTableRefFromPhysicalId`: either of its segments may
  * contain `|`.) The Set's header records the split per type; examples:
  *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
  *     `<restApiId>|<modelName>`. A method wiring
@@ -406,12 +406,12 @@ export async function resolveRef(
  * In every case the `Ref` value is the segment after the pipe (the parent id
  * is the first identifier component).
  *
- * The {@link REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE} types are the mirror
+ * The `REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE` types are the mirror
  * image: their compound primaryIdentifier puts the `Ref` component FIRST
  * (`<refId>|<parentId>` — e.g. `AWS::ApiGateway::Deployment`), so the value
  * is the segment before the first pipe.
  *
- * The {@link REF_RETURNS_NAME_FROM_ARN} types are SDK-provisioned with the
+ * The `REF_RETURNS_NAME_FROM_ARN` types are SDK-provisioned with the
  * resource ARN stored as the physical id, while CFn's `Ref` returns the
  * resource NAME (the CFn physical resource id) — e.g. `AWS::Events::Rule`
  * (`Ref` is the rule name such as `mystack-ScheduledRule-ABC`; a consumer
@@ -427,9 +427,9 @@ export async function resolveRef(
  * `TableARN` attribute.
  *
  * Two further mechanisms cover compounds neither Set can express (issue
- * #1681): {@link REF_RETURNS_SEGMENT_AT_INDEX} for an INTERIOR segment
+ * #1681): `REF_RETURNS_SEGMENT_AT_INDEX` for an INTERIOR segment
  * (`AWS::Route53::RecordSet`'s `<hostedZoneId>|<name>|<type>` -> the record
- * name), and {@link REF_RETURNS_ARN_FROM_STATE} for the `AWS::AppSync::*`
+ * name), and `REF_RETURNS_ARN_FROM_STATE` for the `AWS::AppSync::*`
  * children, whose `Ref` is an ARN recovered from the provider-recorded ARN
  * attribute through the same `stateLookup` seam.
  */
@@ -465,7 +465,7 @@ export function resolveRefValue(
 }
 
 /**
- * The `Ref` twin of {@link noteAttributeSecrecy} (issue
+ * The `Ref` twin of `noteAttributeSecrecy` (issue
  * [#2847](https://github.com/go-to-k/cdkd/issues/2847) review).
  *
  * `noteAttributeSecrecy`'s own contract is "every branch serving a value out

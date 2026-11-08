@@ -313,7 +313,7 @@ export function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * - `redactRollbackRecord` is always `**` (`redactRollbackRecord` early-returns
  *   on an empty map, so it cannot reach the derivation with one).
  * - the deploy JOURNAL's `previousState` no longer consults the derivation at
- *   all: `redactOperationsForJournal` (`deploy-engine/rollback.ts`) passes
+ *   all: `redactOperationsForJournal` (`deploy-engine/rollback/adopt-orphans.ts`) passes
  *   `STATE_SOURCED_READBACK_RULES` explicitly (issue
  *   [#2886](https://github.com/go-to-k/cdkd/issues/2886)). An op whose
  *   resource resolved nothing this deploy — a DELETE, an UPDATE with no
@@ -361,7 +361,7 @@ export function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *
  * The two rows reach this through
  * `scrubResourceRecord` with NO `sourceProperties`:
- * `redactOperationsForJournal` (`deploy-engine/rollback.ts`) scrubs a
+ * `redactOperationsForJournal` (`deploy-engine/rollback/adopt-orphans.ts`) scrubs a
  * `previousState` snapshot against its own untouched `properties` (passing
  * the readback constant as `observedRules`, per the bullet above), and
  * `redactRollbackRecord` finishes by scrubbing the record it just positioned.
@@ -456,7 +456,7 @@ export const TEMPLATE_SOURCED_RULES: PathSourceRules = {
  * Does NOT fail closed. This is the constant a caller reaches for when it knows
  * the SHAPE of its two bags and nothing about where the result lands —
  * `cdkd drift`'s two writers pass it, and so does
- * `redactOperationsForJournal` (`deploy-engine/rollback.ts`) for the journal's `previousState`
+ * `redactOperationsForJournal` (`deploy-engine/rollback/adopt-orphans.ts`) for the journal's `previousState`
  * (issue [#2886](https://github.com/go-to-k/cdkd/issues/2886): a REPLAYED
  * baseline must not gain masks a rollback restore then persists). See
  * {@link STATE_SOURCED_BASELINE_RULES} for the one that does, and

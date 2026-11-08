@@ -126,7 +126,7 @@ export const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, read
   });
 
 /**
- * The attribute name {@link DiffCalculator.extractGetAttRefs} records for a
+ * The attribute name `DiffCalculator.extractGetAttRefs` records for a
  * `Ref` read (go-to-k/cdkd#3717 / #3722). Not a name any attribute can have, so
  * the property-name, derived-attribute and prefix arms of the in-place pass
  * never match it; only the custom-resource arm (whose physical id the handler

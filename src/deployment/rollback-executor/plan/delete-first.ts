@@ -10,7 +10,7 @@ import type { CompletedOperation, FailedOperation } from '../types.js';
  * lost (a target group replaced create-first while its listener was recreated
  * delete-first). Such an op keeps the create-first order, and its collision
  * route refuses to delete the new resource too, so a failed re-create keeps
- * it. Keyed by the op object, like {@link markProvenDistinctFromRecord}:
+ * it. Keyed by the op object, like `markProvenDistinctFromRecord`:
  * computed per replay, never journaled.
  */
 const deleteFirstBlockedBy = new WeakMap<

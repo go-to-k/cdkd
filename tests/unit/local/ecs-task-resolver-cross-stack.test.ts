@@ -1,5 +1,5 @@
 /**
- * Tests for `applyCrossStackResolverToTask` in `src/local/ecs-task-resolver.ts`.
+ * Tests for `applyCrossStackResolverToTask` in `src/local/ecs-task-resolver/cross-stack.ts`.
  *
  * The function is the async post-pass invoked by `cdkd local run-task
  * --from-state` AFTER the synchronous `parseContainerDefinition` /

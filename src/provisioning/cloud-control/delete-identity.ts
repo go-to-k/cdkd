@@ -123,8 +123,8 @@ export async function assertRecordedRegionAgainstClient(
  * a GLOBALLY unique name, so a state record written before the issue #2227 /
  * #2245 guards existed can name a bucket that is ours but lives elsewhere --
  * a cdkd-GENERATED bucket name carries no region or account: for a name cdkd
- * derives itself, `resource-name.ts:240` builds
- * `` `${currentStackName}-${name}` `` whenever `resource-name.ts:239`'s
+ * derives itself, `resource-name/generate.ts:249` builds
+ * `` `${currentStackName}-${name}` `` whenever `resource-name/generate.ts:248`'s
  * `shouldPrefix` holds, so the same stack deployed to two regions produces
  * the same bucket name by construction. (That guard has a second, unrelated
  * path -- it also drops the prefix when there is no ambient stack name at
@@ -145,9 +145,9 @@ export async function assertRecordedRegionAgainstClient(
  *    that wrap a `delete()` honour the marker and would otherwise re-run the
  *    whole delete for their full budget before surfacing the same
  *    deterministic message, which reads as flaky AWS: the destroy path's own
- *    loop (`destroy-runner.ts:1328`, which runs FOUR attempts -- `attempt`
- *    goes 0..`maxAttempts` and `maxAttempts` is 3 at `:1326` -- with
- *    `isMarkedNonRetryable` gating both of its retryable arms at `:1372`)
+ *    loop (`destroy-runner/delete-resource.ts:381`, which runs FOUR attempts -- `attempt`
+ *    goes 0..`maxAttempts` and `maxAttempts` is 3 at `:371` -- with
+ *    `isMarkedNonRetryable` gating both of its retryable arms at `:485`)
  *    and the deploy engine's `withRetry` (`retry.ts:332`) on the
  *    replacement-delete path.
  *  - COULD NOT ANSWER -> proceed, but WARN at default verbosity. Refusing
@@ -207,12 +207,12 @@ export async function confirmDeleteTargetIdentity(
   // this comment claimed the "type-only `getProvider` call sites (destroy /
   // drift / state-refresh)", which is wrong on both halves: destroy, drift
   // and state-refresh all use `getProviderFor` WITH `provisionedBy`
-  // -- `destroy-runner.ts:1284`, `drift.ts:2122` / `:3930`,
+  // -- `destroy-runner/delete-resource.ts:310`, `drift.ts:2122` / `:3930`,
   // `state.ts:2340` / `:2394` -- and drift / state-refresh never call
   // `delete()` at all; the real `getProvider(` sites are `import.ts`,
   // `deploy-engine.ts` and `canonicalize-properties.ts`):
   //
-  //  - `destroy-runner.ts:1336` spreads `expectedRegion` only when
+  //  - `destroy-runner/delete-resource.ts:399` spreads `expectedRegion` only when
   //    `state.region !== undefined`, so a PRE-v2 state record (where
   //    `region` was not yet part of the key layout) arrives with no region.
   //  - any caller threading an EMPTY region string. `deploy-engine.ts`

@@ -44,7 +44,7 @@
 #             object version under the stack's prefix (state, journal,
 #             `deployments/`) is swept, on every exit path.
 #
-# Discrimination: revert the `maskSecrets` this PR threads (destroy-runner.ts
+# Discrimination: revert the `maskSecrets` this PR threads (destroy-runner/delete-resource.ts
 # for 5a, rollback-executor/replay-orphan-delete.ts for 5b,
 # deploy-engine/delete.ts for 5c) or src/provisioning/providers/
 # s3-directory-bucket/delete.ts ALONE and the matching sub-phase fails "the

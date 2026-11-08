@@ -118,7 +118,7 @@ export async function captureObservedForImportedResources(
         // its place adds nothing. That is why they are stated once, here, rather
         // than repeated against the mask.
         //
-        //  - `countProtectedResources` in `destroy-runner.ts` reads
+        //  - `countProtectedResources` in `destroy-runner/helpers.ts` reads
         //    `observedProperties` as its fallback for `DeletionProtection` /
         //    `LoadBalancerAttributes`, so a refused resource whose protection was
         //    set OUT OF BAND is missing from the destroy prompt's protected

@@ -307,7 +307,7 @@ export function withoutSdkUnwiredProperties(
  * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
  *
  * Narrowing only the record and not the desired side is the failure mode the
- * `canonicalizeDesiredProperties` contract in `src/types/resource.ts` spells
+ * `canonicalizeDesiredProperties` contract in `src/types/resource/provider.ts` spells
  * out for issue [#1591](https://github.com/go-to-k/cdkd/issues/1591): the
  * template's key resurfaces as a change on EVERY later deploy, and for a
  * create-only property that change is a REPLACEMENT — a destroy-and-recreate

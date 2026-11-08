@@ -14,7 +14,7 @@ export type OutputChangeType = 'ADD' | 'MODIFY' | 'REMOVE';
 export interface OutputChange {
   /**
    * The bag KEY, which is either a template `Outputs` logical name or an
-   * `Export.Name` alias — see {@link resolveTemplateOutputs} for why both live
+   * `Export.Name` alias — see `resolveTemplateOutputs` for why both live
    * in one flat map.
    */
   name: string;
@@ -33,7 +33,7 @@ export interface OutputChange {
   isExport: boolean;
   /**
    * True when {@link oldValue} was WITHHELD because it MAY be legacy secret
-   * plaintext (see {@link computeOutputsDiff}). Renderers and the `--json`
+   * plaintext (see `computeOutputsDiff`). Renderers and the `--json`
    * projection must not emit the value when this is set.
    *
    * Deliberately ONE boolean covering both reasons the value can be withheld —
@@ -51,7 +51,7 @@ export interface OutputChange {
    * How {@link name} may be SHOWN (issue
    * [#4015](https://github.com/go-to-k/cdkd/issues/4015)): the verdict
    * `secretSafeKeyDisplay` returned for this key against the corpus
-   * {@link computeOutputsDiff} derived, so a renderer prints the verdict's own
+   * `computeOutputsDiff` derived, so a renderer prints the verdict's own
    * text and never a separately sanitised copy of the key.
    *
    * Present only when the verdict is NOT `safe`. Absence loses nothing: the
@@ -73,7 +73,7 @@ export interface ResolvedTemplateOutputs {
    * state. The caller then reports NO outputs delta, EXCEPT on a stack whose
    * resource diff is empty, whose parameters bind and conditions evaluate, in
    * which no condition verdict can reach an output
-   * ({@link templateLetsConditionsReachOutputs}; a condition gating only
+   * (`templateLetsConditionsReachOutputs`; a condition gating only
    * resources does not count), and where every failure is one
    * {@link failuresMirrorDeploy} certifies: there the deploy
    * takes its NO-CHANGE branch and persists a merge (issue #2771), and
@@ -107,7 +107,7 @@ export interface ResolvedTemplateOutputs {
    * cannot name:
    * - a value that came back as a symbol, a surviving intrinsic, an
    *   unsubstituted `Fn::Sub` placeholder, or a container holding any of
-   *   those — {@link isUnresolvedValue}'s arms wider than deploy's
+   *   those — `isUnresolvedValue`'s arms wider than deploy's
    *   `v === undefined`. Such a value is not the deploy's failure signal, so
    *   it says nothing about what the deploy does with the key: it may write
    *   the value, lose it when the bag is serialized (a symbol), or throw where
@@ -142,7 +142,7 @@ export interface ResolvedTemplateOutputs {
    *
    * Collected for EVERY declared output including condition-skipped ones,
    * because a skipped output still appears on the stored side and would
-   * otherwise print its value as a REMOVE row. See {@link computeOutputsDiff}.
+   * otherwise print its value as a REMOVE row. See `computeOutputsDiff`.
    *
    * What it CANNOT cover — stated because an earlier revision of this comment
    * claimed the opposite, and a false coverage claim is what lets a reader
@@ -160,7 +160,7 @@ export interface ResolvedTemplateOutputs {
    * A stored key that is in neither this set nor the resolved bag is one the
    * template no longer explains — a DELETED output. Whether its stored value is
    * pre-GHSA secret plaintext is undecidable from the stored bag alone (a
-   * plaintext is just a string), so {@link computeOutputsDiff} withholds it
+   * plaintext is just a string), so `computeOutputsDiff` withholds it
    * when the template proves the stack handles secrets at all. See issue #1948.
    *
    * An INTRINSIC `Export.Name` is deliberately absent: the alias it resolves to
@@ -196,7 +196,7 @@ export interface ResolvedTemplateOutputs {
    * after this resolver's `skipDynamicReferences` pass — a name the deploy
    * substitutes a secret into and refuses (issue #1919), spelled with the
    * `{{resolve:...}}` token where an older binary substituted the plaintext.
-   * {@link secretSpanInStoredKey} reads them to find that plaintext in a stored
+   * `secretSpanInStoredKey` reads them to find that plaintext in a stored
    * alias key (issue #4015).
    */
   secretBearingExportNames: string[];
@@ -216,7 +216,7 @@ export interface ResolvedTemplateOutputs {
    * with the value and the verdicts of THEN, so a stored alias may spell a
    * value since rotated, or come from a branch today's verdict drops, which
    * neither {@link refusedNoEchoExportNames} nor the printing corpus (today's
-   * value only) can match: {@link computeOutputsDiff} withholds the name of
+   * value only) can match: `computeOutputsDiff` withholds the name of
    * every stored alias today's template cannot account for.
    */
   exportNameReadsNoEcho: boolean;

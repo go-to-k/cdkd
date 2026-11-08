@@ -15,7 +15,7 @@ import {
  * either names a changed property (bug-hunt 2026-06-29) OR is a derived
  * read-only attribute the update side-effects (issue #985).
  *
- * Distinct from {@link promoteReplacementDependents}: a replacement changes the
+ * Distinct from `promoteReplacementDependents`: a replacement changes the
  * physical id, so any reference is affected. An in-place update changes only
  * specific properties, so a dependent is affected in one of two ways when it
  * reads (via `Fn::GetAtt[Up, Attr]` or `Fn::Sub`'s `${Up.Attr}`) an attribute

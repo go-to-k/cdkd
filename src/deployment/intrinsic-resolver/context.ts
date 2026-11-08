@@ -232,7 +232,7 @@ export interface ResolverContext {
    * a nested `Outputs.<Key>`) from the record's `referenceProvenance`. A pin
    * equal to the version this resolver already cached reuses that entry; any
    * other pin is looked up at that version, cached under a key carrying it,
-   * and its plaintext is paired ({@link recordResolvedPair}) only when it
+   * and its plaintext is paired (`recordResolvedPair`) only when it
    * equals what this pass recorded for the token, so two generations of one
    * token never mark its pair conflicting.
    */
@@ -262,7 +262,7 @@ export interface ResolverContext {
   provenanceSuppressed?: true;
   /**
    * A PRINT-ONLY corpus of LOG-ONLY needles (go-to-k/cdkd#4043): read by the
-   * render mask of this resolver's own lines ({@link maskSecretsRaw}) and by
+   * render mask of this resolver's own lines (`maskSecretsRaw`) and by
    * nothing that detects, records into {@link recordedSecretValues} or
    * decides. `cdkd diff`'s Outputs pass resolves into bags of its own, whose
    * log-only needles decide which export aliases are refused, so the
@@ -367,7 +367,7 @@ export interface ResolverContext {
     | undefined;
   /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
-   * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
+   * serves a PERSISTED attribute that is nothing but `SECRET_MASK`
    * (issue #2274).
    *
    * This is the cross-DEPLOY half of the `NoEcho` story, and it exists because
@@ -394,7 +394,7 @@ export interface ResolverContext {
    * revision of this note said the deploy engine puts it on EVERY context, the
    * diff one included, on the argument that an unread array costs nothing. That
    * stopped being true the moment `resolveRefValue` began consulting the bag to
-   * decide whether {@link refStateLookupFromResource} may SKIP a masked leaf:
+   * decide whether `refStateLookupFromResource` may SKIP a masked leaf:
    * on the diff context the skip fired with no reader behind it, so `{Ref: X}`
    * resolved to the raw physical id and was compared against the `'***'` in
    * state — a pre-existing #2274 stack that reported NO_CHANGE and deployed
@@ -547,7 +547,7 @@ export interface ResolverContext {
    *
    * A supplier must also make the refusal SURVIVE its own error handling.
    * Scrub wraps each resolution pass in a best-effort `catch`, so it re-raises
-   * {@link DynamicReferenceRegionAmbiguousError} explicitly; swallowed, the
+   * `DynamicReferenceRegionAmbiguousError` explicitly; swallowed, the
    * refusal produces exactly the silent success it exists to prevent (issue
    * #2134 review). Any future supplier owes the same.
    *

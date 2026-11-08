@@ -47,7 +47,7 @@ import { masksOnlyAt } from './replay-noecho.js';
  *
  * A FOURTH thing since issue
  * [#2086](https://github.com/go-to-k/cdkd/issues/2086): the call is bound in
- * {@link withCurrentResourceSecrets} (`resource-secrets-scope.ts`).
+ * `withCurrentResourceSecrets` (`resource-secrets-scope.ts`).
  * `resolveReplayProps` has just re-resolved the journal's `{{resolve:...}}`
  * expressions back to PLAINTEXT into `secrets`, so the bag in hand here is
  * exactly the one the deploy engine would have bound, and a reader of that
@@ -146,7 +146,7 @@ export async function resolveReplayProps(
     if (typeof v === 'string') {
       if (!v.includes('{{resolve:')) return v;
       // Issue #2057: decide the REGION of every reference in this leaf before
-      // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      // any of them is fetched. See `classifyReplaySecretRegion`.
       refuseUnprovenReplaySecret(v, path, logicalId, execCtx, recordedRegions);
       const leafPins = await pins.forLeaf(v, recordedRegions);
       return await resolveLeafByRegion(

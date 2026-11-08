@@ -434,7 +434,7 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
   it('REPAIRS a stored key whose `Export.Name` did not fully resolve', async () => {
     // `scrub` takes no `--parameters`, so a parameterized export name comes
     // back as the literal `prefix-${Foo}`. Marking that literal ACCOUNTED is
-    // not inert: `deploy-engine.ts` writes an alias key on `typeof exportName
+    // not inert: `deploy-engine/outputs/resolve.ts` writes an alias key on `typeof exportName
     // === 'string'` with no unresolved-value test, so a deploy whose `Fn::Sub`
     // warn-and-kept the placeholder really does key state under it — and
     // accounting for it excluded the key from the widened pass while the

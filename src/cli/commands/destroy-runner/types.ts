@@ -168,14 +168,14 @@ export interface DestroyRunnerContext {
   /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
    * `cdkd destroy` exposes the same `--resource-warn-after` UX as
-   * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
+   * `cdkd deploy`. Defaults to `DEFAULT_RESOURCE_WARN_AFTER_MS`.
    */
   resourceWarnAfterMs?: number;
 
   /**
    * Per-resource hard timeout (ms). Mirrors `DeployEngineOptions` so
    * `cdkd destroy` exposes the same `--resource-timeout` UX as
-   * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
+   * `cdkd deploy`. Defaults to `DEFAULT_RESOURCE_TIMEOUT_MS`.
    */
   resourceTimeoutMs?: number;
 
@@ -276,7 +276,7 @@ export interface DestroyRunnerResult {
    * Number of resources whose provider reported `{ outcome: 'skipped' }` —
    * cdkd could NOT address the resource, so it may still be ALIVE (issue
    * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). The producers are
-   * enumerated on `ResourceDeleteResult` in `src/types/resource.ts`, which is
+   * enumerated on `ResourceDeleteResult` in `src/types/resource/results.ts`, which is
    * the single source of truth — deliberately NOT restated here (issue
    * [#1803](https://github.com/go-to-k/cdkd/issues/1803): this copy said "two
    * producers today" and went stale three times, once per lane that added

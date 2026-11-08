@@ -10,7 +10,7 @@
 # `stack + region + output key -> plaintext`, read back by
 # `NestedStackProvider.readChildOutputsAsAttributes` (a nested stack's
 # `Outputs.<Key>`, reported PER ATTRIBUTE via `noEchoAttributeNames`) and by
-# `reresolveCrossStackValue (intrinsic-resolver/cross-stack.ts)` (`Fn::ImportValue`).
+# `reresolveCrossStackValue (intrinsic-resolver/cross-stack/reresolve.ts)` (`Fn::ImportValue`).
 # Unit tests fence it with mocks that encode cdkd's own belief about the
 # ordering; this is the measurement.
 #
@@ -1031,7 +1031,7 @@ if [[ "${REFUSE_OUT}" != *"${CONSUMER}"* ]]; then
   fail "Phase 7b: the output never names ${CONSUMER} — the capture is empty or the run never reached it"
 fi
 # The cross-stack remedy arm of the redacted-read refusal (src/deployment/
-# deploy-engine/masking.ts, refuseRedactedAttributeReads).
+# deploy-engine/masking/noecho-attributes.ts, refuseRedactedAttributeReads).
 for needle in "Cannot resolve" "must deploy in ONE run"; do
   if [[ "${REFUSE_OUT}" != *"${needle}"* ]]; then
     printf '%s\n' "${REFUSE_OUT}" >&2

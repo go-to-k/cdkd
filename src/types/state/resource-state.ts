@@ -408,7 +408,7 @@ export interface ResourceState {
    * to be in AWS — a `cdkd import` record holds the template's full bag with
    * `provisionedBy: 'sdk'`, a pre-v7 record may have been created by Cloud
    * Control, and an older binary wrote no marker — so ABSENT (or malformed,
-   * read through {@link acceptedCreateOnlyDropsOf}) keeps the pre-#2790
+   * read through `acceptedCreateOnlyDropsOf`) keeps the pre-#2790
    * behaviour.
    *
    * Writers: an SDK-route CREATE or REPLACEMENT records every create-only drop

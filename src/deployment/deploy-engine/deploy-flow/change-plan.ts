@@ -192,7 +192,7 @@ export async function prepareChangeExecution(
   // reset: their only resolutions ARE the diff phase (+ the no-change
   // path's output resolution), so nothing double-counts there. Full
   // semantics in the counter's JSDoc
-  // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
+  // (`IntrinsicFunctionResolver.getPhysicalIdFallbackCount`).
   engine.resolver.resetPhysicalIdFallbackCount();
 
   clock.lap('plan checks, approval');

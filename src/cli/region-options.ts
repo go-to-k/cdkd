@@ -42,8 +42,8 @@ import { plainOrDescribed } from '../utils/pasteable-command.js';
  * A handler that ALSO needs the user's exact spelling must capture it first.
  * The one consumer with that need is the bootstrap-marker read, whose second
  * probe exists precisely to find a key an unfolded `cdkd bootstrap` wrote
- * (see `readBootstrapMarkerBody` in `src/assets/asset-storage.ts`); the
- * `--stack-region` fold in `local-invoke.ts` keeps a `rawStackRegion` for the
+ * (see `readBootstrapMarkerBody` in `src/assets/asset-storage/marker.ts`); the
+ * `--stack-region` fold in `local-invoke/command.ts` keeps a `rawStackRegion` for the
  * same class of reason.
  */
 export function foldRegionOption(options: { region?: string | undefined }): void {

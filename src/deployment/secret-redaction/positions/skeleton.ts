@@ -15,7 +15,7 @@ import { plaintextIndexOf } from '../certified-positions.js';
  * token's terminator and run into the next, so a skeleton for ONE reference
  * cannot match a candidate built from a different one.
  *
- * Zero-or-more here, unlike {@link DYNAMIC_REFERENCE_INNER}: this stands in for
+ * Zero-or-more here, unlike `DYNAMIC_REFERENCE_INNER`: this stands in for
  * an unknown SPAN, which may legitimately be empty (an `Fn::Join` part that
  * resolved to `''`), whereas a token with no inner text is not a token.
  */
@@ -179,7 +179,7 @@ export const UNKNOWN_PART = Symbol('unknown intrinsic part');
 /**
  * Stands in, while a source is RENDERED to text, for a part the skeleton cannot
  * know. A single character so the rendered string keeps the literal parts at
- * their true offsets, and NOT `}` so {@link dynamicReferenceSpans} reads it as
+ * their true offsets, and NOT `}` so `dynamicReferenceSpans` reads it as
  * a token's INNER text (the resolver's `[^}]+`) rather than as its terminator —
  * which is exactly how a `{Ref}` sitting inside a `{{resolve:...}}` opening
  * must read. A NUL, RESERVED here as the placeholder: a template string can
@@ -235,9 +235,9 @@ export function joinPartLiteralText(part: unknown): string | undefined {
  * {@link UNKNOWN_PART}. ONE parser for the three
  * readers of that shape — {@link intrinsicSkeletonPattern}, which hands every
  * segment to {@link anchoredSkeletonPattern} to spell as a regex,
- * {@link positionByIntrinsicFrame}, which needs the
+ * `positionByIntrinsicFrame`, which needs the
  * literal text VERBATIM to know where a token's frame begins and ends, and
- * `frameSpellingOf` in {@link recordNestedStackParameterExpressions}, which
+ * `frameSpellingOf` in `recordNestedStackParameterExpressions`, which
  * renders the same text to find the token a carried frame spells — so
  * they cannot disagree about what a source says (issues #2745, #3062).
  *
@@ -303,7 +303,7 @@ export function intrinsicSkeletonSegments(
  * that intrinsic against the expressions this process recorded as secrets
  * (issue #1916).
  *
- * This is the residual {@link redactByPath} left behind. Its plain-string arm
+ * This is the residual `redactByPath` left behind. Its plain-string arm
  * persists the source leaf VERBATIM, which needs a source string to copy; when
  * the source leaf is an `Fn::Join` / `Fn::Sub` there is none, so the leaf fell
  * to the value scan — and the value map is keyed by the resolved PLAINTEXT, so
@@ -324,7 +324,7 @@ export function intrinsicSkeletonSegments(
  * 1. The bag leaf's WHOLE value is a recorded secret plaintext. The skeleton
  *    describes ONE complete `{{resolve:...}}` token, so a leaf that merely
  *    EMBEDS a secret (a join with surrounding text) is not this shape at all
- *    and goes on to {@link positionByIntrinsicFrame} (issue #2745), and only
+ *    and goes on to `positionByIntrinsicFrame` (issue #2745), and only
  *    where that refuses to the value scan, which rewrites just the substring.
  * 2. EXACTLY ONE candidate matches. Two matching candidates mean the skeleton
  *    genuinely cannot separate them (`{Ref}` in the position that differs), and
@@ -337,7 +337,7 @@ export function intrinsicSkeletonSegments(
  *    candidate absent from that map is a collapsed LOSER, which is the case
  *    this whole function exists to serve, so it is accepted.
  *
- * Every rejection falls to {@link positionByIntrinsicFrame} (issue #2745) and,
+ * Every rejection falls to `positionByIntrinsicFrame` (issue #2745) and,
  * where that arm refuses too, to the value scan, i.e. to today's behavior, so
  * no case gets worse than it is without this pass.
  *
@@ -359,15 +359,15 @@ export function intrinsicSkeletonSegments(
  * earlier draft of this paragraph called it "a spurious UPDATE rather than a
  * disclosure", which understated it.
  *
- * There is deliberately NO {@link isKnownSecretExpression} check here, and the
- * asymmetry with {@link redactByPath}'s plain-string arm is principled rather
+ * There is deliberately NO `isKnownSecretExpression` check here, and the
+ * asymmetry with `redactByPath`'s plain-string arm is principled rather
  * than an oversight. That arm's candidate is the SOURCE LEAF itself — arbitrary
  * template text, which genuinely can be a PUBLIC ssm reference that must stay
  * resolved in state (issue #1901), so it has to be tested. Here the candidates
  * come only from {@link recordedSecretExpressions} and from the values of a
  * {@link RecordedSecretValues} map, which the resolver populates ONLY on a
  * proven-secret verdict — and, since issue #2745, the nested-stack recorder's
- * framed carry entries ({@link recordedExpressionsOf}), which are not
+ * framed carry entries (`recordedExpressionsOf`), which are not
  * references but ARE map values, so the same membership test reads them as
  * secret too. So the test could never answer `false`, and an
  * unfalsifiable guard reads as protection while fencing nothing. Widening the

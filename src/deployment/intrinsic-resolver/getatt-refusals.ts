@@ -108,7 +108,7 @@ export function refuseUnservedAttribute(
  * re-raises, `Conditions` absorb it).
  *
  * Reached only after the #1852 heal settled (every caller runs
- * {@link healBeforeConstructing} first), so the remedy is worded from its
+ * `healBeforeConstructing` first), so the remedy is worded from its
  * outcome. Marked non-retryable: the verdict is the record plus the heal's
  * memoized outcome, which a retry cannot change, and the message
  * interpolates the template's logical id.
@@ -194,7 +194,7 @@ export function describeFailureObserved(
 ): string {
   // `displaySafe` rather than `stripControlChars`: the latter keeps
   // `U+2028` / `U+2029`, which a terminal renders as a line break (the
-  // `error-handler.ts` `formatError` rule). An SDK error name is ASCII.
+  // `error-handler/format.ts` `formatError` rule). An SDK error name is ASCII.
   // Slice THEN trim, so a cut at a space leaves no trailing one; a name
   // with no ASCII in it (a hand-rolled mock — SDK names are ASCII) blanks
   // to nothing, and `Error` is the honest class to print then.
@@ -223,7 +223,7 @@ export function describeFailureObserved(
  * Shared unknown-attribute physicalId fallback (issues #1106 / #1111).
  *
  * Applied by BOTH the final unknown-type fallback of
- * {@link constructAttribute} and every per-type handler's
+ * `constructAttribute` and every per-type handler's
  * `default:`-for-an-unknown-attribute branch:
  *
  * - An attribute name ending in `Arn` whose fallback value is not

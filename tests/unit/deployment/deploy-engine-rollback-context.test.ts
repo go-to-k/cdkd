@@ -1,7 +1,7 @@
 /**
  * DeployEngine -> rollback-executor context threading (issue #1363).
  *
- * `rollbackExecutorContext()` (`deploy-engine/rollback.ts`) hands the executor two fields the
+ * `rollbackExecutorContext()` (`deploy-engine/rollback/context.ts`) hands the executor two fields the
  * `DeletionPolicy: Snapshot` rollback path (issue #1358) depends on:
  *
  *   finalSnapshotClients: deps.options.finalSnapshotClients,

@@ -1594,7 +1594,7 @@ describe('NestedStackProvider', () => {
 
       // MARKED ARM — the child destroy was INTERRUPTED. A retry would not heal
       // the failure; it would re-enter a destroy the user just aborted
-      // (destroy-runner.ts reads `lock.interrupted` from a stack-lock guard it
+      // (destroy-runner/delete-resource.ts reads `lock.interrupted` from a stack-lock guard it
       // acquires per invocation, so the second attempt starts with the
       // interrupt forgotten).
       it('an INTERRUPTED child failure is NOT retryable, despite the substring', async () => {

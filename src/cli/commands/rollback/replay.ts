@@ -103,7 +103,7 @@ import { printRollbackPlanSegments } from './preview.js';
 
 /**
  * What {@link runRollbackReplay} reads from the enclosing
- * {@link rollbackCommand} call: its arguments and the locals it resolved
+ * `rollbackCommand` call: its arguments and the locals it resolved
  * before entering the stack AWS client scope.
  */
 export interface RollbackReplayContext {
@@ -121,7 +121,7 @@ export interface RollbackReplayContext {
 /**
  * The body of `cdkd rollback` that runs inside the stack AWS client scope
  * (go-to-k/cdkd#4932): provider registration, the lock, the plan, the
- * confirmation and the replay. {@link rollbackCommand} awaits it under
+ * confirmation and the replay. `rollbackCommand` awaits it under
  * `runWithStackAwsClients`; its outer `finally` restores the client set.
  */
 export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<void> {

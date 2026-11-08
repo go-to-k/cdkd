@@ -16,7 +16,7 @@ import type { NoEchoDeps } from '../noecho.js';
  * bound to THIS engine.
  */
 export interface RollbackDeps {
-  /** The engine's identity, the key of {@link adoptedOrphanRecords} only — never read. */
+  /** The engine's identity, the key of `adoptedOrphanRecords` only — never read. */
   owner: object;
   logger: DeployEngine['logger'];
   options: DeployEngine['options'];

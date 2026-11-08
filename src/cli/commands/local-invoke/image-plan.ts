@@ -29,7 +29,7 @@ import { type LocalInvokeOptions } from './types.js';
 /**
  * Result of resolving the docker image, bind-mounts, and CMD / entrypoint /
  * workdir / platform fields that depend on the function's `kind`. Built by
- * {@link resolveImagePlan}; consumed by `runDetached`.
+ * `resolveImagePlan`; consumed by `runDetached`.
  *
  * For ZIP Lambdas: `image` is a public Lambda base image, `mounts` carries
  * one entry that bind-mounts the local code at /var/task, `cmd` is

@@ -8,10 +8,10 @@ export { readProducerStateOnce } from './cross-stack/producer-state.js';
 /**
  * The resolver that must answer for a PRODUCER region — `this` when the
  * producer shares this resolver's own region, otherwise the pinned sibling
- * from {@link producerRegionResolvers}.
+ * from `producerRegionResolvers`.
  *
- * The comparison is against {@link explicitRegion}, NOT {@link
- * resolverRegion}: the latter substitutes `AWS_REGION` and then a hard-coded
+ * The comparison is against `explicitRegion`, NOT
+ * `resolverRegion`: the latter substitutes `AWS_REGION` and then a hard-coded
  * `us-east-1`, so comparing against it would answer "same region" on the
  * strength of a guess and resolve the producer's expression against whatever
  * the ambient clients happen to point at. When no region was named, a producer
@@ -21,7 +21,7 @@ export { readProducerStateOnce } from './cross-stack/producer-state.js';
  */
 /**
  * Pin (or retract) a `{{resolve:...}}` secret verdict in the process-wide
- * store, filed under `scope` ({@link secretVerdictScope}) — unless this
+ * store, filed under `scope` (`secretVerdictScope`) — unless this
  * resolver is a producer-region GUEST, which writes nothing there.
  *
  * SCOPED SINCE ISSUE #4105. The store was keyed by the expression STRING

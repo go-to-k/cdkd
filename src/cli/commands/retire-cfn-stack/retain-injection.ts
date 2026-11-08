@@ -114,7 +114,7 @@ export function injectRetainPolicies(
  * resource rows? Parses + walks `Resources` once (no recursive descent),
  * tolerating parse failures by returning `false` (the caller's downstream
  * parse step will surface the same error with a richer message). Used by
- * {@link prepareCloudFormationStackRetirement} to decide whether to lazily build the
+ * `prepareCloudFormationStackRetirement` to decide whether to lazily build the
  * recursive {@link CfnStackResourceTree} — non-nested templates skip the
  * extra `DescribeStackResources` round-trip entirely.
  */
@@ -191,7 +191,7 @@ function injectRetainPoliciesOnParsedResources(resources: Record<string, unknown
  * For each nested-stack row in the parent template:
  *   1. `GetTemplate` Original-stage on the corresponding child stack ARN (read
  *      from the supplied {@link CfnStackResourceTree}, populated up front by
- *      {@link getCloudFormationResourceTree}).
+ *      `getCloudFormationResourceTree`).
  *   2. Recursively process the child template — Retain injection on its
  *      leaves AND further recursion into any grandchildren.
  *   3. If the recursion produced a modified child body, upload the modified

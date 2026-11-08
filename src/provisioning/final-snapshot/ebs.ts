@@ -32,7 +32,7 @@ function isVolumeNotFound(error: unknown): boolean {
  * the tag can only ever point at THIS volume's data — unlike the name-keyed
  * Redshift / ElastiCache APIs, whose user-chosen ids repeat across
  * generations and therefore only resume an in-flight snapshot (see
- * {@link RESUMABLE_SNAPSHOT_STATUS}).
+ * `RESUMABLE_SNAPSHOT_STATUS`).
  *
  * @returns the snapshot id, or `null` when the volume no longer exists
  *   (nothing to snapshot; the subsequent delete is idempotent too).

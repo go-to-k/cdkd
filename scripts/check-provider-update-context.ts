@@ -4,7 +4,7 @@
  * WHAT THIS CHECKS
  * ----------------
  * `ResourceProvider.update`'s `context` parameter is OPTIONAL
- * (`context?: UpdateContext`, `src/types/resource.ts`), so a provider that
+ * (`context?: UpdateContext`, `src/types/resource/provider.ts`), so a provider that
  * simply does not declare it compiles fine and the argument the deploy engine
  * passes is dropped on the floor — silently, with no type error and no lint.
  * Issue #2301 item 1 put `expectedRegion` on that context and threaded it from

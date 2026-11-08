@@ -1467,7 +1467,7 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
   });
 
   // The TWIN of the test above, and the only thing fencing the lazy arm at
-  // `retire-cfn-stack.ts`'s `resourceTree ?? (await
+  // `retire-cfn-stack/prepare.ts`'s `resourceTree ?? (await
   // getCloudFormationResourceTree(...))`. Issue #2572 removed `cdkd migrate`,
   // which was the only caller that omitted `resourceTree` -- `cdkd import`'s
   // migration path always supplies it -- so the arm survives on its CONTRACT

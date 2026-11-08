@@ -687,7 +687,7 @@ Cloud-Control-routed type, at the top of both `delete()` and `update()` —
 before the `--remove-protection` flips, before the SDK delegations, before the
 `AWS::S3::Bucket` identity probe, and before the `DescribeType` the update
 path's write-only lookup performs. The update side is why `UpdateContext`
-carries an `expectedRegion` of its own (`src/types/resource.ts`), threaded by
+carries an `expectedRegion` of its own (`src/types/resource/contexts.ts`), threaded by
 `deploy-engine.ts`, `rollback-executor.ts` and `drift --revert`. An SDK
 provider MAY read the same field, but nothing requires it to: absent, the
 guard is a no-op, exactly as on the delete side.
@@ -2256,7 +2256,7 @@ Two placement rules go with it:
 
     **And the corollary's own corollary: keeping the handler armed for longer
     moves the window a signal can arrive in, so re-check anything that READS the
-    interrupt.** `destroy-runner.ts` assigns `result.interrupted` once, inside
+    interrupt.** `destroy-runner/under-lock.ts` assigns `result.interrupted` once, inside
     its `try` — so arming across the teardown made a first Ctrl-C there set
     `lock.interrupted` after the only read, leaving the flag false and letting
     `destroy --all` delete the next stack. It re-syncs with

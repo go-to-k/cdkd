@@ -20,7 +20,7 @@ import * as readline from 'node:readline/promises';
 
 /**
  * Per-Pattern-B-type CFn property that the user sets to supply a name.
- * Mirrors `PATTERN_B_NAME_PROPERTIES` in `src/provisioning/resource-name.ts`.
+ * Mirrors `PATTERN_B_NAME_PROPERTIES` in `src/provisioning/resource-name/generate.ts`.
  * Used by `makeResource` to populate state's `properties[<NameField>]`
  * when a test scenario wants to simulate a user-supplied name.
  */

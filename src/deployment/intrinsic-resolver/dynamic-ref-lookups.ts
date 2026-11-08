@@ -122,7 +122,7 @@ export async function resolveSecretsManagerReference(
   // string — so an `Fn::Sub` that builds either out of a value this same
   // pass decrypted puts that plaintext in every line and every throw below.
   // The raw-value form is what buys `maskSecretsInText`'s WHOLE-VALUE arm,
-  // which has no {@link MIN_NEEDLE_LENGTH} floor; masking the finished
+  // which has no `MIN_NEEDLE_LENGTH` floor; masking the finished
   // message reaches only the substring arm, where a sub-floor plaintext
   // prints in full. Same rule `masked-retry-logger.ts` states for a
   // provider's wrapped `error.message`.

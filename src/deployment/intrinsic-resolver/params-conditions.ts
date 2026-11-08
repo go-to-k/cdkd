@@ -81,7 +81,7 @@ export async function resolveParameters(
   // print a template-supplied PARAMETER VALUE, so the control-character class
   // reaches them exactly as it reached the `Fn::ImportValue` bindings; they
   // are `debug` rather than `warn`, which changes when a reader sees it, not
-  // whether. Mask, strip, mask — the {@link maskThenStripThenMask} order, and
+  // whether. Mask, strip, mask — the `maskThenStripThenMask` order, and
   // for its reason: `stripControlChars` DELETES, so a plaintext split by an
   // invisible would be reconstituted contiguous by a strip after one mask.
   // Then `displaySafe`, for the class the strip does not cover. This is the
@@ -545,7 +545,7 @@ export async function evaluateConditions(
  * Resolve ONE key of a bag, recovering per key when the caller opted in.
  *
  * Shared by the two sequential key walks that had this defect — the generic
- * object walk in {@link resolveValue} and `resolveSub`'s variable map — so
+ * object walk in `resolveValue` and `resolveSub`'s variable map — so
  * the recovery and the REFUSAL partition cannot drift between them. Both were
  * bare `for … await` loops, so the first failing key abandoned every later
  * one (issue go-to-k/cdkd#3218; the variable map was found beside it and is

@@ -244,7 +244,7 @@ export function serveHealedAttribute(
 
 /**
  * {@link constructGuardedAttribute}, healing a STALE state record first when
- * the construction is about to take {@link guardedPhysicalIdFallback} (issue
+ * the construction is about to take `guardedPhysicalIdFallback` (issue
  * [#1852](https://github.com/go-to-k/cdkd/issues/1852)).
  *
  * Three passes at most, and an AWS call on none of them unless the fallback
@@ -421,7 +421,7 @@ function withAccountId(value: unknown, accountId: string): unknown {
  * phase (the read found nothing) or with no healer it returns, and the arm
  * answers: the IAM arms with their path-less ARN, the `StreamArn` / `RoleId`
  * arms with a refusal worded from the heal's outcome (issue #4077,
- * {@link refuseUnconstructibleAttribute}).
+ * `refuseUnconstructibleAttribute`).
  */
 export function healBeforeConstructing(
   _resolver: IntrinsicFunctionResolver,

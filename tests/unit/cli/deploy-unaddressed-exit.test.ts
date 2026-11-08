@@ -434,7 +434,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     // stack that actually FAILED rejects out of execute first and exits 1.
     // Reporting 2 here would tell CI "completed, some resources survived" for a
     // run that did not complete — the opposite of what this change is for.
-    // Mirrors destroy.ts, which checks `totalErrors` before `totalSkipped`.
+    // Mirrors destroy/command.ts, which checks `totalErrors` before `totalSkipped`.
     synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     failingStacks.add('StackB');

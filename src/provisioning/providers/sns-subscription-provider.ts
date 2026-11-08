@@ -586,7 +586,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // subscription so the resource stays traceable.
     //
     // The premise is deliberately "not destroyed", NOT "no AWS call was
-    // issued" — `ResourceDeleteResult`'s own contract (src/types/resource.ts)
+    // issued" — `ResourceDeleteResult`'s own contract (src/types/resource/results.ts)
     // warns that reading it the second way is a mistake callers build on,
     // since a recursing provider can report `skipped` AFTER deleting other
     // things. Abort is right under the weaker premise too: whatever the

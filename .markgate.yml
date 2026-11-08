@@ -203,10 +203,11 @@ gates:
     # specifically recognizes and gates the `integ-schema-migration`
     # marker set on.
     #
-    # Scope: just `src/types/state.ts` — the file carrying the
-    # `StackState.version` literal type, the
-    # `STATE_SCHEMA_VERSIONS_READABLE` constant, and every
-    # state-shape interface. Editing any other path doesn't touch
+    # Scope: `src/types/state.ts` — the file carrying the
+    # `StateSchemaVersion` literal type and the
+    # `STATE_SCHEMA_VERSIONS_READABLE` constant — plus
+    # `src/types/state/**`, which holds every state-shape interface
+    # since the #5835 split. Editing any other path doesn't touch
     # the schema. The hook
     # (`.claude/hooks/integ-schema-migration-gate.sh`) does a
     # precise second-pass `gh pr diff` grep for actual

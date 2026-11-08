@@ -65,7 +65,7 @@ export interface MaskedInputSources {
    * {@link template} names, read from the cloud assembly (go-to-k/cdkd#4565).
    * An `Fn::GetAtt` on that row's `Outputs.<Key>` is resolved only when the
    * output is classified clean from these templates (see
-   * {@link nestedStackOutputClass}). Absent: every such read is kept as written.
+   * `nestedStackOutputClass`). Absent: every such read is kept as written.
    */
   childTemplate?: ChildTemplateLoader | undefined;
 }
@@ -137,7 +137,7 @@ export function carriesSecretValue(
  * `secret`: a `NoEcho` parameter; a value carrying a `{{resolve:...}}`
  * reference or the mask; and, in a nested child (`nestedChild`), a value the
  * parent SUPPLIED that the parent classified `secret` (`passedClasses`, from
- * {@link classifyPassedParameters} over the parent's own template) or did not
+ * `classifyPassedParameters` over the parent's own template) or did not
  * classify at all, even one equal to the `Default`. A parent can pass a
  * resolved secret, or a value embedding one, as a plain parameter, and the
  * child cannot tell that from the value (the inherited corpus can miss a short
@@ -224,8 +224,8 @@ export interface Walk {
 }
 
 /**
- * What one entry point ({@link maskedInputFingerprint},
- * {@link classifyPassedParameters}, {@link nestedStackOutputClass}) learns
+ * What one entry point (`maskedInputFingerprint`,
+ * `classifyPassedParameters`, `nestedStackOutputClass`) learns
  * about nested-stack outputs, so each row's passed values and each child
  * output are classified once, however many reads reach them: the work is
  * linear in the templates, and `steps` is a backstop for a hostile tree only.
@@ -273,7 +273,7 @@ export function intrinsicKey(value: Record<string, unknown>): string | undefined
  * exception is a masked property's DIRECT read of a nested stack's
  * `Outputs.<Key>` (an `Fn::GetAtt`, or an `Fn::Sub` placeholder): it is
  * resolved when the output is classified clean from the child's template
- * ({@link nestedStackOutputClass}, go-to-k/cdkd#4565). A custom resource's
+ * (`nestedStackOutputClass`, go-to-k/cdkd#4565). A custom resource's
  * attributes are fixed only when its handler runs, so they have no such path.
  */
 const OPAQUE_ATTRIBUTE_TYPES = new Set(['AWS::CloudFormation::CustomResource', NESTED_STACK_TYPE]);

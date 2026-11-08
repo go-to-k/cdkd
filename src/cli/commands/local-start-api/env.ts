@@ -94,7 +94,7 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
  * Issue [#1843](https://github.com/go-to-k/cdkd/issues/1843): the two REGION
  * entries are folded through `canonicalizeRegion` on the way in and the
  * credentials are copied verbatim (an access key id is case-sensitive) — the
- * twin of `local-invoke.ts`'s `forwardAwsEnv`. The value becomes the
+ * twin of `local-invoke/credentials.ts`'s `forwardAwsEnv`. The value becomes the
  * container's own `AWS_REGION`, and SDK endpoint resolution is case-sensitive.
  * Folded here as well as at the handler entry because this helper is exported
  * and must not depend on its caller having folded `process.env`.

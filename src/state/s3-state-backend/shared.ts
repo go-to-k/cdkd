@@ -60,7 +60,7 @@ export const NEW_KEY_DEPTH = 3;
  * Options used to reconstruct the S3Client if the bucket lives in a region
  * different from the one the initial client was built for.
  *
- * Mirrors {@link AwsClientConfig} from `aws-clients.ts` but kept local so
+ * Mirrors `AwsClientConfig` from `aws-clients.ts` but kept local so
  * the state backend doesn't depend on the CLI-side AwsClients wrapper.
  */
 export interface S3ClientOptions {
@@ -74,7 +74,7 @@ export interface S3ClientOptions {
 }
 
 /**
- * Options for {@link S3StateBackend.verifyBucketExists}.
+ * Options for `S3StateBackend.verifyBucketExists`.
  */
 export interface VerifyBucketExistsOptions {
   /**

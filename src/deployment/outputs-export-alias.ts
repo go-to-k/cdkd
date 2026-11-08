@@ -12,7 +12,7 @@
  * output owns a key, `redactByPath` positions a leaf by a source belonging to a
  * DIFFERENT output and persists that output's `{{resolve:...}}` reference as
  * this one's value. So the rules deciding key ownership live here, in one
- * place, because FOUR writers apply them: `resolveOutputs` (`deploy-engine/outputs.ts`) (both of
+ * place, because FOUR writers apply them: `resolveOutputs` (`deploy-engine/outputs/resolve.ts`) (both of
  * its bags), `cdkd scrub` (which reconstructs the same source bag from the
  * template to redact legacy state), and `analyzer/outputs-diff.ts`, which
  * PREVIEWS the very bag the deploy persists — a count that was wrong here for
@@ -66,7 +66,7 @@
  * The INTRINSIC SecureString rows no longer diverge (issue
  * [#4056](https://github.com/go-to-k/cdkd/issues/4056)): the diff refuses an
  * intrinsic alias whose RESOLVED name still carries a token of a service the
- * deploy resolves (`keepsSecretReferenceToken` in `outputs-diff.ts`), and its
+ * deploy resolves (`keepsSecretReferenceToken` in `outputs-diff/resolve.ts`), and its
  * `skipDynamicReferences` pass keeps a plain `{{resolve:ssm:...}}` token only
  * for a parameter the lookup finds secure, while a `String` one resolves to
  * its value. The deploy refuses both pinned and unpinned exactly: since issue

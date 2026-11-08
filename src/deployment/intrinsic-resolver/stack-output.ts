@@ -309,7 +309,7 @@ export async function resolveGetStackOutput(
   // quoting the sequence it warns about.
   //
   // `maskThenStripThenMask` rather than a bare `stripControlChars` is the
-  // rule `cross-stack.ts` (`resolveImportValue`) already settled: stripping DELETES, so a
+  // rule `cross-stack/import-value.ts` (`resolveImportValue`) already settled: stripping DELETES, so a
   // plaintext split by an invisible would be reconstituted contiguous by a
   // strip applied after a single mask. Masking on both sides of it closes
   // that, and it is a no-op on any ordinary name.

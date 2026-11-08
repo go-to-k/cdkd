@@ -191,7 +191,7 @@ describe("a nested child's revert under cdkd rollback --remove-protection (go-to
   });
 
   // The other driver of this replay is a deploy's automatic rollback: its
-  // context carries the deploy's options and a `destroyOptions` deploy.ts
+  // context carries the deploy's options and a `destroyOptions` deploy/stack-deploy.ts
   // builds without the flag. Even a `removeProtection` on `options` (no
   // `DeployEngineOptions` field today) must not reach the child's delete.
   it("never takes the flag from a deploy's context", async () => {

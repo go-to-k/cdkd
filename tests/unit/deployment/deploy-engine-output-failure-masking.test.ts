@@ -1,5 +1,5 @@
 /**
- * Issue #2728: `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`) reported an
+ * Issue #2728: `handleOutputResolutionFailure` (`deploy-engine/outputs/failure.ts`) reported an
  * Output resolution failure with the resolver's error text UNMASKED, on both
  * arms — the default warn and the `--strict-getatt` throw — while every other
  * resolver-facing site in the engine masks against a secrets map.
@@ -735,7 +735,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
         expect(thrown).toBeInstanceOf(IntrinsicResolutionRefusalError);
         expect(thrown.message).toBe(REFUSAL);
         expect(isMarkedNonRetryable(thrown)).toBe(true);
-        // `deploy.ts` renders each `DeployResult.outputs` entry as
+        // `deploy/stack-deploy.ts` renders each `DeployResult.outputs` entry as
         // `<stack>.<key> = ${String(value)}` at default verbosity, so the
         // same rendering is asserted here.
         const summary = Object.entries(result.outputs ?? {}).map(([k, v]) => `${k} = ${String(v)}`);

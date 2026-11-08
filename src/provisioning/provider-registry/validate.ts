@@ -53,7 +53,7 @@ export function validateResourceTypes(this: ProviderRegistry, resourceTypes: Set
  * properties cdkd's SDK provider does not wire (SDK-unwired). As of
  * issue [#614](https://github.com/go-to-k/cdkd/issues/614), SDK-unwired properties
  * auto-route the resource through Cloud Control API by default (see
- * {@link getProviderFor}) — the method emits info-level routing decisions
+ * `getProviderFor`) — the method emits info-level routing decisions
  * for each SDK-unwired resource, plus warn-level lines for resources
  * where the user explicitly opted into leaving it unwritten via
  * `--allow-unsupported-properties`. The ONE remaining throw path is the

@@ -38,12 +38,13 @@ export {
  * case-sensitive in the same direction. So an upper-cased `--region CN-NORTH-1`
  * fell through to the commercial partition here and synthesized
  * `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a `cn-` region carrying the
- * commercial suffix, a host that does not exist — at the five call sites, across
- * three files, that reach this symbol:
+ * commercial suffix, a host that does not exist — at the five call sites that
+ * reach this symbol (the files they live in since the #5835 splits):
  *
- * - `src/cli/commands/local-start-api.ts` (the `Fn::Join` `Code.ImageUri` path)
- * - `src/cli/commands/local-invoke-agentcore.ts` (x3)
- * - `src/local/lambda-resolver.ts`
+ * - `src/cli/commands/local-start-api/lambda-resolver.ts` (the `Fn::Join`
+ *   `Code.ImageUri` path)
+ * - `src/cli/commands/local-invoke-agentcore/image.ts` (x2) and `env.ts` (x1)
+ * - `src/local/lambda-resolver/properties.ts`
  *
  * cdk-local's table now matches prefixes case-insensitively and carries the
  * three rows cdkd's issue #1764 added (issue

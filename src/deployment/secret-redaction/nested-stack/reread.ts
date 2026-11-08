@@ -158,7 +158,7 @@ function evaluatePureRead(
   if (key === 'Fn::Sub') return evaluatePureSub(args, bind, pseudo, evaluate);
   if (!Array.isArray(args) || args.length !== 2) return undefined;
   if (key === 'Fn::Select') {
-    // `selectIndexPosition`'s rule (`intrinsic-resolver/context.ts`), spelled
+    // `selectIndexPosition`'s rule (`intrinsic-resolver/context/refusals.ts`), spelled
     // here because this family imports nothing outside it; keep the two alike.
     const index = args[0];
     const position =
@@ -588,7 +588,7 @@ function ambiguousRereads(rereads: readonly ParameterReread[]): boolean {
  * object the pass resolved into `secrets` (a structural copy finds none), or
  * {@link rereadParameterExpression}'s verdict for the collision walk is wrong.
  *
- * {@link positionByInheritedParameter}'s conditions, over the re-read: this
+ * `positionByInheritedParameter`'s conditions, over the re-read: this
  * resource's resolution read every parameter the taken source names (its
  * recorded values bind the re-read; the #2087 scope), the source evaluated
  * with them IS the leaf, the leaf carries no child-only plaintext, and the

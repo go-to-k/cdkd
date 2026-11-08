@@ -442,16 +442,16 @@ export async function deleteRawObjects(this: S3StateBackend, keys: string[]): Pr
  * custom-resource response sweep, `cdkd bootstrap destroy`'s marker, and the
  * deployment-event store's prunes, issue
  * [#2624](https://github.com/go-to-k/cdkd/issues/2624)), as does
- * {@link deleteRollbackJournal}, which deletes through its own path. So does
+ * `deleteRollbackJournal`, which deletes through its own path. So does
  * `cdkd scrub` after a PUT rather than a delete: the `state.json` it rewrites
  * (and, under `--purge-history`, every record it examines and does not
  * refuse) and the exports index of each region it wrote. The only other
- * `state.json` purge is {@link purgeDeletedStateHistory}, which `cdkd state
+ * `state.json` purge is `purgeDeletedStateHistory`, which `cdkd state
  * destroy` alone runs (go-to-k/cdkd#2346).
  *
  * It reaches only the keys it is given. A key already behind a delete marker
  * is absent from an ordinary listing, so a caller that empties a whole
- * prefix it owns uses {@link purgeNoncurrentVersionsUnderPrefix} instead.
+ * prefix it owns uses `purgeNoncurrentVersionsUnderPrefix` instead.
  *
  * NEVER THROWS, and the try/catch below is what makes that true rather than
  * the helper alone. `ensureClientForBucket()` and `ownerParam()` sit OUTSIDE

@@ -27,7 +27,7 @@ import { refuseUnsafeReplacement } from './update-replace/preflight.js';
 import { recreateDestroyThenCreate } from './update-replace/recreate.js';
 import { replaceCreateFirst } from './update-replace/create-first.js';
 
-/** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
+/** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateByReplacement(
   engine: DeployEngine,
   {
@@ -204,7 +204,7 @@ export async function updateByReplacement(
   // i.e. destroy-then-create — except when the template also renames
   // the target (go-to-k/cdkd#3931): the old resource then does not
   // hold the new name, so `createFirstThenDeleteOld` creates first.
-  // (`updateReplacePolicy` is read once in `update.ts`, before the stateful
+  // (`updateReplacePolicy` is read once in `update/finish.ts`, before the stateful
   // guard, and reused here.)
   //
   // Issue #2668: BOTH inputs come from the state record. The layer

@@ -65,7 +65,7 @@ export function isOrdinaryDate(value: object): value is Date {
  * Own ENUMERABLE keys only, and a key count on both sides, so an inherited
  * field is not equality and neither is a bag that merely CONTAINS the source's
  * keys. That agrees with the two walks beside it -- `isUniquelyKeyedBy` and the
- * object arm of {@link refuseUncertifiedReadbackPositions} both use
+ * object arm of `refuseUncertifiedReadbackPositions` both use
  * `Object.hasOwn` -- and it matters here rather than being hygiene: this
  * predicate is the evidence an anchor pairing rests on, so a comparison that
  * reads the prototype chain would let a constructed bag corroborate a pairing

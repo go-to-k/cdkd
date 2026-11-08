@@ -6,7 +6,7 @@
 # Cloud Control. The schema does not require `CapacityProviderName`, but a
 # Cloud Control create without one fails with `Resource Handler Internal
 # Failure`. cdkd now fills a generated name on the CREATE
-# (`FALLBACK_NAME_RULES` in `src/provisioning/resource-name.ts`) and takes it
+# (`FALLBACK_NAME_RULES` in `src/provisioning/resource-name/fallback-rules.ts`) and takes it
 # back out of the UPDATE bag (`withoutGeneratedFallbackName`), where it would
 # be a change to a create-only property for a provider whose live name is not
 # the generated one.

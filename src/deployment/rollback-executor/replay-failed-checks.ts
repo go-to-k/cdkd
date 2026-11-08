@@ -127,7 +127,7 @@ export interface OwnUnsettled {
   lateSuccess: boolean;
 }
 
-/** The options of {@link replayFailedOperationsUnbound}. */
+/** The options of `replayFailedOperationsUnbound`. */
 export interface ReplayFailedOperationsOptions {
   afterOp?: (logicalId: string) => Promise<void> | void;
   isInterrupted?: () => boolean;
@@ -157,7 +157,7 @@ export interface ReplayFailedOperationsOptions {
    * emitting the envelope — keeping `cdkd events` output symmetric.
    */
   emitEnvelope?: boolean;
-  /** go-to-k/cdkd#4225: as on {@link replayRollback}. */
+  /** go-to-k/cdkd#4225: as on `replayRollback`. */
   inlinePolicyWriters?: RollbackInlinePolicyWriters;
   /**
    * A `cdkd destroy` replays these ops before it deletes the stack: a line

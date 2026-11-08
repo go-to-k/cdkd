@@ -4,8 +4,8 @@ import { type PathSourceRules, isDynamicReferenceString, isPlainObject } from '.
  * Is this rules constant one whose BAG is an AWS readback and whose SOURCE is a
  * persisted STATE bag?
  *
- * Today that is {@link STATE_SOURCED_READBACK_RULES} and its fail-closed twin
- * {@link STATE_SOURCED_BASELINE_RULES}, which differ on nothing this predicate
+ * Today that is `STATE_SOURCED_READBACK_RULES` and its fail-closed twin
+ * `STATE_SOURCED_BASELINE_RULES`, which differ on nothing this predicate
  * reads (issue #2852 added a DESTINATION flag, not a shape one): the path where
  * the
  * secrets map can be EMPTY by construction (nothing was resolved), so the value
@@ -18,7 +18,7 @@ import { type PathSourceRules, isDynamicReferenceString, isPlainObject } from '.
  *
  * `sourceIsSameGeneration` is the third conjunct and it is the one that took a
  * measurement to get right. Without it this also selected
- * {@link STATE_SOURCED_CROSS_GENERATION_RULES} — `cdkd scrub`'s observed walk,
+ * `STATE_SOURCED_CROSS_GENERATION_RULES` — `cdkd scrub`'s observed walk,
  * whose `properties` have ALREADY been repositioned onto TODAY's template — and
  * taking a source subtree there rewrote a baseline holding the DEPLOYED
  * `:AWSPREVIOUS` reference onto the template's edited `:AWSCURRENT` one. That
@@ -31,7 +31,7 @@ import { type PathSourceRules, isDynamicReferenceString, isPlainObject } from '.
  * public `ssm:` reference whose resolved value must STAY resolved (issue
  * #1901), and it always has a populated map, so the value scan already covers
  * the shapes below. So is the rollback replay
- * ({@link STATE_DERIVED_RULES}) — full map, and its bag descends positionally
+ * (`STATE_DERIVED_RULES`) — full map, and its bag descends positionally
  * because it was produced by resolving the source.
  */
 export function isReadbackProjectedFromState(rules: PathSourceRules): boolean {

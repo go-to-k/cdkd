@@ -524,7 +524,7 @@ describe('cdkd state info', () => {
         `Skipping malformed/unreadable bootstrap marker ${JSON.stringify("cdkd-bootstrap/x' ; touch OWNED #.json")}: `
       );
       // Only the HEAD is this site's: the cause after `: ` is
-      // `parseBootstrapMarker`'s own text (`src/assets/asset-storage.ts`).
+      // `parseBootstrapMarker`'s own text (`src/assets/asset-storage/marker.ts`).
       expect(warned).not.toContain("bootstrap marker 'cdkd-bootstrap/");
     });
 

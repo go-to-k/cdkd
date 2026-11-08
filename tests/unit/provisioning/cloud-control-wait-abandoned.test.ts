@@ -104,7 +104,7 @@ const GRACE_MS = 2 * 60 * 1000;
  * The phrases the FOUR already-deleted classifiers substring-match to decide a
  * DELETE failure means "already gone" — at which point they DROP the state row.
  *
- * The union of all four, not three: `destroy-runner.ts:1676` and
+ * The union of all four, not three: `destroy-runner/delete-resource.ts:713` and
  * `deploy-engine/delete.ts` also match `No policy found`; `deploy-engine/update-in-place.ts`
  * matches a BARE `NotFound`, strictly wider than `NotFoundException`; and the
  * fourth consumer is `delete()`'s OWN catch in

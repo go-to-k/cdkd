@@ -490,7 +490,7 @@ export function printDestroySummary({
 }: DestroySummaryFrame): void {
   // Summary glyph distinguishes clean destroy (✓) from partial failure /
   // interrupt (⚠). The CLI's exit code reflects the same split (0 vs 2) —
-  // see PartialFailureError in src/utils/error-handler.ts. Without the
+  // see PartialFailureError in src/utils/error-handler/deploy-errors.ts. Without the
   // visual marker, a partial failure scrolls past in the same shape
   // as a successful destroy and gets missed in CI / bench output.
   const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';

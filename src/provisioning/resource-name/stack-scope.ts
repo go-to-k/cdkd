@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * its resources) and, by an explicit decision at the call site, where only
  * declared names are derived. A stack WITH an id gets CloudFormation-style
  * `{stackName}-{logicalId}-{suffix}` names for what it does not name itself
- * ({@link generateResourceName}), so a recreated stack never asks for the
+ * (`generateResourceName`), so a recreated stack never asks for the
  * names its predecessor left behind.
  */
 export interface StackScope {
@@ -56,7 +56,7 @@ export function withStackScopeBeforeStateRead<T>(
 }
 
 /**
- * Run `fn` with `scope` visible to {@link generateResourceName} for the
+ * Run `fn` with `scope` visible to `generateResourceName` for the
  * duration of the callback (and any `await`s inside). Concurrent invocations
  * each get an independent scope. Both fields are required, so every call site
  * states which lifetime's names it derives; an inner scope replaces an outer

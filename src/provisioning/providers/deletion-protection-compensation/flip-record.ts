@@ -243,7 +243,7 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
 }
 
 /**
- * Whether `error` ends the delete for good, i.e. whether `destroy-runner.ts`'s
+ * Whether `error` ends the delete for good, i.e. whether `destroy-runner/delete-resource.ts`'s
  * outer loop will NOT re-enter `delete()` for it.
  *
  * This is the gate on the compensation, and it is issue #1978's own point:

@@ -388,7 +388,7 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     const provider = new CloudControlProvider();
 
     // No context at all -- the shape a pre-v2 state record produces, since
-    // `destroy-runner.ts` only spreads `expectedRegion` when `state.region`
+    // `destroy-runner/delete-resource.ts` only spreads `expectedRegion` when `state.region`
     // is defined.
     await expect(provider.delete('Bucket', BUCKET, S3)).rejects.toThrow(/lives in ap-northeast-1/);
     expect(ccCallNames()).toEqual([]);

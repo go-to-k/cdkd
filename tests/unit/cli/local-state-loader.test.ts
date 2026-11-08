@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
    *
    * This — NOT the `S3StateBackend` constructor's third argument — is where
    * `--region` actually decides an ENDPOINT: `S3StateBackend` reads only
-   * `profile` / `credentials` out of that bag (`src/state/s3-state-backend.ts`),
+   * `profile` / `credentials` out of that bag (`src/state/s3-state-backend/client.ts`),
    * while the client the backend is handed comes from `new AwsClients({ region
    * })`. Asserting only the backend's bag left the fix unfenced — reverting the
    * `AwsClients` line alone kept the whole suite green.

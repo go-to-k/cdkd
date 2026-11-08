@@ -24,7 +24,7 @@
  *     ]
  *
  * `requiresReplacement: true` is what `DeployEngine` turns into
- * `propertyDrivenReplacement` (`deploy-engine.ts`, the `case 'UPDATE'` arm), so
+ * `propertyDrivenReplacement` (`deploy-engine/update/provision-update.ts`), so
  * the outcome is a DELETE + CREATE of the live bucket. Severity stays high.
  *
  * `[]` and `5` reached the SAME verdict while enumerating no keys at all —

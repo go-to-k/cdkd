@@ -88,9 +88,9 @@ function partRereadsAccountId(part: unknown): boolean {
 /**
  * The pseudo-parameter values a nested child's resolver answers, keyed by the
  * INHERITED bag the child was handed (issue #4962), as
- * {@link withdrawRenderedParameterSpelling}'s table is: the collision walk,
+ * `withdrawRenderedParameterSpelling`'s table is: the collision walk,
  * which runs before any resource resolves, and the persist re-read
- * ({@link positionByParameterReread}, through the reads record's parent) both
+ * (`positionByParameterReread`, through the reads record's parent) both
  * reach that bag. A second recording with a different value for a name
  * poisons the table: no binding at all.
  */
@@ -174,7 +174,7 @@ export function inheritedPseudoSpan(
 }
 
 /**
- * The intrinsics a re-read ({@link rereadParameterExpression}) evaluates. Only
+ * The intrinsics a re-read (`rereadParameterExpression`) evaluates. Only
  * a source holding `Fn::Select`, `Fn::Split` or `Fn::If` (issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)) is re-read: a `{Ref}`
  * alone, an `Fn::Join` / `Fn::Sub` over `{Ref}`s, already has a per-parameter

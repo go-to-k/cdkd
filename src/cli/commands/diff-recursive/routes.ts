@@ -16,7 +16,7 @@ export const SDK_MIGRATION_TOKEN = 'returning to SDK provider';
 
 /**
  * Does the deploy REPLACE this row? The same test the engine's live label
- * applies before dispatch (`needsReplacement` in `deploy-engine.ts`'s
+ * applies before dispatch (`needsReplacement` in `deploy-engine/provision.ts`'s
  * `provisionResource`), less the `--recreate-via-*` half, which `cdkd diff`
  * does not take: an `UPDATE` with a create-only property change, or whose
  * recorded type differs from the template's.

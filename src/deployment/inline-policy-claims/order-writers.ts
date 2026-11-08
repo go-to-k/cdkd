@@ -186,7 +186,7 @@ function inlinePolicyClaimsOf(
  * inline policy name on the same IAM principal, so none of them runs while
  * another is in flight.
  *
- * The claim predicate ({@link isInlinePolicyClaimedByCompletedWriter}) keeps a
+ * The claim predicate (`isInlinePolicyClaimedByCompletedWriter`) keeps a
  * name only once its other writer has COMPLETED. Two writers with no
  * dependency between them (two `iam.Policy` constructs on one role swapping
  * names, or one renamed away from a name a new one takes) ran concurrently,

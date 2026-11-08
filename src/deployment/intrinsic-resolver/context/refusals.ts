@@ -55,7 +55,7 @@ export function selectIndexPosition(value: unknown): number | undefined {
 }
 
 /**
- * One entry in {@link ResolverContext.abandonedResolutions} — one UNIT of a
+ * One entry in `ResolverContext.abandonedResolutions` — one UNIT of a
  * resolution this pass could not complete, recorded instead of abandoning every
  * later unit beside it (issues
  * [#3181](https://github.com/go-to-k/cdkd/issues/3181) /
@@ -250,7 +250,7 @@ export function isDeliberateResolutionRefusal(err: unknown): boolean {
 }
 
 /**
- * One entry in {@link ResolverContext.redactedAttributeReads} — a read the
+ * One entry in `ResolverContext.redactedAttributeReads` — a read the
  * resolver served out of a REDACTED persisted record.
  *
  * STRUCTURED RATHER THAN A JOINED STRING, and that is the fix for a defect
@@ -279,7 +279,7 @@ export function isDeliberateResolutionRefusal(err: unknown): boolean {
  * the message would repeat.
  *
  * ONE CONSEQUENCE, stated because the dedup test at
- * `pushRedactedAttributeRead` (`getatt.ts`) keys its fourth
+ * `pushRedactedAttributeRead` (`getatt/secrecy.ts`) keys its fourth
  * conjunct on this field: two reads whose names differ ONLY by control
  * characters or padding now produce the same `display` and COLLAPSE, so
  * `refuseRedactedAttributeReads` shows one row where it used to show two. Same

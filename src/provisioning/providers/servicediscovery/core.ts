@@ -311,7 +311,7 @@ export function wrapOperationFailedError(
  * value INSIDE a sentence, the substring arm handles it and that floor
  * applies either way, raw or not. So masking here is strictly better than
  * masking the assembled message, but it is not general sub-4-character
- * coverage. See `SecretMaskingContext` in `src/types/resource.ts`.
+ * coverage. See `SecretMaskingContext` in `src/types/resource/contexts.ts`.
  *
  * The `operationId` / timeout message below carries no template-derived
  * value (an AWS-issued opaque id), so it is left as-is.

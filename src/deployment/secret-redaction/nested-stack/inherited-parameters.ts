@@ -13,10 +13,10 @@ import { carriesChildOnlyPlaintext } from './child-only-plaintext.js';
  * resource's own bag, as ordinary {@link crossStackAssociations} rows keyed by
  * `{Ref: <ParamName>}` (issue #2291).
  *
- * Called by the child {@link DeployEngine} once per resolver context, so each
+ * Called by the child `DeployEngine` once per resolver context, so each
  * child resource's fresh bag carries them. Pre-seeding every resource this way
  * does NOT reintroduce issue #2087's over-redaction: an association can only
- * change an answer through {@link positionByCrossStackSource}'s condition 1,
+ * change an answer through `positionByCrossStackSource`'s condition 1,
  * which requires the bag leaf to be a plaintext THIS resource's bag holds — and
  * since #2087 that is true only of resources whose own resolution consumed the
  * parameter. The scoping still comes from the plaintext bag; this table only
@@ -69,7 +69,7 @@ export function inheritNestedStackParameterAssociations(
  * The expression a nested-stack child's PARAMETER was resolved from, or
  * `undefined` when this pass cannot certify one (issue #2291).
  *
- * The DIFF-side twin of {@link positionByCrossStackSource}, and it must exist
+ * The DIFF-side twin of `positionByCrossStackSource`, and it must exist
  * or the fix trades one bug for another. The child's persisted state now holds
  * each parameter-fed leaf's OWN expression, so the desired side of the next
  * diff has to hold it too; `redactParametersForDiff` (`deploy-engine/masking.ts`) rewrites the
@@ -90,7 +90,7 @@ export function inheritNestedStackParameterAssociations(
  * RETURNS AN ARRAY for a LIST-typed parameter (issue
  * [#2327](https://github.com/go-to-k/cdkd/issues/2327)), through the same
  * {@link certifiedListForLeaf} the persist side reaches from
- * {@link positionListByCrossStackSource}. `coerceParameterTypedValue` splits a
+ * `positionListByCrossStackSource`. `coerceParameterTypedValue` splits a
  * `CommaDelimitedList` parameter's STRING into an array before either side sees
  * it, so a scalar answer here would be compared against an array in state and
  * report a change forever — this function's own failure mode, one shape over.
@@ -280,7 +280,7 @@ export const inheritedParameterReads = new WeakMap<
       readonly names: Set<string>;
       /**
        * EVERY parameter this resource read, carrying a secret or not, with
-       * its value (issue #4731): what {@link positionByParameterReread}
+       * its value (issue #4731): what `positionByParameterReread`
        * re-reads a leaf from. `names` stays the secret-carrying subset.
        */
       readonly values: Map<string, unknown>;

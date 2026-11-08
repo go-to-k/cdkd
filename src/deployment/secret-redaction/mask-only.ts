@@ -163,7 +163,7 @@ export function clearRecordedSecretExpressions(): void {
  * `String`), or a same-named public parameter in the wrong region, answers
  * "public" about a value that was a secret. So the reader admits a leaf only
  * when the readback EQUALS the source with every token replaced by its proven
- * value (`mixedLeafProvenPublic` in `redact-path.ts`): a public parameter's own value, not a
+ * value (`mixedLeafProvenPublic` in `redact-path/reference-tokens.ts`): a public parameter's own value, not a
  * statement about some other one.
  *
  * Read through {@link provenPublicValue} — by `mixedLeafMayCarryPublicReference`'s

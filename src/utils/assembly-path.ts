@@ -167,7 +167,7 @@ const MAX_PATH_COMPONENTS = 1000;
  *   supplied, so the leaf CAN already be a symbolic link. It therefore asks
  *   the kernel directly with `lstat` and refuses one whatever it points at. A
  *   path-string model can be argued around; `lstat` cannot.
- * - `resolveInlineCodeFilePath` (`src/cli/commands/local-invoke.ts`) writes
+ * - `resolveInlineCodeFilePath` (`src/cli/commands/local-invoke/inline-code.ts`) writes
  *   into a `mkdtemp` cdkd has just created, mode 0700 and empty, so no
  *   component of the candidate can be a symbolic link at all and the edge is
  *   unreachable. It needs no `lstat`.
