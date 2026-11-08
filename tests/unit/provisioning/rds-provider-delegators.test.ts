@@ -178,6 +178,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['getDriftUnorderedPaths', 'drift', 'getDriftUnorderedPaths', 1],
   ['getDriftUnknownPaths', 'drift', 'getDriftUnknownPaths', 2],
   ['canonicalizeDriftProperties', 'drift', 'canonicalizeDriftProperties', 2],
+  ['canonicalizeDriftPair', 'drift', 'canonicalizeDriftPair', 3],
   ['canonicalizeUnsettledProperties', 'drift', 'canonicalizeUnsettledProperties', 2],
   ['readUnsettled', 'read-state', 'readUnsettled', 7],
   ['readCurrentState', 'read-state', 'readCurrentState', 3],

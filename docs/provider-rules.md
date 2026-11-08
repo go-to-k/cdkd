@@ -1557,7 +1557,11 @@ Checklist when writing or reviewing an `update()`:
   detaches the cluster in place with `RemoveFromGlobalCluster`, as the
   handler's update does; an added or changed one fails there as immutable,
   so cdkd refuses it before any write unless the live cluster is already a
-  member of that global cluster.
+  member of that global cluster. Likewise a removed DBInstance
+  `SourceDBInstanceIdentifier` promotes the read replica in place
+  (`PromoteReadReplica`, with the declared `BackupRetentionPeriod` and
+  `PreferredBackupWindow`); an added or changed one is refused unless the live
+  instance already replicates that source.
 - A real CloudFormation A/B can show it KEEPS the live value: for
   `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
   `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset

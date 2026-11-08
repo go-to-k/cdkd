@@ -82,6 +82,16 @@
 # drops the property, which detaches it (each asserted live). Both roles are
 # stack resources in every phase.
 #
+# go-to-k/cdkd#5640 (DBInstance SourceDBInstanceIdentifier): phase 2d adds two
+# same-region read replicas of a dedicated source instance (by ARN, as CDK
+# names the source);
+# the provisionedBy=sdk guard is what a pre-fix cdkd fails, and each replica's
+# declared maintenance window proves CloudFormation's after-create
+# ModifyDBInstance ran. Phase 2e drops one replica's source, which promotes it
+# in place (same DbiResourceId), holding the backup settings it declares. The
+# destroy deletes the remaining replica without a final snapshot and the
+# promoted one with one.
+#
 # go-to-k/cdkd#5640 (DBInstance DBName / AvailabilityZone): declared unchanged
 # in every phase; the provisionedBy=sdk guard is what a pre-fix cdkd fails, and
 # phase 1 asserts the live DBName and zone (the zone the record declares), that
@@ -131,6 +141,12 @@ cd "$(dirname "$0")"
 STACK="RdsDbInstanceBackfillStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# go-to-k/cdkd#5640: shared S3 VERSION-sweep helpers (issue #2096). Phase 2d's
+# ReplicaSourceInstance declares a literal master password, which reaches the
+# state records, and the state bucket is versioned.
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 EXPECTED_ENGINE_VERSION="17.6"
 EXPECTED_PORT=5433
@@ -149,6 +165,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The fixture's DBInstance has no explicit instanceIdentifier, so CDK
 # auto-generates the physical name; resolve it from cdkd state after deploy.
 DB_INSTANCE_ID=""
+# go-to-k/cdkd#5640: the two read replicas (phase 2d on), resolved from state.
+REPLICA_KEPT_ID=""
+REPLICA_PROMOTED_ID=""
+REPLICA_SOURCE_ID=""
 # go-to-k/cdkd#2762: the two custom parameter groups, resolved from state.
 PG_A_ID=""
 PG_B_ID=""
@@ -195,7 +215,17 @@ cleanup() {
   LOG_INSTANCE_ID="${DB_INSTANCE_ID}"
   if [ -z "${LOG_INSTANCE_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     LOG_INSTANCE_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
-      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.physicalId // empty] | first // ""')
+      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.physicalId // empty] | first // ""')
+  fi
+  # go-to-k/cdkd#5640: a run aborted after the phase-2d deploy started names
+  # its read replicas only in the state record.
+  if [ -z "${REPLICA_KEPT_ID}${REPLICA_PROMOTED_ID}${REPLICA_SOURCE_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    CLEANUP_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+    if [ -n "${CLEANUP_STATE}" ]; then
+      REPLICA_KEPT_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaKept"))) | .value.physicalId // empty] | first // ""')
+      REPLICA_PROMOTED_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaPromoted"))) | .value.physicalId // empty] | first // ""')
+      REPLICA_SOURCE_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReplicaSourceInstance"))) | .value.physicalId // empty] | first // ""')
+    fi
   fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # Pass --state-bucket explicitly so the cdk.json default placeholder
@@ -216,6 +246,27 @@ cleanup() {
       --skip-final-snapshot \
       --yes
   fi
+  # go-to-k/cdkd#5640: the read replicas, best-effort after `state destroy`,
+  # and BEFORE their source: deleting a source promotes its same-region
+  # replicas to standalone instances, which would then outlive the run.
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID}; do
+    aws rds delete-db-instance \
+      --db-instance-identifier "${replica_id}" \
+      --region "${REGION}" \
+      --skip-final-snapshot >/dev/null 2>&1 || true
+  done
+  # ... and wait them out first: a replica still `deleting` is still a replica.
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID}; do
+    aws rds wait db-instance-deleted --db-instance-identifier "${replica_id}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  done
+  # Then their dedicated source (RemovalPolicy.DESTROY: no final snapshot).
+  if [ -n "${REPLICA_SOURCE_ID}" ]; then
+    aws rds delete-db-instance \
+      --db-instance-identifier "${REPLICA_SOURCE_ID}" \
+      --region "${REGION}" \
+      --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
   if [ -n "${DB_INSTANCE_ID}" ]; then
     # Best-effort flip-off before the redundant raw delete — a protected
     # instance (aborted between phases 1 and 2) refuses delete-db-instance.
@@ -230,27 +281,32 @@ cleanup() {
       --skip-final-snapshot >/dev/null 2>&1 || true
   fi
   # Issue #4030: the final snapshot this run's destroy takes of the
-  # policy-less instance (CloudFormation's default is Snapshot). Older
+  # policy-less instance (CloudFormation's default is Snapshot), and of the
+  # promoted replica, standalone by then (go-to-k/cdkd#5640). Older
   # snapshots are not this run's to delete.
-  if [ -n "${DB_INSTANCE_ID}" ] && [ -n "${RUN_START}" ]; then
-    if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${DB_INSTANCE_ID}"); then
-      echo "    WARN: cleanup could not list the manual snapshots of ${DB_INSTANCE_ID}; check for a leftover by hand" >&2
-      SNAPS_TO_CLEAN=""
-    fi
-    for snap in ${SNAPS_TO_CLEAN}; do
-      aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
-      aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
-        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+  if [ -n "${RUN_START}" ]; then
+    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
+      if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${snap_instance}"); then
+        echo "    WARN: cleanup could not list the manual snapshots of ${snap_instance}; check for a leftover by hand" >&2
+        SNAPS_TO_CLEAN=""
+      fi
+      for snap in ${SNAPS_TO_CLEAN}; do
+        aws rds wait db-snapshot-available --db-snapshot-identifier "${snap}" --region "${REGION}"
+        aws rds delete-db-snapshot --db-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+          && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+      done
     done
   fi
   # go-to-k/cdkd#2762: the custom parameter groups, which RDS refuses to
   # delete while an instance still uses them; `state destroy` deletes both on
   # the happy path, so this is best-effort after an aborted one.
   if [ -n "${PG_A_ID}${PG_B_ID}" ]; then
-    if [ -n "${DB_INSTANCE_ID}" ]; then
-      aws rds wait db-instance-deleted --db-instance-identifier "${DB_INSTANCE_ID}" \
+    # go-to-k/cdkd#5640: the replicas share neither group (their source,
+    # ReplicaSourceInstance, uses the default one), but wait them out anyway.
+    for held_by in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID}; do
+      aws rds wait db-instance-deleted --db-instance-identifier "${held_by}" \
         --region "${REGION}" >/dev/null 2>&1 || true
-    fi
+    done
     for pg in ${PG_A_ID} ${PG_B_ID}; do
       aws rds delete-db-parameter-group --db-parameter-group-name "${pg}" \
         --region "${REGION}" >/dev/null 2>&1 || true
@@ -273,6 +329,8 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # NONCURRENT only, per ../s3-versions.sh; the success path sweeps all.
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent
   fi
   set -eu
 }
@@ -317,7 +375,7 @@ if [ -z "${STATE}" ]; then
 fi
 
 # Resolve the auto-generated DBInstance identifier from cdkd state.
-DB_INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.physicalId] | first // ""')
+DB_INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.physicalId] | first // ""')
 if [ -z "${DB_INSTANCE_ID}" ] || [ "${DB_INSTANCE_ID}" = "null" ]; then
   echo "FAIL: could not resolve RDS DBInstance identifier from state" >&2
   echo "${STATE}" | jq .
@@ -338,7 +396,7 @@ echo "    resolved DB parameter groups: A=${PG_A_ID} B=${PG_B_ID}"
 # destroy must apply CloudFormation's default for a standalone instance,
 # Snapshot. A recorded policy would make the snapshot assertion below test
 # the explicit-policy path instead.
-INST_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.deletionPolicy // "absent"] | first // ""')
+INST_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.deletionPolicy // "absent"] | first // ""')
 if [ "${INST_DELETION_POLICY}" != "absent" ]; then
   echo "FAIL: issue #4030 premise: the DBInstance records DeletionPolicy '${INST_DELETION_POLICY}', expected none" >&2
   exit 1
@@ -359,7 +417,7 @@ echo "    expected VPC security group: ${EXPECTED_SG}"
 # resource to the Cloud Control path (provisionedBy=cc-api) and the
 # SDK-provider assertions below would prove nothing.
 # An absent provisionedBy is a legacy SDK record; an absent RECORD is not.
-INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy // "sdk"] | first // "<no DBInstance record>"')
+INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.provisionedBy // "sdk"] | first // "<no DBInstance record>"')
 if [ "${INST_PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: DBInstance routed via '${INST_PROVISIONED_BY}', expected 'sdk' (a set prop is still SDK-unwired → CC-API routing)" >&2
   exit 1
@@ -829,6 +887,122 @@ assert_log_exports '' 'a removed EnableCloudwatchLogsExports disables what the p
 assert_instance_field "${ROLES_JQ}" '' 'a removed AssociatedRoles detaches the recorded role (go-to-k/cdkd#5640)' 'phase 2c'
 assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_B_LOWER}" 'the retained parameter group' 'phase 2c'
 
+# --- Phase 2d: two read replicas (go-to-k/cdkd#5640) --------------------------
+# SourceDBInstanceIdentifier, named by ARN as CDK's DatabaseInstanceReadReplica
+# names it. Before #5640 a declared source routed each replica to Cloud Control,
+# which the provisionedBy=sdk guard below catches. Each declares a maintenance
+# window CreateDBInstanceReadReplica cannot carry: CloudFormation's after-create
+# ModifyDBInstance applies it, so a cdkd that sends no follow-up leaves RDS's
+# own window. The source is a dedicated instance created in the same deploy
+# (ReplicaSourceInstance): RDS refuses a replica of a PostgreSQL source whose
+# managed master password is on, which BackfillInstance's is. cdkd creates the
+# replicas once it is `available`, as their reference orders them.
+echo "==> Phase 2d: redeploy with CDKD_TEST_REPLICA=create (a source instance and two read replicas of it; go-to-k/cdkd#5640)"
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_REPLICA=create node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+# usage: replica_record_field <logical id prefix> <jq path, default if absent>
+replica_record_field() {
+  echo "${STATE}" | jq -r --arg re "^$1" "[.resources | to_entries[] | select(.value.resourceType == \"AWS::RDS::DBInstance\" and (.key | test(\$re))) | ${2}] | if length == 1 then .[0] else \"<\(length) records>\" end"
+}
+REPLICA_KEPT_ID=$(replica_record_field ReadReplicaKept '.value.physicalId')
+REPLICA_PROMOTED_ID=$(replica_record_field ReadReplicaPromoted '.value.physicalId')
+REPLICA_SOURCE_ID=$(replica_record_field ReplicaSourceInstance '.value.physicalId')
+for replica in ReadReplicaKept ReadReplicaPromoted; do
+  REPLICA_ROUTE=$(replica_record_field "${replica}" '.value.provisionedBy // "sdk"')
+  if [ "${REPLICA_ROUTE}" != "sdk" ]; then
+    echo "FAIL: phase 2d: ${replica} routed via '${REPLICA_ROUTE}', expected sdk (SourceDBInstanceIdentifier is SDK-unwired, go-to-k/cdkd#5640)" >&2
+    exit 1
+  fi
+done
+echo "    OK: phase 2d: both replicas provisionedBy=sdk (${REPLICA_KEPT_ID}, ${REPLICA_PROMOTED_ID})"
+SOURCE_LOWER=$(printf '%s' "${REPLICA_SOURCE_ID}" | tr '[:upper:]' '[:lower:]')
+# usage: assert_replica <identifier> <expected maintenance window> <phase>
+assert_replica() {
+  INSTANCE=$(aws rds describe-db-instances \
+    --db-instance-identifier "$1" \
+    --region "${REGION}" \
+    --query 'DBInstances[0]' --output json) || return 1
+  assert_instance_field '(.ReadReplicaSourceDBInstanceIdentifier // "null") | ascii_downcase' "${SOURCE_LOWER}" "SourceDBInstanceIdentifier made $1 a replica of ReplicaSourceInstance (go-to-k/cdkd#5640)" "$3"
+  assert_instance_field '.PreferredMaintenanceWindow' "$2" "the after-create ModifyDBInstance applied $1's window (go-to-k/cdkd#5640)" "$3"
+  assert_instance_field '.DBInstanceStatus' 'available' "$1 is available" "$3"
+}
+assert_replica "${REPLICA_KEPT_ID}" 'mon:06:00-mon:06:30' 'phase 2d'
+assert_replica "${REPLICA_PROMOTED_ID}" 'tue:06:00-tue:06:30' 'phase 2d'
+PROMOTED_RESOURCE_ID=$(echo "${INSTANCE}" | jq -r '.DbiResourceId // ""')
+# The readback must report the source: the observed baseline carries it, and
+# `cdkd drift` reads the unchanged replicas clean against that baseline (the
+# readback's own spelling). Pairing the template's ARN with RDS's identifier
+# happens only on a baseline without observedProperties: unit-tested
+# (`canonicalizeDriftPair`), not proven here.
+for replica in ReadReplicaKept ReadReplicaPromoted; do
+  # Read back as the source's ARN: its region field and its trailing name.
+  OBSERVED_SOURCE=$(replica_record_field "${replica}" '(.value.observedProperties.SourceDBInstanceIdentifier // "null") | split(":") | "\(.[3] // "")/\(last | ascii_downcase)"')
+  if [ "${OBSERVED_SOURCE}" != "${REGION}/${SOURCE_LOWER}" ]; then
+    echo "FAIL: phase 2d: the ${replica} observed baseline holds SourceDBInstanceIdentifier region/name '${OBSERVED_SOURCE}', expected '${REGION}/${SOURCE_LOWER}' (readCurrentState does not report it, go-to-k/cdkd#5640)" >&2
+    exit 1
+  fi
+done
+DRIFT_OUT=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+if grep -qE '^[[:space:]]*[~?!-] ReadReplica(Kept|Promoted) \(AWS::RDS::DBInstance\)' "${DRIFT_OUT}"; then
+  echo "FAIL: phase 2d: cdkd drift reports an unchanged read replica as drifted, unsupported, not compared or deleted (go-to-k/cdkd#5640; drift rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_OUT}" >&2
+  rm -f "${DRIFT_OUT}"
+  exit 1
+fi
+# Sentinel: the per-stack verdict heading, as in phase 1.
+if ! grep -qE "^[[:space:]]*(✓|⚠) ${STACK} \(${REGION}\): " "${DRIFT_OUT}"; then
+  echo "FAIL: phase 2d: cdkd drift did not report on ${STACK} (rc=${DRIFT_RC}), so it compared nothing (go-to-k/cdkd#5640):" >&2
+  cat "${DRIFT_OUT}" >&2
+  rm -f "${DRIFT_OUT}"
+  exit 1
+fi
+rm -f "${DRIFT_OUT}"
+echo "    OK: phase 2d: cdkd drift does not report the read replicas as drifted (go-to-k/cdkd#5640)"
+if [ -z "${PROMOTED_RESOURCE_ID}" ]; then
+  echo "FAIL: phase 2d: DescribeDBInstances reported no DbiResourceId for ${REPLICA_PROMOTED_ID}" >&2
+  exit 1
+fi
+
+# --- Phase 2e: promote one replica (go-to-k/cdkd#5640) --------------------------
+# ReadReplicaPromoted drops its source and declares backup settings; as
+# CloudFormation's update handler does, cdkd promotes it in place
+# (PromoteReadReplica) and the ModifyDBInstance after it, which both carry
+# them. The empty source and the same DbiResourceId prove an in-place
+# promotion; the backup asserts prove only that the promoted instance holds the
+# declared settings, not which of the two calls set them (unit-tested).
+# ReadReplicaKept is unchanged and stays a replica.
+echo "==> Phase 2e: redeploy with CDKD_TEST_REPLICA=promote (ReadReplicaPromoted drops its source; go-to-k/cdkd#5640)"
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_REPLICA=promote node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${REPLICA_PROMOTED_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '.ReadReplicaSourceDBInstanceIdentifier' 'null' 'a removed SourceDBInstanceIdentifier promotes the replica (go-to-k/cdkd#5640)' 'phase 2e'
+assert_instance_field '.DbiResourceId' "${PROMOTED_RESOURCE_ID}" 'the promotion is in place, not a replacement (go-to-k/cdkd#5640)' 'phase 2e'
+assert_instance_field '.BackupRetentionPeriod' '2' 'the promoted instance holds the declared BackupRetentionPeriod (go-to-k/cdkd#5640)' 'phase 2e'
+assert_instance_field '.PreferredBackupWindow' '04:00-04:30' 'the promoted instance holds the declared PreferredBackupWindow (go-to-k/cdkd#5640)' 'phase 2e'
+assert_instance_field '.DBInstanceStatus' 'available' 'the deploy waited for the promotion' 'phase 2e'
+assert_replica "${REPLICA_KEPT_ID}" 'mon:06:00-mon:06:30' 'phase 2e'
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+PROMOTED_ROUTE=$(replica_record_field ReadReplicaPromoted '.value.provisionedBy // "sdk"')
+if [ "${PROMOTED_ROUTE}" != "sdk" ]; then
+  echo "FAIL: phase 2e: ReadReplicaPromoted routed via '${PROMOTED_ROUTE}', expected sdk (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+echo "    OK: phase 2e: ReadReplicaPromoted is standalone, in place, on the SDK route"
+
 # --- Phase 3: destroy -------------------------------------------------
 # --remove-protection: DeletionProtection is retained on removal (#5004), so
 # the destroy has to flip it off.
@@ -881,10 +1055,66 @@ if [ "${FINAL_COUNT}" != "1" ] || [ -n "${OTHER_SNAPSHOTS}" ]; then
 fi
 echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}") (issue #4030; cleanup deletes it)"
 
+# go-to-k/cdkd#5640: both replicas are gone. ReadReplicaKept, still a replica,
+# was deleted without a final snapshot (RDS refuses one on a replica, and
+# CloudFormation ignores a replica's DeletionPolicy); ReadReplicaPromoted,
+# standalone by then, took one, as the policy-less instance did.
+for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURCE_ID}"; do
+  if gone_probe aws rds describe-db-instances --db-instance-identifier "${replica_id}" --region "${REGION}"; then
+    REPLICA_STATUS="gone"
+  elif ! REPLICA_STATUS=$(aws rds describe-db-instances \
+      --db-instance-identifier "${replica_id}" \
+      --region "${REGION}" \
+      --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1); then
+    # TOCTOU: the replica can vanish between gone_probe and this requery.
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${REPLICA_STATUS}" \
+      && REPLICA_STATUS="gone" \
+      || { echo "FAIL: describe-db-instances requery undetermined: ${REPLICA_STATUS}" >&2; exit 1; }
+  fi
+  if [ "${REPLICA_STATUS}" != "gone" ] && [ "${REPLICA_STATUS}" != "deleting" ]; then
+    echo "FAIL: replica ${replica_id} still in unexpected state after destroy: ${REPLICA_STATUS}" >&2
+    exit 1
+  fi
+done
+if ! KEPT_SNAPSHOTS=$(this_run_instance_snapshots "${REPLICA_KEPT_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${REPLICA_KEPT_ID}" >&2
+  exit 1
+fi
+if [ -n "${KEPT_SNAPSHOTS}" ]; then
+  echo "FAIL: destroying the read replica ${REPLICA_KEPT_ID} took snapshot(s) $(printf '%s ' ${KEPT_SNAPSHOTS}), expected none (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+if ! PROMOTED_SNAPSHOTS=$(this_run_instance_snapshots "${REPLICA_PROMOTED_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${REPLICA_PROMOTED_ID}" >&2
+  exit 1
+fi
+PROMOTED_FINAL=$(printf '%s\n' "${PROMOTED_SNAPSHOTS}" | grep -c -- "^${REPLICA_PROMOTED_ID}-final-[0-9]\{8\}-[0-9]\{6\}$" || true)
+if [ "${PROMOTED_FINAL}" != "1" ]; then
+  echo "FAIL: destroying the promoted ${REPLICA_PROMOTED_ID} took ${PROMOTED_FINAL} final snapshot(s), expected 1 (a standalone instance's default DeletionPolicy is Snapshot; go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+if ! SOURCE_SNAPSHOTS=$(this_run_instance_snapshots "${REPLICA_SOURCE_ID}"); then
+  echo "FAIL: could not list the manual snapshots of ${REPLICA_SOURCE_ID}" >&2
+  exit 1
+fi
+if [ -n "${SOURCE_SNAPSHOTS}" ]; then
+  echo "FAIL: destroying the RemovalPolicy.DESTROY replica source ${REPLICA_SOURCE_ID} took snapshot(s) $(printf '%s ' ${SOURCE_SNAPSHOTS}), expected none (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+echo "    OK: both replicas and their source are gone; the replica and the DESTROY source took no final snapshot, the promoted instance one (go-to-k/cdkd#5640; cleanup deletes it)"
+
 # go-to-k/cdkd#2762: the destroy deleted both custom parameter groups.
 assert_gone "DB parameter group ${PG_A_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_A_ID}" --region "${REGION}"
 assert_gone "DB parameter group ${PG_B_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_B_ID}" --region "${REGION}"
 echo "    OK: both DB parameter groups are gone"
 
+# go-to-k/cdkd#5640: the sweep runs LAST, after cleanup's own snapshot and log
+# group deletes (run here, then disarmed): a later `aws s3 rm` would write a
+# delete marker the assertion below never sees.
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-dbinstance-backfill state teardown"
+
 echo ""
-echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value + #5640 read replicas ==="

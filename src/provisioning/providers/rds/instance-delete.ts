@@ -16,6 +16,7 @@ import {
 } from '../deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { isLiveReadReplica, replicaSourceOf } from './read-replica.js';
 import { RDS_DELETE_WAIT_MS, deleteAutomatedBackupsInput } from './shared.js';
 
 /** The compensation boundary for a DBInstance; see {@link deleteDBCluster}. */
@@ -139,10 +140,36 @@ export async function deleteDBInstanceOnce(
     // (`DBClusterIdentifier` present) is deleted WITHOUT a final snapshot
     // even under `Snapshot` — cluster-level snapshots cover it, and the
     // instance-level DeleteDBInstance would reject the parameter anyway.
-    const finalSnapshotId =
+    let finalSnapshotId =
       properties?.['DBClusterIdentifier'] === undefined
         ? context?.finalSnapshotIdentifier
         : undefined;
+    // go-to-k/cdkd#5640: likewise a read replica, as CloudFormation's delete
+    // handler skips the snapshot for one (RDS refuses FinalDBSnapshotIdentifier
+    // there; the source keeps the data). Read live, and only for a record
+    // declaring a source, so a standalone delete pays no extra call. A record
+    // that lacks it over a live replica (a `cdkd import` of a replica whose
+    // template omits the source) keeps the snapshot, which RDS refuses: the
+    // delete fails closed, no data lost. A replica promoted outside cdkd holds
+    // its own data now and keeps the snapshot; an unreadable instance keeps it
+    // too, so RDS refuses rather than a standalone instance losing its
+    // snapshot.
+    if (finalSnapshotId && replicaSourceOf(properties) !== undefined) {
+      const live = await this.describeDBInstance(physicalId).catch((err: unknown) => {
+        this.logger.debug(
+          maskerOrIdentity(context?.maskSecrets)(
+            safeMsg`Could not read whether DBInstance ${logicalId} is a read replica: ${describeAwsFailure(err).detail}`
+          )
+        );
+        return undefined;
+      });
+      if (isLiveReadReplica(live)) {
+        finalSnapshotId = undefined;
+        this.logger.info(
+          safeMsg`Deleting DBInstance ${logicalId} without a final snapshot: it is a read replica, whose DeletionPolicy CloudFormation ignores`
+        );
+      }
+    }
     // Issue #5155: as on the DBCluster delete above.
     const sendDelete = () =>
       this.getClient().send(

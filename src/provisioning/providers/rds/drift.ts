@@ -1,5 +1,6 @@
 import { canonicalAssociatedRoles } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { sameReplicaSource } from './read-replica.js';
 import {
   type ServerlessV2ScalingProps,
   CLUSTER_BOOLEAN_SCALARS,
@@ -101,6 +102,41 @@ export function canonicalizeDriftProperties(
     }
   }
   return out ?? properties;
+}
+
+/**
+ * go-to-k/cdkd#5640: a read replica's source. The readback is an ARN; a
+ * record may hold a bare identifier or an ARN in another case. The two compare
+ * as one source only when they name the same instance by (region, account,
+ * name) (`sameReplicaSource`): the AWS side then takes the baseline's
+ * spelling. A same-named instance in
+ * another region or account stays a difference. Both bags by identity
+ * otherwise.
+ */
+export async function canonicalizeDriftPair(
+  this: RDSProvider,
+  resourceType: string,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  const recorded = baseline['SourceDBInstanceIdentifier'];
+  const live = aws['SourceDBInstanceIdentifier'];
+  if (
+    resourceType !== 'AWS::RDS::DBInstance' ||
+    typeof recorded !== 'string' ||
+    typeof live !== 'string' ||
+    recorded === live
+  ) {
+    return { baseline, aws };
+  }
+  // A bare spelling resolves to this client's region. The account needs no
+  // own scope: the readback is an ARN that carries it (`readCurrentState`
+  // builds a same-region source from the replica's own ARN), so a record ARN
+  // naming another account differs from it there.
+  const region = await this.getClient().config.region();
+  return sameReplicaSource(recorded, live, { region })
+    ? { baseline, aws: { ...aws, SourceDBInstanceIdentifier: recorded } }
+    : { baseline, aws };
 }
 
 /** The post-update proof (#5380) compares through the same normalization. */
