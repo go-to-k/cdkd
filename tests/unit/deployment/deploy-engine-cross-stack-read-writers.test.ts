@@ -87,11 +87,15 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
   // and carries the previous set only when the whole previous bag is kept.
   // Every other save carries the previous set forward via
   // `exportNamesCarriedFrom` (fenced separately below).
+  //
+  // The family lists a directory's own files before its subdirectories'
+  // (`_engine-family.ts`), so the no-change refresh, in
+  // `deploy-flow/no-change.ts` (go-to-k/cdkd#5835), comes after `execute.ts`.
   'exportNames: [],',
-  ': { exportNames: [...exportNamesToPersist] }),',
   'exportNames: [...engine.outputsRun.resolvedExportNames],',
   '...(engine.recordedImports.length > 0 && { imports: [...engine.recordedImports] }),',
   'outputReads: [...engine.recordedOutputReads],',
+  ': { exportNames: [...exportNamesToPersist] }),',
 ];
 
 /**

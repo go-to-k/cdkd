@@ -131,7 +131,7 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   lambda-vpc-deps.ts, retry.ts, retryable-errors.ts,
 #   retryable-errors/**, rollback-executor.ts, rollback-executor/**,
 #   provider-registry.ts,
-#   inline-policy-claims.ts):
+#   inline-policy-claims.ts, inline-policy-claims/**):
 #   any change at all is
 #   delete-touching. These are small high-stakes analyzer files where a
 #   typical addition is an array entry like `'AWS::Foo': ['AWS::Bar']`
@@ -159,8 +159,9 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   returned `provisionedBy` flipped) matched `delete_symbol_pattern` 0
 #   times, while a control line naming `deleteProvider` matched.
 # - "filtered-delete" files (destroy.ts and the modules split out of it
-#   into destroy/, #5835, destroy-runner.ts,
-#   deploy-engine.ts and the modules split out of it, #4200 — code
+#   into destroy/, #5835, destroy-runner.ts and the modules split out
+#   of it into destroy-runner/, #5835, deploy-engine.ts and the modules
+#   split out of it, #4200 — code
 #   under this scope must not leave it by moving): considered delete-touching ONLY when the diff
 #   hunks add/remove a delete-related symbol — same filter as provider
 #   files. These are larger files that mix delete logic with UX
@@ -217,9 +218,9 @@ if [ -n "$diff_base" ]; then
   # Strict files — any change triggers (small high-stakes analyzer
   # files plus the retry classifier / rollback executor; see header
   # comment for rationale).
-  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/deployment/rollback-executor/.*\.ts$|^src/deployment/retryable-errors/.*\.ts$|^src/provisioning/provider-registry\.ts$'
+  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor|inline-policy-claims)\.ts$|^src/deployment/rollback-executor/.*\.ts$|^src/deployment/retryable-errors/.*\.ts$|^src/deployment/inline-policy-claims/.*\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
-  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/cli/commands/destroy/.*\.ts|src/deployment/deploy-engine(\.ts|/.*\.ts)|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
+  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/cli/commands/destroy/.*\.ts|src/cli/commands/destroy-runner/.*\.ts|src/deployment/deploy-engine(\.ts|/.*\.ts)|src/deployment/(label-routing|deploy-value-equality)\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|cloud-control/.*\.ts|region-check\.ts)$'
   # Match a delete-touching symbol on an added/removed line, but NOT inside
   # a single-line comment. This avoids the false positives PR #73 hit

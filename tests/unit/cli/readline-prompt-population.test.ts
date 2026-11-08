@@ -123,7 +123,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       '`promptYesNo` is the deliberate default-YES carve-out whose only caller ' +
       '(`deploy/command.ts`) short-circuits on a non-TTY before reaching it.',
   },
-  'src/cli/commands/destroy-runner.ts': {
+  // Moved with the destroy-runner split (go-to-k/cdkd#5835): `announceOrphansAndConfirm`.
+  'src/cli/commands/destroy-runner/preflight.ts': {
     sites: 1,
     why:
       'The issue #2259 per-stack destroy prompt. Keeps its own inline guard: it ' +

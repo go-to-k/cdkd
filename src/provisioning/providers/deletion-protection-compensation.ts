@@ -339,9 +339,10 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
  *     asynchronous: its wait is not interruptible, gives up on a transport
  *     outage after the flip's own short transient grace, and otherwise waits
  *     out an update that stays in progress for the type's full Cloud Control
- *     poll budget (15 minutes, longer for a known-slow type). The RDS
- *     DBCluster / DBInstance re-enable resends a busy / not-available refusal
- *     for up to `PROTECTION_FLIP_RETRY_WAIT_MS` (10 minutes), bounded by
+ *     poll budget (15 minutes, longer for a known-slow type). The RDS-family
+ *     re-enables (RDS and Neptune DBCluster / DBInstance, DocDB DBCluster)
+ *     resend a busy / not-available refusal for up to
+ *     `PROTECTION_FLIP_RETRY_WAIT_MS` (10 minutes), bounded by
  *     `enclosingDeadlineRemainingMs()` minus a margin, Ctrl-C teardown
  *     included.
  */
@@ -405,10 +406,11 @@ export interface ProtectionGuardSite {
   readonly noun: string;
   /**
    * Whether the re-enable's error is the service's not-found answer. Not a
-   * `cause`-chain walk: every `reEnable` is a bare `send`, so the SDK error
-   * arrives unwrapped. If one ever wraps its call, a name-keyed predicate
-   * answers `false` and the compensation keeps the LOUD error line — the safe
-   * direction.
+   * `cause`-chain walk: a `reEnable` throws the SDK error unwrapped, the
+   * RDS-family ones included, whose busy-refusal retry wraps only its own
+   * give-up (budget spent, terminal status) and passes a not-found through
+   * as-is. A wrapped error makes a name-keyed predicate answer `false`, so the
+   * compensation keeps the LOUD error line — the safe direction.
    */
   readonly isNotFound: (error: unknown) => boolean;
   /**
@@ -855,6 +857,13 @@ export async function settleProtectionFlip(opts: {
   }
   return false;
 }
+
+/**
+ * go-to-k/cdkd#5639 / #5995: how long an RDS-family `--remove-protection`
+ * flip (RDS, DocDB, Neptune) waits, across its retries, for a busy DB cluster
+ * or DB instance to accept it.
+ */
+export const PROTECTION_FLIP_RETRY_WAIT_MS = 10 * 60_000;
 
 /**
  * Issue #5155: how long a delete that takes a final snapshot waits, after a
