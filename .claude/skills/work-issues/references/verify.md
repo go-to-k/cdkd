@@ -106,8 +106,8 @@ checks.
 
 Once the arm AS IT STANDS at the final sha has PASSED (a red on an unproven
 fixture is unattributable): BEFORE the final integ when §8-b's early run is
-that PASS, else AFTER it, never BESIDE it in any region (`ship.md` §9), the
-merge waiting on the probe's RED (#5827) —
+that PASS, else AFTER it, never BESIDE any run of that fixture in any region
+(`ship.md` §9), the merge waiting on the probe's RED (#5827) —
 revert the fix, rebuild, run, confirm the arm goes RED
 **at YOUR assertion — read which one fired**. A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
@@ -132,8 +132,8 @@ log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`; when that holds
 only the code, AWS's text is the CloudTrail event's `errorMessage` (`aws
 cloudtrail lookup-events ... --output json`; `text` breaks the parse). **Revert in a
-THROWAWAY detached tree at the PUSHED final sha, never the lane's**, where
-`dirty-path-restore-gate` refuses the restore and the classifier `cp` (a SECOND
+THROWAWAY detached tree at the PUSHED final sha, never the lane's** (there
+`dirty-path-restore-gate` refuses the restore and the classifier `cp`; a SECOND
 probe in the throwaway tree restores the first's edit with
 `CDKD_ALLOW_DIRTY_RESTORE=1`, never `git show >` around the gate: #5657). Inside
 `bash -c` (zsh mangles `$B:src`), each copy written beside the file FIRST — a

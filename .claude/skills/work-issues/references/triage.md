@@ -23,9 +23,10 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 ```
 
 **The `backfill-type` exclusion is load-bearing** (#2949): a
-slice's `created_at` moves with the coverage map, so §3-0 misreads it. Their
-comments hold the claims and measurements: an empty pick comes only AFTER both
-commands below, naming each type issue and its unclaimed rows (#6052):
+slice's `created_at` moves with the coverage map, so §3-0 misreads it. It also
+hides the type issues, whose comments hold the claims: an empty pick comes
+only AFTER both commands below, naming each type issue and its unclaimed rows
+(#6052):
 
 ```bash
 gh issue list --label backfill-type
