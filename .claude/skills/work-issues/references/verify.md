@@ -106,7 +106,8 @@ checks.
 
 Once the arm AS IT STANDS at the final sha has PASSED (a red on an unproven
 fixture is unattributable): BEFORE the final integ when §8-b's early run is
-that PASS, else AFTER it, the merge waiting on the probe's RED (#5827) —
+that PASS, else AFTER it, the merge waiting on the probe's RED (#5827), never
+BESIDE a run of the same fixture in ANY region (`ship.md` §9; #6052) —
 revert the fix, rebuild, run, confirm the arm goes RED
 **at YOUR assertion — read which one fired**. A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test

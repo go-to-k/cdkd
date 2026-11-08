@@ -19,7 +19,7 @@ round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
 merges at once, nor two integs on the SAME fixture (one stack name, one state
-prefix; another REGION is no isolation, a §8-d probe included: cdkd then refuses
+prefix; another REGION is no isolation: cdkd then refuses
 "state in multiple regions" at drift and cleanup, voiding both, #6048): queue
 the later lane behind the earlier one's merge and rebase it. A
 merge during another lane's integ is allowed, but it moves `main` under that
