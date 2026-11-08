@@ -49,7 +49,13 @@ vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
 vi.mock('../../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../../../src/provisioning/final-snapshot.js')>();
-  return { ...actual, createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-unit') };
+  return {
+    ...actual,
+    createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-unit'),
+    // go-to-k/cdkd#6047: the live read-replica read, stubbed so no case
+    // reaches a real RDS client (it answers "not a replica": refuse as before).
+    ccRoutedInstanceTakesNoSnapshot: vi.fn(async () => false),
+  };
 });
 
 const nestedCtx = vi.hoisted(() => ({ last: undefined as Record<string, unknown> | undefined }));

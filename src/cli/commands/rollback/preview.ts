@@ -226,7 +226,11 @@ export async function previewNestedChildRevert(
  * it (issue #1368)? The preview must not unwind a record for an op that
  * never runs — the same question `snapshotNote` answers for the label,
  * asked with the same predicate and the same route, so the label and the
- * previewed state cannot disagree.
+ * previewed state cannot disagree. One exception it cannot avoid: a Cloud
+ * Control-routed `AWS::RDS::DBInstance` is previewed as refused (the record
+ * kept), while the replay reads the instance and deletes a live read replica
+ * or cluster member without a snapshot (go-to-k/cdkd#6047); the label names
+ * both outcomes.
  */
 export function planItemWillBeRefused(
   resourceType: string,

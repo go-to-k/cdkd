@@ -42,7 +42,13 @@ const mockCreatePreDeleteFinalSnapshot = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
   const actual = await vi.importActual('../../../src/provisioning/final-snapshot.js');
-  return { ...actual, createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot };
+  return {
+    ...actual,
+    createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot,
+    // go-to-k/cdkd#6047: the live read-replica read, stubbed so no case
+    // reaches a real RDS client (it answers "not a replica": refuse as before).
+    ccRoutedInstanceTakesNoSnapshot: vi.fn(async () => false),
+  };
 });
 
 const mockEc2Client = { send: vi.fn() };

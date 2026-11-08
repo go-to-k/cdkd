@@ -36,6 +36,9 @@ vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) =>
   return {
     ...actual,
     createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-1'),
+    // go-to-k/cdkd#6047: the live read-replica read, stubbed so no case
+    // reaches a real RDS client (it answers "not a replica": refuse as before).
+    ccRoutedInstanceTakesNoSnapshot: vi.fn(async () => false),
   };
 });
 
