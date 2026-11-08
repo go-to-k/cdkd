@@ -1,9 +1,0 @@
-# src-file-size-allowlist.txt
-#
-# Repo-relative `src/**/*.ts` files (tests and `*.generated.ts` excluded) that
-# are allowed to exceed the 1000-line cap. `src-file-size-cap.test.ts` enforces
-# it. The list only shrinks:
-#   - a file NOT listed here may not exceed the cap — split it;
-#   - a listed file that drops to the cap or below must be removed from this
-#     list in the same change (a stale entry fails the test).
-# Never add a line here; split the file instead.
