@@ -80,6 +80,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3ServiceException, type S3Client } from '@aws-sdk/client-s3';
 import { LockManager } from '../../../src/state/lock-manager.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import type { LockInfo } from '../../../src/types/state.js';
 
 const OWNER = '999999999999';
@@ -784,7 +785,9 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
    * `custom-resource-response-version-purge-sharing.test.ts` gives at length:
    * a comment naming either method must not be able to satisfy or to widen it.
    */
-  describe('every deleteLock caller is paired with a purge (fence)', () => {
+  // These cases parse every src file to find deleteLock callers: CPU-bound on the
+  // real tree, so a contended full suite pushed one past the 5 s default.
+  describe('every deleteLock caller is paired with a purge (fence)', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
     const SRC = join(process.cwd(), 'src/state/lock-manager.ts');
     /**
      * The class file plus every companion module its method bodies moved into
