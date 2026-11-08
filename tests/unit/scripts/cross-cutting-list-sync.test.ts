@@ -125,6 +125,7 @@ const DESTROY_SCOPE_PIN = [
   'src/provisioning/cloud-control-provider.ts',
   'src/provisioning/cloud-control/**',
   'src/provisioning/provider-registry.ts',
+  'src/provisioning/provider-registry/**',
   'src/provisioning/providers/**',
   'src/provisioning/region-check.ts',
 ];
@@ -161,6 +162,7 @@ const DESTROY_STRICT_PIN = [
   'src/deployment/rollback-executor.ts',
   'src/deployment/rollback-executor/**',
   'src/provisioning/provider-registry.ts',
+  'src/provisioning/provider-registry/**',
 ];
 
 const STRICT_PIN_RATIONALE =

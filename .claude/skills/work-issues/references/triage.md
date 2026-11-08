@@ -76,7 +76,7 @@ and stand down (claim.md) only when the fix needs those lines (#4516).
 The contested cross-cutting files:
 `src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts` (and `src/deployment/{deploy-engine,intrinsic-resolver,retryable-errors,rollback-executor}/*.ts`),
 `src/analyzer/{dag-builder,template-parser}.ts`,
-`src/provisioning/{register-providers,provider-registry}.ts`,
+`src/provisioning/{register-providers,provider-registry}.ts` (and `src/provisioning/provider-registry/*.ts`),
 `src/cli/commands/{deploy,destroy,destroy-runner,export}.ts` (and `src/cli/commands/destroy-runner/*.ts`),
 `scripts/check-provider-update-context.ts` and
 `tests/unit/scripts/provider-update-context.test.ts` (the checker's

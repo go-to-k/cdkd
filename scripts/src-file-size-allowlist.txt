@@ -8,4 +8,3 @@
 #     list in the same change (a stale entry fails the test).
 # Never add a line here; split the file instead.
 src/deployment/deploy-engine/rollback.ts
-src/provisioning/provider-registry.ts

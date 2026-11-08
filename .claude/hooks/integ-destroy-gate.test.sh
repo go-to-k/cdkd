@@ -807,6 +807,15 @@ stage_filter_change "src/provisioning/provider-registry.ts" \
 run_case "diff filter: provider-registry.ts is delete-touching (#2720)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# The routing body itself (`getProviderFor`) moved into
+# `provider-registry/routing.ts` (go-to-k/cdkd#5835), so the companion
+# directory carries the same STRICT weight as the entry: a routing edit there
+# has the same delete-free vocabulary as the case above.
+stage_filter_change "src/provisioning/provider-registry/routing.ts" \
+  "const returningToSdk = false;"
+run_case "diff filter: provider-registry/*.ts is delete-touching (#5835)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # Near-miss control for the #2720 entry: the pattern is anchored at BOTH ends,
 # so a provisioning sibling whose basename merely STARTS with the scoped one is
 # out of scope. Without this, a loose `provider-registry.*` would satisfy the
