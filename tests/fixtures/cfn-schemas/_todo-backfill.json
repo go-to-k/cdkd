@@ -27,13 +27,10 @@
       "KmsKeyIdentifier"
     ],
     "AWS::RDS::DBCluster": [
-      "AllocatedStorage",
-      "DBClusterInstanceClass",
       "DBInstanceParameterGroupName",
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
-      "Iops",
       "ReplicationSourceIdentifier",
       "RestoreToTime",
       "RestoreType",

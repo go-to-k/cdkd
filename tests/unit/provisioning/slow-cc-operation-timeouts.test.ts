@@ -37,6 +37,10 @@ describe('slowCcOperationTimeoutMs', () => {
     expect(slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'UPDATE')).toBe(HOUR_MS);
   });
 
+  it('lifts RDS DBCluster UPDATE to 90 min: a Multi-AZ class change rolls across three instances (#5639)', () => {
+    expect(slowCcOperationTimeoutMs('AWS::RDS::DBCluster', 'UPDATE')).toBe(90 * 60 * 1000);
+  });
+
   it('lifts DynamoDB Table / GlobalTable UPDATE only, past an hour: the TTL rate-limit wait (#5451)', () => {
     for (const type of ['AWS::DynamoDB::Table', 'AWS::DynamoDB::GlobalTable']) {
       expect(slowCcOperationTimeoutMs(type, 'UPDATE')).toBe(75 * 60 * 1000);
@@ -46,8 +50,8 @@ describe('slowCcOperationTimeoutMs', () => {
   });
 
   it('does not lift UPDATE for the cluster types that only declare create/delete', () => {
-    // Only the domain types and the ElastiCache CacheCluster (#5438) declare
-    // an update floor; another cluster UPDATE falls
+    // Only the domain types, the ElastiCache CacheCluster (#5438) and the RDS
+    // DBCluster (#5639) declare an update floor; another cluster UPDATE falls
     // back to the generic default (0), so an in-place cluster modify is not
     // silently given an hour.
     expect(slowCcOperationTimeoutMs('AWS::Redshift::Cluster', 'UPDATE')).toBe(0);

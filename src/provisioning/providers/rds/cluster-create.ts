@@ -22,6 +22,9 @@ import {
   type ServerlessV2ScalingProps,
   serverlessV2ScalingToSend,
   clusterCreateBackfillMembers,
+  clusterCreateMultiAzMembers,
+  clusterSizeValue,
+  malformedInstanceClass,
   clusterCreateScalarMembers,
   backtrackWindowValue,
   localWriteForwardingFlag,
@@ -102,10 +105,18 @@ export async function createDBCluster(
   const globalClusterId = globalClusterSkipped
     ? undefined
     : recordedGlobalClusterIdentifier(properties);
+  const classSkipped = malformedInstanceClass(properties['DBClusterInstanceClass']);
+  const allocatedSkipped = clusterSizeValue(properties['AllocatedStorage']) === 'malformed';
+  const iopsSkipped = clusterSizeValue(properties['Iops']) === 'malformed';
   for (const [skipped, key, expected, created] of [
     [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
     [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
     [globalClusterSkipped, 'GlobalClusterIdentifier', 'a string', 'no global cluster'],
+    // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, storage
+    // size and IOPS.
+    [classSkipped, 'DBClusterInstanceClass', 'a string', 'no instance class sent'],
+    [allocatedSkipped, 'AllocatedStorage', 'a whole number of GiB', 'no storage size sent'],
+    [iopsSkipped, 'Iops', 'a whole number', 'no IOPS sent'],
     [
       availabilityZonesSkipped,
       'AvailabilityZones',
@@ -147,6 +158,9 @@ export async function createDBCluster(
     ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
     ...(availabilityZonesSkipped ? ['AvailabilityZones'] : []),
     ...(globalClusterSkipped ? ['GlobalClusterIdentifier'] : []),
+    ...(classSkipped ? ['DBClusterInstanceClass'] : []),
+    ...(allocatedSkipped ? ['AllocatedStorage'] : []),
+    ...(iopsSkipped ? ['Iops'] : []),
   ];
   const effectiveProperties =
     skippedKeys.length > 0
@@ -218,6 +232,8 @@ export async function createDBCluster(
         }),
         // go-to-k/cdkd#2762: parameter group, windows, tag copying, storage type.
         ...clusterCreateBackfillMembers(properties),
+        // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class and storage.
+        ...clusterCreateMultiAzMembers(properties),
         // go-to-k/cdkd#5639: the declared list, as CloudFormation's create sends it.
         ...(logExports !== undefined &&
           logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),

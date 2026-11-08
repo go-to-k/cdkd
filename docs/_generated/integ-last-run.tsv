@@ -321,6 +321,7 @@ rds-aurora	2026-11-07T13:39:08Z	PASS	3409	verify.sh	rc ok, orph clean (#5996)
 rds-dbinstance-backfill	2026-11-08T17:58:24Z	PASS	4570	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean
+rds-multiaz-cluster	2026-11-08T20:08:02Z	PASS	4107	verify.sh	3 phases ok; class change ~40m on 3 instances (90m floor), orph clean
 recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc ok, orph clean
 recreate-parent-child-permission	2026-10-24T14:12:33Z	PASS	90	verify.sh	rc ok, orph clean

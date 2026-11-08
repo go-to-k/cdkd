@@ -138,7 +138,7 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>'
 Choose the wait mode from what happens after deployment:
 
 - Default: normal interactive development when no immediate consumer needs every asynchronous resource fully serving.
-- `--full-wait`: use before smoke tests, DNS cutovers, or follow-on jobs that require CloudFormation-like completion, including CloudFront `Deployed` and ECS service steady state.
+- `--full-wait`: use before smoke tests, DNS cutovers, or follow-on jobs that require CloudFormation-like completion: it adds the waits the default skips, a CloudFront distribution reaching `Deployed` and a Multi-AZ RDS DB cluster reaching `available` after an instance class or storage change (a storage optimization can take hours: pair it with `--resource-timeout AWS::RDS::DBCluster=<n>h`).
 - `--no-wait`: use only when the user accepts background stabilization and nothing immediately depends on completion. Never combine it with `--full-wait`.
 
 For example, a deploy followed by a website smoke test should use:

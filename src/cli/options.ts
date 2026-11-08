@@ -272,7 +272,11 @@ export const noWaitOption = new Option(
  * both engines wait, but once the call is accepted the outcome is
  * settled — configuration errors are refused by the call itself — and the
  * wait changes only WHEN the edges serve it, never WHETHER: the fast-side
- * clause, issue #1282). ECS Service steady state is NOT in this list: its
+ * clause, issue #1282), and a Multi-AZ RDS DB cluster leaving
+ * `storage-optimization` after an instance class or storage change (the
+ * cluster already serves on the new class and storage; go-to-k/cdkd#5639;
+ * a long optimization needs `--resource-timeout AWS::RDS::DBCluster=<n>h`).
+ * ECS Service steady state is NOT in this list: its
  * outcome is still open when `CreateService` / `UpdateService` returns, so
  * the default waits for it (go-to-k/cdkd#5571).
  *
@@ -303,7 +307,7 @@ export const noWaitOption = new Option(
  */
 export const fullWaitOption = new Option(
   '--full-wait',
-  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (CloudFront Distribution Deployed)'
+  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (CloudFront Distribution Deployed, RDS Multi-AZ DB cluster storage optimization; raise --resource-timeout AWS::RDS::DBCluster for a long one)'
 );
 
 /**

@@ -496,6 +496,20 @@ export async function readCurrentStateDBCluster(
     cluster.StorageType ??
     (cluster.Engine?.toLowerCase().startsWith('aurora') ? 'aurora' : undefined);
   if (storageType !== undefined) result['StorageType'] = storageType;
+  // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class and storage,
+  // the pending size and IOPS first, as for the storage type. Not on an Aurora
+  // engine, where they are not template members and any size RDS reports is
+  // not one the template set.
+  if (!cluster.Engine?.toLowerCase().startsWith('aurora')) {
+    if (cluster.DBClusterInstanceClass !== undefined) {
+      result['DBClusterInstanceClass'] = cluster.DBClusterInstanceClass;
+    }
+    const allocatedStorage =
+      cluster.PendingModifiedValues?.AllocatedStorage ?? cluster.AllocatedStorage;
+    if (allocatedStorage !== undefined) result['AllocatedStorage'] = allocatedStorage;
+    const iops = cluster.PendingModifiedValues?.Iops ?? cluster.Iops;
+    if (iops !== undefined) result['Iops'] = iops;
+  }
   // go-to-k/cdkd#5639: as for a DB instance.
   const clusterLogs = liveLogExports(
     cluster.EnabledCloudwatchLogsExports,

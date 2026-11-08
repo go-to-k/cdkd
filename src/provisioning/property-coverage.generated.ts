@@ -2637,6 +2637,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::RDS::DBCluster',
     {
       handled: new Set<string>([
+        'AllocatedStorage',
         'AssociatedRoles',
         'AutoMinorVersionUpgrade',
         'AvailabilityZones',
@@ -2647,6 +2648,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DatabaseInsightsMode',
         'DatabaseName',
         'DBClusterIdentifier',
+        'DBClusterInstanceClass',
         'DBClusterParameterGroupName',
         'DBSubnetGroupName',
         'DeletionProtection',
@@ -2659,6 +2661,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'EngineMode',
         'EngineVersion',
         'GlobalClusterIdentifier',
+        'Iops',
         'KmsKeyId',
         'ManageMasterUserPassword',
         'MasterUserAuthenticationType',
@@ -2682,8 +2685,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
       ]),
       sdkUnwired: new Map<string, string>([
-        ['AllocatedStorage', 'not yet implemented by cdkd'],
-        ['DBClusterInstanceClass', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         [
           'DBSystemId',
@@ -2696,7 +2697,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
         ['EnableGlobalWriteForwarding', 'not yet implemented by cdkd'],
-        ['Iops', 'not yet implemented by cdkd'],
         ['ReplicationSourceIdentifier', 'not yet implemented by cdkd'],
         ['RestoreToTime', 'not yet implemented by cdkd'],
         ['RestoreType', 'not yet implemented by cdkd'],

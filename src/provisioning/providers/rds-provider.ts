@@ -160,20 +160,10 @@ export class RDSProvider implements ResourceProvider {
         'DeletionProtection',
         'ServerlessV2ScalingConfiguration',
         'Tags',
-        // #609 security-cluster backfill (managed master-password secret +
-        // Enhanced Monitoring + IAM database auth + publicly-accessible).
-        // 5 of the 6 ride CreateDBCluster AND ModifyDBCluster (mutable). Wire-
-        // format flips: CFn `MasterUserSecret` (an object whose only create-
-        // relevant member is `{ KmsKeyId }`) → SDK scalar
-        // `MasterUserSecretKmsKeyId` (the create/modify shapes take the key id
-        // directly — the SDK `MasterUserSecret` *type* is the read-side Describe
-        // shape). `MonitoringInterval` arrives as a numeric STRING ("60"); coerce
-        // via Number() at the wire boundary. `ManageMasterUserPassword` is
-        // mutually exclusive with `MasterUserPassword` (AWS validates).
-        // `PubliclyAccessible` IS a valid CreateDBClusterMessage field (Multi-AZ
-        // DB clusters) but is ABSENT from ModifyDBClusterMessage — wired create-
-        // only here (a template change replaces the cluster), distinct from
-        // DBInstance's same-named mutable prop.
+        // #609 security-cluster backfill. Create and modify both carry these,
+        // except `PubliclyAccessible` (create-only: not a ModifyDBCluster
+        // member). CFn `MasterUserSecret` is sent as `MasterUserSecretKmsKeyId`;
+        // `MonitoringInterval` is coerced with Number().
         'ManageMasterUserPassword',
         'MasterUserSecret',
         'MonitoringRoleArn',
@@ -237,6 +227,10 @@ export class RDSProvider implements ResourceProvider {
         // isGlobalClusterMutable`) detaches a removed one in place and fails an
         // add or change as immutable (`planGlobalClusterUpdate`).
         'GlobalClusterIdentifier',
+        // go-to-k/cdkd#5639: Multi-AZ DB cluster members (`clusterModifyMultiAzMembers`).
+        'DBClusterInstanceClass',
+        'AllocatedStorage',
+        'Iops',
       ]),
     ],
     [
@@ -757,9 +751,17 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     dbClusterIdentifier: string,
     done: (cluster: DBCluster) => boolean,
-    change: string
+    change: string,
+    unboundedMaxWaitMs = 1_800_000
   ): Promise<void> {
-    return waitForClusterState.call(this, logicalId, dbClusterIdentifier, done, change);
+    return waitForClusterState.call(
+      this,
+      logicalId,
+      dbClusterIdentifier,
+      done,
+      change,
+      unboundedMaxWaitMs
+    );
   }
   sendHttpEndpointChange(
     logicalId: string,

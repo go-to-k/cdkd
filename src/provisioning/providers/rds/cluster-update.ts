@@ -34,6 +34,12 @@ import {
   type ServerlessV2ScalingProps,
   serverlessV2ScalingToSend,
   clusterModifyBackfillMembers,
+  clusterModifyMultiAzMembers,
+  multiAzAppliedProbe,
+  clusterSizeValue,
+  usableClusterSize,
+  malformedInstanceClass,
+  usableInstanceClass,
   clusterModifyScalarMembers,
   backtrackWindowValue,
   localWriteForwardingFlag,
@@ -63,6 +69,7 @@ import {
   type GlobalClusterUpdate,
 } from './shared.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
+import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -159,6 +166,26 @@ export async function updateDBCluster(
       'EnableLocalWriteForwarding',
       'true or false',
       usableLocalWriteForwarding,
+    ],
+    // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, storage
+    // size and IOPS.
+    [
+      malformedInstanceClass(properties['DBClusterInstanceClass']),
+      'DBClusterInstanceClass',
+      'a string',
+      usableInstanceClass,
+    ],
+    [
+      clusterSizeValue(properties['AllocatedStorage']) === 'malformed',
+      'AllocatedStorage',
+      'a whole number of GiB',
+      usableClusterSize,
+    ],
+    [
+      clusterSizeValue(properties['Iops']) === 'malformed',
+      'Iops',
+      'a whole number',
+      usableClusterSize,
     ],
   ] as const) {
     if (!malformed) continue;
@@ -299,7 +326,8 @@ export async function updateDBCluster(
     //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
     //     MonitoringRoleArn, ServerlessV2ScalingConfiguration, the
     //     #2762 backfill members (`clusterModifyBackfillMembers`) and the
-    //     #5639 scalars (`clusterModifyScalarMembers`).
+    //     #5639 scalars (`clusterModifyScalarMembers`) and Multi-AZ members
+    //     (`clusterModifyMultiAzMembers`).
     //   * TURNED OFF: a removed `EnableHttpEndpoint: true` disables the Data
     //     API, as CloudFormation's handler does (`clusterHttpEndpointAction`),
     //     and a removed `EnableLocalWriteForwarding: true` disables write
@@ -329,6 +357,18 @@ export async function updateDBCluster(
       context
     );
     const scalarMembers = clusterModifyScalarMembers(properties, previousProperties, context);
+    const multiAzMembers = clusterModifyMultiAzMembers(
+      properties,
+      previousProperties,
+      context,
+      // The record keeps the size AWS still holds (`effectiveProperties`).
+      (desired, previous) => {
+        this.logger.warn(
+          safeMsg`DBCluster ${logicalId}: AllocatedStorage stays at ${String(previous)} GiB rather than going back to ${String(desired)} GiB, because RDS cannot shrink storage`
+        );
+        skippedKeys.push(['AllocatedStorage', usableClusterSize]);
+      }
+    );
     // go-to-k/cdkd#5639: a removed GlobalClusterIdentifier detaches the
     // cluster in place BEFORE the ModifyDBCluster, as CloudFormation's update
     // handler does (`removeFromGlobalCluster`): the detach leaves it
@@ -411,6 +451,9 @@ export async function updateDBCluster(
       // go-to-k/cdkd#5639: only what changed; a removal keeps the live value,
       // except a removed EnableLocalWriteForwarding: true, which turns it off.
       ...scalarMembers,
+      // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, and its
+      // storage size and IOPS together; a removal keeps the live value.
+      ...multiAzMembers,
       // go-to-k/cdkd#5639: only a drift revert sends it; only a change
       // sends the authentication type, beside the credential settings.
       ...(engineLifecycleSupport !== undefined && {
@@ -495,6 +538,22 @@ export async function updateDBCluster(
         (cluster) =>
           cluster.BacktrackWindow === undefined || cluster.BacktrackWindow === backtrackSent,
         'backtrack window'
+      );
+    }
+
+    // go-to-k/cdkd#5639: a Multi-AZ DB cluster applies a new instance class or
+    // storage size after ModifyDBCluster returns, and CloudFormation reports
+    // the update only once it has (`multiAzAppliedProbe`). `--full-wait` also
+    // waits out `storage-optimization`, as CloudFormation does.
+    if (!noWait && Object.keys(multiAzMembers).length > 0) {
+      await this.waitForClusterState(
+        logicalId,
+        physicalId,
+        multiAzAppliedProbe(multiAzMembers, process.env['CDKD_FULL_WAIT'] === 'true'),
+        'instance class or storage change',
+        // A rollback replay has no resource deadline: give the rolling class
+        // change the same budget the deploy's update floor does.
+        slowCcOperationTimeoutMs('AWS::RDS::DBCluster', 'UPDATE')
       );
     }
 

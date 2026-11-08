@@ -1,6 +1,6 @@
 ---
 title: "cdkd deploy: wait mode details"
-description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront, and the waits a destroy always performs."
+description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront and RDS Multi-AZ DB clusters, and the waits a destroy always performs."
 ---
 
 # cdkd deploy: wait mode details
@@ -221,8 +221,9 @@ waits for a service whose `DeploymentController` is `CODE_DEPLOY` or
 
 ## What `--full-wait` adds
 
-`--full-wait` adds one wait that CloudFormation performs and cdkd skips by
-default: a CloudFront distribution reaching `Deployed`.
+`--full-wait` adds two waits that CloudFormation performs and cdkd skips by
+default: a CloudFront distribution reaching `Deployed`, and a Multi-AZ RDS DB
+cluster reaching `available` after an instance class or storage change.
 
 ```bash
 cdkd deploy MyStack --full-wait
@@ -257,6 +258,32 @@ A CloudFront wait that runs out does not fail the deploy. A distribution that
 is still `InProgress` is slow and not broken, and failing would make the
 automatic rollback disable and delete a healthy distribution. cdkd warns,
 prints the manual wait command, and continues.
+
+### `AWS::RDS::DBCluster` (Multi-AZ): `available` after a class or storage change
+
+After an update changes a Multi-AZ DB cluster's `DBClusterInstanceClass`,
+`AllocatedStorage`, `Iops` or `StorageType`, the default waits until the new
+class and storage read back with no storage change pending. The cluster can be
+`available` or `storage-optimization` at that point. RDS can keep a cluster in
+`storage-optimization` for hours after the change is in place, and the cluster
+serves on its new class and storage meanwhile.
+
+RDS rolls a class change across the cluster's three instances one at a time,
+with a failover, which can take longer than 30 minutes. So a DB cluster update
+gets the larger of 90 minutes and a bare `--resource-timeout`. A
+`TYPE=DURATION` value for `AWS::RDS::DBCluster` replaces that limit, so
+`AWS::RDS::DBCluster=20m` gives 20 minutes.
+
+`--full-wait` also waits for `available`, as CloudFormation does. A storage
+optimization can run past 90 minutes, so raise the limit for the type when you
+use `--full-wait` on such an update:
+
+```bash
+cdkd deploy MyStack --full-wait \
+  --resource-timeout AWS::RDS::DBCluster=6h
+```
+
+A wait that runs out fails the update.
 
 ## Destroy always waits
 
