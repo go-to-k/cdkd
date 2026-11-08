@@ -295,9 +295,10 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
  *     asynchronous: its wait is not interruptible, gives up on a transport
  *     outage after the flip's own short transient grace, and otherwise waits
  *     out an update that stays in progress for the type's full Cloud Control
- *     poll budget (15 minutes, longer for a known-slow type). The RDS
- *     DBCluster / DBInstance re-enable resends a busy / not-available refusal
- *     for up to `PROTECTION_FLIP_RETRY_WAIT_MS` (10 minutes), bounded by
+ *     poll budget (15 minutes, longer for a known-slow type). The RDS-family
+ *     re-enables (RDS and Neptune DBCluster / DBInstance, DocDB DBCluster)
+ *     resend a busy / not-available refusal for up to
+ *     `PROTECTION_FLIP_RETRY_WAIT_MS` (10 minutes), bounded by
  *     `enclosingDeadlineRemainingMs()` minus a margin, Ctrl-C teardown
  *     included.
  */

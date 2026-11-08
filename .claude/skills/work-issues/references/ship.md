@@ -43,8 +43,8 @@ exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN under the
 budget the PARENT computed with that block, named per fixture in the brief
 (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
-its own, #5519) and wait on ONE command exiting with that PID (no per-line
-Monitor: each line re-ends it, #5413), bans attribution
+its own, #5519), wait on ONE command exiting with that PID and stop every
+background Monitor before the final report (each Monitor line re-ends it, #5413), bans attribution
 lines in the ledger commit (#5104), relaunches only after `pgrep -f verify.sh`
 plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (a duplicate set FAILed,
 #5695), and STOPs on an unreadable state record, never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
@@ -122,7 +122,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   is no `gen:all-matrices` output, so re-running gen will not restore it: merge
   it by hand (#5829).
 - **A peer SPLIT a file you changed** (refactor waves do not read claims,
-  #5879): take `main`'s copy whole, re-apply your hunk where it moved; on an
+  #5879): take `main`'s copy whole, re-apply your hunk where it moved, and
+  add the new path to your claim (an addendum comment, #5946); on an
   `integ-destroy`-scoped file that stales the marker, so the integ re-runs —
   budget it (#5873).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so

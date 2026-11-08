@@ -8,6 +8,13 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import type { Logger } from '../../../types/config.js';
 
 /**
+ * go-to-k/cdkd#5639 / #5995: how long an RDS-family `--remove-protection`
+ * flip (RDS, DocDB, Neptune) waits, across its retries, for a busy DB cluster
+ * or DB instance to accept it.
+ */
+export const PROTECTION_FLIP_RETRY_WAIT_MS = 10 * 60_000;
+
+/**
  * Issue #5155: how long a delete that takes a final snapshot waits, after a
  * `--remove-protection` flip, for the resource to return to `available`.
  */

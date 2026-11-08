@@ -351,13 +351,15 @@ export async function deleteSubnet(
       this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
       // go-to-k/cdkd#5632: a pool-allocated block holds its allocation past
       // the delete, as an IPAM VPC's does (#5633). Both pools share one wait
-      // budget. Measured: about 19 minutes after DeleteSubnet (1153 s,
-      // us-east-1, 2026-11-07), inside the 25-minute cap.
+      // budget. Measured: about 19 minutes after DeleteSubnet for an IPv4
+      // block (1153 s, us-east-1, 2026-11-07), inside the 25-minute cap, and
+      // about 25 for an IPv6 one (1523 s, #5945), past it: the pool CIDR's
+      // delete then waits out the rest (#5975).
       await this.waitForIpamAllocationRelease(
         [properties?.['Ipv4IpamPoolId'], properties?.['Ipv6IpamPoolId']],
         physicalId,
         'subnet',
-        'AWS can take about 19 minutes',
+        'AWS can take about 19 minutes, 25 for an IPv6 block',
         resourceType,
         context
       );

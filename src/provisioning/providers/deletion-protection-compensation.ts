@@ -68,6 +68,7 @@ export type {
   FlipSettleOptions,
 } from './deletion-protection-compensation/final-snapshot-wait.js';
 export {
+  PROTECTION_FLIP_RETRY_WAIT_MS,
   FINAL_SNAPSHOT_SETTLE_WAIT_MS,
   FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS,
   FLIP_TRANSITION_GRACE_MS,
@@ -125,10 +126,11 @@ export interface ProtectionGuardSite {
   readonly noun: string;
   /**
    * Whether the re-enable's error is the service's not-found answer. Not a
-   * `cause`-chain walk: every `reEnable` is a bare `send`, so the SDK error
-   * arrives unwrapped. If one ever wraps its call, a name-keyed predicate
-   * answers `false` and the compensation keeps the LOUD error line — the safe
-   * direction.
+   * `cause`-chain walk: a `reEnable` throws the SDK error unwrapped, the
+   * RDS-family ones included, whose busy-refusal retry wraps only its own
+   * give-up (budget spent, terminal status) and passes a not-found through
+   * as-is. A wrapped error makes a name-keyed predicate answer `false`, so the
+   * compensation keeps the LOUD error line — the safe direction.
    */
   readonly isNotFound: (error: unknown) => boolean;
   /**
