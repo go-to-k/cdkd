@@ -149,12 +149,13 @@ first, waits for it, and then deletes.
 Four limits apply:
 
 - An RDS instance that is a member of a cluster is deleted without a snapshot,
-  as in CloudFormation.
-- An RDS read replica (`SourceDBInstanceIdentifier`) that cdkd manages through
-  its own code is deleted without a snapshot too, as in CloudFormation: RDS
-  takes none of a replica. One promoted to a standalone instance takes its
-  snapshot. A replica deployed through Cloud Control is refused instead; pass
-  `--skip-final-snapshot` to delete it.
+  as in CloudFormation, through Cloud Control too.
+- An RDS read replica is deleted without a snapshot too, as in
+  CloudFormation: RDS takes none of a replica. cdkd asks AWS whether the
+  instance is a replica when it deletes it, so one promoted to a standalone
+  instance takes its snapshot. This holds for a replica cdkd manages through
+  Cloud Control as well. If AWS cannot be asked, such an instance is refused
+  as below.
 - The two ElastiCache types take a snapshot for the Redis engine only. A
   Memcached cache cluster or replication group fails with AWS's rejection.
 - A node type that cannot snapshot fails the same way.
@@ -233,8 +234,9 @@ CloudFormation's default:
 So an L1 `CfnDBCluster` or a standalone `CfnDBInstance` with no
 `DeletionPolicy` gets a final snapshot on destroy. It gets one too when a
 deploy removes it and when a rollback undoes its creation. If cdkd manages it
-through Cloud Control, the delete is refused as for an explicit `Snapshot`.
-Pass `--skip-final-snapshot` to delete without a snapshot.
+through Cloud Control, the delete is refused as for an explicit `Snapshot`,
+unless AWS reports a read replica. Pass `--skip-final-snapshot` to delete without a
+snapshot.
 
 `UpdateReplacePolicy` defaults to `Delete` for every type, so the delete of a
 replaced resource takes no snapshot by default.
@@ -265,7 +267,8 @@ that copy under its `DeletionPolicy`.
 
 A type cdkd cannot snapshot, or a resource it manages through Cloud Control,
 fails at every one of these deletes. CloudFormation fails the update in the
-same cases.
+same cases. An RDS read replica or cluster member is the exception: it is
+deleted without a snapshot at each of them.
 
 ### Re-running after a failed destroy
 

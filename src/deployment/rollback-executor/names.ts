@@ -21,6 +21,7 @@ import {
 import {
   buildFinalSnapshotIdentifier,
   finalSnapshotNamePrefix,
+  ccRoutedInstanceTakesNoSnapshot,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   finalSnapshotMechanism,
@@ -618,7 +619,9 @@ function isRestorableBag(bag: unknown): bag is Record<string, unknown> {
  *     provider's atomic final-snapshot delete parameter.
  *   - atomic type, cc-api-routed → refuses (Cloud Control's DeleteResource
  *     has no final-snapshot parameter; `CloudControlProvider.delete` also
- *     fail-closes on the context field as defense-in-depth).
+ *     fail-closes on the context field as defense-in-depth), unless it
+ *     is a live RDS read replica or cluster member: undefined, a plain
+ *     delete (go-to-k/cdkd#6047).
  *   - `PRE_DELETE_SNAPSHOT_TYPES` → creates the snapshot and waits for it
  *     here, then returns undefined (the subsequent delete is plain).
  *   - anything else Snapshot-tagged → refuses.
@@ -669,6 +672,20 @@ export async function prepareCreateRollbackFinalSnapshot(
     // Raw values: both builders describe a non-plain id or type themselves
     // (go-to-k/cdkd#4265), so a value described here would be described twice.
     case 'refuse-cc-routed':
+      // go-to-k/cdkd#6047: a live RDS read replica or cluster member is
+      // deleted without one, as CloudFormation does.
+      if (
+        await ccRoutedInstanceTakesNoSnapshot({
+          resourceType,
+          logicalId,
+          physicalId,
+          region: ctx.region,
+          logger: ctx.logger,
+          mask,
+        })
+      ) {
+        return undefined;
+      }
       throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
     case 'refuse-unsupported-type':
       throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);

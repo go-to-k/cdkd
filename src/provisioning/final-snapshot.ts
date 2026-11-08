@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { CdkdError } from '../utils/error-handler.js';
 import { logicalIdShown, resourceTypeShown } from './composite-id.js';
 
@@ -119,7 +120,10 @@ export function replacementDeletePolicy(updateReplacePolicy: string | undefined)
  *     `createPreDeleteFinalSnapshot`, then deletes plainly.
  *   - `refuse-cc-routed`: an atomic type routed through Cloud Control, whose
  *     `DeleteResource` has no final-snapshot parameter
- *     ({@link ccRoutedFinalSnapshotError}).
+ *     ({@link ccRoutedFinalSnapshotError}), unless the executing site finds a
+ *     live RDS read replica or cluster member
+ *     ({@link ccRoutedInstanceTakesNoSnapshot}), which a pure (type, route)
+ *     matrix cannot see.
  *   - `refuse-unsupported-type`: no mechanism at all
  *     ({@link unsupportedFinalSnapshotError}).
  */
@@ -209,6 +213,74 @@ export function ccRoutedFinalSnapshotError(
       `or retain the resource (DeletionPolicy: Retain) and delete it manually.`,
     'FINAL_SNAPSHOT_UNSUPPORTED'
   );
+}
+
+/**
+ * go-to-k/cdkd#6047: is this Cloud Control-routed delete under a `Snapshot`
+ * policy an `AWS::RDS::DBInstance` that cannot take a final snapshot: a LIVE
+ * read replica (of an instance or of a cluster) or a live cluster member?
+ * CloudFormation's RDS delete handler deletes either WITHOUT one whatever its
+ * `DeletionPolicy` (`DeleteHandler.decideSnapshotIdentifier`:
+ * `isSnapshotPossible = !isReadReplica && dbClusterIdentifier empty`, read
+ * off the live instance; RDS refuses `FinalDBSnapshotIdentifier` on both), so
+ * the {@link ccRoutedFinalSnapshotError} sites ask this first, and on `true`
+ * let the delete go to Cloud Control's `DeleteResource`. Its handler re-reads
+ * the instance and decides again: one promoted in between gets the handler's
+ * own snapshot, never none.
+ *
+ * Read live in `region` (the stack's, where the delete goes), never from the
+ * record: a replica promoted outside cdkd holds its own data now and keeps
+ * the refusal, and a replica whose record lacks the source (a `cdkd import`)
+ * is still a replica. `false` for any other type, an unresolved region, a
+ * read that fails (warned, with AWS's reason) or lists nothing, so the
+ * caller refuses as before. One `DescribeDBInstances`, on a delete that would
+ * otherwise be refused.
+ */
+export async function ccRoutedInstanceTakesNoSnapshot(input: {
+  resourceType: string;
+  logicalId: string;
+  physicalId: string;
+  region: string | undefined;
+  logger: { info(message: string): void; warn(message: string): void };
+  /** The delete's masker: the physical id, and AWS's text quoting it, may be secret-derived. */
+  mask?: (text: string) => string;
+}): Promise<boolean> {
+  const { resourceType, logicalId, physicalId, region, logger } = input;
+  if (resourceType !== 'AWS::RDS::DBInstance') return false;
+  if (region === undefined || region === '') return false;
+  const mask = input.mask ?? ((text: string) => text);
+  // Loaded on demand: the module imports the RDS SDK client, which stays off
+  // every command's startup path (go-to-k/cdkd#4521).
+  const { describeDBInstanceInRegion, isLiveReadReplica } =
+    await import('./providers/rds/read-replica.js');
+  let reason: string | undefined;
+  try {
+    const live = await describeDBInstanceInRegion(physicalId, region);
+    if (isLiveReadReplica(live)) reason = 'it is a read replica';
+    else if ((live?.DBClusterIdentifier ?? '') !== '') reason = 'it is a DB cluster member';
+  } catch (error) {
+    // A warning, not debug: the refusal that follows names only
+    // `--skip-final-snapshot`, which would also drop every other final
+    // snapshot of the run, while the fix may be the read itself (a throttle,
+    // a missing rds:DescribeDBInstances grant).
+    logger.warn(
+      mask(
+        `Could not read whether ${logicalIdShown(logicalId)} is a read replica or cluster member, ` +
+          `which CloudFormation deletes without a final snapshot, so its delete is refused: ` +
+          `${describeAwsFailure(error).detail}. Fix the read and re-run before reaching for ` +
+          `--skip-final-snapshot.`
+      )
+    );
+    return false;
+  }
+  if (reason === undefined) return false;
+  logger.info(
+    mask(
+      `Deleting ${logicalIdShown(logicalId)} without a final snapshot: ${reason}, ` +
+        `whose Snapshot policy CloudFormation ignores`
+    )
+  );
+  return true;
 }
 
 /**

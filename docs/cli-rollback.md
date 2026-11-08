@@ -224,7 +224,10 @@ path that deletes one.
 
 - **A resource cdkd cannot snapshot.** The plan labels it
   `cdkd cannot snapshot this resource; the rollback will REFUSE it`. The
-  rollback then fails that one operation and keeps the journal. See
+  rollback then fails that one operation and keeps the journal. For an RDS
+  instance managed through Cloud Control, the label adds `unless AWS reports
+  a read replica or cluster member`: the rollback asks AWS, and deletes either
+  without a snapshot, as CloudFormation does. See
   [When cdkd refuses to delete](cli-destroy-guards.md#when-cdkd-refuses-to-delete).
 
 ## The same stack name under another state prefix

@@ -40,6 +40,17 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
 });
 
+vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/provisioning/final-snapshot.js')>();
+  return {
+    ...actual,
+    // go-to-k/cdkd#6047: the live read-replica read, stubbed so no case
+    // reaches a real RDS client (it answers "not a replica": refuse as before).
+    ccRoutedInstanceTakesNoSnapshot: vi.fn(async () => false),
+  };
+});
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ secretsManager: { send: vi.fn() }, ssm: { send: vi.fn() } }),
   setAwsClients: vi.fn(),

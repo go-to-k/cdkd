@@ -41,6 +41,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 const mockCreatePreDeleteFinalSnapshot = vi.hoisted(() => vi.fn());
 const mockCcRoutedFinalSnapshotError = vi.hoisted(() => vi.fn());
+// go-to-k/cdkd#6047: the live read-replica read, stubbed so no case reads AWS.
+const mockCcRoutedInstanceTakesNoSnapshot = vi.hoisted(() => vi.fn(async () => false));
 vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/final-snapshot.js')
@@ -51,6 +53,7 @@ vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
     ...actual,
     createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot,
     ccRoutedFinalSnapshotError: mockCcRoutedFinalSnapshotError,
+    ccRoutedInstanceTakesNoSnapshot: mockCcRoutedInstanceTakesNoSnapshot,
   };
 });
 
@@ -658,6 +661,49 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(result.errorCount).toBe(1);
     expect(mockProviderDelete).not.toHaveBeenCalled();
     expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+  it('go-to-k/cdkd#6047: cc-api-routed live read replica — deleted without a snapshot, not refused', async () => {
+    mockCcRoutedInstanceTakesNoSnapshot.mockResolvedValueOnce(true);
+    const state = makeState({
+      Db: res({ deletionPolicy: 'Snapshot', provisionedBy: 'cc-api' }),
+    });
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    expect(result.errorCount).toBe(0);
+    expect(mockCcRoutedFinalSnapshotError).not.toHaveBeenCalled();
+    expect(mockProviderDelete).toHaveBeenCalledTimes(1);
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+    // The policy still reaches Cloud Control, so its RDS delegation (#3993)
+    // stays off and the delete goes to DeleteResource, whose handler skips a
+    // replica's snapshot itself.
+    expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
+    expect(deleteContextArg()).not.toHaveProperty('skipFinalSnapshot');
+    expect(mockCcRoutedInstanceTakesNoSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceType: 'AWS::RDS::DBInstance',
+        logicalId: 'Db',
+        physicalId: 'phys-id',
+        region: REGION,
+      })
+    );
+  });
+
+  it('go-to-k/cdkd#6047: cc-api-routed, not a live replica (or unreadable) — still refused', async () => {
+    const state = makeState({
+      Db: res({ deletionPolicy: 'Snapshot', provisionedBy: 'cc-api' }),
+    });
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    expect(mockCcRoutedInstanceTakesNoSnapshot).toHaveBeenCalledTimes(1);
+    expect(result.errorCount).toBe(1);
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+  it('go-to-k/cdkd#6047: the SDK route never asks (its provider reads the instance itself)', async () => {
+    const state = makeState({ Db: res({ deletionPolicy: 'Snapshot' }) });
+    await runDestroyForStack('TestStack', state, makeCtx());
+    expect(mockCcRoutedInstanceTakesNoSnapshot).not.toHaveBeenCalled();
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toEqual(expect.any(String));
   });
 
   it('cc-api-routed atomic type + skipFinalSnapshot: true — deletes plainly (opt-out)', async () => {

@@ -8,6 +8,7 @@ import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  ccRoutedInstanceTakesNoSnapshot,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   replacementDeletePolicy,
@@ -47,7 +48,9 @@ export function replacementDeleteContext(
  *     provider's atomic final-snapshot delete parameter.
  *   - atomic type, cc-api-routed → refuses (Cloud Control has no
  *     final-snapshot parameter; `CloudControlProvider.delete` also
- *     fail-closes on the context field as defense-in-depth).
+ *     fail-closes on the context field as defense-in-depth), unless it is
+ *     a live RDS read replica or cluster member: undefined, a plain delete
+ *     (go-to-k/cdkd#6047).
  *   - `PRE_DELETE_SNAPSHOT_TYPES` (EC2 Volume / Redshift Cluster /
  *     ElastiCache ReplicationGroup) → creates the snapshot and waits for
  *     it here, then returns undefined (the subsequent delete is plain).
@@ -70,6 +73,17 @@ export async function prepareFinalSnapshotForDelete(
     return buildFinalSnapshotIdentifier(currentResource.physicalId, resourceType);
   }
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
+    // go-to-k/cdkd#6047: a live RDS read replica or cluster member is
+    // deleted without one, as CloudFormation does.
+    const takesNoSnapshot = await ccRoutedInstanceTakesNoSnapshot({
+      resourceType,
+      logicalId,
+      physicalId: currentResource.physicalId,
+      region: deps.stackRegion,
+      logger: deps.logger,
+      ...(mask !== undefined && { mask }),
+    });
+    if (takesNoSnapshot) return undefined;
     throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
   }
   if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {

@@ -29,7 +29,10 @@ import type { RDSProvider } from '../rds-provider.js';
  *   immutable" (`ImmutabilityHelper.isSourceDBInstanceIdentifierMutable`).
  * - DELETE: a replica is deleted without a final snapshot whatever its
  *   `DeletionPolicy`, as the delete handler skips it for a replica (RDS
- *   refuses `FinalDBSnapshotIdentifier` on one).
+ *   refuses `FinalDBSnapshotIdentifier` on one). A replica on the Cloud
+ *   Control route is let through the same way (go-to-k/cdkd#6047,
+ *   `ccRoutedInstanceTakesNoSnapshot` in `final-snapshot.ts`, which also
+ *   lets through a live cluster member).
  *
  * Only `SourceDBInstanceIdentifier` is wired here: `SourceRegion`,
  * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time
@@ -161,10 +164,22 @@ export async function describeReplicaSource(
   if (sourceRegion === undefined || sourceRegion === ownRegion) {
     return this.describeDBInstance(source);
   }
-  const client = new RDSClient({ ...ambientClientDefaults(), region: sourceRegion });
+  return describeDBInstanceInRegion(source, sourceRegion);
+}
+
+/**
+ * One `DescribeDBInstances` from a client built for `region` and destroyed
+ * after the call. `undefined` when it lists none; an AWS failure (a
+ * `DBInstanceNotFoundFault` among them) propagates.
+ */
+export async function describeDBInstanceInRegion(
+  identifier: string,
+  region: string
+): Promise<DBInstance | undefined> {
+  const client = new RDSClient({ ...ambientClientDefaults(), region });
   try {
     const response = await client.send(
-      new DescribeDBInstancesCommand({ DBInstanceIdentifier: source })
+      new DescribeDBInstancesCommand({ DBInstanceIdentifier: identifier })
     );
     return response.DBInstances?.[0];
   } finally {

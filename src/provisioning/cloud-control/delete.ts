@@ -285,7 +285,9 @@ export async function deleteInIdLogScope(
   // Control always leaves it null, so every Cloud Control delete left an
   // untagged snapshot behind. A `Snapshot` policy, explicit or
   // CloudFormation's absent default (#4030), is refused on this route by the
-  // caller, or fails closed above.
+  // caller, or fails closed above, except for a live RDS read replica
+  // or cluster member (go-to-k/cdkd#6047), which reaches `DeleteResource`
+  // below: the handler takes no snapshot of either.
   if (
     (context?.deletionPolicy === 'Delete' || context?.skipFinalSnapshot === true) &&
     SDK_DELETE_FAMILIES.has(resourceType)

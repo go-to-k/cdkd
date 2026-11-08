@@ -19,6 +19,7 @@ import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  ccRoutedInstanceTakesNoSnapshot,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
   effectiveDeletionPolicy,
@@ -277,8 +278,24 @@ export async function deleteStackResource(
       } else if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType)) {
         // cc-api-routed atomic type: Cloud Control DeleteResource has
         // no final-snapshot parameter — refuse instead of silently
-        // dropping the promised snapshot.
-        throw ccRoutedFinalSnapshotError(logicalId, resource.resourceType, '--skip-final-snapshot');
+        // dropping the promised snapshot. A live RDS read replica or
+        // cluster member is deleted without one, as CloudFormation does
+        // (go-to-k/cdkd#6047).
+        const takesNoSnapshot = await ccRoutedInstanceTakesNoSnapshot({
+          resourceType: resource.resourceType,
+          logicalId,
+          physicalId: resource.physicalId,
+          region: stackRegion,
+          logger,
+          mask: createUnionSecretMasker([printingBagOf(logicalId)]),
+        });
+        if (!takesNoSnapshot) {
+          throw ccRoutedFinalSnapshotError(
+            logicalId,
+            resource.resourceType,
+            '--skip-final-snapshot'
+          );
+        }
       } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resource.resourceType)) {
         // destroyAwsClients is the region-scoped set when the stack
         // lives in a different region than the caller's base clients.
