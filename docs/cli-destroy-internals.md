@@ -71,6 +71,7 @@ These cases still go through Cloud Control:
 | An RDS cluster or standalone RDS instance with no `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](cli-destroy-guards.md#which-policy-cdkd-reads)). A Neptune cluster's absent default is `Delete`, so it goes through Neptune. |
 | A Neptune cluster that sets `GlobalClusterIdentifier`, or an RDS cluster whose recorded `GlobalClusterIdentifier` is not a plain name | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that a snapshot can be left behind. |
 | A rollback's delete of a replacement's new copy under `UpdateReplacePolicy: Snapshot` | Through Cloud Control, whose handler takes the snapshot, with or without `--skip-final-snapshot`. |
+| An RDS instance on the Cloud Control route under a `Snapshot` policy that AWS reports as a read replica or a cluster member | Through Cloud Control, whose handler takes no snapshot of either, as in CloudFormation. cdkd reads the instance first (`DescribeDBInstances`); one it cannot read is refused. |
 
 ### Which deletes the policy covers
 

@@ -1662,11 +1662,17 @@ describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () =>
     const lines = await planLines('AWS::RDS::DBInstance', 'cc-api', 'completed');
     expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(true);
     expect(lines.some((l) => /final snapshot, then delete/.test(l))).toBe(false);
+    // go-to-k/cdkd#6047: the replay reads the instance live and deletes a
+    // replica or cluster member without a snapshot, so the label names it.
+    expect(
+      lines.some((l) => /REFUSE it unless AWS reports a read replica or cluster member/.test(l))
+    ).toBe(true);
   });
 
   it('completed CREATE, a type cdkd cannot snapshot at all: the plan says it will REFUSE', async () => {
     const lines = await planLines('AWS::S3::Bucket', 'sdk', 'completed');
     expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(true);
+    expect(lines.some((l) => /unless AWS reports/.test(l))).toBe(false);
   });
 
   it('completed CREATE, a snapshottable shape: the plan still promises the snapshot', async () => {

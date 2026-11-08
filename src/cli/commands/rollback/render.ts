@@ -112,6 +112,17 @@ export function snapshotNote(
     return 'DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)';
   }
   if (refusesFinalSnapshot(resourceType, effectiveProvisionedBy)) {
+    // go-to-k/cdkd#6047: the replay reads a Cloud Control-routed DB instance
+    // live and deletes a read replica or cluster member without a snapshot,
+    // as CloudFormation does; this pure preview cannot read it, so it names
+    // both outcomes.
+    if (resourceType === 'AWS::RDS::DBInstance') {
+      return (
+        'DeletionPolicy Snapshot — cdkd cannot snapshot this resource; the rollback will ' +
+        'REFUSE it unless AWS reports a read replica or cluster member, deleted without one ' +
+        'as in CloudFormation (re-run with --skip-final-snapshot to delete without one)'
+      );
+    }
     return (
       'DeletionPolicy Snapshot — cdkd cannot snapshot this resource; the rollback will ' +
       'REFUSE it (re-run with --skip-final-snapshot to delete without one)'

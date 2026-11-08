@@ -92,6 +92,13 @@
 # destroy deletes the remaining replica without a final snapshot and the
 # promoted one with one.
 #
+# go-to-k/cdkd#6047 (a Cloud Control-routed replica under DeletionPolicy:
+# Snapshot): phase 2f moves ReadReplicaKept onto Cloud Control with
+# --recreate-via-cc-api, where every replica deployed before #5640 sits. Its
+# policy is CloudFormation's absent default, Snapshot, which a cdkd before
+# #6047 refused on that route: the phase-3 destroy failed. It must now succeed,
+# with no snapshot of the replica, as CloudFormation's handler takes none.
+#
 # go-to-k/cdkd#5640 (DBInstance DBName / AvailabilityZone): declared unchanged
 # in every phase; the provisionedBy=sdk guard is what a pre-fix cdkd fails, and
 # phase 1 asserts the live DBName and zone (the zone the record declares), that
@@ -167,6 +174,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DB_INSTANCE_ID=""
 # go-to-k/cdkd#5640: the two read replicas (phase 2d on), resolved from state.
 REPLICA_KEPT_ID=""
+# go-to-k/cdkd#6047: ReadReplicaKept's SDK-route copy, which phase 2f's
+# recreate deletes before creating the Cloud Control one.
+REPLICA_KEPT_SDK_ID=""
 REPLICA_PROMOTED_ID=""
 REPLICA_SOURCE_ID=""
 # go-to-k/cdkd#2762: the two custom parameter groups, resolved from state.
@@ -249,14 +259,14 @@ cleanup() {
   # go-to-k/cdkd#5640: the read replicas, best-effort after `state destroy`,
   # and BEFORE their source: deleting a source promotes its same-region
   # replicas to standalone instances, which would then outlive the run.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID}; do
     aws rds delete-db-instance \
       --db-instance-identifier "${replica_id}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   done
   # ... and wait them out first: a replica still `deleting` is still a replica.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID}; do
     aws rds wait db-instance-deleted --db-instance-identifier "${replica_id}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   done
@@ -285,7 +295,7 @@ cleanup() {
   # promoted replica, standalone by then (go-to-k/cdkd#5640). Older
   # snapshots are not this run's to delete.
   if [ -n "${RUN_START}" ]; then
-    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
+    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
       if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${snap_instance}"); then
         echo "    WARN: cleanup could not list the manual snapshots of ${snap_instance}; check for a leftover by hand" >&2
         SNAPS_TO_CLEAN=""
@@ -1003,15 +1013,62 @@ if [ "${PROMOTED_ROUTE}" != "sdk" ]; then
 fi
 echo "    OK: phase 2e: ReadReplicaPromoted is standalone, in place, on the SDK route"
 
+# --- Phase 2f: ReadReplicaKept onto Cloud Control (go-to-k/cdkd#6047) ----------
+# Every replica deployed before #5640 routed through Cloud Control and stays
+# there (sticky provisionedBy). The recreate deletes the SDK copy and creates a
+# Cloud Control one, the only replica created in this deploy: two replicas of
+# one source created together trip InvalidDBInstanceStateFault on that route.
+echo "==> Phase 2f: recreate ReadReplicaKept via Cloud Control (--recreate-via-cc-api; go-to-k/cdkd#6047)"
+REPLICA_KEPT_SDK_ID="${REPLICA_KEPT_ID}"
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_REPLICA=promote node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api ReadReplicaKept \
+  --force-stateful-recreation \
+  --yes
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+KEPT_ROUTE=$(replica_record_field ReadReplicaKept '.value.provisionedBy // "sdk"')
+if [ "${KEPT_ROUTE}" != "cc-api" ]; then
+  echo "FAIL: phase 2f: premise: after --recreate-via-cc-api ReadReplicaKept is routed via '${KEPT_ROUTE}', expected cc-api (go-to-k/cdkd#6047)" >&2
+  exit 1
+fi
+KEPT_POLICY=$(replica_record_field ReadReplicaKept '.value.deletionPolicy // "absent"')
+if [ "${KEPT_POLICY}" != "absent" ] && [ "${KEPT_POLICY}" != "Snapshot" ]; then
+  echo "FAIL: phase 2f: premise: ReadReplicaKept records DeletionPolicy '${KEPT_POLICY}', expected none or Snapshot (whose delete the arm needs; go-to-k/cdkd#6047)" >&2
+  exit 1
+fi
+REPLICA_KEPT_ID=$(replica_record_field ReadReplicaKept '.value.physicalId')
+assert_replica "${REPLICA_KEPT_ID}" 'mon:06:00-mon:06:30' 'phase 2f'
+assert_gone "phase 2f: the recreate left the SDK copy ${REPLICA_KEPT_SDK_ID} of ReadReplicaKept alive" \
+  aws rds describe-db-instances --db-instance-identifier "${REPLICA_KEPT_SDK_ID}" --region "${REGION}"
+echo "    OK: phase 2f: ReadReplicaKept is a Cloud Control-routed replica (${REPLICA_KEPT_ID}), DeletionPolicy ${KEPT_POLICY} (default Snapshot)"
+
 # --- Phase 3: destroy -------------------------------------------------
 # --remove-protection: DeletionProtection is retained on removal (#5004), so
-# the destroy has to flip it off.
+# the destroy has to flip it off. go-to-k/cdkd#6047: the Cloud Control-routed
+# ReadReplicaKept is under a Snapshot policy, which a cdkd before #6047
+# refused on that route, failing the destroy.
 echo "==> Phase 3: destroy --remove-protection (protection was kept, #5004)"
+DESTROY_OUT=$(mktemp)
+set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --remove-protection \
-  --force
+  --force 2>&1 | tee "${DESTROY_OUT}"
+DESTROY_RC=${PIPESTATUS[0]}
+set -e
+if [ "${DESTROY_RC}" != "0" ]; then
+  if grep -qE 'ReadReplicaKept.*has DeletionPolicy: Snapshot, but the resource is managed via the Cloud Control API route' "${DESTROY_OUT}"; then
+    echo "FAIL: phase 3: the destroy refused the Cloud Control-routed read replica ReadReplicaKept under DeletionPolicy: Snapshot, which CloudFormation deletes without a snapshot (go-to-k/cdkd#6047; rc=${DESTROY_RC})" >&2
+  else
+    echo "FAIL: phase 3: destroy exited ${DESTROY_RC}" >&2
+  fi
+  rm -f "${DESTROY_OUT}"
+  exit 1
+fi
+rm -f "${DESTROY_OUT}"
+echo "    OK: phase 3: the destroy deleted the Cloud Control-routed read replica under a Snapshot policy (go-to-k/cdkd#6047)"
 
 # RDS DeleteDBInstance is async: the instance lingers in 'deleting' for
 # a few minutes before describe returns DBInstanceNotFoundFault. cdkd's
@@ -1057,8 +1114,10 @@ echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}"
 
 # go-to-k/cdkd#5640: both replicas are gone. ReadReplicaKept, still a replica,
 # was deleted without a final snapshot (RDS refuses one on a replica, and
-# CloudFormation ignores a replica's DeletionPolicy); ReadReplicaPromoted,
-# standalone by then, took one, as the policy-less instance did.
+# CloudFormation ignores a replica's DeletionPolicy), by Cloud Control since
+# phase 2f (go-to-k/cdkd#6047), as was its SDK copy by the recreate;
+# ReadReplicaPromoted, standalone by then, took one, as the policy-less
+# instance did.
 for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURCE_ID}"; do
   if gone_probe aws rds describe-db-instances --db-instance-identifier "${replica_id}" --region "${REGION}"; then
     REPLICA_STATUS="gone"
@@ -1076,14 +1135,16 @@ for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURC
     exit 1
   fi
 done
-if ! KEPT_SNAPSHOTS=$(this_run_instance_snapshots "${REPLICA_KEPT_ID}"); then
-  echo "FAIL: could not list the manual snapshots of ${REPLICA_KEPT_ID}" >&2
-  exit 1
-fi
-if [ -n "${KEPT_SNAPSHOTS}" ]; then
-  echo "FAIL: destroying the read replica ${REPLICA_KEPT_ID} took snapshot(s) $(printf '%s ' ${KEPT_SNAPSHOTS}), expected none (go-to-k/cdkd#5640)" >&2
-  exit 1
-fi
+for kept_id in "${REPLICA_KEPT_ID}" "${REPLICA_KEPT_SDK_ID}"; do
+  if ! KEPT_SNAPSHOTS=$(this_run_instance_snapshots "${kept_id}"); then
+    echo "FAIL: could not list the manual snapshots of ${kept_id}" >&2
+    exit 1
+  fi
+  if [ -n "${KEPT_SNAPSHOTS}" ]; then
+    echo "FAIL: deleting the read replica ${kept_id} took snapshot(s) $(printf '%s ' ${KEPT_SNAPSHOTS}), expected none (go-to-k/cdkd#5640, go-to-k/cdkd#6047)" >&2
+    exit 1
+  fi
+done
 if ! PROMOTED_SNAPSHOTS=$(this_run_instance_snapshots "${REPLICA_PROMOTED_ID}"); then
   echo "FAIL: could not list the manual snapshots of ${REPLICA_PROMOTED_ID}" >&2
   exit 1
@@ -1117,4 +1178,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-dbinstance-backfill state teardown"
 
 echo ""
-echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value + #5640 read replicas ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value + #5640 read replicas + #6047 Cloud Control replica destroy ==="
