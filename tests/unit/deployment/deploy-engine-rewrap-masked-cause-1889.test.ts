@@ -425,7 +425,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     // catch in provision.ts, which also calls `printingSecretsFor`): if the
     // stub answered the needle bag unconditionally, the boundary would mask
     // the needle too and hide a deleted printing-bag argument at THIS wrap
-    // site. The bag is handed back only to a caller inside update-replace.ts
+    // site. The bag is handed back only to a caller inside update-replace/recreate.ts
     // (the wrap site itself) — by CALLER, not by call order/count, since a
     // call-count stub would still answer the boundary's lone remaining call
     // if this site's own call were deleted, defeating the discrimination.
@@ -440,7 +440,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
         // caller, not by call order/count: a call-count stub would still
         // answer the boundary's lone remaining call if this site's own call
         // were deleted, which is exactly the gap this case probes for.
-        (new Error().stack ?? '').includes('update-replace.ts')
+        (new Error().stack ?? '').includes('update-replace/recreate.ts')
           ? new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
           : undefined
       );
