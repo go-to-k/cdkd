@@ -77,6 +77,10 @@ describe('ccRoutedInstanceTakesNoSnapshot', () => {
     expect(log.info).toHaveBeenCalledWith(
       expect.stringContaining('Deleting Replica without a final snapshot: it is a read replica')
     );
+    // Neutral on the attribute: a replacement's delete reads UpdateReplacePolicy.
+    const line = String(log.info.mock.calls[0]![0]);
+    expect(line).toContain('whose Snapshot policy CloudFormation ignores');
+    expect(line).not.toContain('DeletionPolicy');
   });
 
   it("a live cluster member (the handler's other no-snapshot case): true", async () => {
@@ -108,7 +112,7 @@ describe('ccRoutedInstanceTakesNoSnapshot', () => {
     expect(log.info).not.toHaveBeenCalled();
   });
 
-  it('a failed read fails closed: false, the failure masked at debug', async () => {
+  it('a failed read fails closed: false, the reason WARNED (masked), not only at debug', async () => {
     const error = Object.assign(new Error('Access denied reading secret-db-name'), {
       name: 'AccessDenied',
     });
@@ -118,11 +122,13 @@ describe('ccRoutedInstanceTakesNoSnapshot', () => {
     expect(await ccRoutedInstanceTakesNoSnapshot({ ...base, logger: log, mask })).toBe(false);
     expect(mockDestroy).toHaveBeenCalledTimes(1);
     expect(log.info).not.toHaveBeenCalled();
-    const lines = log.debug.mock.calls.map((c) => String(c[0]));
-    expect(lines.some((l) => l.includes('Could not read whether Replica can take a final snapshot'))).toBe(
-      true
-    );
-    expect(lines.join('\n')).not.toContain('secret-db-name');
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    const warned = String(log.warn.mock.calls[0]![0]);
+    expect(warned).toContain('Could not read whether Replica is a read replica or cluster member');
+    expect(warned).toContain('so its delete is refused');
+    // AWS's reason, through the masker.
+    expect(warned).toContain('Access denied reading ***');
+    expect(warned).not.toContain('secret-db-name');
   });
 
   it.each([
@@ -165,11 +171,13 @@ describe('replacement / engine delete: prepareFinalSnapshotForDelete', () => {
     );
   });
 
-  it('a cc-api instance whose read fails: still refused', async () => {
-    mockSend.mockRejectedValue(new Error('throttled'));
+  it('a cc-api instance whose read fails: still refused, the reason warned', async () => {
+    mockSend.mockRejectedValue(new Error('Rate exceeded'));
+    const d = deps();
     await expect(
-      prepareFinalSnapshotForDelete(deps(), 'Db', 'AWS::RDS::DBInstance', record, 'Snapshot')
+      prepareFinalSnapshotForDelete(d, 'Db', 'AWS::RDS::DBInstance', record, 'Snapshot')
     ).rejects.toMatchObject({ code: 'FINAL_SNAPSHOT_UNSUPPORTED' });
+    expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Rate exceeded'));
   });
 
   it('another cc-api atomic type is refused without a read', async () => {

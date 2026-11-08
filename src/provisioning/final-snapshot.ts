@@ -232,15 +232,16 @@ export function ccRoutedFinalSnapshotError(
  * record: a replica promoted outside cdkd holds its own data now and keeps
  * the refusal, and a replica whose record lacks the source (a `cdkd import`)
  * is still a replica. `false` for any other type, an unresolved region, a
- * read that fails or lists nothing, so the caller refuses as before. One
- * `DescribeDBInstances`, on a delete that would otherwise be refused.
+ * read that fails (warned, with AWS's reason) or lists nothing, so the
+ * caller refuses as before. One `DescribeDBInstances`, on a delete that would
+ * otherwise be refused.
  */
 export async function ccRoutedInstanceTakesNoSnapshot(input: {
   resourceType: string;
   logicalId: string;
   physicalId: string;
   region: string | undefined;
-  logger: { debug(message: string): void; info(message: string): void };
+  logger: { info(message: string): void; warn(message: string): void };
   /** The delete's masker: the physical id, and AWS's text quoting it, may be secret-derived. */
   mask?: (text: string) => string;
 }): Promise<boolean> {
@@ -258,9 +259,16 @@ export async function ccRoutedInstanceTakesNoSnapshot(input: {
     if (isLiveReadReplica(live)) reason = 'it is a read replica';
     else if ((live?.DBClusterIdentifier ?? '') !== '') reason = 'it is a DB cluster member';
   } catch (error) {
-    logger.debug(
+    // A warning, not debug: the refusal that follows names only
+    // `--skip-final-snapshot`, which would also drop every other final
+    // snapshot of the run, while the fix may be the read itself (a throttle,
+    // a missing rds:DescribeDBInstances grant).
+    logger.warn(
       mask(
-        `Could not read whether ${logicalIdShown(logicalId)} can take a final snapshot: ${describeAwsFailure(error).detail}`
+        `Could not read whether ${logicalIdShown(logicalId)} is a read replica or cluster member, ` +
+          `which CloudFormation deletes without a final snapshot, so its delete is refused: ` +
+          `${describeAwsFailure(error).detail}. Fix the read and re-run before reaching for ` +
+          `--skip-final-snapshot.`
       )
     );
     return false;
@@ -269,7 +277,7 @@ export async function ccRoutedInstanceTakesNoSnapshot(input: {
   logger.info(
     mask(
       `Deleting ${logicalIdShown(logicalId)} without a final snapshot: ${reason}, ` +
-        `whose DeletionPolicy CloudFormation ignores`
+        `whose Snapshot policy CloudFormation ignores`
     )
   );
   return true;

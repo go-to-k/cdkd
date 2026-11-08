@@ -237,6 +237,18 @@ cleanup() {
       REPLICA_SOURCE_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReplicaSourceInstance"))) | .value.physicalId // empty] | first // ""')
     fi
   fi
+  # go-to-k/cdkd#6047: phase 2f's deploy can fail after recording the Cloud
+  # Control copy of ReadReplicaKept while REPLICA_KEPT_ID still names the SDK
+  # copy, so read the recorded one on every pass; left out, it would outlive
+  # the source's delete as a promoted standalone instance. Empty when unread.
+  REPLICA_KEPT_STATE_ID=""
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    REPLICA_KEPT_STATE_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaKept"))) | .value.physicalId // empty] | first // ""')
+    case "${REPLICA_KEPT_STATE_ID}" in
+      "${REPLICA_KEPT_ID}" | "${REPLICA_KEPT_SDK_ID}") REPLICA_KEPT_STATE_ID="" ;;
+    esac
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # Pass --state-bucket explicitly so the cdk.json default placeholder
     # ('your-cdkd-state-bucket') does not poison state destroy with a
@@ -259,14 +271,14 @@ cleanup() {
   # go-to-k/cdkd#5640: the read replicas, best-effort after `state destroy`,
   # and BEFORE their source: deleting a source promotes its same-region
   # replicas to standalone instances, which would then outlive the run.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID}; do
     aws rds delete-db-instance \
       --db-instance-identifier "${replica_id}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   done
   # ... and wait them out first: a replica still `deleting` is still a replica.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID}; do
     aws rds wait db-instance-deleted --db-instance-identifier "${replica_id}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   done
@@ -295,7 +307,7 @@ cleanup() {
   # promoted replica, standalone by then (go-to-k/cdkd#5640). Older
   # snapshots are not this run's to delete.
   if [ -n "${RUN_START}" ]; then
-    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
+    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
       if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${snap_instance}"); then
         echo "    WARN: cleanup could not list the manual snapshots of ${snap_instance}; check for a leftover by hand" >&2
         SNAPS_TO_CLEAN=""
