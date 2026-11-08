@@ -1,6 +1,10 @@
 import type { NeptuneProvider } from '../neptune-provider.js';
 import { DeleteDBClusterCommand, ModifyDBClusterCommand } from '@aws-sdk/client-neptune';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import {
+  isModifyNotAvailableRefusal,
+  modifyDbInstanceWhenAvailable,
+} from '../db-instance-modify-retry.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -12,6 +16,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  PROTECTION_FLIP_RETRY_WAIT_MS,
 } from '../deletion-protection-compensation.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 
@@ -44,14 +49,30 @@ export async function deleteDBCluster(
         notFoundFault: 'DBClusterNotFoundFault',
         isNotFound: (error) => this.isNotFoundError(error, 'DBClusterNotFoundFault'),
       }),
+      // go-to-k/cdkd#5995: the flip succeeds in the window a busy cluster
+      // opens, so the re-enable waits that window out too, within the same
+      // bounded budget, rather than leaving the guard off on one refusal.
       reEnable: async () => {
-        await this.getClient().send(
-          new ModifyDBClusterCommand({
-            DBClusterIdentifier: physicalId,
-            DeletionProtection: true,
-            ApplyImmediately: true,
-          })
-        );
+        await modifyDbInstanceWhenAvailable({
+          send: () =>
+            this.getClient().send(
+              new ModifyDBClusterCommand({
+                DBClusterIdentifier: physicalId,
+                DeletionProtection: true,
+                ApplyImmediately: true,
+              })
+            ),
+          readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+          sleep: (ms) => this.sleep(ms),
+          logger: this.logger,
+          label: 'Neptune DBCluster',
+          subject: 'cluster',
+          isRefusal: isModifyNotAvailableRefusal,
+          logicalId,
+          remainingMs: enclosingDeadlineRemainingMs(),
+          maxWaitMs: PROTECTION_FLIP_RETRY_WAIT_MS,
+          command: 'destroy',
+        });
       },
     },
   });
@@ -85,14 +106,32 @@ export async function deleteDBClusterOnce(
           guardName: 'DeletionProtection',
           observe: async () =>
             (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
+          // go-to-k/cdkd#5995: AWS refuses the flip while the cluster is in a
+          // status that ends on its own (`backing-up` right after create);
+          // wait that out and resend, within a bounded budget, as RDS does
+          // (RDS's matcher also takes Aurora's "could not be modified" wording,
+          // which no Neptune refusal has been seen to use).
           disable: async () => {
-            await this.getClient().send(
-              new ModifyDBClusterCommand({
-                DBClusterIdentifier: physicalId,
-                DeletionProtection: false,
-                ApplyImmediately: true,
-              })
-            );
+            await modifyDbInstanceWhenAvailable({
+              send: () =>
+                this.getClient().send(
+                  new ModifyDBClusterCommand({
+                    DBClusterIdentifier: physicalId,
+                    DeletionProtection: false,
+                    ApplyImmediately: true,
+                  })
+                ),
+              readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+              sleep: (ms) => this.sleep(ms),
+              logger: this.logger,
+              label: 'Neptune DBCluster',
+              subject: 'cluster',
+              isRefusal: isModifyNotAvailableRefusal,
+              logicalId,
+              remainingMs: enclosingDeadlineRemainingMs(),
+              maxWaitMs: PROTECTION_FLIP_RETRY_WAIT_MS,
+              command: 'destroy',
+            });
           },
         });
         this.logger.debug(
