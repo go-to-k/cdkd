@@ -67,6 +67,10 @@ const NESTED_FLOORS: Readonly<Record<string, number>> = {
   'deploy-flow': 12,
   // `replacement.ts`'s split body (#5835): 7 nested modules.
   replacement: 7,
+  // `updateByReplacement`'s body (#5835): entry `update-replace.ts` plus 4 modules.
+  'update-replace': 4,
+  // `outputs.ts`'s split body (#5835): 3 nested modules.
+  outputs: 3,
   // `deploy-engine/rollback.ts`'s split body (#5835): 8 nested modules.
   rollback: 8,
 };
