@@ -8229,9 +8229,9 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'that decides a route, never a key anything is stored or served under',
     ],
     [
-      'src/provisioning/provider-registry.ts',
+      'src/provisioning/provider-registry/report.ts',
       3,
-      ':842 / :893 are the closed-set membership test above. :1049 is NOT -- its ' +
+      ':100 / :164 are the closed-set membership test above. :336 is NOT -- its ' +
         'property half is `findUnrecognizedProperties`, i.e. TEMPLATE-declared names, ' +
         'an open set. What holds there is the other half: a collision needs a ' +
         'REGISTERED resourceType that is a `:`-delimited proper prefix of another, ' +
