@@ -122,7 +122,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   is no `gen:all-matrices` output, so re-running gen will not restore it: merge
   it by hand (#5829).
 - **A peer SPLIT a file you changed** (refactor waves do not read claims,
-  #5879): take `main`'s copy whole, re-apply your hunk where it moved; on an
+  #5879): take `main`'s copy whole, re-apply your hunk where it moved, and
+  add the new path to your claim (an addendum comment, #5946); on an
   `integ-destroy`-scoped file that stales the marker, so the integ re-runs —
   budget it (#5873).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so

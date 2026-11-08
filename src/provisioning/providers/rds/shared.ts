@@ -1,12 +1,6 @@
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
 
 /**
- * go-to-k/cdkd#5639: how long a `--remove-protection` flip waits, across its
- * retries, for a busy DB cluster or DB instance to accept it.
- */
-export const PROTECTION_FLIP_RETRY_WAIT_MS = 10 * 60_000;
-
-/**
  * How long a cluster or instance delete waits for the resource to be gone:
  * the Cloud Control route's own DELETE floor for these types, which a Cloud
  * Control-routed delete now reaches through this provider (issue #3993).
