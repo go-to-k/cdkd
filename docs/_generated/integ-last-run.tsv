@@ -104,6 +104,8 @@ docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @7
 docdb-global-cluster	2026-11-06T17:37:57Z	PASS	267	verify.sh	#5898 docdb split head; rc ok, orph clean
 docdb-neptune	2026-11-07T18:36:17Z	PASS	5665	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#5996)
 docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split head; rc ok, orph clean
+docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
+docdb-restore	2026-11-06T17:43:30Z	PASS	600	verify.sh	#5898 docdb split head; rc ok, orph clean
 docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
