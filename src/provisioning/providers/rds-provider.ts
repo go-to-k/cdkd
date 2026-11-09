@@ -323,8 +323,7 @@ export class RDSProvider implements ResourceProvider {
         'AssociatedRoles',
         // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`).
         'SourceDBInstanceIdentifier',
-        // go-to-k/cdkd#5640: validated only; the SDK presigns a cross-region
-        // replica's URL from the source ARN (`./rds/read-replica.ts`).
+        // go-to-k/cdkd#5640: validated only, never sent (`./rds/read-replica.ts`).
         'SourceRegion',
       ]),
     ],
