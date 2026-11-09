@@ -597,6 +597,30 @@ const CLUSTER_CASE: TypeCase = {
         ),
       },
     },
+    {
+      name: 'the instance parameter group an engine upgrade applies (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        MasterUsername: 'admin',
+        DBInstanceParameterGroupName: 'instance-params-1',
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        ...Object.fromEntries(
+          ['create', 'create-vary'].map((d) => [
+            `${d}:DBInstanceParameterGroupName`,
+            `CreateDBCluster has no DBInstanceParameterGroupName member, and CloudFormation's create translation sends none (Translator.createDbClusterRequest, read from the handler source), so a create never sends it (${SRC})`,
+          ])
+        ),
+        ...Object.fromEntries(
+          ['update-add', 'update-remove', 'update-vary'].map((d) => [
+            `${d}:DBInstanceParameterGroupName`,
+            `sent only beside a changed EngineVersion, as CloudFormation's handler sends it (Translator.modifyDbClusterRequest: inside the engine-version arm, outside a rollback); this bag's EngineVersion never changes, so rds-dbcluster-instance-param-group-5639.test.ts observes the delivery (${SRC} clusterInstanceParameterGroupToSend)`,
+          ])
+        ),
+      },
+    },
   ],
 };
 
