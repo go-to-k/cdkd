@@ -526,6 +526,7 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
 
     it('ignores the list with no bag (the unsettled proof cannot narrow it), compares a declared non-list', () => {
       expect(provider.getDriftUnknownPaths(INSTANCE)).toContain('ProcessorFeatures');
+      expect(provider.getDriftUnknownPaths(INSTANCE, {})).toContain('ProcessorFeatures');
       // A record holding a non-list (an imported unresolved value) is compared,
       // so the difference shows.
       expect(
