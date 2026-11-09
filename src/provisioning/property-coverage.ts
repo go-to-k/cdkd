@@ -139,8 +139,8 @@ function findValueRoutedProperties(
   if (resourceType !== 'AWS::RDS::DBInstance') return [];
   const source = templateProperties?.['SourceDBInstanceIdentifier'];
   if (typeof source !== 'string' || !source.startsWith('arn:aws-cn:')) return [];
-  const own = ambientRegion();
-  if (own !== undefined && sameRegion(own, source.split(':')[3])) return [];
+  // `sameRegion` answers false for an unknown (`undefined`) own region.
+  if (sameRegion(ambientRegion(), source.split(':')[3])) return [];
   return [
     { property: 'SourceDBInstanceIdentifier', rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE },
   ];
