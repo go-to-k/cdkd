@@ -2192,6 +2192,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-dbinstance-processor-features",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -3738,6 +3743,7 @@
     "pipes-fix-forward-orphan",
     "profile-region-default",
     "rds-dbinstance-backfill",
+    "rds-dbinstance-processor-features",
     "rds-fix-forward-orphan",
     "rds-multiaz-cluster",
     "recreate-mixed-direction",

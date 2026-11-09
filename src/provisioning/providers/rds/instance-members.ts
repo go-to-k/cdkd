@@ -4,6 +4,7 @@ import {
   type DBInstance,
   type PendingCloudwatchLogsExports,
   type ModifyDBInstanceCommandInput,
+  type ProcessorFeature,
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -503,6 +504,247 @@ export function withPreviousAvailabilityZone(
   const { AvailabilityZone: _desired, ...rest } = properties;
   const previous = previousProperties['AvailabilityZone'];
   return previous === undefined ? rest : { ...rest, AvailabilityZone: previous };
+}
+
+/**
+ * go-to-k/cdkd#5640: a `ProcessorFeatures` list read off a bag: `undefined`
+ * when absent, the entries (a CFn number stringified), or `'malformed'` for
+ * anything but a list of objects whose members are scalars. Neither member is
+ * schema-required, so an entry lacking one goes out as declared, as
+ * CloudFormation forwards it, and RDS answers for it.
+ */
+function processorFeatureList(value: unknown): ProcessorFeature[] | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (!Array.isArray(value)) return 'malformed';
+  const out: ProcessorFeature[] = [];
+  for (const item of value as unknown[]) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'malformed';
+    const feature: ProcessorFeature = {};
+    for (const key of ['Name', 'Value'] as const) {
+      const member = (item as Record<string, unknown>)[key];
+      if (member == null) continue;
+      if (typeof member !== 'string' && typeof member !== 'number') return 'malformed';
+      feature[key] = String(member);
+    }
+    out.push(feature);
+  }
+  return out;
+}
+
+/**
+ * A `UseDefaultProcessorFeatures` read off a bag: a boolean, or its string
+ * form in any case, as CloudFormation coerces it.
+ */
+function useDefaultProcessorFeaturesOf(value: unknown): boolean | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string' && ['true', 'false'].includes(value.toLowerCase())) {
+    return value.toLowerCase() === 'true';
+  }
+  return 'malformed';
+}
+
+type DesiredProcessorFeatures = {
+  features: ProcessorFeature[] | undefined;
+  useDefault: boolean | undefined;
+};
+
+/** The refusal text of a malformed processor property. */
+function processorFeaturesRefusalText(
+  features: unknown,
+  resourceType: string,
+  logicalId: string
+): string {
+  return features === 'malformed'
+    ? `${resourceType} ${logicalId}: ProcessorFeatures must be a list of { Name, Value } objects`
+    : `${resourceType} ${logicalId}: UseDefaultProcessorFeatures must be true or false`;
+}
+
+/**
+ * go-to-k/cdkd#5640: the CREATE's `ProcessorFeatures` and
+ * `UseDefaultProcessorFeatures`, or a non-retryable refusal before any call.
+ * A create sends what is declared, so it is refused on a rollback replay too:
+ * RDS takes nothing but a list of `{ Name, Value }` pairs and a boolean, so
+ * the replay could not have applied it either. A declared empty list goes out
+ * as declared, as CloudFormation sends it.
+ */
+export function desiredProcessorFeatures(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string
+): DesiredProcessorFeatures {
+  const features = processorFeatureList(properties['ProcessorFeatures']);
+  const useDefault = useDefaultProcessorFeaturesOf(properties['UseDefaultProcessorFeatures']);
+  if (features !== 'malformed' && useDefault !== 'malformed') return { features, useDefault };
+  throw markNonRetryable(
+    new ProvisioningError(
+      processorFeaturesRefusalText(features, resourceType, logicalId),
+      resourceType,
+      logicalId
+    )
+  );
+}
+
+/** Whether a bag's processor property equals the other's (malformed by raw value). */
+function sameProcessorValue<T>(
+  read: (value: unknown) => T,
+  desired: unknown,
+  previous: unknown
+): boolean {
+  const a = read(desired);
+  const b = read(previous);
+  return a === 'malformed' && b === 'malformed'
+    ? isDeepStrictEqual(desired, previous)
+    : isDeepStrictEqual(a, b);
+}
+
+/**
+ * go-to-k/cdkd#5640: the ModifyDBInstance processor members of an update, as
+ * CloudFormation's handler builds them (`Translator.modifyDbInstanceRequest`,
+ * `shouldSetProcessorFeatures`): when either property differs from the
+ * previous template, the DESIRED values of both, each only when declared.
+ * Otherwise nothing. A removed `ProcessorFeatures` therefore sends nothing and
+ * the instance KEEPS its custom features, as under CloudFormation; declaring
+ * `UseDefaultProcessorFeatures: true` is what restores the class defaults. A
+ * malformed RECORDED side counts as a difference.
+ *
+ * A malformed DESIRED value is refused, before any call, only when the update
+ * would send it: RDS refuses it every time, a rollback replay included. One
+ * the record holds unchanged (a `cdkd import` of an unresolved intrinsic)
+ * sends nothing and is no reason to fail the rest of the update.
+ */
+export function instanceProcessorFeatureMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId: string
+): Pick<ModifyDBInstanceCommandInput, 'ProcessorFeatures' | 'UseDefaultProcessorFeatures'> {
+  if (
+    sameProcessorValue(
+      processorFeatureList,
+      properties['ProcessorFeatures'],
+      previousProperties['ProcessorFeatures']
+    ) &&
+    sameProcessorValue(
+      useDefaultProcessorFeaturesOf,
+      properties['UseDefaultProcessorFeatures'],
+      previousProperties['UseDefaultProcessorFeatures']
+    )
+  ) {
+    return {};
+  }
+  const features = processorFeatureList(properties['ProcessorFeatures']);
+  const useDefault = useDefaultProcessorFeaturesOf(properties['UseDefaultProcessorFeatures']);
+  if (features === 'malformed' || useDefault === 'malformed') {
+    throw markNonRetryable(
+      new ProvisioningError(
+        processorFeaturesRefusalText(features, resourceType, logicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  return {
+    ...(features !== undefined && { ProcessorFeatures: features }),
+    ...(useDefault !== undefined && { UseDefaultProcessorFeatures: useDefault }),
+  };
+}
+
+/** Two processor feature values RDS reads as the same (`'2'` and `'02'`). */
+function sameFeatureValue(a: string | undefined, b: string | undefined): boolean {
+  if (a === b) return true;
+  return (
+    a !== undefined &&
+    b !== undefined &&
+    a.trim() !== '' &&
+    b.trim() !== '' &&
+    Number(a) === Number(b)
+  );
+}
+
+/**
+ * Quiet reads in a row after which a flag-only change counts as applied: RDS
+ * may take a `UseDefaultProcessorFeatures` the instance already runs with no
+ * restart at all.
+ */
+const FLAG_ONLY_QUIET_READS = 3;
+
+/**
+ * The statuses a processor change has left. `storage-optimization` counts:
+ * a storage change in the same update holds the instance there for hours
+ * after the restart, the instance serves meanwhile, and the update waits for
+ * no storage change otherwise (as `multiAzSettledStatuses` reads it for a
+ * cluster by default).
+ */
+const PROCESSOR_SETTLED_STATUSES: ReadonlySet<string> = new Set([
+  'available',
+  'storage-optimization',
+]);
+
+/** Whether an instance read shows a processor change under way. */
+function processorChangeUnderWay(instance: DBInstance): boolean {
+  return (
+    !PROCESSOR_SETTLED_STATUSES.has(instance.DBInstanceStatus ?? '') ||
+    (instance.PendingModifiedValues?.ProcessorFeatures ?? []).length > 0
+  );
+}
+
+/**
+ * go-to-k/cdkd#5640: a predicate for whether a processor change applied
+ * immediately has settled: a settled status ({@link PROCESSOR_SETTLED_STATUSES})
+ * with no processor change pending, and,
+ * when the update sent a list, every sent feature listed live.
+ * CloudFormation's update stabilizes the same way (`isNoPendingChanges`); a
+ * read of the old features would also be a phantom drift. A flag sent alone
+ * names no value to wait for, so the predicate also needs the change seen
+ * under way (not `available`, or a processor change pending), on the instance
+ * the ModifyDBInstance returned or on a read, or else
+ * {@link FLAG_ONLY_QUIET_READS} quiet reads in a row; a single early read
+ * taken before RDS registered the change does not count. One predicate per
+ * wait: it keeps that count.
+ */
+export function processorFeaturesSettled(
+  sent: ProcessorFeature[] | undefined,
+  modified: DBInstance | undefined
+): (instance: DBInstance) => boolean {
+  let changeSeen = modified !== undefined && processorChangeUnderWay(modified);
+  let quietReads = 0;
+  return (instance) => {
+    if (processorChangeUnderWay(instance)) {
+      changeSeen = true;
+      return false;
+    }
+    if (sent !== undefined) {
+      const live = instance.ProcessorFeatures ?? [];
+      return sent.every((feature) =>
+        live.some(
+          (item) => item.Name === feature.Name && sameFeatureValue(item.Value, feature.Value)
+        )
+      );
+    }
+    if (changeSeen) return true;
+    quietReads += 1;
+    return quietReads >= FLAG_ONLY_QUIET_READS;
+  };
+}
+
+/**
+ * go-to-k/cdkd#5640: the processor features an instance runs with once its
+ * pending change applies: each pending feature over the live one of the same
+ * name, live order first.
+ */
+export function liveProcessorFeatures(instance: DBInstance): ProcessorFeature[] | undefined {
+  const pending = instance.PendingModifiedValues?.ProcessorFeatures ?? [];
+  if (pending.length === 0) return instance.ProcessorFeatures;
+  const out = (instance.ProcessorFeatures ?? []).map(
+    (feature) => pending.find((item) => item.Name === feature.Name) ?? feature
+  );
+  for (const item of pending) {
+    if (!out.some((feature) => feature.Name === item.Name)) out.push(item);
+  }
+  return out;
 }
 
 /** An `EngineLifecycleSupport` read off a bag: `undefined` when absent or empty. */

@@ -10,7 +10,7 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { associatedRolesNamed, associatedRolesReadback } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
-import { liveLogExports } from './instance-members.js';
+import { liveLogExports, liveProcessorFeatures } from './instance-members.js';
 import { isDbIdentifier } from './shared.js';
 
 /**
@@ -345,6 +345,16 @@ export async function readCurrentStateDBInstance(
       inst.PendingModifiedValues?.PendingCloudwatchLogsExports
     );
     if (instanceLogs.length > 0) result['EnableCloudwatchLogsExports'] = instanceLogs;
+  }
+  // go-to-k/cdkd#5640: the features the instance runs with once a pending
+  // change applies, emitted only when listed. `UseDefaultProcessorFeatures`
+  // is write-only in the registry schema and not on the Describe shape.
+  const processorFeatures = liveProcessorFeatures(inst);
+  if (processorFeatures !== undefined && processorFeatures.length > 0) {
+    result['ProcessorFeatures'] = processorFeatures.map((feature) => ({
+      Name: feature.Name,
+      Value: feature.Value,
+    }));
   }
   // go-to-k/cdkd#5640: same names on the Describe shape. The zone only for a
   // single-AZ instance: a Multi-AZ one moves to its standby's zone on every

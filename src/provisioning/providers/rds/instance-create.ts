@@ -15,7 +15,11 @@ import type { ResourceCreateResult } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
-import { desiredLogExports, engineLifecycleSupportOf } from './instance-members.js';
+import {
+  desiredLogExports,
+  desiredProcessorFeatures,
+  engineLifecycleSupportOf,
+} from './instance-members.js';
 import {
   describeReplicaSource,
   refuseMalformedReplicaSource,
@@ -49,6 +53,7 @@ export async function createDBInstance(
     replaying
   );
   const logExports = desiredLogExports(properties, resourceType, logicalId);
+  const processor = desiredProcessorFeatures(properties, resourceType, logicalId);
   // go-to-k/cdkd#5640: a declared source makes the instance a read replica.
   refuseMalformedReplicaSource(properties, resourceType, logicalId);
   // go-to-k/cdkd#5640: an unknown SourceRegion is refused as CloudFormation
@@ -235,6 +240,11 @@ export async function createDBInstance(
         ...(properties['AvailabilityZone'] != null && {
           AvailabilityZone: properties['AvailabilityZone'] as string,
         }),
+        // go-to-k/cdkd#5640: as CloudFormation's create translation sends it.
+        // `UseDefaultProcessorFeatures` is no CreateDBInstance member, so the
+        // handler drops it here; a standalone create without the list runs
+        // the class defaults anyway.
+        ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
         ...(tags.length > 0 && { Tags: tags }),
       });
     // go-to-k/cdkd#5640: a read replica is created as CloudFormation's
@@ -251,16 +261,22 @@ export async function createDBInstance(
             this,
             logicalId,
             replicaSource,
-            new CreateDBInstanceReadReplicaCommand(
-              replicaCreateInput(properties, {
+            new CreateDBInstanceReadReplicaCommand({
+              ...replicaCreateInput(properties, {
                 identifier: dbInstanceIdentifier,
                 source: replicaSource,
                 engine: replicaEngineName,
                 currentRegion: await this.getClient().config.region(),
                 tags,
                 logExports,
-              })
-            )
+              }),
+              // go-to-k/cdkd#5640: both, as CloudFormation's replica create
+              // translation sends them.
+              ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
+              ...(processor.useDefault !== undefined && {
+                UseDefaultProcessorFeatures: processor.useDefault,
+              }),
+            })
           );
     instanceCreated = true;
     createdResourceId = response.DBInstance?.DbiResourceId;

@@ -308,23 +308,23 @@ export class RDSProvider implements ResourceProvider {
         // `CloudwatchLogsExportConfiguration` delta on ModifyDBInstance
         // (`logExportsDelta`).
         'EnableCloudwatchLogsExports',
-        // go-to-k/cdkd#5640: both ride CreateDBInstance only. `DBName` is
-        // create-only (a change replaces). `AvailabilityZone` is not, but
-        // ModifyDBInstance cannot move an instance, so a changed zone is
-        // refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
+        // go-to-k/cdkd#5640: CreateDBInstance only. `DBName` is create-only; a changed
+        // zone is refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
         'DBName',
         'AvailabilityZone',
         // go-to-k/cdkd#5640: ride CreateDBInstance and, when changed,
         // ModifyDBInstance under the same names (`instanceModifyBackfillMembers`).
         'EngineLifecycleSupport',
         'MasterUserAuthenticationType',
-        // go-to-k/cdkd#5640: AddRoleToDBInstance / RemoveRoleFromDBInstance
-        // once the instance is `available` (`applyAssociatedRoles`).
+        // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`).
+        // go-to-k/cdkd#5640: a read replica; SourceRegion is validated only, never sent
+        // (`./rds/read-replica.ts`).
         'SourceDBInstanceIdentifier',
-        // go-to-k/cdkd#5640: validated only, never sent (`./rds/read-replica.ts`).
         'SourceRegion',
+        // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`.
+        'ProcessorFeatures',
+        'UseDefaultProcessorFeatures',
       ]),
     ],
   ]);

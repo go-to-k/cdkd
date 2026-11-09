@@ -57,7 +57,6 @@
       "DomainIAMRoleName",
       "DomainOu",
       "NcharCharacterSetName",
-      "ProcessorFeatures",
       "ReplicaMode",
       "RestoreTime",
       "SourceDBClusterIdentifier",
@@ -66,7 +65,6 @@
       "TdeCredentialArn",
       "TdeCredentialPassword",
       "Timezone",
-      "UseDefaultProcessorFeatures",
       "UseLatestRestorableTime"
     ]
   },
