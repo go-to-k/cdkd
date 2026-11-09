@@ -94,9 +94,14 @@ export function findActionableSdkUnwired(
   recordedProperties?: Record<string, unknown>,
   options?: UnresolvedValueOption
 ): Array<{ property: string; rationale: string }> {
-  const drops = findSdkUnwiredProperties(resourceType, templateProperties).filter(
-    ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
-  );
+  const valueRouted = findValueRoutedProperties(resourceType, templateProperties);
+  const drops = (
+    valueRouted.length === 0
+      ? findSdkUnwiredProperties(resourceType, templateProperties)
+      : [...findSdkUnwiredProperties(resourceType, templateProperties), ...valueRouted].sort(
+          (a, b) => a.property.localeCompare(b.property)
+        )
+  ).filter(({ property }) => !allowedKeys.has(`${resourceType}:${property}`));
   const unrecognized = findRoutableUnrecognizedProperties(
     resourceType,
     templateProperties,
@@ -104,13 +109,9 @@ export function findActionableSdkUnwired(
     recordedProperties,
     options
   );
-  const valueRouted = findValueRoutedProperties(resourceType, templateProperties).filter(
-    ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
-  );
-  if (unrecognized.length === 0 && valueRouted.length === 0) return drops;
+  if (unrecognized.length === 0) return drops;
   return [
     ...drops,
-    ...valueRouted,
     ...unrecognized.map((property) => ({ property, rationale: UNRECOGNIZED_PROPERTY_RATIONALE })),
   ].sort((a, b) => a.property.localeCompare(b.property));
 }
