@@ -453,6 +453,62 @@ export class RdsAuroraStack extends cdk.Stack {
     // the cluster, should a later edit leave it a member.
     globalMemberCluster.node.addDependency(globalCluster);
 
+    // go-to-k/cdkd#5639 (DBCluster DBInstanceParameterGroupName): a cluster
+    // with ONE writer instance (RDS refuses an engine-version change on a
+    // cluster without a primary instance, measured) and two instance
+    // parameter groups, one per major version, both in every phase. Phase 1
+    // declares the 16 group, which CreateDBCluster cannot carry (no such
+    // member) and so only records. Phase 2 (CDKD_TEST_UPDATE=true) upgrades
+    // 16.13 -> 17.9 and swaps both parameter groups for the 17 family: the
+    // ModifyDBCluster carries the 17 instance group beside EngineVersion and
+    // AllowMajorVersionUpgrade, as CloudFormation's handler sends it
+    // (`Translator.modifyDbClusterRequest`), and RDS applies it to the writer
+    // during the upgrade, which verify.sh asserts. RDS also takes a manual
+    // `preupgrade-*` snapshot, which verify.sh's cleanup deletes. Before
+    // #5639 the declared key routed the cluster to Cloud Control (the
+    // provisionedBy=sdk guard catches it). DeletionPolicy Delete on both: no
+    // final snapshot.
+    const upgradeParams16 = new rds.CfnDBParameterGroup(this, 'UpgradeInstanceParams16', {
+      family: 'aurora-postgresql16',
+      description: 'cdkd #5639 instance parameter group (16)',
+      parameters: { log_min_duration_statement: '2000' },
+    });
+    const upgradeParams17 = new rds.CfnDBParameterGroup(this, 'UpgradeInstanceParams17', {
+      family: 'aurora-postgresql17',
+      description: 'cdkd #5639 instance parameter group (17)',
+      parameters: { log_min_duration_statement: '2000' },
+    });
+    const upgradeCluster = new rds.CfnDBCluster(this, 'UpgradeCluster', {
+      engine: 'aurora-postgresql',
+      engineVersion: isUpdate ? '17.9' : '16.13',
+      dbClusterParameterGroupName: isUpdate
+        ? 'default.aurora-postgresql17'
+        : 'default.aurora-postgresql16',
+      dbInstanceParameterGroupName: isUpdate ? upgradeParams17.ref : upgradeParams16.ref,
+      masterUsername: 'postgres',
+      masterUserPassword: cluster.secret!.secretValueFromJson('password').unsafeUnwrap(),
+      backupRetentionPeriod: 1,
+      dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
+      ...(process.env.CDKD_TEST_RUN_ID
+        ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
+        : {}),
+    });
+    upgradeCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    upgradeCluster.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
+    // RDS refuses to delete a parameter group a cluster or instance still uses.
+    upgradeCluster.node.addDependency(upgradeParams16);
+    upgradeCluster.node.addDependency(upgradeParams17);
+    const upgradeWriter = new rds.CfnDBInstance(this, 'UpgradeWriter', {
+      engine: 'aurora-postgresql',
+      dbClusterIdentifier: upgradeCluster.ref,
+      // Provisioned, not db.serverless: pg_upgrade on a Serverless v2 writer
+      // capped at 1 ACU fails ("shared memory segment sizes are configured
+      // too large", measured go-to-k/cdkd#5639), and RDS rolls the upgrade back.
+      dbInstanceClass: 'db.t4g.medium',
+    });
+    upgradeWriter.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    upgradeWriter.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
+
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {
       value: proxy.endpoint,

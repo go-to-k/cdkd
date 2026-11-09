@@ -7185,6 +7185,7 @@
       ],
       "signals": {
         "rds-aurora": [
+          "l1",
           "l2"
         ],
         "rds-dbinstance-backfill": [
