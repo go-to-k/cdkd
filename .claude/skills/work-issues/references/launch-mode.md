@@ -31,11 +31,9 @@ every lane dispatch, and state them all in the opening report.
   Empty means launched detached and selects §9's detach fallback. Record it
   now: once §5 switches to the lane branch it is unrecoverable. MAIN-CHECKOUT
   never uses it.
-- `ORIGIN` is judged by OWNER/REPO, never by spelling: an HTTPS URL with or
-  without `.git` and the SSH form are all this repo (#6057's run printed the
-  bare form). `git remote get-url origin | sed -E
-  's#^(https://github\.com/|git@github\.com:)##; s#\.git$##'` printing anything
-  but `go-to-k/cdkd` is a FORK run: its issues are off and its
+- `ORIGIN` is judged by OWNER/REPO, never by spelling (`.git` is optional):
+  `git remote get-url origin | sed -E 's#^(https://|ssh://git@|git@)github\.com[:/]##; s#(\.git)?/?$##'`
+  printing anything but `go-to-k/cdkd` is a FORK run: its issues are off and its
   `main` lags. Before triage run `git remote get-url upstream || git remote add
   upstream https://github.com/go-to-k/cdkd.git; git fetch upstream main`, and
   tell every dispatch: `gh` takes `-R go-to-k/cdkd`, a stage file's
