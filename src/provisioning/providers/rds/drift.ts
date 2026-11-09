@@ -45,15 +45,16 @@ export function getDriftUnknownPaths(
     // live `ProcessorFeatures` is compared only where the bag declares a
     // non-empty list (RDS reports none for an empty one), so a baseline
     // captured before it was read reports no drift; anything else declared is
-    // compared. An absent or empty bag records nothing to scope by: compare.
+    // compared. With no bag (the post-update unsettled proof) it is not: that
+    // comparison does not narrow the live list to the declared features
+    // (`canonicalizeDriftPair`), so a partial declared list would never settle.
     const instanceUnknown = [
       'AllowMajorVersionUpgrade',
       'CertificateRotationRestart',
       'SourceRegion',
       'UseDefaultProcessorFeatures',
     ];
-    if (properties === undefined || Object.keys(properties).length === 0) return instanceUnknown;
-    const declared = properties['ProcessorFeatures'];
+    const declared = properties?.['ProcessorFeatures'];
     return declared == null || (Array.isArray(declared) && declared.length === 0)
       ? [...instanceUnknown, 'ProcessorFeatures']
       : instanceUnknown;

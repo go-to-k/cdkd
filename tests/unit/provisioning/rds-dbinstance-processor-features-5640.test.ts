@@ -364,9 +364,10 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
     it('storage-optimization with the processor change still pending keeps waiting', async () => {
       arm({
         reads: [
+          // The live list already reads as sent: only the pending change holds.
           {
             DBInstanceStatus: 'storage-optimization',
-            ProcessorFeatures: FEATURES,
+            ProcessorFeatures: OTHER,
             PendingModifiedValues: { ProcessorFeatures: OTHER },
           },
           { DBInstanceStatus: 'storage-optimization', ProcessorFeatures: OTHER },
@@ -513,9 +514,18 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(await drift([...FEATURES].reverse())).toBe(0);
     });
 
-    it('compares the list when the bag is absent or empty, and a declared non-list', () => {
-      expect(provider.getDriftUnknownPaths(INSTANCE)).not.toContain('ProcessorFeatures');
-      expect(provider.getDriftUnknownPaths(INSTANCE, {})).not.toContain('ProcessorFeatures');
+    it('leaves the live list whole for a baseline it cannot read, and for a cluster', async () => {
+      const live = { ProcessorFeatures: FEATURES };
+      const broken = { ProcessorFeatures: ['x', { Name: 'threadsPerCore', Value: '1' }] };
+      expect((await provider.canonicalizeDriftPair(INSTANCE, broken, live)).aws).toBe(live);
+      const partial = { ProcessorFeatures: [{ Name: 'threadsPerCore', Value: '1' }] };
+      expect(
+        (await provider.canonicalizeDriftPair('AWS::RDS::DBCluster', partial, live)).aws
+      ).toBe(live);
+    });
+
+    it('ignores the list with no bag (the unsettled proof cannot narrow it), compares a declared non-list', () => {
+      expect(provider.getDriftUnknownPaths(INSTANCE)).toContain('ProcessorFeatures');
       // A record holding a non-list (an imported unresolved value) is compared,
       // so the difference shows.
       expect(
