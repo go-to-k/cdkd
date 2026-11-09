@@ -37,9 +37,7 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
   quotas carry, else spread them across regions.
 
 The PARENT checks all four before granting each further lane's integ. ANY
-turn holding HOURS tells the user its ETA and queue — a LANE's too: one
-silent past 30 min gets a `SendMessage` asking what is pending plus an ETA,
-relayed unasked (the user asked "not yet?" twice during #6068's lane). A subagent running a turn's
+turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID

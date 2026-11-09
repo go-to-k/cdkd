@@ -151,7 +151,9 @@ SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
 never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
 Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
-`completed`, or running with a frozen tool count and its PR green (#5593). Read
+`completed`, or running with a frozen tool count and its PR green (#5593); ask
+any lane silent past 30 min what is pending plus an ETA, and relay that to
+the user unasked (the user asked "not yet?" twice during #6068's lane). Read
 a completion when it arrives, and check the PR and tree before believing it.
 A subagent's Bash bypasses the PreToolUse hooks.
 
