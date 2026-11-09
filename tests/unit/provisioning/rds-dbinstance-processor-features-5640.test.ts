@@ -69,6 +69,8 @@ const BASE: Input = {
 interface Live {
   /** The instance's DescribeDBInstances fields, read after read. */
   reads?: Input[];
+  /** The instance ModifyDBInstance returns, if any. */
+  modified?: Input;
 }
 
 let reads: Input[] = [];
@@ -107,6 +109,8 @@ function arm(live: Live = {}): void {
         return Promise.resolve({
           DBInstance: { DBInstanceIdentifier: 'db-1', Engine: 'sqlserver-web' },
         });
+      case 'ModifyDBInstanceCommand':
+        return Promise.resolve(live.modified === undefined ? {} : { DBInstance: live.modified });
       case 'ListTagsForResourceCommand':
         return Promise.resolve({ TagList: [] });
       default:
@@ -217,8 +221,14 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
     it('sends the changed list and waits until the instance runs it', async () => {
       arm({
         reads: [
-          // Right after the modify: still pending.
+          // Right after the modify: still pending, then pending while available.
           { DBInstanceStatus: 'modifying', PendingModifiedValues: { ProcessorFeatures: OTHER } },
+          {
+            DBInstanceStatus: 'available',
+            ProcessorFeatures: FEATURES,
+            PendingModifiedValues: { ProcessorFeatures: OTHER },
+          },
+          // Nothing pending, but still the old features.
           { DBInstanceStatus: 'available', ProcessorFeatures: FEATURES },
           { DBInstanceStatus: 'available', ProcessorFeatures: OTHER },
         ],
@@ -228,8 +238,23 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(modify?.['ProcessorFeatures']).toEqual(OTHER);
       expect(modify).not.toHaveProperty('UseDefaultProcessorFeatures');
       expect(modify?.['ApplyImmediately']).toBe(true);
-      // Three wait reads, then the attribute read.
-      expect(describes()).toBe(4);
+      // Four wait reads, then the attribute read.
+      expect(describes()).toBe(5);
+    });
+
+    it('reads a value RDS spells differently as the one sent', async () => {
+      arm({
+        reads: [
+          {
+            ProcessorFeatures: [
+              { Name: 'coreCount', Value: '1.0' },
+              { Name: 'threadsPerCore', Value: '1' },
+            ],
+          },
+        ],
+      });
+      await update({ ...BASE, ProcessorFeatures: OTHER }, WITH);
+      expect(describes()).toBe(2);
     });
 
     it('does not wait under --no-wait', async () => {
@@ -266,11 +291,39 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(modify).not.toHaveProperty('UseDefaultProcessorFeatures');
     });
 
-    it('UseDefaultProcessorFeatures: true in place of the list restores the class defaults', async () => {
-      await update({ ...BASE, UseDefaultProcessorFeatures: true }, WITH);
+    it('UseDefaultProcessorFeatures: true in place of the list restores the class defaults, waiting it out', async () => {
+      arm({
+        reads: [
+          // An early read, before RDS registered the change, does not count.
+          { DBInstanceStatus: 'available', ProcessorFeatures: FEATURES },
+          { DBInstanceStatus: 'modifying' },
+          { DBInstanceStatus: 'available', PendingModifiedValues: { ProcessorFeatures: [{ Name: 'threadsPerCore', Value: '2' }] } },
+          { DBInstanceStatus: 'available' },
+        ],
+      });
+      await update({ ...BASE, UseDefaultProcessorFeatures: 'TRUE' }, WITH);
       const [modify] = sent('ModifyDBInstanceCommand');
       expect(modify?.['UseDefaultProcessorFeatures']).toBe(true);
       expect(modify).not.toHaveProperty('ProcessorFeatures');
+      // Four wait reads, then the attribute read.
+      expect(describes()).toBe(5);
+    });
+
+    it('a flag RDS takes with no change at all settles after a run of quiet reads', async () => {
+      await update({ ...BASE, UseDefaultProcessorFeatures: true }, WITH);
+      expect(sent('ModifyDBInstanceCommand')[0]?.['UseDefaultProcessorFeatures']).toBe(true);
+      // Three quiet wait reads, then the attribute read.
+      expect(describes()).toBe(4);
+    });
+
+    it('a flag the ModifyDBInstance answer shows under way needs no quiet reads', async () => {
+      arm({
+        modified: { DBInstanceStatus: 'modifying' },
+        reads: [{ DBInstanceStatus: 'available' }],
+      });
+      await update({ ...BASE, UseDefaultProcessorFeatures: true }, WITH);
+      // One wait read, then the attribute read.
+      expect(describes()).toBe(2);
     });
 
     it('a changed flag alone sends the declared list beside it, as the handler sends both', async () => {
@@ -295,6 +348,19 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
         update({ ...BASE, ProcessorFeatures: [null] }, WITH, context as UpdateContext | undefined)
       ).rejects.toThrow(/ProcessorFeatures must be a list/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a malformed value the record holds unchanged sends nothing and fails nothing, on a rollback replay too', async () => {
+      const junk = { ProcessorFeatures: 'coreCount=2', UseDefaultProcessorFeatures: 'maybe' };
+      await update(
+        { ...BASE, ...junk, BackupRetentionPeriod: 7 },
+        { ...BASE, ...junk, BackupRetentionPeriod: 1 },
+        { replayingState: true }
+      );
+      const [modify] = sent('ModifyDBInstanceCommand');
+      expect(modify?.['BackupRetentionPeriod']).toBe(7);
+      expect(modify).not.toHaveProperty('ProcessorFeatures');
+      expect(modify).not.toHaveProperty('UseDefaultProcessorFeatures');
     });
   });
 
@@ -321,6 +387,23 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       });
     });
 
+    it('appends a pending feature the live list lacks', async () => {
+      arm({
+        reads: [
+          {
+            ProcessorFeatures: [{ Name: 'threadsPerCore', Value: '1' }],
+            PendingModifiedValues: { ProcessorFeatures: [{ Name: 'coreCount', Value: '1' }] },
+          },
+        ],
+      });
+      expect(await provider.readCurrentState('db-1', 'L', INSTANCE)).toMatchObject({
+        ProcessorFeatures: [
+          { Name: 'threadsPerCore', Value: '1' },
+          { Name: 'coreCount', Value: '1' },
+        ],
+      });
+    });
+
     it.each([
       ['an empty list', { ProcessorFeatures: [] }],
       ['no list', {}],
@@ -341,6 +424,18 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       });
       expect(declared).toContain('UseDefaultProcessorFeatures');
       expect(declared).not.toContain('ProcessorFeatures');
+      // RDS reports no features for a declared empty list.
+      expect(provider.getDriftUnknownPaths(INSTANCE, { ...BASE, ProcessorFeatures: [] })).toContain(
+        'ProcessorFeatures'
+      );
+    });
+
+    it("compares an instance's features in any order; a cluster has none", () => {
+      expect(provider.getDriftUnorderedPaths(INSTANCE)).toContain('ProcessorFeatures');
+      expect(provider.getDriftUnorderedPaths('AWS::RDS::DBCluster')).toEqual([
+        'EnableCloudwatchLogsExports',
+        'AssociatedRoles',
+      ]);
     });
   });
 });

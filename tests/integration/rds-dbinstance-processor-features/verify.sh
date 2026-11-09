@@ -83,6 +83,16 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DRIFT_JSON}"
+  # The instance by its fixed name FIRST, and waited out: a run aborted before
+  # the create returned has no record naming it, and while it lives its subnet
+  # group, security group and VPC cannot be deleted by `state destroy` below.
+  aws rds delete-db-instance \
+    --db-instance-identifier "${INSTANCE_ID}" \
+    --region "${REGION}" \
+    --skip-final-snapshot \
+    --delete-automated-backups >/dev/null 2>&1
+  aws rds wait db-instance-deleted --db-instance-identifier "${INSTANCE_ID}" \
+    --region "${REGION}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # Not silenced: a VPC still held by a deleting instance must show.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
@@ -91,13 +101,6 @@ cleanup() {
       --skip-final-snapshot \
       --yes
   fi
-  # Best-effort by the fixed name, after `state destroy`: a run aborted before
-  # the create returned has no record naming it.
-  aws rds delete-db-instance \
-    --db-instance-identifier "${INSTANCE_ID}" \
-    --region "${REGION}" \
-    --skip-final-snapshot \
-    --delete-automated-backups >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -232,13 +235,17 @@ echo "==> Phase 3: UseDefaultProcessorFeatures: true"
 deploy_phase use-default
 assert_sdk_route "phase 3"
 assert_same_instance "phase 3"
+# The class default is 2; RDS may also list no features at all once the
+# instance runs its class defaults.
 THREADS_P3="$(threads_per_core)"
-if [ "${THREADS_P3}" = "1" ]; then
-  echo "FAIL (phase 3): threadsPerCore still reads 1 — UseDefaultProcessorFeatures: true never reached ModifyDBInstance (go-to-k/cdkd#5640)" >&2
-  instance_field 'PendingModifiedValues' >&2 || true
-  exit 1
-fi
-echo "    OK (phase 3): threadsPerCore=${THREADS_P3} (the class default)"
+case "${THREADS_P3}" in
+  2 | None) echo "    OK (phase 3): threadsPerCore=${THREADS_P3} (the class default)" ;;
+  *)
+    echo "FAIL (phase 3): threadsPerCore reads '${THREADS_P3}', expected the class default (2, or no features listed) — UseDefaultProcessorFeatures: true never reached ModifyDBInstance (go-to-k/cdkd#5640)" >&2
+    instance_field 'PendingModifiedValues' >&2 || true
+    exit 1
+    ;;
+esac
 
 # --- Phase 4: the list again --------------------------------------------------
 echo "==> Phase 4: the list again, with UseDefaultProcessorFeatures: false"

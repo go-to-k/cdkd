@@ -1,4 +1,8 @@
-import { ModifyDBInstanceCommand, PromoteReadReplicaCommand } from '@aws-sdk/client-rds';
+import {
+  ModifyDBInstanceCommand,
+  PromoteReadReplicaCommand,
+  type DBInstance,
+} from '@aws-sdk/client-rds';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -30,9 +34,8 @@ import {
   instanceParameterGroupPendingReboot,
   instanceParameterGroupApplying,
   desiredLogExports,
-  desiredProcessorFeatures,
   instanceProcessorFeatureMembers,
-  processorFeaturesApplied,
+  processorFeaturesSettled,
   logExportsDelta,
   logExportsApplied,
   instanceAvailabilityZoneKept,
@@ -68,11 +71,15 @@ export async function updateDBInstance(
     desiredLogExports(properties, resourceType, logicalId, physicalId),
     previousProperties['EnableCloudwatchLogsExports']
   );
-  // go-to-k/cdkd#5640: refused before any call when malformed; sent only when
-  // either property changed, as CloudFormation sends them.
+  // go-to-k/cdkd#5640: sent only when either property changed, as
+  // CloudFormation sends them; a malformed value it would send is refused
+  // before any call.
   const processorMembers = instanceProcessorFeatureMembers(
-    desiredProcessorFeatures(properties, resourceType, logicalId, physicalId),
-    previousProperties
+    properties,
+    previousProperties,
+    resourceType,
+    logicalId,
+    physicalId
   );
   // Outside the try: it throws only its own ProvisioningError, which names
   // the cause and must not be re-wrapped.
@@ -455,9 +462,12 @@ export async function updateDBInstance(
     );
     // #5194: a cluster change in the same deploy can leave this member not
     // `available` for a moment; only that refusal is waited out and resent.
+    // go-to-k/cdkd#5640: the instance the accepted call returned, which tells a
+    // processor change under way from none.
+    let modified: DBInstance | undefined;
     await modifyDbInstanceWhenAvailable({
-      send: () =>
-        this.getClient().send(
+      send: async () => {
+        const response = await this.getClient().send(
           new ModifyDBInstanceCommand({
             DBInstanceIdentifier: physicalId,
             DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
@@ -529,7 +539,10 @@ export async function updateDBInstance(
               MasterUserAuthenticationType: authenticationType,
             }),
           })
-        ),
+        );
+        modified = response.DBInstance;
+        return response;
+      },
       readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
       sleep: (ms) => this.sleep(ms),
       logger: this.logger,
@@ -556,8 +569,7 @@ export async function updateDBInstance(
       );
     }
     // go-to-k/cdkd#5640: likewise a processor change, which restarts the
-    // instance with the new features. A sent list is waited for by value; a
-    // flag alone only by status and nothing pending.
+    // instance with the new features (`processorFeaturesSettled`).
     if (
       process.env['CDKD_NO_WAIT'] !== 'true' &&
       (processorMembers.ProcessorFeatures !== undefined ||
@@ -566,7 +578,7 @@ export async function updateDBInstance(
       await this.waitForInstanceState(
         logicalId,
         physicalId,
-        (instance) => processorFeaturesApplied(instance, processorMembers.ProcessorFeatures),
+        processorFeaturesSettled(processorMembers.ProcessorFeatures, modified),
         'processor features change'
       );
     }

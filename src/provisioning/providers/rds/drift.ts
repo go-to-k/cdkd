@@ -13,7 +13,11 @@ import {
  * associated IAM roles. Also what `unsettledAfterUpdate` compares by.
  */
 export function getDriftUnorderedPaths(this: RDSProvider, resourceType: string): string[] {
-  return resourceType === 'AWS::RDS::DBCluster' || resourceType === 'AWS::RDS::DBInstance'
+  // go-to-k/cdkd#5640: an instance's processor features, in RDS's own order.
+  if (resourceType === 'AWS::RDS::DBInstance') {
+    return ['EnableCloudwatchLogsExports', 'AssociatedRoles', 'ProcessorFeatures'];
+  }
+  return resourceType === 'AWS::RDS::DBCluster'
     ? ['EnableCloudwatchLogsExports', 'AssociatedRoles']
     : [];
 }
@@ -38,15 +42,17 @@ export function getDriftUnknownPaths(
 ): string[] {
   if (resourceType === 'AWS::RDS::DBInstance') {
     // go-to-k/cdkd#5640: `UseDefaultProcessorFeatures` is write-only. The
-    // live `ProcessorFeatures` is compared only where the template declares
-    // it, so a baseline captured before it was read reports no drift.
+    // live `ProcessorFeatures` is compared only where the template declares a
+    // non-empty list (RDS reports none for an empty one), so a baseline
+    // captured before it was read reports no drift.
     const instanceUnknown = [
       'AllowMajorVersionUpgrade',
       'CertificateRotationRestart',
       'SourceRegion',
       'UseDefaultProcessorFeatures',
     ];
-    return properties?.['ProcessorFeatures'] == null
+    const declared = properties?.['ProcessorFeatures'];
+    return declared == null || (Array.isArray(declared) && declared.length === 0)
       ? [...instanceUnknown, 'ProcessorFeatures']
       : instanceUnknown;
   }

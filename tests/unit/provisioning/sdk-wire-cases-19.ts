@@ -675,7 +675,13 @@ const CFN_DIFF_KEPT = (key: string): string =>
 
 const INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::RDS::DBInstance',
-  provider: () => new RDSProvider(),
+  // go-to-k/cdkd#5640: a flag-only processor change waits out a few quiet
+  // reads (`processorFeaturesSettled`), with no real sleep here.
+  provider: () => {
+    const provider = new RDSProvider();
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
+    return provider;
+  },
   physicalId: INSTANCE_ID,
   createOnly: createOnlyOf('AWS::RDS::DBInstance'),
   arm: (physicalId, bag) => armInstance(physicalId, bag),
