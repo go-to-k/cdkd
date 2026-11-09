@@ -655,7 +655,13 @@ export function instanceProcessorFeatureMembers(
 /** Two processor feature values RDS reads as the same (`'2'` and `'02'`). */
 function sameFeatureValue(a: string | undefined, b: string | undefined): boolean {
   if (a === b) return true;
-  return a !== undefined && b !== undefined && a.trim() !== '' && Number(a) === Number(b);
+  return (
+    a !== undefined &&
+    b !== undefined &&
+    a.trim() !== '' &&
+    b.trim() !== '' &&
+    Number(a) === Number(b)
+  );
 }
 
 /**

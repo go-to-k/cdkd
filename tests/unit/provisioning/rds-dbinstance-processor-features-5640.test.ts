@@ -249,6 +249,13 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(describes()).toBe(5);
     });
 
+    it('never reads an empty value as zero', async () => {
+      arm({ reads: [{ ProcessorFeatures: [{ Name: 'coreCount', Value: '0' }] }] });
+      await expect(
+        update({ ...BASE, ProcessorFeatures: [{ Name: 'coreCount', Value: '' }] }, WITH)
+      ).rejects.toThrow(/Timed out waiting for DBInstance L's processor features change/);
+    });
+
     it('reads a value RDS spells differently as the one sent', async () => {
       arm({
         reads: [
