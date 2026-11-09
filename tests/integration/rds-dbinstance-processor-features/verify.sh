@@ -24,8 +24,9 @@
 #      drift` reports it clean.
 #   5. destroy: the instance and the state file are gone.
 #
-# Budget: the SQL Server create ~20-30 min, each of the three processor
-# changes restarts the instance (~10 min each), the delete ~10 min.
+# Budget: the SQL Server create ~20-30 min, the two processor changes
+# (phases 3 and 4) each restart the instance (~10 min each), the phase-2
+# modify is quick, the delete ~10 min.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -230,6 +231,21 @@ if [ "$(instance_field 'CopyTagsToSnapshot')" != "True" ]; then
   exit 1
 fi
 assert_cores 4 "phase 2: a removed list leaves the features, as CloudFormation does"
+# ... and no reset is merely pending behind that read. The CopyTagsToSnapshot
+# modify itself may show the instance briefly not `available` (cdkd does not
+# wait for it), so the status is polled for up to 10 min first.
+P2_STATUS=""
+for _ in $(seq 1 60); do
+  P2_STATUS="$(instance_field 'DBInstanceStatus')"
+  [ "${P2_STATUS}" = "available" ] && break
+  sleep 10
+done
+P2_PENDING="$(instance_field 'PendingModifiedValues.ProcessorFeatures')"
+assert_cores 4 "phase 2: still 4 once the instance is available again"
+if [ "${P2_PENDING}" != "None" ] || [ "${P2_STATUS}" != "available" ]; then
+  echo "FAIL (phase 2): the instance is '${P2_STATUS}' with pending processor features '${P2_PENDING}' — the list removal must change nothing (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
 assert_drift_clean "phase 2"
 
 # --- Phase 3: UseDefaultProcessorFeatures: true -------------------------------
