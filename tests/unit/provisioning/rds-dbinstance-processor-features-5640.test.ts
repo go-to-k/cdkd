@@ -9,6 +9,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
 
+// A short resource deadline: a wait that never settles fails its test at once
+// instead of spinning (the provider's sleep is stubbed below).
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  enclosingDeadlineRemainingMs: () => 300,
+}));
+
 vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual('@aws-sdk/client-rds');
   return {

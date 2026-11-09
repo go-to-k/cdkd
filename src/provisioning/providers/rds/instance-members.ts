@@ -549,23 +549,15 @@ type DesiredProcessorFeatures = {
   useDefault: boolean | undefined;
 };
 
-/** The refusal of a malformed processor property, before any call. */
-function processorFeaturesRefusal(
+/** The refusal text of a malformed processor property. */
+function processorFeaturesRefusalText(
   features: unknown,
   resourceType: string,
-  logicalId: string,
-  physicalId: string | undefined
-): ProvisioningError {
-  return markNonRetryable(
-    new ProvisioningError(
-      features === 'malformed'
-        ? `${resourceType} ${logicalId}: ProcessorFeatures must be a list of { Name, Value } objects`
-        : `${resourceType} ${logicalId}: UseDefaultProcessorFeatures must be true or false`,
-      resourceType,
-      logicalId,
-      physicalId
-    )
-  );
+  logicalId: string
+): string {
+  return features === 'malformed'
+    ? `${resourceType} ${logicalId}: ProcessorFeatures must be a list of { Name, Value } objects`
+    : `${resourceType} ${logicalId}: UseDefaultProcessorFeatures must be true or false`;
 }
 
 /**
@@ -584,7 +576,13 @@ export function desiredProcessorFeatures(
   const features = processorFeatureList(properties['ProcessorFeatures']);
   const useDefault = useDefaultProcessorFeaturesOf(properties['UseDefaultProcessorFeatures']);
   if (features !== 'malformed' && useDefault !== 'malformed') return { features, useDefault };
-  throw processorFeaturesRefusal(features, resourceType, logicalId, undefined);
+  throw markNonRetryable(
+    new ProvisioningError(
+      processorFeaturesRefusalText(features, resourceType, logicalId),
+      resourceType,
+      logicalId
+    )
+  );
 }
 
 /** Whether a bag's processor property equals the other's (malformed by raw value). */
@@ -639,7 +637,14 @@ export function instanceProcessorFeatureMembers(
   const features = processorFeatureList(properties['ProcessorFeatures']);
   const useDefault = useDefaultProcessorFeaturesOf(properties['UseDefaultProcessorFeatures']);
   if (features === 'malformed' || useDefault === 'malformed') {
-    throw processorFeaturesRefusal(features, resourceType, logicalId, physicalId);
+    throw markNonRetryable(
+      new ProvisioningError(
+        processorFeaturesRefusalText(features, resourceType, logicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
   }
   return {
     ...(features !== undefined && { ProcessorFeatures: features }),
