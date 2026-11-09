@@ -163,15 +163,16 @@ export function clusterSizeValue(value: unknown): number | undefined | 'malforme
 }
 
 /**
- * go-to-k/cdkd#5639: a `DBClusterInstanceClass` that is present but not a
- * string, which the create and update refuse before any call (a replay skips
- * it) rather than send as whatever it stringifies to.
+ * go-to-k/cdkd#5639: a `DBClusterInstanceClass` or
+ * `DBInstanceParameterGroupName` that is present but not a string, which the
+ * create and update refuse before any call (a replay skips it) rather than
+ * send as whatever it stringifies to.
  */
 export function malformedInstanceClass(value: unknown): boolean {
   return value != null && typeof value !== 'string';
 }
 
-/** Whether a recorded `DBClusterInstanceClass` can stand in for a skipped one. */
+/** Whether a recorded value of either can stand in for a skipped one. */
 export const usableInstanceClass = (value: unknown): boolean => typeof value === 'string';
 
 /** Whether a recorded `AllocatedStorage` / `Iops` can stand in for a skipped one. */
@@ -746,6 +747,37 @@ export function clusterEngineVersionChanged(
 ): boolean {
   if (context?.replayingState === true) return false;
   return instanceValueChanged(properties, previousProperties, 'EngineVersion', context);
+}
+
+/**
+ * go-to-k/cdkd#5639: the `DBInstanceParameterGroupName` a cluster update
+ * sends, only beside a changed `EngineVersion` (`clusterEngineVersionChanged`)
+ * and only when the template changed it, as CloudFormation's handler sends it
+ * (`Translator.modifyDbClusterRequest`: `diff(previous, desired)` inside the
+ * engine-version arm). RDS applies it to every instance of the cluster during
+ * a major upgrade, and refuses it beside a minor one ("can only be specified
+ * for a major version upgrade", measured us-east-1, 2026-11-09), failing
+ * CloudFormation's identical request the same way. CreateDBCluster has no
+ * such member, so a create never sends it, and a change without an
+ * engine-version change, or a removal, sends nothing, as CloudFormation sends
+ * nothing then. A malformed one is refused or skipped before any call.
+ */
+export function clusterInstanceParameterGroupToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  engineVersionChanged: boolean,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['DBInstanceParameterGroupName'];
+  if (!engineVersionChanged || typeof desired !== 'string') return undefined;
+  return instanceValueChanged(
+    properties,
+    previousProperties,
+    'DBInstanceParameterGroupName',
+    context
+  )
+    ? desired
+    : undefined;
 }
 
 /** Issue #1160: the member statuses a cluster change moves an instance through. */

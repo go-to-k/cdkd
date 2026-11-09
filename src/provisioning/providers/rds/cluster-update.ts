@@ -54,6 +54,7 @@ import {
   usableLocalWriteForwarding,
   usableAvailabilityZones,
   clusterEngineVersionChanged,
+  clusterInstanceParameterGroupToSend,
   SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
   PORT_CHANGE_MEMBER_STATUSES,
   clusterPortToSend,
@@ -186,6 +187,13 @@ export async function updateDBCluster(
       'Iops',
       'a whole number',
       usableClusterSize,
+    ],
+    // go-to-k/cdkd#5639: the instance parameter group an engine upgrade applies.
+    [
+      malformedInstanceClass(properties['DBInstanceParameterGroupName']),
+      'DBInstanceParameterGroupName',
+      'a string',
+      usableInstanceClass,
     ],
   ] as const) {
     if (!malformed) continue;
@@ -356,6 +364,12 @@ export async function updateDBCluster(
       previousProperties,
       context
     );
+    const instanceParameterGroup = clusterInstanceParameterGroupToSend(
+      properties,
+      previousProperties,
+      engineVersionChanged,
+      context
+    );
     const scalarMembers = clusterModifyScalarMembers(properties, previousProperties, context);
     const multiAzMembers = clusterModifyMultiAzMembers(
       properties,
@@ -399,6 +413,10 @@ export async function updateDBCluster(
       ...(engineVersionChanged && {
         EngineVersion: properties['EngineVersion'] as string,
         AllowMajorVersionUpgrade: true,
+      }),
+      // go-to-k/cdkd#5639: only beside that EngineVersion, when changed.
+      ...(instanceParameterGroup !== undefined && {
+        DBInstanceParameterGroupName: instanceParameterGroup,
       }),
       // Removal keeps the live value, as CFn does (#5004 A/B).
       DeletionProtection: properties['DeletionProtection'] as boolean | undefined,

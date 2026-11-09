@@ -2650,6 +2650,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DBClusterIdentifier',
         'DBClusterInstanceClass',
         'DBClusterParameterGroupName',
+        'DBInstanceParameterGroupName',
         'DBSubnetGroupName',
         'DeletionProtection',
         'EnableCloudwatchLogsExports',
@@ -2685,7 +2686,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
       ]),
       sdkUnwired: new Map<string, string>([
-        ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         [
           'DBSystemId',
           'reserved for future use, per the CloudFormation schema (cloudformation:DescribeType, us-east-1, 2026-11-07); no observable behaviour to wire. Kept unhandled so a template declaring it keeps its Cloud Control route',

@@ -27,7 +27,6 @@
       "KmsKeyIdentifier"
     ],
     "AWS::RDS::DBCluster": [
-      "DBInstanceParameterGroupName",
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
