@@ -9,6 +9,7 @@
 # sent only the identifier, which is the failure this fixture reproduces.
 #
 # Phases:
+#   0. Precondition: account deletion protection is not disabled (read-only).
 #   1. Deploy. Assert the environment exists and has a COMPLETE deployment.
 #   2. Read the configuration through appconfigdata so AppConfig counts the
 #      environment as recently used (no account setting is changed).
@@ -128,6 +129,19 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# --- Precondition: account deletion protection is on ------------------
+# The fixture only reproduces #5875 while AppConfig refuses to delete a recently
+# read environment by default. With account-level protection off, an unfixed
+# delete succeeds and this run would pass without proving anything. Read-only:
+# the account setting is never changed here.
+echo "==> Precondition: account-level AppConfig deletion protection"
+PROTECTION_ENABLED="$(aws appconfig get-account-settings --region "${REGION}" --query 'DeletionProtection.Enabled' --output text)"
+if [ "${PROTECTION_ENABLED}" = "False" ]; then
+  echo "FAIL: account AppConfig deletion protection is disabled in ${REGION}, so this fixture cannot reproduce #5875 (an unfixed delete would also succeed). Enable it for the run or use another account." >&2
+  exit 1
+fi
+echo "    deletion protection enabled=${PROTECTION_ENABLED}"
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy (Environment with DeletionProtectionCheck BYPASS)"
