@@ -80,13 +80,18 @@ export function refuseMalformedReplicaSource(
   );
 }
 
-/** The Java SDK's `Region.regions()` also lists these partition-global pseudo regions. */
+/**
+ * The partition-global pseudo regions the Java SDK's `Region.regions()` also
+ * lists (one per partition in its partitions data), which no DB instance is in.
+ */
 const SDK_GLOBAL_PSEUDO_REGIONS: ReadonlySet<string> = new Set([
   'aws-global',
   'aws-cn-global',
   'aws-us-gov-global',
   'aws-iso-global',
   'aws-iso-b-global',
+  'aws-iso-e-global',
+  'aws-iso-f-global',
 ]);
 
 /**
