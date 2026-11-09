@@ -2786,6 +2786,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'PromotionTier',
         'PubliclyAccessible',
         'SourceDBInstanceIdentifier',
+        'SourceRegion',
         'StorageEncrypted',
         'StorageThroughput',
         'StorageType',
@@ -2828,7 +2829,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['SourceDBClusterIdentifier', 'not yet implemented by cdkd'],
         ['SourceDBInstanceAutomatedBackupsArn', 'not yet implemented by cdkd'],
         ['SourceDbiResourceId', 'not yet implemented by cdkd'],
-        ['SourceRegion', 'not yet implemented by cdkd'],
         ['TdeCredentialArn', 'not yet implemented by cdkd'],
         ['TdeCredentialPassword', 'not yet implemented by cdkd'],
         ['Timezone', 'not yet implemented by cdkd'],
@@ -2841,7 +2841,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'CustomIAMInstanceProfile',
         'DBSystemId',
         'NcharCharacterSetName',
-        'SourceRegion',
         'Timezone',
       ]),
       readOnly: new Set<string>([

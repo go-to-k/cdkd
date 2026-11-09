@@ -92,6 +92,14 @@
 # destroy deletes the remaining replica without a final snapshot and the
 # promoted one with one.
 #
+# go-to-k/cdkd#5640 (DBInstance SourceRegion): before phase 2d, a second stack
+# (RdsDbInstanceBackfillXrSource-<REGION>) deploys a source instance in another
+# region (XR_REGION); phase 2d adds ReadReplicaCrossRegion, a replica of it
+# declaring SourceRegion. The provisionedBy=sdk guard is what a pre-fix cdkd
+# fails (SourceRegion routed it to Cloud Control); the live source ARN proves a
+# cross-region replica. The destroy deletes it without a final snapshot, then
+# the source stack's destroy deletes the source.
+#
 # go-to-k/cdkd#6047 (a Cloud Control-routed replica under DeletionPolicy:
 # Snapshot): phase 2f moves ReadReplicaKept onto Cloud Control with
 # --recreate-via-cc-api, where every replica deployed before #5640 sits. Its
@@ -154,6 +162,24 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 . "${REPO_ROOT}/tests/integration/s3-versions.sh"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+# go-to-k/cdkd#5640 (SourceRegion): the cross-region replica's source stack, in
+# a region other than REGION. Exported: bin/app.ts defines that stack, and the
+# main stack's ReadReplicaCrossRegion, only when they are set. Its source
+# carries a literal master password too, so its prefix is swept like
+# STATE_PREFIX. The stack name and both instance identifiers carry REGION, so
+# runs in two regions sharing one XR_REGION never touch each other's; the
+# replica's fixed name is what lets cleanup delete it, before the source, when
+# no state record holds it (a run stopped mid phase 2d).
+if [ "${REGION}" = "us-west-2" ]; then XR_REGION="us-east-2"; else XR_REGION="us-west-2"; fi
+XR_STACK="RdsDbInstanceBackfillXrSource-${REGION}"
+XR_SOURCE_ID="cdkd-backfill-xr-source-${REGION}"
+XR_REPLICA_ID="cdkd-backfill-xr-replica-${REGION}"
+export CDKD_TEST_XR_SOURCE_REGION="${XR_REGION}"
+export CDKD_TEST_XR_STACK="${XR_STACK}"
+export CDKD_TEST_XR_SOURCE_ID="${XR_SOURCE_ID}"
+export CDKD_TEST_XR_REPLICA_ID="${XR_REPLICA_ID}"
+XR_STATE_KEY="cdkd/${XR_STACK}/${XR_REGION}/state.json"
+XR_STATE_PREFIX="$(s3_stack_prefix "${XR_STACK}" "${XR_REGION}")"
 
 EXPECTED_ENGINE_VERSION="17.6"
 EXPECTED_PORT=5433
@@ -179,6 +205,8 @@ REPLICA_KEPT_ID=""
 REPLICA_KEPT_SDK_ID=""
 REPLICA_PROMOTED_ID=""
 REPLICA_SOURCE_ID=""
+# go-to-k/cdkd#5640 (SourceRegion): the cross-region replica, resolved from state.
+REPLICA_XR_ID=""
 # go-to-k/cdkd#2762: the two custom parameter groups, resolved from state.
 PG_A_ID=""
 PG_B_ID=""
@@ -229,9 +257,10 @@ cleanup() {
   fi
   # go-to-k/cdkd#5640: a run aborted after the phase-2d deploy started names
   # its read replicas only in the state record.
-  if [ -z "${REPLICA_KEPT_ID}${REPLICA_PROMOTED_ID}${REPLICA_SOURCE_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+  if [ -z "${REPLICA_KEPT_ID}${REPLICA_PROMOTED_ID}${REPLICA_SOURCE_ID}${REPLICA_XR_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     CLEANUP_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
     if [ -n "${CLEANUP_STATE}" ]; then
+      REPLICA_XR_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaCrossRegion"))) | .value.physicalId // empty] | first // ""')
       REPLICA_KEPT_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaKept"))) | .value.physicalId // empty] | first // ""')
       REPLICA_PROMOTED_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReadReplicaPromoted"))) | .value.physicalId // empty] | first // ""')
       REPLICA_SOURCE_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^ReplicaSourceInstance"))) | .value.physicalId // empty] | first // ""')
@@ -271,17 +300,41 @@ cleanup() {
   # go-to-k/cdkd#5640: the read replicas, best-effort after `state destroy`,
   # and BEFORE their source: deleting a source promotes its same-region
   # replicas to standalone instances, which would then outlive the run.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID} ${XR_REPLICA_ID}; do
     aws rds delete-db-instance \
       --db-instance-identifier "${replica_id}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   done
   # ... and wait them out first: a replica still `deleting` is still a replica.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID} ${XR_REPLICA_ID}; do
     aws rds wait db-instance-deleted --db-instance-identifier "${replica_id}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   done
+  # go-to-k/cdkd#5640 (SourceRegion): the cross-region source stack, once its
+  # replica is gone (deleting a source promotes its cross-region replicas
+  # too; XR_REPLICA_ID above covers one no state record names yet), then the
+  # source by its name, best-effort, and its state.
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${XR_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${XR_REGION}" \
+      --skip-final-snapshot \
+      --yes
+  fi
+  aws rds delete-db-instance \
+    --db-instance-identifier "${XR_SOURCE_ID}" \
+    --region "${XR_REGION}" \
+    --skip-final-snapshot >/dev/null 2>&1 || true
+  # Its name is fixed: wait it out, or a pre-run pass leaves phase 2d's create
+  # of the same name to collide with a still-deleting leftover.
+  aws rds wait db-instance-deleted --db-instance-identifier "${XR_SOURCE_ID}" \
+    --region "${XR_REGION}" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${XR_STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${XR_STACK}/${XR_REGION}/lock.json" >/dev/null 2>&1 || true
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${XR_STATE_PREFIX:-}" noncurrent
+  fi
   # Then their dedicated source (RemovalPolicy.DESTROY: no final snapshot).
   if [ -n "${REPLICA_SOURCE_ID}" ]; then
     aws rds delete-db-instance \
@@ -307,7 +360,7 @@ cleanup() {
   # promoted replica, standalone by then (go-to-k/cdkd#5640). Older
   # snapshots are not this run's to delete.
   if [ -n "${RUN_START}" ]; then
-    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID}; do
+    for snap_instance in ${DB_INSTANCE_ID} ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_SOURCE_ID} ${REPLICA_XR_ID}; do
       if ! SNAPS_TO_CLEAN=$(this_run_instance_snapshots "${snap_instance}"); then
         echo "    WARN: cleanup could not list the manual snapshots of ${snap_instance}; check for a leftover by hand" >&2
         SNAPS_TO_CLEAN=""
@@ -919,7 +972,19 @@ assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | 
 # (ReplicaSourceInstance): RDS refuses a replica of a PostgreSQL source whose
 # managed master password is on, which BackfillInstance's is. cdkd creates the
 # replicas once it is `available`, as their reference orders them.
-echo "==> Phase 2d: redeploy with CDKD_TEST_REPLICA=create (a source instance and two read replicas of it; go-to-k/cdkd#5640)"
+# go-to-k/cdkd#5640 (SourceRegion): the cross-region replica's source first, in
+# its own stack and region; ReadReplicaCrossRegion names it by ARN.
+echo "==> Phase 2d: deploy ${XR_STACK} in ${XR_REGION} (the cross-region replica's source; go-to-k/cdkd#5640)"
+node "${LOCAL_DIST}" deploy "${XR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${XR_REGION}" \
+  --yes
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${XR_SOURCE_ID}" \
+  --region "${XR_REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '.DBInstanceStatus' 'available' "the cross-region source ${XR_SOURCE_ID} is available" 'phase 2d'
+echo "==> Phase 2d: redeploy with CDKD_TEST_REPLICA=create (a source instance and two read replicas of it, plus a cross-region replica; go-to-k/cdkd#5640)"
 CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_REPLICA=create node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -932,14 +997,34 @@ replica_record_field() {
 REPLICA_KEPT_ID=$(replica_record_field ReadReplicaKept '.value.physicalId')
 REPLICA_PROMOTED_ID=$(replica_record_field ReadReplicaPromoted '.value.physicalId')
 REPLICA_SOURCE_ID=$(replica_record_field ReplicaSourceInstance '.value.physicalId')
-for replica in ReadReplicaKept ReadReplicaPromoted; do
+REPLICA_XR_ID=$(replica_record_field ReadReplicaCrossRegion '.value.physicalId')
+if [ "${REPLICA_XR_ID}" != "${XR_REPLICA_ID}" ]; then
+  echo "FAIL: phase 2d: premise: ReadReplicaCrossRegion records physical id '${REPLICA_XR_ID}', expected the declared '${XR_REPLICA_ID}' cleanup deletes by name (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+for replica in ReadReplicaKept ReadReplicaPromoted ReadReplicaCrossRegion; do
   REPLICA_ROUTE=$(replica_record_field "${replica}" '.value.provisionedBy // "sdk"')
   if [ "${REPLICA_ROUTE}" != "sdk" ]; then
-    echo "FAIL: phase 2d: ${replica} routed via '${REPLICA_ROUTE}', expected sdk (SourceDBInstanceIdentifier is SDK-unwired, go-to-k/cdkd#5640)" >&2
+    echo "FAIL: phase 2d: ${replica} routed via '${REPLICA_ROUTE}', expected sdk (SourceDBInstanceIdentifier / SourceRegion is SDK-unwired, go-to-k/cdkd#5640)" >&2
     exit 1
   fi
 done
-echo "    OK: phase 2d: both replicas provisionedBy=sdk (${REPLICA_KEPT_ID}, ${REPLICA_PROMOTED_ID})"
+echo "    OK: phase 2d: the three replicas are provisionedBy=sdk (${REPLICA_KEPT_ID}, ${REPLICA_PROMOTED_ID}, ${REPLICA_XR_ID})"
+# go-to-k/cdkd#5640 (SourceRegion): the record keeps the declared SourceRegion
+# (nothing narrowed it away), and the replica is one of the source in XR_REGION.
+XR_RECORDED_REGION=$(replica_record_field ReadReplicaCrossRegion '.value.properties.SourceRegion // "null"')
+if [ "${XR_RECORDED_REGION}" != "${XR_REGION}" ]; then
+  echo "FAIL: phase 2d: the ReadReplicaCrossRegion record holds SourceRegion '${XR_RECORDED_REGION}', expected '${XR_REGION}' (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${REPLICA_XR_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '(.ReadReplicaSourceDBInstanceIdentifier // "null") | split(":") | "\(.[0])/\(.[3] // "")/\(last | ascii_downcase)"' "arn/${XR_REGION}/${XR_SOURCE_ID}" "ReadReplicaCrossRegion replicates ${XR_SOURCE_ID} in ${XR_REGION}, by ARN (go-to-k/cdkd#5640)" 'phase 2d'
+assert_instance_field '.PreferredMaintenanceWindow' 'wed:06:00-wed:06:30' "the after-create ModifyDBInstance applied the cross-region replica's window (go-to-k/cdkd#5640)" 'phase 2d'
+assert_instance_field '.DBInstanceStatus' 'available' 'the cross-region replica is available' 'phase 2d'
+echo "    OK: phase 2d: ReadReplicaCrossRegion (${REPLICA_XR_ID}) is a replica of ${XR_SOURCE_ID} in ${XR_REGION}"
 SOURCE_LOWER=$(printf '%s' "${REPLICA_SOURCE_ID}" | tr '[:upper:]' '[:lower:]')
 # usage: assert_replica <identifier> <expected maintenance window> <phase>
 assert_replica() {
@@ -967,6 +1052,13 @@ for replica in ReadReplicaKept ReadReplicaPromoted; do
     exit 1
   fi
 done
+# The cross-region one reads back as its source's ARN too; SourceRegion is
+# write-only, so drift (below) must not compare it (go-to-k/cdkd#5640).
+OBSERVED_SOURCE=$(replica_record_field ReadReplicaCrossRegion '(.value.observedProperties.SourceDBInstanceIdentifier // "null") | split(":") | "\(.[3] // "")/\(last | ascii_downcase)"')
+if [ "${OBSERVED_SOURCE}" != "${XR_REGION}/${XR_SOURCE_ID}" ]; then
+  echo "FAIL: phase 2d: the ReadReplicaCrossRegion observed baseline holds SourceDBInstanceIdentifier region/name '${OBSERVED_SOURCE}', expected '${XR_REGION}/${XR_SOURCE_ID}' (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
 DRIFT_OUT=$(mktemp)
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" \
@@ -974,7 +1066,7 @@ node "${LOCAL_DIST}" drift "${STACK}" \
   --region "${REGION}" > "${DRIFT_OUT}" 2>&1
 DRIFT_RC=$?
 set -e
-if grep -qE '^[[:space:]]*[~?!-] ReadReplica(Kept|Promoted) \(AWS::RDS::DBInstance\)' "${DRIFT_OUT}"; then
+if grep -qE '^[[:space:]]*[~?!-] ReadReplica(Kept|Promoted|CrossRegion) \(AWS::RDS::DBInstance\)' "${DRIFT_OUT}"; then
   echo "FAIL: phase 2d: cdkd drift reports an unchanged read replica as drifted, unsupported, not compared or deleted (go-to-k/cdkd#5640; drift rc=${DRIFT_RC}):" >&2
   cat "${DRIFT_OUT}" >&2
   rm -f "${DRIFT_OUT}"
@@ -988,7 +1080,7 @@ if ! grep -qE "^[[:space:]]*(✓|⚠) ${STACK} \(${REGION}\): " "${DRIFT_OUT}"; 
   exit 1
 fi
 rm -f "${DRIFT_OUT}"
-echo "    OK: phase 2d: cdkd drift does not report the read replicas as drifted (go-to-k/cdkd#5640)"
+echo "    OK: phase 2d: cdkd drift does not report the read replicas (the cross-region one included) as drifted (go-to-k/cdkd#5640)"
 if [ -z "${PROMOTED_RESOURCE_ID}" ]; then
   echo "FAIL: phase 2d: DescribeDBInstances reported no DbiResourceId for ${REPLICA_PROMOTED_ID}" >&2
   exit 1
@@ -1130,7 +1222,7 @@ echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}"
 # phase 2f (go-to-k/cdkd#6047), as was its SDK copy by the recreate;
 # ReadReplicaPromoted, standalone by then, took one, as the policy-less
 # instance did.
-for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURCE_ID}"; do
+for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURCE_ID}" "${REPLICA_XR_ID}"; do
   if gone_probe aws rds describe-db-instances --db-instance-identifier "${replica_id}" --region "${REGION}"; then
     REPLICA_STATUS="gone"
   elif ! REPLICA_STATUS=$(aws rds describe-db-instances \
@@ -1147,7 +1239,7 @@ for replica_id in "${REPLICA_KEPT_ID}" "${REPLICA_PROMOTED_ID}" "${REPLICA_SOURC
     exit 1
   fi
 done
-for kept_id in "${REPLICA_KEPT_ID}" "${REPLICA_KEPT_SDK_ID}"; do
+for kept_id in "${REPLICA_KEPT_ID}" "${REPLICA_KEPT_SDK_ID}" "${REPLICA_XR_ID}"; do
   if ! KEPT_SNAPSHOTS=$(this_run_instance_snapshots "${kept_id}"); then
     echo "FAIL: could not list the manual snapshots of ${kept_id}" >&2
     exit 1
@@ -1176,6 +1268,31 @@ if [ -n "${SOURCE_SNAPSHOTS}" ]; then
 fi
 echo "    OK: both replicas and their source are gone; the replica and the DESTROY source took no final snapshot, the promoted instance one (go-to-k/cdkd#5640; cleanup deletes it)"
 
+# go-to-k/cdkd#5640 (SourceRegion): the cross-region replica went with the
+# stack above (no snapshot, asserted with the others); now its source's stack.
+echo "==> Phase 3: destroy ${XR_STACK} in ${XR_REGION} (the cross-region replica's source; go-to-k/cdkd#5640)"
+node "${LOCAL_DIST}" destroy "${XR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${XR_REGION}" \
+  --force
+assert_gone "state file s3://${STATE_BUCKET}/${XR_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${XR_STATE_KEY}"
+if gone_probe aws rds describe-db-instances --db-instance-identifier "${XR_SOURCE_ID}" --region "${XR_REGION}"; then
+  XR_SOURCE_STATUS="gone"
+elif ! XR_SOURCE_STATUS=$(aws rds describe-db-instances \
+    --db-instance-identifier "${XR_SOURCE_ID}" \
+    --region "${XR_REGION}" \
+    --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1); then
+  # TOCTOU: the source can vanish between gone_probe and this requery.
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${XR_SOURCE_STATUS}" \
+    && XR_SOURCE_STATUS="gone" \
+    || { echo "FAIL: describe-db-instances requery undetermined: ${XR_SOURCE_STATUS}" >&2; exit 1; }
+fi
+if [ "${XR_SOURCE_STATUS}" != "gone" ] && [ "${XR_SOURCE_STATUS}" != "deleting" ]; then
+  echo "FAIL: the cross-region source ${XR_SOURCE_ID} still in unexpected state after destroy: ${XR_SOURCE_STATUS}" >&2
+  exit 1
+fi
+echo "    OK: phase 3: the cross-region source ${XR_SOURCE_ID} is ${XR_SOURCE_STATUS} (go-to-k/cdkd#5640)"
+
 # go-to-k/cdkd#2762: the destroy deleted both custom parameter groups.
 assert_gone "DB parameter group ${PG_A_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_A_ID}" --region "${REGION}"
 assert_gone "DB parameter group ${PG_B_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_B_ID}" --region "${REGION}"
@@ -1188,6 +1305,8 @@ cleanup
 trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-dbinstance-backfill state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${XR_STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${XR_STATE_PREFIX}" "rds-dbinstance-backfill cross-region source state teardown"
 
 echo ""
-echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value + #5640 read replicas + #6047 Cloud Control replica destroy ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value + #5640 read replicas (a cross-region one included) + #6047 Cloud Control replica destroy ==="

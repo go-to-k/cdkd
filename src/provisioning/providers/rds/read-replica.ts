@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js';
+import { isKnownAwsRegionId } from '../../../utils/ecr-uri.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import type { RDSProvider } from '../rds-provider.js';
 
@@ -34,10 +35,21 @@ import type { RDSProvider } from '../rds-provider.js';
  *   `ccRoutedInstanceTakesNoSnapshot` in `final-snapshot.ts`, which also
  *   lets through a live cluster member).
  *
- * Only `SourceDBInstanceIdentifier` is wired here: `SourceRegion`,
- * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time
- * properties stay SDK-unwired, so a template declaring one keeps its Cloud
- * Control route.
+ * - `SourceRegion` (go-to-k/cdkd#5640): the handler refuses a region the SDK
+ *   does not know ("Unknown source region", `Validations.validateSourceRegion`)
+ *   and otherwise only hands it to the Java SDK, which presigns the
+ *   cross-region `PreSignedUrl` for that region and keeps `SourceRegion` off
+ *   the wire. The JS SDK's RDS middleware presigns the same URL by itself,
+ *   from the source ARN's region whenever it differs from the client's, so
+ *   nothing is sent for it here: {@link refuseUnknownSourceRegion} is the
+ *   whole of its handling. RDS honours that URL only in GovCloud and China,
+ *   and the middleware always signs it for `rds.<region>.amazonaws.com`:
+ *   right in GovCloud, wrong in China (`amazonaws.com.cn`), so an `aws-cn`
+ *   cross-region replica keeps the Cloud Control route
+ *   (`findValueRoutedProperties` in `property-coverage.ts`).
+ *
+ * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time properties
+ * stay SDK-unwired, so a template declaring one keeps its Cloud Control route.
  */
 
 /** The declared source: `undefined` when absent or empty, as the handler's `hasValue`. */
@@ -69,6 +81,54 @@ export function refuseMalformedReplicaSource(
       physicalId
     )
   );
+}
+
+/**
+ * The partition-global pseudo regions the Java SDK's `Region.regions()` also
+ * lists (one per partition in its partitions data), which no DB instance is in.
+ */
+const SDK_GLOBAL_PSEUDO_REGIONS: ReadonlySet<string> = new Set([
+  'aws-global',
+  'aws-cn-global',
+  'aws-us-gov-global',
+  'aws-iso-global',
+  'aws-iso-b-global',
+  'aws-iso-e-global',
+  'aws-iso-f-global',
+]);
+
+/**
+ * `SourceRegion`, as the handler validates every request before any call
+ * (`BaseHandlerStd.validateRequest`): absent or blank passes; a value that is
+ * neither a region id some partition knows nor one of the SDK's global pseudo
+ * regions, compared lower-cased as the handler compares it, fails "Unknown
+ * source region". A non-string (an unresolved
+ * intrinsic) is refused the same way. A state-borne replay (`replaying`) only
+ * warns: the value is never sent, so it cannot fail the create there.
+ */
+export function refuseUnknownSourceRegion(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  replaying: boolean,
+  warn: (message: string) => void
+): void {
+  const value = properties['SourceRegion'];
+  // The handler's `StringUtils.isNotBlank`: a blank value skips the check.
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return;
+  if (typeof value === 'string') {
+    const region = value.toLowerCase();
+    if (isKnownAwsRegionId(region) || SDK_GLOBAL_PSEUDO_REGIONS.has(region)) return;
+  }
+  const message =
+    typeof value === 'string'
+      ? `${resourceType} ${logicalId}: Unknown source region (SourceRegion must name an AWS region, as CloudFormation requires)`
+      : `${resourceType} ${logicalId}: SourceRegion must be a string (the source DB instance's region)`;
+  if (replaying) {
+    warn(`${message}; replaying a recorded state, so it is ignored (it is never sent to RDS)`);
+    return;
+  }
+  throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId));
 }
 
 /** The region of an RDS ARN, `undefined` for a bare identifier. */
