@@ -16,7 +16,7 @@
 #      instance routes via the SDK provider; `cdkd drift` reports it clean.
 #   2. removed: the list dropped, beside a CopyTagsToSnapshot change: the
 #      ModifyDBInstance went out (CopyTagsToSnapshot reads true) and the
-#      instance KEEPS threadsPerCore 1.
+#      instance KEEPS threadsPerCore 1; `cdkd drift` reports it clean.
 #   3. use-default: UseDefaultProcessorFeatures: true: back to the default 2.
 #   4. reapply: the list with UseDefaultProcessorFeatures: false: back to 1,
 #      the same instance (DbiResourceId unchanged) in every phase; `cdkd
@@ -229,6 +229,7 @@ if [ "$(instance_field 'CopyTagsToSnapshot')" != "True" ]; then
   exit 1
 fi
 assert_threads 1 "phase 2: a removed list leaves the features, as CloudFormation does"
+assert_drift_clean "phase 2"
 
 # --- Phase 3: UseDefaultProcessorFeatures: true -------------------------------
 echo "==> Phase 3: UseDefaultProcessorFeatures: true"

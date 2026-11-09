@@ -42,16 +42,18 @@ export function getDriftUnknownPaths(
 ): string[] {
   if (resourceType === 'AWS::RDS::DBInstance') {
     // go-to-k/cdkd#5640: `UseDefaultProcessorFeatures` is write-only. The
-    // live `ProcessorFeatures` is compared only where the template declares a
+    // live `ProcessorFeatures` is compared only where the bag declares a
     // non-empty list (RDS reports none for an empty one), so a baseline
-    // captured before it was read reports no drift.
+    // captured before it was read reports no drift; anything else declared is
+    // compared. An absent or empty bag records nothing to scope by: compare.
     const instanceUnknown = [
       'AllowMajorVersionUpgrade',
       'CertificateRotationRestart',
       'SourceRegion',
       'UseDefaultProcessorFeatures',
     ];
-    const declared = properties?.['ProcessorFeatures'];
+    if (properties === undefined || Object.keys(properties).length === 0) return instanceUnknown;
+    const declared = properties['ProcessorFeatures'];
     return declared == null || (Array.isArray(declared) && declared.length === 0)
       ? [...instanceUnknown, 'ProcessorFeatures']
       : instanceUnknown;
@@ -143,6 +145,9 @@ export async function canonicalizeDriftPair(
   baseline: Record<string, unknown>,
   aws: Record<string, unknown>
 ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  if (resourceType === 'AWS::RDS::DBInstance') {
+    aws = withDeclaredProcessorFeatures(baseline, aws);
+  }
   const recorded = baseline['SourceDBInstanceIdentifier'];
   const live = aws['SourceDBInstanceIdentifier'];
   if (
@@ -161,6 +166,34 @@ export async function canonicalizeDriftPair(
   return sameReplicaSource(recorded, live, { region })
     ? { baseline, aws: { ...aws, SourceDBInstanceIdentifier: recorded } }
     : { baseline, aws };
+}
+
+/**
+ * go-to-k/cdkd#5640: RDS lists every processor feature of the class, while a
+ * template may declare only some (`threadsPerCore` alone): the live list keeps
+ * the features the baseline names, so a declared value that differs still
+ * reads as drift and an undeclared one never does. A baseline or live side
+ * that is not a list of named entries is left as it is.
+ */
+function withDeclaredProcessorFeatures(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Record<string, unknown> {
+  const declared = baseline['ProcessorFeatures'];
+  const live = aws['ProcessorFeatures'];
+  if (!Array.isArray(declared) || !Array.isArray(live)) return aws;
+  const names = new Set<unknown>();
+  for (const item of declared as unknown[]) {
+    if (item === null || typeof item !== 'object') return aws;
+    names.add((item as Record<string, unknown>)['Name']);
+  }
+  const kept = (live as unknown[]).filter(
+    (item) =>
+      item !== null &&
+      typeof item === 'object' &&
+      names.has((item as Record<string, unknown>)['Name'])
+  );
+  return kept.length === live.length ? aws : { ...aws, ProcessorFeatures: kept };
 }
 
 /** The post-update proof (#5380) compares through the same normalization. */

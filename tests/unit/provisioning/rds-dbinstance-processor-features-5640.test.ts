@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
 
 type Input = Record<string, unknown>;
@@ -185,6 +186,30 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       const [create] = sent('CreateDBInstanceCommand');
       expect(create).not.toHaveProperty('ProcessorFeatures');
       expect(create).not.toHaveProperty('UseDefaultProcessorFeatures');
+    });
+
+    it("reads a string flag on a read replica's create", async () => {
+      await provider.create('L', INSTANCE, {
+        DBInstanceIdentifier: 'db-1',
+        DBInstanceClass: 'db.m7i.large',
+        SourceDBInstanceIdentifier: SOURCE_ARN,
+        UseDefaultProcessorFeatures: 'true',
+      });
+      expect(sent('CreateDBInstanceReadReplicaCommand')[0]?.['UseDefaultProcessorFeatures']).toBe(
+        true
+      );
+    });
+
+    it('refuses a malformed value on a rollback replay create too: the create would send it', async () => {
+      await expect(
+        provider.create(
+          'L',
+          INSTANCE,
+          { ...BASE, ProcessorFeatures: 'coreCount=2' },
+          { replayingState: true }
+        )
+      ).rejects.toThrow(/ProcessorFeatures must be a list/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it("sends both on a read replica's create, as CloudFormation's replica translation does", async () => {
@@ -330,6 +355,34 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(describes()).toBe(4);
     });
 
+    it('a list applied while a storage change in the same update optimizes counts as settled', async () => {
+      arm({ reads: [{ DBInstanceStatus: 'storage-optimization', ProcessorFeatures: OTHER }] });
+      await update({ ...BASE, ProcessorFeatures: OTHER, AllocatedStorage: '40' }, WITH);
+      expect(describes()).toBe(2);
+    });
+
+    it('storage-optimization with the processor change still pending keeps waiting', async () => {
+      arm({
+        reads: [
+          {
+            DBInstanceStatus: 'storage-optimization',
+            ProcessorFeatures: FEATURES,
+            PendingModifiedValues: { ProcessorFeatures: OTHER },
+          },
+          { DBInstanceStatus: 'storage-optimization', ProcessorFeatures: OTHER },
+        ],
+      });
+      await update({ ...BASE, ProcessorFeatures: OTHER, AllocatedStorage: '40' }, WITH);
+      expect(describes()).toBe(3);
+    });
+
+    it('a flag-only change is not seen under way by storage-optimization alone', async () => {
+      arm({ reads: [{ DBInstanceStatus: 'storage-optimization' }] });
+      await update({ ...BASE, UseDefaultProcessorFeatures: true, AllocatedStorage: '40' }, WITH);
+      // Three quiet wait reads, then the attribute read.
+      expect(describes()).toBe(4);
+    });
+
     it('a flag the ModifyDBInstance answer shows under way needs no quiet reads', async () => {
       arm({
         modified: { DBInstanceStatus: 'modifying' },
@@ -442,6 +495,32 @@ describe('RDS DBInstance processor features (go-to-k/cdkd#5640)', () => {
       expect(provider.getDriftUnknownPaths(INSTANCE, { ...BASE, ProcessorFeatures: [] })).toContain(
         'ProcessorFeatures'
       );
+    });
+
+    it('compares a partial declared list only by the features it names', async () => {
+      const live = { ProcessorFeatures: FEATURES };
+      const drift = async (declared: Input[]): Promise<number> => {
+        const baseline = { ProcessorFeatures: declared };
+        const pair = await provider.canonicalizeDriftPair(INSTANCE, baseline, live);
+        return calculateResourceDrift(pair.baseline, pair.aws, {
+          ignorePaths: provider.getDriftUnknownPaths(INSTANCE, baseline),
+          unorderedPaths: provider.getDriftUnorderedPaths(INSTANCE),
+        }).length;
+      };
+      expect(await drift([{ Name: 'threadsPerCore', Value: '1' }])).toBe(0);
+      expect(await drift([{ Name: 'threadsPerCore', Value: '2' }])).toBeGreaterThan(0);
+      // Both declared, in the other order.
+      expect(await drift([...FEATURES].reverse())).toBe(0);
+    });
+
+    it('compares the list when the bag is absent or empty, and a declared non-list', () => {
+      expect(provider.getDriftUnknownPaths(INSTANCE)).not.toContain('ProcessorFeatures');
+      expect(provider.getDriftUnknownPaths(INSTANCE, {})).not.toContain('ProcessorFeatures');
+      // A record holding a non-list (an imported unresolved value) is compared,
+      // so the difference shows.
+      expect(
+        provider.getDriftUnknownPaths(INSTANCE, { ...BASE, ProcessorFeatures: 'coreCount=2' })
+      ).not.toContain('ProcessorFeatures');
     });
 
     it("compares an instance's features in any order; a cluster has none", () => {

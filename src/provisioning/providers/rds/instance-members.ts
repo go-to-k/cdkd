@@ -671,17 +671,30 @@ function sameFeatureValue(a: string | undefined, b: string | undefined): boolean
  */
 const FLAG_ONLY_QUIET_READS = 3;
 
+/**
+ * The statuses a processor change has left. `storage-optimization` counts:
+ * a storage change in the same update holds the instance there for hours
+ * after the restart, the instance serves meanwhile, and the update waits for
+ * no storage change otherwise (as `multiAzSettledStatuses` reads it for a
+ * cluster by default).
+ */
+const PROCESSOR_SETTLED_STATUSES: ReadonlySet<string> = new Set([
+  'available',
+  'storage-optimization',
+]);
+
 /** Whether an instance read shows a processor change under way. */
 function processorChangeUnderWay(instance: DBInstance): boolean {
   return (
-    instance.DBInstanceStatus !== 'available' ||
+    !PROCESSOR_SETTLED_STATUSES.has(instance.DBInstanceStatus ?? '') ||
     (instance.PendingModifiedValues?.ProcessorFeatures ?? []).length > 0
   );
 }
 
 /**
  * go-to-k/cdkd#5640: a predicate for whether a processor change applied
- * immediately has settled: `available` with no processor change pending, and,
+ * immediately has settled: a settled status ({@link PROCESSOR_SETTLED_STATUSES})
+ * with no processor change pending, and,
  * when the update sent a list, every sent feature listed live.
  * CloudFormation's update stabilizes the same way (`isNoPendingChanges`); a
  * read of the old features would also be a phantom drift. A flag sent alone
