@@ -89,7 +89,11 @@ tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
 SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
-fall as keys get wired and which no basename grep finds (#5611, #5719); a member
+fall as keys get wired and which no basename grep finds (#5611, #5719), plus
+the file that DECLARES the type's `handledProperties` (`grep -rn "'<Type>'"
+src/provisioning/providers/*-provider.ts`, often the facade, not the split
+module) and, for a `writeOnlyProperties` key, the drift `neverRead` list —
+an unlisted held facade parked #6068's lane for 3 h; a member
 sent off its CFn path (its own command, a renamed field) adds its
 `sdk-wire-member-renames.ts` entry, plus `sdk-wire-call-roots.ts` when that
 command is sent more than once per resource (#5630); and the
