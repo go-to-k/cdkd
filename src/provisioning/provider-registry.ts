@@ -240,6 +240,25 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::AppConfig::Environment',
+    {
+      // CC DELETE sends only the identifier, so the write-only
+      // `DeletionProtectionCheck` (a parameter of AppConfig's DeleteEnvironment,
+      // stored nowhere) is lost and AppConfig applies the account default: a
+      // recently read environment cannot be destroyed, however the template
+      // declares BYPASS (issue #5875). Every record written before the SDK
+      // provider existed says `cc-api`, and a destroy passes no properties, so
+      // nothing but this unconditional exemption moves those to the provider
+      // that forwards the value. Broken, not slow.
+      mode: 'cc-broken' as const,
+      physicalIdForm:
+        'both layers store <ApplicationId>|<EnvironmentId>: that is the Cloud ' +
+        'Control primary identifier and what AppConfigEnvironmentProvider.create records',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5875',
+      integFixture: 'appconfig-environment-delete-protection',
+    },
+  ],
+  [
     'AWS::RDS::DBProxyTargetGroup',
     {
       // CC READ and DELETE always fail: the handlers cannot derive DBProxyName

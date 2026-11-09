@@ -28,6 +28,11 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => ({ child: () => childLogger }) };
 });
 
+import {
+  CreateEnvironmentCommand,
+  DeleteEnvironmentCommand,
+  GetEnvironmentCommand,
+} from '@aws-sdk/client-appconfig';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import {
   loadProviderClasses,
@@ -58,6 +63,7 @@ describe('AppConfigEnvironmentProvider', () => {
       async (value) => {
         mockSend.mockResolvedValueOnce({});
         await provider.delete('Env', ID, TYPE, { DeletionProtectionCheck: value });
+        expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(DeleteEnvironmentCommand);
         expect(inputOf(0)).toEqual({
           ApplicationId: 'app123',
           EnvironmentId: 'env456',
@@ -127,6 +133,20 @@ describe('AppConfigEnvironmentProvider', () => {
       );
       expect(mockSend).not.toHaveBeenCalled();
     });
+
+    it('omits an empty Monitors list and sends a CreateEnvironmentCommand', async () => {
+      mockSend.mockResolvedValueOnce({ Id: 'env456' });
+      await provider.create('Env', TYPE, { ApplicationId: 'app123', Name: 'prod', Monitors: [] });
+      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(CreateEnvironmentCommand);
+      expect(inputOf(0)).toEqual({ ApplicationId: 'app123', Name: 'prod' });
+    });
+
+    it('fails when CreateEnvironment returns no Id', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await expect(
+        provider.create('Env', TYPE, { ApplicationId: 'app123', Name: 'prod' })
+      ).rejects.toThrow(/Failed to create AppConfig Environment Env/);
+    });
   });
 
   describe('update', () => {
@@ -152,6 +172,19 @@ describe('AppConfigEnvironmentProvider', () => {
         Description: '',
         Monitors: [],
       });
+    });
+
+    it('makes no STS or tagging call when the tags did not change', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'Env',
+        ID,
+        TYPE,
+        { Name: 'prod2', Tags: [{ Key: 'k', Value: 'v' }] },
+        { Name: 'prod', Tags: [{ Key: 'k', Value: 'v' }] }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockStsSend).not.toHaveBeenCalled();
     });
 
     it('applies the tag diff against the environment ARN', async () => {
@@ -232,6 +265,31 @@ describe('AppConfigEnvironmentProvider wiring and failure handling', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  describe('records written before the SDK provider existed (go-to-k/cdkd#6065 M1)', () => {
+    // A destroy passes no properties, so only the unconditional 'cc-broken'
+    // sticky exemption moves a `provisionedBy: 'cc-api'` Environment record to
+    // the provider that forwards DeletionProtectionCheck. Deleting the table
+    // entry sends these back to Cloud Control and fails this test.
+    it('routes a cc-api record to the SDK provider on destroy', () => {
+      const registry = new ProviderRegistry();
+      registerAllProviders(registry, providerClasses);
+      const decision = registry.getProviderFor({ resourceType: TYPE, provisionedBy: 'cc-api' });
+      expect(decision.provisionedBy).toBe('sdk');
+      expect(decision.provider).toBeInstanceOf(AppConfigEnvironmentProvider);
+    });
+
+    it('keeps the cc-api record on the SDK provider even when a pin is passed', () => {
+      const registry = new ProviderRegistry();
+      registerAllProviders(registry, providerClasses);
+      const decision = registry.getProviderFor({
+        resourceType: TYPE,
+        provisionedBy: 'cc-api',
+        forceCcApi: true,
+      });
+      expect(decision.provisionedBy).toBe('sdk');
+    });
+  });
+
   describe('import', () => {
     it('adopts an explicit <appId>|<envId> that exists', async () => {
       mockSend.mockResolvedValueOnce({});
@@ -245,6 +303,27 @@ describe('AppConfigEnvironmentProvider wiring and failure handling', () => {
       });
       expect(result).toEqual({ physicalId: ID, attributes: { EnvironmentId: 'env456' } });
       expect(inputOf(0)).toEqual({ ApplicationId: 'app123', EnvironmentId: 'env456' });
+    });
+
+    it('rethrows an import failure that is not a not-found', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), {
+          name: 'AccessDeniedException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 403 },
+        })
+      );
+      await expect(
+        provider.import({
+          logicalId: 'Env',
+          resourceType: TYPE,
+          stackName: 's',
+          region: 'us-east-1',
+          properties: {},
+          knownPhysicalId: ID,
+        })
+      ).rejects.toMatchObject({ name: 'AccessDeniedException' });
+      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(GetEnvironmentCommand);
     });
 
     it('returns null without an explicit id, or when the environment is gone', async () => {

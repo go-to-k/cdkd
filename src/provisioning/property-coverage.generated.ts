@@ -343,7 +343,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['EnvironmentId']),
-      ccRouteUnavailable: false,
+      ccRouteUnavailable: true,
     },
   ],
   [
