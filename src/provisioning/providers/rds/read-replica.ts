@@ -42,8 +42,11 @@ import type { RDSProvider } from '../rds-provider.js';
  *   the wire. The JS SDK's RDS middleware presigns the same URL by itself,
  *   from the source ARN's region whenever it differs from the client's, so
  *   nothing is sent for it here: {@link refuseUnknownSourceRegion} is the
- *   whole of its handling. A same-region or bare-identifier source takes no
- *   URL either way (RDS ignores one outside GovCloud and China).
+ *   whole of its handling. RDS honours that URL only in GovCloud and China,
+ *   and the middleware always signs it for `rds.<region>.amazonaws.com`:
+ *   right in GovCloud, wrong in China (`amazonaws.com.cn`), so an `aws-cn`
+ *   cross-region replica keeps the Cloud Control route
+ *   (`findValueRoutedProperties` in `property-coverage.ts`).
  *
  * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time properties
  * stay SDK-unwired, so a template declaring one keeps its Cloud Control route.

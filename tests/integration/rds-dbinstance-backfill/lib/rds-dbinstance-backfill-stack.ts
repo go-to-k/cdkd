@@ -327,18 +327,21 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
         preferredMaintenanceWindow: 'tue:06:00-tue:06:30',
       });
 
-      // go-to-k/cdkd#5640 (SourceRegion): a cross-region read replica of
-      // XR_SOURCE_ID in RdsDbInstanceBackfillXrSourceStack (deployed first by
-      // verify.sh, in CDKD_TEST_XR_SOURCE_REGION), named by ARN with the
-      // source's region declared, as CloudFormation's examples spell it.
-      // Before #5640 the declared SourceRegion routed the replica to Cloud
-      // Control (verify.sh's provisionedBy=sdk guard catches it). Kept a
-      // replica in every later phase; the destroy deletes it without a final
-      // snapshot, before the source stack's destroy.
+      // go-to-k/cdkd#5640 (SourceRegion): a cross-region read replica of the
+      // RdsDbInstanceBackfillXrSourceStack source (deployed first by verify.sh,
+      // in CDKD_TEST_XR_SOURCE_REGION), named by ARN with the source's region
+      // declared, as CloudFormation's examples spell it. Before #5640 the
+      // declared SourceRegion routed the replica to Cloud Control (verify.sh's
+      // provisionedBy=sdk guard catches it). Kept a replica in every later
+      // phase; the destroy deletes it without a final snapshot, before the
+      // source stack's destroy. Both identifiers come from verify.sh, derived
+      // from the run's region: cleanup deletes the replica by its name even
+      // when no state record holds it, before deleting the source.
       const xrSourceRegion = process.env.CDKD_TEST_XR_SOURCE_REGION;
       if (xrSourceRegion !== undefined && xrSourceRegion !== '') {
         new rds.CfnDBInstance(this, 'ReadReplicaCrossRegion', {
-          sourceDbInstanceIdentifier: `arn:${cdk.Aws.PARTITION}:rds:${xrSourceRegion}:${cdk.Aws.ACCOUNT_ID}:db:${XR_SOURCE_ID}`,
+          dbInstanceIdentifier: xrIdentifier('CDKD_TEST_XR_REPLICA_ID'),
+          sourceDbInstanceIdentifier: `arn:${cdk.Aws.PARTITION}:rds:${xrSourceRegion}:${cdk.Aws.ACCOUNT_ID}:db:${xrIdentifier('CDKD_TEST_XR_SOURCE_ID')}`,
           sourceRegion: xrSourceRegion,
           dbInstanceClass: 'db.t3.micro',
           dbSubnetGroupName: subnetGroup.subnetGroupName,
@@ -350,8 +353,18 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
   }
 }
 
-/** go-to-k/cdkd#5640: the cross-region replica's source, by a fixed name the replica's ARN spells. */
-export const XR_SOURCE_ID = 'cdkd-backfill-xr-source-5640';
+/**
+ * go-to-k/cdkd#5640: an identifier verify.sh derives from the run's region
+ * (the cross-region source's, which the replica's ARN spells, or the
+ * replica's), so runs in two regions never share one.
+ */
+function xrIdentifier(name: 'CDKD_TEST_XR_SOURCE_ID' | 'CDKD_TEST_XR_REPLICA_ID'): string {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    throw new Error(`${name} must be set with CDKD_TEST_XR_SOURCE_REGION`);
+  }
+  return value;
+}
 
 /**
  * go-to-k/cdkd#5640 (SourceRegion): the source of ReadReplicaCrossRegion, in
@@ -378,7 +391,7 @@ export class RdsDbInstanceBackfillXrSourceStack extends cdk.Stack {
     });
     subnetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     const source = new rds.CfnDBInstance(this, 'XrSourceInstance', {
-      dbInstanceIdentifier: XR_SOURCE_ID,
+      dbInstanceIdentifier: xrIdentifier('CDKD_TEST_XR_SOURCE_ID'),
       dbInstanceClass: 'db.t3.micro',
       engine: 'postgres',
       masterUsername: 'postgres',

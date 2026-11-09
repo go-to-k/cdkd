@@ -23,6 +23,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { type PropertyCoverage, PROPERTY_COVERAGE_BY_TYPE } from './property-coverage.generated.js';
 import { hasNoCloudControlHandlers } from './unsupported-types.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
+import { sameRegion } from '../utils/aws-partition.js';
+import { ambientRegion } from '../utils/stack-aws-scope.js';
 
 export { PROPERTY_COVERAGE_BY_TYPE };
 export type { PropertyCoverage };
@@ -72,7 +74,8 @@ export const UNRECOGNIZED_PROPERTY_RATIONALE = "not in cdkd's CFn schema snapsho
  * The properties that drive the Cloud Control auto-route (issue
  * [#614](https://github.com/go-to-k/cdkd/issues/614)): every SDK-unwired property whose
  * `<Type>:<Prop>` key is NOT in the `--prefer-sdk-route` allow set, plus every
- * {@link findRoutableUnrecognizedProperties} key. THE routing predicate —
+ * {@link findRoutableUnrecognizedProperties} key and every
+ * {@link findValueRoutedProperties} one. THE routing predicate —
  * `getProviderFor`, the sticky-escape, the plan and diff annotations and the
  * recreate validators all read it, so none can disagree with the route.
  *
@@ -101,11 +104,46 @@ export function findActionableSdkUnwired(
     recordedProperties,
     options
   );
-  if (unrecognized.length === 0) return drops;
+  const valueRouted = findValueRoutedProperties(resourceType, templateProperties).filter(
+    ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
+  );
+  if (unrecognized.length === 0 && valueRouted.length === 0) return drops;
   return [
     ...drops,
+    ...valueRouted,
     ...unrecognized.map((property) => ({ property, rationale: UNRECOGNIZED_PROPERTY_RATIONALE })),
   ].sort((a, b) => a.property.localeCompare(b.property));
+}
+
+/** Rationale of the `aws-cn` cross-region read replica's route (go-to-k/cdkd#5640). */
+export const AWS_CN_CROSS_REGION_REPLICA_RATIONALE =
+  "an aws-cn cross-region read replica: the AWS SDK for JavaScript signs its PreSignedUrl for the commercial amazonaws.com host, which RDS honours in China; CloudFormation's handler signs it for amazonaws.com.cn";
+
+/**
+ * Handled properties whose VALUE the SDK provider cannot send correctly, so
+ * that value keeps the Cloud Control route. Routing only: the record and diff
+ * narrowings read {@link findSdkUnwiredProperties}, where the key stays
+ * handled, so nothing narrows it away.
+ *
+ * go-to-k/cdkd#5640: an `AWS::RDS::DBInstance` whose `SourceDBInstanceIdentifier`
+ * is an `aws-cn` ARN in another region than the one deploying it. RDS honours
+ * the cross-region `PreSignedUrl` in China, and `@aws-sdk/middleware-sdk-rds`
+ * builds it for `rds.<region>.amazonaws.com` whatever the partition. A region
+ * the scope cannot name (`ambientRegion`) counts as another. Only a RESOLVED
+ * string is read: a raw template value behind an intrinsic is not gated.
+ */
+function findValueRoutedProperties(
+  resourceType: string,
+  templateProperties: Record<string, unknown> | undefined
+): Array<{ property: string; rationale: string }> {
+  if (resourceType !== 'AWS::RDS::DBInstance') return [];
+  const source = templateProperties?.['SourceDBInstanceIdentifier'];
+  if (typeof source !== 'string' || !source.startsWith('arn:aws-cn:')) return [];
+  const own = ambientRegion();
+  if (own !== undefined && sameRegion(own, source.split(':')[3])) return [];
+  return [
+    { property: 'SourceDBInstanceIdentifier', rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE },
+  ];
 }
 
 /**

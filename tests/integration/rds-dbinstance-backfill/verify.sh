@@ -93,7 +93,7 @@
 # promoted one with one.
 #
 # go-to-k/cdkd#5640 (DBInstance SourceRegion): before phase 2d, a second stack
-# (RdsDbInstanceBackfillXrSourceStack) deploys a source instance in another
+# (RdsDbInstanceBackfillXrSource-<REGION>) deploys a source instance in another
 # region (XR_REGION); phase 2d adds ReadReplicaCrossRegion, a replica of it
 # declaring SourceRegion. The provisionedBy=sdk guard is what a pre-fix cdkd
 # fails (SourceRegion routed it to Cloud Control); the live source ARN proves a
@@ -164,15 +164,22 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # go-to-k/cdkd#5640 (SourceRegion): the cross-region replica's source stack, in
 # a region other than REGION. Exported: bin/app.ts defines that stack, and the
-# main stack's ReadReplicaCrossRegion, only when it is set. Its source carries
-# a literal master password too, so its prefix is swept like STATE_PREFIX.
-XR_STACK="RdsDbInstanceBackfillXrSourceStack"
+# main stack's ReadReplicaCrossRegion, only when they are set. Its source
+# carries a literal master password too, so its prefix is swept like
+# STATE_PREFIX. The stack name and both instance identifiers carry REGION, so
+# runs in two regions sharing one XR_REGION never touch each other's; the
+# replica's fixed name is what lets cleanup delete it, before the source, when
+# no state record holds it (a run stopped mid phase 2d).
 if [ "${REGION}" = "us-west-2" ]; then XR_REGION="us-east-2"; else XR_REGION="us-west-2"; fi
+XR_STACK="RdsDbInstanceBackfillXrSource-${REGION}"
+XR_SOURCE_ID="cdkd-backfill-xr-source-${REGION}"
+XR_REPLICA_ID="cdkd-backfill-xr-replica-${REGION}"
 export CDKD_TEST_XR_SOURCE_REGION="${XR_REGION}"
+export CDKD_TEST_XR_STACK="${XR_STACK}"
+export CDKD_TEST_XR_SOURCE_ID="${XR_SOURCE_ID}"
+export CDKD_TEST_XR_REPLICA_ID="${XR_REPLICA_ID}"
 XR_STATE_KEY="cdkd/${XR_STACK}/${XR_REGION}/state.json"
 XR_STATE_PREFIX="$(s3_stack_prefix "${XR_STACK}" "${XR_REGION}")"
-# Pinned in lib/ (XR_SOURCE_ID): the replica's ARN names it.
-XR_SOURCE_ID="cdkd-backfill-xr-source-5640"
 
 EXPECTED_ENGINE_VERSION="17.6"
 EXPECTED_PORT=5433
@@ -293,20 +300,21 @@ cleanup() {
   # go-to-k/cdkd#5640: the read replicas, best-effort after `state destroy`,
   # and BEFORE their source: deleting a source promotes its same-region
   # replicas to standalone instances, which would then outlive the run.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID} ${XR_REPLICA_ID}; do
     aws rds delete-db-instance \
       --db-instance-identifier "${replica_id}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   done
   # ... and wait them out first: a replica still `deleting` is still a replica.
-  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID}; do
+  for replica_id in ${REPLICA_KEPT_ID} ${REPLICA_KEPT_SDK_ID} ${REPLICA_KEPT_STATE_ID} ${REPLICA_PROMOTED_ID} ${REPLICA_XR_ID} ${XR_REPLICA_ID}; do
     aws rds wait db-instance-deleted --db-instance-identifier "${replica_id}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   done
   # go-to-k/cdkd#5640 (SourceRegion): the cross-region source stack, once its
   # replica is gone (deleting a source promotes its cross-region replicas
-  # too), then the source by its pinned name, best-effort, and its state.
+  # too; XR_REPLICA_ID above covers one no state record names yet), then the
+  # source by its name, best-effort, and its state.
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${XR_STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
@@ -990,6 +998,10 @@ REPLICA_KEPT_ID=$(replica_record_field ReadReplicaKept '.value.physicalId')
 REPLICA_PROMOTED_ID=$(replica_record_field ReadReplicaPromoted '.value.physicalId')
 REPLICA_SOURCE_ID=$(replica_record_field ReplicaSourceInstance '.value.physicalId')
 REPLICA_XR_ID=$(replica_record_field ReadReplicaCrossRegion '.value.physicalId')
+if [ "${REPLICA_XR_ID}" != "${XR_REPLICA_ID}" ]; then
+  echo "FAIL: phase 2d: premise: ReadReplicaCrossRegion records physical id '${REPLICA_XR_ID}', expected the declared '${XR_REPLICA_ID}' cleanup deletes by name (go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
 for replica in ReadReplicaKept ReadReplicaPromoted ReadReplicaCrossRegion; do
   REPLICA_ROUTE=$(replica_record_field "${replica}" '.value.provisionedBy // "sdk"')
   if [ "${REPLICA_ROUTE}" != "sdk" ]; then

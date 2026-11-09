@@ -59,6 +59,11 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
+import {
+  AWS_CN_CROSS_REGION_REPLICA_RATIONALE,
+  findActionableSdkUnwired,
+  findSdkUnwiredProperties,
+} from '../../../src/provisioning/property-coverage.js';
 
 type Input = Record<string, unknown>;
 
@@ -998,13 +1003,13 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
     // (only the HTTP handler is faked): a cross-region ARN source gets a
     // PreSignedUrl signed for the ARN's region, a same-region one none.
     describe('the JS SDK presigns from the source ARN', () => {
-      async function wireBody(source: string): Promise<string> {
+      async function wireBody(source: string, region = 'us-east-1'): Promise<string> {
         const actual = await vi.importActual<typeof import('@aws-sdk/client-rds')>(
           '@aws-sdk/client-rds'
         );
         let body = '';
         const client = new actual.RDSClient({
-          region: 'us-east-1',
+          region,
           credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'not-a-secret' },
           requestHandler: {
             handle: async (request: { body?: unknown }) => {
@@ -1042,6 +1047,72 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
         const body = await wireBody(SOURCE_ARN);
         expect(body).toContain('SourceDBInstanceIdentifier=');
         expect(body).not.toContain('PreSignedUrl');
+      });
+
+      // Why an aws-cn cross-region replica keeps the Cloud Control route: the
+      // URL is signed for the commercial host, not `amazonaws.com.cn`.
+      it('an aws-cn cross-region source, for the commercial host', async () => {
+        const body = await wireBody(`arn:aws-cn:rds:cn-northwest-1:${ACCOUNT}:db:source-1`, 'cn-north-1');
+        expect(body).toMatch(/PreSignedUrl=https:\/\/rds\.cn-northwest-1\.amazonaws\.com\/\?/);
+        expect(body).not.toContain('amazonaws.com.cn');
+      });
+    });
+
+    describe('routing an aws-cn cross-region replica through Cloud Control', () => {
+      const CN_SOURCE = `arn:aws-cn:rds:cn-northwest-1:${ACCOUNT}:db:source-1`;
+      const routeDriving = (bag: Input, allowed: ReadonlySet<string> = new Set()) =>
+        findActionableSdkUnwired(INSTANCE, bag, allowed).map((d) => d.property);
+      let savedRegion: string | undefined;
+      beforeEach(() => {
+        savedRegion = process.env['AWS_REGION'];
+        process.env['AWS_REGION'] = 'cn-north-1';
+      });
+      afterEach(() => {
+        if (savedRegion === undefined) delete process.env['AWS_REGION'];
+        else process.env['AWS_REGION'] = savedRegion;
+      });
+
+      it('routes a source ARN in another aws-cn region, SourceRegion declared or not', () => {
+        for (const bag of [
+          { ...REPLICA, SourceDBInstanceIdentifier: CN_SOURCE },
+          { ...REPLICA, SourceDBInstanceIdentifier: CN_SOURCE, SourceRegion: 'cn-northwest-1' },
+        ]) {
+          expect(routeDriving(bag)).toEqual(['SourceDBInstanceIdentifier']);
+        }
+        expect(findActionableSdkUnwired(INSTANCE, { SourceDBInstanceIdentifier: CN_SOURCE }, new Set())).toEqual([
+          { property: 'SourceDBInstanceIdentifier', rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE },
+        ]);
+      });
+
+      it('routes it when the deploying region is unknown', () => {
+        delete process.env['AWS_REGION'];
+        expect(routeDriving({ SourceDBInstanceIdentifier: CN_SOURCE })).toEqual([
+          'SourceDBInstanceIdentifier',
+        ]);
+      });
+
+      it.each([
+        ['a same-region aws-cn source', `arn:aws-cn:rds:cn-north-1:${ACCOUNT}:db:source-1`],
+        ['a commercial cross-region source', CROSS_ARN],
+        ['a bare identifier', 'source-1'],
+        ['an unresolved intrinsic', { 'Fn::GetAtt': ['Source', 'DBInstanceArn'] }],
+      ])('keeps the SDK route for %s', (_, source) => {
+        expect(routeDriving({ ...REPLICA, SourceDBInstanceIdentifier: source })).toEqual([]);
+      });
+
+      it('keeps the SDK route when --prefer-sdk-route names the key', () => {
+        expect(
+          routeDriving(
+            { SourceDBInstanceIdentifier: CN_SOURCE },
+            new Set([`${INSTANCE}:SourceDBInstanceIdentifier`])
+          )
+        ).toEqual([]);
+      });
+
+      it('narrows nothing away: the key stays a handled one', () => {
+        expect(findSdkUnwiredProperties(INSTANCE, { SourceDBInstanceIdentifier: CN_SOURCE })).toEqual(
+          []
+        );
       });
     });
   });
