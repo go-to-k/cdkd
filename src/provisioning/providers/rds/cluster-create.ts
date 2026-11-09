@@ -108,6 +108,10 @@ export async function createDBCluster(
   const classSkipped = malformedInstanceClass(properties['DBClusterInstanceClass']);
   const allocatedSkipped = clusterSizeValue(properties['AllocatedStorage']) === 'malformed';
   const iopsSkipped = clusterSizeValue(properties['Iops']) === 'malformed';
+  // go-to-k/cdkd#5639: CreateDBCluster has no DBInstanceParameterGroupName
+  // member, so it is never sent; a malformed one is still refused here, as an
+  // update refuses it, rather than recorded.
+  const instanceParamsSkipped = malformedInstanceClass(properties['DBInstanceParameterGroupName']);
   for (const [skipped, key, expected, created] of [
     [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
     [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
@@ -117,6 +121,12 @@ export async function createDBCluster(
     [classSkipped, 'DBClusterInstanceClass', 'a string', 'no instance class sent'],
     [allocatedSkipped, 'AllocatedStorage', 'a whole number of GiB', 'no storage size sent'],
     [iopsSkipped, 'Iops', 'a whole number', 'no IOPS sent'],
+    [
+      instanceParamsSkipped,
+      'DBInstanceParameterGroupName',
+      'a string',
+      'none (CreateDBCluster takes none), and the record drops it',
+    ],
     [
       availabilityZonesSkipped,
       'AvailabilityZones',
@@ -161,6 +171,7 @@ export async function createDBCluster(
     ...(classSkipped ? ['DBClusterInstanceClass'] : []),
     ...(allocatedSkipped ? ['AllocatedStorage'] : []),
     ...(iopsSkipped ? ['Iops'] : []),
+    ...(instanceParamsSkipped ? ['DBInstanceParameterGroupName'] : []),
   ];
   const effectiveProperties =
     skippedKeys.length > 0

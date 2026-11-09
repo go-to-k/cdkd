@@ -284,11 +284,14 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
         ...BOTH,
         ...FLAGS,
       });
-      // go-to-k/cdkd#5640: SourceRegion is write-only too.
+      // go-to-k/cdkd#5640: SourceRegion and UseDefaultProcessorFeatures are
+      // write-only too; ProcessorFeatures is compared only where declared.
       expect([...paths].sort()).toEqual([
         'AllowMajorVersionUpgrade',
         'CertificateRotationRestart',
+        'ProcessorFeatures',
         'SourceRegion',
+        'UseDefaultProcessorFeatures',
       ]);
     });
   });

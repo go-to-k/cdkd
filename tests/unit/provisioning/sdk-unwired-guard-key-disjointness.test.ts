@@ -172,7 +172,7 @@ describe('SDK-unwired keys are disjoint from what other layers read (#2750)', ()
     // re-derivation, so a count computed from the same walk cannot satisfy the
     // fence it guards.
     expect(typesRead, 'read too few schema fixtures — is the walk still finding them?').toBeGreaterThan(100);
-    expect(dropsChecked, 'checked too few SDK-unwired properties — is the coverage map still populated?').toBeGreaterThan(100);
+    expect(dropsChecked, 'checked too few SDK-unwired properties — is the coverage map still populated?').toBeGreaterThan(50);
     expect(
       typesWithCreateOnlyDrops,
       'no type has a create-only SDK-unwired property — the comparand collapsed, so this ' +

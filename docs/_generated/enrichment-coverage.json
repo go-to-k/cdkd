@@ -188,7 +188,7 @@
     {
       "resourceType": "AWS::AppConfig::Environment",
       "bucket": "enriched",
-      "sdkBacked": false,
+      "sdkBacked": true,
       "readOnlyProperties": [
         "EnvironmentId"
       ],

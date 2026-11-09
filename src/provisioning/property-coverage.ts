@@ -118,7 +118,7 @@ export function findActionableSdkUnwired(
 
 /** Rationale of the `aws-cn` cross-region read replica's route (go-to-k/cdkd#5640). */
 export const AWS_CN_CROSS_REGION_REPLICA_RATIONALE =
-  "an aws-cn cross-region read replica: the AWS SDK for JavaScript signs its PreSignedUrl for the commercial amazonaws.com host, which RDS honours in China; CloudFormation's handler signs it for amazonaws.com.cn";
+  "an aws-cn cross-region read replica: RDS in China honours its PreSignedUrl, which the AWS SDK for JavaScript signs for the commercial amazonaws.com host rather than the amazonaws.com.cn one CloudFormation's handler signs for";
 
 /**
  * Handled properties whose VALUE the SDK provider cannot send correctly, so

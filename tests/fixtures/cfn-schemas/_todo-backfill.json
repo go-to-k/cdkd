@@ -27,7 +27,6 @@
       "KmsKeyIdentifier"
     ],
     "AWS::RDS::DBCluster": [
-      "DBInstanceParameterGroupName",
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
@@ -58,7 +57,6 @@
       "DomainIAMRoleName",
       "DomainOu",
       "NcharCharacterSetName",
-      "ProcessorFeatures",
       "ReplicaMode",
       "RestoreTime",
       "SourceDBClusterIdentifier",
@@ -67,7 +65,6 @@
       "TdeCredentialArn",
       "TdeCredentialPassword",
       "Timezone",
-      "UseDefaultProcessorFeatures",
       "UseLatestRestorableTime"
     ]
   },

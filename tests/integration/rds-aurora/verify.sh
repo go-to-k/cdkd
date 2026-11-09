@@ -134,6 +134,10 @@
 # declares EngineMode provisioned in every phase and the VPC's zones in phases
 # 1-1c (route, record and live values asserted), and DROPS the zones in phase
 # 2, which completes in place keeping the live zones (asserted).
+# go-to-k/cdkd#5639 (DBInstanceParameterGroupName): the UpgradeCluster (one
+# writer) records the 16 instance parameter group in phase 1 (route asserted),
+# and phase 2 upgrades it 16.13 -> 17.9 with the 17 group, which its writer
+# must hold once the upgrade settles (asserted live).
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -199,6 +203,12 @@ export CDKD_TEST_RUN_ID="rds-aurora-$(date +%s)-$$"
 GLOBAL_CLUSTER_NAME="rdsaurorastack-${CDKD_TEST_RUN_ID}"
 # The GlobalMemberCluster's generated identifier, resolved from state after phase 1.
 GLOBAL_MEMBER_ID=""
+# go-to-k/cdkd#5639: the UpgradeCluster, its writer and its two instance
+# parameter groups, resolved from state after phase 1.
+UPGRADE_CLUSTER_ID=""
+UPGRADE_WRITER_ID=""
+UPGRADE_PARAMS16=""
+UPGRADE_PARAMS17=""
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -344,6 +354,25 @@ cleanup() {
     LOG_CLUSTER_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
       jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId // empty] | first // ""')
   fi
+  # go-to-k/cdkd#5639: RDS refuses to delete a cluster mid-upgrade, so let an
+  # in-flight phase-2 upgrade settle first (up to 60 minutes). Only a cluster
+  # still `upgrading` / `modifying` is waited on; a gone one ends it at once.
+  # The writer is waited on too: it can still read `upgrading` once the
+  # cluster reads `available`.
+  if [ -n "${UPGRADE_CLUSTER_ID}" ]; then
+    for _ in $(seq 1 120); do
+      UPGRADE_STATUS_CLEAN=$(aws rds describe-db-clusters --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" \
+        --region "${REGION}" --query 'DBClusters[0].Status' --output text 2>&1)
+      UPGRADE_WRITER_STATUS_CLEAN=""
+      [ -n "${UPGRADE_WRITER_ID}" ] && UPGRADE_WRITER_STATUS_CLEAN=$(aws rds describe-db-instances \
+        --db-instance-identifier "${UPGRADE_WRITER_ID}" --region "${REGION}" \
+        --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1)
+      case "${UPGRADE_STATUS_CLEAN} ${UPGRADE_WRITER_STATUS_CLEAN}" in
+        upgrading* | modifying* | *" upgrading" | *" modifying") sleep 30 ;;
+        *) break ;;
+      esac
+    done
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
@@ -371,6 +400,40 @@ cleanup() {
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   fi
+  # go-to-k/cdkd#5639: the UpgradeCluster's writer, the cluster and its two
+  # instance parameter groups, in that order; a no-op once state destroy
+  # deleted them. Each waits for the previous delete, since RDS refuses to
+  # delete a cluster with a member or a group still in use.
+  if [ -n "${UPGRADE_WRITER_ID}" ]; then
+    if UPGRADE_DELETE_OUT=$(aws rds delete-db-instance --db-instance-identifier "${UPGRADE_WRITER_ID}" \
+      --region "${REGION}" --skip-final-snapshot 2>&1); then
+      aws rds wait db-instance-deleted --db-instance-identifier "${UPGRADE_WRITER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif grep -qiE 'already being deleted|deleting' <<<"${UPGRADE_DELETE_OUT}"; then
+      # state destroy's delete is still in flight: wait for it instead.
+      aws rds wait db-instance-deleted --db-instance-identifier "${UPGRADE_WRITER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${UPGRADE_DELETE_OUT}"; then
+      echo "WARN: cleanup could not delete the #5639 UpgradeWriter ${UPGRADE_WRITER_ID}; delete it by hand: ${UPGRADE_DELETE_OUT}" >&2
+    fi
+  fi
+  if [ -n "${UPGRADE_CLUSTER_ID}" ]; then
+    if UPGRADE_DELETE_OUT=$(aws rds delete-db-cluster --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" \
+      --region "${REGION}" --skip-final-snapshot 2>&1); then
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif grep -qiE 'already being deleted|deleting' <<<"${UPGRADE_DELETE_OUT}"; then
+      # state destroy's delete is still in flight: wait for it instead.
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${UPGRADE_DELETE_OUT}"; then
+      echo "WARN: cleanup could not delete the #5639 UpgradeCluster ${UPGRADE_CLUSTER_ID}; delete it by hand: ${UPGRADE_DELETE_OUT}" >&2
+    fi
+  fi
+  for upgrade_params in "${UPGRADE_PARAMS16}" "${UPGRADE_PARAMS17}"; do
+    [ -n "${upgrade_params}" ] || continue
+    if ! UPGRADE_DELETE_OUT=$(aws rds delete-db-parameter-group --db-parameter-group-name "${upgrade_params}" \
+      --region "${REGION}" 2>&1); then
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${UPGRADE_DELETE_OUT}" \
+        || echo "WARN: cleanup could not delete the #5639 parameter group ${upgrade_params}; delete it by hand: ${UPGRADE_DELETE_OUT}" >&2
+    fi
+  done
   # go-to-k/cdkd#2762: the SecurityCluster's parameter group, which RDS refuses
   # to delete while the cluster still uses it, so after the cluster is gone.
   # Best effort: a no-op once state destroy deleted it.
@@ -484,6 +547,20 @@ cleanup() {
       SEC_SNAPS_TO_CLEAN=""
     fi
     for snap in ${SEC_SNAPS_TO_CLEAN}; do
+      aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${snap}" --region "${REGION}"
+      aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
+        && echo "    cleanup: deleted this run's manual snapshot ${snap}"
+    done
+  fi
+  # go-to-k/cdkd#5639: RDS takes a manual `preupgrade-<cluster>-...` snapshot
+  # of the UpgradeCluster before phase 2's major upgrade, and no destroy
+  # deletes it. This run's cluster only (its name is generated per run).
+  if [ -n "${UPGRADE_CLUSTER_ID}" ] && [ -n "${RUN_START}" ]; then
+    if ! UPGRADE_SNAPS_TO_CLEAN=$(this_run_cluster_snapshots "${UPGRADE_CLUSTER_ID}"); then
+      echo "    WARN: cleanup could not list the manual snapshots of ${UPGRADE_CLUSTER_ID}; check for a leftover preupgrade-* by hand" >&2
+      UPGRADE_SNAPS_TO_CLEAN=""
+    fi
+    for snap in ${UPGRADE_SNAPS_TO_CLEAN}; do
       aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${snap}" --region "${REGION}"
       aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${snap}" --region "${REGION}" >/dev/null \
         && echo "    cleanup: deleted this run's manual snapshot ${snap}"
@@ -740,6 +817,42 @@ if [ "${GLOBAL_MEMBERS}" != "${GLOBAL_MEMBER_ARN}" ]; then
   exit 1
 fi
 echo "    OK: phase 1: GlobalMemberCluster provisionedBy=sdk and the only member of ${GLOBAL_CLUSTER_NAME} (#5639)"
+
+# go-to-k/cdkd#5639 (DBCluster DBInstanceParameterGroupName): the
+# UpgradeCluster declares the 16 instance parameter group, which
+# CreateDBCluster cannot carry. Before #5639 the declared key routed the
+# cluster to Cloud Control, which the route check fails. The writer starts on
+# the engine's default instance group, which phase 2's upgrade replaces.
+UPGRADE_PARAMS16=$(echo "${STATE}" | jq -r '.resources.UpgradeInstanceParams16.physicalId // ""')
+UPGRADE_PARAMS17=$(echo "${STATE}" | jq -r '.resources.UpgradeInstanceParams17.physicalId // ""')
+UPGRADE_CLUSTER_ID=$(echo "${STATE}" | jq -r '.resources.UpgradeCluster.physicalId // ""')
+UPGRADE_WRITER_ID=$(echo "${STATE}" | jq -r '.resources.UpgradeWriter.physicalId // ""')
+if [ -z "${UPGRADE_PARAMS16}" ] || [ -z "${UPGRADE_PARAMS17}" ] || [ -z "${UPGRADE_CLUSTER_ID}" ] || [ -z "${UPGRADE_WRITER_ID}" ]; then
+  echo "FAIL: #5639: could not resolve the UpgradeCluster, its writer and both instance parameter groups from state" >&2
+  exit 1
+fi
+UPGRADE_RECORD=$(echo "${STATE}" | jq -r '.resources.UpgradeCluster | "\(.provisionedBy // "sdk") \(.properties.DBInstanceParameterGroupName // "absent")"')
+if [ "${UPGRADE_RECORD}" != "sdk ${UPGRADE_PARAMS16}" ]; then
+  echo "FAIL: #5639: phase 1: UpgradeCluster record [provisionedBy, DBInstanceParameterGroupName] is '${UPGRADE_RECORD}', want 'sdk ${UPGRADE_PARAMS16}' (DBInstanceParameterGroupName is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  exit 1
+fi
+# usage: upgrade_state -> "<cluster status> <engine version> <writer status> <writer parameter group> <its apply status>"
+upgrade_state() {
+  local cluster writer
+  cluster=$(aws rds describe-db-clusters --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0].[Status, EngineVersion]' --output text) || return 1
+  writer=$(aws rds describe-db-instances --db-instance-identifier "${UPGRADE_WRITER_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0].[DBInstanceStatus, DBParameterGroups[0].DBParameterGroupName, DBParameterGroups[0].ParameterApplyStatus]' \
+    --output text) || return 1
+  printf '%s %s\n' "${cluster}" "${writer}" | tr -s '\t ' ' '
+}
+UPGRADE_1=$(upgrade_state) || { echo "FAIL: #5639: describing the UpgradeCluster or its writer failed" >&2; exit 1; }
+if [ "${UPGRADE_1}" != "available 16.13 available default.aurora-postgresql16 in-sync" ]; then
+  echo "FAIL: #5639: phase 1: UpgradeCluster [status, version, writer status, writer parameter group, apply status] is '${UPGRADE_1}', want 'available 16.13 available default.aurora-postgresql16 in-sync'" >&2
+  exit 1
+fi
+echo "    OK: phase 1: UpgradeCluster provisionedBy=sdk on 16.13, ${UPGRADE_PARAMS16} recorded, writer on the default group (#5639)"
 
 # Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
 # its destroy applies CloudFormation's default for a DBCluster, Snapshot.
@@ -1297,6 +1410,47 @@ if [ "${ENGINE_5639_RECORD}" != "sdk absent absent" ]; then
   exit 1
 fi
 echo "    OK: phase 2: dropping BacktrackWindow kept 7200 s, dropping EnableLocalWriteForwarding turned forwarding off (#5639)"
+
+# go-to-k/cdkd#5639 (DBCluster DBInstanceParameterGroupName): phase 2 upgrades
+# the UpgradeCluster 16.13 -> 17.9 and swaps its instance parameter group for
+# the 17 one, which ModifyDBCluster carries beside EngineVersion and
+# AllowMajorVersionUpgrade, as CloudFormation's handler sends it. cdkd does not
+# wait for an engine upgrade, so wait here (up to 60 minutes) for the cluster
+# and its writer to settle on 17.9, then assert the writer took the 17 group:
+# RDS applies the parameter group to every instance only when the call
+# carried it, so a cdkd that never sent it leaves the writer on
+# default.aurora-postgresql17.
+UPGRADE_2=""
+for _ in $(seq 1 120); do
+  UPGRADE_2=$(upgrade_state) || { echo "FAIL: #5639: describing the UpgradeCluster or its writer failed" >&2; exit 1; }
+  case "${UPGRADE_2}" in "available 17.9 available "*" in-sync") break ;; esac
+  # A failed upgrade rolls back to `available` on 16.13 and says so only in
+  # the cluster's events: stop at once rather than wait out the hour.
+  # Only a fail-fast aid: a failed read (a throttle) waits on, warned.
+  if ! UPGRADE_EVENTS=$(aws rds describe-events --source-type db-cluster --source-identifier "${UPGRADE_CLUSTER_ID}" \
+    --duration 120 --region "${REGION}" --query 'Events[].Message' --output text 2>&1); then
+    echo "    WARN: #5639: describe-events on the UpgradeCluster failed; waiting on: ${UPGRADE_EVENTS}" >&2
+    UPGRADE_EVENTS=""
+  fi
+  # Both wordings: the probe's rollback said "pg_upgrade can not be completed".
+  if grep -qiE 'cannot be upgraded|can not be completed' <<<"${UPGRADE_EVENTS}"; then
+    echo "FAIL: #5639: phase 2: RDS rolled the UpgradeCluster's major upgrade back (${UPGRADE_2}): $(tr '\t' '\n' <<<"${UPGRADE_EVENTS}" | grep -iE 'cannot be upgraded|can not be completed')" >&2
+    exit 1
+  fi
+  sleep 30
+done
+if [ "${UPGRADE_2}" != "available 17.9 available ${UPGRADE_PARAMS17} in-sync" ]; then
+  echo "FAIL: #5639: phase 2: UpgradeCluster [status, version, writer status, writer parameter group, apply status] is '${UPGRADE_2}', want 'available 17.9 available ${UPGRADE_PARAMS17} in-sync' (ModifyDBCluster did not carry DBInstanceParameterGroupName beside the engine upgrade)" >&2
+  exit 1
+fi
+UPGRADE_STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) \
+  || { echo "FAIL: #5639: could not read the state file" >&2; exit 1; }
+UPGRADE_RECORD_2=$(echo "${UPGRADE_STATE_2}" | jq -r '.resources.UpgradeCluster | "\(.provisionedBy // "sdk") \(.properties.EngineVersion // "absent") \(.properties.DBInstanceParameterGroupName // "absent")"')
+if [ "${UPGRADE_RECORD_2}" != "sdk 17.9 ${UPGRADE_PARAMS17}" ]; then
+  echo "FAIL: #5639: phase 2: UpgradeCluster record [provisionedBy, EngineVersion, DBInstanceParameterGroupName] is '${UPGRADE_RECORD_2}', want 'sdk 17.9 ${UPGRADE_PARAMS17}'" >&2
+  exit 1
+fi
+echo "    OK: phase 2: UpgradeCluster upgraded to 17.9 and its writer took ${UPGRADE_PARAMS17} (#5639)"
 
 # go-to-k/cdkd#5639: phase 2 also DROPS the EngineCluster's AvailabilityZones.
 # ModifyDBCluster has no member for it and CloudFormation's update sends none,
@@ -1908,6 +2062,23 @@ if [ "${ENGINE_STATUS}" != "gone" ] && [ "${ENGINE_STATUS}" != "deleting" ]; the
   exit 1
 fi
 echo "    OK: EngineCluster ${ENGINE_CLUSTER_NEW} is gone or deleting (status: ${ENGINE_STATUS})"
+
+# go-to-k/cdkd#5639: the UpgradeCluster is gone or deleting too.
+if gone_probe aws rds describe-db-clusters --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" --region "${REGION}"; then
+  UPGRADE_STATUS="gone"
+elif ! UPGRADE_STATUS=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${UPGRADE_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0].Status' --output text 2>&1); then
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${UPGRADE_STATUS}" \
+    && UPGRADE_STATUS="gone" \
+    || { echo "FAIL: describe-db-clusters requery undetermined: ${UPGRADE_STATUS}" >&2; exit 1; }
+fi
+if [ "${UPGRADE_STATUS}" != "gone" ] && [ "${UPGRADE_STATUS}" != "deleting" ]; then
+  echo "FAIL: #5639: the UpgradeCluster ${UPGRADE_CLUSTER_ID} is '${UPGRADE_STATUS}' after destroy" >&2
+  exit 1
+fi
+echo "    OK: UpgradeCluster ${UPGRADE_CLUSTER_ID} is gone or deleting (status: ${UPGRADE_STATUS})"
 
 # go-to-k/cdkd#5639: the destroy deleted this run's global cluster.
 assert_gone "global cluster ${GLOBAL_CLUSTER_NAME} still exists after destroy (#5639)" aws rds describe-global-clusters --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" --region "${REGION}"

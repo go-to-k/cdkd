@@ -211,14 +211,12 @@ export class RDSProvider implements ResourceProvider {
         // the cluster is `available`, planned against the live list
         // (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5639: CreateDBCluster alone. `EngineMode` is create-only
-        // (a change replaces the cluster). `AvailabilityZones` is schema-mutable,
-        // but ModifyDBCluster has no member for it and CloudFormation's update
-        // handler sends none (`Translator.modifyDbClusterRequest`), so a change
-        // or removal completes in place keeping the live zones. Neither is read
-        // back: no API changes them after the create, and RDS reports an
-        // `EngineMode` on every cluster, which a record that never declared one
-        // would read as a create-only removal.
+        // go-to-k/cdkd#5639: CreateDBCluster alone. `EngineMode` is create-only (a change
+        // replaces). `AvailabilityZones` is schema-mutable, but ModifyDBCluster has no member
+        // and CloudFormation's update sends none (`Translator.modifyDbClusterRequest`), so a
+        // change or removal keeps the live zones. Neither is read back: no API changes them
+        // after the create, and RDS reports an `EngineMode` on every cluster, which a record
+        // that never declared one would read as a create-only removal.
         'EngineMode',
         'AvailabilityZones',
         // go-to-k/cdkd#5639: CreateDBCluster joins the named global cluster (as
@@ -227,10 +225,12 @@ export class RDSProvider implements ResourceProvider {
         // isGlobalClusterMutable`) detaches a removed one in place and fails an
         // add or change as immutable (`planGlobalClusterUpdate`).
         'GlobalClusterIdentifier',
-        // go-to-k/cdkd#5639: Multi-AZ DB cluster members (`clusterModifyMultiAzMembers`).
+        // go-to-k/cdkd#5639: Multi-AZ DB cluster members (`clusterModifyMultiAzMembers`),
+        // and the instance group an upgrade applies (`clusterInstanceParameterGroupToSend`).
         'DBClusterInstanceClass',
         'AllocatedStorage',
         'Iops',
+        'DBInstanceParameterGroupName',
       ]),
     ],
     [
@@ -308,23 +308,23 @@ export class RDSProvider implements ResourceProvider {
         // `CloudwatchLogsExportConfiguration` delta on ModifyDBInstance
         // (`logExportsDelta`).
         'EnableCloudwatchLogsExports',
-        // go-to-k/cdkd#5640: both ride CreateDBInstance only. `DBName` is
-        // create-only (a change replaces). `AvailabilityZone` is not, but
-        // ModifyDBInstance cannot move an instance, so a changed zone is
-        // refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
+        // go-to-k/cdkd#5640: CreateDBInstance only. `DBName` is create-only; a changed
+        // zone is refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
         'DBName',
         'AvailabilityZone',
         // go-to-k/cdkd#5640: ride CreateDBInstance and, when changed,
         // ModifyDBInstance under the same names (`instanceModifyBackfillMembers`).
         'EngineLifecycleSupport',
         'MasterUserAuthenticationType',
-        // go-to-k/cdkd#5640: AddRoleToDBInstance / RemoveRoleFromDBInstance
-        // once the instance is `available` (`applyAssociatedRoles`).
+        // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`).
+        // go-to-k/cdkd#5640: a read replica; SourceRegion is validated only, never sent
+        // (`./rds/read-replica.ts`).
         'SourceDBInstanceIdentifier',
-        // go-to-k/cdkd#5640: validated only, never sent (`./rds/read-replica.ts`).
         'SourceRegion',
+        // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`.
+        'ProcessorFeatures',
+        'UseDefaultProcessorFeatures',
       ]),
     ],
   ]);

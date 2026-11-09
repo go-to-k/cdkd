@@ -122,7 +122,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGatewayV2::Integration` | yes | enriched | `IntegrationId` (allow) |
 | `AWS::ApiGatewayV2::Route` | yes | enriched | `RouteId` (allow) |
 | `AWS::ApiGatewayV2::Stage` | yes | no-computed-attr | _(none)_ |
-| `AWS::AppConfig::Environment` | no | enriched | `EnvironmentId` (allow) |
+| `AWS::AppConfig::Environment` | yes | enriched | `EnvironmentId` (allow) |
 | `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (allow), `Arn` (GAP) |
 | `AWS::AppSync::DataSource` | yes | enriched | `DataSourceArn` (allow) |
 | `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (GAP), `Arn` (allow), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |

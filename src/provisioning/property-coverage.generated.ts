@@ -2667,6 +2667,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DBClusterIdentifier',
         'DBClusterInstanceClass',
         'DBClusterParameterGroupName',
+        'DBInstanceParameterGroupName',
         'DBSubnetGroupName',
         'DeletionProtection',
         'EnableCloudwatchLogsExports',
@@ -2702,7 +2703,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
       ]),
       sdkUnwired: new Map<string, string>([
-        ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         [
           'DBSystemId',
           'reserved for future use, per the CloudFormation schema (cloudformation:DescribeType, us-east-1, 2026-11-07); no observable behaviour to wire. Kept unhandled so a template declaring it keeps its Cloud Control route',
@@ -2800,6 +2800,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Port',
         'PreferredBackupWindow',
         'PreferredMaintenanceWindow',
+        'ProcessorFeatures',
         'PromotionTier',
         'PubliclyAccessible',
         'SourceDBInstanceIdentifier',
@@ -2808,6 +2809,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StorageThroughput',
         'StorageType',
         'Tags',
+        'UseDefaultProcessorFeatures',
         'VPCSecurityGroups',
       ]),
       sdkUnwired: new Map<string, string>([
@@ -2840,7 +2842,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
         ['DomainOu', 'not yet implemented by cdkd'],
         ['NcharCharacterSetName', 'not yet implemented by cdkd'],
-        ['ProcessorFeatures', 'not yet implemented by cdkd'],
         ['ReplicaMode', 'not yet implemented by cdkd'],
         ['RestoreTime', 'not yet implemented by cdkd'],
         ['SourceDBClusterIdentifier', 'not yet implemented by cdkd'],
@@ -2849,7 +2850,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['TdeCredentialArn', 'not yet implemented by cdkd'],
         ['TdeCredentialPassword', 'not yet implemented by cdkd'],
         ['Timezone', 'not yet implemented by cdkd'],
-        ['UseDefaultProcessorFeatures', 'not yet implemented by cdkd'],
         ['UseLatestRestorableTime', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>([
