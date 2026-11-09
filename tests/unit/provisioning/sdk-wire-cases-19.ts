@@ -680,6 +680,10 @@ const INSTANCE_CASE: TypeCase = {
     // handler sends it, a pair no single-key bag probe changes. Pinned by
     // rds-dbinstance-engine-version-backfill-2762.test.ts.
     CertificateRotationRestart: `sent only beside a changed CACertificateIdentifier (instanceModifyBackfillMembers in ${SRC}), which no single-key probe makes`,
+    // go-to-k/cdkd#5640: never on the wire, under CloudFormation's Java SDK
+    // too (it only picks the presigned URL's region, which the JS SDK derives
+    // from the source ARN). Pinned by rds-dbinstance-read-replica-5640.test.ts.
+    SourceRegion: `validated only (refuseUnknownSourceRegion in ${SRC}): no RDS request member carries it`,
   },
   nestedExempt: {
     'MasterUserSecret.SecretArn': SECRET_ARN_READ_ONLY,

@@ -64,7 +64,6 @@
       "SourceDBClusterIdentifier",
       "SourceDBInstanceAutomatedBackupsArn",
       "SourceDbiResourceId",
-      "SourceRegion",
       "TdeCredentialArn",
       "TdeCredentialPassword",
       "Timezone",

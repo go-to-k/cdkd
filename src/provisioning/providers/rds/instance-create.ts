@@ -19,6 +19,7 @@ import { desiredLogExports, engineLifecycleSupportOf } from './instance-members.
 import {
   describeReplicaSource,
   refuseMalformedReplicaSource,
+  refuseUnknownSourceRegion,
   replicaCreateInput,
   replicaEngine,
   replicaModifyAfterCreateInput,
@@ -50,6 +51,11 @@ export async function createDBInstance(
   const logExports = desiredLogExports(properties, resourceType, logicalId);
   // go-to-k/cdkd#5640: a declared source makes the instance a read replica.
   refuseMalformedReplicaSource(properties, resourceType, logicalId);
+  // go-to-k/cdkd#5640: an unknown SourceRegion is refused as CloudFormation
+  // refuses it; nothing else is sent for it (`./read-replica.ts`).
+  refuseUnknownSourceRegion(properties, resourceType, logicalId, replaying, (message) =>
+    this.logger.warn(message)
+  );
   const replicaSource = replicaSourceOf(properties);
 
   const dbInstanceIdentifier =

@@ -398,6 +398,16 @@ const AWS_REGION_ID = new RegExp(
 );
 
 /**
+ * Whether `region` (already lower-cased) has the shape of a region id some
+ * partition knows ({@link AWS_REGION_ID}). Shared so a provider refusing an
+ * unknown region (`AWS::RDS::DBInstance` `SourceRegion`, go-to-k/cdkd#5640)
+ * reads this one table rather than a second copy.
+ */
+export function isKnownAwsRegionId(region: string): boolean {
+  return AWS_REGION_ID.test(region);
+}
+
+/**
  * The ONE case-normalization boundary of this module (issue #1786).
  *
  * DNS is case-INSENSITIVE, so `US-ISO-EAST-1.amazonaws.com` and

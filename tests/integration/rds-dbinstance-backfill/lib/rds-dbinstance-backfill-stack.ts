@@ -326,6 +326,68 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
         vpcSecurityGroups: [securityGroup.securityGroupId],
         preferredMaintenanceWindow: 'tue:06:00-tue:06:30',
       });
+
+      // go-to-k/cdkd#5640 (SourceRegion): a cross-region read replica of
+      // XR_SOURCE_ID in RdsDbInstanceBackfillXrSourceStack (deployed first by
+      // verify.sh, in CDKD_TEST_XR_SOURCE_REGION), named by ARN with the
+      // source's region declared, as CloudFormation's examples spell it.
+      // Before #5640 the declared SourceRegion routed the replica to Cloud
+      // Control (verify.sh's provisionedBy=sdk guard catches it). Kept a
+      // replica in every later phase; the destroy deletes it without a final
+      // snapshot, before the source stack's destroy.
+      const xrSourceRegion = process.env.CDKD_TEST_XR_SOURCE_REGION;
+      if (xrSourceRegion !== undefined && xrSourceRegion !== '') {
+        new rds.CfnDBInstance(this, 'ReadReplicaCrossRegion', {
+          sourceDbInstanceIdentifier: `arn:${cdk.Aws.PARTITION}:rds:${xrSourceRegion}:${cdk.Aws.ACCOUNT_ID}:db:${XR_SOURCE_ID}`,
+          sourceRegion: xrSourceRegion,
+          dbInstanceClass: 'db.t3.micro',
+          dbSubnetGroupName: subnetGroup.subnetGroupName,
+          vpcSecurityGroups: [securityGroup.securityGroupId],
+          preferredMaintenanceWindow: 'wed:06:00-wed:06:30',
+        });
+      }
     }
+  }
+}
+
+/** go-to-k/cdkd#5640: the cross-region replica's source, by a fixed name the replica's ARN spells. */
+export const XR_SOURCE_ID = 'cdkd-backfill-xr-source-5640';
+
+/**
+ * go-to-k/cdkd#5640 (SourceRegion): the source of ReadReplicaCrossRegion, in
+ * another region. A small PostgreSQL instance with backups on (a replica needs
+ * them) and a literal, non-secret password (RDS refuses a replica of a
+ * PostgreSQL source with a managed master password), unencrypted so the
+ * cross-region replica needs no KMS key in its own region. Deleted plainly
+ * (RemovalPolicy.DESTROY), after the replica.
+ */
+export class RdsDbInstanceBackfillXrSourceStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    const vpc = new ec2.Vpc(this, 'XrSourceVpc', {
+      maxAzs: 2,
+      natGateways: 0,
+      subnetConfiguration: [
+        { cidrMask: 24, name: 'Isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      ],
+    });
+    const subnetGroup = new rds.SubnetGroup(this, 'XrSourceSubnetGroup', {
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      description: 'Subnet group for the backfill integ cross-region replica source',
+    });
+    subnetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    const source = new rds.CfnDBInstance(this, 'XrSourceInstance', {
+      dbInstanceIdentifier: XR_SOURCE_ID,
+      dbInstanceClass: 'db.t3.micro',
+      engine: 'postgres',
+      masterUsername: 'postgres',
+      masterUserPassword: 'CdkdIntegNotASecret5640',
+      allocatedStorage: '20',
+      storageType: 'gp3',
+      backupRetentionPeriod: 1,
+      dbSubnetGroupName: subnetGroup.subnetGroupName,
+    });
+    source.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }

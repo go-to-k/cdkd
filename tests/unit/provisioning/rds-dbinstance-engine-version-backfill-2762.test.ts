@@ -284,7 +284,12 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
         ...BOTH,
         ...FLAGS,
       });
-      expect([...paths].sort()).toEqual(['AllowMajorVersionUpgrade', 'CertificateRotationRestart']);
+      // go-to-k/cdkd#5640: SourceRegion is write-only too.
+      expect([...paths].sort()).toEqual([
+        'AllowMajorVersionUpgrade',
+        'CertificateRotationRestart',
+        'SourceRegion',
+      ]);
     });
   });
 });

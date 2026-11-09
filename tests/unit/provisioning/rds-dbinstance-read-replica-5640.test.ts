@@ -918,4 +918,129 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
       expect(out.aws['SourceDBInstanceIdentifier']).toBe(SOURCE_ARN);
     });
   });
+
+  // CloudFormation's handler refuses an unknown SourceRegion
+  // (`Validations.validateSourceRegion`) and otherwise only gives it to the
+  // Java SDK, which presigns the cross-region URL for it and keeps it off the
+  // wire. The JS SDK presigns the same URL from the source ARN by itself.
+  describe('SourceRegion', () => {
+    const CROSS_ARN = `arn:aws:rds:us-west-2:${ACCOUNT}:db:source-1`;
+    const CROSS: Input = { ...REPLICA, SourceDBInstanceIdentifier: CROSS_ARN };
+
+    it('sends nothing for it: the create is the one an undeclared SourceRegion sends', async () => {
+      await provider.create('L', INSTANCE, { ...CROSS });
+      const [without] = sent('CreateDBInstanceReadReplicaCommand');
+      mockSend.mockClear();
+      await provider.create('L', INSTANCE, { ...CROSS, SourceRegion: 'us-west-2' });
+      const [withRegion] = sent('CreateDBInstanceReadReplicaCommand');
+      expect(withRegion).toEqual(without);
+      expect(withRegion).not.toHaveProperty('SourceRegion');
+      expect(withRegion).toMatchObject({ SourceDBInstanceIdentifier: CROSS_ARN });
+    });
+
+    it('a standalone instance declaring it creates as before, with no SourceRegion member', async () => {
+      const { SourceDBInstanceIdentifier: _source, ...standalone } = REPLICA;
+      await provider.create('L', INSTANCE, {
+        ...standalone,
+        Engine: 'postgres',
+        MasterUsername: 'postgres',
+        MasterUserPassword: 'not-a-secret',
+        SourceRegion: 'us-west-2',
+      });
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toEqual([]);
+      const [create] = sent('CreateDBInstanceCommand');
+      expect(create).toBeDefined();
+      expect(create).not.toHaveProperty('SourceRegion');
+    });
+
+    it.each([
+      ['an upper-cased region, as the handler lower-cases it', 'US-WEST-2'],
+      ['a GovCloud region', 'us-gov-west-1'],
+      ['a China region', 'cn-north-1'],
+      ['an empty value, as the handler skips a blank one', ''],
+    ])('accepts %s', async (_, value) => {
+      await provider.create('L', INSTANCE, { ...CROSS, SourceRegion: value });
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(1);
+    });
+
+    it.each([
+      ['a name no partition knows', 'mars-north-1', /Unknown source region/],
+      ['a service name', 's3', /Unknown source region/],
+      ['a region with surrounding space', ' us-west-2', /Unknown source region/],
+      ['an unresolved intrinsic', { Ref: 'SourceRegionParam' }, /SourceRegion must be a string/],
+    ])('refuses %s before any call', async (_, value, says) => {
+      await expect(
+        provider.create('L', INSTANCE, { ...CROSS, SourceRegion: value })
+      ).rejects.toThrow(says);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('only warns on a rollback replay of a recorded state, and creates the replica', async () => {
+      await provider.create(
+        'L',
+        INSTANCE,
+        { ...CROSS, SourceRegion: 'mars-north-1' },
+        { replayingState: true }
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Unknown source region.*ignored/));
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(1);
+    });
+
+    it('is a path drift cannot compare (DescribeDBInstances never returns it)', () => {
+      expect(provider.getDriftUnknownPaths(INSTANCE, { ...CROSS, SourceRegion: 'us-west-2' })).toContain(
+        'SourceRegion'
+      );
+    });
+
+    // The premise the wiring rests on, against the REAL client and middleware
+    // (only the HTTP handler is faked): a cross-region ARN source gets a
+    // PreSignedUrl signed for the ARN's region, a same-region one none.
+    describe('the JS SDK presigns from the source ARN', () => {
+      async function wireBody(source: string): Promise<string> {
+        const actual = await vi.importActual<typeof import('@aws-sdk/client-rds')>(
+          '@aws-sdk/client-rds'
+        );
+        let body = '';
+        const client = new actual.RDSClient({
+          region: 'us-east-1',
+          credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'not-a-secret' },
+          requestHandler: {
+            handle: async (request: { body?: unknown }) => {
+              body = String(request.body);
+              throw new Error('captured');
+            },
+          },
+        });
+        try {
+          await client
+            .send(
+              new actual.CreateDBInstanceReadReplicaCommand({
+                DBInstanceIdentifier: 'db-1',
+                SourceDBInstanceIdentifier: source,
+              })
+            )
+            .catch(() => undefined);
+        } finally {
+          client.destroy();
+        }
+        // Twice: the presigned URL is itself a percent-encoded form value.
+        return decodeURIComponent(decodeURIComponent(body));
+      }
+
+      it('a cross-region source', async () => {
+        const body = await wireBody(CROSS_ARN);
+        expect(body).toMatch(/PreSignedUrl=https:\/\/rds\.us-west-2\.amazonaws\.com/);
+        expect(body).toContain('DestinationRegion=us-east-1');
+        expect(body).toContain('X-Amz-Credential=AKIDEXAMPLE/');
+        expect(body).toMatch(/\/us-west-2\/rds\/aws4_request/);
+        expect(body).not.toMatch(/(^|&)SourceRegion=/);
+      });
+
+      it('a same-region source', async () => {
+        const body = await wireBody(SOURCE_ARN);
+        expect(body).toContain('SourceDBInstanceIdentifier=');
+        expect(body).not.toContain('PreSignedUrl');
+      });
+    });
+  });
 });

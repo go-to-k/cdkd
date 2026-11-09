@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js';
+import { isKnownAwsRegionId } from '../../../utils/ecr-uri.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import type { RDSProvider } from '../rds-provider.js';
 
@@ -34,10 +35,18 @@ import type { RDSProvider } from '../rds-provider.js';
  *   `ccRoutedInstanceTakesNoSnapshot` in `final-snapshot.ts`, which also
  *   lets through a live cluster member).
  *
- * Only `SourceDBInstanceIdentifier` is wired here: `SourceRegion`,
- * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time
- * properties stay SDK-unwired, so a template declaring one keeps its Cloud
- * Control route.
+ * - `SourceRegion` (go-to-k/cdkd#5640): the handler refuses a region the SDK
+ *   does not know ("Unknown source region", `Validations.validateSourceRegion`)
+ *   and otherwise only hands it to the Java SDK, which presigns the
+ *   cross-region `PreSignedUrl` for that region and keeps `SourceRegion` off
+ *   the wire. The JS SDK's RDS middleware presigns the same URL by itself,
+ *   from the source ARN's region whenever it differs from the client's, so
+ *   nothing is sent for it here: {@link refuseUnknownSourceRegion} is the
+ *   whole of its handling. A same-region or bare-identifier source takes no
+ *   URL either way (RDS ignores one outside GovCloud and China).
+ *
+ * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time properties
+ * stay SDK-unwired, so a template declaring one keeps its Cloud Control route.
  */
 
 /** The declared source: `undefined` when absent or empty, as the handler's `hasValue`. */
@@ -69,6 +78,35 @@ export function refuseMalformedReplicaSource(
       physicalId
     )
   );
+}
+
+/**
+ * `SourceRegion`, as the handler validates every request before any call
+ * (`BaseHandlerStd.validateRequest`): absent or empty passes; a value that is
+ * not a region id some partition knows, compared lower-cased as the handler
+ * compares it, fails "Unknown source region". A non-string (an unresolved
+ * intrinsic) is refused the same way. A state-borne replay (`replaying`) only
+ * warns: the value is never sent, so it cannot fail the create there.
+ */
+export function refuseUnknownSourceRegion(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  replaying: boolean,
+  warn: (message: string) => void
+): void {
+  const value = properties['SourceRegion'];
+  if (value == null || value === '') return;
+  if (typeof value === 'string' && isKnownAwsRegionId(value.toLowerCase())) return;
+  const message =
+    typeof value === 'string'
+      ? `${resourceType} ${logicalId}: Unknown source region (SourceRegion must name an AWS region, as CloudFormation requires)`
+      : `${resourceType} ${logicalId}: SourceRegion must be a string (the source DB instance's region)`;
+  if (replaying) {
+    warn(`${message}; replaying a recorded state, so it is ignored (it is never sent to RDS)`);
+    return;
+  }
+  throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId));
 }
 
 /** The region of an RDS ARN, `undefined` for a bare identifier. */

@@ -28,7 +28,8 @@ export function getDriftUnorderedPaths(this: RDSProvider, resourceType: string):
  *
  * go-to-k/cdkd#2762: a DB instance's `AllowMajorVersionUpgrade` and
  * `CertificateRotationRestart` are ModifyDBInstance flags RDS keeps nowhere,
- * so DescribeDBInstances never returns them.
+ * so DescribeDBInstances never returns them. go-to-k/cdkd#5640: nor
+ * `SourceRegion`, which RDS never receives (write-only).
  */
 export function getDriftUnknownPaths(
   this: RDSProvider,
@@ -36,7 +37,7 @@ export function getDriftUnknownPaths(
   properties?: Record<string, unknown>
 ): string[] {
   if (resourceType === 'AWS::RDS::DBInstance') {
-    return ['AllowMajorVersionUpgrade', 'CertificateRotationRestart'];
+    return ['AllowMajorVersionUpgrade', 'CertificateRotationRestart', 'SourceRegion'];
   }
   if (resourceType !== 'AWS::RDS::DBCluster') return [];
   // go-to-k/cdkd#5639: keys `readCurrentState` never reads back, so a
