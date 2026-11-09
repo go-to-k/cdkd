@@ -616,10 +616,14 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
   // replica (the engine it inherits) until PromoteReadReplica.
   const replica = live['SourceDBInstanceIdentifier'] != null;
   let replicaSource = replica ? INSTANCE_ID_SOURCE : undefined;
+  // go-to-k/cdkd#5640: the features a modify sent apply at once, so the
+  // update's processor wait settles.
+  let processorFeatures = live['ProcessorFeatures'] as unknown;
   setOutputOverrides({
     ...roleCallOverrides('AddRoleToDBInstanceCommand', 'RemoveRoleFromDBInstanceCommand', roles),
     ModifyDBInstanceCommand: (input) => {
       logs = applyLogDelta(logs, input);
+      if (input['ProcessorFeatures'] !== undefined) processorFeatures = input['ProcessorFeatures'];
       return {};
     },
     PromoteReadReplicaCommand: () => {
@@ -642,6 +646,7 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
           ...(replicaSource !== undefined && {
             ReadReplicaSourceDBInstanceIdentifier: replicaSource,
           }),
+          ...(Array.isArray(processorFeatures) && { ProcessorFeatures: processorFeatures }),
         },
       ],
     }),
@@ -922,6 +927,34 @@ const INSTANCE_CASE: TypeCase = {
           ['AllocatedStorage', 'StorageType', 'PreferredMaintenanceWindow'].map((key) => [
             `update-remove:${key}`,
             CFN_DIFF_KEPT(key),
+          ])
+        ),
+      },
+    },
+    {
+      name: 'processor features (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.m7i.large',
+        Engine: 'sqlserver-web',
+        LicenseModel: 'license-included',
+        AllocatedStorage: '20',
+        MasterUsername: 'admin',
+        ProcessorFeatures: [
+          { Name: 'coreCount', Value: '1' },
+          { Name: 'threadsPerCore', Value: '1' },
+        ],
+        UseDefaultProcessorFeatures: false,
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:LicenseModel': CFN_DIFF_KEPT('LicenseModel'),
+        ...Object.fromEntries(
+          ['create', 'create-vary'].map((d) => [
+            `${d}:UseDefaultProcessorFeatures`,
+            `not a CreateDBInstance member, so CloudFormation's create translation drops it too; a replica's create and ModifyDBInstance carry it (${SRC}, go-to-k/cdkd#5640)`,
           ])
         ),
       },

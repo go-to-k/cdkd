@@ -4,6 +4,7 @@ import {
   type DBInstance,
   type PendingCloudwatchLogsExports,
   type ModifyDBInstanceCommandInput,
+  type ProcessorFeature,
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -503,6 +504,134 @@ export function withPreviousAvailabilityZone(
   const { AvailabilityZone: _desired, ...rest } = properties;
   const previous = previousProperties['AvailabilityZone'];
   return previous === undefined ? rest : { ...rest, AvailabilityZone: previous };
+}
+
+/**
+ * go-to-k/cdkd#5640: a `ProcessorFeatures` list read off a bag: `undefined`
+ * when absent, the entries (a CFn number stringified), or `'malformed'` for
+ * anything but a list of objects whose members are scalars. Neither member is
+ * schema-required, so an entry lacking one goes out as declared, as
+ * CloudFormation forwards it, and RDS answers for it.
+ */
+function processorFeatureList(value: unknown): ProcessorFeature[] | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (!Array.isArray(value)) return 'malformed';
+  const out: ProcessorFeature[] = [];
+  for (const item of value as unknown[]) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'malformed';
+    const feature: ProcessorFeature = {};
+    for (const key of ['Name', 'Value'] as const) {
+      const member = (item as Record<string, unknown>)[key];
+      if (member == null) continue;
+      if (typeof member !== 'string' && typeof member !== 'number') return 'malformed';
+      feature[key] = String(member);
+    }
+    out.push(feature);
+  }
+  return out;
+}
+
+/** A `UseDefaultProcessorFeatures` read off a bag (`'true'` / `'false'` too). */
+function useDefaultProcessorFeaturesOf(value: unknown): boolean | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return 'malformed';
+}
+
+/**
+ * go-to-k/cdkd#5640: the desired `ProcessorFeatures` and
+ * `UseDefaultProcessorFeatures`, or a non-retryable refusal before any call.
+ * It is refused on a rollback replay too: RDS takes nothing but a list of
+ * `{ Name, Value }` pairs and a boolean, so the replay could not have applied
+ * it either.
+ */
+export function desiredProcessorFeatures(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): { features: ProcessorFeature[] | undefined; useDefault: boolean | undefined } {
+  const features = processorFeatureList(properties['ProcessorFeatures']);
+  const useDefault = useDefaultProcessorFeaturesOf(properties['UseDefaultProcessorFeatures']);
+  if (features !== 'malformed' && useDefault !== 'malformed') return { features, useDefault };
+  throw markNonRetryable(
+    new ProvisioningError(
+      features === 'malformed'
+        ? `${resourceType} ${logicalId}: ProcessorFeatures must be a list of { Name, Value } objects`
+        : `${resourceType} ${logicalId}: UseDefaultProcessorFeatures must be true or false`,
+      resourceType,
+      logicalId,
+      physicalId
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#5640: the ModifyDBInstance processor members of an update, as
+ * CloudFormation's handler builds them (`Translator.modifyDbInstanceRequest`,
+ * `shouldSetProcessorFeatures`): when either property differs from the
+ * previous template, the DESIRED values of both, each only when declared.
+ * Otherwise nothing. A removed `ProcessorFeatures` therefore sends nothing and
+ * the instance KEEPS its custom features, as under CloudFormation; declaring
+ * `UseDefaultProcessorFeatures: true` is what restores the class defaults. A
+ * malformed RECORDED side counts as a difference.
+ */
+export function instanceProcessorFeatureMembers(
+  desired: { features: ProcessorFeature[] | undefined; useDefault: boolean | undefined },
+  previousProperties: Record<string, unknown>
+): Pick<ModifyDBInstanceCommandInput, 'ProcessorFeatures' | 'UseDefaultProcessorFeatures'> {
+  const previousFeatures = processorFeatureList(previousProperties['ProcessorFeatures']);
+  const previousUseDefault = useDefaultProcessorFeaturesOf(
+    previousProperties['UseDefaultProcessorFeatures']
+  );
+  if (
+    isDeepStrictEqual(previousFeatures, desired.features) &&
+    previousUseDefault === desired.useDefault
+  ) {
+    return {};
+  }
+  return {
+    ...(desired.features !== undefined && { ProcessorFeatures: desired.features }),
+    ...(desired.useDefault !== undefined && { UseDefaultProcessorFeatures: desired.useDefault }),
+  };
+}
+
+/**
+ * go-to-k/cdkd#5640: whether a processor change applied immediately has
+ * settled: `available` with no processor change pending, and, when the
+ * update sent a list, every sent feature listed live. CloudFormation's update
+ * stabilizes the same way (`isNoPendingChanges`); a read of the old features
+ * would also be a phantom drift.
+ */
+export function processorFeaturesApplied(
+  instance: DBInstance,
+  sent: ProcessorFeature[] | undefined
+): boolean {
+  if (instance.DBInstanceStatus !== 'available') return false;
+  if ((instance.PendingModifiedValues?.ProcessorFeatures ?? []).length > 0) return false;
+  if (sent === undefined) return true;
+  const live = instance.ProcessorFeatures ?? [];
+  return sent.every((feature) =>
+    live.some((item) => item.Name === feature.Name && item.Value === feature.Value)
+  );
+}
+
+/**
+ * go-to-k/cdkd#5640: the processor features an instance runs with once its
+ * pending change applies: each pending feature over the live one of the same
+ * name, live order first.
+ */
+export function liveProcessorFeatures(instance: DBInstance): ProcessorFeature[] | undefined {
+  const pending = instance.PendingModifiedValues?.ProcessorFeatures ?? [];
+  if (pending.length === 0) return instance.ProcessorFeatures;
+  const out = (instance.ProcessorFeatures ?? []).map(
+    (feature) => pending.find((item) => item.Name === feature.Name) ?? feature
+  );
+  for (const item of pending) {
+    if (!out.some((feature) => feature.Name === item.Name)) out.push(item);
+  }
+  return out;
 }
 
 /** An `EngineLifecycleSupport` read off a bag: `undefined` when absent or empty. */

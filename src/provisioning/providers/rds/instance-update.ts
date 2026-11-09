@@ -30,6 +30,9 @@ import {
   instanceParameterGroupPendingReboot,
   instanceParameterGroupApplying,
   desiredLogExports,
+  desiredProcessorFeatures,
+  instanceProcessorFeatureMembers,
+  processorFeaturesApplied,
   logExportsDelta,
   logExportsApplied,
   instanceAvailabilityZoneKept,
@@ -64,6 +67,12 @@ export async function updateDBInstance(
   const logExportConfig = logExportsDelta(
     desiredLogExports(properties, resourceType, logicalId, physicalId),
     previousProperties['EnableCloudwatchLogsExports']
+  );
+  // go-to-k/cdkd#5640: refused before any call when malformed; sent only when
+  // either property changed, as CloudFormation sends them.
+  const processorMembers = instanceProcessorFeatureMembers(
+    desiredProcessorFeatures(properties, resourceType, logicalId, physicalId),
+    previousProperties
   );
   // Outside the try: it throws only its own ProvisioningError, which names
   // the cause and must not be re-wrapped.
@@ -508,6 +517,9 @@ export async function updateDBInstance(
             ...(logExportConfig !== undefined && {
               CloudwatchLogsExportConfiguration: logExportConfig,
             }),
+            // go-to-k/cdkd#5640: a removed ProcessorFeatures sends nothing,
+            // so the instance keeps its features, as under CloudFormation.
+            ...processorMembers,
             // go-to-k/cdkd#5640: only a drift revert sends it; only a change
             // sends the authentication type, beside the credential settings.
             ...(engineLifecycleSupport !== undefined && {
@@ -541,6 +553,21 @@ export async function updateDBInstance(
             instance.PendingModifiedValues?.PendingCloudwatchLogsExports
           ),
         'CloudWatch Logs exports change'
+      );
+    }
+    // go-to-k/cdkd#5640: likewise a processor change, which restarts the
+    // instance with the new features. A sent list is waited for by value; a
+    // flag alone only by status and nothing pending.
+    if (
+      process.env['CDKD_NO_WAIT'] !== 'true' &&
+      (processorMembers.ProcessorFeatures !== undefined ||
+        processorMembers.UseDefaultProcessorFeatures !== undefined)
+    ) {
+      await this.waitForInstanceState(
+        logicalId,
+        physicalId,
+        (instance) => processorFeaturesApplied(instance, processorMembers.ProcessorFeatures),
+        'processor features change'
       );
     }
 

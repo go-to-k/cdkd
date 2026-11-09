@@ -37,7 +37,18 @@ export function getDriftUnknownPaths(
   properties?: Record<string, unknown>
 ): string[] {
   if (resourceType === 'AWS::RDS::DBInstance') {
-    return ['AllowMajorVersionUpgrade', 'CertificateRotationRestart', 'SourceRegion'];
+    // go-to-k/cdkd#5640: `UseDefaultProcessorFeatures` is write-only. The
+    // live `ProcessorFeatures` is compared only where the template declares
+    // it, so a baseline captured before it was read reports no drift.
+    const instanceUnknown = [
+      'AllowMajorVersionUpgrade',
+      'CertificateRotationRestart',
+      'SourceRegion',
+      'UseDefaultProcessorFeatures',
+    ];
+    return properties?.['ProcessorFeatures'] == null
+      ? [...instanceUnknown, 'ProcessorFeatures']
+      : instanceUnknown;
   }
   if (resourceType !== 'AWS::RDS::DBCluster') return [];
   // go-to-k/cdkd#5639: keys `readCurrentState` never reads back, so a
