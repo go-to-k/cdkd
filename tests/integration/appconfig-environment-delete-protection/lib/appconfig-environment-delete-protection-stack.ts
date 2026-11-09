@@ -7,9 +7,9 @@ import * as appconfig from 'aws-cdk-lib/aws-appconfig';
  * AppConfig takes on the `DeleteEnvironment` call itself, so the destroy has
  * to forward the template's value. The environment declares `BYPASS`;
  * `verify.sh` reads the configuration through `appconfigdata` right before the
- * destroy, so AppConfig sees the environment as recently used and the account
- * default (check on) would refuse the delete. No account-level setting is
- * touched.
+ * destroy, then asserts that an `APPLY` delete is refused, which proves the
+ * protection window is open whatever the account default is. No account-level
+ * setting is touched.
  *
  * covers: AWS::AppConfig::Application
  * covers: AWS::AppConfig::Environment

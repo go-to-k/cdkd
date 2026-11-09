@@ -649,9 +649,10 @@ conditional the escape is:
   unaddressable via Cloud Control), `AWS::RDS::DBProxyTargetGroup` (the
   read and delete handlers cannot derive the proxy name from the
   TargetGroupArn), `AWS::Lambda::EventInvokeConfig` (every Cloud Control
-  update fails validation) and `AWS::Pipes::Pipe` (a Cloud Control UPDATE
+  update fails validation), `AWS::Pipes::Pipe` (a Cloud Control UPDATE
   cannot change a stream or broker source's write-only `SourceParameters`)
-  are the members today.
+  and `AWS::AppConfig::Environment` (Cloud Control's delete drops the
+  write-only `DeletionProtectionCheck`) are the members today.
 - **`'sdk-coverage'`** — Cloud Control manages the type, apart from at most a
   defect that only an update reaches, and is slower; cdkd has since gained full
   property coverage. The escape is

@@ -247,9 +247,9 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // stored nowhere) is lost and AppConfig applies the account default: a
       // recently read environment cannot be destroyed, however the template
       // declares BYPASS (issue #5875). Every record written before the SDK
-      // provider existed says `cc-api`, and a destroy passes no properties, so
-      // nothing but this unconditional exemption moves those to the provider
-      // that forwards the value. Broken, not slow.
+      // provider existed says `cc-api`, and the destroy's routing gets no
+      // properties, so nothing but this unconditional exemption moves those to
+      // the provider that forwards the value. Broken, not slow.
       mode: 'cc-broken' as const,
       physicalIdForm:
         'both layers store <ApplicationId>|<EnvironmentId>: that is the Cloud ' +
