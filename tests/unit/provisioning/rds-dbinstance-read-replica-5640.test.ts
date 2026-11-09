@@ -958,6 +958,8 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
       ['a GovCloud region', 'us-gov-west-1'],
       ['a China region', 'cn-north-1'],
       ['an empty value, as the handler skips a blank one', ''],
+      ['a whitespace-only value, which the handler skips as blank too', '   '],
+      ["one of the Java SDK's global pseudo regions", 'aws-global'],
     ])('accepts %s', async (_, value) => {
       await provider.create('L', INSTANCE, { ...CROSS, SourceRegion: value });
       expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(1);

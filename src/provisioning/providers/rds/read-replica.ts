@@ -80,11 +80,21 @@ export function refuseMalformedReplicaSource(
   );
 }
 
+/** The Java SDK's `Region.regions()` also lists these partition-global pseudo regions. */
+const SDK_GLOBAL_PSEUDO_REGIONS: ReadonlySet<string> = new Set([
+  'aws-global',
+  'aws-cn-global',
+  'aws-us-gov-global',
+  'aws-iso-global',
+  'aws-iso-b-global',
+]);
+
 /**
  * `SourceRegion`, as the handler validates every request before any call
- * (`BaseHandlerStd.validateRequest`): absent or empty passes; a value that is
- * not a region id some partition knows, compared lower-cased as the handler
- * compares it, fails "Unknown source region". A non-string (an unresolved
+ * (`BaseHandlerStd.validateRequest`): absent or blank passes; a value that is
+ * neither a region id some partition knows nor one of the SDK's global pseudo
+ * regions, compared lower-cased as the handler compares it, fails "Unknown
+ * source region". A non-string (an unresolved
  * intrinsic) is refused the same way. A state-borne replay (`replaying`) only
  * warns: the value is never sent, so it cannot fail the create there.
  */
@@ -96,8 +106,12 @@ export function refuseUnknownSourceRegion(
   warn: (message: string) => void
 ): void {
   const value = properties['SourceRegion'];
-  if (value == null || value === '') return;
-  if (typeof value === 'string' && isKnownAwsRegionId(value.toLowerCase())) return;
+  // The handler's `StringUtils.isNotBlank`: a blank value skips the check.
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return;
+  if (typeof value === 'string') {
+    const region = value.toLowerCase();
+    if (isKnownAwsRegionId(region) || SDK_GLOBAL_PSEUDO_REGIONS.has(region)) return;
+  }
   const message =
     typeof value === 'string'
       ? `${resourceType} ${logicalId}: Unknown source region (SourceRegion must name an AWS region, as CloudFormation requires)`

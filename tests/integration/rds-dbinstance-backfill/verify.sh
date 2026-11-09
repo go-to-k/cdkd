@@ -318,6 +318,10 @@ cleanup() {
     --db-instance-identifier "${XR_SOURCE_ID}" \
     --region "${XR_REGION}" \
     --skip-final-snapshot >/dev/null 2>&1 || true
+  # Its name is fixed: wait it out, or a pre-run pass leaves phase 2d's create
+  # of the same name to collide with a still-deleting leftover.
+  aws rds wait db-instance-deleted --db-instance-identifier "${XR_SOURCE_ID}" \
+    --region "${XR_REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${XR_STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${XR_STACK}/${XR_REGION}/lock.json" >/dev/null 2>&1 || true
