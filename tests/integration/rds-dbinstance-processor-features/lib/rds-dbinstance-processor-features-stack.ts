@@ -12,20 +12,24 @@ export const INSTANCE_ID = 'cdkd-rds-procfeat-integ';
  *
  * covers: AWS::RDS::DBInstance
  *
- * Only SQL Server Web (license-included) on db.m7i.large offers processor
- * features among the cheap engines in us-east-1 (PostgreSQL, MySQL and SQL
- * Server Express list none; Oracle SE2 only under BYOL). On that class
- * `coreCount` allows 1 and `threadsPerCore` 1 or 2, default 2, so the custom
- * value under test is `threadsPerCore: 1`, which AWS never picks by itself.
+ * Among the cheaper engines in us-east-1 only SQL Server Web
+ * (license-included) offers processor features (PostgreSQL, MySQL and SQL
+ * Server Express list none; Oracle SE2 only under BYOL), and SQL Server
+ * refuses fewer than 4 vCPUs ("Your request creates 1 vCPUs while SQL Server
+ * requires a minimum of 4 vCPUs"). Every class up to 2xlarge defaults to 4
+ * vCPUs or fewer, so no non-default setting is valid there. On db.m7i.4xlarge
+ * `coreCount` allows 1-8, default 8, and `threadsPerCore` allows only 1, so
+ * the custom value under test is `coreCount: 4` (4 vCPUs), which AWS never
+ * picks by itself.
  *
  * Phases (`CDKD_TEST_PROCESSOR`):
- *   (unset)      `threadsPerCore: 1` at create.
+ *   (unset)      `coreCount: 4` at create.
  *   removed      the list dropped, beside a `CopyTagsToSnapshot` change that
  *                proves the ModifyDBInstance went out: CloudFormation sends no
- *                processor member for a removal, so the instance keeps 1.
- *   use-default  `UseDefaultProcessorFeatures: true`: the class default (2).
+ *                processor member for a removal, so the instance keeps 4.
+ *   use-default  `UseDefaultProcessorFeatures: true`: the class default (8).
  *   reapply      the list again with `UseDefaultProcessorFeatures: false`:
- *                ModifyDBInstance carries both, back to 1.
+ *                ModifyDBInstance carries both, back to 4.
  *
  * L1 (`CfnDBInstance`), so the template carries exactly these properties: an
  * L2 default still unwired would route the instance to Cloud Control.
@@ -56,13 +60,13 @@ export class RdsDbInstanceProcessorFeaturesStack extends cdk.Stack {
     subnetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const customFeatures = [
-      { name: 'coreCount', value: '1' },
+      { name: 'coreCount', value: '4' },
       { name: 'threadsPerCore', value: '1' },
     ];
 
     const instance = new rds.CfnDBInstance(this, 'ProcessorInstance', {
       dbInstanceIdentifier: INSTANCE_ID,
-      dbInstanceClass: 'db.m7i.large',
+      dbInstanceClass: 'db.m7i.4xlarge',
       engine: 'sqlserver-web',
       licenseModel: 'license-included',
       allocatedStorage: '20',

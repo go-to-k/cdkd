@@ -11,14 +11,15 @@
 # features; `UseDefaultProcessorFeatures: true` is what restores the class
 # defaults.
 #
-# Phases (SQL Server Web, db.m7i.large: threadsPerCore 1 or 2, default 2):
-#   1. create with threadsPerCore 1: AWS runs 1 (never its own pick); the
+# Phases (SQL Server Web, db.m7i.4xlarge: coreCount 1-8, default 8;
+# threadsPerCore 1 only; SQL Server needs at least 4 vCPUs):
+#   1. create with coreCount 4: AWS runs 4 (never its own pick); the
 #      instance routes via the SDK provider; `cdkd drift` reports it clean.
 #   2. removed: the list dropped, beside a CopyTagsToSnapshot change: the
 #      ModifyDBInstance went out (CopyTagsToSnapshot reads true) and the
-#      instance KEEPS threadsPerCore 1; `cdkd drift` reports it clean.
-#   3. use-default: UseDefaultProcessorFeatures: true: back to the default 2.
-#   4. reapply: the list with UseDefaultProcessorFeatures: false: back to 1,
+#      instance KEEPS coreCount 4; `cdkd drift` reports it clean.
+#   3. use-default: UseDefaultProcessorFeatures: true: back to the default 8.
+#   4. reapply: the list with UseDefaultProcessorFeatures: false: back to 4,
 #      the same instance (DbiResourceId unchanged) in every phase; `cdkd
 #      drift` reports it clean.
 #   5. destroy: the instance and the state file are gone.
@@ -146,8 +147,8 @@ instance_field() { # usage: instance_field <JMESPath under DBInstances[0]>
     --query "DBInstances[0].$1" --output text || return 1
 }
 
-threads_per_core() { # the live threadsPerCore ("None" when RDS lists no features)
-  instance_field "ProcessorFeatures[?Name=='threadsPerCore'].Value | [0]" || return 1
+core_count() { # the live coreCount ("None" when RDS lists no features)
+  instance_field "ProcessorFeatures[?Name=='coreCount'].Value | [0]" || return 1
 }
 
 assert_sdk_route() { # usage: assert_sdk_route <phase label>
@@ -163,16 +164,16 @@ assert_sdk_route() { # usage: assert_sdk_route <phase label>
   fi
 }
 
-assert_threads() { # usage: assert_threads <expected> <phase label>
+assert_cores() { # usage: assert_cores <expected> <phase label>
   local got
-  got="$(threads_per_core)"
+  got="$(core_count)"
   if [ "${got}" != "$1" ]; then
-    echo "FAIL ($2): threadsPerCore reads '${got}', expected '$1' (go-to-k/cdkd#5640)" >&2
+    echo "FAIL ($2): coreCount reads '${got}', expected '$1' (go-to-k/cdkd#5640)" >&2
     instance_field 'ProcessorFeatures' >&2 || true
     instance_field 'PendingModifiedValues' >&2 || true
     exit 1
   fi
-  echo "    OK ($2): threadsPerCore=${got}"
+  echo "    OK ($2): coreCount=${got}"
 }
 
 assert_drift_clean() { # usage: assert_drift_clean <phase label>
@@ -194,11 +195,11 @@ assert_drift_clean() { # usage: assert_drift_clean <phase label>
   echo "    OK ($1): cdkd drift reports the DB instance clean"
 }
 
-# --- Phase 1: create with threadsPerCore 1 -----------------------------------
-echo "==> Phase 1: create the instance with threadsPerCore 1"
+# --- Phase 1: create with coreCount 4 ----------------------------------------
+echo "==> Phase 1: create the instance with coreCount 4"
 deploy_phase ""
 assert_sdk_route "phase 1"
-assert_threads 1 "phase 1: the declared list reached CreateDBInstance"
+assert_cores 4 "phase 1: the declared list reached CreateDBInstance"
 RESOURCE_ID="$(instance_field 'DbiResourceId')"
 case "${RESOURCE_ID}" in
   db-?*) echo "    instance ${INSTANCE_ID} is ${RESOURCE_ID}" ;;
@@ -228,7 +229,7 @@ if [ "$(instance_field 'CopyTagsToSnapshot')" != "True" ]; then
   echo "FAIL (phase 2): CopyTagsToSnapshot still reads False — the ModifyDBInstance never went out, so the kept features prove nothing" >&2
   exit 1
 fi
-assert_threads 1 "phase 2: a removed list leaves the features, as CloudFormation does"
+assert_cores 4 "phase 2: a removed list leaves the features, as CloudFormation does"
 assert_drift_clean "phase 2"
 
 # --- Phase 3: UseDefaultProcessorFeatures: true -------------------------------
@@ -236,13 +237,13 @@ echo "==> Phase 3: UseDefaultProcessorFeatures: true"
 deploy_phase use-default
 assert_sdk_route "phase 3"
 assert_same_instance "phase 3"
-# The class default is 2; RDS may also list no features at all once the
+# The class default is 8; RDS may also list no features at all once the
 # instance runs its class defaults.
-THREADS_P3="$(threads_per_core)"
-case "${THREADS_P3}" in
-  2 | None) echo "    OK (phase 3): threadsPerCore=${THREADS_P3} (the class default)" ;;
+CORES_P3="$(core_count)"
+case "${CORES_P3}" in
+  8 | None) echo "    OK (phase 3): coreCount=${CORES_P3} (the class default)" ;;
   *)
-    echo "FAIL (phase 3): threadsPerCore reads '${THREADS_P3}', expected the class default (2, or no features listed) — UseDefaultProcessorFeatures: true never reached ModifyDBInstance (go-to-k/cdkd#5640)" >&2
+    echo "FAIL (phase 3): coreCount reads '${CORES_P3}', expected the class default (8, or no features listed) — UseDefaultProcessorFeatures: true never reached ModifyDBInstance (go-to-k/cdkd#5640)" >&2
     instance_field 'PendingModifiedValues' >&2 || true
     exit 1
     ;;
@@ -253,7 +254,7 @@ echo "==> Phase 4: the list again, with UseDefaultProcessorFeatures: false"
 deploy_phase reapply
 assert_sdk_route "phase 4"
 assert_same_instance "phase 4"
-assert_threads 1 "phase 4: the changed list reached ModifyDBInstance"
+assert_cores 4 "phase 4: the changed list reached ModifyDBInstance"
 assert_drift_clean "phase 4"
 
 # --- Phase 5: destroy ---------------------------------------------------------
