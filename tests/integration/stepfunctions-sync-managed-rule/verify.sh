@@ -138,7 +138,15 @@ echo "[verify]   ✓ state machine ${SM_ARN} (role ${ROLE_NAME})"
 
 echo "[verify] step 5: cdkd destroy"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
-assert_gone "state machine ${SM_ARN} still exists post-destroy" \
+# DeleteStateMachine is asynchronous: describe answers status DELETING for a
+# while before StateMachineDoesNotExist.
+for _ in $(seq 1 30); do
+  if gone_probe aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}"; then
+    break
+  fi
+  sleep 3
+done
+assert_gone "state machine ${SM_ARN} still exists 90s after destroy" \
   aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}"
 assert_gone "role ${ROLE_NAME} still exists post-destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}" \
