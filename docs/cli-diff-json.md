@@ -84,7 +84,8 @@ note in the [text output](cli-diff.md#via-cc-api-routing).
 ### `propertyChanges`
 
 Each entry gives the property's `path`, its `oldValue` and `newValue`, and
-`requiresReplacement`.
+`requiresReplacement`. An entry flagged `newValueKnownAfterDeploy` also carries
+`newValueTemplate`.
 
 The notes that the text output prints in square brackets appear here as
 flags. A flag is present and `true` on the lines that carry the note, and
