@@ -515,6 +515,21 @@ export async function applyBackupReplication(
       'the resource timeout leaves no more time to change the automated backup replication of the instance; re-run the deploy, or with a longer --resource-timeout'
     );
   }
+  // Before the wait for `available`: whether the source is encrypted needs no
+  // settled instance, and a refusal should not wait out a busy one.
+  if (fromReadback && plan.start !== undefined && plan.start.kmsKeyId === undefined) {
+    const encrypted = (await this.describeDBInstance(physicalId))?.StorageEncrypted === true;
+    if (encrypted) {
+      throw markNonRetryable(
+        new Error(
+          `cdkd drift --revert cannot restart the automated backup replication of storage-encrypted DB instance ${logicalId}: ` +
+            `RDS needs a KMS key in ${plan.start.region} for it, and AutomaticBackupReplicationKmsKeyId is write-only, so the revert has none to send. ` +
+            `Nothing was stopped or started. Restore it with aws rds start-db-instance-automated-backups-replication --region ${plan.start.region} ` +
+            `--source-db-instance-arn <the instance ARN> --kms-key-id <a key in that region>, or change the template's replication properties and run cdkd deploy`
+        )
+      );
+    }
+  }
   const doing = 'changing its automated backup replication';
   await this.waitForInstanceAvailable(logicalId, physicalId, waitBudgetMs, doing);
   const instance = await this.describeDBInstance(physicalId);
@@ -522,21 +537,6 @@ export async function applyBackupReplication(
   if (instance === undefined || arn === undefined) {
     throw new Error(
       'DescribeDBInstances returned no instance ARN while changing its automated backup replication; nothing was started or stopped'
-    );
-  }
-  if (
-    fromReadback &&
-    plan.start !== undefined &&
-    plan.start.kmsKeyId === undefined &&
-    instance.StorageEncrypted === true
-  ) {
-    throw markNonRetryable(
-      new Error(
-        `cdkd drift --revert cannot restart the automated backup replication of storage-encrypted DB instance ${logicalId}: ` +
-          `RDS needs a KMS key in ${plan.start.region} for it, and AutomaticBackupReplicationKmsKeyId is write-only, so the revert has none to send. ` +
-          `Nothing was stopped or started. Restore it with aws rds start-db-instance-automated-backups-replication --region ${plan.start.region} ` +
-          `--source-db-instance-arn <the instance ARN> --kms-key-id <a key in that region>, or change the template's replication properties and run cdkd deploy`
-      )
     );
   }
   const wait = process.env['CDKD_NO_WAIT'] !== 'true';

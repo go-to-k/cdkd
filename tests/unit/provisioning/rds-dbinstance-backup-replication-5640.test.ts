@@ -60,6 +60,7 @@ import { findSdkUnwiredProperties } from '../../../src/provisioning/property-cov
 import { backupReplicationPlan } from '../../../src/provisioning/providers/rds/instance-members.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { isAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 type Input = Record<string, unknown>;
 type Command = { constructor: { name: string }; input: Input };
@@ -365,6 +366,15 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
           /cannot restart the automated backup replication.*AutomaticBackupReplicationKmsKeyId is write-only.*Nothing was stopped or started.*start-db-instance-automated-backups-replication --region us-west-2/
         );
         expect(String((error as Error).message)).not.toMatch(/run cdkd deploy to restore/);
+        // Terminal: a retry could never have a key to send either.
+        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(replicationCalls()).toEqual([]);
+      });
+
+      it('refuses a busy encrypted instance at once, without waiting for available', async () => {
+        arm({ replicatingTo: 'us-west-2', encrypted: true, statuses: ['modifying'] });
+        // The resource deadline is generous: a wait would spin until it ran out.
+        await expect(revert()).rejects.toThrow(/cannot restart the automated backup replication/);
         expect(replicationCalls()).toEqual([]);
       });
 
