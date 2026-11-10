@@ -80,6 +80,17 @@ export interface PropertyChange {
   replacementPropagated?: boolean;
 
   /**
+   * DISPLAY-only (go-to-k/cdkd#6078): set on a change the diff computed on
+   * its own whose property ALSO reads a resource this deploy replaces, or an
+   * attribute it may move in place. `newValue` was resolved against the
+   * CURRENT state, so it embeds the pre-deploy physical id / attribute; the
+   * deploy re-resolves the property against the in-flight state and writes
+   * the moved value. The renderers show the template value marked
+   * `(known after deploy)` instead. Nothing on the deploy path reads it.
+   */
+  newValueKnownAfterDeploy?: boolean;
+
+  /**
    * Set on synthetic changes created by IN-PLACE attribute propagation
    * (`DiffCalculator.promoteInPlaceAttributeDependents`, every arm): the
    * property's template value did not change, but an attribute it reads of an

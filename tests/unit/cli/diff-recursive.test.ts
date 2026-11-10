@@ -600,6 +600,34 @@ describe('renderDiffTree', () => {
     expect(text).not.toContain('"ref"');
   });
 
+  it('prints the template value for an own change resolved against a changing resource (go-to-k/cdkd#6078)', () => {
+    const template = { 'Fn::Join': ['|', [{ Ref: 'Topic' }, '2']] };
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Param',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SSM::Parameter',
+        desiredProperties: { Value: template },
+        propertyChanges: [
+          {
+            path: 'Value',
+            oldValue: 'arn:aws:sns:us-east-1:123:Topic1|1',
+            newValue: 'arn:aws:sns:us-east-1:123:Topic1|2',
+            requiresReplacement: false,
+            newValueKnownAfterDeploy: true,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+
+    expect(lines).toContain('      - Value: [reads a resource this deploy changes]');
+    expect(lines).toContain(`          new: ${JSON.stringify(template)} (known after deploy)`);
+    // The stale resolved value is never printed as the new side.
+    expect(lines.join('\n')).not.toContain('Topic1|2');
+  });
+
   it('annotates an in-place-propagated change as [attribute propagated] (go-to-k/cdkd#3662)', () => {
     const root = leaf('P', 'P', [
       {

@@ -1021,3 +1021,57 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     });
   });
 });
+
+describe('DiffCalculator - an own change that also reads an attribute that may move (go-to-k/cdkd#6078)', () => {
+  const paramState = (value: string): StackState => {
+    const state = crState();
+    state.resources['Param'] = {
+      physicalId: '/x/p',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: '/x/p', Type: 'String', Value: value },
+    };
+    return state;
+  };
+  const paramTemplate = (seed: string): CloudFormationTemplate => ({
+    Resources: {
+      Cr: cr(seed),
+      Param: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: {
+          Name: '/x/p',
+          Type: 'String',
+          Value: { 'Fn::Join': ['-', [{ 'Fn::GetAtt': ['Cr', 'Text'] }, '2']] },
+        },
+      },
+    },
+  });
+
+  it('marks the own-change row, resolved against the pre-update attribute, newValueKnownAfterDeploy', async () => {
+    const state = paramState('text-a-1');
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      paramTemplate('b'),
+      makeResolver(state)
+    );
+
+    const rows = changes.get('Param')?.propertyChanges?.filter((pc) => pc.path === 'Value');
+    expect(rows).toHaveLength(1);
+    // Resolved against the custom resource's CURRENT `Text`, which its update may move.
+    expect(rows?.[0]?.newValue).toBe('text-a-2');
+    expect(rows?.[0]?.newValueKnownAfterDeploy).toBe(true);
+    expect(rows?.[0]?.inPlacePropagated).toBeUndefined();
+  });
+
+  it('leaves the own-change row unmarked when the attribute it reads cannot move (the control)', async () => {
+    const state = paramState('text-a-1');
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      paramTemplate('a'),
+      makeResolver(state)
+    );
+
+    const pc = changeOf(changes, 'Param', 'Value');
+    expect(pc?.newValue).toBe('text-a-2');
+    expect(pc?.newValueKnownAfterDeploy).toBeUndefined();
+  });
+});

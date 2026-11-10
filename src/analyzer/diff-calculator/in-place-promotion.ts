@@ -115,7 +115,9 @@ export function promoteInPlaceAttributeDependents(
     const syntheticChanges: PropertyChange[] = [];
 
     for (const [propKey, getAttRefs] of perProp) {
-      if (existingPaths.has(propKey)) continue; // already diffed on its own
+      // Already diffed on its own: matched below only to mark its `newValue`
+      // as resolved against a value that may move (go-to-k/cdkd#6078).
+      const ownChange = existingPaths.has(propKey);
       // Which upstreams + attributes does this property read via GetAtt / Sub?
       let matched = false;
       // Set when ONLY arm 5 (a `NoEcho` parameter) promoted the reader.
@@ -198,6 +200,17 @@ export function promoteInPlaceAttributeDependents(
         }
       }
       const noEchoPromoted = !matched && matchedNoEcho;
+      if (ownChange) {
+        // A `NoEcho`-only match has `***` on both sides already; nothing to mark.
+        if (matched) {
+          for (const pc of change.propertyChanges ?? []) {
+            if (pc.path === propKey && pc.inPlacePropagated !== true) {
+              pc.newValueKnownAfterDeploy = true;
+            }
+          }
+        }
+        continue;
+      }
       if (noEchoPromoted) matched = true;
       if (!matched) continue;
 

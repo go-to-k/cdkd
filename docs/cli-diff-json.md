@@ -96,11 +96,16 @@ absent on all others.
 | `inPlacePropagated` | `[attribute propagated]` |
 | `readProvenancePromoted` (with `inPlacePropagated`) | `[read value moved upstream]` |
 | `maskedExpressionChanged` | `[masked input or expression changed]` |
+| `newValueKnownAfterDeploy` | `[reads a resource this deploy changes]` |
 
-Two things to know when reading these entries:
+Three things to know when reading these entries:
 
 - On an entry with `maskedExpressionChanged`, `oldValue` and `newValue` are
   both `***`.
+- On an entry with `newValueKnownAfterDeploy`, `newValue` was resolved
+  against the resources as they are now. It still embeds the old physical ID,
+  ARN or attribute of the resource this deploy changes, so it is not the value
+  the deploy will write.
 - On a propagated entry, `requiresReplacement: true` means the resource may be
   replaced. It is not a verdict, because the deploy decides once it knows the
   new value.

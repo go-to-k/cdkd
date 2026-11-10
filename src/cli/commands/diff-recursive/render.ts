@@ -250,14 +250,21 @@ export function renderChangeLines(
                     ? ' [masked input or expression changed]'
                     : propChange.unsettled === true
                       ? ' [unsettled after a failed update; sent again]'
-                      : '';
+                      : propChange.newValueKnownAfterDeploy === true
+                        ? ' [reads a resource this deploy changes]'
+                        : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,
               propChange.newValue
             );
             const oldStr = renderDiffValue(propChange.oldValue, oldFiltered, indent, false);
-            const newStr = renderDiffValue(propChange.newValue, newFiltered, indent, true);
+            // go-to-k/cdkd#6078: `newValue` was resolved against the resource
+            // this deploy replaces or updates, so print the template value.
+            const newStr =
+              propChange.newValueKnownAfterDeploy === true
+                ? `${JSON.stringify(change.desiredProperties?.[propChange.path])} (known after deploy)`
+                : renderDiffValue(propChange.newValue, newFiltered, indent, true);
             logFn(`      - ${propChange.path}:${requiresReplace}${propagated}`);
             logFn(`          old: ${oldStr}`);
             logFn(`          new: ${newStr}`);

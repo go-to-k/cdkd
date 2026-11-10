@@ -1061,6 +1061,83 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(refChange?.replacementPropagated).toBe(true);
   });
 
+  it('marks an own-change property that also reads a replaced resource newValueKnownAfterDeploy (#6078)', async () => {
+    // The parameter's Value changes on its own (n: 1 -> 2) AND embeds the
+    // topic's ARN; the topic is renamed (replaced). Its own-change newValue was
+    // resolved against the OLD topic, so it must not be shown as final.
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'arn:aws:sns:us-east-1:123:Topic1',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { TopicName: 'Topic1' },
+      attributes: {},
+    };
+    state.resources['Param'] = {
+      physicalId: '/x/json',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: '/x/json', Type: 'String', Value: 'arn:aws:sns:us-east-1:123:Topic1|1' },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'Topic2' } },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/x/json',
+            Type: 'String',
+            Value: { 'Fn::Join': ['|', [{ Ref: 'Topic' }, '2']] },
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const value = changes.get('Param')?.propertyChanges?.filter((pc) => pc.path === 'Value');
+    // ONE row: the own change, marked -- not a second synthetic row.
+    expect(value).toHaveLength(1);
+    expect(value?.[0]?.newValueKnownAfterDeploy).toBe(true);
+    expect(value?.[0]?.replacementPropagated).toBeUndefined();
+  });
+
+  it('leaves an own-change property that reads nothing replaced unmarked (#6078)', async () => {
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'arn:aws:sns:us-east-1:123:Topic1',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { TopicName: 'Topic1' },
+      attributes: {},
+    };
+    state.resources['Param'] = {
+      physicalId: '/x/json',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: '/x/json', Type: 'String', Value: 'arn:aws:sns:us-east-1:123:Topic1|1' },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'Topic1' } },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/x/json',
+            Type: 'String',
+            Value: { 'Fn::Join': ['|', [{ Ref: 'Topic' }, '2']] },
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const value = changes.get('Param')?.propertyChanges?.find((pc) => pc.path === 'Value');
+    expect(value).toBeDefined();
+    expect(value?.newValueKnownAfterDeploy).toBeUndefined();
+  });
+
   it('does NOT spuriously promote grandchildren when the referencing property is a conditionalReplacement (issue #807 Fix 1)', async () => {
     // A type whose referencing property is governed by a conditional rule
     // comparing oldValue vs newValue. If the synthetic promotion fed the

@@ -72,6 +72,15 @@ export class ReplacementFanoutStack extends cdk.Stack {
     // The topic policy's Resource is the topic ARN via Ref(topic). On phase b
     // it must re-point at the new topic (CloudFormation would replace the
     // policy's target; cdkd must update it to reference the new topic).
+    // go-to-k/cdkd#6078: a dependent whose Value ALSO changes on its own in
+    // phase b. `cdkd diff` resolves that own change against the CURRENT
+    // (phase-a) topic, so verify.sh asserts the preview prints the template
+    // value as known after deploy rather than the stale ARN.
+    const ownChange = new ssm.StringParameter(this, 'OwnChangeDependent', {
+      stringValue: `arn=${topic.topicArn}|phase=${phase}`,
+    });
+    new cdk.CfnOutput(this, 'OwnChangeDependentName', { value: ownChange.parameterName });
+
     const topicPolicy = new sns.TopicPolicy(this, 'BaseTopicPolicy', {
       topics: [topic],
     });

@@ -127,6 +127,10 @@ before. They refer to another resource, and that resource is changing.
   resource it reads records (that resource was replaced or updated in an
   earlier deploy). The deploy sends the update when the value it reads now
   differs.
+- `[reads a resource this deploy changes]`: the property's own text changed
+  too, and it also reads a resource that is being replaced or updated. Its
+  `new:` side is the template value marked `(known after deploy)`, because the
+  value it reads is known only once that resource has changed.
 - `[may require replacement]`: appears on a propagated line when the property
   cannot change in place. If the value it reads moves, the deploy replaces
   this resource.
