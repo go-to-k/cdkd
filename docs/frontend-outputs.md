@@ -25,8 +25,8 @@ new cdk.CfnOutput(this, 'UserPoolClientId', { value: client.userPoolClientId });
 ```
 
 The construct ID becomes the output's key in the file. An output declared
-inside a nested construct gets a hash appended to its key, so declare the ones
-a script reads at the stack level.
+inside a nested construct gets a key built from its construct path plus a
+hash, so declare the ones a script reads at the stack level.
 
 ## Local development
 
@@ -76,6 +76,11 @@ To skip the flag on every deploy, set the path once in `cdk.json`:
   "outputsFile": "cdk-outputs.json"
 }
 ```
+
+Each deploy replaces the file with the outputs of the stacks it deployed. A
+later `cdkd deploy OtherStack` leaves no `ApiStack` entry, and `jq` then
+writes `null` without an error, so regenerate the config right after
+deploying `ApiStack`.
 
 The file holds one environment's values, so keep it and `.env.local` out of
 version control.
