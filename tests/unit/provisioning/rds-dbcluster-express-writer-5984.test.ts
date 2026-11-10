@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { EXPRESS_WRITER_RESOURCE_ID_KEY } from '../../../src/provisioning/providers/rds/express-writer.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
+import { applyDefaultNameForFallback } from '../../../src/provisioning/resource-name/fallback.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const CLUSTER = 'AWS::RDS::DBCluster';
@@ -259,6 +260,18 @@ describe('RDSProvider DBCluster WithExpressConfiguration (go-to-k/cdkd#5984)', (
       expect(id.length).toBe(63);
     });
 
+    it('names it alike on the Cloud Control route, which shares the rule', () => {
+      const long = 'ExpressCluster'.repeat(8);
+      const express = applyDefaultNameForFallback(long, CLUSTER, { ...EXPRESS_BAG })[
+        'DBClusterIdentifier'
+      ] as string;
+      const plain = applyDefaultNameForFallback(long, CLUSTER, { Engine: 'aurora-postgresql' })[
+        'DBClusterIdentifier'
+      ] as string;
+      expect(`${express}-instance-1`.length).toBeLessThanOrEqual(63);
+      expect(plain.length).toBe(63);
+    });
+
     it('finds the writer of a cluster declared with uppercase letters', async () => {
       script({ [`${ID}-instance-1`]: { status: 'available', resourceId: WRITER_ID } });
       await provider.delete('Db', ID.toUpperCase(), CLUSTER, EXPRESS_BAG, {
@@ -281,6 +294,26 @@ describe('RDSProvider DBCluster WithExpressConfiguration (go-to-k/cdkd#5984)', (
       ).rejects.toThrow(/wait failed/);
       expect(names()).not.toContain('DeleteDBInstanceCommand');
       expect(names()).toContain('DeleteDBClusterCommand');
+    });
+
+    it("leaves another cluster's instance out of a failed cleanup's recovery command", async () => {
+      script({ [WRITER]: { status: 'available', resourceId: 'db-OTHER', cluster: 'other' } });
+      const base = rdsSend.getMockImplementation()!;
+      rdsSend.mockImplementation((cmd: { constructor: { name: string } }) =>
+        cmd.constructor.name === 'DeleteDBClusterCommand'
+          ? Promise.reject(awsError('AccessDenied', 'not authorized: rds:DeleteDBCluster'))
+          : base(cmd)
+      );
+      vi.spyOn(
+        provider as unknown as { waitForClusterAvailable: () => Promise<void> },
+        'waitForClusterAvailable'
+      ).mockRejectedValue(new Error('wait failed'));
+      await expect(
+        provider.create('Db', CLUSTER, { DBClusterIdentifier: ID, ...EXPRESS_BAG })
+      ).rejects.toThrow(/wait failed/);
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toMatch(/aws rds delete-db-cluster/);
+      expect(warned).not.toMatch(/delete-db-instance/);
     });
 
     it("names the writer delete in a failed cleanup's recovery command", async () => {

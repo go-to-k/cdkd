@@ -196,13 +196,8 @@ export async function createDBCluster(
 
   const dbClusterIdentifier =
     (properties['DBClusterIdentifier'] as string | undefined) ||
-    generatedNameFor(
-      'AWS::RDS::DBCluster',
-      logicalId,
-      // go-to-k/cdkd#5984: RDS refuses an express cluster whose writer name,
-      // `<cluster>-instance-1`, would pass 63 characters.
-      express ? { reservedLength: expressWriterIdentifier('').length } : {}
-    );
+    // go-to-k/cdkd#5984: an express cluster's name leaves room for its writer's.
+    generatedNameFor('AWS::RDS::DBCluster', logicalId, { properties });
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
   // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -392,6 +387,9 @@ export async function createDBCluster(
         ...(effectiveProperties !== undefined && { effectiveProperties }),
       };
     } catch (innerError) {
+      // go-to-k/cdkd#5984: whether the writer under `<cluster>-instance-1` is
+      // this cluster's, read before the cleanup and named in its recovery.
+      let ownWriter = false;
       try {
         // Flip DeletionProtection off first when template requested it
         // — otherwise DeleteDBCluster rejects with `InvalidParameter
@@ -416,7 +414,8 @@ export async function createDBCluster(
         // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer
         // it created for this cluster exists; it takes it once the writer is
         // `deleting`. Only a member of this cluster: a name is no attribution.
-        if (express && (await isOwnExpressWriter.call(this, dbClusterIdentifier))) {
+        ownWriter = express && (await isOwnExpressWriter.call(this, dbClusterIdentifier));
+        if (ownWriter) {
           try {
             await this.getClient().send(
               new DeleteDBInstanceCommand({
@@ -471,7 +470,7 @@ export async function createDBCluster(
           ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
           : aws``;
         // go-to-k/cdkd#5984: RDS refuses the cluster delete while its writer exists.
-        const writer = express
+        const writer = ownWriter
           ? aws`aws rds delete-db-instance --db-instance-identifier ${expressWriterIdentifier(dbClusterIdentifier)} --skip-final-snapshot; `
           : aws``;
         // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
