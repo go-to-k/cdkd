@@ -16,6 +16,7 @@ On this page:
 - [STS cannot report the account](#sts-cannot-report-the-account)
 - ["not authorized to perform: sts:AssumeRole"](#not-authorized-to-perform-sts-assumerole)
 - ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination)
+- ["is not authorized to create managed-rule"](#is-not-authorized-to-create-managed-rule)
 - [Set C: permissions the template does not imply](#set-c-permissions-the-template-does-not-imply)
 - [What you lose without `cloudformation:DescribeType`](#what-you-lose-without-cloudformation-describetype)
 
@@ -182,6 +183,31 @@ aws logs describe-resource-policies --region us-east-1
 > There is no per-entry API for these policies. `aws logs put-resource-policy`
 > rewrites a whole document and `aws logs delete-resource-policy` removes one
 > outright, which revokes log delivery for every identity in it.
+
+## "is not authorized to create managed-rule"
+
+A Step Functions state machine that uses a `.sync` integration (a task with
+`integrationPattern: RUN_JOB`, such as `EcsRunTask`, `BatchSubmitJob` or
+`StepFunctionsStartExecution`) fails to create with:
+
+```text
+'arn:aws:iam::<account>:role/<role>' is not authorized to create managed-rule.
+```
+
+Each `.sync` integration uses an EventBridge rule that Step Functions manages
+(`StepFunctionsGetEventsFor<Service>Rule`). When that rule does not exist yet
+in the account and region, Step Functions checks that the state machine's role
+may create it. CDK grants `events:PutRule`, `events:PutTargets` and
+`events:DescribeRule` on the rule, but a grant created moments earlier has not
+propagated yet.
+
+| Cause | Fix |
+| --- | --- |
+| The role's events grants have not propagated yet | None. cdkd retries this for you |
+| The role lacks the events grants on the managed rule | Grant the three actions above on the rule's ARN |
+
+Once the rule exists, Step Functions skips the check, so only the first
+deployment of each `.sync` integration in an account and region reaches it.
 
 ## Set C: permissions the template does not imply
 

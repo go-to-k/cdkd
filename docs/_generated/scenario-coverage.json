@@ -2745,6 +2745,11 @@
       "scenarios": []
     },
     {
+      "name": "stepfunctions-sync-managed-rule",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "stream-delete-redeploy",
       "annotated": false,
       "scenarios": []
@@ -3803,6 +3808,7 @@
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",
+    "stepfunctions-sync-managed-rule",
     "stream-delete-redeploy",
     "synthetics-canary",
     "termination-protection",

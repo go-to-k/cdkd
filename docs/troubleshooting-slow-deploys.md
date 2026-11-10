@@ -190,7 +190,7 @@ depends on the kind of error:
 | Kind of error | Examples | Retries | Total wait |
 | --- | --- | --- | --- |
 | Throttling and transient | Rate limits, a resource still leaving `Pending`, HTTP 500 / 502 / 503 / 504 | 8, backing off 1s to 8s | 47s |
-| IAM propagation | `cannot be assumed`, `not authorized to perform`, `Invalid IAM Instance Profile`, `not authorized to access the Log Destination` | 26, every 0.25s to 2s | 47.75s |
+| IAM propagation | `cannot be assumed`, `not authorized to perform`, `Invalid IAM Instance Profile`, `not authorized to access the Log Destination`, `is not authorized to create managed-rule` | 26, every 0.25s to 2s | 47.75s |
 | A name still held by a deleted resource | `QueueDeletedRecently`, Step Functions `StateMachineDeleting` | 8, backing off 2s to 10s | 64s |
 
 An access denial that says the call was refused `with an explicit deny` (by a

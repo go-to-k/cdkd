@@ -438,6 +438,22 @@ describe('isRetryableTransientError', () => {
       expect(isIamPropagationError(logAccess)).toBe(true);
     });
 
+    it('retries the SFN .sync managed-rule rejection as IAM propagation (#6081)', () => {
+      // A live A/B (us-east-1, 2026-11-10) against an absent
+      // `StepFunctionsGetEventsForBatchJobsRule`: with the events grants
+      // ABSENT this sentence never clears; with them PUT it clears after ~11s
+      // and the IDENTICAL call succeeds. AWS's sentence is verbatim from the
+      // failed `cdkd deploy`; the prefix is StepFunctionsProvider.create's.
+      const managedRule =
+        "Failed to create Step Functions state machine Parent8B210403: 'arn:aws:iam::111122223333:role/MyStack-ParentRole5F0C366C-f5bd44602564' is not authorized to create managed-rule.";
+      expect(isRetryableTransientError(new Error(managedRule), managedRule)).toBe(true);
+      expect(isIamPropagationError(managedRule)).toBe(true);
+      // The negation is part of the anchor: an affirmative sentence is no error.
+      const affirmative = "'arn:aws:iam::111122223333:role/r' is authorized to create managed-rule.";
+      expect(isRetryableTransientError(new Error(affirmative), affirmative)).toBe(false);
+      expect(isIamPropagationError(affirmative)).toBe(false);
+    });
+
     it('does not retry an SFN error that carries neither propagation phrase', () => {
       // The boundary the reversed case above no longer guards. Both SFN
       // patterns are anchored on their own full sentence, so an ordinary

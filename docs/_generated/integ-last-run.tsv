@@ -416,6 +416,7 @@ state-info-command	2026-11-04T08:01:51Z	PASS	80	verify.sh	rc ok, orph clean (sta
 stepfunctions	2026-11-07T00:17:39Z	PASS	60	verify.sh	#5936 stepfunctions split head; rc ok, orph clean
 stepfunctions-logging	2026-11-04T18:46:30Z	PASS	221	verify.sh	rc ok, destroy 0 errors, orph clean; own state bucket
 stepfunctions-s3-definition	2026-11-07T00:18:55Z	PASS	70	verify.sh	#5936 stepfunctions split head; rc ok, orph clean
+stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, orph clean, managed-rule window hit and retried (#6081), rebuilt tree rerun for marker
 stream-delete-redeploy	2026-11-01T14:08:38Z	PASS	914	verify.sh	rc ok, orph clean
 synthetics-canary	2026-11-04T08:15:09Z	PASS	130	verify.sh	rc ok, orph clean
 tags-propagation	2026-10-24T19:26:15Z	PASS	167	verify.sh	rc ok, orph clean, #5266 tail-c
