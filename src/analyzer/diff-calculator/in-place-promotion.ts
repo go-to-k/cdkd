@@ -7,6 +7,7 @@ import {
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
   REF_READ,
+  markNewValueKnownAfterDeploy,
   siblingsOf,
 } from './shared.js';
 
@@ -202,13 +203,7 @@ export function promoteInPlaceAttributeDependents(
       const noEchoPromoted = !matched && matchedNoEcho;
       if (ownChange) {
         // A `NoEcho`-only match has `***` on both sides already; nothing to mark.
-        if (matched) {
-          for (const pc of change.propertyChanges ?? []) {
-            if (pc.path === propKey && pc.inPlacePropagated !== true) {
-              pc.newValueKnownAfterDeploy = true;
-            }
-          }
-        }
+        if (matched) markNewValueKnownAfterDeploy(change, propKey);
         continue;
       }
       if (noEchoPromoted) matched = true;

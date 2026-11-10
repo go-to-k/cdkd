@@ -91,6 +91,14 @@ export interface PropertyChange {
   newValueKnownAfterDeploy?: boolean;
 
   /**
+   * The template value of a `newValueKnownAfterDeploy` row, which the
+   * renderers print in place of its stale `newValue`. Carried on the row (not
+   * read from `ResourceChange.desiredProperties` at render time) so the
+   * `NoEcho` display mask covers it like `newValue` (go-to-k/cdkd#4049).
+   */
+  newValueTemplate?: unknown;
+
+  /**
    * Set on synthetic changes created by IN-PLACE attribute propagation
    * (`DiffCalculator.promoteInPlaceAttributeDependents`, every arm): the
    * property's template value did not change, but an attribute it reads of an

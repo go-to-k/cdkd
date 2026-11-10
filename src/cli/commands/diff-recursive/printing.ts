@@ -205,18 +205,34 @@ export function maskResourceChangeForDisplay(
   let changed = false;
   const propertyChanges = change.propertyChanges.map((propertyChange): PropertyChange => {
     const newValue = maskDiffValue(propertyChange.newValue, mask);
+    // go-to-k/cdkd#6078: the template value printed in place of a stale
+    // `newValue` is a new side too.
+    const hasTemplate = Object.prototype.hasOwnProperty.call(propertyChange, 'newValueTemplate');
+    const newValueTemplate = hasTemplate
+      ? maskDiffValue(propertyChange.newValueTemplate, mask)
+      : undefined;
     const oldValue = maskedOldSide(
       propertyChange.oldValue,
-      newValue !== propertyChange.newValue,
+      newValue !== propertyChange.newValue ||
+        (hasTemplate && newValueTemplate !== propertyChange.newValueTemplate),
       mask
     );
     // `path` is a top-level property NAME the template's resource schema
     // spells, never a value, so it is printed as it is.
-    if (newValue === propertyChange.newValue && oldValue === propertyChange.oldValue) {
+    if (
+      newValue === propertyChange.newValue &&
+      oldValue === propertyChange.oldValue &&
+      newValueTemplate === propertyChange.newValueTemplate
+    ) {
       return propertyChange;
     }
     changed = true;
-    return { ...propertyChange, oldValue, newValue };
+    return {
+      ...propertyChange,
+      oldValue,
+      newValue,
+      ...(hasTemplate && { newValueTemplate }),
+    };
   });
   return changed ? { ...change, propertyChanges } : change;
 }

@@ -105,7 +105,8 @@ Three things to know when reading these entries:
 - On an entry with `newValueKnownAfterDeploy`, `newValue` was resolved
   against the resources as they are now. It still embeds the old physical ID,
   ARN or attribute of the resource this deploy changes, so it is not the value
-  the deploy will write.
+  the deploy will write. `newValueTemplate` holds the template value the text
+  output prints instead.
 - On a propagated entry, `requiresReplacement: true` means the resource may be
   replaced. It is not a verdict, because the deploy decides once it knows the
   new value.

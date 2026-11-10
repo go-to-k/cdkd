@@ -607,7 +607,6 @@ describe('renderDiffTree', () => {
         logicalId: 'Param',
         changeType: 'UPDATE',
         resourceType: 'AWS::SSM::Parameter',
-        desiredProperties: { Value: template },
         propertyChanges: [
           {
             path: 'Value',
@@ -615,6 +614,7 @@ describe('renderDiffTree', () => {
             newValue: 'arn:aws:sns:us-east-1:123:Topic1|2',
             requiresReplacement: false,
             newValueKnownAfterDeploy: true,
+            newValueTemplate: template,
           },
         ],
       },

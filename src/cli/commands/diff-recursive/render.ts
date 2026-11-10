@@ -263,7 +263,7 @@ export function renderChangeLines(
             // this deploy replaces or updates, so print the template value.
             const newStr =
               propChange.newValueKnownAfterDeploy === true
-                ? `${JSON.stringify(change.desiredProperties?.[propChange.path])} (known after deploy)`
+                ? `${JSON.stringify(propChange.newValueTemplate)} (known after deploy)`
                 : renderDiffValue(propChange.newValue, newFiltered, indent, true);
             logFn(`      - ${propChange.path}:${requiresReplace}${propagated}`);
             logFn(`          old: ${oldStr}`);

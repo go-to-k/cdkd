@@ -1100,6 +1100,46 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(value).toHaveLength(1);
     expect(value?.[0]?.newValueKnownAfterDeploy).toBe(true);
     expect(value?.[0]?.replacementPropagated).toBeUndefined();
+    // The template value the renderers print instead, carried on the row.
+    expect(value?.[0]?.newValueTemplate).toEqual({ 'Fn::Join': ['|', [{ Ref: 'Topic' }, '2']] });
+  });
+
+  it('never marks a row a promotion pass created (#6078 review)', async () => {
+    // No own change: the reader reads the renamed topic's TopicName, so the
+    // replacement pass AND the in-place pass (arm 1: the read attribute names
+    // a changed property) both reach it. Its row is synthetic and must stay
+    // unmarked.
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'arn:aws:sns:us-east-1:123:Topic1',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { TopicName: 'Topic1' },
+      attributes: { TopicName: 'Topic1' },
+    };
+    state.resources['Param'] = {
+      physicalId: '/x/cond',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: '/x/cond', Type: 'String', Value: 'Topic1' },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'Topic2' } },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/x/cond', Type: 'String', Value: { 'Fn::GetAtt': ['Topic', 'TopicName'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const rows = changes.get('Param')?.propertyChanges?.filter((pc) => pc.path === 'Value');
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]?.replacementPropagated).toBe(true);
+    expect(rows?.[0]?.newValueKnownAfterDeploy).toBeUndefined();
+    expect(rows?.[0]?.newValueTemplate).toBeUndefined();
   });
 
   it('leaves an own-change property that reads nothing replaced unmarked (#6078)', async () => {

@@ -1,3 +1,4 @@
+import type { ResourceChange } from '../../types/state.js';
 import type { ReplacementSiblings } from '../replacement-rules.js';
 import { isIntrinsicShaped } from '../../provisioning/create-only-properties.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
@@ -224,4 +225,30 @@ export function siblingsOf(change: {
     return undefined;
   }
   return { oldProperties: change.currentProperties, newProperties: change.desiredProperties };
+}
+
+/**
+ * Marks the row the diff computed ON ITS OWN for `path` as resolved against a
+ * resource this deploy replaces or updates (go-to-k/cdkd#6078), and records
+ * the template value the renderers print instead of its stale `newValue`.
+ * Display-only: nothing on the deploy path reads either field. A row a
+ * promotion pass created (propagated, `NoEcho`-promoted, read-provenance) or
+ * one shown as `***` on both sides already says the value is not final, so
+ * it is left as it is.
+ */
+export function markNewValueKnownAfterDeploy(change: ResourceChange, path: string): void {
+  for (const pc of change.propertyChanges ?? []) {
+    if (
+      pc.path !== path ||
+      pc.replacementPropagated === true ||
+      pc.inPlacePropagated === true ||
+      pc.noEchoPromoted === true ||
+      pc.readProvenancePromoted === true ||
+      pc.maskedExpressionChanged === true
+    ) {
+      continue;
+    }
+    pc.newValueKnownAfterDeploy = true;
+    pc.newValueTemplate = change.desiredProperties?.[path];
+  }
 }

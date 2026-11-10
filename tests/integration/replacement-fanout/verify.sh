@@ -315,13 +315,16 @@ fi
 echo "    OK (fan-out): all ${DEP_COUNT} dependents re-resolved to the NEW base ARN ${TOPIC_ARN_B}"
 
 OWN_NAME=$(echo "${STATE_B}" | jq -r '.outputs.OwnChangeDependentName // empty')
+if [ -z "${OWN_NAME}" ]; then
+  echo "FAIL: no OwnChangeDependentName output in the phase-b state" >&2
+  exit 1
+fi
 OWN_VAL=$(aws ssm get-parameter --name "${OWN_NAME}" --region "${REGION}" --output json | jq -r '.Parameter.Value // empty')
 if [ "${OWN_VAL}" != "arn=${TOPIC_ARN_B}|phase=b" ]; then
   echo "FAIL: OwnChangeDependent ('${OWN_NAME}') Value '${OWN_VAL}' != 'arn=${TOPIC_ARN_B}|phase=b'" >&2
   exit 1
 fi
 echo "    OwnChangeDependent deployed with the phase-b topic ARN"
-
 
 # --- Extra dependent: TopicPolicy re-points at the new topic ----------
 POLICY_B=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_B}" --region "${REGION}" --output json 2>/dev/null \
@@ -375,9 +378,9 @@ if [ "${#ORPHAN_PARAMS[@]}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: all ${DEP_COUNT} dependent parameters are gone after destroy"
+assert_gone "OwnChangeDependent parameter '${OWN_NAME}' still exists after destroy (orphan)" aws ssm get-parameter --name "${OWN_NAME}" --region "${REGION}"
+echo "    OK: OwnChangeDependent is gone after destroy"
 
 echo ""
-assert_gone "OwnChangeDependent parameter '${OWN_NAME}' still exists after destroy (orphan)" aws ssm get-parameter --name "${OWN_NAME}" --region "${REGION}"
-
 echo "==> replacement-fanout test passed (base SNS topic replacement propagated to all ${DEP_COUNT} SSM-parameter dependents + the TopicPolicy + clean destroy)"
 echo "[verify] PASS"
