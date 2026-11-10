@@ -73,6 +73,8 @@ export function getDriftUnknownPaths(
     'GlobalClusterIdentifier',
     // Write-only: a ModifyDBCluster input RDS applies to the instances.
     'DBInstanceParameterGroupName',
+    // go-to-k/cdkd#5984: a CreateDBCluster input DescribeDBClusters has no member for.
+    'WithExpressConfiguration',
   ];
   // An absent or empty bag records nothing to scope by: compare.
   if (properties === undefined || Object.keys(properties).length === 0) return neverRead;

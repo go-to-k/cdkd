@@ -16,6 +16,9 @@
 #   4. assert the Lambda function exists on AWS (`get-function`)
 #   5. invoke the function via `lambda invoke` and assert statusCode=200
 #      in the response payload
+#   5b. cdkd diff expands the macro stack while its NAMED SSM parameter
+#       exists (issue #6077: EarlyValidation NAME_CONFLICT on the transient
+#       changeset), and 5c. an UPDATE redeploy reaches the parameter
 #   6. cdkd destroy --force
 #   7. assert the function is gone on AWS (`get-function` errors with
 #      ResourceNotFoundException) and cdkd state is empty
@@ -63,6 +66,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdMacroExpansionExample"
+PARAM_NAME="/cdkd-integ/macro-expansion/${REGION}/named"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/macro-expansion"
@@ -94,6 +98,9 @@ cleanup() {
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
+    # The named parameter outlives a run that failed before cdkd recorded it,
+    # and would fail the next run's first deploy with ParameterAlreadyExists.
+    aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" || true
     # Belt-and-braces: the transient macro-expand stack should always
     # be cleaned up by cdkd's expander `finally` block, but on a
     # cdkd-side crash mid-expansion it could be left behind. Sweep any
@@ -147,14 +154,36 @@ echo "[verify]   ✓ Lambda returned statusCode=200"
 
 echo "[verify] step 5b: cdkd diff expands the selected macro stack (issue #1150 regression)"
 DIFF_LOG="$(mktemp -t cdkd-macro-diff.XXXXXX.log)"
-${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1 | tee "${DIFF_LOG}"
+${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${DIFF_LOG}"
 if ! grep -F "[macros] Expanding CloudFormation macros" "${DIFF_LOG}" > /dev/null; then
   echo "[verify] FAIL: expected the macro-expansion log line in cdkd diff output (post-selection expansion in diff.ts)"
   rm -f "${DIFF_LOG}"
   exit 1
 fi
+# Issue #6077's path is taken only while AWS's EarlyValidation hook rejects the
+# transient changeset over the existing named parameter. Report whether it did;
+# a pass with the hook silent no longer exercises the fix.
+if grep -F "reading the Processed template from the failed changeset" "${DIFF_LOG}" > /dev/null; then
+  echo "[verify]   ✓ EarlyValidation rejected the changeset and cdkd read its Processed template (#6077 path)"
+else
+  echo "[verify]   NOTE: the EarlyValidation hook did not reject this run's changeset -- the #6077 path was not exercised"
+fi
 rm -f "${DIFF_LOG}"
-echo "[verify]   ✓ diff ran macro expansion for the selected stack"
+echo "[verify]   ✓ diff ran macro expansion for the selected stack (named parameter already existed)"
+
+echo "[verify] step 5c: UPDATE redeploy of the macro stack while its named parameter exists (issue #6077)"
+PARAM_VALUE="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" --query Parameter.Value --output text)"
+if [ "${PARAM_VALUE}" != "initial" ]; then
+  echo "[verify] FAIL: baseline ${PARAM_NAME} expected 'initial', got '${PARAM_VALUE}'"
+  exit 1
+fi
+CDKD_TEST_UPDATE=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+PARAM_VALUE="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" --query Parameter.Value --output text)"
+if [ "${PARAM_VALUE}" != "updated" ]; then
+  echo "[verify] FAIL: ${PARAM_NAME} expected 'updated' after the UPDATE redeploy, got '${PARAM_VALUE}'"
+  exit 1
+fi
+echo "[verify]   ✓ redeploy expanded the macro and updated ${PARAM_NAME}"
 
 echo "[verify] step 6: cdkd destroy (must NOT expand macros - state-driven)"
 DESTROY_LOG="$(mktemp -t cdkd-macro-destroy.XXXXXX.log)"
@@ -170,6 +199,9 @@ echo "[verify]   ✓ destroy skipped macro expansion"
 echo "[verify] step 7: assert function is gone on AWS"
 assert_gone "function ${FN_NAME} still exists post-destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 echo "[verify]   ✓ function deleted"
+
+assert_gone "parameter ${PARAM_NAME} still exists post-destroy" aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
+echo "[verify]   ✓ named parameter deleted"
 
 echo "[verify] step 7b: assert cdkd state is empty for ${STACK}"
 assert_gone "cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

@@ -6,6 +6,8 @@ import { stackScopeStore } from './stack-scope.js';
 export interface GeneratedNameInput {
   /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
   zoneId?: string;
+  /** The resource's properties, for a rule's `reservedLength`. */
+  properties?: Record<string, unknown>;
 }
 
 /** The current scope is a stack with an instance id (not a legacy stack). */
@@ -28,7 +30,10 @@ function deriveRuleName(
     });
     return `${base}${suffix}`;
   }
-  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+  const reserved = rule.reservedLength?.(input.properties ?? {}) ?? 0;
+  const options =
+    reserved > 0 ? { ...rule.options, maxLength: rule.options.maxLength - reserved } : rule.options;
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}`;
   const refused = rule.refusedPrefix;
   if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
     return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;
@@ -139,7 +144,10 @@ export function applyDefaultNameForFallback(
     generatedName = generateResourceName(logicalId, legacy);
   } else {
     const zoneId = rule.zoneSuffix === true ? directoryBucketZoneId(properties) : undefined;
-    generatedName = deriveRuleName(rule, logicalId, zoneId === undefined ? {} : { zoneId });
+    generatedName = deriveRuleName(rule, logicalId, {
+      properties,
+      ...(zoneId !== undefined && { zoneId }),
+    });
   }
   if (generatedName === undefined) {
     if (underivable === 'omit') return properties;

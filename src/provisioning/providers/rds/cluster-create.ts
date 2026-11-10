@@ -1,6 +1,7 @@
 import {
   CreateDBClusterCommand,
   DeleteDBClusterCommand,
+  DeleteDBInstanceCommand,
   ModifyDBClusterCommand,
   type CreateDBClusterCommandInput,
 } from '@aws-sdk/client-rds';
@@ -34,6 +35,13 @@ import {
   usableAvailabilityZones,
 } from './cluster-members.js';
 import { readableGlobalClusterId, recordedGlobalClusterIdentifier } from './shared.js';
+import {
+  EXPRESS_WRITER_RESOURCE_ID_KEY,
+  expressConfigurationFlag,
+  expressWriterIdentifier,
+  isOwnExpressWriter,
+  readExpressWriterId,
+} from './express-writer.js';
 
 // ─── DBCluster ────────────────────────────────────────────────────
 
@@ -105,6 +113,11 @@ export async function createDBCluster(
   const globalClusterId = globalClusterSkipped
     ? undefined
     : recordedGlobalClusterIdentifier(properties);
+  // go-to-k/cdkd#5984: create-only; likewise refused when not a boolean, and
+  // a rollback re-create leaves it out (a cluster without express configuration).
+  const expressFlag = expressConfigurationFlag(properties['WithExpressConfiguration']);
+  const expressSkipped = expressFlag === 'malformed';
+  const express = expressFlag === true;
   const classSkipped = malformedInstanceClass(properties['DBClusterInstanceClass']);
   const allocatedSkipped = clusterSizeValue(properties['AllocatedStorage']) === 'malformed';
   const iopsSkipped = clusterSizeValue(properties['Iops']) === 'malformed';
@@ -116,6 +129,7 @@ export async function createDBCluster(
     [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
     [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
     [globalClusterSkipped, 'GlobalClusterIdentifier', 'a string', 'no global cluster'],
+    [expressSkipped, 'WithExpressConfiguration', 'true or false', 'no express configuration'],
     // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, storage
     // size and IOPS.
     [classSkipped, 'DBClusterInstanceClass', 'a string', 'no instance class sent'],
@@ -168,6 +182,7 @@ export async function createDBCluster(
     ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
     ...(availabilityZonesSkipped ? ['AvailabilityZones'] : []),
     ...(globalClusterSkipped ? ['GlobalClusterIdentifier'] : []),
+    ...(expressSkipped ? ['WithExpressConfiguration'] : []),
     ...(classSkipped ? ['DBClusterInstanceClass'] : []),
     ...(allocatedSkipped ? ['AllocatedStorage'] : []),
     ...(iopsSkipped ? ['Iops'] : []),
@@ -181,7 +196,8 @@ export async function createDBCluster(
 
   const dbClusterIdentifier =
     (properties['DBClusterIdentifier'] as string | undefined) ||
-    generatedNameFor('AWS::RDS::DBCluster', logicalId);
+    // go-to-k/cdkd#5984: an express cluster's name leaves room for its writer's.
+    generatedNameFor('AWS::RDS::DBCluster', logicalId, { properties });
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
   // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -271,6 +287,8 @@ export async function createDBCluster(
         // go-to-k/cdkd#5639: the global cluster to join, as CloudFormation's
         // create sends it (a blank one names none).
         ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
+        // go-to-k/cdkd#5984: RDS creates the writer instance with the cluster.
+        ...(expressFlag !== undefined && !expressSkipped && { WithExpressConfiguration: express }),
         ...(tags.length > 0 && { Tags: tags }),
       })
     );
@@ -320,6 +338,14 @@ export async function createDBCluster(
             'local write forwarding setting'
           );
         }
+        // go-to-k/cdkd#5984: CloudFormation's create completes with the
+        // writer RDS created `available`.
+        if (express) {
+          await this.waitForInstanceAvailable(
+            logicalId,
+            expressWriterIdentifier(dbClusterIdentifier)
+          );
+        }
       }
 
       // go-to-k/cdkd#5639: once the cluster is available, as CloudFormation's
@@ -344,6 +370,9 @@ export async function createDBCluster(
 
       // Describe to get final attributes
       const described = await this.describeDBCluster(dbClusterIdentifier);
+      const expressWriterId = express
+        ? await readExpressWriterId.call(this, dbClusterIdentifier, maskerOrIdentity(mask))
+        : undefined;
 
       return {
         physicalId: dbClusterIdentifier,
@@ -353,10 +382,14 @@ export async function createDBCluster(
           'ReadEndpoint.Address': described?.ReaderEndpoint,
           Arn: described?.DBClusterArn,
           DBClusterResourceId: described?.DbClusterResourceId,
+          [EXPRESS_WRITER_RESOURCE_ID_KEY]: expressWriterId,
         }),
         ...(effectiveProperties !== undefined && { effectiveProperties }),
       };
     } catch (innerError) {
+      // go-to-k/cdkd#5984: whether the writer under `<cluster>-instance-1` is
+      // this cluster's, read before the cleanup and named in its recovery.
+      let ownWriter = false;
       try {
         // Flip DeletionProtection off first when template requested it
         // — otherwise DeleteDBCluster rejects with `InvalidParameter
@@ -376,6 +409,22 @@ export async function createDBCluster(
                 `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
               )
             );
+          }
+        }
+        // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer
+        // it created for this cluster exists; it takes it once the writer is
+        // `deleting`. Only a member of this cluster: a name is no attribution.
+        ownWriter = express && (await isOwnExpressWriter.call(this, dbClusterIdentifier));
+        if (ownWriter) {
+          try {
+            await this.getClient().send(
+              new DeleteDBInstanceCommand({
+                DBInstanceIdentifier: expressWriterIdentifier(dbClusterIdentifier),
+                SkipFinalSnapshot: true,
+              })
+            );
+          } catch (writerError) {
+            if (!this.isNotFoundError(writerError, 'DBInstanceNotFoundFault')) throw writerError;
           }
         }
         await this.getClient().send(
@@ -420,6 +469,10 @@ export async function createDBCluster(
         const unprotect = wantsDeletionProtection
           ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
           : aws``;
+        // go-to-k/cdkd#5984: RDS refuses the cluster delete while its writer exists.
+        const writer = ownWriter
+          ? aws`aws rds delete-db-instance --db-instance-identifier ${expressWriterIdentifier(dbClusterIdentifier)} --skip-final-snapshot; `
+          : aws``;
         // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
         // DeleteDBCluster names the caller's assumed-role ARN. Masked: AWS's
         // text can echo the create's resolved inputs.
@@ -430,7 +483,7 @@ export async function createDBCluster(
           this.logger.debug(m(`${cleanupHead}${m(cleanupFailure.detail)}`));
         }
         this.logger.warn(
-          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}${writer}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
         );
       }
       throw innerError;

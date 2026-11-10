@@ -7207,6 +7207,7 @@
         "cc-final-snapshot-handlers",
         "import-attribute-readback-final",
         "rds-aurora",
+        "rds-express-cluster",
         "rds-fix-forward-orphan",
         "rds-multiaz-cluster"
       ],
@@ -7221,6 +7222,10 @@
         "rds-aurora": [
           "l1",
           "l2"
+        ],
+        "rds-express-cluster": [
+          "l1",
+          "literal"
         ],
         "rds-fix-forward-orphan": [
           "l1"
@@ -8482,6 +8487,7 @@
         "local-invoke-from-cfn-stack-multi-stack",
         "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
+        "macro-expansion",
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
@@ -8743,6 +8749,9 @@
         "lost-child-after-failed-deploy": [
           "l1",
           "literal"
+        ],
+        "macro-expansion": [
+          "l2"
         ],
         "microservices": [
           "l2"

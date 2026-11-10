@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as sam from 'aws-cdk-lib/aws-sam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
 /**
@@ -46,6 +47,17 @@ export class MacroExpansionStack extends cdk.Stack {
         'exports.handler = async () => ({ statusCode: 200, body: JSON.stringify({ msg: "hello from cdkd macro-expansion integ" }) });',
       timeout: 10,
       memorySize: 128,
+    });
+
+    // Issue #6077: a resource with an EXPLICIT physical name. Once the first
+    // deploy has created it, CloudFormation's EarlyValidation hook rejects
+    // every later transient expansion changeset (NAME_CONFLICT_VALIDATION), so
+    // verify.sh's diff and UPDATE redeploy only pass when cdkd reads the
+    // Processed template from the failed changeset. CDKD_TEST_UPDATE=true
+    // changes its value so the redeploy has something to apply.
+    new ssm.StringParameter(this, 'NamedParameter', {
+      parameterName: `/cdkd-integ/macro-expansion/${this.region}/named`,
+      stringValue: process.env.CDKD_TEST_UPDATE === 'true' ? 'updated' : 'initial',
     });
 
     // Output the function's logical id so verify.sh can resolve the
