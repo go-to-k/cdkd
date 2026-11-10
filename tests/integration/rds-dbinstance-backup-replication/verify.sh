@@ -84,12 +84,16 @@ DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-5640-bkrepl-drift.$$.json"
 
 # The replicated automated backups of THIS fixture's instance in DEST_REGION,
 # one ARN per line; empty when RDS lists none (it answers not-found then).
-# Scoped by the fixed DBInstanceIdentifier only, never a broader listing.
+# Scoped by the fixed DBInstanceIdentifier only, never a broader listing, and
+# to backups whose Region is not DEST_REGION: a replicated backup reports its
+# source's region, so a same-named instance's own retained backups there (a
+# run of this fixture in DEST_REGION) are left alone.
 replicated_backups() {
   local out
   if ! out="$(aws rds describe-db-instance-automated-backups \
       --db-instance-identifier "${INSTANCE_ID}" --region "${DEST_REGION}" \
-      --query 'DBInstanceAutomatedBackups[].DBInstanceAutomatedBackupsArn' --output text 2>&1)"; then
+      --query "DBInstanceAutomatedBackups[?Region!='${DEST_REGION}'].DBInstanceAutomatedBackupsArn" \
+      --output text 2>&1)"; then
     grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" && return 0
     echo "${out}" >&2
     return 1

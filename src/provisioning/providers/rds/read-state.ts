@@ -367,7 +367,7 @@ export async function readCurrentStateDBInstance(
   const replicationRegion = replicationArn?.split(':')[3];
   if (replicationArn !== undefined && replicationRegion !== undefined && replicationRegion !== '') {
     result['AutomaticBackupReplicationRegion'] = replicationRegion;
-    const retention = await replicatedBackupRetention(replicationArn);
+    const retention = await replicatedBackupRetention.call(this, replicationArn);
     if (retention !== undefined) {
       result['AutomaticBackupReplicationRetentionPeriod'] = retention;
     }

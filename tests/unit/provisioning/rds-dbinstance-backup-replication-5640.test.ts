@@ -9,13 +9,17 @@
 // DESTINATION region naming the instance's ARN.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, mockWarn } = vi.hoisted(() => ({ mockSend: vi.fn(), mockWarn: vi.fn() }));
+const { mockSend, mockWarn, deadline } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  mockWarn: vi.fn(),
+  deadline: { remainingMs: 60_000 },
+}));
 
 // A short resource deadline: a wait that never settles fails its test at once
 // instead of spinning (the provider's sleep is stubbed below).
 vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  enclosingDeadlineRemainingMs: () => 60_000,
+  enclosingDeadlineRemainingMs: () => deadline.remainingMs,
 }));
 
 // Each client hands its own region to `mockSend`, so a test reads which
@@ -54,6 +58,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import { backupReplicationPlan } from '../../../src/provisioning/providers/rds/instance-members.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import { isAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 type Input = Record<string, unknown>;
 type Command = { constructor: { name: string }; input: Input };
@@ -90,7 +96,16 @@ interface Live {
   refuse?: { command: string; error: Error };
   /** DescribeDBInstanceAutomatedBackups' answer or refusal. */
   automatedBackup?: Input | Error;
+  /** Reads after a stop or start that still show the list as it was. */
+  lagReads?: number;
+  /** Refusals each replication call answers first, in turn, before it succeeds. */
+  busy?: Error[];
+  /** DescribeDBInstances leaves the instance's ARN out. */
+  noArn?: boolean;
 }
+
+/** Whether a start was sent while the instance still listed a replication. */
+let startedWhileListed = false;
 
 /**
  * A live instance whose replication list follows the calls: a stop empties
@@ -98,18 +113,33 @@ interface Live {
  */
 function arm(live: Live = {}): void {
   let replicatingTo = live.replicatingTo;
+  // What the list reads after a lagging change, and how many reads lag.
+  let pending: { region: string | undefined; reads: number } | undefined;
+  const busy = [...(live.busy ?? [])];
   const statuses = [...(live.statuses ?? ['available'])];
+  startedWhileListed = false;
+  const change = (region: string | undefined): void => {
+    if (live.lagReads) pending = { region, reads: live.lagReads };
+    else replicatingTo = region;
+  };
   mockSend.mockImplementation((command: Command, region: string) => {
     const name = command.constructor.name;
     if (live.refuse?.command === name) return Promise.reject(live.refuse.error);
+    if (/AutomatedBackupsReplicationCommand$/.test(name) && busy.length > 0) {
+      return Promise.reject(busy.shift()!);
+    }
     switch (name) {
       case 'DescribeDBInstancesCommand': {
+        if (pending !== undefined && pending.reads-- <= 0) {
+          replicatingTo = pending.region;
+          pending = undefined;
+        }
         const status = statuses.length > 1 ? statuses.shift()! : statuses[0]!;
         return Promise.resolve({
           DBInstances: [
             {
               DBInstanceIdentifier: 'db-1',
-              DBInstanceArn: ARN,
+              ...(live.noArn !== true && { DBInstanceArn: ARN }),
               DBInstanceStatus: status,
               Engine: 'postgres',
               DBInstanceAutomatedBackupsReplications:
@@ -123,10 +153,11 @@ function arm(live: Live = {}): void {
       case 'CreateDBInstanceCommand':
         return Promise.resolve({ DBInstance: { DBInstanceIdentifier: 'db-1' } });
       case 'StopDBInstanceAutomatedBackupsReplicationCommand':
-        replicatingTo = undefined;
+        change(undefined);
         return Promise.resolve({});
       case 'StartDBInstanceAutomatedBackupsReplicationCommand':
-        replicatingTo = region;
+        if (replicatingTo !== undefined) startedWhileListed = true;
+        change(region);
         return Promise.resolve({});
       case 'DescribeDBInstanceAutomatedBackupsCommand':
         return live.automatedBackup instanceof Error
@@ -178,6 +209,7 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
 
   afterEach(() => {
     delete process.env['CDKD_NO_WAIT'];
+    deadline.remainingMs = 60_000;
   });
 
   const update = (next: Input, prev: Input, context?: Parameters<RDSProvider['update']>[5]) =>
@@ -219,10 +251,24 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
     });
 
     it('waits for the instance to list the started replication', async () => {
+      // Two reads after the start still list nothing; the third lists it,
+      // and the create's final describe follows.
+      arm({ lagReads: 2 });
       await provider.create('L', INSTANCE, { ...REPLICATED });
       const order = calls();
       const start = order.indexOf('StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2');
-      expect(order.slice(start + 1)).toContain('DescribeDBInstancesCommand@us-east-1');
+      expect(order.slice(start + 1).filter((c) => c.startsWith('DescribeDBInstances'))).toHaveLength(4);
+    });
+
+    it('marks a replication failure as no name collision of the instance (#3826)', async () => {
+      arm({
+        refuse: {
+          command: 'StartDBInstanceAutomatedBackupsReplicationCommand',
+          error: awsError('InvalidParameterCombination', 'bad combination'),
+        },
+      });
+      const error = await provider.create('L', INSTANCE, { ...REPLICATED }).catch((e: unknown) => e);
+      expect(isAuxiliaryFailure(error)).toBe(true);
     });
 
     it('under --no-wait still waits for available before the start, and not after it', async () => {
@@ -296,6 +342,18 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
         /Provide a valid value for the AutomaticBackupReplicationKmsKeyId property/
       );
     });
+
+    it('adds no KMS hint to any other refusal', async () => {
+      arm({
+        refuse: {
+          command: 'StartDBInstanceAutomatedBackupsReplicationCommand',
+          error: awsError('InvalidParameterCombination', 'bad combination'),
+        },
+      });
+      const error = await provider.create('L', INSTANCE, { ...REPLICATED }).catch((e: unknown) => e);
+      expect(String((error as Error).message)).toMatch(/bad combination/);
+      expect(String((error as Error).message)).not.toMatch(/Provide a valid value/);
+    });
   });
 
   describe('update', () => {
@@ -340,6 +398,62 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
         'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
         'StartDBInstanceAutomatedBackupsReplicationCommand@eu-west-1',
       ]);
+    });
+
+    it('starts only once the stopped replication has left the list', async () => {
+      arm({ replicatingTo: 'us-west-2', lagReads: 2 });
+      await update({ ...REPLICATED, AutomaticBackupReplicationRegion: 'eu-west-1' }, REPLICATED);
+      expect(startedWhileListed).toBe(false);
+      expect(replicationCalls()).toEqual([
+        'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        'StartDBInstanceAutomatedBackupsReplicationCommand@eu-west-1',
+      ]);
+    });
+
+    it('under --no-wait still waits for the stop before a start', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      arm({ replicatingTo: 'us-west-2', lagReads: 2 });
+      await update({ ...REPLICATED, AutomaticBackupReplicationRegion: 'eu-west-1' }, REPLICATED);
+      expect(startedWhileListed).toBe(false);
+    });
+
+    it('waits for the started replication to be listed before returning', async () => {
+      arm({ lagReads: 2 });
+      await update(REPLICATED, BASE);
+      const order = calls();
+      const start = order.indexOf('StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2');
+      // Two lagging reads, then the one listing it.
+      expect(order.slice(start + 1).filter((c) => c.startsWith('DescribeDBInstances'))).toHaveLength(3);
+    });
+
+    it.each([
+      ['InvalidDBInstanceStateFault'],
+      ['InvalidDBInstanceAutomatedBackupStateFault'],
+    ])('resends a start RDS refused as busy (%s), as CloudFormation waits it out', async (fault) => {
+      arm({ busy: [awsError(fault, 'busy')] });
+      await update(REPLICATED, BASE);
+      expect(replicationCalls()).toEqual([
+        'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+      ]);
+    });
+
+    it('does not resend a start refused for any other reason', async () => {
+      arm({ busy: [awsError('InvalidParameterCombination', 'bad combination')] });
+      await expect(update(REPLICATED, BASE)).rejects.toThrow(/bad combination/);
+      expect(replicationCalls()).toHaveLength(1);
+    });
+
+    it('refuses before any replication call when the resource timeout leaves no time', async () => {
+      deadline.remainingMs = 20_000;
+      await expect(update(REPLICATED, BASE)).rejects.toThrow(/leaves no more time/);
+      expect(replicationCalls()).toEqual([]);
+    });
+
+    it('refuses when DescribeDBInstances names no ARN, sending nothing', async () => {
+      arm({ noArn: true });
+      await expect(update(REPLICATED, BASE)).rejects.toThrow(/no instance ARN/);
+      expect(replicationCalls()).toEqual([]);
     });
 
     it.each([
@@ -492,14 +606,55 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       expect(state).not.toHaveProperty('AutomaticBackupReplicationRetentionPeriod');
     });
 
-    it('propagates any other failure of that read', async () => {
+    it('keeps the region on the bare AWS not-found code too', async () => {
+      arm({
+        replicatingTo: 'us-west-2',
+        automatedBackup: awsError('DBInstanceAutomatedBackupNotFound', 'not found'),
+      });
+      const state = (await provider.readCurrentState('db-1', 'L', INSTANCE)) as Input;
+      expect(state['AutomaticBackupReplicationRegion']).toBe('us-west-2');
+    });
+
+    it('soft-fails a denied read with a warning, as the handler ignores it', async () => {
       arm({
         replicatingTo: 'us-west-2',
         automatedBackup: awsError('AccessDenied', 'not authorized'),
       });
+      const state = (await provider.readCurrentState('db-1', 'L', INSTANCE)) as Input;
+      expect(state['AutomaticBackupReplicationRegion']).toBe('us-west-2');
+      expect(state).not.toHaveProperty('AutomaticBackupReplicationRetentionPeriod');
+      expect(mockWarn).toHaveBeenCalledWith(expect.stringMatching(/AccessDenied/));
+    });
+
+    it('propagates any other failure of that read', async () => {
+      arm({
+        replicatingTo: 'us-west-2',
+        automatedBackup: awsError('ThrottlingException', 'rate exceeded'),
+      });
       await expect(provider.readCurrentState('db-1', 'L', INSTANCE)).rejects.toThrow(
-        /not authorized/
+        /rate exceeded/
       );
+    });
+
+    it('reports a replication in another region than declared as drift', async () => {
+      const drift = async (live: Input): Promise<number> => {
+        const pair = await provider.canonicalizeDriftPair(INSTANCE, REPLICATED, live);
+        return calculateResourceDrift(pair.baseline, pair.aws, {
+          ignorePaths: provider.getDriftUnknownPaths(INSTANCE, REPLICATED),
+          unorderedPaths: provider.getDriftUnorderedPaths(INSTANCE),
+        }).length;
+      };
+      const replicating = {
+        AutomaticBackupReplicationRegion: 'us-west-2',
+        AutomaticBackupReplicationRetentionPeriod: 3,
+      };
+      expect(await drift({ ...REPLICATED, ...replicating })).toBe(0);
+      expect(
+        await drift({ ...REPLICATED, ...replicating, AutomaticBackupReplicationRegion: 'eu-west-1' })
+      ).toBeGreaterThan(0);
+      expect(
+        await drift({ ...REPLICATED, ...replicating, AutomaticBackupReplicationRetentionPeriod: 5 })
+      ).toBeGreaterThan(0);
     });
 
     it('compares the retention only where declared, and never the write-only KMS key', () => {

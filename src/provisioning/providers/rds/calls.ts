@@ -428,6 +428,57 @@ async function sendInRegion<T>(
 const REPLICATION_KMS_KEY_ERROR = 'Encrypted instances require a valid KMS key ID';
 
 /**
+ * The faults CloudFormation's handler waits out on a replication start or
+ * stop (`MODIFY_DB_INSTANCE_AUTOMATIC_BACKUP_REPLICATION_ERROR_RULE_SET`:
+ * IN_PROGRESS): the instance or its automated backup is still changing.
+ */
+const REPLICATION_BUSY_FAULTS: ReadonlySet<string> = new Set([
+  'InvalidDBInstanceStateFault',
+  'InvalidDBInstanceState',
+  'InvalidDBInstanceAutomatedBackupStateFault',
+  'InvalidDBInstanceAutomatedBackupState',
+]);
+
+/** Sends of one replication call, the first included, before a busy refusal propagates. */
+const REPLICATION_MAX_ATTEMPTS = 10;
+
+/**
+ * One replication call to `region`, resent after a busy refusal
+ * ({@link REPLICATION_BUSY_FAULTS}) once the instance is `available` again, at
+ * most {@link REPLICATION_MAX_ATTEMPTS} sends; any other failure, or the last
+ * busy one, propagates.
+ */
+async function sendReplicationCall<T>(
+  this: RDSProvider,
+  logicalId: string,
+  physicalId: string,
+  region: string,
+  call: (client: RDSClient) => Promise<T>
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await sendInRegion(region, call);
+    } catch (error) {
+      if (!REPLICATION_BUSY_FAULTS.has(awsErrorName(error)) || attempt >= REPLICATION_MAX_ATTEMPTS) {
+        throw error;
+      }
+      this.logger.debug(
+        safeMsg`${logicalId}: automated backup replication call refused as busy (${awsErrorName(error)}); waiting to resend`
+      );
+      await this.sleep(15_000);
+      const budgetMs = Math.min(1_800_000, enclosingDeadlineRemainingMs() - 30_000);
+      if (budgetMs <= 0) throw error;
+      await this.waitForInstanceAvailable(
+        logicalId,
+        physicalId,
+        budgetMs,
+        'changing its automated backup replication'
+      );
+    }
+  }
+}
+
+/**
  * go-to-k/cdkd#5640: carry out a {@link BackupReplicationPlan} on an instance,
  * as CloudFormation's handlers do after the create or the update's other
  * changes (`stopAutomaticBackupReplicationInRegion` /
@@ -468,7 +519,7 @@ export async function applyBackupReplication(
   const live = liveBackupReplicationRegions(instance);
   for (const region of live) {
     this.logger.debug(safeMsg`Stopping automated backup replication of ${logicalId} to ${region}`);
-    await sendInRegion(region, (client) =>
+    await sendReplicationCall.call(this, logicalId, physicalId, region, (client) =>
       client.send(
         new StopDBInstanceAutomatedBackupsReplicationCommand({ SourceDBInstanceArn: arn })
       )
@@ -490,7 +541,7 @@ export async function applyBackupReplication(
     safeMsg`Starting automated backup replication of ${logicalId} to ${start.region}`
   );
   try {
-    await sendInRegion(start.region, (client) =>
+    await sendReplicationCall.call(this, logicalId, physicalId, start.region, (client) =>
       client.send(
         new StartDBInstanceAutomatedBackupsReplicationCommand({
           SourceDBInstanceArn: arn,
@@ -518,14 +569,25 @@ export async function applyBackupReplication(
   }
 }
 
+/** The faults CloudFormation's read soft-fails (`DESCRIBE_AUTOMATED_BACKUPS_SOFTFAIL_ERROR_RULE_SET`). */
+const RETENTION_READ_SOFT_FAULTS: ReadonlySet<string> = new Set([
+  'DBInstanceAutomatedBackupNotFoundFault',
+  'DBInstanceAutomatedBackupNotFound',
+  'AccessDenied',
+  'AccessDeniedException',
+]);
+
 /**
  * go-to-k/cdkd#5640: the retention of an instance's replicated automated
  * backup, read in its destination region as CloudFormation's read handler
- * reads it (`describeAutomatedBackupsReplication`). `undefined` when RDS
- * lists no such backup there (the handler soft-fails that read); any other
- * failure propagates, since it says nothing about the retention.
+ * reads it (`describeAutomatedBackupsReplication`). `undefined` where the
+ * handler soft-fails that read ({@link RETENTION_READ_SOFT_FAULTS}: no such
+ * backup there, or no permission to read it), with a warning for a denial,
+ * since a declared retention then reads as drift; any other failure
+ * propagates.
  */
 export async function replicatedBackupRetention(
+  this: RDSProvider,
   automatedBackupsArn: string
 ): Promise<number | undefined> {
   const region = automatedBackupsArn.split(':')[3];
@@ -542,12 +604,12 @@ export async function replicatedBackupRetention(
   } catch (error) {
     // The SDK's class name, or the bare AWS code a non-modeled error keeps.
     const name = awsErrorName(error);
-    if (
-      name === 'DBInstanceAutomatedBackupNotFoundFault' ||
-      name === 'DBInstanceAutomatedBackupNotFound'
-    ) {
-      return undefined;
+    if (!RETENTION_READ_SOFT_FAULTS.has(name)) throw error;
+    if (name.startsWith('AccessDenied')) {
+      this.logger.warn(
+        safeMsg`Could not read the replicated automated backup's retention in ${region} (${name}): AutomaticBackupReplicationRetentionPeriod reads as unset`
+      );
     }
-    throw error;
+    return undefined;
   }
 }
