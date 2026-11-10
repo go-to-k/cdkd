@@ -91,8 +91,8 @@ SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
 fall as keys get wired and which no basename grep finds (#5611, #5719), the
 type's `sdk-wire-cases-<N>.ts` bag — a basename-grep hit to TAKE, not filter:
-the harness fails until the bag carries every newly handled key (#6070,
-#6087) — plus
+the harness fails until it carries or exempts each newly handled key (#6087) —
+plus
 the file that DECLARES the type's `handledProperties` (`grep -rn "'<Type>'"
 src/provisioning/providers/*-provider.ts`: the facade, never the split
 module) and, for a `writeOnlyProperties` key, the drift `neverRead` list; a member
