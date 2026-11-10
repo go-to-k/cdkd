@@ -303,13 +303,10 @@ export class RDSProvider implements ResourceProvider {
         'DedicatedLogVolume',
         'AllowMajorVersionUpgrade',
         'CertificateRotationRestart',
-        // go-to-k/cdkd#2762: rides CreateDBInstance and, when changed,
-        // ModifyDBInstance; an update leaving it `pending-reboot` reboots the
-        // instance, as CloudFormation does (`rebootForPendingParameterGroup`).
+        // go-to-k/cdkd#2762: CreateDBInstance / ModifyDBInstance; an update leaving it
+        // `pending-reboot` reboots, as CloudFormation does (`rebootForPendingParameterGroup`).
         'DBParameterGroupName',
-        // go-to-k/cdkd#5640: the list on CreateDBInstance, the
-        // `CloudwatchLogsExportConfiguration` delta on ModifyDBInstance
-        // (`logExportsDelta`).
+        // go-to-k/cdkd#5640: CreateDBInstance's list, ModifyDBInstance's delta (`logExportsDelta`).
         'EnableCloudwatchLogsExports',
         // go-to-k/cdkd#5640: CreateDBInstance only. `DBName` is create-only; a changed
         // zone is refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
@@ -328,6 +325,10 @@ export class RDSProvider implements ResourceProvider {
         // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`.
         'ProcessorFeatures',
         'UseDefaultProcessorFeatures',
+        // go-to-k/cdkd#5640: `backupReplicationPlan`, `applyBackupReplication` (`./rds/calls.ts`).
+        'AutomaticBackupReplicationRegion',
+        'AutomaticBackupReplicationKmsKeyId',
+        'AutomaticBackupReplicationRetentionPeriod',
       ]),
     ],
   ]);

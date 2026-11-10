@@ -3,7 +3,11 @@ import {
   EnableHttpEndpointCommand,
   DisableHttpEndpointCommand,
   DescribeDBInstancesCommand,
+  DescribeDBInstanceAutomatedBackupsCommand,
   DescribeDBSubnetGroupsCommand,
+  RDSClient,
+  StartDBInstanceAutomatedBackupsReplicationCommand,
+  StopDBInstanceAutomatedBackupsReplicationCommand,
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
@@ -15,6 +19,8 @@ import {
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
@@ -29,9 +35,11 @@ import { planTagDiff, tagPlanWarning } from '../../tag-list.js';
 import type { UpdateContext } from '../../../types/resource.js';
 import type { RDSProvider } from '../rds-provider.js';
 import {
+  type BackupReplicationPlan,
   engineLifecycleSupportOf,
   engineLifecycleSupportAction,
   engineLifecycleSupportRefusalText,
+  liveBackupReplicationRegions,
 } from './instance-members.js';
 import { HTTP_ENDPOINT_BUSY_FAULTS, HTTP_ENDPOINT_MAX_ATTEMPTS, awsErrorName } from './shared.js';
 
@@ -400,5 +408,146 @@ export async function attachTags(
     result['Tags'] = tags;
   } catch (err) {
     this.logger.debug(`RDS ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`);
+  }
+}
+
+/** One RDS call from a client built for `region` and destroyed after it. */
+async function sendInRegion<T>(
+  region: string,
+  call: (client: RDSClient) => Promise<T>
+): Promise<T> {
+  const client = new RDSClient({ ...ambientClientDefaults(), region });
+  try {
+    return await call(client);
+  } finally {
+    client.destroy();
+  }
+}
+
+/** The text of RDS's refusal of a replication without a usable KMS key. */
+const REPLICATION_KMS_KEY_ERROR = 'Encrypted instances require a valid KMS key ID';
+
+/**
+ * go-to-k/cdkd#5640: carry out a {@link BackupReplicationPlan} on an instance,
+ * as CloudFormation's handlers do after the create or the update's other
+ * changes (`stopAutomaticBackupReplicationInRegion` /
+ * `startAutomaticBackupReplicationInRegion`): both calls go to the
+ * DESTINATION region and name the instance by its ARN. RDS takes neither while
+ * the instance is busy, so they wait for `available` first, under `--no-wait`
+ * too. Every replication the instance lists is stopped first, whichever
+ * region it reads (the record's previous region, or one a failed earlier
+ * attempt already started), so the start never meets one in place; when a
+ * start follows, that waits for the list to empty. CloudFormation then waits
+ * for `available` with the desired region listed (with none listed after a
+ * stop alone), as does cdkd unless `--no-wait`.
+ */
+export async function applyBackupReplication(
+  this: RDSProvider,
+  logicalId: string,
+  physicalId: string,
+  plan: BackupReplicationPlan
+): Promise<void> {
+  if (!plan.stop && plan.start === undefined) return;
+  // Bounded by the resource deadline, as `applyAssociatedRoles` is.
+  const waitBudgetMs = Math.min(1_800_000, enclosingDeadlineRemainingMs() - 30_000);
+  if (waitBudgetMs <= 0) {
+    throw new Error(
+      'the resource timeout leaves no more time to change the automated backup replication of the instance; re-run the deploy, or with a longer --resource-timeout'
+    );
+  }
+  const doing = 'changing its automated backup replication';
+  await this.waitForInstanceAvailable(logicalId, physicalId, waitBudgetMs, doing);
+  const instance = await this.describeDBInstance(physicalId);
+  const arn = instance?.DBInstanceArn;
+  if (instance === undefined || arn === undefined) {
+    throw new Error(
+      'DescribeDBInstances returned no instance ARN while changing its automated backup replication; nothing was started or stopped'
+    );
+  }
+  const wait = process.env['CDKD_NO_WAIT'] !== 'true';
+  const live = liveBackupReplicationRegions(instance);
+  for (const region of live) {
+    this.logger.debug(safeMsg`Stopping automated backup replication of ${logicalId} to ${region}`);
+    await sendInRegion(region, (client) =>
+      client.send(
+        new StopDBInstanceAutomatedBackupsReplicationCommand({ SourceDBInstanceArn: arn })
+      )
+    );
+  }
+  if (live.length > 0 && (wait || plan.start !== undefined)) {
+    await this.waitForInstanceState(
+      logicalId,
+      physicalId,
+      (current) =>
+        current.DBInstanceStatus === 'available' &&
+        liveBackupReplicationRegions(current).length === 0,
+      'automated backup replication stop'
+    );
+  }
+  const start = plan.start;
+  if (start === undefined) return;
+  this.logger.debug(
+    safeMsg`Starting automated backup replication of ${logicalId} to ${start.region}`
+  );
+  try {
+    await sendInRegion(start.region, (client) =>
+      client.send(
+        new StartDBInstanceAutomatedBackupsReplicationCommand({
+          SourceDBInstanceArn: arn,
+          ...(start.retention !== undefined && { BackupRetentionPeriod: start.retention }),
+          ...(start.kmsKeyId !== undefined && { KmsKeyId: start.kmsKeyId }),
+        })
+      )
+    );
+  } catch (error) {
+    // As CloudFormation's handler appends to this refusal.
+    if (error instanceof Error && error.message.includes(REPLICATION_KMS_KEY_ERROR)) {
+      error.message = `${error.message} Provide a valid value for the AutomaticBackupReplicationKmsKeyId property.`;
+    }
+    throw error;
+  }
+  if (wait) {
+    await this.waitForInstanceState(
+      logicalId,
+      physicalId,
+      (current) =>
+        current.DBInstanceStatus === 'available' &&
+        liveBackupReplicationRegions(current).includes(start.region),
+      'automated backup replication start'
+    );
+  }
+}
+
+/**
+ * go-to-k/cdkd#5640: the retention of an instance's replicated automated
+ * backup, read in its destination region as CloudFormation's read handler
+ * reads it (`describeAutomatedBackupsReplication`). `undefined` when RDS
+ * lists no such backup there (the handler soft-fails that read); any other
+ * failure propagates, since it says nothing about the retention.
+ */
+export async function replicatedBackupRetention(
+  automatedBackupsArn: string
+): Promise<number | undefined> {
+  const region = automatedBackupsArn.split(':')[3];
+  if (region === undefined || region === '') return undefined;
+  try {
+    const response = await sendInRegion(region, (client) =>
+      client.send(
+        new DescribeDBInstanceAutomatedBackupsCommand({
+          DBInstanceAutomatedBackupsArn: automatedBackupsArn,
+        })
+      )
+    );
+    return response.DBInstanceAutomatedBackups?.[0]?.BackupRetentionPeriod;
+  } catch (error) {
+    // The SDK's class name, or the bare AWS code a non-modeled error keeps.
+    const name = awsErrorName(error);
+    if (
+      name === 'DBInstanceAutomatedBackupNotFoundFault' ||
+      name === 'DBInstanceAutomatedBackupNotFound'
+    ) {
+      return undefined;
+    }
+    throw error;
   }
 }

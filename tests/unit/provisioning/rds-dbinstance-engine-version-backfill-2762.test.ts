@@ -286,8 +286,12 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
       });
       // go-to-k/cdkd#5640: SourceRegion and UseDefaultProcessorFeatures are
       // write-only too; ProcessorFeatures is compared only where declared.
+      // AutomaticBackupReplicationKmsKeyId is write-only; the replication
+      // retention is compared only where declared.
       expect([...paths].sort()).toEqual([
         'AllowMajorVersionUpgrade',
+        'AutomaticBackupReplicationKmsKeyId',
+        'AutomaticBackupReplicationRetentionPeriod',
         'CertificateRotationRestart',
         'ProcessorFeatures',
         'SourceRegion',

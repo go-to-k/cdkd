@@ -2197,6 +2197,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-dbinstance-backup-replication",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-dbinstance-processor-features",
       "annotated": false,
       "scenarios": []
@@ -3759,6 +3764,7 @@
     "pipes-fix-forward-orphan",
     "profile-region-default",
     "rds-dbinstance-backfill",
+    "rds-dbinstance-backup-replication",
     "rds-dbinstance-processor-features",
     "rds-express-cluster",
     "rds-fix-forward-orphan",

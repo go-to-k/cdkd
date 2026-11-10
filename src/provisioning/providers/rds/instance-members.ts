@@ -811,3 +811,153 @@ export function engineLifecycleSupportRefusalText(
     `declare that value: a declared value the ${kind} already holds is no change.`
   );
 }
+
+/** The three `AutomaticBackupReplication*` properties, read off one bag. */
+export interface BackupReplication {
+  readonly region: string | undefined;
+  readonly kmsKeyId: string | undefined;
+  readonly retention: number | undefined;
+}
+
+/** The keys {@link backupReplicationOf} reads. */
+const BACKUP_REPLICATION_KEYS = [
+  'AutomaticBackupReplicationRegion',
+  'AutomaticBackupReplicationKmsKeyId',
+  'AutomaticBackupReplicationRetentionPeriod',
+] as const;
+
+/** What a reader below answers for a value no call can carry; never a string. */
+const MALFORMED: unique symbol = Symbol('malformed');
+
+/** A non-blank string, `undefined` when absent or empty (the handler's `isNullOrEmpty`). */
+function optionalString(value: unknown): string | undefined | typeof MALFORMED {
+  if (value == null || value === '') return undefined;
+  return typeof value === 'string' ? value : MALFORMED;
+}
+
+/** A whole number (a CFn number may arrive as a string), `undefined` when absent. */
+function optionalWholeNumber(value: unknown): number | undefined | typeof MALFORMED {
+  if (value == null || value === '') return undefined;
+  const parsed =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isInteger(parsed) ? parsed : MALFORMED;
+}
+
+/**
+ * go-to-k/cdkd#5640: a bag's automated backup replication: the destination
+ * region, the KMS key there, and the retention there; or `'malformed'` when
+ * any of them is not a string (the region, the key) or a whole number (the
+ * retention), which no call can carry.
+ */
+export function backupReplicationOf(bag: Record<string, unknown>): BackupReplication | 'malformed' {
+  const region = optionalString(bag['AutomaticBackupReplicationRegion']);
+  const kmsKeyId = optionalString(bag['AutomaticBackupReplicationKmsKeyId']);
+  const retention = optionalWholeNumber(bag['AutomaticBackupReplicationRetentionPeriod']);
+  if (region === MALFORMED || kmsKeyId === MALFORMED || retention === MALFORMED) {
+    return 'malformed';
+  }
+  return { region, kmsKeyId, retention };
+}
+
+/** A bag's `BackupRetentionPeriod`, `undefined` when absent or unreadable. */
+function backupRetentionPeriodOf(bag: Record<string, unknown>): number | undefined {
+  const value = optionalWholeNumber(bag['BackupRetentionPeriod']);
+  return value === MALFORMED ? undefined : value;
+}
+
+/**
+ * What an update (or a create, against an empty previous bag) does to the
+ * replication: `stop` the one the instance has, then `start` one to the
+ * desired region.
+ */
+export interface BackupReplicationPlan {
+  readonly stop: boolean;
+  readonly start: (BackupReplication & { readonly region: string }) | undefined;
+}
+
+/**
+ * go-to-k/cdkd#5640: the replication change of a create or update, as
+ * CloudFormation's handler decides it (`ResourceModelHelper`
+ * `shouldStartAutomaticBackupReplication` / `shouldStopAutomaticBackupReplication`):
+ * a desired region with none before starts; a previous region with none
+ * desired stops; with both, a changed region, KMS key or retention, or a
+ * changed `BackupRetentionPeriod` while no replication retention is declared
+ * (the replication then inherits it), stops and starts again.
+ *
+ * Before any call, as the handler validates every request
+ * (`AutomaticBackupReplicationValidator`): a KMS key or retention with no
+ * region is refused, and so is a region beside `BackupRetentionPeriod: 0`;
+ * a state-borne bag (`stateBorne`: a rollback replay, `drift --revert`) only
+ * warns there, since the record cannot be edited through the template. A
+ * malformed desired value is refused on every path, but only when the plan
+ * would act on it: one the record holds unchanged is no reason to fail the
+ * rest of the update. A malformed RECORDED side counts as a change.
+ */
+export function backupReplicationPlan(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId: string | undefined,
+  stateBorne: boolean,
+  warn: (message: string) => void
+): BackupReplicationPlan {
+  const none: BackupReplicationPlan = { stop: false, start: undefined };
+  const keys = [...BACKUP_REPLICATION_KEYS, 'BackupRetentionPeriod'];
+  const desired = backupReplicationOf(properties);
+  const previous = backupReplicationOf(previousProperties);
+  if (desired === 'malformed') {
+    if (keys.every((key) => isDeepStrictEqual(properties[key], previousProperties[key]))) {
+      return none;
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${resourceType} ${logicalId}: AutomaticBackupReplicationRegion and AutomaticBackupReplicationKmsKeyId must be strings, and AutomaticBackupReplicationRetentionPeriod a whole number`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  const misuse =
+    desired.region === undefined
+      ? desired.kmsKeyId !== undefined
+        ? 'You must specify the AutomaticBackupReplicationRegion parameter when setting the AutomaticBackupReplicationKmsKeyId parameter'
+        : desired.retention !== undefined
+          ? 'You must specify the AutomaticBackupReplicationRegion parameter when setting the AutomaticBackupReplicationRetentionPeriod parameter'
+          : undefined
+      : backupRetentionPeriodOf(properties) === 0
+        ? 'AutomaticBackupReplicationRegion cannot be specified when BackupRetentionPeriod is 0'
+        : undefined;
+  if (misuse !== undefined) {
+    const message = `${resourceType} ${logicalId}: ${misuse} (as CloudFormation refuses it)`;
+    if (!stateBorne) {
+      throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId, physicalId));
+    }
+    warn(`${message}; the restored properties declare it, so it is applied as declared`);
+  }
+  const start = desired.region === undefined ? undefined : { ...desired, region: desired.region };
+  if (previous === 'malformed') return { stop: true, start };
+  if (previous.region === undefined) return { stop: false, start };
+  if (desired.region === undefined) return { stop: true, start: undefined };
+  const retentionInherited =
+    desired.retention === undefined &&
+    backupRetentionPeriodOf(properties) !== undefined &&
+    backupRetentionPeriodOf(properties) !== backupRetentionPeriodOf(previousProperties);
+  const changed =
+    retentionInherited ||
+    desired.region !== previous.region ||
+    desired.kmsKeyId !== previous.kmsKeyId ||
+    desired.retention !== previous.retention;
+  return changed ? { stop: true, start } : none;
+}
+
+/** The destination regions of an instance's replications, read off their ARNs. */
+export function liveBackupReplicationRegions(instance: DBInstance): string[] {
+  const regions: string[] = [];
+  for (const replication of instance.DBInstanceAutomatedBackupsReplications ?? []) {
+    const region = replication.DBInstanceAutomatedBackupsArn?.split(':')[3];
+    if (region !== undefined && region !== '' && !regions.includes(region)) regions.push(region);
+  }
+  return regions;
+}

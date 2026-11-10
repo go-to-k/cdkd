@@ -53,11 +53,21 @@ export function getDriftUnknownPaths(
       'CertificateRotationRestart',
       'SourceRegion',
       'UseDefaultProcessorFeatures',
+      // go-to-k/cdkd#5640: write-only in the registry schema.
+      'AutomaticBackupReplicationKmsKeyId',
     ];
+    // go-to-k/cdkd#5640: an undeclared replication retention reads as the
+    // instance's own BackupRetentionPeriod, which RDS applies by default, so
+    // it is compared only where declared (and not with no bag).
+    const retention = properties?.['AutomaticBackupReplicationRetentionPeriod'];
     const declared = properties?.['ProcessorFeatures'];
-    return declared == null || (Array.isArray(declared) && declared.length === 0)
-      ? [...instanceUnknown, 'ProcessorFeatures']
-      : instanceUnknown;
+    return [
+      ...instanceUnknown,
+      ...(declared == null || (Array.isArray(declared) && declared.length === 0)
+        ? ['ProcessorFeatures']
+        : []),
+      ...(retention == null ? ['AutomaticBackupReplicationRetentionPeriod'] : []),
+    ];
   }
   if (resourceType !== 'AWS::RDS::DBCluster') return [];
   // go-to-k/cdkd#5639: keys `readCurrentState` never reads back, so a
