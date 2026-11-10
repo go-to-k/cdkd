@@ -39,6 +39,7 @@ import {
   EXPRESS_WRITER_RESOURCE_ID_KEY,
   expressConfigurationFlag,
   expressWriterIdentifier,
+  isOwnExpressWriter,
   readExpressWriterId,
 } from './express-writer.js';
 
@@ -195,7 +196,13 @@ export async function createDBCluster(
 
   const dbClusterIdentifier =
     (properties['DBClusterIdentifier'] as string | undefined) ||
-    generatedNameFor('AWS::RDS::DBCluster', logicalId);
+    generatedNameFor(
+      'AWS::RDS::DBCluster',
+      logicalId,
+      // go-to-k/cdkd#5984: RDS refuses an express cluster whose writer name,
+      // `<cluster>-instance-1`, would pass 63 characters.
+      express ? { reservedLength: expressWriterIdentifier('').length } : {}
+    );
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
   // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -369,7 +376,7 @@ export async function createDBCluster(
       // Describe to get final attributes
       const described = await this.describeDBCluster(dbClusterIdentifier);
       const expressWriterId = express
-        ? await readExpressWriterId.call(this, dbClusterIdentifier)
+        ? await readExpressWriterId.call(this, dbClusterIdentifier, maskerOrIdentity(mask))
         : undefined;
 
       return {
@@ -408,8 +415,8 @@ export async function createDBCluster(
         }
         // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer
         // it created for this cluster exists; it takes it once the writer is
-        // `deleting`. That writer is this create's own, so it goes by name.
-        if (express) {
+        // `deleting`. Only a member of this cluster: a name is no attribution.
+        if (express && (await isOwnExpressWriter.call(this, dbClusterIdentifier))) {
           try {
             await this.getClient().send(
               new DeleteDBInstanceCommand({
@@ -463,6 +470,10 @@ export async function createDBCluster(
         const unprotect = wantsDeletionProtection
           ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
           : aws``;
+        // go-to-k/cdkd#5984: RDS refuses the cluster delete while its writer exists.
+        const writer = express
+          ? aws`aws rds delete-db-instance --db-instance-identifier ${expressWriterIdentifier(dbClusterIdentifier)} --skip-final-snapshot; `
+          : aws``;
         // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
         // DeleteDBCluster names the caller's assumed-role ARN. Masked: AWS's
         // text can echo the create's resolved inputs.
@@ -473,7 +484,7 @@ export async function createDBCluster(
           this.logger.debug(m(`${cleanupHead}${m(cleanupFailure.detail)}`));
         }
         this.logger.warn(
-          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}${writer}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
         );
       }
       throw innerError;

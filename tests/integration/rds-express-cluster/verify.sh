@@ -323,7 +323,7 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
 
 SNAPS="$(aws rds describe-db-cluster-snapshots --db-cluster-identifier "${CLUSTER_ID}" \
-  --snapshot-type manual --region "${REGION}" --query 'length(DBClusterSnapshots)' --output text)"
+  --snapshot-type manual --region "${REGION}" --query 'length(DBClusterSnapshots)' --output json)"
 if [ "${SNAPS}" != "0" ]; then
   echo "FAIL: ${SNAPS} manual snapshot(s) of ${CLUSTER_ID} left behind; RemovalPolicy.DESTROY must delete without a final snapshot" >&2
   exit 1

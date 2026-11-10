@@ -6,6 +6,12 @@ import { stackScopeStore } from './stack-scope.js';
 export interface GeneratedNameInput {
   /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
   zoneId?: string;
+  /**
+   * Characters the name must leave free under the rule's `maxLength`, for a
+   * name AWS derives from it (go-to-k/cdkd#5984: an express-configuration
+   * DBCluster's writer is `<cluster>-instance-1`, itself at most 63).
+   */
+  reservedLength?: number;
 }
 
 /** The current scope is a stack with an instance id (not a legacy stack). */
@@ -28,7 +34,10 @@ function deriveRuleName(
     });
     return `${base}${suffix}`;
   }
-  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+  const reserved = input.reservedLength ?? 0;
+  const options =
+    reserved > 0 ? { ...rule.options, maxLength: rule.options.maxLength - reserved } : rule.options;
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}`;
   const refused = rule.refusedPrefix;
   if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
     return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;

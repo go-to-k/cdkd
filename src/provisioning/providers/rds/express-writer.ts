@@ -30,6 +30,14 @@ export class ExpressWriterRefusal extends Error {
   }
 }
 
+/**
+ * RDS identifiers are case-insensitive and reported lowercase, while a declared
+ * `DBClusterIdentifier` is recorded as written.
+ */
+function sameDbIdentifier(a: string | undefined, b: string): boolean {
+  return a !== undefined && a.toLowerCase() === b.toLowerCase();
+}
+
 /** The writer RDS creates for an express-configuration cluster. */
 export function expressWriterIdentifier(dbClusterIdentifier: string): string {
   return `${dbClusterIdentifier}-instance-1`;
@@ -59,16 +67,37 @@ export function recordedExpressWriterId(
  */
 export async function readExpressWriterId(
   this: RDSProvider,
-  dbClusterIdentifier: string
+  dbClusterIdentifier: string,
+  mask: (text: string) => string
 ): Promise<string | undefined> {
   try {
     const writer = await this.describeDBInstance(expressWriterIdentifier(dbClusterIdentifier));
-    return writer?.DBClusterIdentifier === dbClusterIdentifier ? writer.DbiResourceId : undefined;
+    return sameDbIdentifier(writer?.DBClusterIdentifier, dbClusterIdentifier)
+      ? writer?.DbiResourceId
+      : undefined;
   } catch (error) {
     this.logger.debug(
-      safeMsg`Could not read the express writer of DBCluster ${dbClusterIdentifier}: ${error instanceof Error ? error.name : 'unknown error'}`
+      mask(
+        safeMsg`Could not read the express writer of DBCluster ${dbClusterIdentifier}: ${error instanceof Error ? error.name : 'unknown error'}`
+      )
     );
     return undefined;
+  }
+}
+
+/**
+ * Whether `<cluster>-instance-1` is a member of that cluster: a name is no
+ * attribution, so the failed create's cleanup deletes it only then.
+ */
+export async function isOwnExpressWriter(
+  this: RDSProvider,
+  dbClusterIdentifier: string
+): Promise<boolean> {
+  try {
+    const writer = await this.describeDBInstance(expressWriterIdentifier(dbClusterIdentifier));
+    return sameDbIdentifier(writer?.DBClusterIdentifier, dbClusterIdentifier);
+  } catch {
+    return false;
   }
 }
 
@@ -93,13 +122,16 @@ export async function deleteExpressWriter(
   physicalId: string,
   cluster: DBCluster | undefined,
   recordedWriterId: string | undefined,
-  protectionFlippedOff = false
+  protectionFlippedOff: boolean,
+  mask: (text: string) => string
 ): Promise<boolean> {
   if (cluster === undefined) return false;
   if (cluster.DeletionProtection === true && !protectionFlippedOff) return false;
   const writerName = expressWriterIdentifier(physicalId);
   const members = cluster.DBClusterMembers ?? [];
-  if (!members.some((member) => member.DBInstanceIdentifier === writerName)) return false;
+  if (!members.some((member) => sameDbIdentifier(member.DBInstanceIdentifier, writerName))) {
+    return false;
+  }
 
   const refuse = (detail: string): never => {
     throw new ExpressWriterRefusal(detail);
@@ -108,7 +140,7 @@ export async function deleteExpressWriter(
   const others: string[] = [];
   for (const member of members) {
     const name = member.DBInstanceIdentifier;
-    if (name === undefined || name === writerName) continue;
+    if (name === undefined || sameDbIdentifier(name, writerName)) continue;
     const instance = await this.describeDBInstance(name).catch((error: unknown) => {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return undefined;
       throw error;
@@ -147,6 +179,8 @@ export async function deleteExpressWriter(
     }
     throw error;
   }
-  this.logger.debug(safeMsg`Deleted the express writer ${writerName} of DBCluster ${logicalId}`);
+  this.logger.debug(
+    mask(safeMsg`Deleted the express writer ${writerName} of DBCluster ${logicalId}`)
+  );
   return true;
 }

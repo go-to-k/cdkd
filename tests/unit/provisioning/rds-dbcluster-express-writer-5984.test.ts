@@ -42,6 +42,7 @@ const CLUSTER = 'AWS::RDS::DBCluster';
 const ID = 'db-1';
 const WRITER = `${ID}-instance-1`;
 const WRITER_ID = 'db-WRITER1';
+const EXPRESS_BAG = { Engine: 'aurora-postgresql', WithExpressConfiguration: true };
 
 function awsError(name: string, message = name): Error {
   return Object.assign(new Error(message), { name });
@@ -50,9 +51,15 @@ function awsError(name: string, message = name): Error {
 interface Instance {
   status: string;
   resourceId: string;
+  /** The cluster RDS reports it in; this test's cluster by default. */
+  cluster?: string;
 }
 
-/** A live cluster with the given members, answering the RDS calls the paths send. */
+/**
+ * A live cluster with the given members, answering the RDS calls the paths
+ * send. Like RDS, it matches identifiers case-insensitively and reports them
+ * lowercase.
+ */
 function script(
   members: Record<string, Instance>,
   { deletionProtection = false }: { deletionProtection?: boolean } = {}
@@ -79,14 +86,14 @@ function script(
           ],
         });
       case 'DescribeDBInstancesCommand': {
-        const id = input['DBInstanceIdentifier'] as string;
+        const id = (input['DBInstanceIdentifier'] as string).toLowerCase();
         const instance = members[id];
         if (instance === undefined) return Promise.reject(awsError('DBInstanceNotFoundFault'));
         return Promise.resolve({
           DBInstances: [
             {
               DBInstanceIdentifier: id,
-              DBClusterIdentifier: ID,
+              DBClusterIdentifier: instance.cluster ?? ID,
               DBInstanceStatus: instance.status,
               DbiResourceId: instance.resourceId,
             },
@@ -94,7 +101,7 @@ function script(
         });
       }
       case 'DeleteDBInstanceCommand': {
-        const id = input['DBInstanceIdentifier'] as string;
+        const id = (input['DBInstanceIdentifier'] as string).toLowerCase();
         if (members[id] === undefined) return Promise.reject(awsError('DBInstanceNotFoundFault'));
         members[id] = { ...members[id]!, status: 'deleting' };
         return Promise.resolve({});
@@ -217,6 +224,8 @@ describe('RDSProvider DBCluster WithExpressConfiguration (go-to-k/cdkd#5984)', (
 
       expect(names()).toEqual([
         'CreateDBClusterCommand',
+        // Whether the writer is this cluster's member: a name is no attribution.
+        'DescribeDBInstancesCommand',
         'DeleteDBInstanceCommand',
         'DeleteDBClusterCommand',
       ]);
@@ -224,6 +233,75 @@ describe('RDSProvider DBCluster WithExpressConfiguration (go-to-k/cdkd#5984)', (
         DBInstanceIdentifier: WRITER,
         SkipFinalSnapshot: true,
       });
+    });
+  });
+
+  describe('names and ownership', () => {
+    it('leaves room for the writer suffix in a generated name', async () => {
+      script({});
+      vi.spyOn(
+        provider as unknown as { waitForInstanceAvailable: () => Promise<void> },
+        'waitForInstanceAvailable'
+      ).mockResolvedValue(undefined);
+      await provider.create('ExpressCluster'.repeat(8), CLUSTER, {
+        Engine: 'aurora-postgresql',
+        WithExpressConfiguration: true,
+      });
+      const id = inputOf('CreateDBClusterCommand')?.['DBClusterIdentifier'] as string;
+      // RDS refuses the create when `<cluster>-instance-1` would pass 63.
+      expect(`${id}-instance-1`.length).toBeLessThanOrEqual(63);
+    });
+
+    it('keeps the full 63 characters for a cluster without express configuration', async () => {
+      script({});
+      await provider.create('ExpressCluster'.repeat(8), CLUSTER, { Engine: 'aurora-postgresql' });
+      const id = inputOf('CreateDBClusterCommand')?.['DBClusterIdentifier'] as string;
+      expect(id.length).toBe(63);
+    });
+
+    it('finds the writer of a cluster declared with uppercase letters', async () => {
+      script({ [`${ID}-instance-1`]: { status: 'available', resourceId: WRITER_ID } });
+      await provider.delete('Db', ID.toUpperCase(), CLUSTER, EXPRESS_BAG, {
+        recordedAttributes: { [EXPRESS_WRITER_RESOURCE_ID_KEY]: WRITER_ID },
+      });
+      expect(names().filter((n) => n.startsWith('Delete'))).toEqual([
+        'DeleteDBInstanceCommand',
+        'DeleteDBClusterCommand',
+      ]);
+    });
+
+    it("a failed create's cleanup leaves an instance of another cluster under the writer name", async () => {
+      script({ [WRITER]: { status: 'available', resourceId: 'db-OTHER', cluster: 'other' } });
+      vi.spyOn(
+        provider as unknown as { waitForClusterAvailable: () => Promise<void> },
+        'waitForClusterAvailable'
+      ).mockRejectedValue(new Error('wait failed'));
+      await expect(
+        provider.create('Db', CLUSTER, { DBClusterIdentifier: ID, ...EXPRESS_BAG })
+      ).rejects.toThrow(/wait failed/);
+      expect(names()).not.toContain('DeleteDBInstanceCommand');
+      expect(names()).toContain('DeleteDBClusterCommand');
+    });
+
+    it("names the writer delete in a failed cleanup's recovery command", async () => {
+      script({ [WRITER]: { status: 'available', resourceId: WRITER_ID } });
+      const base = rdsSend.getMockImplementation()!;
+      rdsSend.mockImplementation((cmd: { constructor: { name: string } }) =>
+        cmd.constructor.name === 'DeleteDBClusterCommand'
+          ? Promise.reject(awsError('AccessDenied', 'not authorized: rds:DeleteDBCluster'))
+          : base(cmd)
+      );
+      vi.spyOn(
+        provider as unknown as { waitForClusterAvailable: () => Promise<void> },
+        'waitForClusterAvailable'
+      ).mockRejectedValue(new Error('wait failed'));
+      await expect(
+        provider.create('Db', CLUSTER, { DBClusterIdentifier: ID, ...EXPRESS_BAG })
+      ).rejects.toThrow(/wait failed/);
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toMatch(
+        new RegExp(`aws rds delete-db-instance --db-instance-identifier ${WRITER} --skip-final-snapshot; aws rds delete-db-cluster`)
+      );
     });
   });
 

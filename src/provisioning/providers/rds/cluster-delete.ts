@@ -200,7 +200,8 @@ export async function deleteDBClusterOnce(
         await this.describeDBCluster(physicalId),
         recordedExpressWriterId(context?.recordedAttributes),
         // The read can lag the flip this run just made.
-        flip.flippedOffByThisRun
+        flip.flippedOffByThisRun,
+        maskerOrIdentity(context?.maskSecrets)
       );
       if (writerDeleted) progress.stripped = true;
     }
@@ -244,8 +245,8 @@ export async function deleteDBClusterOnce(
     await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
   } catch (error) {
     if (error instanceof ExpressWriterRefusal) {
-      // Raised before any delete. Not gone (#5228), and non-retryable: a
-      // retry reads the same members.
+      // Raised before the writer or cluster delete. Not gone (#5228), and
+      // non-retryable: a retry reads the same members.
       const refusal = markNotGone(
         markNonRetryable(
           new ProvisioningError(
@@ -257,7 +258,7 @@ export async function deleteDBClusterOnce(
           )
         )
       );
-      throw refusal;
+      throw progress.stripped ? markDeleteStarted(refusal) : refusal;
     }
     if (error instanceof GlobalClusterDetachError) {
       // Not gone, so the destroy / deploy classifiers never read an AWS
