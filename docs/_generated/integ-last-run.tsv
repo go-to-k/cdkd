@@ -341,7 +341,7 @@ remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
 replace-squatter-refusal	2026-11-04T23:16:04Z	PASS	80	verify.sh	rc ok; plain and --replace refused squatter on next-gen name, same-name delete-first kept; own temp state bucket; orph clean
 replaced-delete-failed-rollback	2026-10-29T15:28:06Z	PASS	171	verify.sh	rc ok, orph clean
-replacement-fanout	2026-11-10T14:22:33Z	PASS	108	verify.sh	rc ok, destroy 0 errors, orph clean; OwnChangeDependent preview asserted; A/B negative control FAILed as expected
+replacement-fanout	2026-11-10T14:32:28Z	PASS	105	verify.sh	rc ok, destroy 0 errors, orph clean; OwnChangeDependent preview asserted (rerun after renderer change 551862b21)
 replacement-immutable-name	2026-11-04T21:57:20Z	PASS	115	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 replacement-rename-onto-holder	2026-11-04T22:52:09Z	PASS	582	verify.sh	rc ok, orph clean, own temp state bucket
 require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destroy 0 errors, orph clean (state keys + IAM/Lambda/log groups), own state bucket; main-based re-run on wrasse
