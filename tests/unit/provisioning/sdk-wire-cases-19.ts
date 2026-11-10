@@ -289,6 +289,18 @@ function armCluster(_physicalId: string, bag: Bag): void {
       DBSubnetGroups: [{ DBSubnetGroupArn: SUBNET_GROUP_ARN, VpcId: 'vpc-1' }],
     }),
     DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: DEFAULT_SG }] }),
+    // go-to-k/cdkd#5984: the writer RDS creates for an express cluster, which
+    // the create waits on.
+    DescribeDBInstancesCommand: () => ({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: `${CLUSTER_ID}-instance-1`,
+          DBClusterIdentifier: CLUSTER_ID,
+          DBInstanceStatus: 'available',
+          DbiResourceId: 'db-WRITER1',
+        },
+      ],
+    }),
     // go-to-k/cdkd#5639: a removal's detach takes it out of the global cluster.
     RemoveFromGlobalClusterCommand: () => {
       detached = true;
@@ -567,6 +579,14 @@ const CLUSTER_CASE: TypeCase = {
       expectedRemovalThrows: {
         'update-add:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED,
       },
+    },
+    {
+      name: 'express configuration (go-to-k/cdkd#5984)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        WithExpressConfiguration: true,
+      },
+      expectedSilent: CLUSTER_ENGINE_SILENT,
     },
     {
       name: 'Multi-AZ DB cluster (mysql), a declared Port',

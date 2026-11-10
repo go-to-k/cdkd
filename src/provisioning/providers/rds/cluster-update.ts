@@ -71,6 +71,7 @@ import {
 } from './shared.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
+import { EXPRESS_WRITER_RESOURCE_ID_KEY, recordedExpressWriterId } from './express-writer.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -676,6 +677,9 @@ export async function updateDBCluster(
         'ReadEndpoint.Address': described?.ReaderEndpoint,
         Arn: described?.DBClusterArn,
         DBClusterResourceId: described?.DbClusterResourceId,
+        // go-to-k/cdkd#5984: the record's express writer id, carried over
+        // (the map replaces the record's attributes).
+        [EXPRESS_WRITER_RESOURCE_ID_KEY]: recordedExpressWriterId(context?.recordedAttributes),
       }),
       // go-to-k/cdkd#5639: a skipped key keeps the previous record's value
       // (none when it held none or an unusable one).

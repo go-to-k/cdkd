@@ -231,6 +231,9 @@ export class RDSProvider implements ResourceProvider {
         'AllocatedStorage',
         'Iops',
         'DBInstanceParameterGroupName',
+        // go-to-k/cdkd#5984: create-only, CreateDBCluster alone; never read back. RDS
+        // creates a writer with it, which the delete removes first (`./rds/express-writer.ts`).
+        'WithExpressConfiguration',
       ]),
     ],
     [
@@ -344,10 +347,6 @@ export class RDSProvider implements ResourceProvider {
         [
           'DBSystemId',
           'reserved for future use, per the CloudFormation schema (cloudformation:DescribeType, us-east-1, 2026-11-07); no observable behaviour to wire. Kept unhandled so a template declaring it keeps its Cloud Control route',
-        ],
-        [
-          'WithExpressConfiguration',
-          "CloudFormation's RDS handler fails to create it (an RDS 500, CREATE_FAILED on 3 stacks, us-east-1, 2026-11-07), Cloud Control calls the same RDS handler, so it is expected to fail the same way (inferred, not measured), and there is no parity oracle for what cdkd should do with the writer instance RDS auto-creates; re-measure tracked in go-to-k/cdkd#5984. Kept unhandled so a template declaring it keeps its Cloud Control route",
         ],
       ]),
     ],

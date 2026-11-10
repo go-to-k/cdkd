@@ -144,6 +144,7 @@ says what to do.
 | Another stack imports one of its outputs | `STACK_HAS_ACTIVE_IMPORTS` | [Use Another Stack's Outputs](cross-stack-references.md) |
 | A bucket or ECR repository that still holds data | That resource fails, exit `2` | [Non-empty buckets and repositories](cli-destroy-guards.md#non-empty-s3-buckets-and-ecr-repositories) |
 | Deletion protection on a resource | That resource fails with the AWS error, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
+| An Aurora cluster created with express configuration that still has an instance you added | That cluster is refused, exit `2` | [Aurora clusters created with express configuration](cli-destroy-guards.md#aurora-clusters-created-with-express-configuration) |
 | A `Snapshot` resource cdkd cannot snapshot | That resource is refused, exit `2` | [When cdkd refuses to delete](cli-destroy-guards.md#when-cdkd-refuses-to-delete) |
 | A nested stack named directly | Refused, exit `2` | [Nested stacks](#nested-stacks) |
 | Another `--state-prefix` records the same stack | Refused before any prompt or delete | [The same stack name under another state prefix](#the-same-stack-name-under-another-state-prefix) |
