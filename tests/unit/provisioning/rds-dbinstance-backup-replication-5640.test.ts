@@ -651,8 +651,8 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
     });
 
     it('leaves it alone when the template drops BackupRetentionPeriod (nothing to inherit), as CloudFormation does', async () => {
-      const prev = { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2' };
-      const next = { ...prev };
+      const prev: Input = { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2' };
+      const next: Input = { ...prev };
       delete next['BackupRetentionPeriod'];
       arm({ replicatingTo: 'us-west-2' });
       await update(next, prev);
