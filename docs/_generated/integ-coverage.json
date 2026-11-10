@@ -8478,6 +8478,7 @@
         "local-invoke-from-cfn-stack-multi-stack",
         "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
+        "macro-expansion",
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
@@ -8739,6 +8740,9 @@
         "lost-child-after-failed-deploy": [
           "l1",
           "literal"
+        ],
+        "macro-expansion": [
+          "l2"
         ],
         "microservices": [
           "l2"
