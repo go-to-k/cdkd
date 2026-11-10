@@ -31,8 +31,9 @@ export {
   StackTerminationProtectionError,
   NestedStackChildDirectDestroyError,
   StackHasActiveImportsError,
+  ExportInUseError,
 } from './error-handler/deploy-errors.js';
-export type { ActiveImportConsumer } from './error-handler/deploy-errors.js';
+export type { ActiveImportConsumer, InUseExportChange } from './error-handler/deploy-errors.js';
 export {
   RouteDiscoveryError,
   StartApiServerError,

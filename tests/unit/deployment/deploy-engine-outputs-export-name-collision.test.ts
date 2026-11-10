@@ -303,6 +303,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
       validateResourceProperties: vi.fn(),
     };
     mockStateBackend = {
+      listStacks: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       // go-to-k/cdkd#4438: a successful deploy reads the create-token ledger.

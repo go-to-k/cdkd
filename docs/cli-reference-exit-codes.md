@@ -65,6 +65,9 @@ What counts as a partial failure depends on the command:
   delete then failed. Under
   [`--allow-unaddressed`](cli-deploy-safety-ci-flags.md#allow-unaddressed-deploy) the
   deploy exits `0` in that case.
+  A deploy refused because it would change or remove an export another stack
+  still imports also exits `2`, having changed nothing
+  ([A refused deploy](cross-stack-references.md#a-refused-deploy)).
 - **`cdkd publish-assets`.** The assets of one or more stacks failed to
   publish.
 - **`cdkd rollback`.** An operation failed or was skipped, or a reverted

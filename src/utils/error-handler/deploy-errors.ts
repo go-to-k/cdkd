@@ -455,3 +455,59 @@ export class StackHasActiveImportsError extends CdkdError {
     Object.setPrototypeOf(this, StackHasActiveImportsError.prototype);
   }
 }
+
+/**
+ * One export a refused deploy would change or remove, with a consumer that
+ * still imports it. Surfaced inside {@link ExportInUseError}.
+ */
+export interface InUseExportChange extends ActiveImportConsumer {
+  reason: 'removed' | 'changed';
+}
+
+/**
+ * `cdkd deploy <producer>` refused before any resource change because its
+ * plan would change or remove an export that a stack outside this run still
+ * imports via `Fn::ImportValue` (go-to-k/cdkd#6088). CloudFormation refuses
+ * the same update (`Export ... cannot be updated as it is in use by ...`);
+ * without the refusal the consumer keeps a value naming a resource the
+ * deploy deleted, which `cdkd drift` cannot see.
+ *
+ * Exit code 2, as {@link StackHasActiveImportsError}. Non-retryable: the
+ * verdict comes from records and the template, which no retry changes.
+ */
+export class ExportInUseError extends CdkdError {
+  readonly exitCode: number = 2;
+  public readonly producerStack: string;
+  public readonly producerRegion: string;
+  public readonly changes: InUseExportChange[];
+
+  constructor(producerStack: string, producerRegion: string, changes: InUseExportChange[]) {
+    // Record-derived values are printed plain or described, never quoted raw
+    // (go-to-k/cdkd#3950), as in StackHasActiveImportsError.
+    const lines = changes.map(
+      (c) =>
+        `  - ${plainOrDescribed(c.consumerStack, 'stack name')} (${plainOrDescribed(c.consumerRegion, 'region')}): ` +
+        `imports ${exportNamePhrase(c.exportName)}, which this deploy would ` +
+        (c.reason === 'removed' ? 'remove' : 'change')
+    );
+    super(
+      `Cannot deploy stack ${quotedOrDescribed(producerStack, 'stack name')} (${plainOrDescribed(producerRegion, 'region')}): ` +
+        `this deploy would change or remove exports that other stacks still import via Fn::ImportValue:\n` +
+        `${lines.join('\n')}\n\n` +
+        `Nothing was changed. This matches CloudFormation, which refuses to update or\n` +
+        `remove an export while another stack imports it.\n\n` +
+        `To proceed:\n` +
+        `  1. Deploy the consumers in the same run (name them with this stack, or use --all),\n` +
+        `     so each one picks up the new value right after this stack.\n` +
+        `  2. Or remove the Fn::ImportValue from each consumer's template and re-deploy\n` +
+        `     the consumer first, then retry this deploy.`,
+      'EXPORT_IN_USE'
+    );
+    this.producerStack = producerStack;
+    this.producerRegion = producerRegion;
+    this.changes = changes;
+    this.name = 'ExportInUseError';
+    Object.setPrototypeOf(this, ExportInUseError.prototype);
+    markNonRetryable(this);
+  }
+}

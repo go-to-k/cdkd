@@ -4,6 +4,7 @@ import {
   validateResourceTimeouts,
   applyWaitFlagEnv,
 } from '../../options.js';
+import { inRunStackKey } from '../../../deployment/export-change-guard.js';
 import { getLogger } from '../../../utils/logger.js';
 import { PhaseClock, renderPhaseTimings, timePhase } from '../../../utils/phase-timings.js';
 import { forwardSigtermToSigint } from '../../../utils/interrupt-signals.js';
@@ -830,6 +831,11 @@ export async function deployCommand(
       addCancelledStack: () => {
         cancelledStacks++;
       },
+      inRunStacks: new Set(
+        targetStacks.map((s) =>
+          inRunStackKey(s.stackName, stackRegions.get(s) ?? deployStackRegion(s, baseRegion))
+        )
+      ),
     };
 
     checkPinCcApiOptions(options, targetStacks, logger);

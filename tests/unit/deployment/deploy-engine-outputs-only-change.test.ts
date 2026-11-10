@@ -71,6 +71,7 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
   };
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
   };
   let mockLockManager: {
@@ -146,6 +147,7 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     };
     mockStateBackend = {
       getState: vi.fn(),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
     };
     mockExportIndexStore = {

@@ -69,6 +69,7 @@ const REGION = 'us-east-1';
 describe('DeployEngine refuses a malformed `outputs` bag at the load (go-to-k/cdkd#3207)', () => {
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
     stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
   };
@@ -91,6 +92,7 @@ describe('DeployEngine refuses a malformed `outputs` bag at the load (go-to-k/cd
     };
     stateBackend = {
       getState: vi.fn(),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       stackInstanceIdForFirstWrite: vi
         .fn()

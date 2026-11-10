@@ -118,6 +118,11 @@ export async function runChildDeploy(
       // destructive one) and `pinCcApi` (issue #2719 -- a routing one, which
       // is quieter and therefore easier to get wrong: a pin that matches in
       // the wrong stack produces no output at all).
+      //
+      // `inRunStacks` (go-to-k/cdkd#6088) names stacks too, and inheriting it
+      // is the intent: it lists the RUN's stacks, and a consumer of a child's
+      // export that this run deploys is exempt from the child's in-use export
+      // refusal exactly as it is from the parent's.
       ...(parentCtx.options ?? {}),
       // Always overwrite (never spread-inherit) parameters: the parent's
       // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

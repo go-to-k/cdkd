@@ -172,6 +172,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`cross-backend-same-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-backend-same-stack/)
 - [`cross-backend-same-stack-migration`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-backend-same-stack-migration/)
 - [`cross-region-concurrent-stacks`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-region-concurrent-stacks/)
+- [`cross-stack-export-in-use`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-stack-export-in-use/)
 - [`custom-resource-noecho-nested`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/custom-resource-noecho-nested/)
 - [`custom-resource-service-token-change`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/custom-resource-service-token-change/)
 - [`destroy-failed-delete-keeps-dependencies`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-failed-delete-keeps-dependencies/)

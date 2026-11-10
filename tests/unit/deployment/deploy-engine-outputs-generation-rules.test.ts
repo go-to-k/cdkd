@@ -274,6 +274,7 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       validateResourceProperties: vi.fn(),
     };
     mockStateBackend = {
+      listStacks: vi.fn().mockResolvedValue([]),
       // A fresh COPY per test: the engine mutates the record it loads (the
       // auto-refresh writes `observedProperties` onto it), and a second test
       // handed the same object would find the refresh already done and never

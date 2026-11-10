@@ -101,7 +101,7 @@ const deletion: ResourceChange = {
 };
 
 describe('DeployEngine --require-approval', () => {
-  let mockStateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let mockStateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
   let mockDiffCalculator: {
     calculateDiff: ReturnType<typeof vi.fn>;
     hasChanges: ReturnType<typeof vi.fn>;
@@ -135,6 +135,7 @@ describe('DeployEngine --require-approval', () => {
     };
     mockStateBackend = {
       getState: vi.fn(),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
     };
     approve = vi.fn();

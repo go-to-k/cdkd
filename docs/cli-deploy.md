@@ -297,7 +297,7 @@ explains why.
 | --- | --- |
 | `0` | Every resource was deployed. |
 | `1` | The deploy failed. |
-| `2` | The stack deployed, but resources were left unaddressed. |
+| `2` | The stack deployed, but resources were left unaddressed. Or the deploy was refused because it would change or remove an export another stack imports. |
 
 Exit `1` covers bad arguments (including `--no-wait` with `--full-wait`), an
 auth failure, a synthesis crash, a refused state record, and a resource
@@ -307,6 +307,10 @@ Exit `2` means a delete was skipped, a replacement's old resource survives,
 or a replacement was refused because another state prefix records the stack
 (or that check could not run). cdkd keeps the state, and running the deploy again usually clears
 the code. `--allow-unaddressed` turns this exit into `0`.
+
+A deploy refused for an export another stack imports changes nothing and
+exits `2` too; `--allow-unaddressed` does not apply to it.
+[A refused deploy](cross-stack-references.md#a-refused-deploy) has the remedies.
 
 An ECS service that never stabilizes, or whose deployment circuit breaker fails
 or rolls back the rollout, fails the deploy, so the deploy exits with `1` and
