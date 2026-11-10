@@ -161,6 +161,16 @@ cleanup() {
     --region "${REGION}" --query 'DBInstances[0].DBInstanceArn' --output text 2>/dev/null)"
   case "${arn}" in
     arn:aws*:rds:*:db:"${INSTANCE_ID}")
+      # A leftover instance's replicated backup joins the sweep below, whether
+      # or not the identifier listing reaches it.
+      local leftover
+      leftover="$(aws rds describe-db-instances --db-instance-identifier "${INSTANCE_ID}" \
+        --region "${REGION}" \
+        --query 'DBInstances[0].DBInstanceAutomatedBackupsReplications[0].DBInstanceAutomatedBackupsArn' \
+        --output text 2>/dev/null)"
+      case "${leftover}" in
+        arn:aws*:rds:"${DEST_REGION}":*:auto-backup:?*) SEEN_BACKUP_ARNS="${SEEN_BACKUP_ARNS} ${leftover}" ;;
+      esac
       aws rds stop-db-instance-automated-backups-replication \
         --source-db-instance-arn "${arn}" --region "${DEST_REGION}" >/dev/null 2>&1
       ;;

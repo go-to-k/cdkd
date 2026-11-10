@@ -100,6 +100,8 @@ interface Live {
   lagReads?: number;
   /** Refusals each replication call answers first, in turn, before it succeeds. */
   busy?: Error[];
+  /** Runs when a queued refusal is answered. */
+  onBusy?: () => void;
   /** DescribeDBInstances leaves the instance's ARN out. */
   noArn?: boolean;
 }
@@ -126,6 +128,7 @@ function arm(live: Live = {}): void {
     const name = command.constructor.name;
     if (live.refuse?.command === name) return Promise.reject(live.refuse.error);
     if (/AutomatedBackupsReplicationCommand$/.test(name) && busy.length > 0) {
+      live.onBusy?.();
       return Promise.reject(busy.shift()!);
     }
     switch (name) {
@@ -450,7 +453,9 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
 
     it.each([
       ['InvalidDBInstanceStateFault'],
+      ['InvalidDBInstanceState'],
       ['InvalidDBInstanceAutomatedBackupStateFault'],
+      ['InvalidDBInstanceAutomatedBackupState'],
     ])('resends a start RDS refused as busy (%s), as CloudFormation waits it out', async (fault) => {
       arm({ busy: [awsError(fault, 'busy')] });
       await update(REPLICATED, BASE);
@@ -458,6 +463,38 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
         'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
         'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
       ]);
+      // The instance is read (available again) between the two sends.
+      const order = calls();
+      const first = order.indexOf('StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2');
+      expect(order[first + 1]).toBe('DescribeDBInstancesCommand@us-east-1');
+    });
+
+    it('resends a stop RDS refused as busy', async () => {
+      arm({ replicatingTo: 'us-west-2', busy: [awsError('InvalidDBInstanceStateFault', 'busy')] });
+      await update(BASE, REPLICATED);
+      expect(replicationCalls()).toEqual([
+        'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+      ]);
+    });
+
+    it('gives up after ten sends refused as busy, with the busy refusal', async () => {
+      arm({
+        busy: Array.from({ length: 10 }, () => awsError('InvalidDBInstanceStateFault', 'still busy')),
+      });
+      await expect(update(REPLICATED, BASE)).rejects.toThrow(/still busy/);
+      expect(replicationCalls()).toHaveLength(10);
+    });
+
+    it('stops resending once the resource timeout leaves no time', async () => {
+      arm({
+        busy: [awsError('InvalidDBInstanceStateFault', 'busy')],
+        onBusy: () => {
+          deadline.remainingMs = 20_000;
+        },
+      });
+      await expect(update(REPLICATED, BASE)).rejects.toThrow(/busy/);
+      expect(replicationCalls()).toHaveLength(1);
     });
 
     it('does not resend a start refused for any other reason', async () => {
@@ -637,15 +674,15 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       expect(state['AutomaticBackupReplicationRegion']).toBe('us-west-2');
     });
 
-    it('soft-fails a denied read with a warning, as the handler ignores it', async () => {
+    it.each([['AccessDenied'], ['AccessDeniedException']])('soft-fails a denied read (%s) with a warning, as the handler ignores it', async (code) => {
       arm({
         replicatingTo: 'us-west-2',
-        automatedBackup: awsError('AccessDenied', 'not authorized'),
+        automatedBackup: awsError(code, 'not authorized'),
       });
       const state = (await provider.readCurrentState('db-1', 'L', INSTANCE)) as Input;
       expect(state['AutomaticBackupReplicationRegion']).toBe('us-west-2');
       expect(state).not.toHaveProperty('AutomaticBackupReplicationRetentionPeriod');
-      expect(mockWarn).toHaveBeenCalledWith(expect.stringMatching(/AccessDenied/));
+      expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining(code));
     });
 
     it('propagates any other failure of that read', async () => {
