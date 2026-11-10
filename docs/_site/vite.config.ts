@@ -105,6 +105,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'Orphan Instead of Destroy', path: '/orphan-vs-destroy' },
       { title: 'Read Stack Outputs', path: '/stack-outputs' },
       { title: "Use Another Stack's Outputs", path: '/cross-stack-references' },
+      { title: 'Connect a Frontend to Your Stack', path: '/frontend-outputs' },
       { title: 'Manage Stacks Without the App', path: '/state-store' },
       {
         title: 'Name check before a create',
