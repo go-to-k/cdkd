@@ -26,6 +26,12 @@ import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { isClusterBusyRefusal } from './cluster-members.js';
 import {
+  ExpressWriterRefusal,
+  deleteExpressWriter,
+  expressConfigurationFlag,
+  recordedExpressWriterId,
+} from './express-writer.js';
+import {
   RDS_DELETE_WAIT_MS,
   deleteAutomatedBackupsInput,
   recordedGlobalClusterIdentifier,
@@ -184,6 +190,22 @@ export async function deleteDBClusterOnce(
         : undefined;
     }
 
+    // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer it
+    // created for an express-configuration cluster exists.
+    if (expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true) {
+      const writerDeleted = await deleteExpressWriter.call(
+        this,
+        logicalId,
+        physicalId,
+        await this.describeDBCluster(physicalId),
+        recordedExpressWriterId(context?.recordedAttributes),
+        // The read can lag the flip this run just made.
+        flip.flippedOffByThisRun,
+        maskerOrIdentity(context?.maskSecrets)
+      );
+      if (writerDeleted) progress.stripped = true;
+    }
+
     // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
     // final-snapshot delete when the destroy call site passed an id.
     const finalSnapshotId = context?.finalSnapshotIdentifier;
@@ -222,6 +244,22 @@ export async function deleteDBClusterOnce(
     // Wait for cluster to be fully deleted
     await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
   } catch (error) {
+    if (error instanceof ExpressWriterRefusal) {
+      // Raised before the writer or cluster delete. Not gone (#5228), and
+      // non-retryable: a retry reads the same members.
+      const refusal = markNotGone(
+        markNonRetryable(
+          new ProvisioningError(
+            `Failed to delete DBCluster ${logicalId}: ${maskerOrIdentity(context?.maskSecrets)(error.message)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error
+          )
+        )
+      );
+      throw progress.stripped ? markDeleteStarted(refusal) : refusal;
+    }
     if (error instanceof GlobalClusterDetachError) {
       // Not gone, so the destroy / deploy classifiers never read an AWS
       // "not found" in the detail as the cluster being gone (#5228). Also

@@ -2202,6 +2202,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-express-cluster",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -3750,6 +3755,7 @@
     "profile-region-default",
     "rds-dbinstance-backfill",
     "rds-dbinstance-processor-features",
+    "rds-express-cluster",
     "rds-fix-forward-orphan",
     "rds-multiaz-cluster",
     "recreate-mixed-direction",

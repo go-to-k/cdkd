@@ -285,6 +285,27 @@ depends on the type:
 per-type notes, what each delete does when a snapshot fails part-way, and how
 a Cloud Control delete behaves under `DeletionPolicy: Delete`.
 
+## Aurora clusters created with express configuration
+
+An `AWS::RDS::DBCluster` declaring `WithExpressConfiguration: true` comes with
+a writer instance that RDS creates itself, named `<cluster>-instance-1`. No
+template declares it, and RDS refuses to delete the cluster while it exists.
+So cdkd deletes that writer first, without a final snapshot, and then the
+cluster, as CloudFormation does.
+
+cdkd deletes only that writer:
+
+| The cluster | What the destroy does |
+| --- | --- |
+| Has only the writer RDS created | Deletes the writer, then the cluster |
+| Has another instance that is not already being deleted | Refuses before deleting anything, exit `2`, naming the instance |
+| Has a writer that is not the one RDS created when cdkd deployed it | Refuses before deleting anything, exit `2` |
+| Has deletion protection on | Keeps the writer; the cluster delete fails with the AWS error |
+
+An instance declared in the same stack is deleted before the cluster, so it
+does not stop the destroy. Delete an instance you added by hand, then run the
+destroy again.
+
 ## Related
 
 - [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it

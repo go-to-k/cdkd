@@ -2701,6 +2701,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StorageType',
         'Tags',
         'VpcSecurityGroupIds',
+        'WithExpressConfiguration',
       ]),
       sdkUnwired: new Map<string, string>([
         [
@@ -2726,10 +2727,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['SourceDbClusterResourceId', 'not yet implemented by cdkd'],
         ['SourceRegion', 'not yet implemented by cdkd'],
         ['UseLatestRestorableTime', 'not yet implemented by cdkd'],
-        [
-          'WithExpressConfiguration',
-          "CloudFormation's RDS handler fails to create it (an RDS 500, CREATE_FAILED on 3 stacks, us-east-1, 2026-11-07), Cloud Control calls the same RDS handler, so it is expected to fail the same way (inferred, not measured), and there is no parity oracle for what cdkd should do with the writer instance RDS auto-creates; re-measure tracked in go-to-k/cdkd#5984. Kept unhandled so a template declaring it keeps its Cloud Control route",
-        ],
       ]),
       createOnlyDrops: new Set<string>([
         'DBSystemId',
@@ -2740,7 +2737,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceDbClusterResourceId',
         'SourceRegion',
         'UseLatestRestorableTime',
-        'WithExpressConfiguration',
       ]),
       readOnly: new Set<string>([
         'DBClusterArn',

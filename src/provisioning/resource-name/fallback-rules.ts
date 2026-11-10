@@ -31,6 +31,13 @@ export interface GeneratedNameRule {
    */
   nestedIn?: string;
   /**
+   * Characters the name must leave free under `options.maxLength` for these
+   * properties, for a name AWS derives from it (go-to-k/cdkd#5984: an
+   * express-configuration DBCluster's writer `<cluster>-instance-1` is itself
+   * at most 63). Read by both routes, so they keep naming it alike.
+   */
+  reservedLength?: (properties: Record<string, unknown>) => number;
+  /**
    * A stack WITHOUT an instance id (a legacy stack) keeps what each route
    * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
    */
@@ -151,6 +158,11 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
   'AWS::RDS::DBCluster': {
     nameProperty: 'DBClusterIdentifier',
     options: { maxLength: 63, lowercase: true },
+    reservedLength: (properties) =>
+      properties['WithExpressConfiguration'] === true ||
+      properties['WithExpressConfiguration'] === 'true'
+        ? '-instance-1'.length
+        : 0,
   },
   'AWS::RDS::DBInstance': {
     nameProperty: 'DBInstanceIdentifier',
