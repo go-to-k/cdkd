@@ -435,6 +435,35 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // assume-role window, up to 10 for this one. 16 of the 26 attempts is 27.75s
   // of the 47.75s grid, leaving 10 attempts / 20s spare.
   'not authorized to access the Log Destination',
+  // Step Functions CreateStateMachine / UpdateStateMachine for a definition
+  // using a `.sync` (RUN_JOB) integration: when that integration's EventBridge
+  // managed rule (`StepFunctionsGetEventsFor<Service>Rule`) does not exist yet
+  // in the account and region, the call validates that the role may
+  // `events:PutRule` it, and cdkd issues it ~0.2s after the role's
+  // DefaultPolicy CREATE. AWS rejects it with "'<role arn>' is not authorized
+  // to create managed-rule." (issue #6081). A live A/B, us-east-1, 2026-11-10,
+  // against an absent `StepFunctionsGetEventsForBatchJobsRule`:
+  //
+  //   - grants ABSENT -> the same message on 16 attempts over 46s, permanent.
+  //   - grants PUT    -> the same message on 5 attempts, then the IDENTICAL
+  //                      call SUCCEEDS at t+11s.
+  //
+  // When the rule already exists the check is skipped (a grant-less create
+  // succeeded), so only the first `.sync` deploy of each integration type per
+  // account and region reaches it -- and before this entry it failed every
+  // time, since the rollback deletes the role and the re-run races a fresh
+  // policy again. Anchored on the full "is not authorized to create
+  // managed-rule" phrase; a role genuinely lacking the grant burns the bounded
+  // budget before surfacing, the same trade as the entry above.
+  //
+  // Budget, composed with the two windows above (one shared `attemptLimit`):
+  // the assume-role window is measured at 6 attempts and the Log Destination
+  // one at up to 10, and this one ran ~11s, which the dense grid covers in 8
+  // attempts (0.25 + 0.5 + 1 + 2 x 5 = 11.75s). 24 of the 26 attempts is the
+  // worst case only when all three windows open on one call -- a first
+  // deploy with a brand-new role, logging AND a `.sync` task; the windows
+  // observed one at a time are the evidence, the composition is derived.
+  'is not authorized to create managed-rule',
   // DynamoDB Streams / Kinesis: IAM role not yet propagated
   'Cannot access stream',
   'Please ensure the role can perform',

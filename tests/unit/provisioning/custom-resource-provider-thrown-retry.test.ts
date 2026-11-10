@@ -1096,6 +1096,10 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "does not have permission to publish with SNS",
       "authorized to assume the provided role",
       "not authorized to access the Log Destination",
+      // Issue #6081: Step Functions' CreateStateMachine refuses it at the API
+      // front door, before any state machine exists, so it is decided before
+      // an execution environment is engaged.
+      "is not authorized to create managed-rule",
       "Cannot access stream",
       "Please ensure the role can perform",
       "KMS key is invalid for CreateGrant",

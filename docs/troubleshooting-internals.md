@@ -161,8 +161,9 @@ schedule is chosen per error class.
 
 **IAM propagation** covers `Invalid IAM Instance Profile`, `cannot be
 assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`,
-`not authorized to access the Log Destination`, `does not have a trust
-relationship allowing` and similar. A message that also says `with an explicit
+`not authorized to access the Log Destination`, `is not authorized to create
+managed-rule` (a Step Functions `.sync` integration's first deploy in a
+region), `does not have a trust relationship allowing` and similar. A message that also says `with an explicit
 deny` is excluded and not retried at all: a policy's `Deny` does not
 propagate away ([#4969](https://github.com/go-to-k/cdkd/issues/4969)). cdkd creates an IAM entity and consumes it
 one to three seconds later, faster than IAM propagates, and this class usually
