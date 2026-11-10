@@ -14,9 +14,9 @@
 #
 # Steps:
 #   1. deploy --all (phase 1); the consumer parameters hold q1's ARN / URL.
-#   2. Phase 2, the producer ALONE: refused, exit 2, naming the consumer and
+#   2. Phase 2, the producer ALONE: refused, exit 1, naming the consumer and
 #      "change"; q1 still exists and q2 was never created.
-#   3. Phase 2, the embrace producer ALONE: refused, exit 2, naming its
+#   3. Phase 2, the embrace producer ALONE: refused, exit 1, naming its
 #      consumer and "remove"; the bucket still exists.
 #   4. Phase 2 deploy --all: succeeds; the consumer parameters hold q2's ARN /
 #      URL, q1 is gone, the embrace consumer holds the literal and the bucket
@@ -65,6 +65,7 @@ CDKD="node ../../../dist/cli.js"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
+BUCKET=""
 
 PROD="CdkdExportInUseProd"
 CONS="CdkdExportInUseCons"
@@ -92,6 +93,12 @@ cleanup() {
   for p in "${P_ARN}" "${P_URL}" "${P_EMBRACE}" "${P_KEEP}"; do
     aws ssm delete-parameter --name "${p}" --region "${AWS_REGION}" >/dev/null 2>&1
   done
+  # The embrace bucket's name is generated; Step 1 records it.
+  case "${BUCKET:-}" in
+    cdkdexportinuseembrace?*) aws s3 rb "s3://${BUCKET}" --force --region "${AWS_REGION}" >/dev/null 2>&1 ;;
+    "") ;;
+    *) echo "teardown sweep refused: unexpected bucket name '${BUCKET}'" >&2 ;;
+  esac
   exit ${rc}
 }
 trap cleanup EXIT
@@ -114,7 +121,7 @@ expect_eq() { # usage: expect_eq <what> <actual> <expected>
   fi
 }
 
-# A refused deploy: exit 2 and cdkd's own refusal naming the consumer. The
+# A refused deploy: exit 1 and cdkd's own refusal naming the consumer. The
 # sentinel ("Cannot deploy stack") and the parsed marker are independent, so
 # a reworded message fails loudly instead of reading as "not refused".
 expect_refusal() { # usage: expect_refusal <stack> <consumer> <change|remove>
@@ -122,7 +129,7 @@ expect_refusal() { # usage: expect_refusal <stack> <consumer> <change|remove>
   out=$(CDKD_TEST_UPDATE=true ${CDKD} deploy "$1" --exclusively --region "${AWS_REGION}" \
     --state-bucket "${STATE_BUCKET}" 2>&1) || rc=$?
   echo "${out}" | tail -20
-  expect_eq "exit code of the refused deploy of $1" "${rc}" "2"
+  expect_eq "exit code of the refused deploy of $1" "${rc}" "1"
   if ! grep -q "Cannot deploy stack" <<<"${out}"; then
     echo "FAIL: the refusal sentinel 'Cannot deploy stack' is missing" >&2
     exit 1

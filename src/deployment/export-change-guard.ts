@@ -1,7 +1,13 @@
 import { isDeepStrictEqual } from 'node:util';
-import { referencedLogicalIds } from '../analyzer/skipped-outputs.js';
+import { extractGetAttRefs } from '../analyzer/diff-calculator/in-place-promotion.js';
+import {
+  IN_PLACE_UPDATE_DERIVED_ATTRS,
+  IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
+  REF_READ,
+} from '../analyzer/diff-calculator/shared.js';
 import { importableOutputKeys } from '../types/state.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { producerRecordKey } from '../state/record-keys.js';
 import { SECRET_MASK } from './secret-redaction/pairs.js';
 import type { ResourceChange, StackState } from '../types/state.js';
 import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
@@ -13,9 +19,11 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  * cdkd refuses it from the consumers its state records (see
  * `refuseInUseExportChanges` in `deploy-engine/deploy-flow/plan-checks.ts`).
  *
- * This is the ZERO-I/O half that keeps the everyday deploy fast: a stack
- * that exports nothing returns at once, and the O(stacks) consumer scan runs
- * only when this returns a non-empty list.
+ * This half reads no state bucket, so the everyday deploy never pays the
+ * O(stacks) consumer scan: a stack that exports nothing returns at once, and
+ * the scan runs only when this returns a non-empty list. A stack that does
+ * export resolves each exported value against the plan's resolver context,
+ * the same reads its outputs pass makes anyway.
  *
  * The verdict leans toward "affected" wherever it cannot decide, since an
  * affected export only triggers the scan and refuses only when a consumer
@@ -25,16 +33,24 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  *   names any more is REMOVED. An `Export.Name` that does not resolve to a
  *   string proves no name, so it keeps none.
  * - An export whose output references a resource this plan creates, deletes
- *   or (possibly) replaces CHANGES: the new value is known only after deploy.
- *   The caller's `replaces` decides replacement; a `requiresReplacement`
- *   ceiling it over-calls is counted too.
- * - Otherwise the value is resolved against the plan's resolver context and
- *   compared with the published one. A value that does not resolve counts as
- *   changing only when it references a resource this plan touches. A
- *   published `***` (a `NoEcho` source) cannot be compared and is left alone.
+ *   or replaces CHANGES: the new value is known only after deploy. The
+ *   caller's `replaces` decides replacement.
+ * - So does one reading an attribute an IN-PLACE update may move, by the
+ *   diff calculator's own promotion rule (`in-place-promotion.ts`, arms 1-4):
+ *   an attribute named after a changed property, a derived attribute of the
+ *   type (a launch template's version, a nested stack's `Outputs.*`), or any
+ *   read of a custom resource. The diff context still holds the OLD value
+ *   there, so resolving it would compare equal.
+ * - Otherwise the value is resolved and compared with the published one. A
+ *   value that does not resolve counts as changing only when it references a
+ *   resource this plan touches. A published `***` (a `NoEcho` source) cannot
+ *   be compared and is left alone.
  * - Nothing holding a `{{resolve:...}}` dynamic reference is resolved: this
  *   check must not issue a lookup, let alone read a secret. Such a name proves
  *   no name, and such a value is judged by the resources it references alone.
+ *
+ * Not seen: a replacement decided only while provisioning (an update AWS
+ * refuses, replaced instead), and a change to a dynamic reference's own text.
  */
 export interface AffectedExport {
   exportName: string;
@@ -109,11 +125,12 @@ async function valueMayChange(
   replaces: (logicalId: string) => boolean
 ): Promise<boolean> {
   let touchesChangedResource = false;
-  for (const logicalId of referencedLogicalIds({ Value: output.Value })) {
+  for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
     if (replaces(logicalId)) return true;
     const change = changes.get(logicalId);
     if (change === undefined || change.changeType === 'NO_CHANGE') continue;
     if (change.changeType !== 'UPDATE') return true;
+    if (inPlaceUpdateMayMove(change, reads)) return true;
     touchesChangedResource = true;
   }
   if (publishedValue === SECRET_MASK) return false;
@@ -128,11 +145,36 @@ async function valueMayChange(
   return !isDeepStrictEqual(desired, publishedValue);
 }
 
+/**
+ * Whether an in-place `change` may move one of `reads` (attribute names, or
+ * `REF_READ`): `promoteInPlaceAttributeDependents`'s arms 1-4.
+ */
+function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>): boolean {
+  const type = change.resourceType;
+  if (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource') return true;
+  const changed = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
+  const derived = Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, type)
+    ? IN_PLACE_UPDATE_DERIVED_ATTRS[type]
+    : undefined;
+  const prefixes = Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES, type)
+    ? IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES[type]
+    : undefined;
+  for (const attr of reads) {
+    if (attr === REF_READ) continue;
+    if (changed.has(attr) || derived?.has(attr) === true) return true;
+    if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return true;
+  }
+  return false;
+}
+
 function holdsDynamicReference(value: unknown): boolean {
   return JSON.stringify(value)?.includes('{{resolve:') === true;
 }
 
-/** The `DeployEngineOptions.inRunStacks` key of a stack (name, region). */
+/**
+ * The `DeployEngineOptions.inRunStacks` key of a stack (name, region): the
+ * record key, over the region canonicalized as the consumer scan compares it.
+ */
 export function inRunStackKey(stackName: string, region: string): string {
-  return `${stackName}\u0000${canonicalizeRegion(region)}`;
+  return producerRecordKey(stackName, canonicalizeRegion(region));
 }

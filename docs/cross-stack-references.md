@@ -1,6 +1,6 @@
 ---
 title: "Use Another Stack's Outputs"
-description: "How cdkd resolves Fn::ImportValue and Fn::GetStackOutput: values come from cdkd's state rather than CloudFormation, so a cross-account role needs S3 access, cdkd itself refuses a producer's destroy, and a CloudFormation-managed producer can still be read."
+description: "How cdkd resolves Fn::ImportValue and Fn::GetStackOutput: values come from cdkd's state rather than CloudFormation, so a cross-account role needs S3 access, cdkd itself refuses a producer's destroy or a deploy that would change an imported export, and a CloudFormation-managed producer can still be read."
 ---
 
 # Use Another Stack's Outputs
@@ -8,8 +8,9 @@ description: "How cdkd resolves Fn::ImportValue and Fn::GetStackOutput: values c
 cdkd supports both cross-stack intrinsics CloudFormation has, with the same
 meaning, so a CDK app's references within one account work unchanged:
 
-- **`Fn::ImportValue`** is a strong reference. The producer cannot be
-  destroyed while a consumer imports from it.
+- **`Fn::ImportValue`** is a strong reference. While a consumer imports from
+  the producer, the producer cannot be destroyed, and a deploy cannot change
+  or remove the exports the consumer imports.
 - **`Fn::GetStackOutput`** is a weak reference. Nothing protects the producer,
   and it can read from another region or another account.
 
@@ -21,9 +22,9 @@ meaning, so a CDK app's references within one account work unchanged:
                ▼                          ▼
         Strong reference           Weak reference
         cdkd records the import    the producer can be destroyed
-        destroying the producer    at any time; the consumer then
-        is refused while this      fails the next time it resolves
-        consumer exists            the value
+        destroying the producer,   at any time; the consumer then
+        or changing what it        fails the next time it resolves
+        imports, is refused        the value
 ```
 
 AWS documents the two intrinsics in
@@ -109,14 +110,21 @@ cdkd deploy ConsumerStack     # the consumer no longer records the import
 cdkd destroy ProducerStack    # now succeeds
 ```
 
+### Do not use `cdkd state orphan` for this
+
+`cdkd state orphan ConsumerStack` would also clear the refusal, but at too
+high a cost. It removes the consumer from cdkd's state entirely, so cdkd
+stops tracking every resource in that stack, only to break one reference.
+Use one of the two ways above.
+
 ## A refused deploy
 
 cdkd also refuses a producer deploy that would change or remove an export a
 consumer still imports, as CloudFormation refuses it. An export changes when
 the deploy replaces, deletes or newly creates the resource its output reads,
-or when the output's value resolves differently. It is removed when no output
-declares it any more. The refusal comes before any resource change and the
-command exits `2`:
+or reads an attribute the deploy's update may move, or when the output's value
+resolves differently. It is removed when no output declares it any more. The
+refusal comes before any resource change and the command exits `1`:
 
 ```text
 Cannot deploy stack 'ProducerStack' (us-east-1): this deploy would change or remove exports that other stacks still import via Fn::ImportValue:
@@ -137,18 +145,16 @@ cdkd deploy --all
 
 That includes the case where the consumer drops its reference and the
 producer drops the resource in the same change, which CloudFormation cannot
-deploy in one step. Otherwise, remove the `Fn::ImportValue` from the consumer
-and deploy it first, as for a refused destroy.
+deploy in one step. If the consumer's own deploy then fails, it keeps the old
+value until you deploy it again. Otherwise, remove the `Fn::ImportValue` from
+the consumer and deploy it first, as for a refused destroy.
 
-The check costs nothing on a deploy that leaves the stack's exports alone. Only
-a deploy that changes one reads the other stacks' state to find consumers.
+A stack whose state cannot be read might import the export, so cdkd refuses
+in that case too and names the stack.
 
-### Do not use `cdkd state orphan` for this
-
-`cdkd state orphan ConsumerStack` would also clear the refusal, but at too
-high a cost. It removes the consumer from cdkd's state entirely, so cdkd
-stops tracking every resource in that stack, only to break one reference.
-Use one of the two ways above.
+A deploy reads the other stacks' state to find consumers only when it changes
+or removes one of the stack's exports, so the everyday deploy does not pay for
+the check.
 
 ## Reading from another account
 

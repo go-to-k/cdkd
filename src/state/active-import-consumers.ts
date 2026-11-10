@@ -17,7 +17,13 @@ import type { S3StateBackend } from './s3-state-backend.js';
 export async function scanActiveConsumers(
   producerStack: string,
   producerRegion: string,
-  ctx: { stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>; baseRegion: string }
+  ctx: { stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>; baseRegion: string },
+  /**
+   * Told of each record that could not be read (go-to-k/cdkd#6088). The deploy
+   * refuses on one, since it cannot rule out an importer there; destroy keeps
+   * deciding on what it can read.
+   */
+  onUnreadable?: (stackName: string, region: string) => void
 ): Promise<ActiveImportConsumer[]> {
   const refs = await ctx.stateBackend.listStacks();
   const results = await Promise.all(
@@ -50,6 +56,7 @@ export async function scanActiveConsumers(
           exportName: entry.exportName,
         }));
       } catch {
+        onUnreadable?.(ref.stackName, region);
         // A single unreadable state shouldn't tank the safety scan —
         // skip and log nothing here; the destroy is going to refuse
         // or proceed based on what we CAN read. The caller will see

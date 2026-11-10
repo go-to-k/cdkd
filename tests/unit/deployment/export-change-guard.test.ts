@@ -201,7 +201,12 @@ describe('findAffectedExports', () => {
 });
 
 describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)', () => {
-  function engineDouble(opts: { consumers: Array<{ name: string; imports: string[] }>; inRun?: string[] }) {
+  function engineDouble(opts: {
+    consumers: Array<{ name: string; imports: string[]; unreadable?: boolean }>;
+    inRun?: string[];
+    inRunRegion?: string;
+    options?: Record<string, unknown>;
+  }) {
     const listStacks = vi.fn().mockResolvedValue(
       [{ stackName: 'Producer', region: 'us-east-1' }].concat(
         opts.consumers.map((c) => ({ stackName: c.name, region: 'us-east-1' }))
@@ -210,6 +215,7 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const getState = vi.fn().mockImplementation((name: string) => {
       const consumer = opts.consumers.find((c) => c.name === name);
       if (!consumer) return Promise.resolve(null);
+      if (consumer.unreadable) return Promise.reject(new Error('AccessDenied'));
       return Promise.resolve({
         state: {
           imports: consumer.imports.map((exportName) => ({
@@ -222,8 +228,11 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     });
     const engine = {
       options: {
+        ...opts.options,
         ...(opts.inRun && {
-          inRunStacks: new Set(opts.inRun.map((n) => inRunStackKey(n, 'us-east-1'))),
+          inRunStacks: new Set(
+            opts.inRun.map((n) => inRunStackKey(n, opts.inRunRegion ?? 'us-east-1'))
+          ),
         }),
       },
       resolver: { resolve: vi.fn().mockResolvedValue(OLD_ARN) },
@@ -234,23 +243,28 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     return { engine, listStacks };
   }
 
-  const plan = (changes: Map<string, ResourceChange>) => ({
+  const plan = (
+    changes: Map<string, ResourceChange>,
+    effectiveTemplate: CloudFormationTemplate = exportingQueueArn
+  ) => ({
     stackName: 'Producer',
     currentState: state(),
-    effectiveTemplate: exportingQueueArn,
+    effectiveTemplate,
     parameterValues: {},
     conditions: {},
     changes,
     diffResolverContext: {} as ResolverContext,
   });
 
-  it('refuses, exit 2, naming the consumer outside the run', async () => {
+  it('refuses, exit 1, naming the consumer outside the run', async () => {
     const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
     const error = await refuseUnsafePlan(engine, plan(new Map([['Q', replacingChange]]))).catch(
       (e: unknown) => e
     );
     expect(error).toBeInstanceOf(ExportInUseError);
-    expect((error as ExportInUseError).exitCode).toBe(2);
+    // Exit 1 like every refused deploy: deploy's exit 2 means "deployed, and a
+    // re-run usually clears it", which never holds here.
+    expect((error as { exitCode?: number }).exitCode).toBeUndefined();
     expect((error as ExportInUseError).changes).toEqual([
       { consumerStack: 'Consumer', consumerRegion: 'us-east-1', exportName: EXPORT, reason: 'changed' },
     ]);
@@ -278,5 +292,189 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const { engine, listStacks } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
     await refuseUnsafePlan(engine, plan(new Map([['Q', change({ changeType: 'NO_CHANGE' })]])));
     expect(listStacks).not.toHaveBeenCalled();
+  });
+
+  const refusal = async (
+    engine: DeployEngine,
+    changes: Map<string, ResourceChange>,
+    template?: CloudFormationTemplate
+  ): Promise<ExportInUseError | undefined> => {
+    try {
+      await refuseUnsafePlan(engine, plan(changes, template));
+      return undefined;
+    } catch (e) {
+      expect(e).toBeInstanceOf(ExportInUseError);
+      return e as ExportInUseError;
+    }
+  };
+
+  it('counts a Type change of the referenced resource as a replacement', async () => {
+    const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    const typeChange = change({ changeType: 'UPDATE', resourceType: 'AWS::SNS::Topic' });
+    expect(await refusal(engine, new Map([['Q', typeChange]]))).toBeDefined();
+  });
+
+  it('counts a --recreate-via-* target as a replacement, even with no template change', async () => {
+    const { engine } = engineDouble({
+      consumers: [{ name: 'Consumer', imports: [EXPORT] }],
+      options: {
+        recreateTargets: { stackName: 'Producer', viaCcApi: ['Q'], viaSdkProvider: [] },
+      },
+    });
+    expect(await refusal(engine, new Map([['Q', change({ changeType: 'NO_CHANGE' })]]))).toBeDefined();
+  });
+
+  it('does not count an in-place propagation\'s replacement ceiling', async () => {
+    const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    const ceiling = change({
+      changeType: 'UPDATE',
+      propertyChanges: [
+        {
+          path: 'QueueName',
+          oldValue: 'q1',
+          newValue: 'q1',
+          requiresReplacement: true,
+          inPlacePropagated: true,
+        },
+      ],
+    });
+    expect(await refusal(engine, new Map([['Q', ceiling]]))).toBeUndefined();
+  });
+
+  it('refuses a removed export, worded as a removal', async () => {
+    const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    const error = await refusal(engine, new Map(), template({}));
+    expect(error?.changes).toEqual([
+      { consumerStack: 'Consumer', consumerRegion: 'us-east-1', exportName: EXPORT, reason: 'removed' },
+    ]);
+    expect(error?.message).toContain('which this deploy would remove');
+  });
+
+  it('refuses when a record that may hold an importer cannot be read', async () => {
+    const { engine } = engineDouble({
+      consumers: [{ name: 'Unreadable', imports: [], unreadable: true }],
+    });
+    const error = await refusal(engine, new Map([['Q', replacingChange]]));
+    expect(error?.changes).toEqual([]);
+    expect(error?.unreadable).toEqual([{ stackName: 'Unreadable', region: 'us-east-1' }]);
+    expect(error?.message).toContain('could not be read');
+  });
+
+  it('does not refuse over an unreadable record of a stack in the same run', async () => {
+    const { engine } = engineDouble({
+      consumers: [{ name: 'Unreadable', imports: [], unreadable: true }],
+      inRun: ['Producer', 'Unreadable'],
+    });
+    expect(await refusal(engine, new Map([['Q', replacingChange]]))).toBeUndefined();
+  });
+
+  it('says nothing was changed only outside a nested child', async () => {
+    const top = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    expect((await refusal(top.engine, new Map([['Q', replacingChange]])))?.message).toContain(
+      'Nothing was changed.'
+    );
+    const nested = engineDouble({
+      consumers: [{ name: 'Consumer', imports: [EXPORT] }],
+      options: { parentStackInfo: { stackName: 'Parent', logicalId: 'Child' } },
+    });
+    expect(
+      (await refusal(nested.engine, new Map([['Q', replacingChange]])))?.message
+    ).not.toContain('Nothing was changed.');
+  });
+
+  it('matches an in-run consumer whatever the case of its region', async () => {
+    const { engine } = engineDouble({
+      consumers: [{ name: 'Consumer', imports: [EXPORT] }],
+      inRun: ['Producer', 'Consumer'],
+      inRunRegion: 'US-EAST-1',
+    });
+    expect(await refusal(engine, new Map([['Q', replacingChange]]))).toBeUndefined();
+  });
+});
+
+describe('findAffectedExports: what moves an exported value', () => {
+  const run = (
+    outputs: CloudFormationTemplate['Outputs'],
+    changes: Map<string, ResourceChange>,
+    resolve: (value: unknown) => Promise<unknown> = () => Promise.resolve(OLD_ARN)
+  ) =>
+    findAffectedExports({
+      template: template(outputs),
+      conditions: {},
+      changes,
+      currentState: state(),
+      resolve,
+      replaces: noReplace,
+    });
+  const exported = (value: unknown) => ({
+    ExportsOutputFnGetAttQArn: { Value: value, Export: { Name: EXPORT } },
+  });
+
+  it('proves an intrinsic Export.Name by resolving it', async () => {
+    const outputs = {
+      ExportsOutputFnGetAttQArn: {
+        Value: { 'Fn::GetAtt': ['Q', 'Arn'] },
+        Export: { Name: { 'Fn::Sub': '${AWS::StackName}:QArn' } as never },
+      },
+    };
+    const resolveName = (value: unknown) =>
+      Promise.resolve(typeof value === 'object' && value !== null && 'Fn::Sub' in value ? EXPORT : OLD_ARN);
+    expect(await run(outputs, new Map(), resolveName)).toEqual([]);
+    expect(
+      await run(outputs, new Map(), (value) =>
+        typeof value === 'object' && value !== null && 'Fn::Sub' in value
+          ? Promise.reject(new Error('unresolvable'))
+          : Promise.resolve(OLD_ARN)
+      )
+    ).toEqual([{ exportName: EXPORT, reason: 'removed' }]);
+  });
+
+  it('counts a value now reading a resource this plan creates or deletes, though the diff context still resolves the old value', async () => {
+    for (const changeType of ['CREATE', 'DELETE'] as const) {
+      const changes = new Map([['Q', change({ changeType })]]);
+      expect(await run(exportingQueueArn.Outputs, changes)).toEqual([
+        { exportName: EXPORT, reason: 'changed' },
+      ]);
+    }
+  });
+
+  it('counts an in-place update that may move the read attribute, though the old value still resolves', async () => {
+    const cases: Array<[unknown, ResourceChange]> = [
+      // Arm 1: the attribute names a changed property.
+      [
+        { 'Fn::GetAtt': ['Q', 'Value'] },
+        change({
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SSM::Parameter',
+          propertyChanges: [{ path: 'Value', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+        }),
+      ],
+      // Arm 2: a derived attribute of the type.
+      [
+        { 'Fn::GetAtt': ['Q', 'LatestVersionNumber'] },
+        change({ changeType: 'UPDATE', resourceType: 'AWS::EC2::LaunchTemplate' }),
+      ],
+      // Arm 3: a derived attribute family (a nested stack's outputs).
+      [
+        { 'Fn::GetAtt': ['Q', 'Outputs.Url'] },
+        change({ changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack' }),
+      ],
+      // Arm 4: any read of a custom resource, its Ref included.
+      [{ Ref: 'Q' }, change({ changeType: 'UPDATE', resourceType: 'Custom::Thing' })],
+    ];
+    for (const [value, upstream] of cases) {
+      expect(await run(exported(value), new Map([['Q', upstream]]))).toEqual([
+        { exportName: EXPORT, reason: 'changed' },
+      ]);
+    }
+  });
+
+  it('leaves an in-place update that cannot move the read attribute (a Lambda Arn on a code edit)', async () => {
+    const lambdaEdit = change({
+      changeType: 'UPDATE',
+      resourceType: 'AWS::Lambda::Function',
+      propertyChanges: [{ path: 'Code', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+    });
+    expect(await run(exported({ 'Fn::GetAtt': ['Q', 'Arn'] }), new Map([['Q', lambdaEdit]]))).toEqual([]);
   });
 });

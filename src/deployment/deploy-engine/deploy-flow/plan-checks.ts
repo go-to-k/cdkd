@@ -215,7 +215,11 @@ async function refuseInUseExportChanges(
       if (change === undefined || record === undefined) return false;
       return (
         (change.changeType === 'UPDATE' &&
-          ((change.propertyChanges ?? []).some((pc) => pc.requiresReplacement) ||
+          // An in-place propagation's `requiresReplacement` is a ceiling the
+          // engine lowers when the read value did not move: not a verdict.
+          ((change.propertyChanges ?? []).some(
+            (pc) => pc.requiresReplacement && pc.inPlacePropagated !== true
+          ) ||
             record.resourceType !== change.resourceType)) ||
         recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(logicalId) === true
       );
@@ -224,10 +228,17 @@ async function refuseInUseExportChanges(
   if (affected.length === 0) return;
   const reasons = new Map(affected.map((a) => [a.exportName, a.reason]));
   const inRun = engine.options.inRunStacks;
-  const consumers = await scanActiveConsumers(stackName, engine.stackRegion, {
-    stateBackend: engine.stateBackend,
-    baseRegion: engine.stackRegion,
-  });
+  const unreadable: Array<{ stackName: string; region: string }> = [];
+  const consumers = await scanActiveConsumers(
+    stackName,
+    engine.stackRegion,
+    { stateBackend: engine.stateBackend, baseRegion: engine.stackRegion },
+    (unreadableStack, region) => {
+      if (inRun?.has(inRunStackKey(unreadableStack, region)) !== true) {
+        unreadable.push({ stackName: unreadableStack, region });
+      }
+    }
+  );
   const refused: InUseExportChange[] = [];
   for (const consumer of consumers) {
     const reason = reasons.get(consumer.exportName);
@@ -235,7 +246,13 @@ async function refuseInUseExportChanges(
     if (inRun?.has(inRunStackKey(consumer.consumerStack, consumer.consumerRegion))) continue;
     refused.push({ ...consumer, reason });
   }
-  if (refused.length > 0) {
-    throw new ExportInUseError(stackName, engine.stackRegion, refused);
+  // A record that cannot be read may hold an importer, and a deploy that went
+  // ahead would leave it on a deleted resource: refuse rather than guess.
+  if (refused.length > 0 || unreadable.length > 0) {
+    throw new ExportInUseError(stackName, engine.stackRegion, refused, {
+      unreadable,
+      affectedExportNames: affected.map((a) => a.exportName),
+      nested: engine.options.parentStackInfo !== undefined,
+    });
   }
 }
