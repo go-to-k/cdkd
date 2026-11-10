@@ -1087,6 +1087,47 @@ describe('expandMacros — EarlyValidation rejection still serves the Processed 
     }
   });
 
+  it('never reads the template of a changeset that is not FAILED, even when its reason names the hook', async () => {
+    // A waiter timeout leaves the changeset CREATE_IN_PROGRESS; its template is
+    // not settled, so it must not be read whatever StatusReason says.
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter timed out'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'CREATE_IN_PROGRESS', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+      });
+      await expect(
+        expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+      ).rejects.toThrow(/status=CREATE_IN_PROGRESS/);
+      expect(calls.some((c) => c.name === 'GetTemplate')).toBe(false);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('surfaces the hook rejection, not the GetTemplate error, when the failed changeset serves no template', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: new Error('ChangeSetNotFound: no template for this changeset'),
+      });
+      const err = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never }).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(MacroExpansionError);
+      expect((err as Error).message).toMatch(/AWS::EarlyValidation::ResourceExistenceCheck/);
+      expect((err as Error).message).not.toMatch(/ChangeSetNotFound/);
+      expect(calls.filter((c) => c.name === 'GetTemplate')).toHaveLength(3);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
   it('never reads the template of a changeset FAILED for any other reason', async () => {
     waitUntilChangeSetCreateCompleteMock.mockRejectedValueOnce(new Error('waiter saw FAILED'));
     const { client, calls } = buildCfnClient({

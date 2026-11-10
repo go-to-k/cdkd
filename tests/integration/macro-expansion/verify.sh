@@ -98,6 +98,9 @@ cleanup() {
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
+    # The named parameter outlives a run that failed before cdkd recorded it,
+    # and would fail the next run's first deploy with ParameterAlreadyExists.
+    aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" || true
     # Belt-and-braces: the transient macro-expand stack should always
     # be cleaned up by cdkd's expander `finally` block, but on a
     # cdkd-side crash mid-expansion it could be left behind. Sweep any
@@ -151,11 +154,19 @@ echo "[verify]   ✓ Lambda returned statusCode=200"
 
 echo "[verify] step 5b: cdkd diff expands the selected macro stack (issue #1150 regression)"
 DIFF_LOG="$(mktemp -t cdkd-macro-diff.XXXXXX.log)"
-${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1 | tee "${DIFF_LOG}"
+${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${DIFF_LOG}"
 if ! grep -F "[macros] Expanding CloudFormation macros" "${DIFF_LOG}" > /dev/null; then
   echo "[verify] FAIL: expected the macro-expansion log line in cdkd diff output (post-selection expansion in diff.ts)"
   rm -f "${DIFF_LOG}"
   exit 1
+fi
+# Issue #6077's path is taken only while AWS's EarlyValidation hook rejects the
+# transient changeset over the existing named parameter. Report whether it did;
+# a pass with the hook silent no longer exercises the fix.
+if grep -F "reading the Processed template from the failed changeset" "${DIFF_LOG}" > /dev/null; then
+  echo "[verify]   ✓ EarlyValidation rejected the changeset and cdkd read its Processed template (#6077 path)"
+else
+  echo "[verify]   NOTE: the EarlyValidation hook did not reject this run's changeset -- the #6077 path was not exercised"
 fi
 rm -f "${DIFF_LOG}"
 echo "[verify]   ✓ diff ran macro expansion for the selected stack (named parameter already existed)"
