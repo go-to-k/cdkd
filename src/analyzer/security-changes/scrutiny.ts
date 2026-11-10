@@ -79,6 +79,7 @@ export const PROPERTY_SCRUTINY: Readonly<
 > = {
   'AWS::ApiGateway::DomainNameV2': { Policy: 'InlineResourcePolicy' },
   'AWS::ApiGateway::RestApi': { Policy: 'InlineResourcePolicy' },
+  'AWS::Backup::BackupAccessPoint': { AccessPointPolicy: 'InlineResourcePolicy' },
   'AWS::Backup::BackupVault': { AccessPolicy: 'InlineResourcePolicy' },
   'AWS::Backup::LogicallyAirGappedBackupVault': { AccessPolicy: 'InlineResourcePolicy' },
   'AWS::CodeArtifact::Domain': { PermissionsPolicyDocument: 'InlineResourcePolicy' },
