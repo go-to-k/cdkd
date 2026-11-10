@@ -6321,6 +6321,7 @@
         "stack-lock-renewal",
         "stage-assets",
         "stepfunctions",
+        "stepfunctions-sync-managed-rule",
         "tags-propagation",
         "update-replace",
         "vpc-lambda",
@@ -6718,6 +6719,9 @@
           "l2"
         ],
         "stepfunctions": [
+          "l2"
+        ],
+        "stepfunctions-sync-managed-rule": [
           "l2"
         ],
         "tags-propagation": [
@@ -9141,7 +9145,8 @@
         "replacement-immutable-name",
         "stepfunctions",
         "stepfunctions-logging",
-        "stepfunctions-s3-definition"
+        "stepfunctions-s3-definition",
+        "stepfunctions-sync-managed-rule"
       ],
       "signals": {
         "iam-propagation-stress": [
@@ -9162,6 +9167,9 @@
         ],
         "stepfunctions-s3-definition": [
           "l1"
+        ],
+        "stepfunctions-sync-managed-rule": [
+          "l2"
         ]
       }
     },
