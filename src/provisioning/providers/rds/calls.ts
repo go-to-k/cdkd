@@ -459,7 +459,10 @@ async function sendReplicationCall<T>(
     try {
       return await sendInRegion(region, call);
     } catch (error) {
-      if (!REPLICATION_BUSY_FAULTS.has(awsErrorName(error)) || attempt >= REPLICATION_MAX_ATTEMPTS) {
+      if (
+        !REPLICATION_BUSY_FAULTS.has(awsErrorName(error)) ||
+        attempt >= REPLICATION_MAX_ATTEMPTS
+      ) {
         throw error;
       }
       this.logger.debug(
@@ -490,13 +493,16 @@ async function sendReplicationCall<T>(
  * attempt already started), so the start never meets one in place; when a
  * start follows, that waits for the list to empty. CloudFormation then waits
  * for `available` with the desired region listed (with none listed after a
- * stop alone), as does cdkd unless `--no-wait`.
+ * stop alone), as does cdkd unless `--no-wait`. `fromReadback` (a `cdkd drift
+ * --revert`) only changes the hint on a refused KMS key: the key is write-only,
+ * so a revert never has the template's key to send.
  */
 export async function applyBackupReplication(
   this: RDSProvider,
   logicalId: string,
   physicalId: string,
-  plan: BackupReplicationPlan
+  plan: BackupReplicationPlan,
+  fromReadback = false
 ): Promise<void> {
   if (!plan.stop && plan.start === undefined) return;
   // Bounded by the resource deadline, as `applyAssociatedRoles` is.
@@ -553,7 +559,9 @@ export async function applyBackupReplication(
   } catch (error) {
     // As CloudFormation's handler appends to this refusal.
     if (error instanceof Error && error.message.includes(REPLICATION_KMS_KEY_ERROR)) {
-      error.message = `${error.message} Provide a valid value for the AutomaticBackupReplicationKmsKeyId property.`;
+      error.message = fromReadback
+        ? `${error.message} AutomaticBackupReplicationKmsKeyId is write-only, so cdkd drift --revert cannot send it; run cdkd deploy to restore the replication from the template.`
+        : `${error.message} Provide a valid value for the AutomaticBackupReplicationKmsKeyId property.`;
     }
     throw error;
   }

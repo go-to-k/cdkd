@@ -343,6 +343,28 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       );
     });
 
+    it('a drift --revert names the write-only key instead of asking for a value', async () => {
+      arm({
+        replicatingTo: 'us-west-2',
+        refuse: {
+          command: 'StartDBInstanceAutomatedBackupsReplicationCommand',
+          error: awsError('InvalidParameterValue', 'Encrypted instances require a valid KMS key ID.'),
+        },
+      });
+      const error = await provider
+        .update(
+          'L',
+          'db-1',
+          INSTANCE,
+          { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 3 },
+          { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 5 },
+          { desiredFromAwsReadback: true }
+        )
+        .catch((e: unknown) => e);
+      expect(String((error as Error).message)).toMatch(/write-only, so cdkd drift --revert cannot send it/);
+      expect(String((error as Error).message)).not.toMatch(/Provide a valid value/);
+    });
+
     it('adds no KMS hint to any other refusal', async () => {
       arm({
         refuse: {

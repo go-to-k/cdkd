@@ -82,6 +82,10 @@ INSTANCE_ID="cdkd-rds-bkrepl-integ"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-5640-bkrepl-drift.$$.json"
 
+# The replicated automated backups' ARNs `assert_replicating` read off the
+# instance this run, space-separated.
+SEEN_BACKUP_ARNS=""
+
 # The replicated automated backups of THIS fixture's instance in DEST_REGION,
 # one ARN per line; empty when RDS lists none (it answers not-found then).
 # Scoped by the fixed DBInstanceIdentifier only, never a broader listing, and
@@ -98,8 +102,20 @@ replicated_backups() {
     echo "${out}" >&2
     return 1
   fi
-  [ "${out}" = "None" ] && return 0
-  printf '%s\n' ${out}
+  [ "${out}" = "None" ] || printf '%s\n' ${out}
+  # Every replicated backup this run SAW listed on the instance, whether or not
+  # the identifier listing above reaches it in DEST_REGION.
+  local arn
+  for arn in ${SEEN_BACKUP_ARNS}; do
+    if ! out="$(aws rds describe-db-instance-automated-backups \
+        --db-instance-automated-backups-arn "${arn}" --region "${DEST_REGION}" \
+        --query 'DBInstanceAutomatedBackups[0].DBInstanceAutomatedBackupsArn' --output text 2>&1)"; then
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" && continue
+      echo "${out}" >&2
+      return 1
+    fi
+    [ "${out}" = "None" ] || printf '%s\n' "${out}"
+  done
 }
 
 # Deletes each replicated backup `replicated_backups` lists, until it lists
@@ -108,7 +124,7 @@ replicated_backups() {
 sweep_replicated_backups() {
   local arns arn
   for _ in $(seq 1 30); do
-    arns="$(replicated_backups)" || return 1
+    arns="$(replicated_backups | sort -u)" || return 1
     [ -z "${arns}" ] && return 0
     for arn in ${arns}; do
       case "${arn}" in
@@ -233,16 +249,19 @@ assert_replicating() { # usage: assert_replicating <expected retention> <phase l
   local arn retention
   arn="$(replication_arn)"
   case "${arn}" in
-    arn:aws*:rds:"${DEST_REGION}":*:auto-backup:?*) ;;
+    arn:aws*:rds:"${DEST_REGION}":*:auto-backup:?*) SEEN_BACKUP_ARNS="${SEEN_BACKUP_ARNS} ${arn}" ;;
     *)
       echo "FAIL ($2): the instance lists replication '${arn}', expected one to ${DEST_REGION} (go-to-k/cdkd#5640)" >&2
       instance_field 'DBInstanceAutomatedBackupsReplications' >&2 || true
       exit 1
       ;;
   esac
-  retention="$(aws rds describe-db-instance-automated-backups \
-    --db-instance-automated-backups-arn "${arn}" --region "${DEST_REGION}" \
-    --query 'DBInstanceAutomatedBackups[0].BackupRetentionPeriod' --output text)" || return 1
+  if ! retention="$(aws rds describe-db-instance-automated-backups \
+      --db-instance-automated-backups-arn "${arn}" --region "${DEST_REGION}" \
+      --query 'DBInstanceAutomatedBackups[0].BackupRetentionPeriod' --output text)"; then
+    echo "FAIL ($2): could not read the replicated automated backup ${arn}" >&2
+    return 1
+  fi
   if [ "${retention}" != "$1" ]; then
     echo "FAIL ($2): the replicated automated backup reads retention '${retention}', expected '$1' (go-to-k/cdkd#5640)" >&2
     exit 1
@@ -333,7 +352,7 @@ if [ "${STATUS}" != "gone" ] && [ "${STATUS}" != "deleting" ]; then
 fi
 echo "    OK: ${INSTANCE_ID} is ${STATUS}"
 
-LEFT="$(replicated_backups)"
+LEFT="$(replicated_backups | sort -u)"
 echo "NOTE: replicated automated backups of ${INSTANCE_ID} left in ${DEST_REGION} after destroy: $(printf '%s' "${LEFT}" | grep -c . || true)"
 if ! sweep_replicated_backups; then
   echo "FAIL: the sweep left replicated automated backups of ${INSTANCE_ID} in ${DEST_REGION}" >&2

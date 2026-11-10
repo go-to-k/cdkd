@@ -635,7 +635,13 @@ export async function updateDBInstance(
 
     // go-to-k/cdkd#5640: after the roles, as CloudFormation's update handler
     // stops the previous replication and starts the desired one.
-    await applyBackupReplication.call(this, logicalId, physicalId, replication);
+    await applyBackupReplication.call(
+      this,
+      logicalId,
+      physicalId,
+      replication,
+      context?.desiredFromAwsReadback === true
+    );
 
     // Apply tag diff using the instance ARN.
     if (described?.DBInstanceArn) {
