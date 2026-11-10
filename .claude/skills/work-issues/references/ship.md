@@ -46,14 +46,14 @@ budget the PARENT computed with that block, named per fixture in the brief
 (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
 its own, #5519), wait on ONE command exiting with that PID and stop every
-background Monitor before the final report (each Monitor line re-ends it, #5413), bans attribution
+background Monitor before the final report (#5413), bans attribution
 lines in the ledger commit (#5104), relaunches only after `pgrep -f verify.sh`
-plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (a duplicate set FAILed,
-#5695), and STOPs on an unreadable state record, never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
+plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (#5695), and STOPs on an unreadable state record (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff — unless that file
-only WRAPS an AWS error code, which names the call, not the cause: CloudTrail's
+only WRAPS an AWS error code, which names the call, not the cause (text: CloudTrail
+`errorMessage`, lagging; else replay via aws CLI, #6079): CloudTrail's
 create/delete sequence for that resource decides blamed vs cleared (a race
-already on `main`, #5744) — cleared when the grep hits only outside the diff,
+on `main`, #5744) — cleared when the grep hits only outside the diff,
 else UNATTRIBUTED (#4981). Size it for ONE context (§8-d probe alone, then
 fixture batches), each run's fixture,
 `pid=<N>` (bare digits), log, state

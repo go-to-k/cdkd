@@ -117,7 +117,7 @@ unreached ones stood down with a four-field comment.
 record included (its comments; a body's "conditional on #N": read N's `state`;
 an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
 the claims" — so read those and the PRs they name BEFORE ranking a row, #1160) —
-already-done, not-yet-true and WRONG look identical from the title. "WRONG" /
+done, not-yet-true and WRONG look alike by title. "WRONG" /
 "not cdkd" needs BOTH sides of the boundary read: the handler or asset that
 consumes cdkd's output too, from `node_modules` (#5871: cdkd kept the port,
 aws-cdk-lib's handler dropped it). Grep the
@@ -140,11 +140,11 @@ and the provider's `unhandledByDesign` map.
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
-maintainer-only step) or closing an AWS-side limit with
+maintainer-only step; re-measure as a consumer deploys it, e.g. a CDK PR's
+integ, #5984) or closing an AWS-side limit with
 docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
 `AskUserQuestion` at triage (gotchas.md). An issue's "Undecided" line is no
-question: where the CFn premise settles it, take that, unasked (#5637, #5656:
-the maintainer asked why CFn had not settled it).
+question: where the CFn premise settles it, take that, unasked (#5637, #5656).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
