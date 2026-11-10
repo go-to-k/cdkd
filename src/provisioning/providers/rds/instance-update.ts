@@ -40,7 +40,9 @@ import {
   logExportsApplied,
   instanceAvailabilityZoneKept,
   withPreviousAvailabilityZone,
+  backupReplicationPlan,
 } from './instance-members.js';
+import { applyBackupReplication } from './calls.js';
 import {
   isLiveReadReplica,
   refuseMalformedReplicaSource,
@@ -80,6 +82,17 @@ export async function updateDBInstance(
     resourceType,
     logicalId,
     physicalId
+  );
+  // go-to-k/cdkd#5640: decided as CloudFormation decides it, refused before
+  // any call when the template misuses it (a state-borne bag only warns).
+  const replication = backupReplicationPlan(
+    properties,
+    previousProperties,
+    resourceType,
+    logicalId,
+    physicalId,
+    context?.replayingState === true || context?.desiredFromAwsReadback === true,
+    (message) => this.logger.warn(message)
   );
   // Outside the try: it throws only its own ProvisioningError, which names
   // the cause and must not be re-wrapped.
@@ -618,6 +631,16 @@ export async function updateDBInstance(
       }) ?? [],
       context?.maskSecrets,
       context
+    );
+
+    // go-to-k/cdkd#5640: after the roles, as CloudFormation's update handler
+    // stops the previous replication and starts the desired one.
+    await applyBackupReplication.call(
+      this,
+      logicalId,
+      physicalId,
+      replication,
+      context?.desiredFromAwsReadback === true
     );
 
     // Apply tag diff using the instance ARN.

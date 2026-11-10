@@ -10,6 +10,7 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { associatedRolesNamed, associatedRolesReadback } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { replicatedBackupRetention } from './calls.js';
 import { liveLogExports, liveProcessorFeatures } from './instance-members.js';
 import { isDbIdentifier } from './shared.js';
 
@@ -355,6 +356,21 @@ export async function readCurrentStateDBInstance(
       Name: feature.Name,
       Value: feature.Value,
     }));
+  }
+  // go-to-k/cdkd#5640: the replication's destination region, off its
+  // automated backup's ARN, and that backup's retention, read there, as
+  // CloudFormation's read handler reads both (one more call, only for an
+  // instance that replicates). The KMS key is write-only in the registry
+  // schema, so it is not read back.
+  const replicationArn =
+    inst.DBInstanceAutomatedBackupsReplications?.[0]?.DBInstanceAutomatedBackupsArn;
+  const replicationRegion = replicationArn?.split(':')[3];
+  if (replicationArn !== undefined && replicationRegion !== undefined && replicationRegion !== '') {
+    result['AutomaticBackupReplicationRegion'] = replicationRegion;
+    const retention = await replicatedBackupRetention.call(this, replicationArn);
+    if (retention !== undefined) {
+      result['AutomaticBackupReplicationRetentionPeriod'] = retention;
+    }
   }
   // go-to-k/cdkd#5640: same names on the Describe shape. The zone only for a
   // single-AZ instance: a Multi-AZ one moves to its standby's zone on every

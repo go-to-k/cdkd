@@ -677,6 +677,14 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
       Port: ['DBPortNumber'],
       VPCSecurityGroups: ['VpcSecurityGroupIds'],
+      // go-to-k/cdkd#5640: StartDBInstanceAutomatedBackupsReplication's members.
+      AutomaticBackupReplicationKmsKeyId: ['KmsKeyId'],
+      AutomaticBackupReplicationRetentionPeriod: ['BackupRetentionPeriod'],
+    },
+    transformed: {
+      // go-to-k/cdkd#5640: CloudFormation's handler builds its client there too.
+      AutomaticBackupReplicationRegion:
+        'the region the replication calls go to (the client of StartDBInstanceAutomatedBackupsReplication), never a request member',
     },
     containers: {
       // go-to-k/cdkd#5640: one AddRoleToDBInstance call per entry.

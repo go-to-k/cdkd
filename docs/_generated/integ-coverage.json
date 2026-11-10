@@ -1521,6 +1521,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -1709,6 +1710,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -1811,6 +1815,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -1988,6 +1993,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-dbinstance-backup-replication": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -2120,6 +2128,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -2309,6 +2318,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2410,6 +2422,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -2598,6 +2611,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2681,6 +2697,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-full-stack",
         "rds-multiaz-cluster",
@@ -2812,6 +2829,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-dbinstance-backup-replication": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -2963,6 +2983,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3182,6 +3203,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3300,6 +3324,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3480,6 +3505,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3588,6 +3616,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3824,6 +3853,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3942,6 +3974,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -4129,6 +4162,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-dbinstance-backup-replication": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -7241,6 +7277,7 @@
       "integs": [
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack"
@@ -7252,6 +7289,10 @@
         ],
         "rds-dbinstance-backfill": [
           "l1"
+        ],
+        "rds-dbinstance-backup-replication": [
+          "l1",
+          "literal"
         ],
         "rds-dbinstance-processor-features": [
           "l1",
@@ -7284,6 +7325,7 @@
         "list-parameters",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-backup-replication",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -7304,6 +7346,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-dbinstance-backup-replication": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [

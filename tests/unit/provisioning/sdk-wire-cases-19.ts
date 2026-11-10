@@ -663,11 +663,24 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
   // go-to-k/cdkd#5640: the features a modify sent apply at once, so the
   // update's processor wait settles.
   let processorFeatures = live['ProcessorFeatures'] as unknown;
+  // go-to-k/cdkd#5640: the replication the bag declares is live until a stop;
+  // a start lists one again (its region is the client's, which no input
+  // carries, so the replication waits are skipped: INSTANCE_CASE.provider).
+  const declaredReplication = live['AutomaticBackupReplicationRegion'];
+  let replicationRegion = typeof declaredReplication === 'string' ? declaredReplication : undefined;
   setOutputOverrides({
     ...roleCallOverrides('AddRoleToDBInstanceCommand', 'RemoveRoleFromDBInstanceCommand', roles),
     ModifyDBInstanceCommand: (input) => {
       logs = applyLogDelta(logs, input);
       if (input['ProcessorFeatures'] !== undefined) processorFeatures = input['ProcessorFeatures'];
+      return {};
+    },
+    StopDBInstanceAutomatedBackupsReplicationCommand: () => {
+      replicationRegion = undefined;
+      return {};
+    },
+    StartDBInstanceAutomatedBackupsReplicationCommand: () => {
+      replicationRegion = 'us-west-2';
       return {};
     },
     PromoteReadReplicaCommand: () => {
@@ -691,6 +704,14 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
             ReadReplicaSourceDBInstanceIdentifier: replicaSource,
           }),
           ...(Array.isArray(processorFeatures) && { ProcessorFeatures: processorFeatures }),
+          DBInstanceAutomatedBackupsReplications:
+            replicationRegion === undefined
+              ? []
+              : [
+                  {
+                    DBInstanceAutomatedBackupsArn: `arn:aws:rds:${replicationRegion}:${ACCOUNT}:auto-backup:ab-1`,
+                  },
+                ],
         },
       ],
     }),
@@ -724,6 +745,14 @@ const INSTANCE_CASE: TypeCase = {
   provider: () => {
     const provider = new RDSProvider();
     (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
+    // go-to-k/cdkd#5640: a replication wait reads the destination region off
+    // the listed ARN, which the arm cannot name (the client region is no
+    // input); rds-dbinstance-backup-replication-5640.test.ts pins those waits.
+    const waitForInstanceState = provider.waitForInstanceState.bind(provider);
+    provider.waitForInstanceState = async (logicalId, id, done, change) =>
+      change.startsWith('automated backup replication')
+        ? ((await provider.describeDBInstance(id)) ?? {})
+        : waitForInstanceState(logicalId, id, done, change);
     return provider;
   },
   physicalId: INSTANCE_ID,
@@ -979,6 +1008,53 @@ const INSTANCE_CASE: TypeCase = {
             CFN_DIFF_KEPT(key),
           ])
         ),
+      },
+    },
+    {
+      name: 'automated backup replication (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t4g.micro',
+        Engine: 'postgres',
+        AllocatedStorage: '20',
+        MasterUsername: 'postgres',
+        BackupRetentionPeriod: 7,
+        AutomaticBackupReplicationRegion: 'us-west-2',
+        AutomaticBackupReplicationKmsKeyId: `arn:aws:kms:us-west-2:${ACCOUNT}:key/replica-key`,
+        AutomaticBackupReplicationRetentionPeriod: 3,
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:BackupRetentionPeriod': CFN_DIFF_KEPT('BackupRetentionPeriod'),
+      },
+      expectedRemovalThrows: Object.fromEntries(
+        ['create', 'update-add', 'update-remove'].map((d) => [
+          `${d}:AutomaticBackupReplicationRegion`,
+          {
+            why: `a KMS key or retention with no region is refused before any call, as CloudFormation's AutomaticBackupReplicationValidator refuses it (backupReplicationPlan in ${SRC})`,
+            says: /must specify the AutomaticBackupReplicationRegion parameter/,
+          },
+        ])
+      ),
+    },
+    {
+      // go-to-k/cdkd#5640: the region alone, so its removal stops the
+      // replication (StopDBInstanceAutomatedBackupsReplication).
+      name: 'automated backup replication, region only (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t4g.micro',
+        Engine: 'postgres',
+        AllocatedStorage: '20',
+        MasterUsername: 'postgres',
+        AutomaticBackupReplicationRegion: 'us-west-2',
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
       },
     },
     {

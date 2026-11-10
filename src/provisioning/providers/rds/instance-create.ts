@@ -15,7 +15,9 @@ import type { ResourceCreateResult } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { applyBackupReplication } from './calls.js';
 import {
+  backupReplicationPlan,
   desiredLogExports,
   desiredProcessorFeatures,
   engineLifecycleSupportOf,
@@ -54,6 +56,16 @@ export async function createDBInstance(
   );
   const logExports = desiredLogExports(properties, resourceType, logicalId);
   const processor = desiredProcessorFeatures(properties, resourceType, logicalId);
+  // go-to-k/cdkd#5640: validated before any call, started once available.
+  const replication = backupReplicationPlan(
+    properties,
+    {},
+    resourceType,
+    logicalId,
+    undefined,
+    replaying,
+    (message) => this.logger.warn(message)
+  );
   // go-to-k/cdkd#5640: a declared source makes the instance a read replica.
   refuseMalformedReplicaSource(properties, resourceType, logicalId);
   // go-to-k/cdkd#5640: an unknown SourceRegion is refused as CloudFormation
@@ -314,10 +326,11 @@ export async function createDBInstance(
     }
 
     // go-to-k/cdkd#5640: once the instance is available, as CloudFormation's
-    // create handler attaches them (`updateAssociatedRoles`). A role's
-    // failure is not this instance name's collision (#3826).
-    if (roles !== 'skipped') {
-      try {
+    // create handler attaches the roles (`updateAssociatedRoles`), then starts
+    // the backup replication (`startAutomaticBackupReplicationInRegion`).
+    // Neither failure is this instance name's collision (#3826).
+    try {
+      if (roles !== 'skipped') {
         await this.applyAssociatedRoles(
           'instance',
           logicalId,
@@ -327,10 +340,11 @@ export async function createDBInstance(
           mask,
           undefined
         );
-      } catch (roleError) {
-        markAuxiliaryFailure(roleError, logicalId);
-        throw roleError;
       }
+      await applyBackupReplication.call(this, logicalId, dbInstanceIdentifier, replication);
+    } catch (auxiliaryError) {
+      markAuxiliaryFailure(auxiliaryError, logicalId);
+      throw auxiliaryError;
     }
 
     // Describe to get final attributes

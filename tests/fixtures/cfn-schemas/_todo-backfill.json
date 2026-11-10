@@ -41,9 +41,6 @@
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
-      "AutomaticBackupReplicationKmsKeyId",
-      "AutomaticBackupReplicationRegion",
-      "AutomaticBackupReplicationRetentionPeriod",
       "BackupTarget",
       "CharacterSetName",
       "CustomIAMInstanceProfile",
