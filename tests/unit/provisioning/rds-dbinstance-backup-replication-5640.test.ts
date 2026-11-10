@@ -104,6 +104,10 @@ interface Live {
   onBusy?: () => void;
   /** DescribeDBInstances leaves the instance's ARN out. */
   noArn?: boolean;
+  /** The instance is storage-encrypted. */
+  encrypted?: boolean;
+  /** A second region the instance also lists a replication to, until a stop. */
+  alsoReplicatingTo?: string;
 }
 
 /** Whether a start was sent while the instance still listed a replication. */
@@ -115,6 +119,7 @@ let startedWhileListed = false;
  */
 function arm(live: Live = {}): void {
   let replicatingTo = live.replicatingTo;
+  let alsoReplicatingTo = live.alsoReplicatingTo;
   // What the list reads after a lagging change, and how many reads lag.
   let pending: { region: string | undefined; reads: number } | undefined;
   const busy = [...(live.busy ?? [])];
@@ -143,12 +148,12 @@ function arm(live: Live = {}): void {
             {
               DBInstanceIdentifier: 'db-1',
               ...(live.noArn !== true && { DBInstanceArn: ARN }),
+              ...(live.encrypted === true && { StorageEncrypted: true }),
               DBInstanceStatus: status,
               Engine: 'postgres',
-              DBInstanceAutomatedBackupsReplications:
-                replicatingTo === undefined
-                  ? []
-                  : [{ DBInstanceAutomatedBackupsArn: backupArn(replicatingTo) }],
+              DBInstanceAutomatedBackupsReplications: [replicatingTo, alsoReplicatingTo]
+                .filter((r): r is string => r !== undefined)
+                .map((r) => ({ DBInstanceAutomatedBackupsArn: backupArn(r) })),
             },
           ],
         });
@@ -156,7 +161,8 @@ function arm(live: Live = {}): void {
       case 'CreateDBInstanceCommand':
         return Promise.resolve({ DBInstance: { DBInstanceIdentifier: 'db-1' } });
       case 'StopDBInstanceAutomatedBackupsReplicationCommand':
-        change(undefined);
+        if (region === alsoReplicatingTo) alsoReplicatingTo = undefined;
+        else change(undefined);
         return Promise.resolve({});
       case 'StartDBInstanceAutomatedBackupsReplicationCommand':
         if (replicatingTo !== undefined) startedWhileListed = true;
@@ -346,26 +352,49 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       );
     });
 
-    it('a drift --revert names the write-only key instead of asking for a value', async () => {
-      arm({
-        replicatingTo: 'us-west-2',
-        refuse: {
-          command: 'StartDBInstanceAutomatedBackupsReplicationCommand',
-          error: awsError('InvalidParameterValue', 'Encrypted instances require a valid KMS key ID.'),
-        },
+    describe('a drift --revert restarting a replication', () => {
+      const prev = { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 5 };
+      const next = { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 3 };
+      const revert = () =>
+        provider.update('L', 'db-1', INSTANCE, { ...next }, { ...prev }, { desiredFromAwsReadback: true });
+
+      it('is refused on a storage-encrypted instance before the stop, naming the write-only key', async () => {
+        arm({ replicatingTo: 'us-west-2', encrypted: true });
+        const error = await revert().catch((e: unknown) => e);
+        expect(String((error as Error).message)).toMatch(
+          /cannot restart the automated backup replication.*AutomaticBackupReplicationKmsKeyId is write-only.*Nothing was stopped or started.*start-db-instance-automated-backups-replication --region us-west-2/
+        );
+        expect(String((error as Error).message)).not.toMatch(/run cdkd deploy to restore/);
+        expect(replicationCalls()).toEqual([]);
       });
-      const error = await provider
-        .update(
+
+      it('goes ahead on an unencrypted instance, which needs no key', async () => {
+        arm({ replicatingTo: 'us-west-2' });
+        await revert();
+        expect(replicationCalls()).toEqual([
+          'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+          'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        ]);
+      });
+
+      it('goes ahead when the restored bag carries a key', async () => {
+        arm({ replicatingTo: 'us-west-2', encrypted: true });
+        await provider.update(
           'L',
           'db-1',
           INSTANCE,
-          { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 3 },
-          { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2', AutomaticBackupReplicationRetentionPeriod: 5 },
+          { ...next, AutomaticBackupReplicationKmsKeyId: KMS },
+          { ...prev, AutomaticBackupReplicationKmsKeyId: KMS },
           { desiredFromAwsReadback: true }
-        )
-        .catch((e: unknown) => e);
-      expect(String((error as Error).message)).toMatch(/write-only, so cdkd drift --revert cannot send it/);
-      expect(String((error as Error).message)).not.toMatch(/Provide a valid value/);
+        );
+        expect(sent('StartDBInstanceAutomatedBackupsReplicationCommand')[0]?.['KmsKeyId']).toBe(KMS);
+      });
+
+      it('a template update of an encrypted instance is not refused (the key is the template\'s to give)', async () => {
+        arm({ replicatingTo: 'us-west-2', encrypted: true });
+        await update(next, prev);
+        expect(replicationCalls()).toHaveLength(2);
+      });
     });
 
     it('adds no KMS hint to any other refusal', async () => {
@@ -589,6 +618,56 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       expect(replicationCalls()).toEqual([]);
     });
 
+    it.each([
+      ['a rollback replay', { replayingState: true }],
+      ['drift --revert', { desiredFromAwsReadback: true }],
+    ])('%s still applies a region beside BackupRetentionPeriod 0 after the warning', async (_label, context) => {
+      await update(
+        { ...BASE, BackupRetentionPeriod: 0, AutomaticBackupReplicationRegion: 'us-west-2' },
+        { ...BASE, BackupRetentionPeriod: 0 },
+        context
+      );
+      expect(mockWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/cannot be specified when BackupRetentionPeriod is 0/)
+      );
+      expect(replicationCalls()).toEqual([
+        'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+      ]);
+    });
+
+    it.each([
+      ['KMS key', 'AutomaticBackupReplicationKmsKeyId', 'KmsKeyId'],
+      ['retention', 'AutomaticBackupReplicationRetentionPeriod', 'BackupRetentionPeriod'],
+    ])('restarts without the %s when the template drops it and keeps the region', async (_label, key, member) => {
+      arm({ replicatingTo: 'us-west-2' });
+      const next = { ...REPLICATED };
+      delete next[key];
+      await update(next, REPLICATED);
+      expect(replicationCalls()).toEqual([
+        'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        'StartDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+      ]);
+      expect(sent('StartDBInstanceAutomatedBackupsReplicationCommand')[0]).not.toHaveProperty(member);
+    });
+
+    it('leaves it alone when the template drops BackupRetentionPeriod (nothing to inherit), as CloudFormation does', async () => {
+      const prev = { ...BASE, AutomaticBackupReplicationRegion: 'us-west-2' };
+      const next = { ...prev };
+      delete next['BackupRetentionPeriod'];
+      arm({ replicatingTo: 'us-west-2' });
+      await update(next, prev);
+      expect(replicationCalls()).toEqual([]);
+    });
+
+    it('stops every replication the instance lists', async () => {
+      arm({ replicatingTo: 'us-west-2', alsoReplicatingTo: 'eu-west-1' });
+      await update(BASE, REPLICATED);
+      expect(replicationCalls()).toEqual([
+        'StopDBInstanceAutomatedBackupsReplicationCommand@us-west-2',
+        'StopDBInstanceAutomatedBackupsReplicationCommand@eu-west-1',
+      ]);
+    });
+
     it('does not refuse a malformed value the record holds unchanged', async () => {
       const prev = { ...BASE, AutomaticBackupReplicationRegion: { Ref: 'Region' } };
       await update(prev, prev);
@@ -714,6 +793,15 @@ describe('RDS DBInstance automated backup replication (go-to-k/cdkd#5640)', () =
       expect(
         await drift({ ...REPLICATED, ...replicating, AutomaticBackupReplicationRetentionPeriod: 5 })
       ).toBeGreaterThan(0);
+    });
+
+    it('reads a blank declared retention as undeclared, as the create and update do', () => {
+      expect(
+        provider.getDriftUnknownPaths(INSTANCE, {
+          ...REPLICATED,
+          AutomaticBackupReplicationRetentionPeriod: '',
+        })
+      ).toContain('AutomaticBackupReplicationRetentionPeriod');
     });
 
     it('compares the retention only where declared, and never the write-only KMS key', () => {

@@ -66,7 +66,10 @@ export function getDriftUnknownPaths(
       ...(declared == null || (Array.isArray(declared) && declared.length === 0)
         ? ['ProcessorFeatures']
         : []),
-      ...(retention == null ? ['AutomaticBackupReplicationRetentionPeriod'] : []),
+      // Blank is unset, as the create and update read it (`backupReplicationOf`).
+      ...(retention == null || retention === ''
+        ? ['AutomaticBackupReplicationRetentionPeriod']
+        : []),
     ];
   }
   if (resourceType !== 'AWS::RDS::DBCluster') return [];

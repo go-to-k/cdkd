@@ -245,7 +245,7 @@ replication_arn() {
 assert_sdk_route() { # usage: assert_sdk_route <phase label>
   local by
   by="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
-    | jq -r '[.resources[] | select(.resourceType == "AWS::RDS::DBInstance") | .provisionedBy // "sdk"] | if length == 1 then .[0] else "records:\(length)" end')" || {
+    | jq -r '[.resources[] | select(.resourceType == "AWS::RDS::DBInstance") | .provisionedBy // "missing"] | if length == 1 then .[0] else "records:\(length)" end')" || {
     echo "FAIL ($1): could not read the state record" >&2
     exit 1
   }
