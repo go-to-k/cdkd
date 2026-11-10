@@ -217,11 +217,12 @@ echo "    configuration read (the environment was just polled)"
 # removes the environment, which fails the run here and is cleaned up by the
 # exit trap.
 #
-# AppConfig registers the read a moment late (#6074): measured on a real
-# account, an APPLY delete issued in the same second as the last poll was
-# allowed in 2 of 12 trials, and one issued 2 s or more later was refused in
-# all 8. The protection period is 60 minutes by default, so waiting costs the
-# destroy below nothing.
+# AppConfig likely registers the read a moment late (#6074). Measured on a
+# real account with this read pattern: an APPLY delete issued right after the
+# loop above (about 3 s after the last poll, as this script did before) was
+# allowed in 2 of 12 trials, and one issued 2 s or more later still was refused
+# in all 8. The protection period is 60 minutes by default, so waiting costs
+# the destroy below nothing.
 sleep 15
 CONTROL_OUT="$(aws appconfig delete-environment --application-id "${APP_ID}" --environment-id "${ENV_ID}" \
   --deletion-protection-check APPLY --region "${REGION}" 2>&1)" && {
