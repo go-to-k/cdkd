@@ -580,10 +580,13 @@ CREATE, `GetTemplate --template-stage Processed`, cleanup; see the
 Expansion is selection-aware (issue
 [#1150](https://github.com/go-to-k/cdkd/issues/1150)): `cdkd deploy` / `cdkd
 diff` expand only the stacks they target, `cdkd list` / `cdkd destroy` never
-expand (names and destroy both come from the manifest / cdkd state), and
-intermittent `AWS::EarlyValidation::*` hook rejections of the transient
-changeset are retried (issue
-[#1151](https://github.com/go-to-k/cdkd/issues/1151)). Multi-stage macros
+expand (names and destroy both come from the manifest / cdkd state). An
+`AWS::EarlyValidation::*` hook rejection of the transient changeset — which
+fires on every run after the first deploy when the template names a resource
+that now exists — does not block expansion: the hook runs after the transform,
+so cdkd reads the Processed template from the failed changeset (issue
+[#6077](https://github.com/go-to-k/cdkd/issues/6077)), and retries with a
+fresh transient stack only when that changeset serves none. Multi-stage macros
 (expansion output that itself contains a macro) remain out of scope.
 
 ### Nested stacks

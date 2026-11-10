@@ -943,15 +943,21 @@ describe('expandMacros — EarlyValidation hook retry (issue #1151)', () => {
     const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
     try {
       // Attempt 1: waiter fails, DescribeChangeSet reports the hook
-      // rejection. Attempt 2: waiter passes, GetTemplate returns the
-      // expanded template.
+      // rejection, and the failed changeset serves no Processed template
+      // (#6077 reads it when it does). Attempt 2: waiter passes, GetTemplate
+      // returns the expanded template.
       waitUntilChangeSetCreateCompleteMock
         .mockRejectedValueOnce(new Error('waiter saw FAILED'))
         .mockResolvedValueOnce({});
+      let getTemplateCalls = 0;
       const { client, calls } = buildCfnClient({
         CreateChangeSet: { Id: 'cs', StackId: 's' },
         DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
-        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+        GetTemplate: () => {
+          getTemplateCalls++;
+          if (getTemplateCalls === 1) throw new Error('ChangeSetNotFound');
+          return { TemplateBody: EXPANDED_TEMPLATE };
+        },
       });
       const result = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
       expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
@@ -1009,5 +1015,129 @@ describe('expandMacros — EarlyValidation hook retry (issue #1151)', () => {
     } finally {
       sleepSpy.mockRestore();
     }
+  });
+});
+
+describe('expandMacros — EarlyValidation rejection still serves the Processed template (issue #6077)', () => {
+  const EARLY_VALIDATION_REASON =
+    'The following hook(s)/validation failed: [AWS::EarlyValidation::ResourceExistenceCheck]. ' +
+    'To troubleshoot Early Validation errors, use the DescribeEvents API for detailed failure information.';
+
+  it('reads the Processed template from the FAILED changeset instead of retrying', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValueOnce(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+      });
+      const result = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
+      expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+      expect(calls.filter((c) => c.name === 'CreateChangeSet')).toHaveLength(1);
+      const getTemplate = calls.find((c) => c.name === 'GetTemplate');
+      expect(getTemplate?.input).toEqual({
+        StackName: calls[0]!.input['StackName'],
+        ChangeSetName: calls[0]!.input['ChangeSetName'],
+        TemplateStage: 'Processed',
+      });
+      expect(calls.filter((c) => c.name === 'DeleteStack')).toHaveLength(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('treats a Processed template that still carries the macro as the rejection, not a multi-stage macro', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: { TemplateBody: SAM_TEMPLATE },
+      });
+      const err = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never }).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(MacroExpansionError);
+      expect((err as Error).message).toMatch(/AWS::EarlyValidation::ResourceExistenceCheck/);
+      expect((err as Error).message).not.toMatch(/Multi-stage/);
+      expect(calls.filter((c) => c.name === 'CreateChangeSet')).toHaveLength(3);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('treats a FAILED changeset with no Processed body as the rejection and retries', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: {},
+      });
+      await expect(
+        expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+      ).rejects.toThrow(/AWS::EarlyValidation::ResourceExistenceCheck/);
+      expect(calls.filter((c) => c.name === 'CreateChangeSet')).toHaveLength(3);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('never reads the template of a changeset that is not FAILED, even when its reason names the hook', async () => {
+    // A waiter timeout leaves the changeset CREATE_IN_PROGRESS; its template is
+    // not settled, so it must not be read whatever StatusReason says.
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter timed out'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'CREATE_IN_PROGRESS', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+      });
+      await expect(
+        expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+      ).rejects.toThrow(/status=CREATE_IN_PROGRESS/);
+      expect(calls.some((c) => c.name === 'GetTemplate')).toBe(false);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('surfaces the hook rejection, not the GetTemplate error, when the failed changeset serves no template', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: new Error('ChangeSetNotFound: no template for this changeset'),
+      });
+      const err = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never }).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(MacroExpansionError);
+      expect((err as Error).message).toMatch(/AWS::EarlyValidation::ResourceExistenceCheck/);
+      expect((err as Error).message).not.toMatch(/ChangeSetNotFound/);
+      expect(calls.filter((c) => c.name === 'GetTemplate')).toHaveLength(3);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('never reads the template of a changeset FAILED for any other reason', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockRejectedValueOnce(new Error('waiter saw FAILED'));
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      DescribeChangeSet: { Status: 'FAILED', StatusReason: 'Transform failed: macro Lambda threw' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    await expect(
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+    ).rejects.toThrow(/macro Lambda threw/);
+    expect(calls.some((c) => c.name === 'GetTemplate')).toBe(false);
   });
 });

@@ -93,7 +93,10 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   NotFound-tolerant `finally`. `Parameters` without `Default` get synthetic
   placeholders, which do NOT leak into the Processed template. Inline up to
   51,200 bytes, `TemplateURL` up to 1 MB, refusal above; a still-macro-carrying
-  expansion hard-errors.
+  expansion hard-errors. A changeset FAILED by an `AWS::EarlyValidation::*` hook
+  (deterministic once a template-NAMED resource exists, #6077) still serves the
+  Processed template, so it is read from the failed changeset; the #1151 retry
+  runs only when that changeset serves none.
 - **stack-messages.ts** — `collectStackMessages` gathers `aws:cdk:error` /
   `warning` / `info` from the artifact's inline `metadata` AND its
   `additionalMetadataFile` side file; an unreadable or wrong-shape side file
