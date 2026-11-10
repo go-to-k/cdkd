@@ -6,6 +6,7 @@ import {
   DeleteStackCommand,
   DescribeChangeSetCommand,
   GetTemplateCommand,
+  type GetTemplateCommandOutput,
   waitUntilChangeSetCreateComplete,
 } from '@aws-sdk/client-cloudformation';
 import {
@@ -131,14 +132,15 @@ const PARAMETER_PLACEHOLDER = 'cdkd-macro-expand-placeholder';
 
 /**
  * AWS's managed pre-deployment validation hooks
- * (`AWS::EarlyValidation::*`, e.g. `ResourceExistenceCheck`) can
- * reject the transient expansion changeset INTERMITTENTLY (issue
- * #1151: two consecutive rejections followed by a clean pass on the
- * same template minutes later, with the same named resources
- * existing throughout). The changeset is never executed — cdkd only
- * reads the Processed-stage template — so a validation-hook rejection
- * carries no real risk and is worth retrying with a fresh transient
- * stack before failing the whole run.
+ * (`AWS::EarlyValidation::*`, e.g. `ResourceExistenceCheck`) reject the
+ * transient expansion changeset once a resource it NAMES already exists —
+ * which is every run after the stack's first deploy. Issue #1151 read it as
+ * intermittent (one later pass); issue #6077 measured it deterministic (12/12,
+ * `NAME_CONFLICT_VALIDATION`). The hook runs AFTER the transform, so
+ * `expandMacrosAttempt` reads the Processed template from the FAILED
+ * changeset instead. The changeset is never executed, so the rejection carries
+ * no risk. The retry below remains for a rejection that leaves no Processed
+ * template to read.
  */
 const EARLY_VALIDATION_MAX_ATTEMPTS = 3;
 const EARLY_VALIDATION_RETRY_BASE_DELAY_MS = 2_000;
@@ -330,8 +332,8 @@ export async function expandMacros(
         const delayMs = EARLY_VALIDATION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
         logger.warn(
           `Macro expansion changeset was rejected by an AWS EarlyValidation hook ` +
-            `(attempt ${attempt}/${EARLY_VALIDATION_MAX_ATTEMPTS}); this rejection is ` +
-            `known to be intermittent — retrying with a fresh transient stack in ` +
+            `(attempt ${attempt}/${EARLY_VALIDATION_MAX_ATTEMPTS}) and served no ` +
+            `Processed template — retrying with a fresh transient stack in ` +
             `${delayMs / 1000}s...`
         );
         await retryDelays.sleep(delayMs);
@@ -475,6 +477,7 @@ async function expandMacrosAttempt(
     // StatusReason via a follow-up DescribeChangeSet.
     let waiterFailed = false;
     let waiterError: unknown;
+    let earlyValidationFailure: MacroExpansionError | undefined;
     try {
       await waitUntilChangeSetCreateComplete(
         {
@@ -521,23 +524,55 @@ async function expandMacrosAttempt(
       const status = displaySafe(desc?.Status ?? 'UNKNOWN');
       // The retry verdict is taken from `rawReason`, never from the rendered
       // message — see `withEarlyValidationVerdict`.
-      throw withEarlyValidationVerdict(
+      const failure = withEarlyValidationVerdict(
         new MacroExpansionError(
           `CloudFormation macro expansion failed (status=${status}): ${reason}`,
           waiterError instanceof Error ? waiterError : undefined
         ),
         rawReason
       );
+      // Issue #6077: a validation-hook rejection comes AFTER the transform has
+      // run, so the FAILED changeset still serves the Processed template — and
+      // cdkd only reads that template, it never executes the changeset. The
+      // hook's `NAME_CONFLICT_VALIDATION` fires deterministically once a named
+      // resource exists (cdkd's own first deploy created it), so retrying it
+      // cannot help; read the template instead. Any other FAILED changeset
+      // (a macro Lambda error, a malformed template) still throws here.
+      if (desc?.Status !== 'FAILED' || !isEarlyValidationRejection(failure)) {
+        throw failure;
+      }
+      earlyValidationFailure = failure;
+      logger.debug(
+        'Macro expansion: changeset rejected by an AWS EarlyValidation hook; ' +
+          'reading the Processed template from the failed changeset (issue #6077).'
+      );
     }
 
     // ---- GetTemplate Processed ----
-    const tpl = await cfn.send(
-      new GetTemplateCommand({
-        StackName: transientStackName,
-        ChangeSetName: changeSetName,
-        TemplateStage: 'Processed',
-      })
-    );
+    let tpl: GetTemplateCommandOutput;
+    try {
+      tpl = await cfn.send(
+        new GetTemplateCommand({
+          StackName: transientStackName,
+          ChangeSetName: changeSetName,
+          TemplateStage: 'Processed',
+        })
+      );
+    } catch (err) {
+      // The failed changeset served no template: surface the hook rejection
+      // itself (still retry-eligible), not a GetTemplate error that hides it.
+      if (earlyValidationFailure !== undefined) throw earlyValidationFailure;
+      throw err;
+    }
+    if (earlyValidationFailure !== undefined) {
+      // A rejection that came BEFORE the transform leaves the Processed stage
+      // empty or still carrying the macros — that is the original rejection,
+      // not a multi-stage macro, so it keeps its own message and retry verdict.
+      if (tpl.TemplateBody === undefined || tpl.TemplateBody === null) {
+        throw earlyValidationFailure;
+      }
+      if (containsMacro(parseTemplateBody(tpl.TemplateBody))) throw earlyValidationFailure;
+    }
     if (tpl.TemplateBody === undefined || tpl.TemplateBody === null) {
       // CR-MJ4: no underlying cause — this is a CFn-side response
       // shape problem (the SDK returned a successful response with no
