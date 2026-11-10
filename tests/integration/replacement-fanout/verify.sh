@@ -206,6 +206,36 @@ if [ "${HAS_A_IN_POLICY}" != "true" ]; then
 fi
 echo "    OK (baseline): TopicPolicy references the phase-a topic ARN"
 
+# --- Phase b preview: cdkd diff (go-to-k/cdkd#6078) -------------------
+# OwnChangeDependent's Value changes on its own (phase=a -> phase=b) AND
+# embeds the topic being replaced. Its preview must print the template value
+# `(known after deploy)`, never a value resolved against the phase-a topic.
+echo "==> Phase b preview: cdkd diff -c phase=b"
+DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  -c phase=b 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+# The OwnChangeDependent row, up to the next resource row.
+OWN_BLOCK=$(printf '%s\n' "${DIFF_OUT}" | awk '/\[~\] OwnChangeDependent/{f=1; print; next} f && /^  \[/{f=0} f')
+# Sentinel: the row and its Value line must parse, or a wording drift would
+# read as "no stale value".
+if ! grep -qF -- '- Value:' <<<"${OWN_BLOCK}"; then
+  echo "FAIL: cdkd diff printed no OwnChangeDependent Value row; got:" >&2
+  printf '%s\n' "${DIFF_OUT}" >&2
+  exit 1
+fi
+if ! grep -qF '[reads a resource this deploy changes]' <<<"${OWN_BLOCK}"; then
+  echo "FAIL: OwnChangeDependent's Value row lacks '[reads a resource this deploy changes]':" >&2
+  printf '%s\n' "${OWN_BLOCK}" >&2
+  exit 1
+fi
+OWN_NEW=$(grep -F 'new:' <<<"${OWN_BLOCK}" || true)
+if [ -z "${OWN_NEW}" ] || grep -qF "${TOPIC_ARN_A}" <<<"${OWN_NEW}" || ! grep -qF '(known after deploy)' <<<"${OWN_NEW}"; then
+  echo "FAIL: OwnChangeDependent's new side must be the template value (known after deploy), not the phase-a ARN; got: ${OWN_NEW}" >&2
+  exit 1
+fi
+echo "    OwnChangeDependent preview: template value, known after deploy (no stale phase-a ARN)"
+
 # --- Phase b: redeploy (-c phase=b) -> base REPLACED ------------------
 echo "==> Phase b: redeploy with -c phase=b (forces base topic replacement)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -284,6 +314,18 @@ if [ "${#STALE_DEPENDENTS[@]}" -ne 0 ]; then
 fi
 echo "    OK (fan-out): all ${DEP_COUNT} dependents re-resolved to the NEW base ARN ${TOPIC_ARN_B}"
 
+OWN_NAME=$(echo "${STATE_B}" | jq -r '.outputs.OwnChangeDependentName // empty')
+if [ -z "${OWN_NAME}" ]; then
+  echo "FAIL: no OwnChangeDependentName output in the phase-b state" >&2
+  exit 1
+fi
+OWN_VAL=$(aws ssm get-parameter --name "${OWN_NAME}" --region "${REGION}" --output json | jq -r '.Parameter.Value // empty')
+if [ "${OWN_VAL}" != "arn=${TOPIC_ARN_B}|phase=b" ]; then
+  echo "FAIL: OwnChangeDependent ('${OWN_NAME}') Value '${OWN_VAL}' != 'arn=${TOPIC_ARN_B}|phase=b'" >&2
+  exit 1
+fi
+echo "    OwnChangeDependent deployed with the phase-b topic ARN"
+
 # --- Extra dependent: TopicPolicy re-points at the new topic ----------
 POLICY_B=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_B}" --region "${REGION}" --output json 2>/dev/null \
   | jq -r '.Attributes.Policy // empty')
@@ -336,6 +378,8 @@ if [ "${#ORPHAN_PARAMS[@]}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: all ${DEP_COUNT} dependent parameters are gone after destroy"
+assert_gone "OwnChangeDependent parameter '${OWN_NAME}' still exists after destroy (orphan)" aws ssm get-parameter --name "${OWN_NAME}" --region "${REGION}"
+echo "    OK: OwnChangeDependent is gone after destroy"
 
 echo ""
 echo "==> replacement-fanout test passed (base SNS topic replacement propagated to all ${DEP_COUNT} SSM-parameter dependents + the TopicPolicy + clean destroy)"

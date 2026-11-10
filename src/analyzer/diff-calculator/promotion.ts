@@ -12,7 +12,12 @@ import {
   type ReadProvenanceSources,
 } from '../read-provenance-promotion.js';
 import type { DiffCalculator } from '../diff-calculator.js';
-import { type SyntheticCreateOnly, containsIntrinsic, siblingsOf } from './shared.js';
+import {
+  type SyntheticCreateOnly,
+  containsIntrinsic,
+  markNewValueKnownAfterDeploy,
+  siblingsOf,
+} from './shared.js';
 
 /**
  * The read-provenance arm (go-to-k/cdkd#4852, `read-provenance-promotion.ts`):
@@ -331,7 +336,13 @@ export function promoteReplacementDependents(
       const existingPaths = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
       const syntheticChanges: PropertyChange[] = [];
       for (const propKey of refPropKeys) {
-        if (existingPaths.has(propKey)) continue; // already diffed on its own
+        if (existingPaths.has(propKey)) {
+          // Already diffed on its own, so its replacement verdict stands; but
+          // its `newValue` was resolved against the resource being replaced
+          // (go-to-k/cdkd#6078), so the preview must not print it as final.
+          markNewValueKnownAfterDeploy(change, propKey);
+          continue;
+        }
         const oldValue = change.currentProperties?.[propKey];
         const newValue = change.desiredProperties?.[propKey];
         syntheticChanges.push({

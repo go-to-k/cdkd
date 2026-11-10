@@ -84,7 +84,8 @@ note in the [text output](cli-diff.md#via-cc-api-routing).
 ### `propertyChanges`
 
 Each entry gives the property's `path`, its `oldValue` and `newValue`, and
-`requiresReplacement`.
+`requiresReplacement`. An entry flagged `newValueKnownAfterDeploy` also carries
+`newValueTemplate`.
 
 The notes that the text output prints in square brackets appear here as
 flags. A flag is present and `true` on the lines that carry the note, and
@@ -96,11 +97,17 @@ absent on all others.
 | `inPlacePropagated` | `[attribute propagated]` |
 | `readProvenancePromoted` (with `inPlacePropagated`) | `[read value moved upstream]` |
 | `maskedExpressionChanged` | `[masked input or expression changed]` |
+| `newValueKnownAfterDeploy` | `[reads a resource this deploy changes]` |
 
-Two things to know when reading these entries:
+Three things to know when reading these entries:
 
 - On an entry with `maskedExpressionChanged`, `oldValue` and `newValue` are
   both `***`.
+- On an entry with `newValueKnownAfterDeploy`, `newValue` was resolved
+  against the resources as they are now. It still embeds the old physical ID,
+  ARN or attribute of the resource this deploy changes, so it is not the value
+  the deploy will write. `newValueTemplate` holds the template value the text
+  output prints instead.
 - On a propagated entry, `requiresReplacement: true` means the resource may be
   replaced. It is not a verdict, because the deploy decides once it knows the
   new value.
