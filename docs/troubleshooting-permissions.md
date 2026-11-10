@@ -188,7 +188,7 @@ aws logs describe-resource-policies --region us-east-1
 
 A Step Functions state machine that uses a `.sync` integration (a task with
 `integrationPattern: RUN_JOB`, such as `EcsRunTask`, `BatchSubmitJob` or
-`StepFunctionsStartExecution`) fails to create or update with:
+`StepFunctionsStartExecution`) fails to create with:
 
 ```text
 'arn:aws:iam::<account>:role/<role>' is not authorized to create managed-rule.

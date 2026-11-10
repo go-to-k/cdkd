@@ -433,9 +433,12 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // Observed per window (tests/integration/stepfunctions-logging isolates each,
   // so the COMPOSED case is derived rather than measured): 6 attempts for the
   // assume-role window, up to 10 for this one. 16 of the 26 attempts is 27.75s
-  // of the 47.75s grid, leaving 10 attempts / 20s spare.
+  // of the 47.75s grid, leaving 10 attempts / 20s spare -- before #6081's
+  // managed-rule window below took up to 8 of them (its comment composes all
+  // three).
   'not authorized to access the Log Destination',
-  // Step Functions CreateStateMachine / UpdateStateMachine for a definition
+  // Step Functions CreateStateMachine (measured; UpdateStateMachine is not)
+  // for a definition
   // using a `.sync` (RUN_JOB) integration: when that integration's EventBridge
   // managed rule (`StepFunctionsGetEventsFor<Service>Rule`) does not exist yet
   // in the account and region, the call validates that the role may

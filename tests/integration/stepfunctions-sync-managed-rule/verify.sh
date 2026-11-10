@@ -10,8 +10,10 @@
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
 #   2. delete the Batch `.sync` managed rule so the deploy is a FIRST deploy
-#      (no other fixture uses Batch `.sync`; Step Functions re-creates the
-#      rule on demand)
+#      (no other fixture uses Batch `.sync`). Integ-account only: a Batch
+#      `.sync` execution running elsewhere in the account and region while
+#      the rule is absent would stop receiving its job-completion events.
+#      Step Functions creates the rule at CreateStateMachine (step 3)
 #   3. cdkd deploy --verbose; report whether the managed-rule window was hit
 #   4. assert the state machine exists on AWS
 #   5. cdkd destroy --force; assert the state machine, its role and the cdkd
