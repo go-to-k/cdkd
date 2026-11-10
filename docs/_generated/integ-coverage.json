@@ -11,6 +11,7 @@
     "AWS::ApiGatewayV2::Integration",
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
+    "AWS::AppConfig::Environment",
     "AWS::AppSync::ApiKey",
     "AWS::AppSync::DataSource",
     "AWS::AppSync::GraphQLApi",
@@ -542,6 +543,21 @@
         ],
         "serverless-api": [
           "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
+      "integs": [
+        "appconfig",
+        "appconfig-environment-delete-protection"
+      ],
+      "signals": {
+        "appconfig": [
+          "literal"
+        ],
+        "appconfig-environment-delete-protection": [
+          "literal"
         ]
       }
     },
@@ -9190,7 +9206,6 @@
     "AWS::AppConfig::ConfigurationProfile",
     "AWS::AppConfig::Deployment",
     "AWS::AppConfig::DeploymentStrategy",
-    "AWS::AppConfig::Environment",
     "AWS::AppConfig::HostedConfigurationVersion",
     "AWS::ApplicationAutoScaling::ScalableTarget",
     "AWS::ApplicationAutoScaling::ScalingPolicy",

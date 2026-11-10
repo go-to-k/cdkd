@@ -412,13 +412,6 @@ export const NOT_GUARDED: ReadonlyMap<string, string> = new Map([
       'whatever hosted zone the user points at, which the delete does not touch.',
   ],
   [
-    'AWS::AppConfig::Environment',
-    '(c) An environment holds deployment HISTORY and the `Monitors` list; the ' +
-      'configuration content lives under a ConfigurationProfile (guarded) and its ' +
-      'hosted versions. Nothing the environment itself stores survives a redeploy ' +
-      'anyway.',
-  ],
-  [
     'AWS::AppRunner::Service',
     '(c) A stateless container service. Its `SourceConfiguration` points at an image ' +
       'repository or a code repository that outlives the service, and the running ' +

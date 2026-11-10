@@ -36,6 +36,7 @@ import { CASES_12 } from './sdk-wire-cases-12.js';
 import { CASES_13 } from './sdk-wire-cases-13.js';
 import { CASES_14 } from './sdk-wire-cases-14.js';
 import { CASES_15 } from './sdk-wire-cases-15.js';
+import { CASES_APPCONFIG } from './sdk-wire-cases-appconfig.js';
 import { CASES_16 } from './sdk-wire-cases-16.js';
 import { CASES_16_EC2 } from './sdk-wire-cases-16-ec2.js';
 import { CASES_17 } from './sdk-wire-cases-17.js';
@@ -852,6 +853,7 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     file: 'sdk-wire-coverage-18-globaltable.test.ts',
   },
   { cases: CASES_19, name: 'CASES_19', file: 'sdk-wire-coverage-19.test.ts' },
+  { cases: CASES_APPCONFIG, name: 'CASES_APPCONFIG', file: 'sdk-wire-coverage-appconfig.test.ts' },
   {
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',

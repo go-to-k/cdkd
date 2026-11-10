@@ -330,6 +330,23 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::AppConfig::Environment',
+    {
+      handled: new Set<string>([
+        'ApplicationId',
+        'DeletionProtectionCheck',
+        'Description',
+        'Monitors',
+        'Name',
+        'Tags',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['EnvironmentId']),
+      ccRouteUnavailable: true,
+    },
+  ],
+  [
     'AWS::AppSync::ApiKey',
     {
       handled: new Set<string>(['ApiId', 'Description', 'Expires']),

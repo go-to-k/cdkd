@@ -3,8 +3,9 @@ import { Construct } from 'constructs';
 import * as appconfig from 'aws-cdk-lib/aws-appconfig';
 
 /**
- * AWS AppConfig full chain integ. All resources are Cloud-Control-provisioned
- * (no SDK providers) and several have COMPOUND CC primary identifiers:
+ * AWS AppConfig full chain integ. Every type except Environment is
+ * Cloud-Control-provisioned (Environment has an SDK provider, #5875) and several
+ * have COMPOUND primary identifiers:
  *   - Environment            `<appId>|<envId>`
  *   - ConfigurationProfile   `<appId>|<profileId>`
  *   - HostedConfigurationVersion `<appId>|<profileId>|<versionNumber>` (3-segment)

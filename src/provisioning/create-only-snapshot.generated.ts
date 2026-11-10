@@ -24,6 +24,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ['AWS::ApiGatewayV2::Integration', [['ApiId']]],
   ['AWS::ApiGatewayV2::Route', [['ApiId']]],
   ['AWS::ApiGatewayV2::Stage', [['ApiId'], ['StageName']]],
+  ['AWS::AppConfig::Environment', [['ApplicationId']]],
   ['AWS::AppSync::ApiKey', [['ApiId']]],
   ['AWS::AppSync::DataSource', [['ApiId'], ['Name']]],
   ['AWS::AppSync::GraphQLApi', []],

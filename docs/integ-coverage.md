@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run integ-coverage` to regenerate.
 
-**136 / 138 registered SDK Providers** have at least one integ fixture exercising them. 2 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**137 / 139 registered SDK Providers** have at least one integ fixture exercising them. 2 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -34,7 +34,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945). |
 
-## Covered providers (136)
+## Covered providers (137)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -49,6 +49,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::ApiGatewayV2::Integration` | [`apigatewayv2-update-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigatewayv2-update-removal/) (l1)<br>[`export`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/export/) (l2,literal)<br>[`local-invoke-stage`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-stage/) (l2)<br>[`local-start-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api/) (l1,l2)<br>[`local-start-api-container`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-container/) (l2)<br>[`local-start-api-websocket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-websocket/) (l1,literal)<br>[`migrate-from-cfn`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/migrate-from-cfn/) (l2)<br>[`serverless-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/serverless-api/) (l1) |
 | `AWS::ApiGatewayV2::Route` | [`apigatewayv2-update-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigatewayv2-update-removal/) (l1)<br>[`export`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/export/) (l2)<br>[`local-invoke-stage`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-stage/) (l2)<br>[`local-start-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api/) (l1,l2)<br>[`local-start-api-container`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-container/) (l2)<br>[`local-start-api-websocket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-websocket/) (l1,literal)<br>[`migrate-from-cfn`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/migrate-from-cfn/) (l2)<br>[`serverless-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/serverless-api/) (l1) |
 | `AWS::ApiGatewayV2::Stage` | [`apigatewayv2-update-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigatewayv2-update-removal/) (l1)<br>[`drift-revert`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert/) (l1)<br>[`export`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/export/) (l2,literal)<br>[`local-invoke-stage`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-stage/) (l1,l2)<br>[`local-start-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api/) (l2)<br>[`local-start-api-container`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-container/) (l2)<br>[`local-start-api-websocket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-websocket/) (l1,literal)<br>[`migrate-from-cfn`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/migrate-from-cfn/) (l2)<br>[`redacted-delete-address`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/redacted-delete-address/) (l1,literal)<br>[`secret-derived-immutable-names`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/secret-derived-immutable-names/) (l1,literal)<br>[`serverless-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/serverless-api/) (l1) |
+| `AWS::AppConfig::Environment` | [`appconfig`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig/) (literal)<br>[`appconfig-environment-delete-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig-environment-delete-protection/) (literal) |
 | `AWS::AppSync::ApiKey` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1)<br>[`import-migrate-appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-migrate-appsync/) (l1) |
 | `AWS::AppSync::DataSource` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1,literal)<br>[`import-migrate-appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-migrate-appsync/) (l1)<br>[`secret-derived-immutable-names`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/secret-derived-immutable-names/) (l1,literal) |
 | `AWS::AppSync::GraphQLApi` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1)<br>[`import-migrate-appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-migrate-appsync/) (l1)<br>[`secret-derived-immutable-names`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/secret-derived-immutable-names/) (l1,literal) |
@@ -175,7 +176,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-propagation-stress/) (l2)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`wafv2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (99)
+## Resource types referenced in integs without an SDK Provider (98)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -191,7 +192,6 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::AppConfig::ConfigurationProfile`
 - `AWS::AppConfig::Deployment`
 - `AWS::AppConfig::DeploymentStrategy`
-- `AWS::AppConfig::Environment`
 - `AWS::AppConfig::HostedConfigurationVersion`
 - `AWS::ApplicationAutoScaling::ScalableTarget`
 - `AWS::ApplicationAutoScaling::ScalingPolicy`

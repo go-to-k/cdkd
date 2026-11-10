@@ -46,6 +46,10 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"AccessLogSettings":"object","DefaultRouteSettings":"object","RouteSettings":"object","StageVariables":"object","Tags":"object"}',
   ],
   [
+    'AWS::AppConfig::Environment',
+    '{"Monitors":"array","Monitors[]":"object","Tags":"array","Tags[]":"object"}',
+  ],
+  [
     'AWS::AppSync::DataSource',
     '{"DynamoDBConfig":"object","DynamoDBConfig.DeltaSyncConfig":"object","ElasticsearchConfig":"object","EventBridgeConfig":"object","HttpConfig":"object","HttpConfig.AuthorizationConfig":"object","HttpConfig.AuthorizationConfig.AwsIamConfig":"object","LambdaConfig":"object","OpenSearchServiceConfig":"object","RelationalDatabaseConfig":"object","RelationalDatabaseConfig.RdsHttpEndpointConfig":"object"}',
   ],

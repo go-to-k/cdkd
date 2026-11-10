@@ -57,6 +57,7 @@ export { RDSDBProxyEndpointProvider } from './providers/rds-dbproxy-endpoint-pro
 export { RDSDBProxyTargetGroupProvider } from './providers/rds-dbproxy-targetgroup-provider.js';
 export { DocDBProvider } from './providers/docdb-provider.js';
 export { DocDBSubnetGroupProvider } from './providers/docdb-subnet-group-provider.js';
+export { AppConfigEnvironmentProvider } from './providers/appconfig-environment-provider.js';
 export { NeptuneProvider } from './providers/neptune-provider.js';
 export { Route53Provider } from './providers/route53-provider.js';
 export { WAFv2WebACLProvider } from './providers/wafv2-provider.js';

@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **138**
-- Fully enriched: **47**
+- Classified types (cached schema): **139**
+- Fully enriched: **48**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **73**
-- Types with allow-listed (not-a-gap) attributes: **86**
+- Types with allow-listed (not-a-gap) attributes: **87**
 
 ## Pure-CC latent gaps
 
@@ -122,6 +122,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGatewayV2::Integration` | yes | enriched | `IntegrationId` (allow) |
 | `AWS::ApiGatewayV2::Route` | yes | enriched | `RouteId` (allow) |
 | `AWS::ApiGatewayV2::Stage` | yes | no-computed-attr | _(none)_ |
+| `AWS::AppConfig::Environment` | yes | enriched | `EnvironmentId` (allow) |
 | `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (allow), `Arn` (GAP) |
 | `AWS::AppSync::DataSource` | yes | enriched | `DataSourceArn` (allow) |
 | `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (GAP), `Arn` (allow), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |

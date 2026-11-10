@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-03T12:26:40.737Z",
+  "generatedAt": "2026-11-09T10:40:28.123Z",
   "summary": {
-    "tier2Count": 1638,
-    "schemasRead": 1638,
-    "withCreateOnly": 1432,
+    "tier2Count": 1637,
+    "schemasRead": 1637,
+    "withCreateOnly": 1431,
     "schemasWithNoProperties": 0,
-    "candidateCount": 118,
+    "candidateCount": 117,
     "guardedCount": 88,
-    "unguardedCount": 30,
+    "unguardedCount": 29,
     "signalCounts": {
       "snapshot-or-backup": 16,
       "retention-window": 10,
       "storage-capacity": 21,
-      "deletion-protection": 13,
+      "deletion-protection": 12,
       "encryption-at-rest": 18,
       "data-store-noun": 68
     }
@@ -80,16 +80,6 @@
         "deletion-protection"
       ],
       "guarded": true
-    },
-    {
-      "typeName": "AWS::AppConfig::Environment",
-      "createOnlyProperties": [
-        "/properties/ApplicationId"
-      ],
-      "signals": [
-        "deletion-protection"
-      ],
-      "guarded": false
     },
     {
       "typeName": "AWS::AppRunner::Service",
@@ -1503,6 +1493,7 @@
         "/properties/Bucket",
         "/properties/DbStorageType",
         "/properties/DeploymentType",
+        "/properties/KmsKeyId",
         "/properties/Name",
         "/properties/NetworkType",
         "/properties/Organization",
@@ -1522,6 +1513,7 @@
       "typeName": "AWS::Timestream::InfluxDBInstance",
       "createOnlyProperties": [
         "/properties/Bucket",
+        "/properties/KmsKeyId",
         "/properties/Name",
         "/properties/NetworkType",
         "/properties/Organization",

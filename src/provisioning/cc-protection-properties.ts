@@ -14,9 +14,11 @@
  * the type's CFn schema exactly, must NOT be createOnly, and the type's
  * UPDATE handler must support flipping it in-place). Remaining candidates
  * are tracked in issue #1320: SMSVOICE PhoneNumber/Pool are registrable via
- * SIMULATOR numbers; SenderId (per-country regulatory registration) and
- * AppConfig `DeletionProtectionCheck` (whose `BYPASS` off-value touches
- * account-global state, so no safe integ) stay excluded, as recorded there.
+ * SIMULATOR numbers; SenderId (per-country regulatory registration) stays
+ * excluded, as recorded there. AppConfig `DeletionProtectionCheck` cannot be
+ * an entry here at all: it is write-only, so the flip patch changes nothing a
+ * later delete can see. `AppConfigEnvironmentProvider` forwards it on
+ * `DeleteEnvironment` instead (issue #5875).
  * `AWS::QLDB::Ledger` is permanently excluded (Tier 3 non-provisionable in
  * cdkd; the QLDB service is sunset).
  */

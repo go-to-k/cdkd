@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-11-03T12:13:35.091Z",
   "summary": {
-    "tier1Count": 138,
-    "tier2Count": 1638,
+    "tier1Count": 139,
+    "tier2Count": 1637,
     "tier3Count": 330,
     "totalCount": 2106
   },
@@ -19,6 +19,7 @@
     "AWS::ApiGatewayV2::Integration",
     "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Stage",
+    "AWS::AppConfig::Environment",
     "AWS::AppSync::ApiKey",
     "AWS::AppSync::DataSource",
     "AWS::AppSync::GraphQLApi",
@@ -207,7 +208,6 @@
     "AWS::AppConfig::ConfigurationProfile",
     "AWS::AppConfig::Deployment",
     "AWS::AppConfig::DeploymentStrategy",
-    "AWS::AppConfig::Environment",
     "AWS::AppConfig::ExperimentDefinition",
     "AWS::AppConfig::ExperimentRun",
     "AWS::AppConfig::Extension",

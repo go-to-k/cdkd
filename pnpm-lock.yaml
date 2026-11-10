@@ -178,6 +178,9 @@ importers:
       '@aws-sdk/client-apigatewayv2':
         specifier: ^3.1161.0
         version: 3.1161.0
+      '@aws-sdk/client-appconfig':
+        specifier: ^3.1161.0
+        version: 3.1161.0
       '@aws-sdk/client-application-auto-scaling':
         specifier: ^3.1161.0
         version: 3.1161.0
@@ -557,6 +560,10 @@ packages:
 
   '@aws-sdk/client-apigatewayv2@3.1161.0':
     resolution: {integrity: sha512-J8M7nEEjFaua4bgEjUSSqLineuq706NCGqozx/7XOnVvUcHtzbFEUS6odNRgf1xaUyOVzVt5bo+H4BOtMVkh3Q==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-appconfig@3.1161.0':
+    resolution: {integrity: sha512-PhofddRBODoRu33JUpRxX4osRZLAwoVHag0rIWSESgwh5Fq/SwfECptXOIpQtzen5Ncjc9Blo44h+jpaPkPZgg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-application-auto-scaling@3.1161.0':
@@ -4937,6 +4944,17 @@ snapshots:
       tslib: 2.8.1
 
   '@aws-sdk/client-apigatewayv2@3.1161.0':
+    dependencies:
+      '@aws-sdk/core': 3.979.1
+      '@aws-sdk/credential-provider-node': 3.972.92
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.38.1
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.14.0
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-appconfig@3.1161.0':
     dependencies:
       '@aws-sdk/core': 3.979.1
       '@aws-sdk/credential-provider-node': 3.972.92

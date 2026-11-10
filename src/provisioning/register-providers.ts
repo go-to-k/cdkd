@@ -78,6 +78,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     RDSDBProxyTargetGroupProvider,
     DocDBProvider,
     DocDBSubnetGroupProvider,
+    AppConfigEnvironmentProvider,
     NeptuneProvider,
     Route53Provider,
     WAFv2WebACLProvider,
@@ -240,6 +241,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   // the cluster and instance are NON_PROVISIONABLE and their provider opts out
   // of the Cloud Control fallback, which the subnet group must keep (#3866).
   registry.register('AWS::DocDB::DBSubnetGroup', new DocDBSubnetGroupProvider());
+  registry.register('AWS::AppConfig::Environment', new AppConfigEnvironmentProvider());
   const docdbProvider = new DocDBProvider();
   registry.register('AWS::DocDB::DBCluster', docdbProvider);
   registry.register('AWS::DocDB::DBInstance', docdbProvider);

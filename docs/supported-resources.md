@@ -48,6 +48,7 @@ part of the type name.
 | --- | --- |
 | ApiGateway | `AWS::ApiGateway::Account`, `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Stage` |
 | ApiGatewayV2 | `AWS::ApiGatewayV2::Api`, `AWS::ApiGatewayV2::Authorizer`, `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Stage` |
+| AppConfig | `AWS::AppConfig::Environment` |
 | AppSync | `AWS::AppSync::ApiKey`, `AWS::AppSync::DataSource`, `AWS::AppSync::GraphQLApi`, `AWS::AppSync::GraphQLSchema`, `AWS::AppSync::Resolver` |
 | AutoScaling | `AWS::AutoScaling::AutoScalingGroup` |
 | BedrockAgentCore | `AWS::BedrockAgentCore::Browser`, `AWS::BedrockAgentCore::CodeInterpreter`, `AWS::BedrockAgentCore::Evaluator`, `AWS::BedrockAgentCore::Runtime` |

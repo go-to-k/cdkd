@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 138,
+    "classifiedCount": 139,
     "covered": 67,
-    "noArnAttr": 71,
+    "noArnAttr": 72,
     "gap": 0,
     "knownGap": 0
   },
@@ -75,6 +75,12 @@
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Stage",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **91**
-- Wrapped: **84**
+- Provider classes with `update()`: **92**
+- Wrapped: **85**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -35,6 +35,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `AgentCoreRuntimeProvider` | `agentcore-runtime-provider.ts` | wrapped |
 | `ApiGatewayProvider` | `apigateway-provider.ts` | wrapped |
 | `ApiGatewayV2Provider` | `apigatewayv2-provider.ts` | wrapped |
+| `AppConfigEnvironmentProvider` | `appconfig-environment-provider.ts` | wrapped |
 | `AppSyncProvider` | `appsync-provider.ts` | wrapped |
 | `ASGProvider` | `asg-provider.ts` | wrapped |
 | `BudgetsBudgetProvider` | `budgets-budget-provider.ts` | wrapped |
