@@ -220,6 +220,7 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
       getAllowedUnsupportedProperties: vi.fn().mockReturnValue(new Set<string>()),
     };
     mockStateBackend = {
+      listStacks: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),

@@ -7413,6 +7413,7 @@
         "composite-stack",
         "conditions",
         "context-test",
+        "cross-stack-export-in-use",
         "cross-stack-references",
         "custom-resource-provider",
         "data-analytics",
@@ -7504,6 +7505,9 @@
           "l2"
         ],
         "context-test": [
+          "l2"
+        ],
+        "cross-stack-export-in-use": [
           "l2"
         ],
         "cross-stack-references": [
@@ -8130,6 +8134,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
+        "cross-stack-export-in-use",
         "cross-stack-secret-import",
         "data-pipeline",
         "drift-revert-arrays",
@@ -8235,6 +8240,9 @@
         "cross-region-concurrent-stacks": [
           "l2",
           "literal"
+        ],
+        "cross-stack-export-in-use": [
+          "l2"
         ],
         "cross-stack-secret-import": [
           "l1"
@@ -8486,6 +8494,7 @@
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
+        "cross-stack-export-in-use",
         "cross-stack-references",
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
@@ -8633,6 +8642,9 @@
         ],
         "cross-stack-cfn-fallback": [
           "l1"
+        ],
+        "cross-stack-export-in-use": [
+          "l2"
         ],
         "cross-stack-references": [
           "l1"

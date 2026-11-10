@@ -455,3 +455,90 @@ export class StackHasActiveImportsError extends CdkdError {
     Object.setPrototypeOf(this, StackHasActiveImportsError.prototype);
   }
 }
+
+/**
+ * One export a refused deploy would change or remove, with a consumer that
+ * still imports it. Surfaced inside {@link ExportInUseError}.
+ */
+export interface InUseExportChange extends ActiveImportConsumer {
+  reason: 'removed' | 'changed';
+}
+
+/**
+ * `cdkd deploy <producer>` refused before any resource change because its
+ * plan would change or remove an export that a stack outside this run still
+ * imports via `Fn::ImportValue`, or that a stack whose record cannot be read
+ * may import (go-to-k/cdkd#6088). CloudFormation refuses the same update
+ * (`Export ... cannot be updated as it is in use by ...`); without the
+ * refusal the consumer keeps a value naming a resource the deploy deleted,
+ * which `cdkd drift` cannot see.
+ *
+ * Exit code 1, as every other refused deploy: `cdkd deploy`'s exit 2 means
+ * "deployed, and running again usually clears it", and running again never
+ * clears this. Non-retryable: the verdict comes from records and the
+ * template, which no retry changes.
+ *
+ * `nested` drops the "Nothing was changed" sentence: a nested child refuses
+ * inside its parent's update, after the parent has started provisioning.
+ */
+export class ExportInUseError extends CdkdError {
+  public readonly producerStack: string;
+  public readonly producerRegion: string;
+  public readonly changes: InUseExportChange[];
+  public readonly unreadable: ReadonlyArray<{ stackName: string; region: string }>;
+
+  constructor(
+    producerStack: string,
+    producerRegion: string,
+    changes: InUseExportChange[],
+    opts: {
+      unreadable?: ReadonlyArray<{ stackName: string; region: string }>;
+      affectedExportNames?: readonly string[];
+      nested?: boolean;
+    } = {}
+  ) {
+    const unreadable = opts.unreadable ?? [];
+    // Record-derived values are printed plain or described, never quoted raw
+    // (go-to-k/cdkd#3950), as in StackHasActiveImportsError.
+    const lines = changes.map(
+      (c) =>
+        `  - ${plainOrDescribed(c.consumerStack, 'stack name')} (${plainOrDescribed(c.consumerRegion, 'region')}): ` +
+        `imports ${exportNamePhrase(c.exportName)}, which this deploy would ` +
+        (c.reason === 'removed' ? 'remove' : 'change')
+    );
+    const unreadableBlock =
+      unreadable.length === 0
+        ? ''
+        : `The state of these stacks could not be read, so cdkd cannot rule out that they import\n` +
+          `${(opts.affectedExportNames ?? []).map((n) => exportNamePhrase(n)).join(', ') || 'an export this deploy changes'}:\n` +
+          unreadable
+            .map(
+              (u) =>
+                `  - ${plainOrDescribed(u.stackName, 'stack name')} (${plainOrDescribed(u.region, 'region')})`
+            )
+            .join('\n') +
+          `\nCheck that their records can be read (\`cdkd state show <stack>\`), then retry.\n\n`;
+    super(
+      `Cannot deploy stack ${quotedOrDescribed(producerStack, 'stack name')} (${plainOrDescribed(producerRegion, 'region')}): ` +
+        `this deploy would change or remove exports that other stacks may still import via Fn::ImportValue.\n` +
+        (lines.length > 0 ? `${lines.join('\n')}\n\n` : '\n') +
+        unreadableBlock +
+        (opts.nested === true ? '' : `Nothing was changed. `) +
+        `This matches CloudFormation, which refuses to update or\n` +
+        `remove an export while another stack imports it.\n\n` +
+        `To proceed:\n` +
+        `  1. Deploy the consumers in the same run (name them with this stack, or use --all),\n` +
+        `     so each one picks up the new value right after this stack.\n` +
+        `  2. Or remove the Fn::ImportValue from each consumer's template and re-deploy\n` +
+        `     the consumer first, then retry this deploy.`,
+      'EXPORT_IN_USE'
+    );
+    this.unreadable = unreadable;
+    this.producerStack = producerStack;
+    this.producerRegion = producerRegion;
+    this.changes = changes;
+    this.name = 'ExportInUseError';
+    Object.setPrototypeOf(this, ExportInUseError.prototype);
+    markNonRetryable(this);
+  }
+}

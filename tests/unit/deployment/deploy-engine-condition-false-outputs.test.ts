@@ -54,6 +54,7 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
 
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
   };
   let mockLockManager: {
@@ -122,6 +123,7 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
     };
     mockStateBackend = {
       getState: vi.fn(),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
     };
     mockExportIndexStore = {

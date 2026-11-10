@@ -209,6 +209,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
   let provider: Record<string, ReturnType<typeof vi.fn>>;
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
     appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
   };
@@ -243,6 +244,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     };
     stateBackend = {
       getState: vi.fn().mockResolvedValue({ state: v11State(), etag: 'etag-old' }),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     } as never;

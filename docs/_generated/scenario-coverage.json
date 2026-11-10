@@ -782,6 +782,11 @@
       ]
     },
     {
+      "name": "cross-stack-export-in-use",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-stack-references",
       "annotated": true,
       "scenarios": [
@@ -3651,6 +3656,7 @@
     "cross-backend-same-stack",
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
+    "cross-stack-export-in-use",
     "custom-resource-noecho-nested",
     "custom-resource-service-token-change",
     "destroy-failed-delete-keeps-dependencies",

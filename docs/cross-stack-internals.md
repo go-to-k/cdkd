@@ -884,7 +884,7 @@ The design points behind it:
 
 `cdkd destroy '<producer>'` refuses with `StackHasActiveImportsError` when a
 consumer still imports from the producer. The check is `scanActiveConsumers`
-in [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts):
+in [`src/state/active-import-consumers.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/active-import-consumers.ts):
 
 1. It only runs when the producing stack's `state.outputs` is non-empty. A
    stack with no outputs skips the scan.
@@ -897,18 +897,43 @@ in [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/m
 The scan is not delegated to the exports index. The index does not store the
 consumer-side reverse mapping (a `ListImports` equivalent), and trusting a
 stale index here could let a destructive destroy through. Destroy is not the
-performance-critical path, so the O(N) scan is accepted.
+performance-critical path, so the O(N) scan is accepted. A record the scan
+cannot read is skipped at destroy.
 
 CloudFormation offers no force flag for this refusal and cdkd matches that.
 A producer that must be destroyable independently uses `Fn::GetStackOutput`
 at template-authoring time.
+
+## Strong-reference check at deploy
+
+`cdkd deploy '<producer>'` refuses with `ExportInUseError`
+([#6088](https://github.com/go-to-k/cdkd/issues/6088)) when its plan would
+change or remove an export a consumer outside the run imports. The check runs
+in the plan checks, after the diff and before any provider call, in two halves:
+
+1. `findAffectedExports` in
+   [`src/deployment/export-change-guard.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/export-change-guard.ts)
+   reads no state bucket. It compares the published exports (`exportNames`)
+   with the template's outputs and the plan: a removed name, an output
+   reading a created, deleted or replaced resource, an attribute an in-place
+   update may move (the diff's promotion rule), or a resolved value that
+   differs. A stack that exports nothing returns at once.
+2. Only when that list is non-empty does it call `scanActiveConsumers`, the
+   same O(N) scan destroy uses. A consumer in `DeployEngineOptions.inRunStacks`
+   (every stack this `cdkd deploy` deploys) is exempt. Unlike destroy, a
+   record the scan cannot read refuses the deploy: it may hold an importer.
+
+Not seen: a replacement decided only while provisioning (an update AWS
+refuses, replaced instead), and a change inside a dynamic reference's text,
+which the check never resolves.
 
 ## Source map
 
 - Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) (version constants) and [`src/types/state/`](https://github.com/go-to-k/cdkd/tree/main/src/types/state) (the state-shape interfaces)
 - Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
 - Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts); `Fn::ImportValue` in [`src/deployment/intrinsic-resolver/cross-stack/import-value.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cross-stack/import-value.ts), `Fn::GetStackOutput` in [`stack-output.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/stack-output.ts), the CloudFormation fallback in [`cfn-fallback.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cfn-fallback.ts)
-- Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
+- Consumer scan (destroy and deploy): [`src/state/active-import-consumers.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/active-import-consumers.ts)
+- Deploy check: [`src/deployment/export-change-guard.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/export-change-guard.ts)
 - Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
 
 ---

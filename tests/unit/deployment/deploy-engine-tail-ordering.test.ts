@@ -85,6 +85,7 @@ interface Harness {
   provider: { create: ReturnType<typeof vi.fn> };
   stateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
     deleteRollbackJournal: ReturnType<typeof vi.fn>;
     loadRollbackJournal: ReturnType<typeof vi.fn>;
@@ -117,6 +118,7 @@ function buildHarness(opts: {
   };
 
   const stateBackend = {
+    listStacks: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockImplementation(() => {
       order.push('getState');
       // The real backend returns `null` (not a record with a null state)

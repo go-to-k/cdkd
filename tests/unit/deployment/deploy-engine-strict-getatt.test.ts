@@ -90,6 +90,7 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
 
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
+    listStacks: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
     stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
   };
@@ -153,6 +154,7 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
     };
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: makeState(), etag: 'etag-old' }),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       stackInstanceIdForFirstWrite: vi
         .fn()
@@ -347,6 +349,7 @@ describe('DeployEngine - strict output failure persists provisioning state (#111
         .mockResolvedValue(
           opts.priorState ? { state: opts.priorState, etag: opts.priorEtag ?? 'etag-0' } : null
         ),
+      listStacks: vi.fn().mockResolvedValue([]),
       saveState: vi.fn().mockResolvedValue('etag-next'),
       stackInstanceIdForFirstWrite: vi
         .fn()

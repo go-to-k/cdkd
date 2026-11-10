@@ -75,6 +75,8 @@ export interface DeployStackContext {
   addUnaddressed: (stackUnaddressed: number, crossPrefixKept: number) => void;
   /** Counts a stack that unwound through `DeployCancelledError`. */
   addCancelledStack: () => void;
+  /** Every stack of this run, as `inRunStackKey` keys (go-to-k/cdkd#6088). */
+  inRunStacks: ReadonlySet<string>;
 }
 
 /**
@@ -422,6 +424,7 @@ export async function deployStackInScope(
       ...(approveDeployment && { requireApproval, approveDeployment }),
       // go-to-k/cdkd#5238: recorded so `cdkd state destroy` can honor it.
       ...(stackInfo.terminationProtection === true && { terminationProtection: true }),
+      inRunStacks: ctx.inRunStacks,
     };
 
     const stackDeployEngine = new DeployEngine(

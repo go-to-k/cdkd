@@ -72,6 +72,7 @@ const AUDITED_MEMBERS = [
   'onDestructivePlan', // overwritten to undefined by the spread site: the top-level check covers children (#4705)
   'crossPrefixHolder', // inherited: called with the CHILD's own stack name by its automatic rollback; a child never settles (#4705 R6-2)
   'eventRecorder', // carries the top-level run's stack name, by design
+  'inRunStacks', // inherited: the RUN's stacks, which a child's in-use export refusal exempts as the parent's does (#6088)
   // --- names no resource ------------------------------------------------------
   'concurrency',
   'dryRun',

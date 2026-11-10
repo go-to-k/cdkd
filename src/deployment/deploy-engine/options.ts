@@ -137,6 +137,13 @@ export interface DeployEngineOptions {
    */
   terminationProtection?: boolean;
   /**
+   * Every stack this `cdkd deploy` run deploys, as `inRunStackKey` keys
+   * (go-to-k/cdkd#6088). A consumer in this set is exempt from the in-use
+   * export refusal: it deploys in the same run, after its producer when it
+   * still imports. Absent reads as a run of this stack alone.
+   */
+  inRunStacks?: ReadonlySet<string>;
+  /**
    * When set, every state save during this deploy stamps the supplied
    * parent-stack identity onto `StackState.parentStack` /
    * `parentLogicalId` / `parentRegion` (schema v6+). The

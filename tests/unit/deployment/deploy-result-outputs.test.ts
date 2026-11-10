@@ -40,6 +40,7 @@ vi.mock('p-limit', () => ({
 
 describe('DeployEngine - DeployResult.outputs', () => {
   let mockStateBackend: {
+    listStacks: ReturnType<typeof vi.fn>;
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
   };
@@ -71,6 +72,7 @@ describe('DeployEngine - DeployResult.outputs', () => {
     vi.clearAllMocks();
 
     mockStateBackend = {
+      listStacks: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({
         state: {
           version: 5,

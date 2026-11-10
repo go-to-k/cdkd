@@ -300,8 +300,10 @@ explains why.
 | `2` | The stack deployed, but resources were left unaddressed. |
 
 Exit `1` covers bad arguments (including `--no-wait` with `--full-wait`), an
-auth failure, a synthesis crash, a refused state record, and a resource
-failure that the automatic rollback then handled.
+auth failure, a synthesis crash, a refused state record, a deploy refused
+because it would change an export another stack imports
+([A refused deploy](cross-stack-references.md#a-refused-deploy)), and a
+resource failure that the automatic rollback then handled.
 
 Exit `2` means a delete was skipped, a replacement's old resource survives,
 or a replacement was refused because another state prefix records the stack

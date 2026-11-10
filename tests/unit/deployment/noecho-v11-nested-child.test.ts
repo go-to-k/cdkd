@@ -89,6 +89,7 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
       readCurrentState: vi.fn().mockResolvedValue(undefined),
     };
     stateBackend = {
+      listStacks: vi.fn().mockResolvedValue([]),
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('e2'),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),

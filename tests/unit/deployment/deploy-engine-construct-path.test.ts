@@ -83,7 +83,7 @@ describe('DeployEngine stamps constructPath on every save', () => {
 
   function engine() {
     return new DeployEngine(
-      { getState, saveState } as never,
+      { getState, saveState, listStacks: vi.fn().mockResolvedValue([]) } as never,
       {
         acquireLockWithRetry: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn().mockResolvedValue(undefined),
