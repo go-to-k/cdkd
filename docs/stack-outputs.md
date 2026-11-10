@@ -83,6 +83,9 @@ cdkd deploy --all --outputs-file cdk-outputs.json
 | `cdk.json` | `"outputsFile": "cdk-outputs.json"` sets the path; the flag wins. |
 | Masked values | Written as `***`, as printed; the AWS CDK CLI writes the real value. See [Secrets in outputs are masked](#secrets-in-outputs-are-masked). |
 
+[Connect a Frontend to Your Stack](frontend-outputs.md) shows how to turn the
+file into a web frontend's configuration.
+
 ## Differences from CloudFormation
 
 | | CloudFormation | cdkd |
@@ -114,5 +117,7 @@ outputs.
 
 - [Use Another Stack's Outputs](cross-stack-references.md): using another stack's
   outputs
+- [Connect a Frontend to Your Stack](frontend-outputs.md): feeding outputs to a
+  web frontend
 - [State Store](state-management.md): the state file that holds them
 - [`cdkd state`](cli-state.md): `cdkd state show` and its flags
