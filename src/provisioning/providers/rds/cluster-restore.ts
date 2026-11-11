@@ -472,7 +472,9 @@ export async function readRestoreSnapshot(
   snapshotIdentifier: string,
   resourceType: string,
   logicalId: string,
-  mask: ((text: string) => string) | undefined
+  mask: ((text: string) => string) | undefined,
+  /** Whether the restore is FROM this snapshot (else a point-in-time source decides the shape). */
+  restoresFromIt = true
 ): Promise<RestoreSnapshotSource> {
   // `ArnHelper.getResourceType`: the resource type is matched exactly, before `:` or `/`.
   if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot[:/]/.test(snapshotIdentifier)) return UNREAD_SNAPSHOT;
@@ -494,7 +496,9 @@ export async function readRestoreSnapshot(
   } catch (error) {
     if (ACCESS_DENIED_CODES.has(awsErrorName(error))) {
       this.logger.warn(
-        safeMsg`DBCluster ${logicalId}: could not read the restore snapshot (${awsErrorName(error)}), so it is restored as a standard (not limitless) cluster, as in CloudFormation.`
+        restoresFromIt
+          ? safeMsg`DBCluster ${logicalId}: could not read the restore snapshot (${awsErrorName(error)}), so it is restored as a standard (not limitless) cluster, as in CloudFormation.`
+          : safeMsg`DBCluster ${logicalId}: could not read the declared SnapshotIdentifier (${awsErrorName(error)}); the point-in-time restore goes ahead without it, as in CloudFormation.`
       );
       return UNREAD_SNAPSHOT;
     }

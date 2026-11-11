@@ -251,7 +251,7 @@ export async function createDBCluster(
     typeof declaredSnapshot === 'string' &&
     declaredSnapshot !== ''
   ) {
-    await readRestoreSnapshot.call(this, declaredSnapshot, resourceType, logicalId, mask);
+    await readRestoreSnapshot.call(this, declaredSnapshot, resourceType, logicalId, mask, false);
   }
   if (restore?.kind === 'point-in-time' && restore.source.by === 'identifier') {
     const source = await readRestoreSource.call(

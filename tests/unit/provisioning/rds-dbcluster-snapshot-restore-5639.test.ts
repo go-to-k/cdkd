@@ -463,6 +463,18 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(sent('DescribeDBClusterAutomatedBackupsCommand')).toHaveLength(0);
     });
 
+    it('goes ahead with a point-in-time restore whose declared snapshot read is denied, naming no standard-cluster restore', async () => {
+      arm({ snapshotError: named('AccessDenied', 'not authorized') });
+      await create(ID_BASE, { SnapshotIdentifier: SNAPSHOT });
+      expect(sent('RestoreDBClusterToPointInTimeCommand')).toHaveLength(1);
+      expect(
+        warnings().some((w) =>
+          /could not read the declared SnapshotIdentifier \(AccessDenied\); the point-in-time restore goes ahead without it/.test(w)
+        )
+      ).toBe(true);
+      expect(warnings().some((w) => /restored as a standard \(not limitless\) cluster/.test(w))).toBe(false);
+    });
+
     it('lets a point-in-time source win, as the handler tests it first, naming the snapshot as unused', async () => {
       await create(ID_BASE, { SnapshotIdentifier: SNAPSHOT });
       expect(sent('RestoreDBClusterFromSnapshotCommand')).toHaveLength(0);

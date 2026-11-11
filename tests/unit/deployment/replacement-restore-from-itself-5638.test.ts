@@ -337,7 +337,15 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     });
 
     it.each([
-      ['the read throws', () => provider.import.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }))],
+      [
+        'the read throws',
+        () =>
+          provider.import.mockRejectedValue(
+            Object.assign(new Error('User arn:aws:iam::123456789012:role/x is not authorized'), {
+              name: 'AccessDenied',
+            })
+          ),
+      ],
       ['the cluster is not found', () => provider.import.mockResolvedValue(null)],
       ['the read answers no id', () => live(undefined)],
     ] as const)('refuses when %s, before any delete', async (_n, arrange) => {
@@ -347,6 +355,34 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
         const failure = await run(NO_ID);
         expect(chain(failure), path).toMatch(/its identity could not be verified/);
         expect(provider.delete, path).not.toHaveBeenCalled();
+      }
+    });
+
+    it('names only the failed read\'s class, never its text', async () => {
+      provider.import.mockRejectedValue(
+        Object.assign(new Error('User arn:aws:iam::123456789012:role/x is not authorized'), {
+          name: 'AccessDenied',
+        })
+      );
+      for (const [path, run] of paths) {
+        const text = chain(await run(NO_ID));
+        expect(text, path).toContain('(the read failed (AccessDenied))');
+        expect(text, path).not.toContain('arn:aws:iam::123456789012:role/x');
+      }
+    });
+
+    it('refuses when no provider can read the cluster, before any delete', async () => {
+      const read = provider.import;
+      (provider as { import?: unknown }).import = undefined;
+      try {
+        for (const [path, run] of paths) {
+          provider.delete.mockClear();
+          const failure = await run(NO_ID);
+          expect(chain(failure), path).toMatch(/could not be verified \(no provider can read it\)/);
+          expect(provider.delete, path).not.toHaveBeenCalled();
+        }
+      } finally {
+        (provider as { import?: unknown }).import = read;
       }
     });
 
