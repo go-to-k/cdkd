@@ -7,7 +7,9 @@ import type { FailedOperation } from '../../rollback-executor.js';
  * the settle must not advertise it. Provable only from what the journaled op
  * itself says: an UPDATE with no attempted bag (the mark drops it) and none
  * of the fields a made or deleted resource sets. A replacement-orphan
- * companion op is a CREATE, so it never qualifies.
+ * companion op is a CREATE, so it never qualifies. Assumes the journal was
+ * written by a cdkd that records the attempted bag (#1198 onward): an older
+ * one's partially applied UPDATE also lacks it and would read as nothing.
  */
 export function appliedNothing(op: FailedOperation): boolean {
   return (

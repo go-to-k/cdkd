@@ -9,6 +9,7 @@ import type { StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { StackScope } from '../../../provisioning/resource-name.js';
 import { appliedNothing } from '../rollback/applied-nothing.js';
+
 /**
  * Steps 1b-pre and 1b of a deploy: the pending Cloud Control requests an
  * earlier run left, then the rollback journal note (moved from `deploy-flow.ts`).
