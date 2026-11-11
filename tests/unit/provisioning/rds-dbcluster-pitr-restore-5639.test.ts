@@ -59,26 +59,44 @@ const KEYS = [
 
 interface Live {
   source?: Input | undefined;
+  /** What the by-name read of the source throws instead of answering. */
+  sourceError?: Error;
   shared?: Input[][];
+  /** Markers of the shared pages after each one (default: the next index). */
+  sharedMarkers?: Array<string | undefined>;
+  sharedError?: Error;
   restored?: Input;
   failModify?: Error;
 }
 
 function arm(live: Live = {}): void {
   const source = 'source' in live ? live.source : { StorageEncrypted: true };
+  let deleted = false;
   mockSend.mockImplementation((command: Command) => {
     const name = command.constructor.name;
     const input = command.input;
     if (name === 'DescribeDBClustersCommand') {
       if (input['IncludeShared'] === true) {
+        if (live.sharedError !== undefined) return Promise.reject(live.sharedError);
         const pages = live.shared ?? [];
         const index = input['Marker'] === undefined ? 0 : Number(input['Marker']);
+        const marker =
+          live.sharedMarkers !== undefined
+            ? live.sharedMarkers[index]
+            : index + 1 < pages.length
+              ? String(index + 1)
+              : undefined;
         return Promise.resolve({
           DBClusters: pages[index] ?? [],
-          ...(index + 1 < pages.length && { Marker: String(index + 1) }),
+          ...(marker !== undefined && { Marker: marker }),
         });
       }
       if (input['DBClusterIdentifier'] === CLUSTER) {
+        if (deleted) {
+          const error = new Error(`DBCluster ${CLUSTER} not found`);
+          error.name = 'DBClusterNotFoundFault';
+          return Promise.reject(error);
+        }
         return Promise.resolve({
           DBClusters: [
             {
@@ -86,10 +104,12 @@ function arm(live: Live = {}): void {
               DBClusterArn: CLUSTER_ARN,
               DBClusterMembers: [],
               Status: 'available',
+              HttpEndpointEnabled: true,
             },
           ],
         });
       }
+      if (live.sourceError !== undefined) return Promise.reject(live.sourceError);
       if (source === undefined) {
         const error = new Error(`DBCluster ${String(input['DBClusterIdentifier'])} not found`);
         error.name = 'DBClusterNotFoundFault';
@@ -106,6 +126,13 @@ function arm(live: Live = {}): void {
     }
     if (name === 'ModifyDBClusterCommand' && live.failModify !== undefined) {
       return Promise.reject(live.failModify);
+    }
+    if (name === 'DeleteDBClusterCommand') deleted = true;
+    // No instance exists: a wait on one fails by name, never loops.
+    if (name === 'DescribeDBInstancesCommand') {
+      const error = new Error('DBInstance not found');
+      error.name = 'DBInstanceNotFoundFault';
+      return Promise.reject(error);
     }
     return Promise.resolve({});
   });
@@ -219,6 +246,8 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       CopyTagsToSnapshot: true,
       MasterUserAuthenticationType: 'password',
       EngineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+      AllocatedStorage: 100,
+      BacktrackWindow: 3600,
     });
     const followUp = only('ModifyDBClusterCommand');
     expect(followUp).toEqual({
@@ -239,7 +268,10 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       CloudwatchLogsExportConfiguration: { EnableLogTypes: ['postgresql'] },
       StorageType: 'aurora-iopt1',
       CopyTagsToSnapshot: true,
+      AllocatedStorage: 100,
+      BacktrackWindow: 3600,
     });
+    expect(warnings().some((w) => /does not apply MasterUserAuthenticationType/.test(w))).toBe(true);
     expect(names().indexOf('RestoreDBClusterToPointInTimeCommand')).toBeLessThan(
       names().indexOf('ModifyDBClusterCommand')
     );
@@ -256,6 +288,50 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       ManageMasterUserPassword: true,
       MasterUserSecretKmsKeyId: 'key-2',
     });
+  });
+
+  it.each([false, 'false'])(
+    'sends no managed-password members for ManageMasterUserPassword %j',
+    async (flag) => {
+      await create({ ManageMasterUserPassword: flag, MasterUserSecret: { KmsKeyId: 'key-2' } });
+      const followUp = only('ModifyDBClusterCommand');
+      expect(followUp).not.toHaveProperty('ManageMasterUserPassword');
+      expect(followUp).not.toHaveProperty('MasterUserSecretKmsKeyId');
+    }
+  );
+
+  it("coerces a 'true' ManageMasterUserPassword", async () => {
+    await create({ ManageMasterUserPassword: 'true' });
+    expect(only('ModifyDBClusterCommand')['ManageMasterUserPassword']).toBe(true);
+  });
+
+  it('an Aurora Serverless v1 cluster takes the Data API flag on the follow-up instead', async () => {
+    await create({
+      EngineMode: 'serverless',
+      EnableHttpEndpoint: true,
+      AllocatedStorage: 100,
+      BacktrackWindow: 3600,
+      EnableIAMDatabaseAuthentication: true,
+      PreferredBackupWindow: '03:00-03:30',
+      PreferredMaintenanceWindow: 'sun:05:00-sun:05:30',
+    });
+    const followUp = only('ModifyDBClusterCommand');
+    expect(followUp['EnableHttpEndpoint']).toBe(true);
+    expect(followUp['PreferredMaintenanceWindow']).toBe('sun:05:00-sun:05:30');
+    for (const key of [
+      'AllocatedStorage',
+      'BacktrackWindow',
+      'EnableIAMDatabaseAuthentication',
+      'PreferredBackupWindow',
+    ]) {
+      expect(followUp, key).not.toHaveProperty(key);
+    }
+    expect(sent('EnableHttpEndpointCommand')).toHaveLength(0);
+  });
+
+  it('sends no RestoreType for an empty one', async () => {
+    await create({ RestoreType: '' });
+    expect(only('RestoreDBClusterToPointInTimeCommand')).not.toHaveProperty('RestoreType');
   });
 
   it('waits for available before the follow-up even under --no-wait, and not after it', async () => {
@@ -278,6 +354,35 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       names().indexOf('EnableHttpEndpointCommand')
     );
     expect(only('RestoreDBClusterToPointInTimeCommand')).not.toHaveProperty('EnableHttpEndpoint');
+  });
+
+  it('waits for the Data API to read on, as the handler stabilizes it', async () => {
+    let reads = 0;
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: Command) => {
+      if (command.constructor.name === 'EnableHttpEndpointCommand') reads = 1;
+      if (
+        command.constructor.name === 'DescribeDBClustersCommand' &&
+        command.input['DBClusterIdentifier'] === CLUSTER &&
+        reads > 0
+      ) {
+        reads += 1;
+        return Promise.resolve({
+          DBClusters: [
+            { DBClusterIdentifier: CLUSTER, Status: 'available', HttpEndpointEnabled: reads > 3 },
+          ],
+        });
+      }
+      return base(command);
+    });
+    await create({ EnableHttpEndpoint: true });
+    expect(reads).toBeGreaterThan(3);
+  });
+
+  it('describes the restored cluster for its ARN when the restore answer has none', async () => {
+    arm({ restored: { DBClusterArn: undefined } });
+    await create({ EnableHttpEndpoint: true });
+    expect(only('EnableHttpEndpointCommand')).toEqual({ ResourceArn: CLUSTER_ARN });
   });
 
   describe('RestoreToTime', () => {
@@ -334,6 +439,12 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       );
       expect(parseZonedTimestamp('2028-02-29T00:00:00Z')).toEqual(new Date('2028-02-29T00:00:00Z'));
       expect(parseZonedTimestamp('2027-02-29T00:00:00Z')).toBeUndefined();
+      // ZoneOffset spans +-18:00 in all.
+      expect(parseZonedTimestamp('2026-11-10T00:30:00+18:00')).toEqual(
+        new Date('2026-11-09T06:30:00Z')
+      );
+      expect(parseZonedTimestamp('2026-11-10T00:30:00+18:01')).toBeUndefined();
+      expect(parseZonedTimestamp('2026-11-10T00:30:00-18:00:01')).toBeUndefined();
     });
   });
 
@@ -386,6 +497,26 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
     expect(warnings().some((w) => /MasterUsername/.test(w))).toBe(false);
   });
 
+  it('names no kept value the restore answer does not report, nor an empty declared one', async () => {
+    arm({ restored: { EngineVersion: '15.8' } });
+    await create({ DatabaseName: 'app', EngineVersion: '' });
+    expect(warnings().some((w) => /keeps its source's/.test(w))).toBe(false);
+  });
+
+  it('names no unused key declared false or empty', async () => {
+    await create({ WithExpressConfiguration: false, AvailabilityZones: [], GlobalClusterIdentifier: '' });
+    expect(warnings().some((w) => /does not apply/.test(w))).toBe(false);
+  });
+
+  it('names ClusterScalabilityType and MasterUserAuthenticationType as not applied', async () => {
+    await create({ ClusterScalabilityType: 'standard', MasterUserAuthenticationType: 'password' });
+    expect(
+      warnings().some((w) =>
+        /does not apply ClusterScalabilityType, MasterUserAuthenticationType/.test(w)
+      )
+    ).toBe(true);
+  });
+
   describe('the source cluster', () => {
     it('refuses a source name no cluster answers, before anything is made', async () => {
       arm({ source: undefined });
@@ -411,6 +542,57 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
         { IncludeShared: true, Marker: '1' },
       ]);
       expect(only('RestoreDBClusterToPointInTimeCommand')['SourceDBClusterIdentifier']).toBe(shared);
+    });
+
+    it('stops the shared lookup at the page that holds the ARN', async () => {
+      const shared = `arn:aws:rds:us-east-1:210987654321:cluster:${SOURCE}`;
+      arm({
+        source: undefined,
+        shared: [[{ DBClusterArn: 'other' }], [{ DBClusterArn: shared }], [{ DBClusterArn: 'third' }]],
+      });
+      await create({ SourceDBClusterIdentifier: shared });
+      expect(sent('DescribeDBClustersCommand').filter((i) => i['IncludeShared'] === true)).toHaveLength(2);
+    });
+
+    it('stops at an empty Marker, and refuses an ARN no shared cluster has', async () => {
+      const shared = `arn:aws:rds:us-east-1:210987654321:cluster:${SOURCE}`;
+      arm({
+        source: undefined,
+        shared: [[{ DBClusterArn: 'other' }], [{ DBClusterArn: 'never-read' }]],
+        sharedMarkers: [''],
+      });
+      await expect(create({ SourceDBClusterIdentifier: shared })).rejects.toThrow(
+        /does not name a DB cluster this account can read/
+      );
+      expect(sent('DescribeDBClustersCommand').filter((i) => i['IncludeShared'] === true)).toHaveLength(1);
+      expect(sent('RestoreDBClusterToPointInTimeCommand')).toHaveLength(0);
+    });
+
+    it('takes the shared lookup when the by-name read refuses another account\'s ARN', async () => {
+      const shared = `arn:aws:rds:us-east-1:210987654321:cluster:${SOURCE}`;
+      const refused = new Error('Invalid database cluster identifier');
+      refused.name = 'InvalidParameterValue';
+      arm({ sourceError: refused, shared: [[{ DBClusterArn: shared }]] });
+      await create({ SourceDBClusterIdentifier: shared });
+      expect(only('RestoreDBClusterToPointInTimeCommand')['SourceDBClusterIdentifier']).toBe(shared);
+    });
+
+    it('fails a name the by-name read refuses as invalid, without the shared lookup', async () => {
+      const refused = new Error('Invalid database cluster identifier');
+      refused.name = 'InvalidParameterValue';
+      arm({ sourceError: refused });
+      await expect(create({})).rejects.toThrow(/reading the restore source failed/);
+      expect(sent('DescribeDBClustersCommand').filter((i) => i['IncludeShared'] === true)).toHaveLength(0);
+    });
+
+    it('fails the create when a shared page cannot be read', async () => {
+      const denied = new Error('denied');
+      denied.name = 'AccessDenied';
+      arm({ source: undefined, sharedError: denied });
+      await expect(
+        create({ SourceDBClusterIdentifier: `arn:aws:rds:us-east-1:210987654321:cluster:${SOURCE}` })
+      ).rejects.toThrow(/reading the restore source failed, so nothing was changed/);
+      expect(sent('RestoreDBClusterToPointInTimeCommand')).toHaveLength(0);
     });
 
     it('fails the create when the source cannot be read, before anything is made', async () => {
@@ -451,6 +633,7 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       arm({ source: { StorageEncrypted: true, ClusterScalabilityType: 'limitless' } });
       await create({
         MonitoringInterval: 60,
+        MonitoringRoleArn: 'role-m',
         PerformanceInsightsEnabled: true,
         PerformanceInsightsRetentionPeriod: 31,
         PerformanceInsightsKmsKeyId: 'key-pi',
@@ -459,6 +642,7 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       });
       expect(only('RestoreDBClusterToPointInTimeCommand')).toMatchObject({
         MonitoringInterval: 60,
+        MonitoringRoleArn: 'role-m',
         EnablePerformanceInsights: true,
         PerformanceInsightsRetentionPeriod: 31,
         PerformanceInsightsKMSKeyId: 'key-pi',
@@ -492,6 +676,35 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
     expect(() =>
       refuseRestoreFromItself('AWS::RDS::DBCluster', { SourceDBClusterIdentifier: CLUSTER }, CLUSTER, 'L', {})
     ).toThrow(/must be another cluster/);
+  });
+
+  it("leaves an ARN source to the restore's own refusal, as the guard cannot tell its account", async () => {
+    await create({ SourceDBClusterIdentifier: SOURCE_ARN });
+    expect(only('RestoreDBClusterToPointInTimeCommand')['SourceDBClusterIdentifier']).toBe(SOURCE_ARN);
+  });
+
+  it('a restored record deletes no writer instance by name and detaches from no global cluster', async () => {
+    await provider.delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
+      ...BASE,
+      WithExpressConfiguration: true,
+      GlobalClusterIdentifier: 'global-1',
+    });
+    expect(sent('DeleteDBInstanceCommand')).toHaveLength(0);
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
+    expect(sent('DescribeGlobalClustersCommand')).toHaveLength(0);
+    expect(only('DeleteDBClusterCommand')['DBClusterIdentifier']).toBe(CLUSTER);
+  });
+
+  it('a created (not restored) record still deletes its express writer and detaches first', async () => {
+    await provider
+      .delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
+        DBClusterIdentifier: CLUSTER,
+        Engine: 'aurora-postgresql',
+        WithExpressConfiguration: true,
+        GlobalClusterIdentifier: 'global-1',
+      })
+      .catch(() => undefined);
+    expect(sent('DescribeGlobalClustersCommand').length).toBeGreaterThan(0);
   });
 
   it('deletes the restored cluster when the follow-up fails, and rethrows', async () => {

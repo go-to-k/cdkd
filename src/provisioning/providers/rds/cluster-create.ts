@@ -417,6 +417,16 @@ export async function createDBCluster(
           if (arn === undefined)
             throw new Error('The restored DBCluster has no ARN to enable the Data API on');
           await this.sendHttpEndpointChange(logicalId, dbClusterIdentifier, arn, true);
+          // As the handler's `enableHttpEndpointV2` stabilizes, and as an
+          // update waits for the setting (skipped with --no-wait).
+          if (process.env['CDKD_NO_WAIT'] !== 'true') {
+            await this.waitForClusterState(
+              logicalId,
+              dbClusterIdentifier,
+              (live) => live.HttpEndpointEnabled === true,
+              'HTTP endpoint (Data API) setting'
+            );
+          }
         }
       }
       // Wait for cluster to become available (skip with --no-wait)

@@ -31,6 +31,7 @@ import {
   expressConfigurationFlag,
   recordedExpressWriterId,
 } from './express-writer.js';
+import { isRestoredRecord } from './cluster-restore.js';
 import {
   RDS_DELETE_WAIT_MS,
   deleteAutomatedBackupsInput,
@@ -176,7 +177,10 @@ export async function deleteDBClusterOnce(
     // Issue #4029: a global-cluster member cannot be deleted until it is
     // detached, which is what the Cloud Control handler did before its own
     // (unwanted) final snapshot.
-    const globalClusterId = recordedGlobalClusterIdentifier(properties);
+    // go-to-k/cdkd#5639: a point-in-time restore never joins one (the restore
+    // call has no member for it), so a recorded one names no membership.
+    const restored = isRestoredRecord(properties);
+    const globalClusterId = restored ? undefined : recordedGlobalClusterIdentifier(properties);
     if (globalClusterId !== undefined) {
       detachedFrom = (await this.detachFromGlobalCluster(
         logicalId,
@@ -192,7 +196,8 @@ export async function deleteDBClusterOnce(
 
     // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer it
     // created for an express-configuration cluster exists.
-    if (expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true) {
+    // A restore creates no writer either: never delete one by name for it.
+    if (!restored && expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true) {
       const writerDeleted = await deleteExpressWriter.call(
         this,
         logicalId,

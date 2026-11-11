@@ -58,7 +58,9 @@ export function parseZonedTimestamp(text: string): Date | undefined {
   const [year, month, day, hour, minute, second] = [n(1), n(2), n(3), n(4), n(5), n(6)];
   const [offsetHours, offsetMinutes, offsetSeconds] = [n(9), n(10), n(11)];
   if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return undefined;
-  if (offsetHours > 18 || offsetMinutes > 59 || offsetSeconds > 59) return undefined;
+  // Java's ZoneOffset spans -18:00 to +18:00 in all.
+  if (offsetMinutes > 59 || offsetSeconds > 59) return undefined;
+  if (offsetHours * 3600 + offsetMinutes * 60 + offsetSeconds > 18 * 3600) return undefined;
   // Java resolves strictly: 2026-02-30 is refused, not rolled into March.
   if (day < 1 || new Date(Date.UTC(year, month - 1, day)).getUTCDate() !== day) return undefined;
   const millis = Number((match[7] ?? '').padEnd(3, '0').slice(0, 3));
@@ -129,6 +131,16 @@ export function readClusterRestore(
 }
 
 /**
+ * Whether a recorded bag is a point-in-time restore's: its create applied no
+ * `GlobalClusterIdentifier` or `WithExpressConfiguration`, which the record
+ * still carries (create-only; dropping them would re-diff as an addition).
+ */
+export function isRestoredRecord(properties: Record<string, unknown> | undefined): boolean {
+  const source = properties?.['SourceDBClusterIdentifier'];
+  return typeof source === 'string' && source !== '';
+}
+
+/**
  * The declared keys a create of this kind does not apply, as CloudFormation's
  * does not: on a plain create the point-in-time keys; on a restore the keys
  * neither `RestoreDBClusterToPointInTime` nor the handler's follow-up
@@ -185,12 +197,19 @@ export function restoredDifferences(
     .map(([key]) => key);
 }
 
+/** What `DescribeDBClusters` may answer for an identifier it does not take. */
+const ARN_IDENTIFIER_REFUSALS: ReadonlySet<string> = new Set([
+  'InvalidParameterValue',
+  'InvalidParameterCombination',
+]);
+
 /**
  * The source cluster, as CloudFormation's create reads it before restoring
  * (`fetchSourceDBCluster`; its scalability type picks the request shape, its
  * encryption is validated against the template). A cross-account ARN is not
- * found by name, so an ARN not found is looked up among the clusters shared
- * with the account, as the handler does. Any failure stops the create before
+ * found by name, so an ARN the by-name read does not find (or refuses as an
+ * invalid identifier: the API does not take another account's) is looked up
+ * among the clusters shared with the account, as the handler does. Any failure stops the create before
  * anything is made, as the handler's unguarded read does.
  */
 export async function readRestoreSource(
@@ -220,7 +239,13 @@ export async function readRestoreSource(
     );
     found = response.DBClusters?.[0];
   } catch (error) {
-    if (!this.isNotFoundError(error, 'DBClusterNotFoundFault')) throw wrapSourceReadError(error);
+    const crossAccountRefusal =
+      source.startsWith('arn:') &&
+      error instanceof Error &&
+      ARN_IDENTIFIER_REFUSALS.has(error.name);
+    if (!crossAccountRefusal && !this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
+      throw wrapSourceReadError(error);
+    }
   }
   if (found === undefined && source.startsWith('arn:')) {
     try {
