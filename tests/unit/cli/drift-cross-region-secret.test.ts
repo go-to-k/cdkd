@@ -677,7 +677,7 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
     const recorded = { Arn: 'arn:recorded-4051', FunctionId: 'id-4051' };
     mockGetState.mockResolvedValue(
-      makeState({ Fn: { ...lambdaResource(NAME_EXPR), attributes: recorded } }, [CONSUMER_REGION])
+      makeState({ Fn: { ...lambdaResource(NAME_EXPR), attributes: recorded, acceptedCreateOnlyDrops: ['SnapshotIdentifier'] } }, [CONSUMER_REGION])
     );
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => awsEnv(TOKYO_PASSWORD, 'tampered'),
@@ -689,6 +689,7 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     expect(update).toHaveBeenCalledTimes(1);
     const context = update.mock.calls[0]![5] as { recordedAttributes?: unknown };
     expect(context.recordedAttributes).toEqual(recorded);
+    expect(update.mock.calls[0]![5]).toHaveProperty('recordedCreateOnlyDrops', ['SnapshotIdentifier']);
     // go-to-k/cdkd#4156: `--revert` builds its context without the deploy's
     // inline-policy claim predicate, for every type.
     expect(Object.keys(context)).not.toContain('inlinePolicyClaimed');

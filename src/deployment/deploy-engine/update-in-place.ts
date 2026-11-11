@@ -440,6 +440,7 @@ export async function updateInPlace(
               maskSecrets: createSecretMasker(updateSecrets),
               expectedRegion: engine.stackRegion,
               recordedAttributes: currentResource.attributes,
+              recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
               changedProperties: changedForProvider,

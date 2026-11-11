@@ -520,6 +520,7 @@ export async function replayFailedOperationsUnbound(
                   // Issue #4157; as on the completed-CREATE arm, the record names
                   // `op.physicalId` here.
                   recordedAttributes: failedCreateRecord?.attributes,
+                  recordedCreateOnlyDrops: failedCreateRecord?.acceptedCreateOnlyDrops,
                   // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
                   // journal records no coordinates, and its bag is masked by
                   // position, so every whole-`***` leaf of it counts (review
@@ -821,6 +822,7 @@ export async function replayFailedOperationsUnbound(
                   expectedRegion: ctx.region,
                   replayingState: true,
                   recordedAttributes: current.attributes,
+                  recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
                   ...(revertFailedClaimed && { inlinePolicyClaimed: revertFailedClaimed }),
                   // go-to-k/cdkd#5380: the failed update's unsettled keys may
                   // hold either side in AWS while the attempted bag equals the

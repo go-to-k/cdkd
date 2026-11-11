@@ -534,17 +534,19 @@ describe('replayRollback', () => {
     const { ctx } = makeCtx({ update });
     // The PREVIOUS record carries different attributes: the context must name
     // the record whose physicalId the call addresses (`current`).
-    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' } });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' }, acceptedCreateOnlyDrops: ['PrevDrop'] });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B', previousState: prev },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', properties: { a: 2 }, attributes: { RepositoryId: 'cur-id' } }),
+      B: res({ physicalId: 'phys-B', properties: { a: 2 }, attributes: { RepositoryId: 'cur-id' }, acceptedCreateOnlyDrops: ['CurDrop'] }),
     };
     await replayRollback(ops, state, 'S', ctx);
     expect((update.mock.calls[0]![5] as { recordedAttributes?: unknown }).recordedAttributes).toEqual({
       RepositoryId: 'cur-id',
     });
+    // go-to-k/cdkd#6104: and that record's accepted drops.
+    expect(update.mock.calls[0]![5]).toHaveProperty('recordedCreateOnlyDrops', ['CurDrop']);
   });
 
   // go-to-k/cdkd#4225 flipped this from go-to-k/cdkd#4156's "handed no
@@ -1793,7 +1795,7 @@ describe('replayFailedOperations (#1198)', () => {
   it("the 'revert-failed-update' arm hands the addressed record's attributes as recordedAttributes (issue #4051)", async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
-    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' } });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'prev-id' }, acceptedCreateOnlyDrops: ['PrevDrop'] });
     const failedOps: FailedOperation[] = [
       {
         logicalId: 'B',
@@ -1805,12 +1807,14 @@ describe('replayFailedOperations (#1198)', () => {
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'cur-id' } }),
+      B: res({ physicalId: 'phys-B', properties: { a: 1 }, attributes: { RepositoryId: 'cur-id' }, acceptedCreateOnlyDrops: ['CurDrop'] }),
     };
     await replayFailedOperations(failedOps, state, 'S', ctx);
     expect((update.mock.calls[0]![5] as { recordedAttributes?: unknown }).recordedAttributes).toEqual({
       RepositoryId: 'cur-id',
     });
+    // go-to-k/cdkd#6104: and that record's accepted drops.
+    expect(update.mock.calls[0]![5]).toHaveProperty('recordedCreateOnlyDrops', ['CurDrop']);
   });
 
   it('force-reverts a failed UPDATE with previous-vs-attempted diff sides', async () => {

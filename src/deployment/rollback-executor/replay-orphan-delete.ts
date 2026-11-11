@@ -289,6 +289,7 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
         // Issue #4157. `classifyRollbackOp` reaches this arm only with a
         // record naming `op.physicalId`.
         recordedAttributes: stateResources[op.logicalId]?.attributes,
+        recordedCreateOnlyDrops: stateResources[op.logicalId]?.acceptedCreateOnlyDrops,
         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
         recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
         // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.

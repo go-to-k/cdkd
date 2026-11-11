@@ -155,12 +155,14 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
   let createFailures: Error[];
   /** The record's `attributes` (issue #4157 sets distinctive ones). */
   let recordAttributes: Record<string, unknown>;
+  let recordDrops: string[] | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     events = [];
     createFailures = [];
     recordAttributes = {};
+    recordDrops = undefined;
     provider = {
       create: vi.fn().mockImplementation(async () => {
         const failure = createFailures.shift();
@@ -243,6 +245,7 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
         resourceType: TYPE,
         properties: { Name: 'a|b' },
         attributes: recordAttributes,
+        ...(recordDrops !== undefined && { acceptedCreateOnlyDrops: recordDrops }),
         dependencies: [],
         provisionedBy: 'sdk',
       },
@@ -551,6 +554,8 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
 
     beforeEach(() => {
       recordAttributes = { ...RECORDED };
+      // go-to-k/cdkd#6104: the record's accepted drops ride beside it.
+      recordDrops = ['SnapshotIdentifier'];
       // The replacement's own attributes differ, so a site handing the NEW
       // record's attributes to the OLD resource's delete is caught.
       (provider.create as ReturnType<typeof vi.fn>).mockImplementation(async () => {
@@ -563,6 +568,7 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
     it('template-DELETE branch', async () => {
       await invokeTemplateDelete(makeEngine(), freshCounts());
       expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      expect(deleteContext()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
     });
 
     it('UPDATE-not-supported replacement', async () => {
@@ -571,11 +577,13 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       );
       await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: false });
       expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      expect(deleteContext()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
     });
 
     it('create-first cleanup', async () => {
       await invokeReplacingUpdate(makeEngine(), { requiresReplacement: true });
       expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      expect(deleteContext()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
     });
 
     it('--recreate-via-cc-api', async () => {
@@ -583,6 +591,7 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
         requiresReplacement: false,
       });
       expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      expect(deleteContext()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
     });
 
     it('--replace delete-first fallback', async () => {
@@ -594,6 +603,7 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       ];
       await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: true });
       expect(deleteContext()['recordedAttributes']).toEqual(RECORDED);
+      expect(deleteContext()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
       // Reached through the collision: the create-first ran, then the re-create.
       expect(provider.create).toHaveBeenCalledTimes(2);
     });

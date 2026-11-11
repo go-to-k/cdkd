@@ -303,6 +303,18 @@ export interface UpdateContext extends SecretMaskingContext {
   recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
 
   /**
+   * The same record's `ResourceState.acceptedCreateOnlyDrops`
+   * (go-to-k/cdkd#6104): create-only keys its `properties` hold that the SDK
+   * route was told to drop, so never sent. Threaded beside
+   * `recordedAttributes` by every `update()` caller, verbatim; a provider
+   * reads it as `acceptedCreateOnlyDropsOf` reads the field (malformed =
+   * none). Evidence about the record's CREATE: an `AWS::RDS::DBCluster`
+   * record holding a restore source key only as a drop was created plainly,
+   * not restored. ABSENT keeps the pre-#6104 reading of every key.
+   */
+  recordedCreateOnlyDrops?: readonly string[] | undefined;
+
+  /**
    * go-to-k/cdkd#4156: answers, at the moment of each removal, whether ANOTHER
    * resource of this deploy has already written the inline policy
    * `policyName` onto `principal` (`src/deployment/inline-policy-claims.ts`).
