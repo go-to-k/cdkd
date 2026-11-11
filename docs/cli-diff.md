@@ -204,7 +204,11 @@ same type and the same properties, so it is most likely the same resource
 renamed or moved. A deploy would delete it and create a new one;
 [`cdkd refactor`](cli-refactor.md) keeps it instead. The note appears only
 when the pair is unambiguous: one removal and one addition match each other
-and nothing else. A move between stacks is noted when both stacks are in the
+and nothing else. A pair whose added side references a resource the deploy
+changes gets no note: as in `cdk refactor`, that is a new resource. A CDK
+`fn.currentVersion` after a code change and an API Gateway deployment after a
+method change both get a new logical ID while their own properties stay the
+same. A move between stacks is noted when both stacks are in the
 diff (`cdkd diff OldStack NewStack`, or `--all`), deploy to the same account
 and region, and already have cdkd state: `cdkd refactor` never moves a
 resource into a stack that was never deployed. A nested stack's rows get no
