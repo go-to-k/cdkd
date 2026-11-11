@@ -23,7 +23,6 @@ const start = (kmsKeyId: string) => async () => {
       new StartDBInstanceAutomatedBackupsReplicationCommand({
         SourceDBInstanceArn: SOURCE,
         KmsKeyId: kmsKeyId,
-        SourceRegion: 'us-east-1',
       })
     );
   } finally {
