@@ -412,9 +412,13 @@ export async function update(
     // here. `NoEcho` is per RESPONSE, so a handler that sets it on Create and
     // omits it on Update genuinely declares this response public; that is the
     // handler's contract to keep, and cdkd reports what it was told.
+    // go-to-k/cdkd#6117: a new id leaves the old one with the handler; the
+    // engine sends its Delete after the deploy succeeds, as CloudFormation's
+    // cleanup phase does.
     return {
       physicalId: newPhysicalId,
       wasReplaced,
+      ...(wasReplaced && { oldPhysicalIdLeftForCleanup: true as const }),
       attributes,
       ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
     };

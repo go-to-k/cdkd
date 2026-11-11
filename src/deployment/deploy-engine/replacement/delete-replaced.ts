@@ -133,29 +133,12 @@ export async function deleteReplacedAfterCreate(
       // go-to-k/cdkd#5111: recorded BEFORE the row's save, which persists it:
       // a deploy killed before the retry below left the old resource in AWS
       // with no record at all.
-      const host = run.supersededHost;
-      if (
-        host !== undefined &&
-        canRecordSuperseded(currentResource, { noEchoDeleteValues, inlinePolicyClaimed }) &&
-        // Never an id ANOTHER record of this deploy holds: a later run would
-        // delete that live resource. (This row's own record still names the
-        // old id until the row completes; an equal new id refused above.)
-        !Object.entries(deps.deployStateResources()).some(
-          ([id, record]) => id !== logicalId && record?.physicalId === currentResource.physicalId
-        )
-      ) {
-        const entry: SupersededResourceRecord = {
-          logicalId,
-          supersededAt: Date.now(),
-          state: currentResource,
-          ...(updateReplacePolicy !== undefined && { updateReplacePolicy }),
-          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-          ...(deps.options.forceStatefulRecreation === true && { forceDataDelete: true as const }),
-          ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
-        };
-        addSuperseded(host, entry);
-        run.supersededEntries.set(logicalId, entry);
-      }
+      recordSupersededForDeferral(run, deps, logicalId, currentResource, {
+        updateReplacePolicy,
+        finalSnapshotIdentifier,
+        noEchoDeleteValues,
+        inlinePolicyClaimed,
+      });
       deferred.set(logicalId, {
         physicalId: currentResource.physicalId,
         resourceType: oldResourceType,
@@ -241,4 +224,56 @@ export async function deleteReplacedAfterCreate(
         : safeMsg`  ${green('✓')} Old resource deleted`
     );
   }
+}
+
+/**
+ * go-to-k/cdkd#5111: record a deferred delete's old resource on the deploy's
+ * live state, BEFORE the row's save persists it, so a deploy killed before
+ * the deferred delete runs leaves it tracked rather than lost. Only when a
+ * later run can send the delete with this run's context
+ * (`canRecordSuperseded`).
+ */
+export function recordSupersededForDeferral(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  logicalId: string,
+  oldResource: ResourceState,
+  context: {
+    updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    finalSnapshotIdentifier: string | undefined;
+    noEchoDeleteValues: NoEchoDeleteValues | undefined;
+    inlinePolicyClaimed: unknown;
+  }
+): void {
+  const host = run.supersededHost;
+  if (
+    host === undefined ||
+    !canRecordSuperseded(oldResource, {
+      noEchoDeleteValues: context.noEchoDeleteValues,
+      inlinePolicyClaimed: context.inlinePolicyClaimed,
+    }) ||
+    // Never an id ANOTHER record of this deploy holds: a later run would
+    // delete that live resource. (This row's own record still names the old
+    // id until the row completes; an equal new id never reaches here.)
+    Object.entries(deps.deployStateResources()).some(
+      ([id, record]) => id !== logicalId && record?.physicalId === oldResource.physicalId
+    )
+  ) {
+    return;
+  }
+  const entry: SupersededResourceRecord = {
+    logicalId,
+    supersededAt: Date.now(),
+    state: oldResource,
+    ...(context.updateReplacePolicy !== undefined && {
+      updateReplacePolicy: context.updateReplacePolicy,
+    }),
+    ...(context.finalSnapshotIdentifier !== undefined && {
+      finalSnapshotIdentifier: context.finalSnapshotIdentifier,
+    }),
+    ...(deps.options.forceStatefulRecreation === true && { forceDataDelete: true as const }),
+    ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
+  };
+  addSuperseded(host, entry);
+  run.supersededEntries.set(logicalId, entry);
 }
