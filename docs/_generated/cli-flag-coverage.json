@@ -542,6 +542,7 @@
         "appsync",
         "created-before-failure-revert",
         "cross-backend-same-stack-migration",
+        "custom-resource-physid-replace",
         "docdb-fix-forward-orphan",
         "dynamodb-fix-forward-orphan",
         "dynamodb-globaltable",

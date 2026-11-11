@@ -17,7 +17,12 @@
 #   2. Redeploy with Name = <stack>-name-2. cdkd reports the replacement; the
 #      old id got a Delete carrying the OLD Name; res/name-1 is gone and
 #      res/name-2 exists; state records name-2 and no pending old id.
-#   3. Clean destroy: name-2 gets its Delete; both res/ parameters are gone.
+#   3. Redeploy with Name = <stack>-name-3 and Gate (updated after Res)
+#      failing its Update, under --no-rollback: the deploy fails, Res records
+#      name-3, and name-2 stays in state as a superseded old id, never sent.
+#   4. Clean destroy: name-2's Delete goes through the handler BEFORE the
+#      stack's own resources take it down, carrying the Name it was made
+#      with; name-3 gets its Delete; every res/ parameter is gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -72,6 +77,7 @@ FN_ON_EVENT="${STACK}-on-event"
 ROOT="/cdkd-integ/${STACK}"
 NAME_1="${STACK}-name-1"
 NAME_2="${STACK}-name-2"
+NAME_3="${STACK}-name-3"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -85,6 +91,14 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 sweep_params() {
   (
     set +eu
+    # Scope guard (testing.md): a widened ROOT would list every parameter.
+    case "${ROOT}" in
+      /cdkd-integ/CdkdCrPhysidReplace) ;;
+      *)
+        echo "    WARN: teardown sweep refused a parameter scope outside this fixture: '${ROOT:-<empty>}'" >&2
+        exit 0
+        ;;
+    esac
     names=$(aws ssm get-parameters-by-path --path "${ROOT}" --recursive \
       --region "${REGION}" --query 'Parameters[].Name' --output text 2>/dev/null)
     for name in ${names}; do
@@ -297,8 +311,45 @@ if [ "${PENDING_2}" != "0" ]; then
 fi
 echo "    OK: state records ${NAME_2} and no pending old id"
 
-# --- Phase 3: the CLEAN destroy ----------------------------------------------
-echo "==> Phase 3: clean destroy (this is the run the integ-destroy gate reads)"
+# --- Phase 3: a failed deploy leaves the old id in state -------------------
+echo "==> Phase 3: redeploy (Name = ${NAME_3}) with Gate failing, under --no-rollback"
+set +e
+FAIL_OUT=$(CDKD_TEST_UPDATE=fail node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --no-rollback \
+  --yes 2>&1)
+FAIL_RC=$?
+set -e
+printf '%s\n' "${FAIL_OUT}"
+if [ "${FAIL_RC}" -eq 0 ]; then
+  echo "FAIL: PREMISE not met — the deploy with a failing Gate succeeded" >&2
+  exit 1
+fi
+STATE_3=$(state_json)
+RECORDED_3=$(printf '%s' "${STATE_3}" | jq -r --arg id "${CR_ID}" '.resources[$id].physicalId')
+PENDING_3=$(printf '%s' "${STATE_3}" | jq -r --arg id "${CR_ID}" \
+  '[(.supersededResources // [])[] | select(.logicalId == $id) | .state.physicalId] | join(",")')
+if [ "${RECORDED_3}" != "${NAME_3}" ]; then
+  echo "FAIL: PREMISE not met — ${CR_ID} records '${RECORDED_3}' after the failed deploy, expected ${NAME_3}" >&2
+  exit 1
+fi
+if [ "${PENDING_3}" != "${NAME_2}" ]; then
+  echo "FAIL (#6117): state lists '${PENDING_3}' as ${CR_ID}'s superseded old id after the failed deploy, expected ${NAME_2}" >&2
+  exit 1
+fi
+if param_present "deleted/${NAME_2}"; then
+  echo "FAIL (#6117): the failed deploy sent ${NAME_2} a Delete (only a successful deploy may)" >&2
+  exit 1
+fi
+if ! param_present "res/${NAME_2}"; then
+  echo "FAIL: res/${NAME_2} is gone after a failed deploy that sent no Delete" >&2
+  exit 1
+fi
+echo "    OK: the failed deploy kept ${NAME_2} in state, unsent; ${CR_ID} records ${NAME_3}"
+
+# --- Phase 4: the CLEAN destroy ----------------------------------------------
+echo "==> Phase 4: clean destroy (this is the run the integ-destroy gate reads)"
 set +e
 DESTROY_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -312,15 +363,31 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "FAIL: the clean destroy exited ${DESTROY_RC}, expected 0" >&2
   exit 1
 fi
+# Sentinel: the capture below holds the destroy's own lines (the superseded
+# old id's delete line), so the absence grep that follows reads real output.
+if ! grep -qF "Deleting ${CR_ID}'s superseded Custom::CdkdPhysidReplace (${NAME_2})" <<<"${DESTROY_TXT}"; then
+  echo "FAIL (#6117): the destroy did not delete ${CR_ID}'s superseded old id ${NAME_2}" >&2
+  exit 1
+fi
 if grep -q 'Destroy skipped ' <<<"${DESTROY_TXT}"; then
   echo "FAIL: the clean destroy still skipped something" >&2
   exit 1
 fi
+# The handler was still there: its Delete of the old id ran, with the old Name.
 if ! param_present "deleted/${NAME_2}"; then
-  echo "FAIL: ${NAME_2} did not get its Delete from the destroy" >&2
+  echo "FAIL (#6117): the destroy never delivered ${NAME_2}'s Delete to the handler" >&2
   exit 1
 fi
-for name in "${NAME_1}" "${NAME_2}"; do
+DELETED_2_WITH=$(param_value "deleted/${NAME_2}")
+if [ "${DELETED_2_WITH}" != "${NAME_2}" ]; then
+  echo "FAIL (#6117): the destroy's Delete of ${NAME_2} carried Name '${DELETED_2_WITH}', expected ${NAME_2}" >&2
+  exit 1
+fi
+if ! param_present "deleted/${NAME_3}"; then
+  echo "FAIL: ${NAME_3} did not get its Delete from the destroy" >&2
+  exit 1
+fi
+for name in "${NAME_1}" "${NAME_2}" "${NAME_3}"; do
   assert_gone "res/${name} still exists after the clean destroy (orphan)" \
     aws ssm get-parameter --name "${ROOT}/res/${name}" --region "${REGION}"
 done
@@ -340,12 +407,12 @@ if [ -n "${LEFT_ROLES}" ]; then
 fi
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the clean destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: both ids got their Delete; functions, roles, parameters and the state file are gone"
+echo "    OK: every id got its Delete; functions, roles, parameters and the state file are gone"
 
 trap - EXIT INT TERM
 sweep_params
 sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
-for name in "${NAME_1}" "${NAME_2}"; do
+for name in "${NAME_1}" "${NAME_2}" "${NAME_3}"; do
   assert_gone "marker ${ROOT}/deleted/${name} survived the sweep" \
     aws ssm get-parameter --name "${ROOT}/deleted/${name}" --region "${REGION}"
 done
@@ -360,4 +427,4 @@ if [ -n "${LEFT_GROUPS}" ]; then
 fi
 
 echo ""
-echo "[verify] PASS — custom-resource-physid-replace (#6117: the old physical id gets a Delete with the old properties after the Update; clean destroy)"
+echo "[verify] PASS — custom-resource-physid-replace (#6117: the old physical id gets a Delete with the old properties after the Update; a failed deploy keeps it for destroy, which deletes it first)"

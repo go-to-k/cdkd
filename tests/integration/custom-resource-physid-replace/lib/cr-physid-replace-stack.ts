@@ -21,7 +21,10 @@ import * as cr from 'aws-cdk-lib/custom-resources';
  * sweeps them.
  *
  * `CDKD_TEST_UPDATE=true` changes `Name` from `<stack>-name-1` to
- * `<stack>-name-2`.
+ * `<stack>-name-2`. `CDKD_TEST_UPDATE=fail` changes it to `<stack>-name-3`
+ * and makes `Gate` (a second resource on the same handler, updated after
+ * `Res`) fail its Update, so a `--no-rollback` deploy stops with the old id
+ * left in state for `cdkd destroy`.
  */
 export class CrPhysidReplaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -41,6 +44,12 @@ const {
 const ssm = new SSMClient({});
 exports.handler = async (event) => {
   const name = event.ResourceProperties.Name;
+  if (event.ResourceProperties.Role === 'gate') {
+    if (event.RequestType !== 'Delete' && event.ResourceProperties.Fail === 'yes') {
+      throw new Error('cdkd-integ deliberate Gate failure');
+    }
+    return { PhysicalResourceId: 'gate' };
+  }
   if (event.RequestType === 'Delete') {
     const id = event.PhysicalResourceId;
     try {
@@ -68,11 +77,18 @@ exports.handler = async (event) => {
     );
 
     const provider = new cr.Provider(this, 'Provider', { onEventHandler: onEvent });
-    const version = process.env.CDKD_TEST_UPDATE === 'true' ? 2 : 1;
-    new cdk.CustomResource(this, 'Res', {
+    const mode = process.env.CDKD_TEST_UPDATE;
+    const version = mode === 'true' ? 2 : mode === 'fail' ? 3 : 1;
+    const res = new cdk.CustomResource(this, 'Res', {
       serviceToken: provider.serviceToken,
       resourceType: 'Custom::CdkdPhysidReplace',
       properties: { Name: `${this.stackName}-name-${version}` },
     });
+    const gate = new cdk.CustomResource(this, 'Gate', {
+      serviceToken: provider.serviceToken,
+      resourceType: 'Custom::CdkdPhysidGate',
+      properties: { Role: 'gate', Fail: mode === 'fail' ? 'yes' : 'no' },
+    });
+    gate.node.addDependency(res);
   }
 }

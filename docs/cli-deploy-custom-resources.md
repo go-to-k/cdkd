@@ -91,6 +91,12 @@ a deploy that is killed before the `Delete` leaves it for the next
 holding the masked value of a `NoEcho` parameter is not kept, because only the
 running deploy can re-resolve that value.
 
+The old properties are the ones recorded in state, except at a position that
+held a `NoEcho` parameter value: state keeps only `***` there, so cdkd sends
+the parameter's value as the template binds it today. When that value has
+changed since the old id was created, the `Delete` carries the new value,
+where CloudFormation sends the old one.
+
 - **The deploy fails.** No `Delete` is sent. The rollback records the old id
   again by sending the handler a `Create` with the old properties, then
   deletes the new id. CloudFormation sends an `Update` instead, so a handler
