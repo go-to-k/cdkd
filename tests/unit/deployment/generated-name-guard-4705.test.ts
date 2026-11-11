@@ -49,6 +49,7 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
 import {
   DEFAULT_TIMING,
   GeneratedNameGuard,
+  GeneratedNameMismatchError,
   provenNothingCreated,
   type GeneratedNameGuardInput,
 } from '../../../src/deployment/generated-name-guard.js';
@@ -604,7 +605,11 @@ describe('a lookup that needs the resolved properties waits for the create (revi
     const q = fifoQueue();
     // Not deferred: the plan read `FifoQueue` as absent.
     const guard = GeneratedNameGuard.start(inputOf([create('Q', QUEUE)], { [QUEUE]: q }))!;
-    await expect(guard.admit('Q', { FifoQueue: true })).resolves.toMatchObject({ kind: 'failed' });
+    const verdict = await guard.admit('Q', { FifoQueue: true });
+    expect(verdict).toMatchObject({ kind: 'failed' });
+    const error = (verdict as { error: unknown }).error;
+    expect(error).toBeInstanceOf(GeneratedNameMismatchError);
+    expect(error).toMatchObject({ checked: 'gen-Q', sent: 'gen-Q.fifo' });
     expect(ledger.writes).toEqual([]);
   });
 });

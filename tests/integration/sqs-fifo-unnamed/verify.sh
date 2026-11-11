@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd un-named FIFO SQS queue integ (issue #6100).
+# verify.sh — cdkd un-named FIFO SQS queue (and SNS topic) integ (issue #6100).
 #
 # `new sqs.Queue(this, 'Q', { fifo: true })` synthesizes `FifoQueue: true` and
 # no `QueueName`, so cdkd generates the name. SQS refuses a FIFO queue whose
@@ -13,11 +13,13 @@
 #      is at most 80 characters, starts with `<stack>-<logicalId>-`, matches the
 #      recorded QueueName attribute, resolves by name through get-queue-url to
 #      the recorded URL, and reads FifoQueue=true. The standard queue's name has
-#      no suffix and no FifoQueue attribute.
+#      no suffix and no FifoQueue attribute. FifoTopic (an L1 CfnTopic with
+#      FifoTopic: true, no TopicName) is named `<stack>-FifoTopic-<suffix>.fifo`
+#      (SNS refuses a FIFO topic without the suffix too) and reads FifoTopic=true.
 #   2. CDKD_TEST_UPDATE=true redeploy changes FifoQueue's VisibilityTimeout
 #      (30 -> 45). Assert it reached AWS IN PLACE: the same URL in state and an
 #      unchanged CreatedTimestamp.
-#   3. Destroy, assert all three queues and the state file are gone.
+#   3. Destroy, assert all three queues, the topic and the state file are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -84,6 +86,9 @@ cleanup() {
       for url in $(printf '%s' "${state}" | jq -r '.resources[]? | select(.resourceType == "AWS::SQS::Queue") | .physicalId // empty' 2>/dev/null); do
         aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 || true
       done
+      for arn in $(printf '%s' "${state}" | jq -r '.resources[]? | select(.resourceType == "AWS::SNS::Topic") | .physicalId // empty' 2>/dev/null); do
+        aws sns delete-topic --topic-arn "${arn}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
     fi
   fi
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
@@ -95,6 +100,11 @@ cleanup() {
         --query 'QueueUrls[]' --output text 2>/dev/null); do
         [ "${url}" = "None" ] && continue
         aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
+      for arn in $(aws sns list-topics --region "${REGION}" \
+        --query "Topics[?contains(TopicArn, ':${STACK}-')].TopicArn" --output text 2>/dev/null); do
+        [ "${arn}" = "None" ] && continue
+        aws sns delete-topic --topic-arn "${arn}" --region "${REGION}" >/dev/null 2>&1 || true
       done
       ;;
     *)
@@ -204,6 +214,24 @@ for id in ${QUEUE_IDS}; do
 done
 echo "    OK: both FIFO queues are named <stack>-<logicalId>-<suffix>.fifo and are FIFO; the standard queue is not"
 
+TOPIC_ARN="$(state_field FifoTopic '.physicalId')"
+TOPIC_NAME="${TOPIC_ARN##*:}"
+echo "    FifoTopic: ${TOPIC_NAME} (${#TOPIC_NAME} characters)"
+case "${TOPIC_NAME}" in
+  "${STACK}-FifoTopic-"?*.fifo) ;;
+  *)
+    echo "FAIL (#6100): the FIFO topic's generated name '${TOPIC_NAME}' is not '${STACK}-FifoTopic-<suffix>.fifo' (ARN '${TOPIC_ARN}')" >&2
+    exit 1
+    ;;
+esac
+TOPIC_FIFO="$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
+  --query 'Attributes.FifoTopic' --output text)"
+if [ "${TOPIC_FIFO}" != "true" ]; then
+  echo "FAIL (#6100): the topic reads FifoTopic='${TOPIC_FIFO}', expected 'true'" >&2
+  exit 1
+fi
+echo "    OK: the un-named FIFO topic is named <stack>-FifoTopic-<suffix>.fifo and is FIFO"
+
 # --- Phase 2: in-place update of the FIFO queue -----------------------------
 FIFO_URL="$(state_field FifoQueue '.physicalId')"
 BASE_VT="$(queue_attr "${FIFO_URL}" VisibilityTimeout)"
@@ -249,6 +277,7 @@ for id in ${QUEUE_IDS}; do
   URL="$(state_field "${id}" '.physicalId')"
   NAMES="${NAMES} ${URL##*/}"
 done
+TOPIC_ARN="$(state_field FifoTopic '.physicalId')"
 
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -258,10 +287,12 @@ for name in ${NAMES}; do
   assert_gone "queue ${name} still exists after destroy" aws sqs get-queue-url --queue-name "${name}" --region "${REGION}"
 done
 echo "    OK: all three queues are gone"
+assert_gone "topic ${TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}"
+echo "    OK: the topic is gone"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
 trap - EXIT INT TERM
 
-echo "[verify] PASS — un-named FIFO queues get a .fifo name (boolean and string FifoQueue), update in place, destroy clean"
+echo "[verify] PASS — un-named FIFO queues (boolean and string FifoQueue) and an un-named FIFO topic get a .fifo name, the queue updates in place, destroy clean"

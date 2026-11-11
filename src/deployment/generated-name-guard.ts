@@ -98,6 +98,24 @@ export type {
 } from './generated-name-guard/types.js';
 
 /**
+ * go-to-k/cdkd#6100: a create would send another generated name than the one
+ * the guard checked before the deploy. Deterministic, so a re-run meets it
+ * again: a cdkd defect, never a lookup that could not answer.
+ */
+export class GeneratedNameMismatchError extends Error {
+  constructor(
+    readonly checked: string,
+    readonly sent: string | undefined
+  ) {
+    super(
+      `the create would send ${sent === undefined ? 'no generated name' : `the name ${sent}`}, ` +
+        `not ${checked}, which was checked before the deploy`
+    );
+    this.name = 'GeneratedNameMismatchError';
+  }
+}
+
+/**
  * Did the create call that threw `error` prove that it created nothing? A
  * definite client rejection (a 4xx: validation, AlreadyExists, AccessDenied --
  * not a throttle, 408 or 429) with no ambiguous link and no mark that the
@@ -428,12 +446,7 @@ export class GeneratedNameGuard {
       this.candidates.set(logicalId, c);
       this.ask([c]);
     } else if (sent !== c.name) {
-      return {
-        kind: 'failed',
-        error: new Error(
-          `the name the create sends (${sent ?? 'none'}) is not the one checked before the deploy`
-        ),
-      };
+      return { kind: 'failed', error: new GeneratedNameMismatchError(c.name, sent) };
     }
     const verdict = await this.verdicts.get(logicalId)!;
     if (verdict.kind !== 'free' && verdict.kind !== 'licensed') return verdict;

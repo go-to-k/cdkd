@@ -10,6 +10,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import type { DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
+import { coerceCfnBoolean } from '../config-shape.js';
 import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
@@ -288,7 +289,21 @@ export class SNSTopicProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['TopicName']) return undefined;
-    return generatedNameFor('AWS::SNS::Topic', logicalId);
+    // go-to-k/cdkd#6100: the rule ends a FIFO topic's name with `.fifo`.
+    return generatedNameFor('AWS::SNS::Topic', logicalId, { properties });
+  }
+
+  /**
+   * go-to-k/cdkd#6100: a `FifoTopic` the plan cannot read (an intrinsic still
+   * unresolved) decides whether the name ends with `.fifo`, so the guard
+   * looks the name up at the create, with the resolved properties.
+   */
+  lookupNeedsResolvedProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean {
+    const fifo = properties['FifoTopic'];
+    return fifo !== undefined && fifo !== null && coerceCfnBoolean(fifo) === undefined;
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

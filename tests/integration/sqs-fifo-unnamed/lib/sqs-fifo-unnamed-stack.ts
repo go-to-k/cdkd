@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
@@ -11,11 +12,15 @@ import type { Construct } from 'constructs';
  * - `FifoStringQueue`: `FifoQueue` given as the STRING `'true'`, which
  *   CloudFormation coerces to a boolean.
  * - `StandardQueue`: an un-named standard queue, the negative control (no suffix).
+ * - `FifoTopic`: an L1 `CfnTopic` with `FifoTopic: true` and no `TopicName`
+ *   (CDK names an L2 FIFO topic itself), which SNS also requires to end with
+ *   `.fifo`.
  *
  * `CDKD_TEST_UPDATE=true` changes `FifoQueue`'s visibility timeout (30s -> 45s),
  * an in-place update.
  *
  * covers: AWS::SQS::Queue
+ * covers: AWS::SNS::Topic
  */
 export class SqsFifoUnnamedStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -38,5 +43,9 @@ export class SqsFifoUnnamedStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     (standard.node.defaultChild as sqs.CfnQueue).overrideLogicalId('StandardQueue');
+
+    const topic = new sns.CfnTopic(this, 'Topic', { fifoTopic: true });
+    topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    topic.overrideLogicalId('FifoTopic');
   }
 }
