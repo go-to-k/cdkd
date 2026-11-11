@@ -69,11 +69,14 @@ interface Live {
   failModify?: Error;
   /** The instances the cluster lists, as an L1 template may add its own. */
   members?: Input[];
+  /** The global clusters AWS lists, by identifier, with the cluster's ARN as member. */
+  globalMemberOf?: string;
 }
 
 function arm(live: Live = {}): void {
   const source = 'source' in live ? live.source : { StorageEncrypted: true };
   let deleted = false;
+  let detached = false;
   mockSend.mockImplementation((command: Command) => {
     const name = command.constructor.name;
     const input = command.input;
@@ -130,6 +133,20 @@ function arm(live: Live = {}): void {
       return Promise.reject(live.failModify);
     }
     if (name === 'DeleteDBClusterCommand') deleted = true;
+    if (name === 'RemoveFromGlobalClusterCommand') detached = true;
+    if (name === 'DescribeGlobalClustersCommand') {
+      return Promise.resolve({
+        GlobalClusters:
+          live.globalMemberOf === undefined || detached
+            ? []
+            : [
+                {
+                  GlobalClusterIdentifier: live.globalMemberOf,
+                  GlobalClusterMembers: [{ DBClusterArn: CLUSTER_ARN, IsWriter: true }],
+                },
+              ],
+      });
+    }
     // No instance exists: a wait on one fails by name, never loops.
     if (name === 'DescribeDBInstancesCommand') {
       const error = new Error('DBInstance not found');
@@ -380,7 +397,8 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
     await create({ EnableHttpEndpoint: true });
     // Without the wait only the closing availability wait and the attribute
     // read follow the call (3 reads); the wait polls until the 6th reads on.
-    expect(reads).toBeGreaterThan(6);
+    // 6 polls until the 6th reads on, then the closing wait and the attribute read.
+    expect(reads).toBe(9);
   });
 
   it('describes the restored cluster for its ARN when the restore answer has none', async () => {
@@ -509,6 +527,7 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
 
   it('names no unused key declared false or empty', async () => {
     await create({ WithExpressConfiguration: false, AvailabilityZones: [], GlobalClusterIdentifier: '' });
+    await create({ WithExpressConfiguration: 'false' });
     expect(warnings().some((w) => /does not apply/.test(w))).toBe(false);
   });
 
@@ -696,9 +715,34 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       GlobalClusterIdentifier: 'global-1',
     });
     expect(sent('DeleteDBInstanceCommand')).toHaveLength(0);
+    // AWS was asked, and lists the cluster in no global cluster.
+    expect(sent('DescribeGlobalClustersCommand').length).toBeGreaterThan(0);
     expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
-    expect(sent('DescribeGlobalClustersCommand')).toHaveLength(0);
     expect(only('DeleteDBClusterCommand')['DBClusterIdentifier']).toBe(CLUSTER);
+  });
+
+  it('a restored cluster a global cluster adopted later is still detached before its delete', async () => {
+    arm({ globalMemberOf: 'global-1' });
+    await provider.delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
+      ...BASE,
+      GlobalClusterIdentifier: 'global-1',
+    });
+    expect(only('RemoveFromGlobalClusterCommand')).toEqual({
+      GlobalClusterIdentifier: 'global-1',
+      DbClusterIdentifier: CLUSTER_ARN,
+    });
+  });
+
+  it("an update removing a restored record's global cluster detaches nothing AWS does not list", async () => {
+    await provider.update(
+      'Cluster',
+      CLUSTER,
+      'AWS::RDS::DBCluster',
+      { ...BASE },
+      { ...BASE, GlobalClusterIdentifier: 'global-1' }
+    );
+    expect(sent('DescribeGlobalClustersCommand').length).toBeGreaterThan(0);
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
   });
 
   it('a created (not restored) record still deletes its express writer and detaches first', async () => {

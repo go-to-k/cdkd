@@ -72,6 +72,7 @@ import {
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
 import { EXPRESS_WRITER_RESOURCE_ID_KEY, recordedExpressWriterId } from './express-writer.js';
+import { isRestoredRecord } from './cluster-restore.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -389,7 +390,16 @@ export async function updateDBCluster(
     // handler does (`removeFromGlobalCluster`): the detach leaves it
     // `modifying` until it is out and `available` again. The wait runs under
     // `--no-wait` too, since RDS refuses the ModifyDBCluster meanwhile.
-    if (globalClusterPlan.kind === 'detach') {
+    // A restored cluster never joined one: nothing to detach unless AWS lists it.
+    if (
+      globalClusterPlan.kind === 'detach' &&
+      !(await restoredOutsideGlobalCluster.call(
+        this,
+        previousProperties,
+        physicalId,
+        globalClusterPlan.globalClusterId
+      ))
+    ) {
       const detached = await this.detachFromGlobalCluster(
         logicalId,
         physicalId,
@@ -868,4 +878,22 @@ export async function liveGlobalClusterMembership(
     );
     return { kind: 'unreadable', summary: failure.summary };
   }
+}
+
+/**
+ * Whether a detach from `globalClusterId` is to be skipped: only for a
+ * restored record, and only when AWS answers that the cluster is not that
+ * global cluster's member. A restored cluster a global cluster adopted later
+ * (its `SourceDBClusterIdentifier`), or an unreadable membership, still
+ * detaches, as before.
+ */
+export async function restoredOutsideGlobalCluster(
+  this: RDSProvider,
+  properties: Record<string, unknown> | undefined,
+  physicalId: string,
+  globalClusterId: string
+): Promise<boolean> {
+  if (!isRestoredRecord(properties)) return false;
+  const live = await liveGlobalClusterMembership.call(this, physicalId, globalClusterId);
+  return live.kind === 'answered' && !live.member;
 }

@@ -32,6 +32,7 @@ import {
   recordedExpressWriterId,
 } from './express-writer.js';
 import { isRestoredRecord } from './cluster-restore.js';
+import { restoredOutsideGlobalCluster } from './cluster-update.js';
 import {
   RDS_DELETE_WAIT_MS,
   deleteAutomatedBackupsInput,
@@ -177,11 +178,15 @@ export async function deleteDBClusterOnce(
     // Issue #4029: a global-cluster member cannot be deleted until it is
     // detached, which is what the Cloud Control handler did before its own
     // (unwanted) final snapshot.
-    // go-to-k/cdkd#5639: a point-in-time restore never joins one (the restore
-    // call has no member for it), so a recorded one names no membership.
+    // go-to-k/cdkd#5639: a point-in-time restore joins none (the restore call
+    // has no member for it), so a restored record's one is detached only when
+    // AWS lists the cluster as its member.
     const restored = isRestoredRecord(properties);
-    const globalClusterId = restored ? undefined : recordedGlobalClusterIdentifier(properties);
-    if (globalClusterId !== undefined) {
+    const globalClusterId = recordedGlobalClusterIdentifier(properties);
+    if (
+      globalClusterId !== undefined &&
+      !(await restoredOutsideGlobalCluster.call(this, properties, physicalId, globalClusterId))
+    ) {
       detachedFrom = (await this.detachFromGlobalCluster(
         logicalId,
         physicalId,
