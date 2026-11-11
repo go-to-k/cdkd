@@ -38,13 +38,14 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
 
 ## Stack selection
 
-Stack names are POSITIONAL (`cdkd deploy MyStack`), a single stack is
-auto-detected, `--all` targets all stacks (for `destroy`, only those the current
-app synthesizes), and wildcards work (`cdkd deploy 'My*'`). Both forms are
-accepted, CDK-CLI parity: a pattern containing `/` matches the hierarchical
+Stack names are POSITIONAL, a single stack is auto-detected, `--all` targets
+all stacks (for `destroy`, only those the app synthesizes), and wildcards work.
+CDK-CLI parity: a pattern containing `/` matches the hierarchical
 DISPLAY PATH, one without matches the PHYSICAL name — so `'MyStage/*'` works.
 For `destroy`, display-path matching needs synth to succeed, because state alone
-carries physical names. Implemented in `src/cli/stack-matcher.ts`.
+carries physical names. Implemented in `src/cli/stack-matcher.ts`. Unless
+`-e`, deploy adds manifest dependencies and destroy adds deployed dependents
+(CDK parity, #6115).
 
 ## stdout is a PAYLOAD on some commands
 
@@ -67,8 +68,7 @@ payload is the LAST stdout line, not the whole stream. Contract in
   `--asset-publish-concurrency` (8), `--image-build-concurrency` (4).
 - `--resource-warn-after` (default `5m`) and `--resource-timeout` (default
   `30m`) on deploy / destroy / state destroy. Both are REPEATABLE and take
-  either form: a bare `<duration>` sets the global default, `<TYPE>=<duration>`
-  adds a per-type override. Resolution per call:
+  a bare `<duration>` (global) or `<TYPE>=<duration>` (per-type). Resolution:
   `perTypeMs[resourceType] ?? max(provider.getMinResourceTimeoutMs?.(), slowCcOperationTimeoutMs(type, op), globalMs) ?? compileTimeDefault`
   — a per-type CLI override always wins; otherwise the deadline is lifted for
   that type by whichever is larger of the provider's self-reported minimum (the
@@ -77,8 +77,8 @@ payload is the LAST stdout line, not the whole stream. Contract in
   `CloudControlProvider`'s internal poll cap so a CC-routed slow DELETE is not
   aborted mid-delete.
   The warn timer mutates the live renderer's task label in place; the hard timer
-  throws `ResourceTimeoutError`, wrapped as `ProvisioningError` at the same site
-  as any other provider failure, so rollback and state preservation run
+  throws `ResourceTimeoutError`, wrapped as `ProvisioningError` like any other
+  provider failure, so rollback and state preservation are
   unchanged. Rejected at parse time: zero, negative, missing or unknown unit, a
   malformed `TYPE`, and `warn >= timeout` (globally and per type). Cancellation
   is `Promise.race`-style — the provider call keeps running after the timer
@@ -107,8 +107,7 @@ new unguarded copy cannot be written.
 - **`--allow-unsupported-types <types>`** (deploy + destroy) — cdkd rejects Tier
   3 (`ProvisioningType: NON_PROVISIONABLE`) types in a pre-flight, from the
   generated `src/provisioning/unsupported-types.generated.ts`. The flag is
-  comma-separated and repeatable, PER TYPE so each is named explicitly; listed
-  types join `ProviderRegistry.allowedUnsupportedTypes` and are routed through
+  comma-separated, repeatable and PER TYPE; listed types join `ProviderRegistry.allowedUnsupportedTypes` and are routed through
   Cloud Control optimistically. It exists for a cached-Tier-3 type AWS has since
   made provisionable. Destroy threads it through
   `DestroyRunnerContext.allowUnsupportedTypes`, so a stack deployed with the flag

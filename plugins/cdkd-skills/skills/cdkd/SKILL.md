@@ -226,25 +226,25 @@ Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state re
 
 ## Reclaim asset storage
 
-Content-addressed assets are deliberately kept on `cdkd destroy` (another stack or a future rollback may reference the same hash), so cdkd-owned asset storage grows over time. `cdkd gc` deletes only assets no state file references, one region per invocation, and never touches CDK's own bootstrap storage:
+`cdkd destroy` keeps content-addressed assets (another stack or a rollback may use them), so asset storage grows. `cdkd gc` deletes only assets no state file references, one region per invocation, and never touches CDK's own bootstrap storage:
 
 ```bash
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd gc --dry-run  # print the reclaim plan first
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd gc            # delete after reviewing the plan
 ```
 
-Keep the default `--older-than 30d` age guard unless the user explicitly accepts a shorter window; it protects in-flight publishes and recent rollback targets.
+Keep the default `--older-than 30d` age guard unless the user accepts a shorter window; it protects in-flight publishes and rollback targets.
 
 ## Guard destructive and migration commands
 
 Before `destroy`, `state destroy`, `orphan`, `refactor`, `import`, `export`, `drift --accept`, `drift --revert`, or `gc`:
 
-1. Re-resolve the AWS identity, region, stack name, and current owner.
-2. Show the exact command and explain which resources or state records change.
+1. Re-resolve the AWS identity, region, stack, and owner.
+2. Show the exact command and explain which resources or state records change. `destroy` also takes the stacks depending on a named one (as `cdk destroy`); `-e` keeps to the named ones.
 3. Check retention, snapshots, backups, and downstream consumers.
 4. Obtain explicit user confirmation immediately before execution.
 
-`state destroy` also deletes the earlier S3 versions of each state record it removes, so that record can no longer be restored from the versioned state bucket unless it warns otherwise; `destroy` and `orphan` keep them.
+`state destroy` also deletes the earlier S3 versions of each state record it removes, so it cannot be restored from the versioned bucket unless it warns otherwise; `destroy` and `orphan` keep them.
 
 Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
 
