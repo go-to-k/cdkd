@@ -93,6 +93,9 @@ export class RdsPitrRestoreStack extends cdk.Stack {
       dbClusterParameterGroupName: params.ref,
       backupRetentionPeriod: isUpdate ? 6 : 5,
       preferredBackupWindow: '05:00-05:30',
+      // Declared so RDS's randomly assigned maintenance window can never
+      // overlap the backup window, which fails the follow-up ModifyDBCluster.
+      preferredMaintenanceWindow: 'sun:10:00-sun:10:30',
       enableHttpEndpoint: true,
       deletionProtection: false,
     });
@@ -131,6 +134,8 @@ export class RdsPitrRestoreStack extends cdk.Stack {
         // On the follow-up ModifyDBCluster only.
         backupRetentionPeriod: 4,
         preferredBackupWindow: '06:00-06:30',
+        // See PitrCluster: keeps the assigned maintenance window off the backup window.
+        preferredMaintenanceWindow: 'sun:10:00-sun:10:30',
         deletionProtection: false,
       });
       snap.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
