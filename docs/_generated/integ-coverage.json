@@ -7543,6 +7543,7 @@
         "rollback-command",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
+        "s3-bucket-policy-existing",
         "s3-cloudfront",
         "s3-directory-bucket",
         "s3-event-notification",
@@ -7728,6 +7729,10 @@
         "s3-analytics-inventory": [
           "l1"
         ],
+        "s3-bucket-policy-existing": [
+          "l2",
+          "literal"
+        ],
         "s3-cloudfront": [
           "l2"
         ],
@@ -7793,6 +7798,7 @@
         "migrate-from-cfn",
         "propagation-races-2",
         "s3-analytics-inventory",
+        "s3-bucket-policy-existing",
         "s3-replication-and-filter"
       ],
       "signals": {
@@ -7811,6 +7817,9 @@
         ],
         "s3-analytics-inventory": [
           "l1"
+        ],
+        "s3-bucket-policy-existing": [
+          "literal"
         ],
         "s3-replication-and-filter": [
           "l1"
