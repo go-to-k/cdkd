@@ -82,8 +82,9 @@ describe('SNSTopicProvider delegators hand every argument to the moved body', ()
     // The class's own non-delegator methods stay in the class.
     expect(Object.getOwnPropertyNames(SNSTopicProvider.prototype).length).toBe(
       // constructor, callerAccount, topicHeldBefore, wrapCaughtError,
-      // getAttribute, getDriftUnknownPaths, generatedCreateName
-      own.length + 7
+      // getAttribute, getDriftUnknownPaths, generatedCreateName,
+      // lookupNeedsResolvedProperties
+      own.length + 8
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });
