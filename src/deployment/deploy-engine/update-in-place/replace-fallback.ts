@@ -403,6 +403,7 @@ export async function replaceFallbackFor(
           }),
           ...replacementDeleteContext(engine.replacementDeps(), fallbackUpdateReplacePolicy),
           recordedAttributes: currentResource.attributes,
+          recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: currentResource.noEchoLeaves,
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),

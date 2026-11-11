@@ -428,6 +428,7 @@ export async function deleteStackResource(
                         }),
                         // Issue #4157: the identity evidence of the record deleted.
                         recordedAttributes: resource.attributes,
+                        recordedCreateOnlyDrops: resource.acceptedCreateOnlyDrops,
                         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
                         recordedNoEchoLeaves: resource.noEchoLeaves,
                         ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),

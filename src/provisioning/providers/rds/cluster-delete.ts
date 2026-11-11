@@ -31,7 +31,7 @@ import {
   expressConfigurationFlag,
   recordedExpressWriterId,
 } from './express-writer.js';
-import { isRestoredRecord } from './cluster-restore.js';
+import { isRestoredRecord, recordedCreateOnlyDropsOf } from './cluster-restore.js';
 import { restoredOutsideGlobalCluster } from './cluster-update.js';
 import {
   RDS_DELETE_WAIT_MS,
@@ -181,11 +181,20 @@ export async function deleteDBClusterOnce(
     // go-to-k/cdkd#5639: a restore (point in time or snapshot) joins none (no restore call
     // has no member for it), so a restored record's one is detached only when
     // AWS lists the cluster as its member.
-    const restored = isRestoredRecord(properties);
+    // go-to-k/cdkd#6104: a source key the record lists as an accepted drop
+    // was never sent, so its create was plain; no list reads as before.
+    const acceptedDrops = recordedCreateOnlyDropsOf(context);
+    const restored = isRestoredRecord(properties, acceptedDrops);
     const globalClusterId = recordedGlobalClusterIdentifier(properties);
     if (
       globalClusterId !== undefined &&
-      !(await restoredOutsideGlobalCluster.call(this, properties, physicalId, globalClusterId))
+      !(await restoredOutsideGlobalCluster.call(
+        this,
+        properties,
+        physicalId,
+        globalClusterId,
+        acceptedDrops
+      ))
     ) {
       detachedFrom = (await this.detachFromGlobalCluster(
         logicalId,
@@ -206,9 +215,13 @@ export async function deleteDBClusterOnce(
     // writer by name. One that holds an id (a plain create recorded with its
     // source under `--prefer-sdk-route`) made a writer: delete it, matched by
     // that id and by the live cluster listing it, as for any other record.
+    // go-to-k/cdkd#6104: a `WithExpressConfiguration` the record lists as an
+    // accepted drop was never sent, so RDS made no writer: an instance under
+    // the writer's name is not one cdkd created, and is never deleted here.
     const recordedWriterId = recordedExpressWriterId(context?.recordedAttributes);
     if (
       !(restored && recordedWriterId === undefined) &&
+      !acceptedDrops.has('WithExpressConfiguration') &&
       expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true
     ) {
       const writerDeleted = await deleteExpressWriter.call(

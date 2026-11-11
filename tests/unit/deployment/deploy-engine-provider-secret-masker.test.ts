@@ -277,6 +277,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
             resourceType: RESOURCE_TYPE,
             properties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
             attributes: recorded,
+            acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
           },
         },
         outputs: {},
@@ -289,6 +290,8 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
 
     const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
     expect(updateContext?.recordedAttributes).toEqual(recorded);
+    // go-to-k/cdkd#6104: the same record's accepted drops ride beside them.
+    expect(updateContext?.recordedCreateOnlyDrops).toEqual(['SnapshotIdentifier']);
   });
 
   it("UPDATE: expectedRegion follows the engine's stackRegion, not a constant (issue #2301)", async () => {
@@ -332,6 +335,8 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
       'markUnsettled',
       'maskSecrets',
       'recordedAttributes',
+      // go-to-k/cdkd#6104: the record's accepted drops, evidence like the attributes.
+      'recordedCreateOnlyDrops',
       'removedProperties',
     ]);
     // The sibling flag stays off for the same reason: this bag is a template,

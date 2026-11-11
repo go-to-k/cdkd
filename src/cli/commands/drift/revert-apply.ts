@@ -135,6 +135,7 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
             maskSecrets: createSecretMasker(secrets),
             expectedRegion: report.region,
             recordedAttributes: stateResource.attributes,
+            recordedCreateOnlyDrops: stateResource.acceptedCreateOnlyDrops,
             // Issue #1160: nothing reads as REMOVED here, so no
             // provider `removalDefaults` value is injected. Removal is
             // judged template-vs-template, and the previous side above

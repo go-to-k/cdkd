@@ -111,7 +111,11 @@ jobs:
       - run: vp run vue:lint
       - run: vp run vue:fmt:check
       - run: vp run vue:check
-      - run: ./node_modules/.bin/playwright install --with-deps chromium
+      # `--with-deps` installs Chromium's system libraries through apt. When apt
+      # cannot reach its mirror (2026-11-11: hours of `Temporary failure
+      # resolving` on every runner), fall back to the browser alone, from
+      # Playwright's own CDN: the runner image already carries those libraries.
+      - run: ./node_modules/.bin/playwright install --with-deps chromium || ./node_modules/.bin/playwright install chromium
       - run: vp run docs:build
       - name: Assert the Vue islands were rendered at build time
         # The pages link assets/islands.css by a fixed name, and the hero's
