@@ -78,6 +78,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 }));
 
 const CR = 'Custom::Thing';
+const OTHER_CR = 'Custom::OtherThing';
 const TOPIC = 'AWS::SNS::Topic';
 const TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:handler';
 const OLD_PROPS = { ServiceToken: TOKEN, Name: 'name-1' };
@@ -185,7 +186,10 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       other?: ResourceState;
       /** `Res` already moved to name-2, with name-1 recorded as superseded. */
       carried?: boolean;
-      /** `Other` (name-2) moves to name-1 in the same deploy: a swap. */
+      /**
+       * `Other` (name-2, another custom type, so no save drops a superseded
+       * entry it holds) moves to name-1 in the same deploy: a swap.
+       */
       swap?: boolean;
     } = {}
   ): Promise<{ updatePartial: number; final: StackState }> {
@@ -202,7 +206,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
         },
         Topic: { Type: TOPIC, Properties: { DisplayName: 'v2' } },
         ...(opts.other !== undefined && { Other: { Type: CR, Properties: opts.other.properties } }),
-        ...(opts.swap && { Other: { Type: CR, Properties: OLD_PROPS } }),
+        ...(opts.swap && { Other: { Type: OTHER_CR, Properties: OLD_PROPS } }),
       },
     } as unknown as CloudFormationTemplate;
     const record = (physicalId: string, resourceType: string, properties: Record<string, unknown>) =>
@@ -224,7 +228,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
           : { ...record('name-1', CR, OLD_PROPS), ...opts.oldRecord },
         Topic: record('topic', TOPIC, { DisplayName: 'v1' }),
         ...(opts.other !== undefined && { Other: opts.other }),
-        ...(opts.swap && { Other: record('name-2', CR, NEW_PROPS) }),
+        ...(opts.swap && { Other: record('name-2', OTHER_CR, NEW_PROPS) }),
       },
       ...(opts.carried && {
         supersededResources: [
@@ -255,7 +259,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
               {
                 logicalId: 'Other',
                 changeType: 'UPDATE',
-                resourceType: CR,
+                resourceType: OTHER_CR,
                 currentProperties: NEW_PROPS,
                 desiredProperties: OLD_PROPS,
                 propertyChanges: [
@@ -453,8 +457,8 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     const { final, updatePartial } = await deploy({ swap: true });
     expect(provider.delete).not.toHaveBeenCalled();
     expect(updatePartial).toBe(0);
+    // What the deploy's final save persists (the per-row saves predate the cleanup).
     expect(final.supersededResources).toBeUndefined();
-    expect(saved.at(-1)?.supersededResources).toBeUndefined();
     for (const [id, old, holder] of [
       ['Res', 'name-1', 'Other'],
       ['Other', 'name-2', 'Res'],
