@@ -320,7 +320,11 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     const entry: SupersededResourceRecord = {
       logicalId: 'Tg',
       supersededAt: 1,
-      state: record(OLD_TG, TG, { Port: 8080 }),
+      state: {
+        ...record(OLD_TG, TG, { Port: 8080 }),
+        attributes: { TargetGroupFullName: 'old-tg' },
+        acceptedCreateOnlyDrops: ['Protocol'],
+      },
     };
     const state = {
       version: 13,
@@ -345,6 +349,11 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
 
     // One attempt: an entry still in use must not slow every later deploy.
     expect(provider.delete).toHaveBeenCalledTimes(1);
+    // go-to-k/cdkd#4157 / #6104: the carried record's own evidence reaches the delete.
+    expect(vi.mocked(provider.delete).mock.calls[0]![4]).toMatchObject({
+      recordedAttributes: { TargetGroupFullName: 'old-tg' },
+      recordedCreateOnlyDrops: ['Protocol'],
+    });
     expect(supersededResourcesOf(final).map((e) => e.state.physicalId)).toEqual([OLD_TG]);
     expect(
       printed.warn.some(

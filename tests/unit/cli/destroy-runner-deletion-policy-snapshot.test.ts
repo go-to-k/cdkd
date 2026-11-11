@@ -582,9 +582,10 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
 
   it("issue #4157: threads the deleted record's attributes into the DeleteContext", async () => {
     const attributes = { RepositoryId: 'id-recorded-4157' };
-    const state = makeState({ Db: res({ deletionPolicy: 'Delete', attributes }) });
+    const state = makeState({ Db: res({ deletionPolicy: 'Delete', attributes, acceptedCreateOnlyDrops: ['SnapshotIdentifier'] }) });
     await runDestroyForStack('TestStack', state, makeCtx());
     expect(deleteContextArg()['recordedAttributes']).toEqual(attributes);
+    expect(deleteContextArg()['recordedCreateOnlyDrops']).toEqual(['SnapshotIdentifier']);
   });
 
   it("go-to-k/cdkd#4043: threads the deleted record's noEchoLeaves into the DeleteContext", async () => {

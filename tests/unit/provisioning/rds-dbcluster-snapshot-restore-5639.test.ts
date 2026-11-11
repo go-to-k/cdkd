@@ -614,12 +614,12 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
     });
 
     it('is a restore for every source key, and for no empty or missing one', () => {
-      expect(isRestoredRecord({ SnapshotIdentifier: SNAPSHOT })).toBe(true);
-      expect(isRestoredRecord({ SourceDbClusterResourceId: RESOURCE_ID })).toBe(true);
-      expect(isRestoredRecord({ SourceDBClusterIdentifier: 'source-1' })).toBe(true);
-      expect(isRestoredRecord({ SnapshotIdentifier: '', SourceDbClusterResourceId: '' })).toBe(false);
-      expect(isRestoredRecord({ SnapshotIdentifier: ['x'] })).toBe(false);
-      expect(isRestoredRecord(undefined)).toBe(false);
+      expect(isRestoredRecord({ SnapshotIdentifier: SNAPSHOT }, new Set())).toBe(true);
+      expect(isRestoredRecord({ SourceDbClusterResourceId: RESOURCE_ID }, new Set())).toBe(true);
+      expect(isRestoredRecord({ SourceDBClusterIdentifier: 'source-1' }, new Set())).toBe(true);
+      expect(isRestoredRecord({ SnapshotIdentifier: '', SourceDbClusterResourceId: '' }, new Set())).toBe(false);
+      expect(isRestoredRecord({ SnapshotIdentifier: ['x'] }, new Set())).toBe(false);
+      expect(isRestoredRecord(undefined, new Set())).toBe(false);
     });
   });
 

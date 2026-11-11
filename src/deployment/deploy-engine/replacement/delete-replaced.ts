@@ -85,6 +85,7 @@ export async function deleteReplacedAfterCreate(
           ...replacementDeleteContext(deps, updateReplacePolicy),
           // Issue #4157: the identity evidence of the record deleted.
           recordedAttributes: currentResource.attributes,
+          recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: currentResource.noEchoLeaves,
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),

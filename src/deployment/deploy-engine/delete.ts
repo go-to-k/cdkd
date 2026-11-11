@@ -235,6 +235,7 @@ Drop the record with: ${dropCommand}`
             ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
             // Issue #4157: the identity evidence of the record deleted.
             recordedAttributes: currentResource.attributes,
+            recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
             recordedNoEchoLeaves: currentResource.noEchoLeaves,
             // go-to-k/cdkd#2007: the record is the persisted, redacted one,

@@ -320,12 +320,12 @@ profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
 rds-aurora	2026-11-09T12:13:54Z	PASS	4754	verify.sh	rc ok, orph clean (#5639 DBInstanceParameterGroupName, PR #6068)
-rds-dbcluster-pitr-restore	2026-11-11T09:12:17Z	PASS	496	verify.sh	rc ok, orph clean
+rds-dbcluster-pitr-restore	2026-11-11T14:15:04Z	PASS	434	verify.sh	rc ok, orph clean
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
-rds-express-cluster	2026-11-10T12:30:00Z	PASS	1358	verify.sh	rc ok, orph clean
+rds-express-cluster	2026-11-11T14:15:04Z	PASS	1405	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-11-10T17:28:58Z	PASS	1239	verify.sh	rc ok, orph clean; own bucket
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean
 rds-multiaz-cluster	2026-11-08T20:08:02Z	PASS	4107	verify.sh	3 phases ok; class change ~40m on 3 instances (90m floor), orph clean

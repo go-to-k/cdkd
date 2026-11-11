@@ -72,7 +72,7 @@ import {
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
 import { EXPRESS_WRITER_RESOURCE_ID_KEY, recordedExpressWriterId } from './express-writer.js';
-import { isRestoredRecord } from './cluster-restore.js';
+import { isRestoredRecord, recordedCreateOnlyDropsOf } from './cluster-restore.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -397,7 +397,8 @@ export async function updateDBCluster(
         this,
         previousProperties,
         physicalId,
-        globalClusterPlan.globalClusterId
+        globalClusterPlan.globalClusterId,
+        recordedCreateOnlyDropsOf(context)
       ))
     ) {
       const detached = await this.detachFromGlobalCluster(
@@ -794,7 +795,9 @@ export async function planGlobalClusterUpdate(
     // go-to-k/cdkd#5639: a restore (point in time or snapshot) never joined it, so the key
     // records the template, not a membership that ended: dropping it would
     // make the next deploy of the same template an add, which is refused.
-    if (isRestoredRecord(previousProperties)) return { kind: 'none' };
+    if (isRestoredRecord(previousProperties, recordedCreateOnlyDropsOf(context))) {
+      return { kind: 'none' };
+    }
     this.logger.warn(
       mask(
         safeMsg`${logicalId} (${resourceType}): the cluster is no longer a member of global cluster ${desiredId}, so the record drops GlobalClusterIdentifier.`
@@ -899,9 +902,10 @@ export async function restoredOutsideGlobalCluster(
   this: RDSProvider,
   properties: Record<string, unknown> | undefined,
   physicalId: string,
-  globalClusterId: string
+  globalClusterId: string,
+  acceptedDrops: ReadonlySet<string>
 ): Promise<boolean> {
-  if (!isRestoredRecord(properties)) return false;
+  if (!isRestoredRecord(properties, acceptedDrops)) return false;
   const live = await liveGlobalClusterMembership.call(this, physicalId, globalClusterId);
   return live.kind === 'answered' && !live.member;
 }

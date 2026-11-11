@@ -241,6 +241,7 @@ export async function deleteSupersededEntry(
           ...(input.removeProtection === true && { removeProtection: true }),
           ...(input.stackDestroy === true && { stackDestroy: true }),
           recordedAttributes: record.attributes,
+          recordedCreateOnlyDrops: record.acceptedCreateOnlyDrops,
           recordedNoEchoLeaves: record.noEchoLeaves,
           maskSecrets: input.maskSecrets,
         }

@@ -134,6 +134,7 @@ export async function replaceDeleteFirstAndRecreate(
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           ...replacementDeleteContext(deps, updateReplacePolicy),
           recordedAttributes: currentResource.attributes,
+          recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: currentResource.noEchoLeaves,
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),

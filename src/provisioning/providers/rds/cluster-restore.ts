@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { acceptedCreateOnlyDropsOf } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
@@ -182,12 +183,34 @@ const RESTORE_SOURCE_KEYS = [
 ] as const;
 
 /**
+ * go-to-k/cdkd#6104: the addressed record's `acceptedCreateOnlyDrops`, as
+ * its delete / update caller threads it (`recordedCreateOnlyDrops`). Absent
+ * or malformed is no evidence: an empty set, which keeps every reader's
+ * pre-#6104 answer.
+ */
+export function recordedCreateOnlyDropsOf(
+  context: { recordedCreateOnlyDrops?: unknown } | undefined
+): ReadonlySet<string> {
+  return acceptedCreateOnlyDropsOf({ acceptedCreateOnlyDrops: context?.recordedCreateOnlyDrops });
+}
+
+/**
  * Whether a recorded bag is a restore's: its create applied no
  * `GlobalClusterIdentifier` or `WithExpressConfiguration`, which the record
  * still carries (create-only; dropping them would re-diff as an addition).
+ *
+ * go-to-k/cdkd#6104: a source key the record lists as an accepted
+ * create-only drop ({@link recordedCreateOnlyDropsOf}) was never sent: a
+ * `--prefer-sdk-route` create before the SDK route wired restores ran a plain
+ * `CreateDBCluster` over it, so it does not make the record a restore's. No
+ * drop list (an older caller, a malformed field) reads every key as before.
  */
-export function isRestoredRecord(properties: Record<string, unknown> | undefined): boolean {
+export function isRestoredRecord(
+  properties: Record<string, unknown> | undefined,
+  acceptedDrops: ReadonlySet<string>
+): boolean {
   return RESTORE_SOURCE_KEYS.some((key) => {
+    if (acceptedDrops.has(key)) return false;
     const source = properties?.[key];
     return typeof source === 'string' && source !== '';
   });
@@ -508,7 +531,7 @@ export async function readRestoreSnapshot(
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to create DBCluster ${logicalId}: reading the restore snapshot failed, so nothing was changed: ${text}`,
+            `Failed to create DBCluster ${logicalId}: reading the ${restoresFromIt ? 'restore snapshot' : 'declared SnapshotIdentifier'} failed, so nothing was changed: ${text}`,
             resourceType,
             logicalId,
             undefined,
@@ -518,9 +541,14 @@ export async function readRestoreSnapshot(
     }
   }
   if (!found) {
+    // go-to-k/cdkd#6104: a point-in-time restore restores from its source
+    // cluster, not this snapshot; the create is refused because CloudFormation
+    // reads a declared snapshot first, not because nothing is left to restore.
     throw markNonRetryable(
       new ProvisioningError(
-        safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier ${snapshotIdentifier} does not name a DB cluster snapshot this account can read, so there is nothing to restore; nothing was changed.`,
+        restoresFromIt
+          ? safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier ${snapshotIdentifier} does not name a DB cluster snapshot this account can read, so there is nothing to restore; nothing was changed.`
+          : safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier ${snapshotIdentifier} does not name a DB cluster snapshot this account can read. The point-in-time restore does not use it, but CloudFormation reads a declared snapshot first and fails the create, so nothing was changed; remove SnapshotIdentifier or name a readable snapshot.`,
         resourceType,
         logicalId
       )

@@ -281,6 +281,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
           // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
           recordedAttributes: current.attributes,
+          recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: current.noEchoLeaves,
           // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
@@ -635,6 +636,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           expectedRegion: ctx.region,
           replayingState: true,
           recordedAttributes: current.attributes,
+          recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
           ...(revertClaimed && { inlinePolicyClaimed: revertClaimed }),
           // go-to-k/cdkd#5380: what either record names unsettled is
           // converged against AWS, since the record built below clears it.
