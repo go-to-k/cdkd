@@ -55,8 +55,8 @@ import {
   restoredDifferences,
   restoreWaitMs,
   sendClusterRestore,
-  snapshotRestoreStaysUnencrypted,
   sendRestoreFollowUp,
+  snapshotRestoreStaysUnencrypted,
   unusedRestoreKeys,
 } from './cluster-restore.js';
 

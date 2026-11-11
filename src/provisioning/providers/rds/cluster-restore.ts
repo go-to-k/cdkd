@@ -457,14 +457,15 @@ export function snapshotRestoreStaysUnencrypted(
 }
 
 /**
- * Whether the snapshot is an Aurora Limitless Database cluster's, as
- * CloudFormation's create reads it before a snapshot restore
- * (`getClusterScalabilityTypeFromSnapshot`; the engine version's `-limitless`
- * suffix picks the request shape). A DB instance snapshot's ARN is not read
- * (a standard restore). A denied read restores as standard, as the handler's
- * `fetchResourceForValidation` lets it; any other failure, a snapshot it does
- * not find among the account's, shared and public ones included, stops the
- * create before anything is made. The handler checks no encryption here.
+ * The snapshot as CloudFormation's create reads it before a snapshot restore
+ * (`getClusterScalabilityTypeFromSnapshot`): whether it is an Aurora Limitless
+ * Database cluster's (the engine version's `-limitless` suffix picks the
+ * request shape), and its encryption, which the handler does not check and
+ * cdkd only warns about ({@link snapshotRestoreStaysUnencrypted}). A DB
+ * instance snapshot's ARN is not read (a standard restore). A denied read
+ * restores as standard, as the handler's `fetchResourceForValidation` lets it;
+ * any other failure, a snapshot it does not find among the account's, shared
+ * and public ones included, stops the create before anything is made.
  */
 export async function readRestoreSnapshot(
   this: RDSProvider,
