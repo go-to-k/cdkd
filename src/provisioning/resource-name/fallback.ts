@@ -6,7 +6,7 @@ import { stackScopeStore } from './stack-scope.js';
 export interface GeneratedNameInput {
   /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
   zoneId?: string;
-  /** The resource's properties, for a rule's `reservedLength`. */
+  /** The resource's properties, for a rule's `reservedLength` and `nameSuffix`. */
   properties?: Record<string, unknown>;
 }
 
@@ -30,10 +30,11 @@ function deriveRuleName(
     });
     return `${base}${suffix}`;
   }
-  const reserved = rule.reservedLength?.(input.properties ?? {}) ?? 0;
+  const suffix = rule.nameSuffix?.(input.properties ?? {}) ?? '';
+  const reserved = (rule.reservedLength?.(input.properties ?? {}) ?? 0) + suffix.length;
   const options =
     reserved > 0 ? { ...rule.options, maxLength: rule.options.maxLength - reserved } : rule.options;
-  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}`;
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}${suffix}`;
   const refused = rule.refusedPrefix;
   if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
     return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;

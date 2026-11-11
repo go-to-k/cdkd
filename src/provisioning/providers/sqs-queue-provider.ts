@@ -18,6 +18,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
+import { coerceCfnBoolean } from '../config-shape.js';
 import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -212,14 +213,31 @@ export class SQSQueueProvider implements ResourceProvider {
   /**
    * Create an SQS queue
    */
-  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  /**
+   * go-to-k/cdkd#4705: the name `create()` sends when the template names none.
+   * The properties go to the rule: a FIFO queue's name ends with `.fifo`
+   * (go-to-k/cdkd#6100).
+   */
   generatedCreateName(
     _resourceType: string,
     logicalId: string,
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['QueueName']) return undefined;
-    return generatedNameFor('AWS::SQS::Queue', logicalId);
+    return generatedNameFor('AWS::SQS::Queue', logicalId, { properties });
+  }
+
+  /**
+   * go-to-k/cdkd#6100: a `FifoQueue` the plan cannot read (an intrinsic still
+   * unresolved) decides whether the name ends with `.fifo`, so the guard
+   * looks the name up at the create, with the resolved properties.
+   */
+  lookupNeedsResolvedProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean {
+    const fifo = properties['FifoQueue'];
+    return fifo !== undefined && fifo !== null && coerceCfnBoolean(fifo) === undefined;
   }
 
   /**
@@ -277,6 +295,10 @@ export class SQSQueueProvider implements ResourceProvider {
             attributes[sqsKey] = serializeRedrivePolicy(value);
           } else if (cdkKey === 'RedriveAllowPolicy') {
             attributes[sqsKey] = serializeRedriveAllowPolicy(value);
+          } else if (cdkKey === 'FifoQueue' && coerceCfnBoolean(value) !== undefined) {
+            // go-to-k/cdkd#6100: read as the name's `.fifo` rule reads it, so
+            // a `'TRUE'` that names the queue `.fifo` also makes it FIFO.
+            attributes[sqsKey] = String(coerceCfnBoolean(value));
           } else {
             attributes[sqsKey] = stringifyValue(value);
           }
@@ -422,7 +444,7 @@ export class SQSQueueProvider implements ResourceProvider {
       const queueName =
         (properties['QueueName'] as string | undefined) ||
         physicalId.split('/').pop() ||
-        generatedNameFor('AWS::SQS::Queue', logicalId);
+        generatedNameFor('AWS::SQS::Queue', logicalId, { properties });
 
       return {
         physicalId,

@@ -9,6 +9,7 @@ import {
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { stringifyValue } from '../../../utils/stringify.js';
+import { coerceCfnBoolean } from '../../config-shape.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import type { ResourceCreateResult, CreateContext, SecretMasker } from '../../../types/resource.js';
@@ -61,7 +62,11 @@ export async function create(
     const topicAttributes: Record<string, string> = {};
 
     if (properties['FifoTopic']) {
-      topicAttributes['FifoTopic'] = stringifyValue(properties['FifoTopic']);
+      // go-to-k/cdkd#6100: read as the name's `.fifo` rule reads it, so a
+      // `'TRUE'` that names the topic `.fifo` also makes it FIFO.
+      const fifo = coerceCfnBoolean(properties['FifoTopic']);
+      topicAttributes['FifoTopic'] =
+        fifo === undefined ? stringifyValue(properties['FifoTopic']) : String(fifo);
     }
     if (properties['ContentBasedDeduplication']) {
       topicAttributes['ContentBasedDeduplication'] = stringifyValue(

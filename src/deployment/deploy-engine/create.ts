@@ -11,6 +11,7 @@ import type { FailedOperation } from '../rollback-executor.js';
 import { redactOperationsForJournal } from './rollback.js';
 import { displacedPhysicalIdShown } from '../nested-child-journal.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
+import { GeneratedNameMismatchError } from '../generated-name-guard.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
@@ -488,7 +489,10 @@ async function refuseUnlicensedGeneratedName(
   const verdict = await engine.generatedNameGuard!.admit(logicalId, input.resolvedProps);
   if (verdict === undefined) return;
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
-  const named = `the cdkd-generated ${asked.property ?? 'name'} ${displaySafe(asked.name)}`;
+  // A deferred lookup asked for the name derived from the resolved
+  // properties (go-to-k/cdkd#6100), so read it again after `admit`.
+  const checked = engine.generatedNameGuard!.candidate(logicalId) ?? asked;
+  const named = `the cdkd-generated ${checked.property ?? 'name'} ${displaySafe(checked.name)}`;
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
     `refusing it`;
@@ -513,6 +517,15 @@ async function refuseUnlicensedGeneratedName(
       // go-to-k/cdkd#4705 review H-4: a Ctrl-C ended the deletion cooldown --
       // an interrupt, never a refusal (and never a rollback trigger).
       if (isInterruptedWaitError(verdict.error)) throw verdict.error;
+      // go-to-k/cdkd#6100: deterministic, so a re-run would not help.
+      if (verdict.error instanceof GeneratedNameMismatchError) {
+        return refuse(
+          `${subject} is created with a cdkd-generated ${checked.property ?? 'name'}, and ` +
+            `${adoptsText}, but cdkd internal error: ${displaySafe(verdict.error.message)}. ` +
+            `${displaySafe(logicalId)} was not created, since the name it would take was never ` +
+            `checked. Please report this at https://github.com/go-to-k/cdkd/issues.`
+        );
+      }
       return refuse(
         `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
           `whether another resource already holds it (${describeAwsFailure(verdict.error).summary}). ` +

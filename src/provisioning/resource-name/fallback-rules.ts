@@ -1,3 +1,4 @@
+import { coerceCfnBoolean } from '../config-shape.js';
 import type { ResourceNameOptions } from './generate.js';
 
 /**
@@ -38,6 +39,13 @@ export interface GeneratedNameRule {
    */
   reservedLength?: (properties: Record<string, unknown>) => number;
   /**
+   * A suffix the service requires the name to end with for these properties
+   * (go-to-k/cdkd#6100: a FIFO queue's `.fifo`). It counts toward
+   * `options.maxLength` and survives truncation. Read by both routes, so they
+   * keep naming it alike.
+   */
+  nameSuffix?: (properties: Record<string, unknown>) => string;
+  /**
    * A stack WITHOUT an instance id (a legacy stack) keeps what each route
    * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
    */
@@ -62,6 +70,14 @@ export interface GeneratedNameRule {
 }
 
 /**
+ * go-to-k/cdkd#6100: `.fifo` when `property` reads true, as CloudFormation
+ * reads a boolean (`'true'` too), for a FIFO queue's or topic's name.
+ */
+function fifoSuffix(property: string): (properties: Record<string, unknown>) => string {
+  return (properties) => (coerceCfnBoolean(properties[property]) === true ? '.fifo' : '');
+}
+
+/**
  * The generated-name rule of every type cdkd names (see
  * {@link GeneratedNameRule}).
  *
@@ -83,8 +99,20 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'BucketName',
     options: { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g },
   },
-  'AWS::SQS::Queue': { nameProperty: 'QueueName', options: { maxLength: 80 } },
-  'AWS::SNS::Topic': { nameProperty: 'TopicName', options: { maxLength: 256 } },
+  // go-to-k/cdkd#6100: SQS refuses a FIFO queue whose name does not end with
+  // `.fifo`, and CloudFormation names an un-named one
+  // `<stack>-<logicalId>-<random>.fifo`, the suffix inside the 80 characters.
+  'AWS::SQS::Queue': {
+    nameProperty: 'QueueName',
+    options: { maxLength: 80 },
+    nameSuffix: fifoSuffix('FifoQueue'),
+  },
+  // ...and SNS a FIFO topic's (an L1 `CfnTopic`; CDK names an L2 FIFO topic).
+  'AWS::SNS::Topic': {
+    nameProperty: 'TopicName',
+    options: { maxLength: 256 },
+    nameSuffix: fifoSuffix('FifoTopic'),
+  },
   'AWS::Lambda::Function': { nameProperty: 'FunctionName', options: { maxLength: 64 } },
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },
   // No SDK provider — Cloud Control only. The schema does not require the

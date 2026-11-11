@@ -238,7 +238,9 @@ Five things in this method apply to every provider:
 
 - **The name.** When the template gives no name, `generatedNameFor`
   (`src/provisioning/resource-name.ts`) names the resource by the type's rule
-  in `FALLBACK_NAME_RULES` (length, characters, case, any prefix). A Cloud
+  in `FALLBACK_NAME_RULES` (length, characters, case, any prefix, any suffix
+  the properties require, such as a FIFO queue's `.fifo`: pass the properties
+  as `{ properties }`). A Cloud
   Control create fills the name from the same rule, so the resource is named
   the same on either route; a new type gets a rule there, and the
   `generated-name-route-parity` and `generated-name-limits` unit tests list it.

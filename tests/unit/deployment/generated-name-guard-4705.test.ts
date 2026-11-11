@@ -49,6 +49,7 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
 import {
   DEFAULT_TIMING,
   GeneratedNameGuard,
+  GeneratedNameMismatchError,
   provenNothingCreated,
   type GeneratedNameGuardInput,
 } from '../../../src/deployment/generated-name-guard.js';
@@ -562,6 +563,54 @@ describe('a lookup that needs the resolved properties waits for the create (revi
     ];
     expect(names).toEqual(['gen-R']);
     expect(ctx.propertiesByName.get('gen-R')).toEqual({ EventBusName: 'custom' });
+  });
+
+  /** A queue provider naming a FIFO queue `.fifo` once `FifoQueue` reads true (go-to-k/cdkd#6100). */
+  const fifoQueue = (holders: Record<string, string> = {}) => {
+    const q = providerOf(holders);
+    q.generatedCreateName.mockImplementation(
+      (_t: string, logicalId: string, p: Record<string, unknown>) =>
+        `gen-${logicalId}${p['FifoQueue'] === true ? '.fifo' : ''}`
+    );
+    (q as unknown as { lookupNeedsResolvedProperties: unknown }).lookupNeedsResolvedProperties = (
+      _t: string,
+      p: Record<string, unknown>
+    ) => typeof p['FifoQueue'] === 'object';
+    return q;
+  };
+
+  it('a name that depends on an unresolved property is derived again, and that name is looked up (#6100)', async () => {
+    const q = fifoQueue({ 'gen-Q.fifo': 'https://sqs/123/gen-Q.fifo' });
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('Q', QUEUE, { FifoQueue: { Ref: 'IsFifo' } })], { [QUEUE]: q })
+    )!;
+    expect(q.lookupNames).not.toHaveBeenCalled();
+    // The holder of the `.fifo` name the create sends is found, not missed
+    // under the plan's un-suffixed name.
+    await expect(guard.admit('Q', { FifoQueue: true })).resolves.toMatchObject({ kind: 'held' });
+    expect(q.lookupNames.mock.calls[0]![1]).toEqual(['gen-Q.fifo']);
+    expect(guard.candidate('Q')).toEqual({ name: 'gen-Q.fifo', property: 'QueueName' });
+  });
+
+  it('a deferred free name records the derived name as the intent (#6100)', async () => {
+    const q = fifoQueue();
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('Q', QUEUE, { FifoQueue: { Ref: 'IsFifo' } })], { [QUEUE]: q })
+    )!;
+    await expect(guard.admit('Q', { FifoQueue: true })).resolves.toEqual({ kind: 'free' });
+    expect(ledger.writes).toEqual([[{ logicalId: 'Q', resourceType: QUEUE, name: 'gen-Q.fifo' }]]);
+  });
+
+  it('a create whose name differs from the one checked at plan time is refused (#6100)', async () => {
+    const q = fifoQueue();
+    // Not deferred: the plan read `FifoQueue` as absent.
+    const guard = GeneratedNameGuard.start(inputOf([create('Q', QUEUE)], { [QUEUE]: q }))!;
+    const verdict = await guard.admit('Q', { FifoQueue: true });
+    expect(verdict).toMatchObject({ kind: 'failed' });
+    const error = (verdict as { error: unknown }).error;
+    expect(error).toBeInstanceOf(GeneratedNameMismatchError);
+    expect(error).toMatchObject({ checked: 'gen-Q', sent: 'gen-Q.fifo' });
+    expect(ledger.writes).toEqual([]);
   });
 });
 
