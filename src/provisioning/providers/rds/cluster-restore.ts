@@ -200,7 +200,7 @@ export async function readRestoreSource(
   logicalId: string,
   mask: ((text: string) => string) | undefined
 ): Promise<DBCluster> {
-  const failed = (error: unknown): ProvisioningError =>
+  const wrapSourceReadError = (error: unknown): ProvisioningError =>
     this.wrapCaughtError(
       mask,
       error,
@@ -220,7 +220,7 @@ export async function readRestoreSource(
     );
     found = response.DBClusters?.[0];
   } catch (error) {
-    if (!this.isNotFoundError(error, 'DBClusterNotFoundFault')) throw failed(error);
+    if (!this.isNotFoundError(error, 'DBClusterNotFoundFault')) throw wrapSourceReadError(error);
   }
   if (found === undefined && source.startsWith('arn:')) {
     try {
@@ -235,7 +235,7 @@ export async function readRestoreSource(
         marker = page.Marker;
       } while (found === undefined && marker !== undefined && marker !== '');
     } catch (error) {
-      throw failed(error);
+      throw wrapSourceReadError(error);
     }
   }
   if (found !== undefined) return found;
