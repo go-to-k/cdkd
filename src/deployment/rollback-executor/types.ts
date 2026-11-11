@@ -456,6 +456,7 @@ export type RollbackActionKind =
   | 'orphan-retain' // CREATE rollback → orphan (DeletionPolicy Retain)
   | 'orphan-flag' // op skipped by --orphan; leaves resource, updates state
   | 'revert' // UPDATE rollback → restore previous properties
+  | 'restore-policies' // UPDATE that changed only DeletionPolicy / UpdateReplacePolicy → restore them in state, no AWS call (#6101)
   | 'reverse-replacement' // replacement rollback → re-create old, delete new (#1199)
   | 'reverse-replacement-readopt' // replacement w/ Retain'd old → delete new, re-adopt old (#1199)
   | 'skip-already-done' // idempotent skip (already reverted / already gone)

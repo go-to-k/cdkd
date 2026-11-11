@@ -2367,6 +2367,11 @@
       "scenarios": []
     },
     {
+      "name": "rollback-attribute-only-revert",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-command",
       "annotated": false,
       "scenarios": []
@@ -3816,6 +3821,7 @@
     "require-approval-broadening",
     "retain-orphan-redeploy",
     "retain-orphan-secret",
+    "rollback-attribute-only-revert",
     "rollback-command",
     "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",

@@ -14,6 +14,7 @@ export {
   sameIdReversalUndecidable,
   deepEqual,
   classifyRollbackOp,
+  withPreviousPolicies,
 } from './plan/classify.js';
 export {
   classifyFailedOp,

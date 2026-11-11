@@ -4,6 +4,7 @@
  */
 
 import { ownRecord } from './replay-failed-checks.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { type RolledBackCreate } from '../../state/name-generation.js';
 import { type ReplayDeferral } from './replay-scope.js';
 import type {
@@ -29,6 +30,7 @@ import {
   sortRollbackCreates,
   classifyRollbackOp,
   resolveReplacementOldType,
+  withPreviousPolicies,
   unroutableReplacementError,
   markDeleteFirstBlocked,
   renamedReverseReplacement,
@@ -504,6 +506,30 @@ export async function replaySingle(
 
       case 'revert':
         return await replayRevert(scope);
+
+      case 'restore-policies': {
+        // go-to-k/cdkd#6101: the forward changed only the record's template
+        // policies and called no provider, so the reversal calls none either.
+        // The rest of the record stays as the deploy left it (a read-version
+        // refresh among it), as the forward's own arm left it.
+        stateResources[op.logicalId] = withPreviousPolicies(
+          stateResources[op.logicalId]!,
+          op.previousState!
+        );
+        logger.info(
+          safeMsg`  Rollback: ${safe(op.logicalId)} (${safe(op.resourceType)}) DeletionPolicy / UpdateReplacePolicy restored in state (no AWS call)`
+        );
+        await afterOp?.(op.logicalId);
+        ctx.recordEvent?.({
+          eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+          stackName,
+          operation: 'UPDATE',
+          logicalId: op.logicalId,
+          resourceType: op.resourceType,
+          ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+        });
+        return;
+      }
     }
   } catch (rollbackError) {
     // Best-effort: warn and continue with remaining rollbacks.

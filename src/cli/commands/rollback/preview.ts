@@ -11,6 +11,7 @@ import {
   planFailedOps,
   recheckFailedPlan,
   recordUnderIdIsNotOwn,
+  withPreviousPolicies,
   type RollbackPlanItem,
   type FailedOpPlanItem,
 } from '../../../deployment/rollback-executor.js';
@@ -278,6 +279,14 @@ export function applyPlanToPreview(
       case 'reverse-replacement-readopt':
         if (op.previousState) previewState[op.logicalId] = op.previousState;
         break;
+      case 'restore-policies': {
+        // go-to-k/cdkd#6101: the replay moves only these two keys back.
+        const current = previewState[op.logicalId];
+        if (op.previousState && current) {
+          previewState[op.logicalId] = withPreviousPolicies(current, op.previousState);
+        }
+        break;
+      }
       default:
         break;
     }
