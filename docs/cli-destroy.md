@@ -244,8 +244,15 @@ Found 2 stack(s) to destroy: Consumer (depends on Producer), Producer
 Pass `-e` / `--exclusively` to destroy only the stacks you name. A stack that
 depends on them then stays deployed and keeps references to what was deleted.
 
-A dependent that is not deployed is not added. The selection does not grow
-upstream: `cdkd destroy Consumer` leaves `Producer` running.
+A dependent that is not deployed is not added; one whose state record of its
+name is in another region than the app pins is not added either. A stack you
+name that is not deployed still adds its deployed dependents, as in the AWS CDK
+CLI. The selection does not grow upstream: `cdkd destroy Consumer` leaves
+`Producer` running.
+
+`--remove-protection` applies only to the stacks you name. An added stack with
+termination protection is refused, and so are the stacks it depends on in that
+run. Name it to remove its protection too.
 
 ### Order
 

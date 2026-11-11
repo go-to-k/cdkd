@@ -23,7 +23,9 @@
 #          and its state stay.
 # Phase 4: redeploy CdkdDmdDepProducer, then destroy both named producer-first
 #          under -e: the consumer is destroyed first, both are gone.
-# Pre-fix red lines: "phase 2: CdkdDmdXrConsumer is still deployed" (phase 2),
+# Pre-fix red lines: "phase 2: CdkdDmdXrConsumer is still deployed" (phase 2,
+# read BEFORE the destroy's exit code: pre-fix the producer's export writer may
+# also refuse its delete while the consumer's reader still holds the value),
 # and the unknown -e option (phase 3).
 #
 # Required env: STATE_BUCKET. The XR pair needs CDK bootstrap assets in
@@ -122,6 +124,7 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/${r}/rollback-journal.json" >/dev/null 2>&1 || true
     done
   fi
+  [ -n "${DESTROY_LOG:-}" ] && rm -f "${DESTROY_LOG}"
   set -eu
 }
 trap cleanup EXIT
@@ -169,19 +172,24 @@ assert_stack_gone() { # usage: assert_stack_gone <phase> <stack> <param> <region
   assert_gone "$1: $2's state $(state_key "$2") remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "$2")"
   echo "    OK: $1: $2 and its state are gone"
 }
-run_destroy() { # usage: run_destroy <args...>; prints the log, fails on a non-zero exit
-  local out rc
-  if out="$(node "${LOCAL_DIST}" destroy "$@" --state-bucket "${STATE_BUCKET}" --force 2>&1)"; then
-    rc=0
+# Runs `cdkd destroy <args...> --force`, echoes its log to stderr, writes it to
+# DESTROY_LOG and its exit code to DESTROY_RC. Never fails by itself: each
+# phase reads its own assertions first, then the exit code.
+DESTROY_LOG="$(mktemp)"
+DESTROY_RC=0
+run_destroy() { # usage: run_destroy <args...>
+  if node "${LOCAL_DIST}" destroy "$@" --state-bucket "${STATE_BUCKET}" --force >"${DESTROY_LOG}" 2>&1; then
+    DESTROY_RC=0
   else
-    rc=$?
+    DESTROY_RC=$?
   fi
-  printf '%s\n' "${out}" >&2
-  if [ "${rc}" -ne 0 ]; then
-    echo "FAIL: cdkd destroy $* exited ${rc}" >&2
-    return 1
+  cat "${DESTROY_LOG}" >&2
+}
+assert_destroy_rc0() { # usage: assert_destroy_rc0 <phase>
+  if [ "${DESTROY_RC}" -ne 0 ]; then
+    echo "FAIL: $1: cdkd destroy exited ${DESTROY_RC}" >&2
+    exit 1
   fi
-  printf '%s\n' "${out}"
 }
 
 echo "==> Phase 1: deploy --all"
@@ -199,11 +207,13 @@ EXPORTS="$(aws ssm get-parameters-by-path --path "${EXPORTS_PATH}" --recursive -
 echo "    OK: phase 1: the four stacks are deployed and the cross-region value resolved"
 
 echo "==> Phase 2: destroy ${XR_PRODUCER} alone"
-P2="$(run_destroy "${XR_PRODUCER}")" || exit 1
+run_destroy "${XR_PRODUCER}"
+P2="$(cat "${DESTROY_LOG}")"
 if ! gone_probe aws ssm get-parameter --name "${PARAM_PREFIX}/xr-consumer" --region "${EAST}"; then
   echo "FAIL: phase 2: ${XR_CONSUMER} is still deployed after destroying ${XR_PRODUCER} (go-to-k/cdkd#6115: the dependent was not added)" >&2
   exit 1
 fi
+assert_destroy_rc0 "phase 2"
 grep -qF "Found 2 stack(s) to destroy: ${XR_CONSUMER} (depends on ${XR_PRODUCER}), ${XR_PRODUCER}" <<<"${P2}" \
   || { echo "FAIL: phase 2: the selection line does not name ${XR_CONSUMER} as added for ${XR_PRODUCER}" >&2; exit 1; }
 assert_dependent_first "phase 2" "${XR_CONSUMER}" "${XR_PRODUCER}" "${P2}"
@@ -214,12 +224,24 @@ EXPORTS="$(aws ssm get-parameters-by-path --path "${EXPORTS_PATH}" --recursive -
 echo "    OK: phase 2: no export parameter remains"
 
 echo "==> Phase 3: destroy ${DEP_PRODUCER} -e"
-P3="$(run_destroy "${DEP_PRODUCER}" -e)" || exit 1
-assert_stack_gone "phase 3" "${DEP_PRODUCER}" dep-producer "${EAST}"
-param_value dep-consumer "${EAST}" >/dev/null
-aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${DEP_CONSUMER}")" >/dev/null
+run_destroy "${DEP_PRODUCER}" -e
+P3="$(cat "${DESTROY_LOG}")"
+assert_destroy_rc0 "phase 3"
+# The selection line is the sentinel: a reworded line fails here rather than
+# letting the negative grep below pass on nothing.
+grep -qF "Found 1 stack(s) to destroy: ${DEP_PRODUCER}" <<<"${P3}" \
+  || { echo "FAIL: phase 3: no 'Found 1 stack(s) to destroy: ${DEP_PRODUCER}' line (-e added a stack, or the wording drifted)" >&2; exit 1; }
 if grep -qF "Also destroying" <<<"${P3}"; then
   echo "FAIL: phase 3: -e still added a dependent" >&2
+  exit 1
+fi
+assert_stack_gone "phase 3" "${DEP_PRODUCER}" dep-producer "${EAST}"
+if gone_probe aws ssm get-parameter --name "${PARAM_PREFIX}/dep-consumer" --region "${EAST}"; then
+  echo "FAIL: phase 3: -e destroyed ${DEP_CONSUMER} too" >&2
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${DEP_CONSUMER}")"; then
+  echo "FAIL: phase 3: ${DEP_CONSUMER}'s state is gone after a -e destroy of ${DEP_PRODUCER}" >&2
   exit 1
 fi
 echo "    OK: phase 3: -e destroyed only ${DEP_PRODUCER}; ${DEP_CONSUMER} and its state stay"
@@ -227,7 +249,9 @@ echo "    OK: phase 3: -e destroyed only ${DEP_PRODUCER}; ${DEP_CONSUMER} and it
 echo "==> Phase 4: redeploy ${DEP_PRODUCER}, then destroy both, producer named first"
 node "${LOCAL_DIST}" deploy "${DEP_PRODUCER}" --state-bucket "${STATE_BUCKET}" --yes
 param_value dep-producer "${EAST}" >/dev/null
-P4="$(run_destroy "${DEP_PRODUCER}" "${DEP_CONSUMER}" -e)" || exit 1
+run_destroy "${DEP_PRODUCER}" "${DEP_CONSUMER}" -e
+P4="$(cat "${DESTROY_LOG}")"
+assert_destroy_rc0 "phase 4"
 assert_dependent_first "phase 4" "${DEP_CONSUMER}" "${DEP_PRODUCER}" "${P4}"
 assert_stack_gone "phase 4" "${DEP_CONSUMER}" dep-consumer "${EAST}"
 assert_stack_gone "phase 4" "${DEP_PRODUCER}" dep-producer "${EAST}"
