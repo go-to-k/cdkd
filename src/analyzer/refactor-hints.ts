@@ -106,12 +106,13 @@ export function rollbackOrphanIds(orphans: unknown): Set<string> {
  * A stack's CREATE and DELETE rows as pairing sides (a DELETE carries the
  * record's properties), leaving out the ids in `exclude`, and every CREATE
  * of `template` that references, directly or not, a resource this diff
- * UPDATEs (go-to-k/cdkd#6097): that is a new resource, as a
- * `fn.currentVersion` after a code change, which `cdkd refactor` refuses to
- * pair. A referenced CREATE counts only when no DELETE row of its type could
- * make it a rename (an API Gateway deployment after an added method); one
- * that could is left to the refactor's confirming diff, so a hint may be
- * missing, never wrong this way.
+ * UPDATEs, or CREATEs with no DELETE row of its type to be a rename of
+ * (go-to-k/cdkd#6097): as a `fn.currentVersion` after a code change, or an
+ * API Gateway deployment after an added method, that is a new resource, which
+ * `cdkd refactor` refuses to pair. The rows here are the diff BEFORE any
+ * rename, so the verdict is a hint either way: a referenced CREATE that may be
+ * a rename itself is not counted, and an UPDATE a rename would settle is.
+ * `cdkd refactor`'s confirming diff decides.
  */
 export function hintSidesOf(
   changes: Iterable<ResourceChange>,

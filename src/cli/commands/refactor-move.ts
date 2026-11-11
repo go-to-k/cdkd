@@ -15,7 +15,10 @@ import { displayAwsMessage, safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
-  newResourceReason,
+  changedReferenceInDiff,
+  changedReferencePath,
+  changedReferenceReason,
+  propertiesChangedReason,
   isPairableType,
   looselyEqual,
   type AmbiguousGroup,
@@ -278,29 +281,24 @@ export async function planMoves(
       const { changes } = await dest.diff(withMoves);
       for (const m of incoming) {
         const change = changes.get(m.to);
-        if (change?.changeType === 'NO_CHANGE') {
-          const reason = newResourceReason(dest.template, m.to, changes); // go-to-k/cdkd#6097
-          if (reason === undefined) continue;
-          failed.push(m);
-          const { fromStack, from, toStack, to } = m;
-          result.refused.push({ fromStack, from, toStack, to, reason });
-          continue;
-        }
+        // Unchanged itself, but referencing what the deploy changes (go-to-k/cdkd#6097).
+        const ref =
+          change?.changeType === 'NO_CHANGE'
+            ? changedReferenceInDiff(dest.template, m.to, changes)
+            : undefined;
+        if (change?.changeType === 'NO_CHANGE' && ref === undefined) continue;
         failed.push(m);
-        const paths = (change?.propertyChanges ?? []).map((p) => p.path);
+        const paths =
+          ref === undefined
+            ? (change?.propertyChanges ?? []).map((p) => p.path)
+            : [changedReferencePath(ref)];
         for (const a of change?.attributeChanges ?? []) paths.push(a.attribute);
         if (paths.length === 0) paths.push(`(${change?.changeType ?? 'not in the diff'})`);
         if (m.source === 'override') {
-          result.refused.push({
-            fromStack: m.fromStack,
-            from: m.from,
-            toStack: m.toStack,
-            to: m.to,
-            reason:
-              `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
-              'unchanged resource. Revert the property change, run cdkd refactor, then deploy ' +
-              'the change',
-          });
+          const reason =
+            ref === undefined ? propertiesChangedReason(paths) : changedReferenceReason(ref);
+          const { fromStack, from, toStack, to } = m;
+          result.refused.push({ fromStack, from, toStack, to, reason });
         } else {
           result.differing.push({ move: m, paths });
         }

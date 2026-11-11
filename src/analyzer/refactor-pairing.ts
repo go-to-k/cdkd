@@ -197,8 +197,14 @@ export function referencedLogicalIds(
         else if (typeof arg === 'string') out.add(arg.split('.')[0]!);
       } else if (key === 'Fn::Sub') {
         const text = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
+        // A name the variable map binds is a local, not a resource.
+        const vars: unknown = Array.isArray(arg) ? arg[1] : undefined;
+        const local = (name: string): boolean =>
+          vars !== null && typeof vars === 'object' && Object.hasOwn(vars, name);
         if (typeof text === 'string') {
-          for (const match of text.matchAll(/\$\{([^}!][^}.]*)/g)) out.add(match[1]!);
+          for (const match of text.matchAll(/\$\{([^}!][^}.]*)/g)) {
+            if (!local(match[1]!)) out.add(match[1]!);
+          }
         }
       }
       walk(arg);
@@ -240,25 +246,42 @@ export function changedDependencyOf(
 }
 
 /**
- * Why a pair whose new side references a resource the diff of the template
- * changes is not a rename ({@link changedDependencyOf}), or `undefined` when
- * nothing it references changes. Every row but `NO_CHANGE` counts as a
- * change, and a resource with no row as unchanged.
+ * The first resource a pair's new side references whose row in this diff of
+ * the template is not `NO_CHANGE` ({@link changedDependencyOf}), or
+ * `undefined`. A resource with no row counts as unchanged.
  */
-export function newResourceReason(
+export function changedReferenceInDiff(
   template: CloudFormationTemplate,
   logicalId: string,
   changes: ReadonlyMap<string, { changeType: string }>
 ): string | undefined {
-  const dependency = changedDependencyOf(template, logicalId, (id) => {
+  return changedDependencyOf(template, logicalId, (id) => {
     const change = changes.get(id);
     return change !== undefined && change.changeType !== 'NO_CHANGE';
   });
-  return dependency === undefined
-    ? undefined
-    : `it references ${dependency}, which the next deploy changes, so it is a new resource ` +
-        `(as a Lambda version or an API Gateway deployment after a change), not a renamed one; ` +
-        `keeping the old record in its place would leave the old one in use`;
+}
+
+/** The change a pair {@link changedReferenceInDiff} names shows, as a `differing` path. */
+export function changedReferencePath(reference: string): string {
+  return `the resource it references, ${reference}`;
+}
+
+/** Why a mapping-file pair {@link changedReferenceInDiff} names is refused. */
+export function changedReferenceReason(reference: string): string {
+  return (
+    `it references ${reference}, which the next deploy changes, so cdkd treats it as a new ` +
+    `resource, as cdk refactor does (a Lambda version or an API Gateway deployment after a ` +
+    `change is one). If it is a renamed one, revert the change to ${reference}, run cdkd ` +
+    `refactor, then deploy the change`
+  );
+}
+
+/** Why a mapping-file pair whose new side still changes `paths` is refused. */
+export function propertiesChangedReason(paths: readonly string[]): string {
+  return (
+    `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
+    'unchanged resource. Revert the property change, run cdkd refactor, then deploy the change'
+  );
 }
 
 /** An object with exactly one key naming an intrinsic function. */

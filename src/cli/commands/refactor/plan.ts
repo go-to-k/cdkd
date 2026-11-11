@@ -7,7 +7,10 @@ import {
 } from '../../../state/malformed-resources-bag.js';
 import { applyLogicalIdRenames, type LogicalIdRename } from '../../../state/logical-id-rename.js';
 import {
-  newResourceReason,
+  changedReferenceInDiff,
+  changedReferencePath,
+  changedReferenceReason,
+  propertiesChangedReason,
   proposeRenames,
   referencedLogicalIds,
   type AmbiguousGroup,
@@ -51,12 +54,12 @@ export interface StackRefactorPlan {
   etag: string;
   /** Renames the confirming diff showed to be no-change. */
   renames: ProposedRename[];
-  /** Detected look-alikes whose properties differ: left for the deploy. */
-  differing: DifferingRename[];
   /**
-   * Detected renames left out for another reason: a rollback-orphan record, or
-   * a reference to a resource the next deploy changes (go-to-k/cdkd#6097).
+   * Detected look-alikes whose properties differ, or that reference a resource
+   * the next deploy changes (go-to-k/cdkd#6097): left for the deploy.
    */
+  differing: DifferingRename[];
+  /** Detected renames left out for another reason (a rollback-orphan record). */
   skipped: SkippedRename[];
   ambiguous: AmbiguousGroup[];
   /** User-named pairs refused, including those whose properties differ. */
@@ -182,42 +185,37 @@ export async function planStackRefactor(input: {
 
   // Keep only the renames the diff over the renamed record shows unchanged,
   // re-diffing after each drop: a dropped rename can be what a kept one's
-  // reference resolved through.
+  // reference resolved through. With `checkReferences`, also drop one whose
+  // new side references a resource the diff still changes (go-to-k/cdkd#6097):
+  // as in `cdk refactor`, that is a new resource (a Lambda version after a code
+  // change), not a renamed one. Only once every pair is settled, since a
+  // look-alike the loop below has yet to split still reads as a CREATE.
   const confirm = async (
-    proposed: readonly ProposedRename[]
+    proposed: readonly ProposedRename[],
+    checkReferences = false
   ): Promise<{ kept: ProposedRename[]; changes: Map<string, ResourceChange> | undefined }> => {
     let kept = [...proposed];
     while (kept.length > 0) {
       const renamed = applyLogicalIdRenames(state, toLogicalIdRenames(kept), template);
       const { changes } = await diff(renamed);
-      const failed = kept.filter((r) => changes.get(r.to)?.changeType !== 'NO_CHANGE');
-      // Unchanged itself, but referencing a resource the next deploy changes:
-      // a new resource, not a renamed one (go-to-k/cdkd#6097).
-      const fresh = kept.flatMap((rename) => {
-        if (failed.includes(rename)) return [];
-        const reason = newResourceReason(template, rename.to, changes);
-        return reason === undefined ? [] : [{ rename, reason }];
+      const refOf = new Map<ProposedRename, string>();
+      const failed = kept.filter((r) => {
+        if (changes.get(r.to)?.changeType !== 'NO_CHANGE') return true;
+        const ref = checkReferences ? changedReferenceInDiff(template, r.to, changes) : undefined;
+        if (ref !== undefined) refOf.set(r, ref);
+        return ref !== undefined;
       });
-      if (failed.length === 0 && fresh.length === 0) return { kept, changes };
-      for (const { rename, reason } of fresh) {
-        if (rename.source === 'override') {
-          refusedOverrides.push({ from: rename.from, to: rename.to, reason });
-        } else {
-          skipped.push({ rename, reason });
-        }
-        failed.push(rename);
-      }
+      if (failed.length === 0) return { kept, changes };
       for (const rename of failed) {
-        if (fresh.some((f) => f.rename === rename)) continue;
-        const paths = changedPaths(changes.get(rename.to));
+        const ref = refOf.get(rename);
+        const paths =
+          ref === undefined ? changedPaths(changes.get(rename.to)) : [changedReferencePath(ref)];
         if (rename.source === 'override') {
           refusedOverrides.push({
             from: rename.from,
             to: rename.to,
             reason:
-              `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
-              `unchanged resource. Revert the property change, run cdkd refactor, then deploy ` +
-              `the change`,
+              ref === undefined ? propertiesChangedReason(paths) : changedReferenceReason(ref),
           });
         } else {
           differing.push({ rename, paths });
@@ -298,6 +296,10 @@ export async function planStackRefactor(input: {
     ambiguous = remaining;
     if (accepted.length === 0) break;
     ({ kept: renames, changes: confirmed } = await confirm([...renames, ...accepted]));
+  }
+  const settled = confirmed;
+  if (settled && renames.some((r) => changedReferenceInDiff(template, r.to, settled))) {
+    ({ kept: renames, changes: confirmed } = await confirm(renames, true));
   }
 
   // A resource that references a renamed one and still changes after the

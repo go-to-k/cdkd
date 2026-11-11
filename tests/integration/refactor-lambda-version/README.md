@@ -24,7 +24,7 @@ alias on version N and the stage on D1, serving the old code with exit 0.
 1. Deploy generation "a"; record the alias version N and the stage's deployment.
 2. Under generation "b":
    1. `cdkd diff` shows both removals with no `moved to` hint.
-   2. `cdkd refactor --dry-run` reports `Not refactored: ... it references ...`
+   2. `cdkd refactor --dry-run` reports `Not refactored: ... also changes the resource it references, ...`
       for both; `cdkd refactor --yes` writes nothing (state ETag unchanged).
    3. `cdkd deploy` moves the alias to version N+1, which returns `code: 'b'`,
       and points the stage at a new deployment.

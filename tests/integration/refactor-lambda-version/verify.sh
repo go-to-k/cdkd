@@ -206,7 +206,7 @@ ETAG_BEFORE="$(state_etag)"
 OUT_2B="$(cdkd refactor "${STACK}" "${STATE_FLAGS[@]}" --dry-run 2>&1)"
 printf '%s\n' "${OUT_2B}"
 for id in "${OLD_VERSION_ID}" "${OLD_DEPLOYMENT_ID}"; do
-  printf '%s\n' "${OUT_2B}" | grep -E "Not refactored: ${id} -> .*: it references .*, which the next deploy changes" >/dev/null \
+  printf '%s\n' "${OUT_2B}" | grep -E "Not refactored: ${id} -> .* also changes the resource it references, " >/dev/null \
     || { echo "FAIL: refactor --dry-run does not report ${id} as not refactored for a changed reference" >&2; exit 1; }
 done
 if printf '%s\n' "${OUT_2B}" | grep -E "^  ${OLD_VERSION_ID} -> |^  ${OLD_DEPLOYMENT_ID} -> " >/dev/null; then
@@ -242,6 +242,10 @@ echo "    alias live on version ${VERSION_B} (code b); stage live on deployment 
 echo "==> Phase 3: destroy"
 cdkd destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 trap - EXIT INT TERM
+# The alias invocations created the function's log group; no stack owns it.
+# Removed before the assertions, which exit on a failure.
+aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+rm -rf "${WORK_DIR}"
 
 assert_gone "function ${FN_NAME} still exists after destroy" \
   aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
@@ -249,9 +253,6 @@ assert_gone "rest api ${API_ID} still exists after destroy" \
   aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-# The alias invocations created the function's log group; no stack owns it.
-aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-rm -rf "${WORK_DIR}"
 echo "    function, API and cdkd state removed"
 
 echo "[verify] PASS — a new Lambda version and API deployment are never refactored into the old ones; the deploy publishes both"

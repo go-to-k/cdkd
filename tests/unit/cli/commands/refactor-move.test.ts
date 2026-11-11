@@ -127,7 +127,7 @@ describe('planMoves', () => {
 
   // go-to-k/cdkd#6097: unchanged itself, but referencing a resource the next
   // deploy changes -- a new resource (a `fn.currentVersion`), not a moved one.
-  it('refuses a move whose destination references a resource the deploy changes', async () => {
+  it('leaves a move whose destination references a resource the deploy changes', async () => {
     const mk = (fnAccepted: string) => {
       const b = plan(
         'B',
@@ -143,13 +143,22 @@ describe('planMoves', () => {
       };
       return [plan('A', stack('A', { Old: rec('p1') }), { deletes: ['Old'] }), b];
     };
+    // Detected: left for the deploy, never fatal to the run.
     const changed = await planMoves(mk('fn-v2'), sameEnv, []);
     expect(changed.moves).toEqual([]);
-    expect(changed.refused).toEqual([
+    expect(changed.refused).toEqual([]);
+    expect(changed.differing).toEqual([
+      expect.objectContaining({ paths: ['the resource it references, Fn'] }),
+    ]);
+    // Named in a mapping file: refused, with the remedy.
+    const named = await planMoves(mk('fn-v2'), sameEnv, [
+      { region: 'r', env: 'same-env', fromStack: 'A', from: 'Old', toStack: 'B', to: 'New' },
+    ]);
+    expect(named.refused).toEqual([
       expect.objectContaining({
         from: 'Old',
         to: 'New',
-        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+        reason: expect.stringMatching(/references Fn, which the next deploy changes.*revert the change to Fn/),
       }),
     ]);
     const unchanged = await planMoves(mk('fn-v1'), sameEnv, []);

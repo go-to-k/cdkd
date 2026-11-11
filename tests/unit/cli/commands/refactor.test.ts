@@ -376,21 +376,19 @@ describe('a rename referencing a resource the deploy changes', () => {
       }),
     });
 
-  it('is not renamed: it is a new resource, and the plan says why', async () => {
+  it('is not renamed: it is left for the deploy, and the plan says why', async () => {
     const p = await versionPlan('v2');
     expect(p.renames).toEqual([]);
-    expect(p.differing).toEqual([]);
-    expect(p.skipped).toEqual([
+    expect(p.skipped).toEqual([]);
+    expect(p.differing).toEqual([
       {
         rename: expect.objectContaining({ from: 'VerOld', to: 'VerNew' }),
-        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+        paths: ['the resource it references, Fn'],
       },
     ]);
     expect(renderRefactorPlan(p).join('\n')).toMatch(
-      /Not refactored: VerOld -> VerNew \(AWS::Lambda::Version\): it references Fn/
+      /Not refactored: VerOld -> VerNew \(AWS::Lambda::Version\) also changes the resource it references, Fn\./
     );
-    // Neither side becomes a move candidate.
-    expect(p.unpaired.creates.map((c) => c.logicalId)).not.toContain('VerNew');
   });
 
   it('refuses the same pair named in a mapping file', async () => {
@@ -400,7 +398,7 @@ describe('a rename referencing a resource the deploy changes', () => {
       expect.objectContaining({
         from: 'VerOld',
         to: 'VerNew',
-        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+        reason: expect.stringMatching(/references Fn, which the next deploy changes.*revert the change to Fn/),
       }),
     ]);
   });
@@ -408,7 +406,55 @@ describe('a rename referencing a resource the deploy changes', () => {
   it('is renamed when what it references is unchanged', async () => {
     const p = await versionPlan('v1');
     expect(p.renames.map((r) => [r.from, r.to])).toEqual([['VerOld', 'VerNew']]);
-    expect(p.skipped).toEqual([]);
+    expect(p.differing).toEqual([]);
+  });
+
+  // A reference to a look-alike the trial loop has yet to split reads as a
+  // CREATE until it is split: the check waits for every pair to settle.
+  it('waits for a referenced look-alike to be split before judging', async () => {
+    const roles: CloudFormationTemplate = {
+      Resources: {
+        NewA: { Type: queue, Properties: { T: 1 } },
+        NewB: { Type: queue, Properties: { T: 1 } },
+        NewR: { Type: 'AWS::SNS::Topic', DependsOn: ['NewA'], Properties: { T: 7 } },
+      },
+    };
+    const p = await planStackRefactor({
+      stackName: 'S',
+      region: 'us-east-1',
+      state: stack({
+        OldA: rec({ T: 1 }, { physicalId: 'a' }),
+        OldB: rec({ T: 1 }, { physicalId: 'b' }),
+        OldR: rec({ T: 7 }, { resourceType: 'AWS::SNS::Topic' }),
+      }),
+      etag: '"e"',
+      template: roles,
+      overrides: [],
+      // NewA is unchanged only over OldA's record, NewB only over OldB's.
+      diff: async (s: StackState) => {
+        const changes = new Map<string, ResourceChange>();
+        const row = (id: string, type: string, ok: (r: ResourceState) => boolean): void => {
+          const r = s.resources[id];
+          const changeType = r === undefined ? 'CREATE' : ok(r) ? 'NO_CHANGE' : 'UPDATE';
+          changes.set(id, { logicalId: id, resourceType: type, changeType, desiredProperties: { T: 1 } });
+        };
+        row('NewA', queue, (r) => r.physicalId === 'a');
+        row('NewB', queue, (r) => r.physicalId === 'b');
+        row('NewR', 'AWS::SNS::Topic', () => true);
+        for (const id of Object.keys(s.resources)) {
+          if (!(id in roles.Resources!)) {
+            changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: s.resources[id]!.resourceType });
+          }
+        }
+        return { changes, blocking: [] };
+      },
+    });
+    expect(p.renames.map((r) => [r.from, r.to]).sort()).toEqual([
+      ['OldA', 'NewA'],
+      ['OldB', 'NewB'],
+      ['OldR', 'NewR'],
+    ]);
+    expect(p.differing).toEqual([]);
   });
 });
 
@@ -424,12 +470,14 @@ describe('referencedLogicalIds', () => {
             b: { 'Fn::GetAtt': ['B', 'Arn'] },
             c: { 'Fn::GetAtt': 'C.Arn' },
             d: { 'Fn::Sub': '${E}-${F.Arn}-${!G}' },
-            e: [{ 'Fn::Sub': ['${H}', { H: 'v' }] }],
+            // A name the variable map binds is a local, never a resource;
+            // the map's own values are walked like any other.
+            e: [{ 'Fn::Sub': ['${H}-${I}', { H: { Ref: 'J' } }] }],
           },
         },
       },
     };
-    expect([...referencedLogicalIds(t, 'R')].sort()).toEqual(['A', 'B', 'C', 'D1', 'E', 'F', 'H']);
+    expect([...referencedLogicalIds(t, 'R')].sort()).toEqual(['A', 'B', 'C', 'D1', 'E', 'F', 'I', 'J']);
     expect(referencedLogicalIds(t, 'missing').size).toBe(0);
   });
 });
