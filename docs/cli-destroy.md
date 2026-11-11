@@ -241,6 +241,9 @@ Also destroying 1 stack(s) that depend on the selected stack(s) (pass -e / --exc
 Found 2 stack(s) to destroy: Consumer (depends on Producer), Producer
 ```
 
+An added stack names the stack you selected that it depends on, directly or
+through other stacks.
+
 Pass `-e` / `--exclusively` to destroy only the stacks you name. A stack that
 depends on them then stays deployed and keeps references to what was deleted.
 

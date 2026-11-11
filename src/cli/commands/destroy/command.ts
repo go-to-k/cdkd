@@ -532,19 +532,6 @@ export async function destroyCommand(
           continue;
         }
       }
-      // A stack whose dependent this run did not destroy keeps running, as
-      // `cdk destroy` stops before it (go-to-k/cdkd#6115). Below the refusals
-      // above, which count as errors on their own. Not counted as an error: a
-      // dependent that failed counted already, and one the user declined is
-      // the user's choice. A later run destroys both.
-      const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
-      if (keptDependents.length > 0) {
-        logger.warn(
-          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
-        );
-        notDestroyed.add(target);
-        continue;
-      }
       const plannedRegion = plannedRegionFor(target);
       const strict = strictRegion.get(target);
       let stackTargetRegion: string;
@@ -651,6 +638,20 @@ export async function destroyCommand(
         logger.error(`  ✗ ${err.message}`);
         notDestroyed.add(target);
         totalErrors++;
+        continue;
+      }
+
+      // A stack whose dependent this run did not destroy keeps running, as
+      // `cdk destroy` stops before it (go-to-k/cdkd#6115). Below every refusal
+      // above, which count as errors on their own. Not counted as an error: a
+      // dependent that failed counted already, and one the user declined is
+      // the user's choice. A later run destroys both.
+      const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
+      if (keptDependents.length > 0) {
+        logger.warn(
+          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
+        );
+        notDestroyed.add(target);
         continue;
       }
 

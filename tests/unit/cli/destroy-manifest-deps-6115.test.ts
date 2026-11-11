@@ -546,6 +546,23 @@ describe('cdkd destroy dependents: review round (#6115)', () => {
     expect(logged.warn.join('\n')).not.toContain('Not destroying stack Prod');
   });
 
+  it('still refuses a producer DEPLOYED with termination protection when its dependent was declined', async () => {
+    getState.mockImplementation(async (name: string, region: string) =>
+      held.records.some((r) => r.stackName === name && r.region === region)
+        ? {
+            state: { ...stateOf(name, region), ...(name === 'Prod' && { terminationProtection: true }) },
+            etag: '"e"',
+          }
+        : null
+    );
+    runDestroyForStack.mockImplementation(async (name: string) =>
+      name === 'Cons' ? { ...clean(name), cancelled: true, deletedCount: 0 } : clean(name)
+    );
+    await destroy(['Prod']);
+    expect(exitCode).toBe(2);
+    expect(logged.warn.join('\n')).not.toContain('Not destroying stack Prod');
+  });
+
   it('words the no-app warning as conditional', async () => {
     synthesize.mockRejectedValue(new Error('synth failed'));
     await destroy(['Prod', '--force']);
