@@ -7,8 +7,7 @@ import {
 } from '../../../state/malformed-resources-bag.js';
 import { applyLogicalIdRenames, type LogicalIdRename } from '../../../state/logical-id-rename.js';
 import {
-  changedDependencyOf,
-  changedDependencyReason,
+  newResourceReason,
   proposeRenames,
   referencedLogicalIds,
   type AmbiguousGroup,
@@ -194,18 +193,13 @@ export async function planStackRefactor(input: {
       const failed = kept.filter((r) => changes.get(r.to)?.changeType !== 'NO_CHANGE');
       // Unchanged itself, but referencing a resource the next deploy changes:
       // a new resource, not a renamed one (go-to-k/cdkd#6097).
-      const isChanged = (id: string): boolean => {
-        const change = changes.get(id);
-        return change !== undefined && change.changeType !== 'NO_CHANGE';
-      };
       const fresh = kept.flatMap((rename) => {
         if (failed.includes(rename)) return [];
-        const dependency = changedDependencyOf(template, rename.to, isChanged);
-        return dependency === undefined ? [] : [{ rename, dependency }];
+        const reason = newResourceReason(template, rename.to, changes);
+        return reason === undefined ? [] : [{ rename, reason }];
       });
       if (failed.length === 0 && fresh.length === 0) return { kept, changes };
-      for (const { rename, dependency } of fresh) {
-        const reason = changedDependencyReason(dependency);
+      for (const { rename, reason } of fresh) {
         if (rename.source === 'override') {
           refusedOverrides.push({ from: rename.from, to: rename.to, reason });
         } else {

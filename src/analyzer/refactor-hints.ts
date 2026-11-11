@@ -108,9 +108,10 @@ export function rollbackOrphanIds(orphans: unknown): Set<string> {
  * of `template` that references, directly or not, a resource this diff
  * UPDATEs (go-to-k/cdkd#6097): that is a new resource, as a
  * `fn.currentVersion` after a code change, which `cdkd refactor` refuses to
- * pair. A referenced CREATE does not count: it may be a rename itself, which
- * only the refactor's confirming diff can tell, so a hint may be missing,
- * never wrong this way.
+ * pair. A referenced CREATE counts only when no DELETE row of its type could
+ * make it a rename (an API Gateway deployment after an added method); one
+ * that could is left to the refactor's confirming diff, so a hint may be
+ * missing, never wrong this way.
  */
 export function hintSidesOf(
   changes: Iterable<ResourceChange>,
@@ -118,7 +119,18 @@ export function hintSidesOf(
   exclude: ReadonlySet<string> = new Set()
 ): RefactorSides {
   const rows = [...changes];
-  const updated = new Set(rows.filter((c) => c.changeType === 'UPDATE').map((c) => c.logicalId));
+  const deletedTypes = new Set(
+    rows.filter((c) => c.changeType === 'DELETE').map((c) => c.resourceType)
+  );
+  const updated = new Set(
+    rows
+      .filter(
+        (c) =>
+          c.changeType === 'UPDATE' ||
+          (c.changeType === 'CREATE' && !deletedTypes.has(c.resourceType))
+      )
+      .map((c) => c.logicalId)
+  );
   const creates: RefactorCreateSide[] = [];
   const deletes: RefactorDeleteSide[] = [];
   for (const change of rows) {

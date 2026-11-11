@@ -275,6 +275,36 @@ describe('hintSidesOf', () => {
     expect(hintFor(versionRows('Role'))).toBeUndefined();
   });
 
+  it('drops it when it references a CREATE no DELETE row could make a rename (an added method)', () => {
+    const template = {
+      Resources: {
+        ...VERSION_TEMPLATE.Resources,
+        FnVersionNew: { ...VERSION_TEMPLATE.Resources.FnVersionNew, DependsOn: ['Method'] },
+        Method: { Type: 'AWS::ApiGateway::Method', Properties: {} },
+      },
+    };
+    const added: ResourceChange = {
+      logicalId: 'Method',
+      changeType: 'CREATE',
+      resourceType: 'AWS::ApiGateway::Method',
+      desiredProperties: {},
+    };
+    const hints = (rows: ResourceChange[]) =>
+      findRefactorHints([{ id: 's', stackName: 'S', env: 'e', ...hintSidesOf(rows, template) }]).get('s');
+    expect(hints([...versionRows(undefined), added])).toBeUndefined();
+    // A Method DELETE could make the CREATE a rename: left to `cdkd refactor`.
+    const removed: ResourceChange = {
+      logicalId: 'OldMethod',
+      changeType: 'DELETE',
+      resourceType: 'AWS::ApiGateway::Method',
+      currentProperties: {},
+    };
+    expect(hints([...versionRows(undefined), added, removed])?.get('FnVersionOld')).toEqual({
+      stackName: 'S',
+      logicalId: 'FnVersionNew',
+    });
+  });
+
   it('keeps the hint when nothing the CREATE references changes (a plain rename)', () => {
     expect(hintFor(versionRows(undefined))?.get('FnVersionOld')).toEqual({
       stackName: 'S',

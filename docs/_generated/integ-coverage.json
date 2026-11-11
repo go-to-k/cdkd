@@ -6408,6 +6408,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redacted-delete-address",
+        "refactor-lambda-version",
         "rename-refactor",
         "rollback-failure-injection",
         "s3-asset-deploy",
@@ -6769,6 +6770,9 @@
         "redacted-delete-address": [
           "l2",
           "literal"
+        ],
+        "refactor-lambda-version": [
+          "l2"
         ],
         "rename-refactor": [
           "l2",

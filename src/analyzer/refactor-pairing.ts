@@ -239,13 +239,26 @@ export function changedDependencyOf(
   return undefined;
 }
 
-/** Why a pair {@link changedDependencyOf} names a dependency for is not a rename. */
-export function changedDependencyReason(dependency: string): string {
-  return (
-    `it references ${dependency}, which the next deploy changes, so it is a new resource ` +
-    `(as a Lambda version or an API Gateway deployment after a change), not a renamed one; ` +
-    `keeping the old record in its place would leave the old one in use`
-  );
+/**
+ * Why a pair whose new side references a resource the diff of the template
+ * changes is not a rename ({@link changedDependencyOf}), or `undefined` when
+ * nothing it references changes. Every row but `NO_CHANGE` counts as a
+ * change, and a resource with no row as unchanged.
+ */
+export function newResourceReason(
+  template: CloudFormationTemplate,
+  logicalId: string,
+  changes: ReadonlyMap<string, { changeType: string }>
+): string | undefined {
+  const dependency = changedDependencyOf(template, logicalId, (id) => {
+    const change = changes.get(id);
+    return change !== undefined && change.changeType !== 'NO_CHANGE';
+  });
+  return dependency === undefined
+    ? undefined
+    : `it references ${dependency}, which the next deploy changes, so it is a new resource ` +
+        `(as a Lambda version or an API Gateway deployment after a change), not a renamed one; ` +
+        `keeping the old record in its place would leave the old one in use`;
 }
 
 /** An object with exactly one key naming an intrinsic function. */
