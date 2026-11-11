@@ -54,8 +54,22 @@ import { describeStack, renderNotInAppWarning } from '../../stack-matcher.js';
 import { runDestroyForStack } from '../destroy-runner.js';
 import { skippedDestroyMessage } from '../destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../../deployment/noecho-delete-reresolution.js';
-import { selectDestroyTargets, orderDestroyTargets, type DestroyTarget } from './select-targets.js';
+import {
+  selectDestroyTargets,
+  orderDestroyTargets,
+  type AppStack,
+  type DestroyTarget,
+} from './select-targets.js';
 import { plannedDestroyRegion, purgeEventsAfterDestroy } from './helpers.js';
+
+/**
+ * go-to-k/cdkd#6115: the line under a termination-protection refusal of a
+ * stack the run ADDED, when `--remove-protection` was passed: the flag reaches
+ * only the stacks the user named.
+ */
+function protectionNotNamed(dependsOn: AppStack): string {
+  return safeMsg`    --remove-protection applies only to the stacks you name; this stack was added because it depends on ${describeStack(dependsOn)}. Name it to remove its protection too.`;
+}
 
 /**
  * Destroy command implementation
@@ -465,7 +479,12 @@ export async function destroyCommand(
       );
     };
     for (const target of targets) {
-      if (target.synth?.terminationProtection === true && !options.removeProtection) continue;
+      if (
+        target.synth?.terminationProtection === true &&
+        !(options.removeProtection === true && target.dependsOnSelected === undefined)
+      ) {
+        continue;
+      }
       const planned = plannedRegionFor(target);
       if (planned !== undefined) {
         void crossPrefixCheck.cache.full(target.stackName, planned, 'prestart');
@@ -474,18 +493,11 @@ export async function destroyCommand(
     for (const [stackIndex, target] of targets.entries()) {
       const stackName = target.stackName;
       logger.info(`\nPreparing to destroy stack: ${describeTarget(target)}`);
-      // A stack whose dependent this run did not destroy keeps running, as
-      // `cdk destroy` stops before it (go-to-k/cdkd#6115). Not counted as an
-      // error: a dependent that failed counted already, and one the user
-      // declined is the user's choice. A later run destroys both.
-      const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
-      if (keptDependents.length > 0) {
-        logger.warn(
-          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
-        );
-        notDestroyed.add(target);
-        continue;
-      }
+      // go-to-k/cdkd#6115: `--remove-protection` reaches only the stacks the
+      // user NAMED. A stack added because it depends on one is still refused
+      // when protected: its protection is what guards an unasked delete.
+      const removeProtection =
+        options.removeProtection === true && target.dependsOnSelected === undefined;
       if (wrongAccount.has(target)) {
         // Counted like a termination-protection refusal (exit 2): the user named
         // a stack and it was not destroyed.
@@ -516,7 +528,7 @@ export async function destroyCommand(
       // the explicit opt-in bypass: log at WARN so the bypass is visible
       // in CI logs, then proceed with the destroy.
       if (synthStack?.terminationProtection === true) {
-        if (options.removeProtection) {
+        if (removeProtection) {
           logger.warn(
             `Stack ${displaySafe(stackName)} has terminationProtection: true — bypassing because --remove-protection set`
           );
@@ -526,10 +538,26 @@ export async function destroyCommand(
             clause: withheldAccountClause(accountRecovery, 'the command below prints'),
           });
           logger.error(`  ✗ ${err.message}`);
+          if (options.removeProtection === true && target.dependsOnSelected !== undefined) {
+            logger.error(protectionNotNamed(target.dependsOnSelected));
+          }
           notDestroyed.add(target);
           totalErrors++;
           continue;
         }
+      }
+      // A stack whose dependent this run did not destroy keeps running, as
+      // `cdk destroy` stops before it (go-to-k/cdkd#6115). Below the refusals
+      // above, which count as errors on their own. Not counted as an error: a
+      // dependent that failed counted already, and one the user declined is
+      // the user's choice. A later run destroys both.
+      const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
+      if (keptDependents.length > 0) {
+        logger.warn(
+          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
+        );
+        notDestroyed.add(target);
+        continue;
       }
       const plannedRegion = plannedRegionFor(target);
       const strict = strictRegion.get(target);
@@ -588,7 +616,7 @@ export async function destroyCommand(
         synthStack?.terminationProtection !== true &&
         stateResult.state.terminationProtection === true
       ) {
-        if (options.removeProtection) {
+        if (removeProtection) {
           logger.warn(
             safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
           );
@@ -603,6 +631,9 @@ export async function destroyCommand(
             { command: 'cdkd destroy' }
           );
           logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+          if (options.removeProtection === true && target.dependsOnSelected !== undefined) {
+            logger.error(protectionNotNamed(target.dependsOnSelected));
+          }
           notDestroyed.add(target);
           totalErrors++;
           continue;
@@ -704,7 +735,7 @@ export async function destroyCommand(
               destroyOptions: {
                 ...(options.profile && { profile: options.profile }),
                 statePrefix: options.statePrefix,
-                ...(options.removeProtection === true && { removeProtection: true }),
+                ...(removeProtection && { removeProtection: true }),
                 ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                 ...(options.resourceWarnAfter?.globalMs !== undefined && {
                   resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
@@ -742,7 +773,7 @@ export async function destroyCommand(
                 ...(target.dependsOnSelected !== undefined && {
                   confirmationNote: `it depends on ${describeStack(target.dependsOnSelected)}`,
                 }),
-                removeProtection: options.removeProtection === true,
+                removeProtection,
                 skipFinalSnapshot: options.skipFinalSnapshot === true,
                 // go-to-k/cdkd#4150: a top-level destroy may resolve a
                 // secret-derived principal list; a deploy never does.
@@ -796,6 +827,8 @@ export async function destroyCommand(
         stackInterrupted = result.interrupted;
         stackCancelled = result.cancelled === true;
         if (result.interrupted) interrupted = true;
+        // `skippedCount` counts journaled orphans the run kept too: a resource
+        // of the dependent may still exist, so its producer is kept as well.
         if (
           result.errorCount > 0 ||
           result.skippedCount > 0 ||

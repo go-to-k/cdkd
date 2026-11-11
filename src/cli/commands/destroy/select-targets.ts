@@ -266,20 +266,27 @@ export async function selectDestroyTargets(
     synth: appStackSet.has(s) ? (s as AppStack) : undefined,
   });
   // go-to-k/cdkd#6115: add the deployed stacks that depend on a selected one,
-  // as `cdk destroy` does unless `--exclusively`. Without a synthesized app
-  // there is no dependency graph to read, so the selection stays as named.
-  const expandSelection = (selected: DestroyTarget[]): DestroyTarget[] => {
-    if (options.exclusively === true || selected.length === 0) return selected;
+  // as `cdk destroy` does unless `--exclusively`. `seeds` are every app stack
+  // the selection named, deployed or not: CDK expands from an undeployed one
+  // too, and a dependent of it can be deployed (`deploy -e`). Without a
+  // synthesized app there is no dependency graph to read, so the selection
+  // stays as named.
+  const expandSelection = (
+    selected: DestroyTarget[],
+    seeds: readonly AppStack[]
+  ): DestroyTarget[] => {
+    if (options.exclusively === true) return selected;
     if (appStacks.length === 0) {
-      logger.warn(
-        'No synthesized app stack to read stack dependencies from, so only the named ' +
-          'stack(s) are destroyed: a deployed stack that depends on one stays deployed. ' +
-          'Run destroy from the CDK app to destroy its dependents too.'
-      );
+      if (selected.length > 0) {
+        logger.warn(
+          'No synthesized app stack to read stack dependencies from, so only the named ' +
+            'stack(s) are destroyed: a deployed stack that depends on one, if any, stays ' +
+            'deployed. Run destroy from the CDK app to destroy its dependents too.'
+        );
+      }
       return selected;
     }
-    const inState = new Set(candidateStacks.map((s) => s.stackName));
-    const added = expandDestroyTargetsDownstream(selected, appStacks, inState);
+    const added = expandDestroyTargetsDownstream(seeds, appStacks, deployedIn(allStateRefs));
     for (const t of added.notDeployed) {
       logger.debug(
         safeMsg`Not destroying ${describeStack(t)}, which depends on a selected stack: it is not deployed`
@@ -301,7 +308,10 @@ export async function selectDestroyTargets(
     // CLI's `destroy --all` (#4474). A Stage's stacks are left running and
     // named in one line, so the narrower set is never silent.
     const { topLevel, inStages } = partitionTopLevel(candidateStacks);
-    targets = expandSelection(topLevel.map(toTarget));
+    targets = expandSelection(
+      topLevel.map(toTarget),
+      partitionTopLevel(appStacks).topLevel as AppStack[]
+    );
     // A Stage stack that depends on a top-level one is destroyed with it
     // (go-to-k/cdkd#6115), so only the rest are named as left out.
     const expanded = new Set<StackLike>(targets.flatMap((t) => (t.synth ? [t.synth] : [])));
@@ -316,10 +326,10 @@ export async function selectDestroyTargets(
     const selectFrom = appStacks.length > 0 ? appStacks : candidateStacks;
     const inState = new Set(candidateStacks.map((s) => s.stackName));
     // Every selected stack, two sharing a physical name included (#5176).
+    const matched = matchStacks(selectFrom, stackPatterns, { dedupe: 'identity' });
     targets = expandSelection(
-      matchStacks(selectFrom, stackPatterns, { dedupe: 'identity' })
-        .filter((s) => inState.has(s.stackName))
-        .map(toTarget)
+      matched.filter((s) => inState.has(s.stackName)).map(toTarget),
+      matched.filter((s) => appStackSet.has(s)) as AppStack[]
     );
     // A deployed stack a pattern used to select by a physical-name wildcard
     // and no longer does is named, not dropped silently (#4474) -- also when
@@ -380,17 +390,18 @@ export async function selectDestroyTargets(
 }
 
 /**
- * go-to-k/cdkd#6115: the stacks of the app that depend on a selected stack,
- * directly or through other stacks, by the cloud assembly's dependencies
- * (CDK's `expandDown`). Only a deployed one (its name in `inStateNames`) is a
- * target; an undeployed one is still walked through, since a stack depending
- * on it can be deployed (`cdk deploy -e`). A dependency name two Stages share
- * resolves to the producer in the dependent's own Stage (#5176).
+ * go-to-k/cdkd#6115: the stacks of the app that depend on one of `seeds` (the
+ * stacks the selection named, deployed or not), directly or through other
+ * stacks, by the cloud assembly's dependencies (CDK's `expandDown`). Only a
+ * deployed one (`isDeployed`) is a target; an undeployed one is still walked
+ * through, since a stack depending on it can be deployed (`cdk deploy -e`).
+ * Each target records the seed it was reached from. A dependency name two
+ * Stages share resolves to the producer in the dependent's own Stage (#5176).
  */
 export function expandDestroyTargetsDownstream(
-  selected: readonly DestroyTarget[],
+  seeds: readonly AppStack[],
   appStacks: readonly AppStack[],
-  inStateNames: ReadonlySet<string>
+  isDeployed: (stack: AppStack) => boolean
 ): { targets: DestroyTarget[]; notDeployed: AppStack[] } {
   const dependentsOf = new Map<AppStack, AppStack[]>();
   for (const stack of appStacks) {
@@ -402,28 +413,41 @@ export function expandDestroyTargetsDownstream(
       }
     }
   }
-  const seen = new Set<AppStack>(selected.flatMap((t) => (t.synth ? [t.synth] : [])));
-  const queue = [...seen];
+  const seen = new Set<AppStack>(seeds);
+  const queue: Array<[AppStack, AppStack]> = seeds.map((s) => [s, s]);
   const targets: DestroyTarget[] = [];
   const notDeployed: AppStack[] = [];
   while (queue.length > 0) {
-    const producer = queue.shift()!;
+    const [producer, seed] = queue.shift()!;
     for (const dependent of dependentsOf.get(producer) ?? []) {
       if (seen.has(dependent)) continue;
       seen.add(dependent);
-      queue.push(dependent);
-      if (inStateNames.has(dependent.stackName)) {
-        targets.push({
-          stackName: dependent.stackName,
-          synth: dependent,
-          dependsOnSelected: producer,
-        });
+      queue.push([dependent, seed]);
+      if (isDeployed(dependent)) {
+        targets.push({ stackName: dependent.stackName, synth: dependent, dependsOnSelected: seed });
       } else {
         notDeployed.push(dependent);
       }
     }
   }
   return { targets, notDeployed };
+}
+
+/**
+ * Whether an app stack has a state record it could own: one of its name in
+ * its pinned region, or a region-less (legacy) one. A record of the name in
+ * ANOTHER region is not its own -- another app sharing the bucket, or another
+ * Stage (#5176) -- so a dependent the run adds unasked never reaches it.
+ */
+export function deployedIn(
+  stateRefs: ReadonlyArray<{ stackName: string; region?: string | undefined }>
+): (stack: AppStack) => boolean {
+  return (stack) =>
+    stateRefs.some(
+      (r) =>
+        r.stackName === stack.stackName &&
+        (stack.region === undefined || r.region === undefined || r.region === stack.region)
+    );
 }
 
 /**

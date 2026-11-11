@@ -126,6 +126,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 import { createDestroyCommand } from '../../../src/cli/commands/destroy.js';
 
 type Synth = {
+  account?: string;
   stackName: string;
   displayName: string;
   stagePath?: string;
@@ -138,7 +139,7 @@ type Synth = {
 function stack(
   name: string,
   deps: string[] = [],
-  extra: { stage?: string; region?: string; physical?: string } = {}
+  extra: { stage?: string; region?: string; physical?: string; account?: string } = {}
 ): Synth {
   return {
     stackName: extra.physical ?? name,
@@ -148,6 +149,7 @@ function stack(
     template: { Resources: {} },
     dependencyNames: deps,
     ...(extra.region !== undefined && { region: extra.region }),
+    ...(extra.account !== undefined && { account: extra.account }),
   };
 }
 
@@ -409,5 +411,144 @@ describe('cdkd destroy orders by the manifest dependencies (#6115)', () => {
     await destroy(['Prod', '--force']);
     expect(destroyed()).toEqual([]);
     expect(exitCode).toBe(2);
+  });
+});
+
+describe('cdkd destroy dependents: review round (#6115)', () => {
+  it('expands from a named stack that is not deployed, as cdk destroy does', async () => {
+    held.records = [{ stackName: 'Cons', region: 'us-east-1' }];
+    await destroy(['Prod', '--force']);
+    expect(destroyed()).toEqual(['Cons@us-east-1']);
+  });
+
+  it('expands --all from an undeployed top-level stack to a deployed Stage dependent', async () => {
+    synthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        stack('Prod'),
+        stack('Top'),
+        stack('Cons', ['Prod'], { stage: 'Beta', physical: 'Beta-Cons' }),
+      ],
+    });
+    held.records = [
+      { stackName: 'Top', region: 'us-east-1' },
+      { stackName: 'Beta-Cons', region: 'us-east-1' },
+    ];
+    await destroy(['--all', '--force']);
+    expect(destroyed().sort()).toEqual(['Beta-Cons@us-east-1', 'Top@us-east-1']);
+  });
+
+  it("does not add a dependent whose only record of its name is in another region", async () => {
+    // Cons is pinned to us-east-1 and not deployed there; a record of the
+    // same name in eu-west-1 is another app's (same state bucket).
+    held.records = [
+      { stackName: 'Prod', region: 'us-west-2' },
+      { stackName: 'Cons', region: 'eu-west-1' },
+    ];
+    await destroy(['Prod', '--force']);
+    expect(destroyed()).toEqual(['Prod@us-west-2']);
+    expect(logged.info.join('\n')).not.toContain('Also destroying');
+  });
+
+  it('names the selected stack a dependent was reached from, not an undeployed middle one', async () => {
+    synthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [stack('Prod'), stack('Mid', ['Prod']), stack('Leaf', ['Mid'])],
+    });
+    held.records = [
+      { stackName: 'Prod', region: 'us-east-1' },
+      { stackName: 'Leaf', region: 'us-east-1' },
+    ];
+    await destroy(['Prod', '--force']);
+    expect(logged.info.join('\n')).toContain(
+      'Found 2 stack(s) to destroy: Leaf (depends on Prod), Prod'
+    );
+  });
+
+  it('keeps --remove-protection to the named stacks: a protected added dependent is refused', async () => {
+    synthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        stack('Prod', [], { region: 'us-west-2' }),
+        { ...stack('Cons', ['Prod'], { region: 'us-east-1' }), terminationProtection: true },
+      ],
+    });
+    await destroy(['Prod', '--force', '--remove-protection']);
+    expect(destroyed()).toEqual([]);
+    expect(exitCode).toBe(2);
+    expect(logged.error.join('\n')).toContain(
+      '--remove-protection applies only to the stacks you name; this stack was added because it depends on Prod.'
+    );
+  });
+
+  it('does not pass --remove-protection to an added dependent, and does to a named stack', async () => {
+    await destroy(['Prod', '--force', '--remove-protection']);
+    const flags = runDestroyForStack.mock.calls.map((c) => [
+      String(c[0]),
+      (c[2] as { removeProtection?: boolean }).removeProtection,
+    ]);
+    expect(flags).toEqual([
+      ['Cons', false],
+      ['Prod', true],
+    ]);
+  });
+
+  it('keeps the producer when its dependent skipped a resource', async () => {
+    runDestroyForStack.mockImplementation(async (name: string) =>
+      name === 'Cons' ? { ...clean(name), skippedCount: 1, stateDeleted: false } : clean(name)
+    );
+    await destroy(['Prod', '--force']);
+    expect(destroyed()).toEqual(['Cons@us-east-1']);
+  });
+
+  it("keeps the producer when its dependent is pinned to another account than the run's", async () => {
+    synthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        stack('Prod', [], { stage: 'UsEast', region: 'us-east-1', physical: 'Prod' }),
+        stack('Cons', ['Prod'], { stage: 'UsEast', region: 'us-east-1', physical: 'Cons' }),
+        stack('Prod', [], { stage: 'UsWest', region: 'us-west-2', physical: 'Prod' }),
+        stack('Cons', ['Prod'], {
+          stage: 'UsWest',
+          region: 'us-west-2',
+          physical: 'Cons',
+          account: '999999999999',
+        }),
+      ],
+    });
+    held.records = [
+      { stackName: 'Prod', region: 'us-west-2' },
+      { stackName: 'Cons', region: 'us-west-2' },
+    ];
+    await destroy(['UsWest/Prod', '--force']);
+    expect(destroyed()).toEqual([]);
+    expect(exitCode).toBe(2);
+  });
+
+  it('still refuses a protected producer, as an error, when its dependent was declined', async () => {
+    synthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        { ...stack('Prod', [], { region: 'us-west-2' }), terminationProtection: true },
+        stack('Cons', ['Prod'], { region: 'us-east-1' }),
+      ],
+    });
+    runDestroyForStack.mockImplementation(async (name: string) =>
+      name === 'Cons' ? { ...clean(name), cancelled: true, deletedCount: 0 } : clean(name)
+    );
+    await destroy(['Prod']);
+    expect(exitCode).toBe(2);
+    expect(logged.warn.join('\n')).not.toContain('Not destroying stack Prod');
+  });
+
+  it('words the no-app warning as conditional', async () => {
+    synthesize.mockRejectedValue(new Error('synth failed'));
+    await destroy(['Prod', '--force']);
+    expect(logged.warn.join('\n')).toContain('a deployed stack that depends on one, if any, stays deployed');
   });
 });
