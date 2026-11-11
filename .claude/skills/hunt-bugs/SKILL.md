@@ -118,8 +118,8 @@ claims the issue BEFORE the first edit). Then fix:
    (`work-issues/references/ship.md` §9 has the restore arm).
 3. **Add a unit test that fails without the fix and passes with it** —
    mandatory: a bug found by integ MUST leave a unit test behind.
-4. **Re-run the live repro with the fixed binary**, then destroy it and run
-   `bughunt-track.sh clear` in its OWN call before the first commit: the gate
+4. **Re-run the live repro with the fixed binary**, then destroy it, `verify`,
+   and `clear` (§5) in its OWN call before the first commit: the gate
    blocks your commit while your stacks are tracked and judges a command
    before it runs, so `clear && git commit` is refused whole (#6106).
 5. **Add a committed integ fixture** under `tests/integration/<name>/`
