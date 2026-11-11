@@ -169,7 +169,37 @@ function fakeOutput(context: SmithyContext, input: Record<string, unknown>): unk
 const SDK_TOKEN =
   /("(?:ClientToken|ClientRequestToken|CreatorRequestId|UpdaterRequestId)"\s*:\s*")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/gi;
 
-/** The request body as text, the SDK-filled tokens in it normalized. */
+/**
+ * The clock-derived parts of a SigV4 presigned URL the SDK fills in: the RDS
+ * client's cross-region `PreSignedUrl` (`StartDBInstanceAutomatedBackupsReplication`,
+ * a cross-region read replica) is signed at the current SECOND, so two
+ * recordings either side of a second boundary differ in `X-Amz-Date`, the
+ * signature and, across midnight UTC, the credential scope's date
+ * (go-to-k/cdkd#6126: `create is not deterministic` under host load). Matched
+ * in each encoding the URL reaches the capture in: raw in the command input,
+ * once encoded as a query-body value, twice inside it. Only these three are
+ * normalized; the URL's other parameters (`KmsKeyId`, `SourceDBInstanceArn`)
+ * are declared values and stay in the comparison.
+ */
+const EQ = '(?:=|%3D|%253D)';
+const SLASH = '(?:/|%2F|%252F)';
+const SIGV4_CLOCK = new RegExp(
+  `(X-Amz-Date${EQ})\\d{8}T\\d{6}Z|(X-Amz-Signature${EQ})[0-9a-f]{64}|(${CREDENTIALS.accessKeyId}${SLASH})\\d{8}`,
+  'gi'
+);
+
+/** `text` with the SDK-filled tokens and presigning clock normalized. */
+function normalizeSdkFilled(text: string): string {
+  return text
+    .replace(SDK_TOKEN, '$1<token>"')
+    .replace(
+      SIGV4_CLOCK,
+      (_m, date?: string, sig?: string, cred?: string) =>
+        `${date ?? sig ?? cred}${date ? '<date>' : sig ? '<signature>' : '<day>'}`
+    );
+}
+
+/** The request body as text, the SDK-filled values in it normalized. */
 function bodyText(body: unknown): string {
   // The JSON protocols hand the body over as bytes.
   const text =
@@ -178,7 +208,7 @@ function bodyText(body: unknown): string {
       : body instanceof Uint8Array
         ? new TextDecoder().decode(body)
         : JSON.stringify(body ?? null);
-  return text.replace(SDK_TOKEN, '$1<token>"');
+  return normalizeSdkFilled(text);
 }
 
 interface Capturable {
@@ -209,7 +239,7 @@ function capturing<T extends Capturable>(client: T): T {
         const raw = (this as Record<string, unknown>)[k];
         return raw instanceof Uint8Array ? new TextDecoder().decode(raw) : v;
       });
-      inputs.push(text.replace(SDK_TOKEN, '$1<token>"'));
+      inputs.push(normalizeSdkFilled(text));
       wire.push(
         JSON.stringify([
           command,
