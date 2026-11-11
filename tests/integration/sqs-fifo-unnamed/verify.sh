@@ -186,8 +186,11 @@ for id in ${QUEUE_IDS}; do
     echo "FAIL: get-queue-url --queue-name ${NAME} returned '${BY_NAME}'" >&2
     exit 1
   fi
-  FIFO_ATTR="$(queue_attr "${URL}" FifoQueue)"
   if [ "${id}" = "StandardQueue" ]; then
+    # SQS refuses `--attribute-names FifoQueue` on a standard queue
+    # (InvalidAttributeName), so read every attribute and look for the key.
+    FIFO_ATTR="$(aws sqs get-queue-attributes --queue-url "${URL}" --attribute-names All \
+      --region "${REGION}" --query 'Attributes.FifoQueue' --output text)"
     case "${NAME}" in
       *.fifo)
         echo "FAIL: the standard queue's name '${NAME}' ends with .fifo" >&2
@@ -199,6 +202,7 @@ for id in ${QUEUE_IDS}; do
       exit 1
     fi
   else
+    FIFO_ATTR="$(queue_attr "${URL}" FifoQueue)"
     case "${NAME}" in
       *.fifo) ;;
       *)
