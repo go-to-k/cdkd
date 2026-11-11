@@ -19,6 +19,7 @@ import { replayRevert } from '../../../src/deployment/rollback-executor/replay-r
 import type { ReplayOpScope } from '../../../src/deployment/rollback-executor/replay-scope.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   recordLogOnlyValue,
   type RecordedSecretValues,
@@ -294,6 +295,53 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
     const result = await replayFailedOperations([op], { F: res({ physicalId: 'phys-F' }) }, 'S', ctx);
     expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
     expectOneSkip(events, 'F', 'UPDATE', 'No previous state is available');
+  });
+
+  // go-to-k/cdkd#6106: a force-revert of a resource deleted outside cdkd fails
+  // on every re-run; it is skipped and leaves the journal instead.
+  it('revert-failed-update of a resource AWS reports gone', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('QueueDoesNotExist'));
+    const readCurrentState = vi.fn().mockResolvedValue(RESOURCE_NOT_FOUND);
+    const { ctx, events, warns } = makeCtx({ update, readCurrentState });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-F',
+      previousState: res({ physicalId: 'phys-F' }),
+      attemptedProperties: { a: 2 },
+    };
+    const result = await replayFailedOperations([op], { F: res({ physicalId: 'phys-F' }) }, 'S', ctx);
+    expect(update).toHaveBeenCalled();
+    expect(readCurrentState).toHaveBeenCalledWith('phys-F', 'F', 'AWS::SQS::Queue', { a: 1 });
+    expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
+    expect(result.remainingFailedOps).toEqual([]);
+    expectOneSkip(events, 'F', 'UPDATE', 'deleted outside cdkd');
+    expect(events.some((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')).toBe(false);
+    expect(warns.join('\n')).toContain(
+      'F (AWS::SQS::Queue): AWS reports this resource no longer exists (deleted outside cdkd)'
+    );
+    expect(warns.join('\n')).toContain('remove it from the CDK app and deploy');
+  });
+
+  it('a failed force-revert whose resource still exists stays a failure', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('AccessDenied'));
+    const readCurrentState = vi.fn().mockResolvedValue({ a: 1 });
+    const { ctx, events } = makeCtx({ update, readCurrentState });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-F',
+      previousState: res({ physicalId: 'phys-F' }),
+      attemptedProperties: { a: 2 },
+    };
+    const result = await replayFailedOperations([op], { F: res({ physicalId: 'phys-F' }) }, 'S', ctx);
+    expect(result).toMatchObject({ failures: 1, skipped: 0 });
+    expect(result.remainingFailedOps).toEqual([op]);
+    expect(skips(events)).toHaveLength(0);
   });
 
   it('skip-failed-type-change', async () => {

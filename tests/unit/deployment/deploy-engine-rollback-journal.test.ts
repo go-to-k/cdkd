@@ -467,6 +467,74 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
     });
 
+    // A rollback that SKIPPED an op keeps the full segment; the gone op is
+    // named there too, and the `--revert-failed` line is not printed for it.
+    it.each([
+      ['only the gone op remains', true, false],
+      ['an op whose resource exists remains too', false, true],
+    ] as const)(
+      'a partial rollback where %s',
+      async (_label, onlyGone, expectHint) => {
+        const aChange = {
+          logicalId: 'A',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          desiredProperties: { p: 'new' },
+          currentProperties: {},
+          propertyChanges: [{ path: 'p', requiresReplacement: false }],
+        } as unknown as ResourceChange;
+        const changes = new Map<string, ResourceChange>([
+          ['A', aChange],
+          ['B', updateChange('B')],
+          ['C', updateChange('C')],
+        ]);
+        const engine = buildEngine({
+          changes,
+          // A completes before B and C fail.
+          deps: { A: [], B: ['A'], C: ['A'] },
+          noRollback: false,
+          currentEtag: 'e0',
+          currentResources: {
+            A: { ...record('A'), resourceType: 'AWS::S3::Bucket', properties: {} },
+            B: record('B'),
+            C: record('C'),
+          },
+        });
+        // A's revert is skipped (no `properties` bag, issue #3203).
+        (engine as unknown as { options: Record<string, unknown> }).options['onCurrentStateLoaded'] =
+          async (_stack: string, state: StackState | undefined) => {
+            delete (state!.resources['A'] as { properties?: unknown }).properties;
+          };
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { update: ReturnType<typeof vi.fn>; readCurrentState?: unknown };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.update.mockImplementation((logicalId: string) =>
+          logicalId === 'A'
+            ? Promise.resolve({ physicalId: 'phys-A-old', wasReplaced: false })
+            : Promise.reject(new Error('QueueDoesNotExist'))
+        );
+        provider.readCurrentState = vi.fn((id: string) =>
+          Promise.resolve(id === 'phys-B-old' || (onlyGone && id === 'phys-C-old') ? RESOURCE_NOT_FOUND : {})
+        );
+
+        await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+        expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+        const warns = logged('warn');
+        expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+        const notes = warns.filter((m) => m.includes('deleted outside cdkd'));
+        expect(notes.map((m) => m.split(' ')[0])).toEqual(onlyGone ? ['B', 'C'] : ['B']);
+        expect(notes[0]).toContain("'cdkd rollback --revert-failed' drops its record.");
+        expect(warns.some((m) => m.includes('Revert it with:'))).toBe(expectHint);
+      }
+    );
+
     it('keeps the failed-only segment when the provider has no read path', async () => {
       const { engine } = failingUpdateEngine(undefined);
       await expect(engine.deploy(stackName, template)).rejects.toThrow();

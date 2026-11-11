@@ -65,6 +65,11 @@ import {
   withUnsettledProperties,
 } from '../../state/unsettled-properties.js';
 import { withUnprovenUnsettled } from '../unsettled-convergence.js';
+import {
+  DELETED_OUTSIDE_SKIP_CAUSE,
+  deletedOutsideCdkdMessage,
+  failedUpdateResourceIsGone,
+} from '../deleted-outside-cdkd.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
 
@@ -932,30 +937,41 @@ export async function replayFailedOperationsUnbound(
         }
       }
     } catch (revertError) {
-      // Issue #2031: the `--revert-failed` twin of `replaySingle`'s catch —
-      // same plaintext bag, same DEFAULT-verbosity exposure. No registered
-      // refusal is thrown on this path, so `rollbackFailureText` always takes
-      // its flat arm here; it is called for the one spelling, not for a line.
-      logger.warn(
-        maskedFailureText(
-          // As `replaySingle`'s catch line (go-to-k/cdkd#4214).
-          `  Rollback failed for failed-op ${shownLogicalId(op.logicalId)} (${shownChangeType(op.changeType)}): `,
-          revertError,
-          mask
-        )
-      );
-      result.failures++;
-      pending.add(op);
-      const failedRoute = createRollbackRoute ?? op.provisionedBy;
-      ctx.recordEvent?.({
-        eventType: 'ROLLBACK_RESOURCE_FAILED',
-        stackName,
-        operation: op.changeType,
-        logicalId: op.logicalId,
-        resourceType: op.resourceType,
-        ...(failedRoute && { provisionedBy: failedRoute }),
-        error: maskedRollbackEventError(revertError, mask),
-      });
+      // go-to-k/cdkd#6106: a force-revert of a resource AWS reports gone
+      // (deleted outside cdkd) fails on every re-run, so the op is skipped
+      // with `cdkd drift`'s remedy and leaves the journal instead of failing.
+      if (
+        action === 'revert-failed-update' &&
+        (await failedUpdateResourceIsGone({ providerRegistry: ctx.providerRegistry }, op))
+      ) {
+        logger.warn(mask(`  Rollback: ${deletedOutsideCdkdMessage(op, true)}`));
+        recordRollbackSkip(skipScope, op, DELETED_OUTSIDE_SKIP_CAUSE);
+      } else {
+        // Issue #2031: the `--revert-failed` twin of `replaySingle`'s catch —
+        // same plaintext bag, same DEFAULT-verbosity exposure. No registered
+        // refusal is thrown on this path, so `rollbackFailureText` always takes
+        // its flat arm here; it is called for the one spelling, not for a line.
+        logger.warn(
+          maskedFailureText(
+            // As `replaySingle`'s catch line (go-to-k/cdkd#4214).
+            `  Rollback failed for failed-op ${shownLogicalId(op.logicalId)} (${shownChangeType(op.changeType)}): `,
+            revertError,
+            mask
+          )
+        );
+        result.failures++;
+        pending.add(op);
+        const failedRoute = createRollbackRoute ?? op.provisionedBy;
+        ctx.recordEvent?.({
+          eventType: 'ROLLBACK_RESOURCE_FAILED',
+          stackName,
+          operation: op.changeType,
+          logicalId: op.logicalId,
+          resourceType: op.resourceType,
+          ...(failedRoute && { provisionedBy: failedRoute }),
+          error: maskedRollbackEventError(revertError, mask),
+        });
+      }
     }
     if (result.skipped > skippedBefore) result.skippedOps!.push(op);
     inlinePolicyWriters.noteOutcome(
