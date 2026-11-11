@@ -546,6 +546,42 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       expect(sentPuts()).toBe(0);
     });
 
+    it('refuses, never overwrites, when a re-read cannot read the policy', async () => {
+      let reads = 0;
+      respond(() => {
+        reads++;
+        return reads === 1
+          ? Promise.resolve({ Policy: AUTO_ATTACHED })
+          : Promise.reject(awsError('AccessDenied', 403));
+      });
+
+      await expect(provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)).rejects.toThrow(
+        /The bucket policy already exists/
+      );
+      expect(sentGets()).toBe(2);
+      expect(sentPuts()).toBe(0);
+    });
+
+    it('judges the re-read policy, not the first one', async () => {
+      // The first read is a stranger's; by the second, the bucket holds the
+      // policy this stack's journal shows an earlier deploy attempted.
+      let reads = 0;
+      respond(() => {
+        reads++;
+        return Promise.resolve({ Policy: reads === 1 ? AUTO_ATTACHED : JSON.stringify(DESIRED) });
+      });
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED }])
+      );
+
+      await withPriorAttempts(lookup, () =>
+        provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+      );
+
+      expect(sentGets()).toBe(2);
+      expect(sentPuts()).toBe(1);
+    });
+
     it('does not re-read for an own-holder refusal, which rests on state', async () => {
       respond(() => Promise.resolve({ Policy: JSON.stringify(DESIRED) }));
       const records = {
@@ -581,7 +617,7 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
     const AS_ARN = JSON.stringify(
       oaiDoc({ AWS: `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OAI_ID}` })
     );
-    const AS_UNIQUE_ID = JSON.stringify(oaiDoc({ AWS: 'AEXAMPLEUNIQUEIDXYZ' }));
+    const AS_UNIQUE_ID = JSON.stringify(oaiDoc({ AWS: 'AIDAEXAMPLEUNIQ1X' }));
     const oaiRecords = (canonical: string) => ({
       live: () =>
         [
@@ -627,6 +663,37 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       );
 
       expect(sentPuts()).toBe(1);
+    });
+
+    it('folds the transient id when the template lists ONE action and S3 reads back the scalar', async () => {
+      const listed = {
+        ...DESIRED_OAI,
+        Statement: [{ ...DESIRED_OAI.Statement[0], Action: ['s3:GetObject'] }],
+      };
+      const lookup = priorAttemptLookup(LOGICAL_ID, () => Promise.resolve([]));
+      lookup.notePossiblyLanded();
+      respond(() => Promise.resolve({ Policy: AS_UNIQUE_ID }));
+
+      await withStackRecords(oaiRecords(CANONICAL), () =>
+        withPriorAttempts(lookup, () =>
+          provider.create(LOGICAL_ID, RESOURCE_TYPE, { Bucket: BUCKET, PolicyDocument: listed })
+        )
+      );
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('never folds a unique id without the IAM-user prefix (a role) into the OAI grant', async () => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () => Promise.resolve([]));
+      lookup.notePossiblyLanded();
+      respond(() => Promise.resolve({ Policy: JSON.stringify(oaiDoc({ AWS: 'AROAEXAMPLEROLE1X' })) }));
+
+      await expect(
+        withStackRecords(oaiRecords(CANONICAL), () =>
+          withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+        )
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
     });
 
     it('still refuses a grant to ANOTHER OAI', async () => {

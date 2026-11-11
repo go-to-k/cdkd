@@ -47,13 +47,16 @@ const OAI_USER_ARN_RE =
   /^arn:aws[a-z-]*:iam::cloudfront:user\/CloudFront Origin Access Identity ([A-Z0-9]+)$/;
 
 /**
- * Matches a bare IAM principal unique id (e.g. `AIDAIBJOSOJSBZ753XCAW`). S3
+ * Matches a bare IAM USER unique id (e.g. `AIDAIBJOSOJSBZ753XCAW`). S3
  * returns an OAI grant's principal in this transient form immediately after
- * `PutBucketPolicy` (before it settles to the friendly cloudfront-user ARN).
+ * `PutBucketPolicy` (before it settles to the friendly cloudfront-user ARN);
+ * an OAI is a CloudFront IAM user, so the id carries the `AIDA` user prefix.
  * It carries no recoverable link back to the OAI, so it can only be
  * canonicalized by matching against the template's `{ CanonicalUser }` form.
+ * Any other prefix (a role's `AROA`, ...) is never an OAI and is left alone
+ * (go-to-k/cdkd#6109).
  */
-const IAM_UNIQUE_ID_RE = /^A[A-Z0-9]{15,}$/;
+const IAM_UNIQUE_ID_RE = /^AIDA[A-Z0-9]{12,}$/;
 
 /**
  * Process-lifetime cache of OAI id -> S3 canonical user id (or `null` when the
@@ -127,8 +130,11 @@ function findTemplateCanonicalUser(
   awsStmt: Record<string, unknown>,
   templateStmts: Record<string, unknown>[]
 ): string | undefined {
+  // S3 reads a one-element `Action` / `Resource` list back as its scalar
+  // (go-to-k/cdkd#6109), so both sides compare unwrapped.
+  const one = (v: unknown): unknown => (Array.isArray(v) && v.length === 1 ? v[0] : v);
   const key = (s: Record<string, unknown>): string =>
-    JSON.stringify([s['Effect'], s['Action'], s['Resource']]);
+    JSON.stringify([s['Effect'], one(s['Action']), one(s['Resource'])]);
   const want = key(awsStmt);
   const matches = templateStmts.filter((t) => key(t) === want);
   if (matches.length !== 1) return undefined;
