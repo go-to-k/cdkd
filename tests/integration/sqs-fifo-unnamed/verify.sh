@@ -8,7 +8,7 @@
 #
 # Phases:
 #   1. Deploy three un-named queues: FifoQueue (`fifo: true`), FifoStringQueue
-#      (`FifoQueue: 'true'`, a string CloudFormation coerces) and StandardQueue
+#      (`FifoQueue: 'TRUE'`, an upper-case string CloudFormation coerces) and StandardQueue
 #      (the negative control). Assert each FIFO queue's name ends with `.fifo`,
 #      is at most 80 characters, starts with `<stack>-<logicalId>-`, matches the
 #      recorded QueueName attribute, resolves by name through get-queue-url to

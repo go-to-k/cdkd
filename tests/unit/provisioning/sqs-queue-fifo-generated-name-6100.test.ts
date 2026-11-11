@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { SQSQueueProvider } from '../../../src/provisioning/providers/sqs-queue-provider.js';
 import {
   applyDefaultNameForFallback,
+  looksLikeCdkdGeneratedName,
   withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
@@ -78,6 +79,11 @@ describe('SQSQueueProvider names an un-named FIFO queue `.fifo` (go-to-k/cdkd#61
           // The Cloud Control fill and the replacement-name holder read the same rule.
           const filled = scope(() => applyDefaultNameForFallback(logicalId, TYPE, props, 'omit'));
           expect(filled['QueueName']).toBe(name);
+          // The CREATE-collision diagnosis still recognizes it as cdkd's own.
+          const instanceId = scope === v13 ? ID : undefined;
+          expect(
+            scope(() => looksLikeCdkdGeneratedName(name, logicalId, STACK, instanceId))
+          ).toBe(true);
           // The standard queue's name is the FIFO one without the suffix's room
           // taken: the same base when short.
           const standard = scope(() => provider.generatedCreateName(TYPE, logicalId, {}))!;

@@ -330,15 +330,19 @@ export function looksLikeCdkdGeneratedName(
   generations?: { through: number }
 ): boolean {
   if (!physicalId || !logicalId || !stackName) return false;
+  // go-to-k/cdkd#6100: a FIFO queue / topic's generated name ends with the
+  // `.fifo` suffix its rule appends after the hash (`fallback-rules.ts`), which
+  // the end-anchored forms below would otherwise never match.
+  const name = physicalId.replace(/\.fifo$/i, '');
   // The skeleton drops every separator the per-type `allowedPattern` could
   // have rewritten (a hyphen, an underscore, a dot) so an S3-style
   // lowercase-and-dot name still matches its own derivation.
   const skeleton = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, '');
   const derived = skeleton(`${stackName}-${logicalId}`);
-  const actual = skeleton(physicalId);
+  const actual = skeleton(name);
   if (actual === derived) return true;
   if (stackInstanceId !== undefined) {
-    const suffixed = /^(.*)-([0-9a-f]{12})$/.exec(physicalId.toLowerCase());
+    const suffixed = /^(.*)-([0-9a-f]{12})$/.exec(name.toLowerCase());
     if (suffixed !== null) {
       const base = skeleton(suffixed[1]!);
       const through = Math.min(
@@ -354,7 +358,7 @@ export function looksLikeCdkdGeneratedName(
   // Truncated form: `{prefix}-{8 hex}` where prefix is a cut of the same
   // derivation. Require BOTH halves — a bare prefix match would accept a
   // template-supplied name that merely starts the same way.
-  const truncated = /^(.*)-([0-9a-f]{8})$/.exec(physicalId.toLowerCase());
+  const truncated = /^(.*)-([0-9a-f]{8})$/.exec(name.toLowerCase());
   if (!truncated) return false;
   const prefix = skeleton(truncated[1]!);
   return prefix.length > 0 && derived.startsWith(prefix);

@@ -9,7 +9,7 @@ import type { Construct } from 'constructs';
  *
  * - `FifoQueue`: the everyday CDK shape, `new sqs.Queue(this, 'Q', { fifo: true })`,
  *   which synthesizes `FifoQueue: true` and no `QueueName`.
- * - `FifoStringQueue`: `FifoQueue` given as the STRING `'true'`, which
+ * - `FifoStringQueue`: `FifoQueue` given as the STRING `'TRUE'`, which
  *   CloudFormation coerces to a boolean.
  * - `StandardQueue`: an un-named standard queue, the negative control (no suffix).
  * - `FifoTopic`: an L1 `CfnTopic` with `FifoTopic: true` and no `TopicName`
@@ -35,7 +35,7 @@ export class SqsFifoUnnamedStack extends cdk.Stack {
     (fifo.node.defaultChild as sqs.CfnQueue).overrideLogicalId('FifoQueue');
 
     const fifoString = new sqs.CfnQueue(this, 'FifoString');
-    fifoString.addPropertyOverride('FifoQueue', 'true');
+    fifoString.addPropertyOverride('FifoQueue', 'TRUE');
     fifoString.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     fifoString.overrideLogicalId('FifoStringQueue');
 
