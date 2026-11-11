@@ -733,6 +733,51 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
     });
   });
 
+  it('a restored record whose recorded id differs only in case or spelling still detaches', async () => {
+    arm({ globalMemberOf: 'global-1' });
+    await provider.delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
+      ...BASE,
+      GlobalClusterIdentifier: `arn:aws:rds::${ACCOUNT}:global-cluster:GLOBAL-1`,
+    });
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
+  });
+
+  it('a restored record whose membership cannot be read detaches as before', async () => {
+    const base = (arm(), mockSend.getMockImplementation()!);
+    let reads = 0;
+    mockSend.mockImplementation((command: Command) => {
+      // The membership scan (no filter) fails; the detach's own read answers.
+      if (
+        command.constructor.name === 'DescribeGlobalClustersCommand' &&
+        command.input['GlobalClusterIdentifier'] === undefined
+      ) {
+        reads += 1;
+        const error = new Error('denied');
+        error.name = 'AccessDenied';
+        return Promise.reject(error);
+      }
+      return base(command);
+    });
+    await provider.delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
+      ...BASE,
+      GlobalClusterIdentifier: 'global-1',
+    });
+    expect(reads).toBe(1);
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
+  });
+
+  it('an update removing a restored member detaches it', async () => {
+    arm({ globalMemberOf: 'global-1' });
+    await provider.update(
+      'Cluster',
+      CLUSTER,
+      'AWS::RDS::DBCluster',
+      { ...BASE },
+      { ...BASE, GlobalClusterIdentifier: 'global-1' }
+    );
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
+  });
+
   it("an update removing a restored record's global cluster detaches nothing AWS does not list", async () => {
     await provider.update(
       'Cluster',

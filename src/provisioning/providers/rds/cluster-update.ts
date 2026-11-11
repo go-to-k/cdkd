@@ -870,7 +870,11 @@ export async function liveGlobalClusterMembership(
       }
       marker = page.Marker;
     } while (marker);
-    return { kind: 'answered', member: liveId === desiredId };
+    // A global cluster id in any spelling AWS takes: an ARN ends in it, and
+    // case does not count.
+    const idOf = (id: string | undefined): string | undefined =>
+      id === undefined ? undefined : (id.split(':').pop() ?? id).toLowerCase();
+    return { kind: 'answered', member: idOf(liveId) === idOf(desiredId) };
   } catch (error) {
     const failure = describeAwsFailure(error);
     this.logger.debug(
