@@ -65,11 +65,7 @@ import {
   withUnsettledProperties,
 } from '../../state/unsettled-properties.js';
 import { withUnprovenUnsettled } from '../unsettled-convergence.js';
-import {
-  DELETED_OUTSIDE_SKIP_CAUSE,
-  deletedOutsideCdkdMessage,
-  failedUpdateResourceIsGone,
-} from '../deleted-outside-cdkd.js';
+import { skippedAsDeletedOutsideCdkd } from './replay-deleted-outside.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
 
@@ -937,16 +933,8 @@ export async function replayFailedOperationsUnbound(
         }
       }
     } catch (revertError) {
-      // go-to-k/cdkd#6106: a force-revert of a resource AWS reports gone
-      // (deleted outside cdkd) fails on every re-run, so the op is skipped
-      // with `cdkd drift`'s remedy and leaves the journal instead of failing.
-      if (
-        action === 'revert-failed-update' &&
-        (await failedUpdateResourceIsGone({ providerRegistry: ctx.providerRegistry }, op))
-      ) {
-        logger.warn(mask(`  Rollback: ${deletedOutsideCdkdMessage(op, true)}`));
-        recordRollbackSkip(skipScope, op, DELETED_OUTSIDE_SKIP_CAUSE);
-      } else {
+      // go-to-k/cdkd#6106: a gone resource's force-revert is skipped, not failed.
+      if (!(await skippedAsDeletedOutsideCdkd(action, op, logger, skipScope))) {
         // Issue #2031: the `--revert-failed` twin of `replaySingle`'s catch —
         // same plaintext bag, same DEFAULT-verbosity exposure. No registered
         // refusal is thrown on this path, so `rollbackFailureText` always takes
