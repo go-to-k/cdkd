@@ -8284,6 +8284,7 @@
         "sns-subscription-filter",
         "sns-subscription-update",
         "sqs-esm-max-concurrency",
+        "sqs-fifo-unnamed",
         "tags-propagation",
         "wide-independent"
       ],
@@ -8529,6 +8530,11 @@
         ],
         "sqs-esm-max-concurrency": [
           "l2"
+        ],
+        "sqs-fifo-unnamed": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "tags-propagation": [
           "l2"

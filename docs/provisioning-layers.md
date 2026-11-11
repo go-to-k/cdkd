@@ -253,6 +253,10 @@ from `LocationName`. When `LocationName` is an Availability Zone name rather
 than a zone id such as `use1-az5`, the create is refused; set `LocationName`
 to the zone id or declare `BucketName`.
 
+A generated FIFO queue name (`FifoQueue: true`, or the string `'true'`) ends
+with `.fifo`, which SQS requires, as CloudFormation's does. The suffix counts
+toward the 80-character limit and is kept when a long name is truncated.
+
 A generated security group name never starts with `sg-`, which EC2 refuses:
 for a stack whose name starts with `sg-` in any case, the hyphen is dropped.
 

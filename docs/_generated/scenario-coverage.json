@@ -2716,6 +2716,11 @@
       "scenarios": []
     },
     {
+      "name": "sqs-fifo-unnamed",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ssm-secure-dynamic-ref",
       "annotated": true,
       "scenarios": [
@@ -3835,6 +3840,7 @@
     "sns-subscription-filter",
     "sns-subscription-update",
     "sqs-esm-max-concurrency",
+    "sqs-fifo-unnamed",
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",
