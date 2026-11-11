@@ -415,6 +415,39 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const logged = (level: 'info' | 'warn') =>
       (getLogger()[level] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
 
+    // go-to-k/cdkd#6118: a refused UPDATE (a stateful-replacement pre-flight
+    // refusal) is still journaled, but nothing was applied, so no
+    // `--revert-failed` remedy is printed for it.
+    it('a refused UPDATE keeps its journal record but prints no --revert-failed remedy (#6118)', async () => {
+      const { engine, provider } = failingUpdateEngine(undefined);
+      provider.update.mockRejectedValue(
+        markRefusedBeforeApplying(new Error('B requires replacement but it is stateful'))
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+      const retained = journal.appendRollbackJournalSegment.mock.calls[1]![2];
+      expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(false);
+    });
+
+    it('a refused UPDATE beside a non-refused one still prints the remedy (mixed set)', async () => {
+      const { engine, provider } = failingUpdateEngine(undefined, ['B', 'C']);
+      provider.update.mockImplementation((id: string) =>
+        Promise.reject(
+          id === 'B' ? markRefusedBeforeApplying(new Error('B refused')) : new Error('C failed')
+        )
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
+    it('control: a non-refused failed UPDATE still prints the --revert-failed remedy', async () => {
+      const { engine } = failingUpdateEngine(undefined);
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
     it('names the resource as deleted outside cdkd and keeps no failed-only segment', async () => {
       const { engine, provider } = failingUpdateEngine(gone);
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
@@ -531,6 +564,73 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         const notes = warns.filter((m) => m.includes('deleted outside cdkd'));
         expect(notes.map((m) => m.split(' ')[0])).toEqual(onlyGone ? ['B', 'C'] : ['B']);
         expect(notes[0]).toContain("'cdkd rollback --revert-failed' drops its record.");
+        expect(warns.some((m) => m.includes('Revert it with:'))).toBe(expectHint);
+      }
+    );
+
+    // go-to-k/cdkd#6118: the partial-rollback warning names `--revert-failed`
+    // only when a kept op may have applied something.
+    it.each([
+      ['every failed op was refused before applying', true, false],
+      ['one failed op was not refused', false, true],
+    ] as const)(
+      'a partial rollback where %s (#6118)',
+      async (_label, allRefused, expectHint) => {
+        const changes = new Map<string, ResourceChange>([
+          [
+            'A',
+            {
+              logicalId: 'A',
+              changeType: 'UPDATE',
+              resourceType: 'AWS::S3::Bucket',
+              desiredProperties: { p: 'new' },
+              currentProperties: {},
+              propertyChanges: [{ path: 'p', requiresReplacement: false }],
+            } as unknown as ResourceChange,
+          ],
+          ['B', updateChange('B')],
+          ['C', updateChange('C')],
+        ]);
+        const engine = buildEngine({
+          changes,
+          deps: { A: [], B: ['A'], C: ['A'] },
+          noRollback: false,
+          currentEtag: 'e0',
+          currentResources: {
+            A: { ...record('A'), resourceType: 'AWS::S3::Bucket', properties: {} },
+            B: record('B'),
+            C: record('C'),
+          },
+        });
+        // A's revert is skipped (no `properties` bag, issue #3203).
+        (engine as unknown as { options: Record<string, unknown> }).options['onCurrentStateLoaded'] =
+          async (_stack: string, state: StackState | undefined) => {
+            delete (state!.resources['A'] as { properties?: unknown }).properties;
+          };
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { update: ReturnType<typeof vi.fn>; readCurrentState?: unknown };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.update.mockImplementation((logicalId: string) =>
+          logicalId === 'A'
+            ? Promise.resolve({ physicalId: 'phys-A-old', wasReplaced: false })
+            : Promise.reject(
+                allRefused || logicalId === 'B'
+                  ? markRefusedBeforeApplying(new Error(`${logicalId} refused`))
+                  : new Error(`${logicalId} failed`)
+              )
+        );
+        provider.readCurrentState = vi.fn(() => Promise.resolve({}));
+
+        await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+        const warns = logged('warn');
+        expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
         expect(warns.some((m) => m.includes('Revert it with:'))).toBe(expectHint);
       }
     );
@@ -834,6 +934,29 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const infoCalls = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
     expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(true);
     expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(true);
+  });
+
+  it('next deploy prints no revert note for a failed-only journal of refused UPDATEs (#6118)', async () => {
+    const changes = new Map([['A', makeChange('A')]]);
+    const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
+    journal.loadRollbackJournal.mockResolvedValue({
+      journalVersion: 1,
+      stackName,
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'auto-rollback-clean',
+          initialDeploy: false,
+          operations: [],
+          failedOperations: [{ logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket' }],
+        },
+      ],
+    });
+    await engine.deploy(stackName, template);
+    const infoCalls = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+    expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(false);
+    expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(false);
   });
 
   // go-to-k/cdkd#3252: the next deploy settles a journaled abandoned Cloud
