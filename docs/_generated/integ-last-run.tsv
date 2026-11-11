@@ -322,6 +322,7 @@ raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph cle
 rds-aurora	2026-11-09T12:13:54Z	PASS	4754	verify.sh	rc ok, orph clean (#5639 DBInstanceParameterGroupName, PR #6068)
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
+rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
 rds-express-cluster	2026-11-10T12:30:00Z	PASS	1358	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-11-10T17:28:58Z	PASS	1239	verify.sh	rc ok, orph clean; own bucket
