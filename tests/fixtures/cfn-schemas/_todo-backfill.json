@@ -31,8 +31,6 @@
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
       "ReplicationSourceIdentifier",
-      "SnapshotIdentifier",
-      "SourceDbClusterResourceId",
       "SourceRegion"
     ],
     "AWS::RDS::DBInstance": [

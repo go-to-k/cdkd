@@ -244,8 +244,14 @@ function armCluster(_physicalId: string, bag: Bag): void {
       forwarding = input['EnableLocalWriteForwarding'] === true;
       return { DBCluster: { DBClusterIdentifier: CLUSTER_ID } };
     },
-    // go-to-k/cdkd#5639: a point-in-time restore answers like a create.
+    // go-to-k/cdkd#5639: either restore answers like a create, after the read
+    // of its snapshot or of its source's automated backups.
     RestoreDBClusterToPointInTimeCommand: () => ({ DBCluster: { DBClusterIdentifier: CLUSTER_ID } }),
+    RestoreDBClusterFromSnapshotCommand: () => ({ DBCluster: { DBClusterIdentifier: CLUSTER_ID } }),
+    DescribeDBClusterSnapshotsCommand: () => ({ DBClusterSnapshots: [{ EngineVersion: '16.4' }] }),
+    DescribeDBClusterAutomatedBackupsCommand: () => ({
+      DBClusterAutomatedBackups: [{ Status: 'active', StorageEncrypted: false }],
+    }),
     EnableHttpEndpointCommand: () => {
       httpEndpoint = true;
       return {};
@@ -626,6 +632,30 @@ const CLUSTER_CASE: TypeCase = {
         RestoreToTime: '2026-11-10T00:30:00Z',
       },
       variants: { RestoreToTime: '2026-11-09T12:00:00Z' },
+      expectedSilent: { ...CLUSTER_ENGINE_SILENT, ...RESTORE_ENGINE_SILENT },
+    },
+    {
+      name: 'a snapshot restore (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        SnapshotIdentifier: 'manual-snapshot-1',
+        BackupRetentionPeriod: 7,
+        DeletionProtection: true,
+      },
+      variants: { SnapshotIdentifier: 'manual-snapshot-2' },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        'update-remove:DeletionProtection': KEPT('DeletionProtection'),
+      },
+    },
+    {
+      name: 'a point-in-time restore from a source resource id (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        SourceDbClusterResourceId: 'cluster-SOURCEID123',
+        UseLatestRestorableTime: true,
+      },
+      variants: { SourceDbClusterResourceId: 'cluster-SOURCEID456' },
       expectedSilent: { ...CLUSTER_ENGINE_SILENT, ...RESTORE_ENGINE_SILENT },
     },
     {

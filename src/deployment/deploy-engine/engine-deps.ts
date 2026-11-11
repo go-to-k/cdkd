@@ -154,6 +154,7 @@ export function maskingDeps(this: DeployEngine): MaskingDeps {
 export function replacementDeps(this: DeployEngine): ReplacementDeps {
   return {
     options: this.options,
+    providerRegistry: () => this.providerRegistry,
     stackRegion: this.stackRegion,
     logger: this.logger,
     secretsRun: () => this.secretsRun,

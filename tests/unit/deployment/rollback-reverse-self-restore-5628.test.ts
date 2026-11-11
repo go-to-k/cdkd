@@ -106,6 +106,30 @@ describe('reversing a delete-first replacement whose old record restores from th
     expect(state.Cluster.physicalId).toBe('cluster-new');
   });
 
+  // go-to-k/cdkd#5639: an RDS point-in-time restore may name its source by the
+  // resource id only the new cluster's record holds.
+  it.each([
+    ['the new cluster\'s recorded id', 'CLUSTER-NEWID', 'AWS::RDS::DBCluster', 0],
+    ['another id', 'cluster-other', 'AWS::RDS::DBCluster', 1],
+    ['the id on a type that never restores by it', 'cluster-newid', TYPE, 1],
+    ['the id on a Neptune cluster', 'cluster-newid', 'AWS::Neptune::DBCluster', 1],
+    ['an id, on a record holding none', 'cluster-newid', 'AWS::RDS::DBCluster', 1, {}],
+  ] as const)('a SourceDbClusterResourceId naming %s', async (_name, id, type, deletes, attributes?) => {
+    const m = harness();
+    const current = { ...rec('cluster-new', {}), resourceType: type };
+    current.attributes = attributes ?? { DBClusterResourceId: 'cluster-newid' };
+    const state = { Cluster: current };
+    const operation = op({ SourceDbClusterResourceId: id, UseLatestRestorableTime: true });
+    operation.resourceType = type;
+    operation.previousState = { ...operation.previousState!, resourceType: type };
+    const result = await replayRollback([operation], state, 'S', m.ctx);
+    expect(m.calls.filter((c) => c.startsWith('delete'))).toHaveLength(deletes);
+    if (deletes === 0) {
+      expect(result.failures).toBe(1);
+      expect(m.logged.join('\n')).toContain("SourceDbClusterResourceId must be another cluster's");
+    }
+  });
+
   it('deletes then re-creates for another source', async () => {
     const m = harness();
     const state: Record<string, ResourceState> = { Cluster: rec('cluster-new', {}) };

@@ -12,7 +12,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **register-providers.ts** - Which types HAVE an SDK provider (`provider-registry.ts` decides which one RUNS a resource), from the classes **provider-classes.ts** re-exports, loaded on demand (#4521).
 
-- **provider-registry.ts** - The ROUTING decision: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` (also `cdkd diff`'s) says otherwise (escapes: `STICKY_CC_MIGRATION_EXEMPT`, #2719; differing ids: strict normalizer, **sticky-exempt-physical-id.ts**, #5654); an SDK provider with no SDK-unwired property -> it; else -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic too**, `integ-destroy`-scoped. Method bodies live in **provider-registry/** (`routing.ts`, `validate.ts`, `report.ts`; #5835), same scope.
+- **provider-registry.ts** - The ROUTING decision: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` (also `cdkd diff`'s) says otherwise (escapes: `STICKY_CC_MIGRATION_EXEMPT`, #2719; differing ids: strict normalizer, **sticky-exempt-physical-id.ts**, #5654); an SDK provider with no SDK-unwired property -> it; else -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic too**, `integ-destroy`-scoped. Bodies: **provider-registry/** (#5835), same scope.
 
 - **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it.
 
@@ -32,7 +32,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
 
-- **restore-source-guard.ts** - Refuses a restore from the cluster or its automated snapshot before any delete, rollback's too (#5628). A LEAF.
+- **restore-source-guard.ts** - Refuses a restore from the cluster or its automated snapshot before any delete, rollback's (#5628); unrecorded ids: `deployment/restore-source-identity.ts`; a LEAF.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 

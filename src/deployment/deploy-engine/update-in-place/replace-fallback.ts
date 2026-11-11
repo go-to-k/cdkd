@@ -56,6 +56,7 @@ import { equalIdNamesDifferentResources } from '../../type-change-guard.js';
 import type { RecordedSecretValues } from '../../secret-redaction.js';
 import { noteRetainedResource } from '../../../provisioning/providers/create-token-ledger.js';
 import { refuseRestoreFromItself } from '../../../provisioning/restore-source-guard.js';
+import { verifyRestoreSourceIdentity } from '../../restore-source-identity.js';
 import { maskedInputSources } from '../resolver-context.js';
 import type { ProviderRoutingDecision } from '../../../provisioning/provider-registry.js';
 
@@ -345,6 +346,18 @@ export async function replaceFallbackFor(
     refuseRestoreFromItself(resourceType, replProps, currentResource.physicalId, logicalId, {
       region: engine.stackRegion,
       account: engine.options.consumerAccount,
+      attributes: currentResource.attributes,
+    });
+    // go-to-k/cdkd#5639: a record with no resource id, read live.
+    await verifyRestoreSourceIdentity({
+      resourceType,
+      logicalId,
+      physicalId: currentResource.physicalId,
+      properties: replProps,
+      attributes: currentResource.attributes,
+      stackName,
+      region: engine.stackRegion,
+      provider: () => engine.providerRegistry.getProvider(resourceType),
     });
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
     // old resource before the fallback replacement's delete. The

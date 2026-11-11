@@ -157,6 +157,8 @@ export class ReplacementRunState {
  */
 export interface ReplacementDeps {
   options: DeployEngine['options'];
+  /** go-to-k/cdkd#5639: the live identity read of a restore source (`restore-source-identity.ts`). */
+  providerRegistry: () => DeployEngine['providerRegistry'];
   stackRegion: DeployEngine['stackRegion'];
   logger: DeployEngine['logger'];
   secretsRun: () => DeployEngine['secretsRun'];

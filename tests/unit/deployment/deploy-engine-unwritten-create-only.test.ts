@@ -304,9 +304,10 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
   });
 
   it('names the deletion protection a replacement cannot clear (#2610)', async () => {
+    // A DBCluster create-only key still SDK-unwired (go-to-k/cdkd#5639 wired SnapshotIdentifier).
     const recorded = {
       Engine: 'aurora-mysql',
-      SnapshotIdentifier: 'snap-1',
+      SourceRegion: 'us-west-2',
       DeletionProtection: true,
     };
     const change: ResourceChange = {
@@ -317,14 +318,14 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
       desiredProperties: recorded,
       propertyChanges: [
         {
-          path: 'SnapshotIdentifier',
+          path: 'SourceRegion',
           oldValue: undefined,
-          newValue: 'snap-1',
+          newValue: 'us-west-2',
           requiresReplacement: true,
         },
       ],
     };
-    expect(getPropertyCoverage('AWS::RDS::DBCluster')?.createOnlyDrops.has('SnapshotIdentifier')).toBe(
+    expect(getPropertyCoverage('AWS::RDS::DBCluster')?.createOnlyDrops.has('SourceRegion')).toBe(
       true
     );
     const engine = makeEngine();
@@ -340,7 +341,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
           attributes: {},
           dependencies: [],
           provisionedBy: 'sdk',
-          acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
+          acceptedCreateOnlyDrops: ['SourceRegion'],
         },
       } as unknown as Record<string, never>,
       'MyStack',
