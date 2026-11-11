@@ -65,11 +65,19 @@ const DESIRED = {
       Sid: 'AWSLogDeliveryWrite',
       Effect: 'Allow',
       Principal: { Service: 'delivery.logs.amazonaws.com' },
-      Action: 's3:PutObject',
+      Action: ['s3:PutObject'],
       Resource: `arn:aws:s3:::${BUCKET}/AWSLogs/*`,
     },
   ],
 };
+/**
+ * DESIRED as GetBucketPolicy returns it: S3 collapses a one-element `Action`
+ * list to its scalar (probed live, us-east-1, 2026-11-11).
+ */
+const DESIRED_AS_S3_RETURNS = JSON.stringify({
+  ...DESIRED,
+  Statement: [{ ...DESIRED.Statement[0], Action: 's3:PutObject' }],
+});
 const PROPERTIES = { Bucket: BUCKET, PolicyDocument: DESIRED };
 /** What the log-delivery service attaches on its own (Sid suffixed `1`). */
 const AUTO_ATTACHED = JSON.stringify({
@@ -272,12 +280,12 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
 
     it('the engine retry proceeds over the policy that Put attached', async () => {
       // Attempt 1: no policy, Put answers 500 but lands. Attempt 2: the look
-      // finds the policy attempt 1 sent (AWS's own spelling) and proceeds.
+      // finds the policy attempt 1 sent, in S3's own spelling, and proceeds.
       let landed = false;
       let puts = 0;
       respond(
         () =>
-          landed ? Promise.resolve({ Policy: JSON.stringify(DESIRED) }) : Promise.reject(noPolicy()),
+          landed ? Promise.resolve({ Policy: DESIRED_AS_S3_RETURNS }) : Promise.reject(noPolicy()),
         () => {
           puts++;
           landed = true;

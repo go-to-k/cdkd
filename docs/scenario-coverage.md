@@ -316,6 +316,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`rollback-command`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-command/)
 - [`rollback-replay-cc-generated-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-replay-cc-generated-name/)
 - [`s3-analytics-inventory`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-analytics-inventory/)
+- [`s3-bucket-policy-existing`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-bucket-policy-existing/)
 - [`s3-event-notification`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-event-notification/)
 - [`s3-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-fix-forward-orphan/)
 - [`s3-lifecycle`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-lifecycle/)

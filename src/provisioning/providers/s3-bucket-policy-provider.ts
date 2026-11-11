@@ -409,7 +409,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof NoSuchBucket) return { kind: 'absent' };
       const name =
-        error !== null && typeof error === 'object' ? (error as { name?: unknown }).name : undefined;
+        error !== null && typeof error === 'object'
+          ? (error as { name?: unknown }).name
+          : undefined;
       if (name === 'NoSuchBucketPolicy' || name === 'NoSuchBucket') return { kind: 'absent' };
       if (name === 'AccessDenied') return { kind: 'unreadable', error };
       throw error;

@@ -300,6 +300,9 @@ export const CASES_2: TypeCase[] = [
     provider: () => new S3BucketPolicyProvider(),
     physicalId: 'b',
     createOnly: createOnlyOf('AWS::S3::BucketPolicy'),
+    // go-to-k/cdkd#6109: create() refuses a bucket that already holds a
+    // policy, so the bucket under probe holds none.
+    arm: () => setOutputOverrides({ GetBucketPolicyCommand: () => ({ Policy: undefined }) }),
     wholeFromNext: { keys: (k) => k === 'PolicyDocument', reason: WHOLE_FROM_NEXT },
     exempt: {},
     targets: [],

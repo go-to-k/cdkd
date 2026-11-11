@@ -2465,6 +2465,11 @@
       ]
     },
     {
+      "name": "s3-bucket-policy-existing",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-cloudfront",
       "annotated": true,
       "scenarios": [
@@ -3830,6 +3835,7 @@
     "rollback-command",
     "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
+    "s3-bucket-policy-existing",
     "s3-event-notification",
     "s3-fix-forward-orphan",
     "s3-lifecycle",
