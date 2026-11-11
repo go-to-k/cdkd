@@ -113,10 +113,18 @@ jobs:
       # the two shells disagree on an unquoted `(` after a displayed value.
       # apt has hung here ~45 min until cancelled (docs/tooling-backlog.md);
       # a passing run took at most 331 s (50 runs, measured 2026-10-23), so
-      # 12 min fails fast and a re-run passes.
+      # 12 min fails fast and a re-run passes. When apt cannot reach its mirror
+      # (2026-11-11: hours of `Temporary failure resolving 'security.ubuntu.com'`
+      # on every branch), the runner's Homebrew installs zsh from its own CDN.
       - name: install zsh for the paste harness
         timeout-minutes: 12
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+        run: |
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
+            echo "::warning::apt could not install zsh; falling back to Homebrew"
+            /home/linuxbrew/.linuxbrew/bin/brew install zsh
+            sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
+          fi
+          zsh -f -c 'exit 0'
       # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
       # builds. `tests/unit/cli/version.test.ts` skips itself when `dist/` is
       # absent -- correct for a contributor who has not built, and correct for
@@ -351,7 +359,13 @@ jobs:
       # the two shells disagree on an unquoted `(` after a displayed value.
       - name: install zsh for the paste harness
         timeout-minutes: 12  # why: see the check-build-test step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+        run: |
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
+            echo "::warning::apt could not install zsh; falling back to Homebrew"
+            /home/linuxbrew/.linuxbrew/bin/brew install zsh
+            sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
+          fi
+          zsh -f -c 'exit 0'
       - run: vp run test:once-leak
 
       # Prove the detector still REJECTS, not just that it ran. With the
