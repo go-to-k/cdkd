@@ -360,6 +360,26 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       expect(sentPuts()).toBe(0);
     });
 
+    it('a nested-stack child gets no cdkd refactor advice', async () => {
+      respond(() => Promise.resolve({ Policy: JSON.stringify(DESIRED) }));
+      const records = recordsHolding({
+        OldBucketPolicy: { resourceType: RESOURCE_TYPE, physicalId: BUCKET, properties: {} },
+      });
+
+      const thrown = await capture(() =>
+        withStackScope(
+          { stackName: 'Parent~Child', stackInstanceId: undefined, nameGenerations: undefined },
+          () =>
+            withStackRecords(records, () =>
+              provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+            )
+        )
+      );
+
+      expect(thrown.message).toContain('Deploy the removal of OldBucketPolicy first');
+      expect(thrown.message).not.toContain('cdkd refactor');
+    });
+
     it('a record of another TYPE or another bucket is no holder', async () => {
       respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
       const records = recordsHolding({

@@ -503,8 +503,12 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       refuse(
         `This stack's ${holder} already holds the policy on that bucket: a BucketPolicy ` +
           `construct moved or renamed gets a new logical id, which is created before the old ` +
-          `one is deleted. Nothing was sent. Move the record with 'cdkd refactor', or deploy ` +
-          `the removal of ${holder} first. Do not delete or import the existing policy: the ` +
+          `one is deleted. Nothing was sent. ` +
+          // `cdkd refactor` works on a top-level stack only, like `cdkd import`.
+          (getCurrentStackName()?.includes('~') === true
+            ? 'Deploy'
+            : `Move the record with 'cdkd refactor', or deploy`) +
+          ` the removal of ${holder} first. Do not delete or import the existing policy: the ` +
           `removal of ${holder} would then delete it, leaving the bucket with no policy.`
       );
     }
