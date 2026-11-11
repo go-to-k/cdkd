@@ -250,10 +250,12 @@ export async function revertUnsettledFailedUpdates(
   if (replay.interrupted) out.interrupted = true;
   const pending = new Set(replay.remainingFailedOps);
   const skipped = new Set(replay.skippedOps ?? []);
+  // go-to-k/cdkd#6106: such a skip printed its own remedy; no retry advice.
+  const deletedOutside = new Set(replay.deletedOutsideOps ?? []);
   ops.forEach((op, k) => {
     const { index, own: marks } = ready[k]!;
     if (pending.has(op) || skipped.has(op)) {
-      if (!replay.interrupted) {
+      if (!replay.interrupted && !deletedOutside.has(op)) {
         logger.warn(
           safeMsg`${op.logicalId} (${op.resourceType}): the automatic rollback could not revert ${marks.names.size > 0 ? `what the failed update left unsettled (${[...marks.names].join(', ')})` : 'the failed update'} (see above). ${fallback(marks.names)}`
         );

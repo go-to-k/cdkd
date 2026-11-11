@@ -362,6 +362,188 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(infos.some((m) => m.includes('pre-failure record was kept'))).toBe(true);
   });
 
+  // go-to-k/cdkd#6106: an UPDATE that failed because its resource was deleted
+  // outside cdkd is no `--revert-failed` target: the revert's update fails the
+  // same way and the journal asks for a re-run forever.
+  describe('a failed UPDATE of a resource deleted outside cdkd (go-to-k/cdkd#6106)', () => {
+    const updateChange = (logicalId: string): ResourceChange =>
+      ({
+        logicalId,
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        desiredProperties: { p: 'new' },
+        currentProperties: { p: 'old' },
+        propertyChanges: [{ path: 'p', requiresReplacement: false }],
+      }) as unknown as ResourceChange;
+    const record = (logicalId: string): ResourceState => ({
+      physicalId: `phys-${logicalId}-old`,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { p: 'old' },
+      attributes: {},
+      dependencies: [],
+    });
+    type Read = (physicalId: string) => Promise<unknown>;
+    function failingUpdateEngine(read: Read | undefined, failing: string[] = ['B']) {
+      const changes = new Map<string, ResourceChange>([['A', makeChange('A')]]);
+      const currentResources: Record<string, ResourceState> = {};
+      for (const id of failing) {
+        changes.set(id, updateChange(id));
+        currentResources[id] = record(id);
+      }
+      const engine = buildEngine({
+        changes,
+        deps: Object.fromEntries([...changes.keys()].map((id) => [id, []])),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources,
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { update: ReturnType<typeof vi.fn>; readCurrentState?: unknown };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(new Error('QueueDoesNotExist'));
+      if (read !== undefined) provider.readCurrentState = vi.fn(read);
+      return { engine, provider };
+    }
+    const gone: Read = (id) =>
+      Promise.resolve(id.endsWith('-old') ? RESOURCE_NOT_FOUND : { p: 'old' });
+    const logged = (level: 'info' | 'warn') =>
+      (getLogger()[level] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+
+    it('names the resource as deleted outside cdkd and keeps no failed-only segment', async () => {
+      const { engine, provider } = failingUpdateEngine(gone);
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(provider.readCurrentState).toHaveBeenCalledWith(
+        'phys-B-old',
+        'B',
+        'AWS::SQS::Queue',
+        { p: 'old' }
+      );
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
+      // Only the auto-rollback-started segment: nothing is re-recorded.
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+      const warns = logged('warn');
+      const note = warns.find((m) => m.includes('deleted outside cdkd'));
+      expect(note).toContain('B (AWS::SQS::Queue): AWS reports this resource no longer exists');
+      expect(note).toContain('no rollback record is kept for it');
+      expect(note).toContain('remove it from the CDK app and deploy');
+      expect([...logged('info'), ...warns].some((m) => m.includes('--revert-failed'))).toBe(false);
+    });
+
+    it('re-records only the ops whose resource still exists', async () => {
+      const { engine } = failingUpdateEngine(
+        (id) => Promise.resolve(id === 'phys-B-old' ? RESOURCE_NOT_FOUND : { p: 'old' }),
+        ['B', 'C']
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+      const retained = journal.appendRollbackJournalSegment.mock.calls[1]![2];
+      expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['C']);
+      expect(logged('warn').filter((m) => m.includes('deleted outside cdkd'))).toHaveLength(1);
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
+    // Only AWS's own not-found answer counts: every other outcome keeps the
+    // record, as before the fix.
+    it.each([
+      ['the read returns properties', () => Promise.resolve({ p: 'old' })],
+      ['the read throws', () => Promise.reject(new Error('AccessDenied'))],
+      ['the read answers nothing', () => Promise.resolve(undefined)],
+    ] as const)('keeps the failed-only segment when %s', async (_label, read) => {
+      const { engine } = failingUpdateEngine(read);
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+      const retained = journal.appendRollbackJournalSegment.mock.calls[1]![2];
+      expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(logged('warn').some((m) => m.includes('deleted outside cdkd'))).toBe(false);
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
+    // A rollback that SKIPPED an op keeps the full segment; the gone op is
+    // named there too, and the `--revert-failed` line is not printed for it.
+    it.each([
+      ['only the gone op remains', true, false],
+      ['an op whose resource exists remains too', false, true],
+    ] as const)(
+      'a partial rollback where %s',
+      async (_label, onlyGone, expectHint) => {
+        const aChange = {
+          logicalId: 'A',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          desiredProperties: { p: 'new' },
+          currentProperties: {},
+          propertyChanges: [{ path: 'p', requiresReplacement: false }],
+        } as unknown as ResourceChange;
+        const changes = new Map<string, ResourceChange>([
+          ['A', aChange],
+          ['B', updateChange('B')],
+          ['C', updateChange('C')],
+        ]);
+        const engine = buildEngine({
+          changes,
+          // A completes before B and C fail.
+          deps: { A: [], B: ['A'], C: ['A'] },
+          noRollback: false,
+          currentEtag: 'e0',
+          currentResources: {
+            A: { ...record('A'), resourceType: 'AWS::S3::Bucket', properties: {} },
+            B: record('B'),
+            C: record('C'),
+          },
+        });
+        // A's revert is skipped (no `properties` bag, issue #3203).
+        (engine as unknown as { options: Record<string, unknown> }).options['onCurrentStateLoaded'] =
+          async (_stack: string, state: StackState | undefined) => {
+            delete (state!.resources['A'] as { properties?: unknown }).properties;
+          };
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { update: ReturnType<typeof vi.fn>; readCurrentState?: unknown };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.update.mockImplementation((logicalId: string) =>
+          logicalId === 'A'
+            ? Promise.resolve({ physicalId: 'phys-A-old', wasReplaced: false })
+            : Promise.reject(new Error('QueueDoesNotExist'))
+        );
+        provider.readCurrentState = vi.fn((id: string) =>
+          Promise.resolve(id === 'phys-B-old' || (onlyGone && id === 'phys-C-old') ? RESOURCE_NOT_FOUND : {})
+        );
+
+        await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+        expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+        const warns = logged('warn');
+        expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+        const notes = warns.filter((m) => m.includes('deleted outside cdkd'));
+        expect(notes.map((m) => m.split(' ')[0])).toEqual(onlyGone ? ['B', 'C'] : ['B']);
+        expect(notes[0]).toContain("'cdkd rollback --revert-failed' drops its record.");
+        expect(warns.some((m) => m.includes('Revert it with:'))).toBe(expectHint);
+      }
+    );
+
+    it('keeps the failed-only segment when the provider has no read path', async () => {
+      const { engine } = failingUpdateEngine(undefined);
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+  });
+
   it('clean auto-rollback whose failed-only re-write FAILS claims no kept record', async () => {
     const changes = new Map([
       ['A', makeChange('A')],

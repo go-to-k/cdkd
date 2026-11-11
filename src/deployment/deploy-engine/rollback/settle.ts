@@ -31,6 +31,11 @@ import { hasReadableOrphans } from '../../../state/malformed-resources-bag.js';
 import type { RollbackDeps } from './deps.js';
 import { rollbackExecutorContext } from './context.js';
 import { writeRollbackJournalSegment } from './journal-write.js';
+import {
+  deletedOutsideCdkdMessage,
+  partitionDeletedOutsideCdkd,
+} from '../../deleted-outside-cdkd.js';
+import { deletedOutsideReadDeps } from './deleted-outside-read.js';
 
 /**
  * Who else holds a resource, for the success settle: one same-prefix scan of the bucket's other stacks
@@ -305,6 +310,13 @@ export async function settleJournalAfterCleanRollback(
     }
     return true;
   }
+  // go-to-k/cdkd#6106: a failed UPDATE of a resource AWS reports gone is no
+  // `--revert-failed` target (the revert's update fails the same way), so it
+  // is named as deleted outside cdkd and not re-recorded.
+  const { gone, kept: revertable } = await partitionDeletedOutsideCdkd(
+    deletedOutsideReadDeps(deps),
+    failedOperations
+  );
   try {
     await deps.stateBackend.popRollbackJournalSegment(stackName, deps.stackRegion);
   } catch (err) {
@@ -316,11 +328,13 @@ export async function settleJournalAfterCleanRollback(
     );
     return false;
   }
+  for (const op of gone) deps.logger.warn(deletedOutsideCdkdMessage(op, true));
+  if (revertable.length === 0) return true;
   const kept = await writeRollbackJournalSegment(
     deps,
     stackName,
     [],
-    failedOperations,
+    revertable,
     'auto-rollback-clean',
     initialDeploy
   );

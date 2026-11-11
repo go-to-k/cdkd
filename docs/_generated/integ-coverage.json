@@ -8292,6 +8292,7 @@
         "sqs-esm-max-concurrency",
         "sqs-fifo-unnamed",
         "tags-propagation",
+        "update-deleted-outside",
         "wide-independent"
       ],
       "signals": {
@@ -8546,6 +8547,9 @@
           "literal"
         ],
         "tags-propagation": [
+          "l2"
+        ],
+        "update-deleted-outside": [
           "l2"
         ],
         "wide-independent": [

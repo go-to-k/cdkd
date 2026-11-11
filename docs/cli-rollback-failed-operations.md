@@ -61,8 +61,23 @@ automatic rollback reverts it itself and drops its entry
 ([The resource whose update failed](rollback.md#the-resource-whose-update-failed)).
 Its entry stays for `--revert-failed` only when that revert did not happen.
 
+A failed update of a resource deleted outside cdkd is a second exception.
+After the failure cdkd reads the resource. When AWS reports it gone, the
+deploy says it was deleted outside cdkd and keeps no entry for it, since
+forcing old properties onto a missing resource fails the same way. The warning
+gives the remedy `cdkd drift` gives: remove the resource from the app and
+deploy, then restore it and deploy again. A read that fails, or a type with no
+read, keeps the entry.
+
 An automatic rollback that failed or skipped an operation keeps the whole
-segment instead.
+segment instead. If its failed update's resource is gone, the deploy names it
+the same way and does not suggest `--revert-failed` for it.
+
+`--revert-failed` itself checks the same thing: when forcing a failed update
+back fails and AWS reports the resource gone, the operation is skipped with
+that warning (exit `2`) and leaves the journal, so a re-run does not try it
+again. A replacement that deleted the old resource itself is not treated this
+way; see the edge cases below.
 
 ### Edge cases
 

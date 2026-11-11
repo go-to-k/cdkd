@@ -431,6 +431,7 @@ termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
 throttle-wide-dag	2026-11-05T12:05:22Z	PASS	241	verify.sh	rc ok, orph clean
 type-change-replacement	2026-11-04T22:10:47Z	PASS	210	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
+update-deleted-outside	2026-11-11T11:02:54Z	PASS	139	verify.sh	rc ok, orph clean
 update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
 update-replace	2026-11-07T14:32:37Z	PASS	106	verify.sh	#6011 deploy-engine execute split head; rc ok, orph clean
 vpc-lambda	2026-11-10T16:15:04Z	PASS	339	standard	deploy+destroy rc 0, orph clean
