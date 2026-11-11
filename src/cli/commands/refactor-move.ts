@@ -18,6 +18,7 @@ import {
   changedReferenceInDiff,
   changedReferencePath,
   changedReferenceReason,
+  differingRemedy,
   propertiesChangedReason,
   isPairableType,
   looselyEqual,
@@ -347,8 +348,7 @@ export function renderMovePlan(plan: MovePlan): string[] {
   for (const { move: m, paths } of plan.differing) {
     lines.push(
       safeMsg`  Not moved: ${m.fromStack}.${m.from} -> ${m.toStack}.${m.to} (${m.resourceType}) also ` +
-        safeMsg`changes ${paths.join(', ')}. cdkd refactor keeps only an unchanged resource: revert ` +
-        'the property change, run cdkd refactor, then deploy the change.'
+        safeMsg`changes ${paths.join(', ')}. ${differingRemedy(paths)}`
     );
   }
   for (const group of plan.ambiguous) {

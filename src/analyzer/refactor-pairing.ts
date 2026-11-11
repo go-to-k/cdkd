@@ -261,9 +261,21 @@ export function changedReferenceInDiff(
   });
 }
 
+const REFERENCE_PATH_PREFIX = 'the resource it references, ';
+
 /** The change a pair {@link changedReferenceInDiff} names shows, as a `differing` path. */
 export function changedReferencePath(reference: string): string {
-  return `the resource it references, ${reference}`;
+  return `${REFERENCE_PATH_PREFIX}${reference}`;
+}
+
+/** What a `differing` row tells the user to do, after the paths it changes. */
+export function differingRemedy(paths: readonly string[]): string {
+  return paths.some((p) => p.startsWith(REFERENCE_PATH_PREFIX))
+    ? 'As cdk refactor does, cdkd treats it as a new resource (a Lambda version or an API ' +
+        'Gateway deployment after a change is one). If it was renamed, revert that change, run ' +
+        'cdkd refactor, then deploy the change.'
+    : 'cdkd refactor keeps only an unchanged resource: revert the property change, run cdkd ' +
+        'refactor, then deploy the change.';
 }
 
 /** Why a mapping-file pair {@link changedReferenceInDiff} names is refused. */

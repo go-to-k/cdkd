@@ -150,6 +150,9 @@ describe('planMoves', () => {
     expect(changed.differing).toEqual([
       expect.objectContaining({ paths: ['the resource it references, Fn'] }),
     ]);
+    expect(renderMovePlan(changed).join('\n')).toMatch(
+      /Not moved: A\.Old -> B\.New .* references, Fn\. As cdk refactor does, cdkd treats it as a new resource/
+    );
     // Named in a mapping file: refused, with the remedy.
     const named = await planMoves(mk('fn-v2'), sameEnv, [
       { region: 'r', env: 'same-env', fromStack: 'A', from: 'Old', toStack: 'B', to: 'New' },

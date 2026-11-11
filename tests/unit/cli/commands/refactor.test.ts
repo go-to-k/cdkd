@@ -387,7 +387,7 @@ describe('a rename referencing a resource the deploy changes', () => {
       },
     ]);
     expect(renderRefactorPlan(p).join('\n')).toMatch(
-      /Not refactored: VerOld -> VerNew \(AWS::Lambda::Version\) also changes the resource it references, Fn\./
+      /Not refactored: VerOld -> VerNew \(AWS::Lambda::Version\) also changes the resource it references, Fn\. As cdk refactor does, cdkd treats it as a new resource/
     );
   });
 
