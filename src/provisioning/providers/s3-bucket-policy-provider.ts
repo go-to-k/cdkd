@@ -62,6 +62,14 @@ const IAM_UNIQUE_ID_RE = /^A[A-Z0-9]{15,}$/;
  */
 const oaiCanonicalUserIdCache = new Map<string, string | null>();
 
+/**
+ * How often, and how far apart, a create re-reads a bucket policy before
+ * refusing it as another owner's (go-to-k/cdkd#6109): S3 may still return a
+ * policy a delete removed seconds ago.
+ */
+const POLICY_RECHECKS = 3;
+const POLICY_RECHECK_DELAY_MS = 5_000;
+
 /** What a create's look at the bucket found (go-to-k/cdkd#6109). */
 type ExistingBucketPolicy =
   | { kind: 'absent' }
@@ -151,6 +159,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 export class S3BucketPolicyProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketPolicyProvider');
+  /** The wait between policy re-reads; replaced by tests. */
+  sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::S3::BucketPolicy', new Set(['Bucket', 'PolicyDocument'])],
@@ -213,6 +223,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         context?.maskSecrets
       );
     }
+    // The window between this read and the Put cannot be closed: S3 has no
+    // conditional PutBucketPolicy, so a policy attached in between is still
+    // replaced.
     await this.decideOnExistingPolicy(
       logicalId,
       resourceType,
@@ -409,7 +422,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       const resp = await this.s3Client.send(new GetBucketPolicyCommand({ Bucket: bucketName }));
       return resp.Policy ? { kind: 'present', policy: resp.Policy } : { kind: 'absent' };
     } catch (error) {
-      if (error instanceof NoSuchBucket) return { kind: 'absent' };
+      // By NAME, which also covers the SDK's `NoSuchBucket` class (its
+      // instances carry that name).
       const name =
         error !== null && typeof error === 'object'
           ? (error as { name?: unknown }).name
@@ -513,35 +527,41 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       );
     }
 
-    const liveKey = policyContentKey(existing.policy);
-    if (ownAttemptMayHaveLanded && liveKey === policyContentKey(policyDoc)) {
-      this.logger.debug(
-        safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
-      );
-      return;
-    }
-    if (lookup !== undefined) {
-      try {
-        const attempts = await lookup.attempts();
-        if (
-          attempts.some(
-            (bag) =>
-              bag['Bucket'] === bucketName &&
-              bag['PolicyDocument'] != null &&
-              policyContentKey(bag['PolicyDocument']) === liveKey
-          )
-        ) {
-          this.logger.info(
-            safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
-          );
-          return;
-        }
-      } catch (error) {
-        // An unreadable journal is no evidence, never "attempted".
-        this.logger.debug(
-          safeMsg`S3 bucket policy ${logicalId}: rollback journal read failed: ${mask(describeAwsFailure(error).detail)}`
-        );
+    // go-to-k/cdkd#6109: S3's bucket configuration is eventually consistent,
+    // so a policy a delete just removed (a delete-then-create recreate, an
+    // operator's delete right before a re-deploy) can still be read. Look
+    // again, briefly, before calling it another owner's. A re-read that fails
+    // refuses on what the first read found.
+    let livePolicy = existing.policy;
+    for (let recheck = 0; ; recheck++) {
+      if (
+        await this.isOwnLeftover(
+          logicalId,
+          bucketName,
+          policyDoc,
+          livePolicy,
+          ownAttemptMayHaveLanded,
+          lookup,
+          bucketShown,
+          mask
+        )
+      ) {
+        return;
       }
+      if (recheck >= POLICY_RECHECKS) break;
+      await this.sleep(POLICY_RECHECK_DELAY_MS);
+      let again: ExistingBucketPolicy;
+      try {
+        again = await this.probeExistingPolicy(bucketName);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`S3 bucket policy ${logicalId}: re-reading the policy on ${bucketShown} failed: ${mask(describeAwsFailure(error).detail)}`
+        );
+        break;
+      }
+      if (again.kind === 'absent') return;
+      if (again.kind === 'unreadable') break;
+      livePolicy = again.policy;
     }
 
     const bucketArg =
@@ -562,6 +582,85 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         `remove the existing policy if nothing relies on it ('aws s3api delete-bucket-policy ` +
         `--bucket ${bucketArg}')${importArm}, then re-deploy.`
     );
+  }
+
+  /**
+   * Whether `livePolicy` is this logical id's own earlier write
+   * (go-to-k/cdkd#6109), by content: equal to the policy being created after
+   * a Put of THIS dispatch got no definite answer, or equal to a bag the
+   * stack's rollback journal keeps for an earlier failed or interrupted
+   * attempt on the same bucket. An unreadable journal is no evidence.
+   */
+  private async isOwnLeftover(
+    logicalId: string,
+    bucketName: string,
+    policyDoc: string,
+    livePolicy: string,
+    ownAttemptMayHaveLanded: boolean,
+    lookup: ReturnType<typeof getPriorAttempts>,
+    bucketShown: string,
+    mask: (text: string) => string
+  ): Promise<boolean> {
+    if (
+      ownAttemptMayHaveLanded &&
+      (await this.livePolicyKey(livePolicy, policyDoc)) === policyContentKey(policyDoc)
+    ) {
+      this.logger.debug(
+        safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
+      );
+      return true;
+    }
+    if (lookup === undefined) return false;
+    let attempts: ReadonlyArray<Record<string, unknown>>;
+    try {
+      attempts = await lookup.attempts();
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`S3 bucket policy ${logicalId}: rollback journal read failed: ${mask(describeAwsFailure(error).detail)}`
+      );
+      return false;
+    }
+    for (const bag of attempts) {
+      const attempted = bag['PolicyDocument'];
+      if (bag['Bucket'] !== bucketName || attempted == null) continue;
+      if ((await this.livePolicyKey(livePolicy, attempted)) === policyContentKey(attempted)) {
+        this.logger.info(
+          safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * {@link policyContentKey} of the policy S3 returned, compared against
+   * `reference` (a document cdkd sent). S3 rewrites a CloudFront OAI grant's
+   * `{ CanonicalUser }` principal into the OAI's user ARN, or transiently a
+   * bare IAM unique id, so those are folded back to the `{ CanonicalUser }`
+   * form first, the way {@link readCurrentState} does, with the same-stack
+   * OAI records as siblings.
+   */
+  private async livePolicyKey(livePolicy: string, reference: unknown): Promise<string> {
+    let live: unknown;
+    let ref: unknown = reference;
+    try {
+      live = JSON.parse(livePolicy) as unknown;
+      if (typeof ref === 'string') ref = JSON.parse(ref) as unknown;
+    } catch {
+      return policyContentKey(livePolicy);
+    }
+    const siblings: NonNullable<ReadCurrentStateContext['siblings']> = {};
+    for (const [id, record] of getStackRecords()?.live() ?? []) {
+      siblings[id] = {
+        resourceType: record.resourceType,
+        physicalId: record.physicalId,
+        properties: {},
+        ...(record.attributes !== undefined && { attributes: record.attributes }),
+      };
+    }
+    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings });
+    return policyContentKey(live);
   }
 
   /**

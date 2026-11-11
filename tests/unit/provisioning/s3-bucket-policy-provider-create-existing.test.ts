@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { GetBucketPolicyCommand, PutBucketPolicyCommand } from '@aws-sdk/client-s3';
+import { GetBucketPolicyCommand, NoSuchBucket, PutBucketPolicyCommand } from '@aws-sdk/client-s3';
 
 /**
  * go-to-k/cdkd#6109: `PutBucketPolicy` REPLACES the bucket's whole policy, so
@@ -43,7 +43,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
+import {
+  S3BucketPolicyProvider,
+  clearOaiCanonicalUserIdCacheForTest,
+} from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
@@ -112,6 +115,11 @@ function respond(
   });
 }
 
+const sleeps: number[] = [];
+
+const sentGets = (): number =>
+  mockSend.mock.calls.filter(([c]) => c instanceof GetBucketPolicyCommand).length;
+
 const sentPuts = (): number =>
   mockSend.mock.calls.filter(([c]) => c instanceof PutBucketPolicyCommand).length;
 
@@ -131,6 +139,11 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
     vi.clearAllMocks();
     mockSend.mockReset();
     provider = new S3BucketPolicyProvider();
+    sleeps.length = 0;
+    provider.sleep = async (ms) => {
+      sleeps.push(ms);
+    };
+    clearOaiCanonicalUserIdCacheForTest();
   });
 
   it('refuses with CloudFormation’s message and sends NO PutBucketPolicy', async () => {
@@ -488,5 +501,176 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
 
       expect(thrown.message).toContain('--bucket <bucketName>');
     });
+  });
+
+  describe('a stale read right after a delete (S3 is eventually consistent)', () => {
+    it('proceeds when a re-read finds the policy gone', async () => {
+      let reads = 0;
+      respond(() => {
+        reads++;
+        return reads === 1 ? Promise.resolve({ Policy: AUTO_ATTACHED }) : Promise.reject(noPolicy());
+      });
+
+      await provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES);
+
+      expect(sentGets()).toBe(2);
+      expect(sleeps).toEqual([5000]);
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('refuses after the bounded re-reads when the policy stays', async () => {
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+
+      await expect(provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)).rejects.toThrow(
+        /The bucket policy already exists/
+      );
+
+      expect(sentGets()).toBe(4);
+      expect(sleeps).toEqual([5000, 5000, 5000]);
+      expect(sentPuts()).toBe(0);
+    });
+
+    it('refuses on the first read when a re-read fails', async () => {
+      let reads = 0;
+      respond(() => {
+        reads++;
+        return reads === 1
+          ? Promise.resolve({ Policy: AUTO_ATTACHED })
+          : Promise.reject(awsError('SlowDown', 503));
+      });
+
+      await expect(provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)).rejects.toThrow(
+        /The bucket policy already exists/
+      );
+      expect(sentGets()).toBe(2);
+      expect(sentPuts()).toBe(0);
+    });
+
+    it('does not re-read for an own-holder refusal, which rests on state', async () => {
+      respond(() => Promise.resolve({ Policy: JSON.stringify(DESIRED) }));
+      const records = {
+        live: () =>
+          [['OldBucketPolicy', { resourceType: RESOURCE_TYPE, physicalId: BUCKET }]] as Array<
+            [string, ResourceState]
+          >,
+        survivors: () => [] as Array<[string, ResourceState]>,
+      };
+
+      await expect(
+        withStackRecords(records, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+      ).rejects.toThrow(/already holds the policy/);
+      expect(sentGets()).toBe(1);
+    });
+  });
+
+  describe('a CloudFront OAI grant, which S3 returns in another principal form', () => {
+    const OAI_ID = 'E1EXAMPLEOAI';
+    const CANONICAL = 'a'.repeat(64);
+    const oaiDoc = (principal: Record<string, string>) => ({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: principal,
+          Action: 's3:GetObject',
+          Resource: `arn:aws:s3:::${BUCKET}/*`,
+        },
+      ],
+    });
+    const DESIRED_OAI = oaiDoc({ CanonicalUser: CANONICAL });
+    const AS_ARN = JSON.stringify(
+      oaiDoc({ AWS: `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OAI_ID}` })
+    );
+    const AS_UNIQUE_ID = JSON.stringify(oaiDoc({ AWS: 'AEXAMPLEUNIQUEIDXYZ' }));
+    const oaiRecords = (canonical: string) => ({
+      live: () =>
+        [
+          [
+            'OAI',
+            {
+              resourceType: 'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+              physicalId: OAI_ID,
+              attributes: { S3CanonicalUserId: canonical },
+            },
+          ],
+        ] as unknown as Array<[string, ResourceState]>,
+      survivors: () => [] as Array<[string, ResourceState]>,
+    });
+    const props = { Bucket: BUCKET, PolicyDocument: DESIRED_OAI };
+
+    it.each([
+      ['the OAI user ARN', AS_ARN],
+      ['a transient IAM unique id', AS_UNIQUE_ID],
+    ])('the in-dispatch retry proceeds over its own grant read back as %s', async (_l, live) => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () => Promise.resolve([]));
+      lookup.notePossiblyLanded();
+      respond(() => Promise.resolve({ Policy: live }));
+
+      await withStackRecords(oaiRecords(CANONICAL), () =>
+        withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+      );
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it.each([
+      ['the OAI user ARN', AS_ARN],
+      ['a transient IAM unique id', AS_UNIQUE_ID],
+    ])('a journal bag matches its own grant read back as %s', async (_l, live) => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED_OAI }])
+      );
+      respond(() => Promise.resolve({ Policy: live }));
+
+      await withStackRecords(oaiRecords(CANONICAL), () =>
+        withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+      );
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('still refuses a grant to ANOTHER OAI', async () => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED_OAI }])
+      );
+      lookup.notePossiblyLanded();
+      respond(() => Promise.resolve({ Policy: AS_ARN }));
+
+      await expect(
+        withStackRecords(oaiRecords('b'.repeat(64)), () =>
+          withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+        )
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
+    });
+  });
+
+  it('a live record of THIS logical id on the bucket is no other holder', async () => {
+    respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+    const records = {
+      live: () =>
+        [[LOGICAL_ID, { resourceType: RESOURCE_TYPE, physicalId: BUCKET }]] as Array<
+          [string, ResourceState]
+        >,
+      survivors: () => [] as Array<[string, ResourceState]>,
+    };
+
+    const thrown = await capture(() =>
+      withStackRecords(records, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+    );
+
+    expect(thrown.message).not.toContain('already holds the policy');
+    expect(thrown.message).toContain('cdkd does not overwrite it');
+  });
+
+  it('a missing bucket thrown as the SDK NoSuchBucket class goes to the Put', async () => {
+    respond(
+      () => Promise.reject(new NoSuchBucket({ message: 'gone', $metadata: {} })),
+      () => Promise.resolve({})
+    );
+
+    await provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES);
+
+    expect(sentPuts()).toBe(1);
   });
 });
