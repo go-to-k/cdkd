@@ -69,10 +69,16 @@ export async function deleteOldIdAfterDeploy(
       : input.updateReplacePolicy === 'Snapshot' && deps.options.skipFinalSnapshot !== true
         ? 'Snapshot'
         : undefined;
-  if (keptBy !== undefined) {
-    const line = safeMsg`  ${logicalId} has UpdateReplacePolicy: ${keptBy} — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`;
-    if (keptBy === 'Retain') deps.logger.info(line);
-    else deps.logger.warn(`${line} (a custom resource takes no snapshot)`);
+  if (keptBy === 'Retain') {
+    deps.logger.info(
+      safeMsg`  ${logicalId} has UpdateReplacePolicy: Retain — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`
+    );
+    return;
+  }
+  if (keptBy === 'Snapshot') {
+    deps.logger.warn(
+      safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Snapshot, which a custom resource cannot take — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`
+    );
     return;
   }
   let noEchoDeleteValues: NoEchoDeleteValues | undefined;

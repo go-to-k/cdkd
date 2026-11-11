@@ -93,9 +93,8 @@ running deploy can re-resolve that value.
 
 - **The deploy fails.** No `Delete` is sent. The rollback records the old id
   again by sending the handler a `Create` with the old properties, then
-  deletes the new id. CloudFormation sends an `Update` instead
-  ([#6120](https://github.com/go-to-k/cdkd/issues/6120)), so a handler whose
-  `Create` refuses a resource that already exists fails that rollback.
+  deletes the new id. CloudFormation sends an `Update` instead, so a handler
+  whose `Create` refuses a resource that already exists fails that rollback.
 - **The `Delete` does not complete** (the handler answers `FAILED`, or the
   invoke fails). cdkd warns, naming the old id, and the deploy still
   completes, with exit code `2` unless `--allow-unaddressed`. This is the skip
