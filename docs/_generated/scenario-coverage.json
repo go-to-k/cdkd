@@ -820,6 +820,11 @@
       "scenarios": []
     },
     {
+      "name": "custom-resource-physid-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "custom-resource-provider",
       "annotated": true,
       "scenarios": [
@@ -3693,6 +3698,7 @@
     "cross-region-concurrent-stacks",
     "cross-stack-export-in-use",
     "custom-resource-noecho-nested",
+    "custom-resource-physid-replace",
     "custom-resource-service-token-change",
     "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",

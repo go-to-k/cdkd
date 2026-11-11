@@ -7,9 +7,10 @@ description: "How cdkd deploy handles a custom resource whose ServiceToken chang
 
 A custom resource is a resource whose create, update and delete are carried
 out by a handler you supply, usually a Lambda function. The resource's
-`ServiceToken` property is the handler's ARN. This page covers the two
+`ServiceToken` property is the handler's ARN. This page covers the three
 situations where `cdkd deploy` treats a custom resource differently from other
-resources: the `ServiceToken` changed, or cdkd could not send the delete.
+resources: the `ServiceToken` changed, an update answered a new physical id, or
+cdkd could not send the delete.
 Against an S3 emulator, see
 [The custom-resource response endpoint](troubleshooting-internals.md#the-custom-resource-response-endpoint).
 
@@ -74,6 +75,32 @@ as `***`. A new parameter value is therefore not detected, and the update goes
 to whichever handler the new value names. To have such a change refused, feed
 `ServiceToken` from a plain value.
 
+## An update that answers a new physical id
+
+A handler can answer an `Update` request with a `PhysicalResourceId` that
+differs from the one it was sent, for example when the id is derived from a
+property that changed. CloudFormation treats that as a replacement: once the
+whole stack update has succeeded, it sends the handler a `Delete` request for
+the OLD id, with the OLD properties.
+
+`cdkd deploy` does the same. It prints `Resource <id> was replaced: <old> ->
+<new>`, and once every other change of the deploy has succeeded, it sends the
+`Delete` for the old id. Until then the old id stays in the stack's state, so
+a deploy that is killed before the `Delete` leaves it for the next
+`cdkd deploy`, or for `cdkd destroy`, to delete. One exception: a record
+holding the masked value of a `NoEcho` parameter is not kept, because only the
+running deploy can re-resolve that value.
+
+- **The deploy fails.** No `Delete` is sent. The rollback undoes the update,
+  and the old id is in use again.
+- **The `Delete` does not complete** (the handler answers `FAILED`, or the
+  invoke fails). cdkd warns, naming the old id, and the deploy still
+  completes, with exit code `2` unless `--allow-unaddressed`. This is the skip
+  below: the old id is no longer tracked, so tear down what the handler made
+  under it by hand.
+- **`UpdateReplacePolicy: Retain`.** No `Delete` is sent, and the old id is no
+  longer tracked.
+
 ## A skipped custom-resource delete
 
 A deploy deletes a custom resource when the resource leaves the template, is
@@ -93,8 +120,9 @@ What follows depends on why the resource was being deleted.
 | Replaced delete-first, or rolled back | The resource usually fails and the record is kept. |
 | The other copy already exists | The skip only warns, and the surviving copy is no longer tracked. |
 
-The third row covers a replacement that created the new resource first, and a
-rollback that created the old resource again first. Tear the surviving copy
+The third row covers a replacement that created the new resource first, an
+update whose handler answered a new physical id, and a rollback that created
+the old resource again first. Tear the surviving copy
 down by hand.
 
 ### A resource removed from the template
