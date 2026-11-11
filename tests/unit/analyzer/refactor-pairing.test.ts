@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  changedDependencyOf,
   looselyEqual,
   mappingPairs,
   parseMappingFile,
@@ -174,5 +175,39 @@ describe('parseMappingFile / mappingPairs', () => {
 
   it('refuses a location without a stack', () => {
     expect(() => mappingPairs({ Old: 'S.New' }, false)).toThrow(/StackName/);
+  });
+});
+
+// go-to-k/cdkd#6097: the AWS CDK CLI's digest covers what a resource
+// references, transitively; a pair whose references changed is a new resource.
+describe('changedDependencyOf', () => {
+  const t = {
+    Resources: {
+      Ver: { Type: 'V', Properties: { FunctionName: { Ref: 'Fn' } } },
+      Fn: { Type: 'F', Properties: { Role: { 'Fn::GetAtt': ['Role', 'Arn'] } }, DependsOn: ['Policy'] },
+      Role: { Type: 'R', Properties: { Name: { 'Fn::Sub': '${Fn}-${AWS::Region}' } } },
+      Policy: { Type: 'P', Properties: {} },
+      Alone: { Type: 'Q', Properties: { Ref: 'not-an-intrinsic-arg', N: { Ref: 'Param' } } },
+    },
+  };
+  const changed = (...ids: string[]) => (id: string) => ids.includes(id);
+
+  it('names a directly referenced changed resource', () => {
+    expect(changedDependencyOf(t, 'Ver', changed('Fn'))).toBe('Fn');
+  });
+
+  it('follows references through unchanged resources, DependsOn included', () => {
+    expect(changedDependencyOf(t, 'Ver', changed('Role'))).toBe('Role');
+    expect(changedDependencyOf(t, 'Ver', changed('Policy'))).toBe('Policy');
+  });
+
+  it('terminates on a reference cycle and never names the resource itself', () => {
+    expect(changedDependencyOf(t, 'Fn', changed('Fn'))).toBeUndefined();
+  });
+
+  it('answers undefined when nothing referenced changed, and ignores non-resources', () => {
+    expect(changedDependencyOf(t, 'Ver', changed())).toBeUndefined();
+    expect(changedDependencyOf(t, 'Alone', changed('Param', 'not-an-intrinsic-arg'))).toBeUndefined();
+    expect(changedDependencyOf(t, 'Missing', changed('Fn'))).toBeUndefined();
   });
 });

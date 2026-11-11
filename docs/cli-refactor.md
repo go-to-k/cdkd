@@ -66,6 +66,7 @@ refactor with look-alikes takes longer than one without.
 | Several of a type, each matching exactly one old resource | Renames each |
 | Two or more that match equally (for example two identical queues) | Reports them as ambiguous and writes nothing; name the pairs with `--override-file` |
 | The resource was renamed and its properties also changed | Leaves it, and says so; see below |
+| It references a resource the next deploy changes, directly or through other resources (for example a CDK `fn.currentVersion` after a code change, or an API Gateway deployment after a method change) | Leaves it, and says so: as in `cdk refactor`, it is treated as a new resource. If it really was renamed, revert the change to what it references, run `cdkd refactor`, then deploy the change |
 | An `AWS::CloudFormation::Stack` (nested stack) row | Never renamed |
 | A resource inside a nested stack | Not looked at; only the selected stack's own resources are |
 

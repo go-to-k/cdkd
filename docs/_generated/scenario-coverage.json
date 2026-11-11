@@ -2293,6 +2293,11 @@
       "scenarios": []
     },
     {
+      "name": "refactor-lambda-version",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "refactor-move",
       "annotated": false,
       "scenarios": []
@@ -3794,6 +3799,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "refactor-command",
+    "refactor-lambda-version",
     "refactor-move",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",

@@ -11,7 +11,11 @@ import {
   refuseMalformedState,
 } from '../../../state/malformed-resources-bag.js';
 import { applyLogicalIdRenames } from '../../../state/logical-id-rename.js';
-import { mappingPairs, type MappingEnvironment } from '../../../analyzer/refactor-pairing.js';
+import {
+  differingRemedy,
+  mappingPairs,
+  type MappingEnvironment,
+} from '../../../analyzer/refactor-pairing.js';
 import type { AmbiguousMoveGroup, MoveOverride } from '../refactor-move.js';
 import { toLogicalIdRenames, type StackRefactorPlan } from './plan.js';
 
@@ -102,8 +106,8 @@ export function renderRefactorPlan(plan: StackRefactorPlan): string[] {
   for (const { rename, paths } of plan.differing) {
     lines.push(
       safeMsg`  Not refactored: ${rename.from} -> ${rename.to} (${rename.resourceType}) also changes ` +
-        safeMsg`${paths.join(', ')}. cdkd refactor keeps only an unchanged resource: revert the ` +
-        'property change, run cdkd refactor, then deploy the change.'
+        safeMsg`${paths.join(', ')}. ` +
+        differingRemedy(paths)
     );
   }
   for (const { rename, reason } of plan.skipped) {

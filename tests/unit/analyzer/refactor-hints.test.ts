@@ -164,6 +164,43 @@ describe('which stacks take part (cdkd refactor would plan them)', () => {
     expect((await tree(null)).refactorSides).toBeUndefined();
   });
 
+  // go-to-k/cdkd#6097: the diff reads the stack's template for references.
+  it('a CREATE referencing a resource the diff updates is not offered', async () => {
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Fn: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'changed' } },
+          NewQueue: {
+            Type: 'AWS::SQS::Queue',
+            Properties: { QueueName: 'q', RedrivePolicy: { deadLetterTargetArn: { 'Fn::GetAtt': ['Fn', 'Arn'] } } },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: {
+        getState: async () => ({
+          state: {
+            ...record,
+            resources: {
+              ...record.resources,
+              Fn: { physicalId: 'f', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'old' } },
+            },
+          },
+          etag: 'e',
+        }),
+      } as unknown as S3StateBackend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+    expect(node.changes.get('Fn')?.changeType).toBe('UPDATE');
+    expect(node.refactorSides?.deletes.map((d) => d.logicalId)).toEqual(['OldQueue']);
+    expect(node.refactorSides?.creates).toEqual([]);
+  });
+
   it('a nested child offers none: cdkd refactor plans top-level stacks only', async () => {
     expect((await tree(record, true)).refactorSides).toBeUndefined();
   });
@@ -178,14 +215,100 @@ describe('which stacks take part (cdkd refactor would plan them)', () => {
 
 describe('hintSidesOf', () => {
   it('takes CREATE desired properties and DELETE recorded properties, and nothing else', () => {
-    const sides = hintSidesOf([
-      { logicalId: 'C', changeType: 'CREATE', resourceType: 'T', desiredProperties: { a: 1 } },
-      { logicalId: 'D', changeType: 'DELETE', resourceType: 'T', currentProperties: { b: 2 } },
-      { logicalId: 'U', changeType: 'UPDATE', resourceType: 'T' },
-    ]);
+    const sides = hintSidesOf(
+      [
+        { logicalId: 'C', changeType: 'CREATE', resourceType: 'T', desiredProperties: { a: 1 } },
+        { logicalId: 'D', changeType: 'DELETE', resourceType: 'T', currentProperties: { b: 2 } },
+        { logicalId: 'U', changeType: 'UPDATE', resourceType: 'T' },
+      ],
+      { Resources: { C: { Type: 'T', Properties: { a: 1 } }, U: { Type: 'T' } } }
+    );
     expect(sides).toEqual({
       creates: [{ logicalId: 'C', resourceType: 'T', properties: { a: 1 } }],
       deletes: [{ logicalId: 'D', resourceType: 'T', properties: { b: 2 } }],
+    });
+  });
+
+  // go-to-k/cdkd#6097: CDK's `fn.currentVersion` after a code change. The new
+  // version's own properties match the old one's, but it is a new resource.
+  const VERSION_TEMPLATE = {
+    Resources: {
+      Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      Fn: { Type: 'AWS::Lambda::Function', Properties: { Role: { 'Fn::GetAtt': ['Role', 'Arn'] } } },
+      FnVersionNew: { Type: 'AWS::Lambda::Version', Properties: { FunctionName: { Ref: 'Fn' } } },
+    },
+  };
+  const versionRows = (changed: 'Fn' | 'Role' | undefined): ResourceChange[] => [
+    {
+      logicalId: 'FnVersionNew',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Lambda::Version',
+      desiredProperties: { FunctionName: 'my-fn' },
+    },
+    {
+      logicalId: 'FnVersionOld',
+      changeType: 'DELETE',
+      resourceType: 'AWS::Lambda::Version',
+      currentProperties: { FunctionName: 'my-fn' },
+    },
+    {
+      logicalId: 'Fn',
+      changeType: changed === 'Fn' ? 'UPDATE' : 'NO_CHANGE',
+      resourceType: 'AWS::Lambda::Function',
+    },
+    {
+      logicalId: 'Role',
+      changeType: changed === 'Role' ? 'UPDATE' : 'NO_CHANGE',
+      resourceType: 'AWS::IAM::Role',
+    },
+  ];
+  const hintFor = (rows: ResourceChange[]) =>
+    findRefactorHints([
+      { id: 's', stackName: 'S', env: 'e', ...hintSidesOf(rows, VERSION_TEMPLATE) },
+    ]).get('s');
+
+  it('drops a CREATE that references a resource this diff updates (a new Lambda version)', () => {
+    expect(hintFor(versionRows('Fn'))).toBeUndefined();
+  });
+
+  it('drops it when the updated resource is reached through another one', () => {
+    expect(hintFor(versionRows('Role'))).toBeUndefined();
+  });
+
+  it('drops it when it references a CREATE no DELETE row could make a rename (an added method)', () => {
+    const template = {
+      Resources: {
+        ...VERSION_TEMPLATE.Resources,
+        FnVersionNew: { ...VERSION_TEMPLATE.Resources.FnVersionNew, DependsOn: ['Method'] },
+        Method: { Type: 'AWS::ApiGateway::Method', Properties: {} },
+      },
+    };
+    const added: ResourceChange = {
+      logicalId: 'Method',
+      changeType: 'CREATE',
+      resourceType: 'AWS::ApiGateway::Method',
+      desiredProperties: {},
+    };
+    const hints = (rows: ResourceChange[]) =>
+      findRefactorHints([{ id: 's', stackName: 'S', env: 'e', ...hintSidesOf(rows, template) }]).get('s');
+    expect(hints([...versionRows(undefined), added])).toBeUndefined();
+    // A Method DELETE could make the CREATE a rename: left to `cdkd refactor`.
+    const removed: ResourceChange = {
+      logicalId: 'OldMethod',
+      changeType: 'DELETE',
+      resourceType: 'AWS::ApiGateway::Method',
+      currentProperties: {},
+    };
+    expect(hints([...versionRows(undefined), added, removed])?.get('FnVersionOld')).toEqual({
+      stackName: 'S',
+      logicalId: 'FnVersionNew',
+    });
+  });
+
+  it('keeps the hint when nothing the CREATE references changes (a plain rename)', () => {
+    expect(hintFor(versionRows(undefined))?.get('FnVersionOld')).toEqual({
+      stackName: 'S',
+      logicalId: 'FnVersionNew',
     });
   });
 });
@@ -305,5 +428,43 @@ describe('where the hint is rendered', () => {
     expect(request.destructiveChanges).toEqual([
       expect.objectContaining({ logicalId: 'OldTable', movedTo: { stackName: 'Src', logicalId: 'NewTable' } }),
     ]);
+  });
+
+  // go-to-k/cdkd#6097: the prompt reads the stack's template for references.
+  it('not in the deploy approval prompt for a new Lambda version after a code change', async () => {
+    const approve = vi.fn(async () => true);
+    await requireDeploymentApproval({
+      options: { requireApproval: 'destructive', approveDeployment: approve },
+      stackName: 'Src',
+      changes: [
+        {
+          logicalId: 'VerOld',
+          changeType: 'DELETE',
+          resourceType: 'AWS::Lambda::Version',
+          currentProperties: { FunctionName: 'fn' },
+        },
+        {
+          logicalId: 'VerNew',
+          changeType: 'CREATE',
+          resourceType: 'AWS::Lambda::Version',
+          desiredProperties: { FunctionName: 'fn' },
+        },
+        { logicalId: 'Fn', changeType: 'UPDATE', resourceType: 'AWS::Lambda::Function' },
+      ],
+      records: {
+        VerOld: { physicalId: 'v1', resourceType: 'AWS::Lambda::Version', properties: { FunctionName: 'fn' } },
+      },
+      template: {
+        Resources: {
+          Fn: { Type: 'AWS::Lambda::Function', Properties: {} },
+          VerNew: { Type: 'AWS::Lambda::Version', Properties: { FunctionName: { Ref: 'Fn' } } },
+        },
+      },
+    });
+    const request = (approve.mock.calls[0] as unknown[] | undefined)?.[0] as {
+      destructiveChanges: Array<{ logicalId: string; movedTo?: unknown }>;
+    };
+    expect(request.destructiveChanges).toEqual([expect.objectContaining({ logicalId: 'VerOld' })]);
+    expect(request.destructiveChanges[0]!.movedTo).toBeUndefined();
   });
 });

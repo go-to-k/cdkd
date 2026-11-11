@@ -10,6 +10,7 @@
  * proposal is therefore allowed to be loose, never to guess: two candidates
  * that look the same are reported AMBIGUOUS and left to the user.
  */
+import type { CloudFormationTemplate } from '../types/resource.js';
 
 /** Types `cdkd refactor` never pairs. */
 const UNPAIRABLE_TYPES: ReadonlySet<string> = new Set([
@@ -165,6 +166,134 @@ export function proposeRenames(
   }
 
   return { renames, ambiguous, refusedOverrides };
+}
+
+/**
+ * The logical ids one template resource references: `Ref`, `Fn::GetAtt` (both
+ * forms), `Fn::Sub` placeholders and `DependsOn`. Exported for its unit tests.
+ */
+export function referencedLogicalIds(
+  template: CloudFormationTemplate,
+  logicalId: string
+): Set<string> {
+  const out = new Set<string>();
+  const resources = template.Resources ?? {};
+  if (!Object.hasOwn(resources, logicalId)) return out;
+  const resource = resources[logicalId] as { Properties?: unknown; DependsOn?: unknown };
+  const dependsOn = resource.DependsOn;
+  for (const id of Array.isArray(dependsOn) ? dependsOn : [dependsOn]) {
+    if (typeof id === 'string') out.add(id);
+  }
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    for (const [key, arg] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'Ref' && typeof arg === 'string') out.add(arg);
+      else if (key === 'Fn::GetAtt') {
+        if (Array.isArray(arg) && typeof arg[0] === 'string') out.add(arg[0]);
+        else if (typeof arg === 'string') out.add(arg.split('.')[0]!);
+      } else if (key === 'Fn::Sub') {
+        const text = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
+        // A name the variable map binds is a local, not a resource.
+        const vars: unknown = Array.isArray(arg) ? arg[1] : undefined;
+        const local = (name: string): boolean =>
+          vars !== null && typeof vars === 'object' && Object.hasOwn(vars, name);
+        if (typeof text === 'string') {
+          for (const match of text.matchAll(/\$\{([^}!][^}.]*)/g)) {
+            if (!local(match[1]!)) out.add(match[1]!);
+          }
+        }
+      }
+      walk(arg);
+    }
+  };
+  walk(resource.Properties);
+  return out;
+}
+
+/**
+ * The first resource `logicalId` depends on, directly or through other
+ * resources, that `isChanged` names, or `undefined` (go-to-k/cdkd#6097).
+ *
+ * The AWS CDK CLI pairs a removed and an added resource only when their
+ * digests match, and a digest covers the digests of everything the resource
+ * references. A `fn.currentVersion` after a code change, or an API Gateway
+ * deployment after a method change, is a NEW resource whose logical id CDK
+ * derived from that change, while its own properties (`FunctionName: {Ref}`)
+ * still match the old one's. Renaming the old record into its place would
+ * mean the new one is never created: the alias or stage stays on the old code.
+ */
+export function changedDependencyOf(
+  template: CloudFormationTemplate,
+  logicalId: string,
+  isChanged: (logicalId: string) => boolean
+): string | undefined {
+  const resources = template.Resources ?? {};
+  const seen = new Set([logicalId]);
+  const queue = [logicalId];
+  while (queue.length > 0) {
+    for (const dep of [...referencedLogicalIds(template, queue.shift()!)].sort()) {
+      if (seen.has(dep) || !Object.hasOwn(resources, dep)) continue;
+      seen.add(dep);
+      if (isChanged(dep)) return dep;
+      queue.push(dep);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The first resource a pair's new side references whose row in this diff of
+ * the template is not `NO_CHANGE` ({@link changedDependencyOf}), or
+ * `undefined`. A resource with no row counts as unchanged.
+ */
+export function changedReferenceInDiff(
+  template: CloudFormationTemplate,
+  logicalId: string,
+  changes: ReadonlyMap<string, { changeType: string }>
+): string | undefined {
+  return changedDependencyOf(template, logicalId, (id) => {
+    const change = changes.get(id);
+    return change !== undefined && change.changeType !== 'NO_CHANGE';
+  });
+}
+
+const REFERENCE_PATH_PREFIX = 'the resource it references, ';
+
+/** The change a pair {@link changedReferenceInDiff} names shows, as a `differing` path. */
+export function changedReferencePath(reference: string): string {
+  return `${REFERENCE_PATH_PREFIX}${reference}`;
+}
+
+/** What a `differing` row tells the user to do, after the paths it changes. */
+export function differingRemedy(paths: readonly string[]): string {
+  return paths.some((p) => p.startsWith(REFERENCE_PATH_PREFIX))
+    ? 'As cdk refactor does, cdkd treats it as a new resource (a Lambda version or an API ' +
+        'Gateway deployment after a change is one). If it was renamed, revert that change, run ' +
+        'cdkd refactor, then deploy the change.'
+    : 'cdkd refactor keeps only an unchanged resource: revert the property change, run cdkd ' +
+        'refactor, then deploy the change.';
+}
+
+/** Why a mapping-file pair {@link changedReferenceInDiff} names is refused. */
+export function changedReferenceReason(reference: string): string {
+  return (
+    `it references ${reference}, which the next deploy changes, so cdkd treats it as a new ` +
+    `resource, as cdk refactor does (a Lambda version or an API Gateway deployment after a ` +
+    `change is one). If it is a renamed one, revert the change to ${reference}, run cdkd ` +
+    `refactor, then deploy the change`
+  );
+}
+
+/** Why a mapping-file pair whose new side still changes `paths` is refused. */
+export function propertiesChangedReason(paths: readonly string[]): string {
+  return (
+    `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
+    'unchanged resource. Revert the property change, run cdkd refactor, then deploy the change'
+  );
 }
 
 /** An object with exactly one key naming an intrinsic function. */
