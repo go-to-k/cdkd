@@ -112,10 +112,12 @@ describe('reversing a delete-first replacement whose old record restores from th
     ['the new cluster\'s recorded id', 'CLUSTER-NEWID', 'AWS::RDS::DBCluster', 0],
     ['another id', 'cluster-other', 'AWS::RDS::DBCluster', 1],
     ['the id on a type that never restores by it', 'cluster-newid', TYPE, 1],
-  ] as const)('a SourceDbClusterResourceId naming %s', async (_name, id, type, deletes) => {
+    ['the id on a Neptune cluster', 'cluster-newid', 'AWS::Neptune::DBCluster', 1],
+    ['an id, on a record holding none', 'cluster-newid', 'AWS::RDS::DBCluster', 1, {}],
+  ] as const)('a SourceDbClusterResourceId naming %s', async (_name, id, type, deletes, attributes?) => {
     const m = harness();
     const current = { ...rec('cluster-new', {}), resourceType: type };
-    current.attributes = { DBClusterResourceId: 'cluster-newid' };
+    current.attributes = attributes ?? { DBClusterResourceId: 'cluster-newid' };
     const state = { Cluster: current };
     const operation = op({ SourceDbClusterResourceId: id, UseLatestRestorableTime: true });
     operation.resourceType = type;

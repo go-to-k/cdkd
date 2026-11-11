@@ -56,12 +56,15 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     update: vi.fn(),
     delete: vi.fn(),
     getAttribute: vi.fn(),
+    // go-to-k/cdkd#5639: the live read of a record holding no resource id.
+    import: vi.fn(),
     disableOuterRetry: true,
   };
 
   beforeEach(() => {
     provider.create.mockReset().mockResolvedValue({ physicalId: 'new-id', attributes: {} });
     provider.delete.mockReset().mockResolvedValue(undefined);
+    provider.import.mockReset().mockResolvedValue(null);
   });
 
   const makeEngine = (recreate?: 'viaCcApi' | 'viaSdkProvider', replace = false) =>
@@ -295,8 +298,8 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       async (_path, run) => {
         for (const c of [
           { type: RDS, attributes: OWN, desired: byId('cluster-OTHER') },
-          { type: RDS, attributes: {}, desired: byId('cluster-OWNID123') },
           { type: RDS, attributes: { DBClusterResourceId: '' }, desired: byId('') },
+          { type: RDS, attributes: {}, desired: { UseLatestRestorableTime: true } },
           { type: 'AWS::DocDB::DBCluster', attributes: OWN, desired: byId('cluster-OWNID123') },
           { type: 'AWS::Neptune::DBCluster', attributes: OWN, desired: byId('cluster-OWNID123') },
         ]) {
@@ -308,6 +311,56 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
         }
       }
     );
+
+    // A record holding no resource id: the live cluster's is read and compared.
+    const NO_ID = { type: RDS, attributes: {}, desired: byId('cluster-OWNID123') };
+    const live = (id: string | undefined) =>
+      provider.import.mockResolvedValue({
+        physicalId: PHYSICAL,
+        attributes: id === undefined ? {} : { DBClusterResourceId: id },
+      });
+
+    it.each(paths)('%s refuses when the live cluster holds the source id', async (_path, run) => {
+      live('CLUSTER-OWNID123');
+      const failure = await run(NO_ID);
+      expect(chain(failure)).toMatch(/SourceDbClusterResourceId must be another cluster's/);
+      expect(provider.import).toHaveBeenCalledWith(
+        expect.objectContaining({ knownPhysicalId: PHYSICAL, resourceType: RDS })
+      );
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s proceeds when the live cluster holds another id', async (_path, run) => {
+      live('cluster-OTHER');
+      expect(chain(await run(NO_ID))).not.toMatch(/SourceDbClusterResourceId/);
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['the read throws', () => provider.import.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }))],
+      ['the cluster is not found', () => provider.import.mockResolvedValue(null)],
+      ['the read answers no id', () => live(undefined)],
+    ] as const)('refuses when %s, before any delete', async (_n, arrange) => {
+      arrange();
+      for (const [path, run] of paths) {
+        provider.delete.mockClear();
+        const failure = await run(NO_ID);
+        expect(chain(failure), path).toMatch(/its identity could not be verified/);
+        expect(provider.delete, path).not.toHaveBeenCalled();
+      }
+    });
+
+    it('reads nothing live for a record holding its id, another type, or no SourceDbClusterResourceId', async () => {
+      for (const c of [
+        { type: RDS, attributes: OWN, desired: byId('cluster-OTHER') },
+        { type: 'AWS::DocDB::DBCluster', attributes: {}, desired: byId('cluster-OWNID123') },
+        { type: 'AWS::Neptune::DBCluster', attributes: {}, desired: byId('cluster-OWNID123') },
+        { type: RDS, attributes: {}, desired: { UseLatestRestorableTime: true } },
+      ]) {
+        for (const [, run] of paths) await run(c);
+      }
+      expect(provider.import).not.toHaveBeenCalled();
+    });
   });
 });
 

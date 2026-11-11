@@ -454,10 +454,20 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('fails a point-in-time restore whose declared snapshot does not exist, as CloudFormation reads it first', async () => {
+      arm({ snapshot: undefined });
+      await expect(create(ID_BASE, { SnapshotIdentifier: SNAPSHOT })).rejects.toThrow(
+        /SnapshotIdentifier manual-snap-1 does not name a DB cluster snapshot/
+      );
+      expect(sent('RestoreDBClusterToPointInTimeCommand')).toHaveLength(0);
+      expect(sent('DescribeDBClusterAutomatedBackupsCommand')).toHaveLength(0);
+    });
+
     it('lets a point-in-time source win, as the handler tests it first, naming the snapshot as unused', async () => {
       await create(ID_BASE, { SnapshotIdentifier: SNAPSHOT });
       expect(sent('RestoreDBClusterFromSnapshotCommand')).toHaveLength(0);
-      expect(sent('DescribeDBClusterSnapshotsCommand')).toHaveLength(0);
+      // Read, as the handler reads it, then not used.
+      expect(sent('DescribeDBClusterSnapshotsCommand')).toHaveLength(1);
       expect(only('RestoreDBClusterToPointInTimeCommand')).not.toHaveProperty('SnapshotIdentifier');
       expect(warnings().some((w) => /point-in-time restore does not apply SnapshotIdentifier/.test(w))).toBe(
         true
@@ -489,7 +499,12 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(only('DescribeDBClusterAutomatedBackupsCommand')).toEqual({
         DbClusterResourceId: RESOURCE_ID,
       });
-      // The source cluster is not read by name: there is none.
+      // No cluster is read by the resource id (DescribeDBClusters takes none),
+      // and no snapshot is read.
+      expect(sent('DescribeDBClustersCommand').length).toBeGreaterThan(0);
+      expect(
+        sent('DescribeDBClustersCommand').filter((i) => i['DBClusterIdentifier'] === RESOURCE_ID)
+      ).toHaveLength(0);
       expect(names()).not.toContain('DescribeDBClusterSnapshotsCommand');
       expect(only('RestoreDBClusterToPointInTimeCommand')).toEqual({
         DBClusterIdentifier: CLUSTER,
@@ -498,7 +513,10 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
         Port: 5433,
         KmsKeyId: 'alias/aws/rds',
       });
-      expect(names().indexOf('DescribeDBClusterAutomatedBackupsCommand')).toBe(0);
+      // The backups are read before the restore.
+      expect(names().indexOf('DescribeDBClusterAutomatedBackupsCommand')).toBeLessThan(
+        names().indexOf('RestoreDBClusterToPointInTimeCommand')
+      );
       expect(only('ModifyDBClusterCommand')['BackupRetentionPeriod']).toBe(1);
     });
 

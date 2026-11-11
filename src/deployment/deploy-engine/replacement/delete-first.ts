@@ -21,6 +21,7 @@ import { reportDeleteGuards } from '../../delete-guard-scope.js';
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../../resource-secrets-scope.js';
 import { withRetry } from '../../retry.js';
 import { refuseRestoreFromItself } from '../../../provisioning/restore-source-guard.js';
+import { verifyRestoreSourceIdentity } from '../../restore-source-identity.js';
 import { isRecreateRetryableError, markRedactedCause } from '../../retryable-errors.js';
 import {
   type RecordedSecretValues,
@@ -82,6 +83,17 @@ export async function replaceDeleteFirstAndRecreate(
     region: deps.stackRegion,
     account: deps.options.consumerAccount,
     attributes: currentResource.attributes,
+  });
+  // go-to-k/cdkd#5639: a record with no resource id, read live.
+  await verifyRestoreSourceIdentity({
+    resourceType,
+    logicalId,
+    physicalId: currentResource.physicalId,
+    properties: replaceProps,
+    attributes: currentResource.attributes,
+    stackName: '',
+    region: deps.stackRegion,
+    provider: () => deps.providerRegistry().getProvider(resourceType),
   });
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // go-to-k/cdkd#2007: the bag this deploy resolved plus the name bag, which

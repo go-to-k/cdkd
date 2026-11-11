@@ -242,6 +242,17 @@ export async function createDBCluster(
   // scalability type picks the request, and a point-in-time source's
   // encryption is checked (a snapshot's is not).
   let limitless = false;
+  // CloudFormation reads a declared snapshot even when a point-in-time source
+  // wins (`isRestoreFromSnapshot` is checked first, its answer then replaced),
+  // so a snapshot it cannot find fails that create too.
+  const declaredSnapshot = properties['SnapshotIdentifier'];
+  if (
+    restore?.kind === 'point-in-time' &&
+    typeof declaredSnapshot === 'string' &&
+    declaredSnapshot !== ''
+  ) {
+    await readRestoreSnapshot.call(this, declaredSnapshot, resourceType, logicalId, mask);
+  }
   if (restore?.kind === 'point-in-time' && restore.source.by === 'identifier') {
     const source = await readRestoreSource.call(
       this,

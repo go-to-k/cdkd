@@ -271,8 +271,16 @@ aws rds create-db-cluster-snapshot --db-cluster-identifier "${SOURCE_ID}" \
   --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" --region "${REGION}" >/dev/null
 SNAP_STATUS=""
 for _ in $(seq 1 90); do
-  SNAP_STATUS="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
-    --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text)"
+  # Right after the create the read can answer not-found (eventual
+  # consistency): only that is waited out; any other failure is fatal.
+  if ! SNAP_OUT="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+    --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text 2>&1)"; then
+    case "${SNAP_OUT}" in
+      *DBClusterSnapshotNotFound*) SNAP_STATUS="not-found"; sleep 10; continue ;;
+      *) echo "FAIL: Phase 2: reading snapshot ${SNAPSHOT_ID} failed: ${SNAP_OUT}" >&2; exit 1 ;;
+    esac
+  fi
+  SNAP_STATUS="${SNAP_OUT}"
   [ "${SNAP_STATUS}" = "available" ] && break
   sleep 10
 done
