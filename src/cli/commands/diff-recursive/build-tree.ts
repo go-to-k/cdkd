@@ -388,7 +388,11 @@ export async function buildDiffTree(args: {
     children: [],
   };
   if (found && !isNestedChild && node.blocking.length === 0) {
-    node.refactorSides = hintSidesOf(changes.values(), rollbackOrphanIds(state.orphans));
+    node.refactorSides = hintSidesOf(
+      changes.values(),
+      effectiveTemplate,
+      rollbackOrphanIds(state.orphans)
+    );
   }
   if (!recursive) return node;
 

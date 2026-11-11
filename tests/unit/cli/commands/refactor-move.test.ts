@@ -125,6 +125,37 @@ describe('planMoves', () => {
     expect(named.refused).toEqual([expect.objectContaining({ reason: expect.stringMatching(/properties also changed \(T\)/) })]);
   });
 
+  // go-to-k/cdkd#6097: unchanged itself, but referencing a resource the next
+  // deploy changes -- a new resource (a `fn.currentVersion`), not a moved one.
+  it('refuses a move whose destination references a resource the deploy changes', async () => {
+    const mk = (fnAccepted: string) => {
+      const b = plan(
+        'B',
+        stack('B', { Fn: rec('fn-v1') }),
+        { creates: ['New'] },
+        destDiff({ New: ['p1'], Fn: [fnAccepted] })
+      );
+      b.template = {
+        Resources: {
+          Fn: { Type: queue },
+          New: { Type: queue, Properties: { T: { 'Fn::GetAtt': ['Fn', 'Arn'] } } },
+        },
+      };
+      return [plan('A', stack('A', { Old: rec('p1') }), { deletes: ['Old'] }), b];
+    };
+    const changed = await planMoves(mk('fn-v2'), sameEnv, []);
+    expect(changed.moves).toEqual([]);
+    expect(changed.refused).toEqual([
+      expect.objectContaining({
+        from: 'Old',
+        to: 'New',
+        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+      }),
+    ]);
+    const unchanged = await planMoves(mk('fn-v1'), sameEnv, []);
+    expect(unchanged.moves).toEqual([expect.objectContaining({ from: 'Old', to: 'New' })]);
+  });
+
   it('reports look-alikes across stacks as ambiguous, with stack-qualified locations', async () => {
     const a = plan('A', stack('A', { O1: rec('p1'), O2: rec('p2') }), { deletes: ['O1', 'O2'] });
     const b = plan('B', stack('B', {}), { creates: ['N1', 'N2'] }, destDiff({ N1: ['p1', 'p2'], N2: ['p1', 'p2'] }));

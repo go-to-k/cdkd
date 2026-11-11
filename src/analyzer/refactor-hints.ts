@@ -9,10 +9,12 @@
  * such candidate. No AWS call. A hint is a suggestion: `cdkd refactor`
  * re-checks every pair with its own diff before writing anything.
  */
+import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
 import {
+  changedDependencyOf,
   isPairableType,
   looselyEqual,
   type RefactorCreateSide,
@@ -102,17 +104,29 @@ export function rollbackOrphanIds(orphans: unknown): Set<string> {
 
 /**
  * A stack's CREATE and DELETE rows as pairing sides (a DELETE carries the
- * record's properties), leaving out the ids in `exclude`.
+ * record's properties), leaving out the ids in `exclude`, and every CREATE
+ * of `template` that references, directly or not, a resource this diff
+ * UPDATEs (go-to-k/cdkd#6097): that is a new resource, as a
+ * `fn.currentVersion` after a code change, which `cdkd refactor` refuses to
+ * pair. A referenced CREATE does not count: it may be a rename itself, which
+ * only the refactor's confirming diff can tell, so a hint may be missing,
+ * never wrong this way.
  */
 export function hintSidesOf(
   changes: Iterable<ResourceChange>,
+  template: CloudFormationTemplate,
   exclude: ReadonlySet<string> = new Set()
 ): RefactorSides {
+  const rows = [...changes];
+  const updated = new Set(rows.filter((c) => c.changeType === 'UPDATE').map((c) => c.logicalId));
   const creates: RefactorCreateSide[] = [];
   const deletes: RefactorDeleteSide[] = [];
-  for (const change of changes) {
+  for (const change of rows) {
     if (exclude.has(change.logicalId)) continue;
     if (change.changeType === 'CREATE') {
+      if (changedDependencyOf(template, change.logicalId, (id) => updated.has(id)) !== undefined) {
+        continue;
+      }
       creates.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,

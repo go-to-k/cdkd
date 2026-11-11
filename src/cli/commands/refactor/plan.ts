@@ -7,7 +7,10 @@ import {
 } from '../../../state/malformed-resources-bag.js';
 import { applyLogicalIdRenames, type LogicalIdRename } from '../../../state/logical-id-rename.js';
 import {
+  changedDependencyOf,
+  changedDependencyReason,
   proposeRenames,
+  referencedLogicalIds,
   type AmbiguousGroup,
   type ProposedRename,
   type RefactorCreateSide,
@@ -16,6 +19,8 @@ import {
 } from '../../../analyzer/refactor-pairing.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResourceChange, StackState } from '../../../types/state.js';
+
+export { referencedLogicalIds };
 
 /**
  * The diff `cdkd refactor` plans against: `computeStackDiff`'s changes for one
@@ -49,7 +54,10 @@ export interface StackRefactorPlan {
   renames: ProposedRename[];
   /** Detected look-alikes whose properties differ: left for the deploy. */
   differing: DifferingRename[];
-  /** Detected renames left out for another reason (a rollback-orphan record). */
+  /**
+   * Detected renames left out for another reason: a rollback-orphan record, or
+   * a reference to a resource the next deploy changes (go-to-k/cdkd#6097).
+   */
   skipped: SkippedRename[];
   ambiguous: AmbiguousGroup[];
   /** User-named pairs refused, including those whose properties differ. */
@@ -184,8 +192,29 @@ export async function planStackRefactor(input: {
       const renamed = applyLogicalIdRenames(state, toLogicalIdRenames(kept), template);
       const { changes } = await diff(renamed);
       const failed = kept.filter((r) => changes.get(r.to)?.changeType !== 'NO_CHANGE');
-      if (failed.length === 0) return { kept, changes };
+      // Unchanged itself, but referencing a resource the next deploy changes:
+      // a new resource, not a renamed one (go-to-k/cdkd#6097).
+      const isChanged = (id: string): boolean => {
+        const change = changes.get(id);
+        return change !== undefined && change.changeType !== 'NO_CHANGE';
+      };
+      const fresh = kept.flatMap((rename) => {
+        if (failed.includes(rename)) return [];
+        const dependency = changedDependencyOf(template, rename.to, isChanged);
+        return dependency === undefined ? [] : [{ rename, dependency }];
+      });
+      if (failed.length === 0 && fresh.length === 0) return { kept, changes };
+      for (const { rename, dependency } of fresh) {
+        const reason = changedDependencyReason(dependency);
+        if (rename.source === 'override') {
+          refusedOverrides.push({ from: rename.from, to: rename.to, reason });
+        } else {
+          skipped.push({ rename, reason });
+        }
+        failed.push(rename);
+      }
       for (const rename of failed) {
+        if (fresh.some((f) => f.rename === rename)) continue;
         const paths = changedPaths(changes.get(rename.to));
         if (rename.source === 'override') {
           refusedOverrides.push({
@@ -332,46 +361,6 @@ export async function planStackRefactor(input: {
 
 /** The most trial diffs one stack's look-alike groups may cost. */
 const MAX_TRIAL_DIFFS = 64;
-
-/**
- * The logical ids one template resource references: `Ref`, `Fn::GetAtt` (both
- * forms), `Fn::Sub` placeholders and `DependsOn`. Exported for its unit tests.
- */
-export function referencedLogicalIds(
-  template: CloudFormationTemplate,
-  logicalId: string
-): Set<string> {
-  const out = new Set<string>();
-  const resources = template.Resources ?? {};
-  if (!Object.hasOwn(resources, logicalId)) return out;
-  const resource = resources[logicalId] as { Properties?: unknown; DependsOn?: unknown };
-  const dependsOn = resource.DependsOn;
-  for (const id of Array.isArray(dependsOn) ? dependsOn : [dependsOn]) {
-    if (typeof id === 'string') out.add(id);
-  }
-  const walk = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      value.forEach(walk);
-      return;
-    }
-    if (value === null || typeof value !== 'object') return;
-    for (const [key, arg] of Object.entries(value as Record<string, unknown>)) {
-      if (key === 'Ref' && typeof arg === 'string') out.add(arg);
-      else if (key === 'Fn::GetAtt') {
-        if (Array.isArray(arg) && typeof arg[0] === 'string') out.add(arg[0]);
-        else if (typeof arg === 'string') out.add(arg.split('.')[0]!);
-      } else if (key === 'Fn::Sub') {
-        const text = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
-        if (typeof text === 'string') {
-          for (const match of text.matchAll(/\$\{([^}!][^}.]*)/g)) out.add(match[1]!);
-        }
-      }
-      walk(arg);
-    }
-  };
-  walk(resource.Properties);
-  return out;
-}
 
 export function toLogicalIdRenames(renames: readonly ProposedRename[]): LogicalIdRename[] {
   return renames.map(({ from, to }) => ({ from, to }));

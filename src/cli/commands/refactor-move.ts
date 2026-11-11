@@ -15,6 +15,8 @@ import { displayAwsMessage, safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
+  changedDependencyOf,
+  changedDependencyReason,
   isPairableType,
   looselyEqual,
   type AmbiguousGroup,
@@ -275,9 +277,27 @@ export async function planMoves(
         dest.template
       );
       const { changes } = await dest.diff(withMoves);
+      // Unchanged itself, but referencing a resource the next deploy changes:
+      // a new resource, not a moved one (go-to-k/cdkd#6097).
+      const isChanged = (id: string): boolean => {
+        const change = changes.get(id);
+        return change !== undefined && change.changeType !== 'NO_CHANGE';
+      };
       for (const m of incoming) {
         const change = changes.get(m.to);
-        if (change?.changeType === 'NO_CHANGE') continue;
+        if (change?.changeType === 'NO_CHANGE') {
+          const dependency = changedDependencyOf(dest.template, m.to, isChanged);
+          if (dependency === undefined) continue;
+          failed.push(m);
+          result.refused.push({
+            fromStack: m.fromStack,
+            from: m.from,
+            toStack: m.toStack,
+            to: m.to,
+            reason: changedDependencyReason(dependency),
+          });
+          continue;
+        }
         failed.push(m);
         const paths = (change?.propertyChanges ?? []).map((p) => p.path);
         for (const a of change?.attributeChanges ?? []) paths.push(a.attribute);

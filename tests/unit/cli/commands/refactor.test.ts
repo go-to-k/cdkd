@@ -346,6 +346,72 @@ describe('stillChanging', () => {
   });
 });
 
+// go-to-k/cdkd#6097: CDK's `fn.currentVersion` gets a new logical id when the
+// function's code changes. The new version's own properties match the old
+// one's, but renaming the old record into its place means no new version is
+// published, and the alias stays on the old code.
+describe('a rename referencing a resource the deploy changes', () => {
+  const version = 'AWS::Lambda::Version';
+  const fnType = 'AWS::Lambda::Function';
+  const t: CloudFormationTemplate = {
+    Resources: {
+      Fn: { Type: fnType, Properties: { Code: 'v2' } },
+      VerNew: { Type: version, Properties: { FunctionName: { Ref: 'Fn' } } },
+    },
+  };
+  const versionPlan = (fnCode: string, overrides: Array<{ from: string; to: string }> = []) =>
+    planStackRefactor({
+      stackName: 'S',
+      region: 'us-east-1',
+      state: stack({
+        Fn: rec({ Code: 'v1' }, { resourceType: fnType }),
+        VerOld: rec({ FunctionName: 'fn' }, { resourceType: version }),
+      }),
+      etag: '"e"',
+      template: t,
+      overrides,
+      diff: fakeDiff({
+        Fn: { type: fnType, props: { Code: fnCode } },
+        VerNew: { type: version, props: { FunctionName: 'fn' } },
+      }),
+    });
+
+  it('is not renamed: it is a new resource, and the plan says why', async () => {
+    const p = await versionPlan('v2');
+    expect(p.renames).toEqual([]);
+    expect(p.differing).toEqual([]);
+    expect(p.skipped).toEqual([
+      {
+        rename: expect.objectContaining({ from: 'VerOld', to: 'VerNew' }),
+        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+      },
+    ]);
+    expect(renderRefactorPlan(p).join('\n')).toMatch(
+      /Not refactored: VerOld -> VerNew \(AWS::Lambda::Version\): it references Fn/
+    );
+    // Neither side becomes a move candidate.
+    expect(p.unpaired.creates.map((c) => c.logicalId)).not.toContain('VerNew');
+  });
+
+  it('refuses the same pair named in a mapping file', async () => {
+    const p = await versionPlan('v2', [{ from: 'VerOld', to: 'VerNew' }]);
+    expect(p.renames).toEqual([]);
+    expect(p.refusedOverrides).toEqual([
+      expect.objectContaining({
+        from: 'VerOld',
+        to: 'VerNew',
+        reason: expect.stringMatching(/references Fn, which the next deploy changes/),
+      }),
+    ]);
+  });
+
+  it('is renamed when what it references is unchanged', async () => {
+    const p = await versionPlan('v1');
+    expect(p.renames.map((r) => [r.from, r.to])).toEqual([['VerOld', 'VerNew']]);
+    expect(p.skipped).toEqual([]);
+  });
+});
+
 describe('referencedLogicalIds', () => {
   it('collects Ref, both GetAtt forms, Sub placeholders and DependsOn', () => {
     const t: CloudFormationTemplate = {
