@@ -29,6 +29,10 @@ import type { SettledNestedRows } from '../../nested-child-journal.js';
 import type { FailedOperation } from '../../rollback-executor.js';
 import { retiredAfterRollback, type RolledBackCreate } from '../../../state/name-generation.js';
 import { dropUnsettledMarks, recordUnsettledMarks } from './helpers.js';
+import {
+  partitionDeletedOutsideCdkd,
+  warnDeletedOutsideCdkd,
+} from '../rollback/deleted-outside.js';
 import type { DeployRun } from './run.js';
 
 /**
@@ -221,14 +225,23 @@ export async function rollbackFailedDeploy(
         // `--revert-failed` would only repeat its warning.
         rollbackResult.remainingFailedOps.some((op) => op.changeType !== 'DELETE')
       ) {
-        engine.logger.warn(
-          safeMsg`The record of the operation that failed is kept too. Revert it with: ${
-            pasteableCommand('cdkd rollback', [
-              { value: stackName, hole: 'stack' },
-              { literal: '--revert-failed' },
-            ]).command
-          }`
+        // go-to-k/cdkd#6106: an op whose resource AWS reports gone is named
+        // as deleted outside cdkd; `--revert-failed` would fail on it too.
+        const { gone, kept } = await partitionDeletedOutsideCdkd(
+          engine.rollbackDeps(),
+          rollbackResult.remainingFailedOps
         );
+        warnDeletedOutsideCdkd(engine.rollbackDeps(), gone, false);
+        if (kept.some((op) => op.changeType !== 'DELETE')) {
+          engine.logger.warn(
+            safeMsg`The record of the operation that failed is kept too. Revert it with: ${
+              pasteableCommand('cdkd rollback', [
+                { value: stackName, hole: 'stack' },
+                { literal: '--revert-failed' },
+              ]).command
+            }`
+          );
+        }
       }
     }
     // Hoisted out of this block because both saves below sit outside it

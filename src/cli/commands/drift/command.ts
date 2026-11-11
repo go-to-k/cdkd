@@ -53,6 +53,7 @@ import {
   matchOutcome,
   incompleteRemediationMessage,
 } from './outcome.js';
+import { DELETED_RESOURCE_REMEDY } from '../../../deployment/deleted-resource-remedy.js';
 import { runDriftForStack } from './detect.js';
 import { runAccept } from './accept.js';
 import { runRevert } from './revert.js';
@@ -524,18 +525,6 @@ function deletedRefusalError(
   ];
   return new PartialFailureError(`${parts.join(' and ')} were not ${verb}; each is named above.`);
 }
-
-/**
- * What to do about a resource deleted outside cdkd. NOT "run cdkd deploy": a
- * deploy diffs the template against STATE, never AWS, so an unchanged
- * template leaves the record as it is and recreates nothing.
- */
-const DELETED_RESOURCE_REMEDY =
-  `First confirm it is really gone (in the AWS console or with the AWS CLI). A deploy that ` +
-  `does not change it will not recreate it: to recreate it, remove it from the CDK app and ` +
-  `deploy, then restore it and deploy again; if it is meant to be gone, the first of those ` +
-  `deploys is enough. Anything in the app that references it has to come out with it, and ` +
-  `that deploy DELETES those resources too.`;
 
 /**
  * What to do about a nested stack whose own `<parent>~<child>` record is gone
