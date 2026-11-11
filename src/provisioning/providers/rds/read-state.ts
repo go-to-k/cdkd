@@ -12,6 +12,7 @@ import { associatedRolesNamed, associatedRolesReadback } from '../db-associated-
 import type { RDSProvider } from '../rds-provider.js';
 import { replicatedBackupRetention } from './calls.js';
 import { liveLogExports, liveProcessorFeatures } from './instance-members.js';
+import { readAdditionalStorageVolumes } from './additional-storage-volumes.js';
 import { isDbIdentifier } from './shared.js';
 
 /**
@@ -357,6 +358,9 @@ export async function readCurrentStateDBInstance(
       Value: feature.Value,
     }));
   }
+  // go-to-k/cdkd#5640: the volumes' configuration, status members left out.
+  const volumes = readAdditionalStorageVolumes(inst);
+  if (volumes !== undefined) result['AdditionalStorageVolumes'] = volumes;
   // go-to-k/cdkd#5640: the replication's destination region, off its
   // automated backup's ARN, and that backup's retention, read there, as
   // CloudFormation's read handler reads both (one more call, only for an

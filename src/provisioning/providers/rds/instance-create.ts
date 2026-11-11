@@ -32,6 +32,7 @@ import {
   replicaNeedsModifyAfterCreate,
   replicaSourceOf,
 } from './read-replica.js';
+import { desiredAdditionalStorageVolumes } from './additional-storage-volumes.js';
 
 // ─── DBInstance ───────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ export async function createDBInstance(
   );
   const logExports = desiredLogExports(properties, resourceType, logicalId);
   const processor = desiredProcessorFeatures(properties, resourceType, logicalId);
+  // go-to-k/cdkd#5640: refused before any call when malformed.
+  const volumes = desiredAdditionalStorageVolumes(properties, resourceType, logicalId);
   // go-to-k/cdkd#5640: validated before any call, started once available.
   const replication = backupReplicationPlan(
     properties,
@@ -269,6 +272,9 @@ export async function createDBInstance(
         // handler drops it here; a standalone create without the list runs
         // the class defaults anyway.
         ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
+        // go-to-k/cdkd#5640: on the create call itself, as CloudFormation was
+        // measured to send it (no follow-up modify).
+        ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
         ...(tags.length > 0 && { Tags: tags }),
       });
     // go-to-k/cdkd#5640: a read replica is created as CloudFormation's
@@ -300,6 +306,9 @@ export async function createDBInstance(
               ...(processor.useDefault !== undefined && {
                 UseDefaultProcessorFeatures: processor.useDefault,
               }),
+              // go-to-k/cdkd#5640: the replica's own volumes, a
+              // CreateDBInstanceReadReplica member like the standalone one.
+              ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
             })
           );
     instanceCreated = true;
