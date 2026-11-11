@@ -89,21 +89,21 @@ KEPT_LINE="the restored cluster keeps its source's MasterUsername, not the templ
 # Sentinel: the line's opening, independent of its wording.
 KEPT_SENTINEL=": the restored cluster"
 
-# Best-effort delete of one cluster, waiting until it is gone only when AWS
-# took the delete.
+# Best-effort delete of one cluster, until it is gone. The delete is re-sent
+# each round: a cluster interrupted mid-restore (`creating`) refuses it until
+# it is `available`.
 sweep_cluster() { ( # usage: sweep_cluster <cluster id>
   set +eu
-  aws rds modify-db-cluster --db-cluster-identifier "$1" --no-deletion-protection \
-    --apply-immediately --region "${REGION}" >/dev/null 2>&1
-  if aws rds delete-db-cluster --db-cluster-identifier "$1" \
-    --skip-final-snapshot --region "${REGION}" >/dev/null 2>&1; then
-    for _ in $(seq 1 90); do
-      out="$(aws rds describe-db-clusters --db-cluster-identifier "$1" \
-        --region "${REGION}" 2>&1)"
-      case "${out}" in *DBClusterNotFound*) break ;; esac
-      sleep 10
-    done
-  fi
+  for _ in $(seq 1 120); do
+    out="$(aws rds describe-db-clusters --db-cluster-identifier "$1" \
+      --region "${REGION}" 2>&1)"
+    case "${out}" in *DBClusterNotFound*) break ;; esac
+    aws rds modify-db-cluster --db-cluster-identifier "$1" --no-deletion-protection \
+      --apply-immediately --region "${REGION}" >/dev/null 2>&1
+    aws rds delete-db-cluster --db-cluster-identifier "$1" \
+      --skip-final-snapshot --region "${REGION}" >/dev/null 2>&1
+    sleep 10
+  done
 ) }
 
 # Best-effort teardown of a partial destroy, by fixed name and by the CDK Name
@@ -259,8 +259,11 @@ fi
 for logical in PitrCluster TimeCluster; do
   # The discriminator: a pre-fix binary routes these to Cloud Control.
   assert_record "Phase 3" "${logical}" provisionedBy sdk
-  if ! grep -F "${logical}" "${DEPLOY_LOG}" | grep -qF "${KEPT_LINE}"; then
-    if grep -F "${logical}" "${DEPLOY_LOG}" | grep -qF "${KEPT_SENTINEL}"; then
+  # Here-strings, not pipes: under pipefail an early `grep -q` exit can
+  # SIGPIPE the upstream grep and read as no match.
+  LINES="$(grep -F "${logical}" "${DEPLOY_LOG}" || true)"
+  if ! grep -qF "${KEPT_LINE}" <<<"${LINES}"; then
+    if grep -qF "${KEPT_SENTINEL}" <<<"${LINES}"; then
       echo "FAIL: Phase 3: the ${logical} warning no longer reads '${KEPT_LINE}' (wording drift?)" >&2
     else
       echo "FAIL: Phase 3: the deploy did not warn that ${logical} keeps the source's MasterUsername" >&2

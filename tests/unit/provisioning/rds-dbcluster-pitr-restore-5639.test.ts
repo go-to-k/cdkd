@@ -67,6 +67,8 @@ interface Live {
   sharedError?: Error;
   restored?: Input;
   failModify?: Error;
+  /** The instances the cluster lists, as an L1 template may add its own. */
+  members?: Input[];
 }
 
 function arm(live: Live = {}): void {
@@ -102,7 +104,7 @@ function arm(live: Live = {}): void {
             {
               DBClusterIdentifier: CLUSTER,
               DBClusterArn: CLUSTER_ARN,
-              DBClusterMembers: [],
+              DBClusterMembers: live.members ?? [],
               Status: 'available',
               HttpEndpointEnabled: true,
             },
@@ -369,14 +371,16 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
         reads += 1;
         return Promise.resolve({
           DBClusters: [
-            { DBClusterIdentifier: CLUSTER, Status: 'available', HttpEndpointEnabled: reads > 3 },
+            { DBClusterIdentifier: CLUSTER, Status: 'available', HttpEndpointEnabled: reads > 6 },
           ],
         });
       }
       return base(command);
     });
     await create({ EnableHttpEndpoint: true });
-    expect(reads).toBeGreaterThan(3);
+    // Without the wait only the closing availability wait and the attribute
+    // read follow the call (3 reads); the wait polls until the 6th reads on.
+    expect(reads).toBeGreaterThan(6);
   });
 
   it('describes the restored cluster for its ARN when the restore answer has none', async () => {
@@ -684,6 +688,8 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
   });
 
   it('a restored record deletes no writer instance by name and detaches from no global cluster', async () => {
+    // An instance the template made under the express writer's name.
+    arm({ members: [{ DBInstanceIdentifier: `${CLUSTER}-instance-1`, IsClusterWriter: true }] });
     await provider.delete('Cluster', CLUSTER, 'AWS::RDS::DBCluster', {
       ...BASE,
       WithExpressConfiguration: true,
