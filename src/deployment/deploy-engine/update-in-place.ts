@@ -742,25 +742,26 @@ export async function updateInPlace(
         secrets: updateSecrets,
         // go-to-k/cdkd#4682: today's values at the old record's NoEcho
         // coordinates, as a replacement's delete of its old record gets them.
-        noEchoDeleteValues: await noEchoDeleteValuesFromResolved({
-          record: currentResource,
-          templateResource: template?.Resources?.[logicalId],
-          resolvedProperties: resolvedProps,
-          noEchoParameters:
-            noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
-            new Set(),
-          conditions: engine.noEchoRun.noEchoConditions,
-          secrets: updateSecrets,
-          inputSources:
-            template &&
-            maskedInputSources(
-              engine.resolverContextDeps(),
-              template,
-              stateResources,
-              engine.noEchoRun.noEchoConditions,
-              stackName
-            ),
-        }),
+        noEchoDeleteValues: () =>
+          noEchoDeleteValuesFromResolved({
+            record: currentResource,
+            templateResource: template?.Resources?.[logicalId],
+            resolvedProperties: resolvedProps,
+            noEchoParameters:
+              noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
+              new Set(),
+            conditions: engine.noEchoRun.noEchoConditions,
+            secrets: updateSecrets,
+            inputSources:
+              template &&
+              maskedInputSources(
+                engine.resolverContextDeps(),
+                template,
+                stateResources,
+                engine.noEchoRun.noEchoConditions,
+                stackName
+              ),
+          }),
       });
     }
   }

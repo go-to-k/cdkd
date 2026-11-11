@@ -9,6 +9,7 @@ import type { ResourceState } from '../../../types/state.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import type { RecordedSecretValues } from '../../secret-redaction.js';
+import { removeSuperseded } from '../../superseded-resources.js';
 import { deleteReplacedAfterCreate, recordSupersededForDeferral } from './delete-replaced.js';
 import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
 
@@ -32,7 +33,14 @@ import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
  * whose delete was skipped (go-to-k/cdkd#4043).
  *
  * `UpdateReplacePolicy: Retain` keeps the old id: no delete is sent, as
- * CloudFormation retains a replaced resource under it.
+ * CloudFormation retains a replaced resource under it. So does `Snapshot`
+ * (unless `--skip-final-snapshot`): a custom resource has no snapshot, and
+ * every other replacement delete refuses the policy for such a type before
+ * deleting, which this one, run after the deploy, cannot do.
+ *
+ * Never an id another record of the stack names when the delete is sent
+ * (two custom resources swapping names): cdkd never deletes an id a record
+ * names, as the superseded retry and `cdkd destroy` do not.
  */
 export async function deleteOldIdAfterDeploy(
   run: ReplacementRunState,
@@ -45,19 +53,57 @@ export async function deleteOldIdAfterDeploy(
     deleteProvisionedBy: 'sdk' | 'cc-api' | undefined;
     updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | undefined;
     secrets: RecordedSecretValues;
-    noEchoDeleteValues: NoEchoDeleteValues | undefined;
+    /**
+     * go-to-k/cdkd#4682: today's values at the old record's NoEcho
+     * coordinates. Called here so a failure to compute them never fails the
+     * update that already succeeded.
+     */
+    noEchoDeleteValues: () => Promise<NoEchoDeleteValues | undefined>;
   }
 ): Promise<void> {
   const { logicalId, oldResource } = input;
   const shownOldId = displayPhysicalId(oldResource.resourceType, oldResource.physicalId);
-  if (input.updateReplacePolicy === 'Retain') {
-    deps.logger.info(
-      safeMsg`  ${logicalId} has UpdateReplacePolicy: Retain — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`
+  const keptBy =
+    input.updateReplacePolicy === 'Retain'
+      ? 'Retain'
+      : input.updateReplacePolicy === 'Snapshot' && deps.options.skipFinalSnapshot !== true
+        ? 'Snapshot'
+        : undefined;
+  if (keptBy !== undefined) {
+    const line = safeMsg`  ${logicalId} has UpdateReplacePolicy: ${keptBy} — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`;
+    if (keptBy === 'Retain') deps.logger.info(line);
+    else deps.logger.warn(`${line} (a custom resource takes no snapshot)`);
+    return;
+  }
+  let noEchoDeleteValues: NoEchoDeleteValues | undefined;
+  try {
+    noEchoDeleteValues = await input.noEchoDeleteValues();
+  } catch {
+    // Its text is not shown: it may carry a re-resolved value.
+    deps.logger.warn(
+      safeMsg`  ⚠ ${logicalId}'s old physical id (${shownOldId}) is not sent a Delete: cdkd could not prepare its properties. It is no longer tracked by cdkd; delete what the handler made under it manually`
     );
     return;
   }
-  const send = (isRetry: boolean): Promise<void> =>
-    deleteReplacedAfterCreate(
+  const send = async (isRetry: boolean): Promise<void> => {
+    const others = Object.fromEntries(
+      Object.entries(deps.deployStateResources()).filter(([id]) => id !== logicalId)
+    );
+    const holderId = Object.entries(others).find(
+      ([, record]) => record?.physicalId === oldResource.physicalId
+    )?.[0];
+    if (holderId !== undefined) {
+      deps.logger.warn(
+        safeMsg`  ⚠ ${logicalId}'s old physical id (${shownOldId}) is not sent a Delete: ${holderId} records the same physical id, and cdkd never deletes an id a record names`
+      );
+      const recorded = run.supersededEntries.get(logicalId);
+      if (recorded !== undefined && run.supersededHost !== undefined) {
+        removeSuperseded(run.supersededHost, recorded);
+        run.supersededEntries.delete(logicalId);
+      }
+      return;
+    }
+    await deleteReplacedAfterCreate(
       run,
       deps,
       logicalId,
@@ -69,12 +115,14 @@ export async function deleteOldIdAfterDeploy(
       input.updateReplacePolicy,
       input.secrets,
       input.deleteProvisionedBy,
-      input.noEchoDeleteValues,
+      noEchoDeleteValues,
       isRetry
     );
+  };
   const deferred = run.deferredReplacedDeletes;
   if (deferred === undefined) {
-    // Outside a deploy's DAG there is no cleanup phase to wait for.
+    // Not reached by a deploy (`executeDeployment` sets the map for its whole
+    // DAG); a caller outside one has no cleanup phase to wait for.
     deps.logger.info(safeMsg`  Deleting old ${logicalId} (${shownOldId})...`);
     await send(false);
     return;
@@ -82,7 +130,7 @@ export async function deleteOldIdAfterDeploy(
   recordSupersededForDeferral(run, deps, logicalId, oldResource, {
     updateReplacePolicy: input.updateReplacePolicy,
     finalSnapshotIdentifier: undefined,
-    noEchoDeleteValues: input.noEchoDeleteValues,
+    noEchoDeleteValues,
     inlinePolicyClaimed: undefined,
   });
   deferred.set(logicalId, {

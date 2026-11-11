@@ -91,15 +91,21 @@ a deploy that is killed before the `Delete` leaves it for the next
 holding the masked value of a `NoEcho` parameter is not kept, because only the
 running deploy can re-resolve that value.
 
-- **The deploy fails.** No `Delete` is sent. The rollback undoes the update,
-  and the old id is in use again.
+- **The deploy fails.** No `Delete` is sent. The rollback records the old id
+  again by sending the handler a `Create` with the old properties, then
+  deletes the new id. CloudFormation sends an `Update` instead
+  ([#6120](https://github.com/go-to-k/cdkd/issues/6120)), so a handler whose
+  `Create` refuses a resource that already exists fails that rollback.
 - **The `Delete` does not complete** (the handler answers `FAILED`, or the
   invoke fails). cdkd warns, naming the old id, and the deploy still
   completes, with exit code `2` unless `--allow-unaddressed`. This is the skip
   below: the old id is no longer tracked, so tear down what the handler made
   under it by hand.
-- **`UpdateReplacePolicy: Retain`.** No `Delete` is sent, and the old id is no
-  longer tracked.
+- **`UpdateReplacePolicy: Retain`**, or **`Snapshot`** without
+  `--skip-final-snapshot` (a custom resource takes no snapshot). No `Delete`
+  is sent, and the old id is no longer tracked.
+- **Another resource of the stack records the same physical id.** No `Delete`
+  is sent; cdkd never deletes an id one of its records names.
 
 ## A skipped custom-resource delete
 

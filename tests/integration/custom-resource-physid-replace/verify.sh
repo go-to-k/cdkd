@@ -332,9 +332,15 @@ if [ -n "${LEFT_FNS}" ]; then
   echo "FAIL: functions still exist after the clean destroy (orphan): ${LEFT_FNS}" >&2
   exit 1
 fi
+LEFT_ROLES=$(aws iam list-roles \
+  --query "Roles[?starts_with(RoleName, '${STACK}-')].RoleName" --output text)
+if [ -n "${LEFT_ROLES}" ]; then
+  echo "FAIL: IAM roles still exist after the clean destroy (orphan): ${LEFT_ROLES}" >&2
+  exit 1
+fi
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the clean destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: both ids got their Delete; functions, parameters and the state file are gone"
+echo "    OK: both ids got their Delete; functions, roles, parameters and the state file are gone"
 
 trap - EXIT INT TERM
 sweep_params
@@ -345,6 +351,13 @@ for name in "${NAME_1}" "${NAME_2}"; do
 done
 assert_gone "log group /aws/lambda/${FN_ON_EVENT} survived the sweep" \
   aws logs describe-log-streams --log-group-name "/aws/lambda/${FN_ON_EVENT}" --region "${REGION}"
+# The provider framework's function is auto-named `<stack>-...` too.
+LEFT_GROUPS=$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}-" \
+  --region "${REGION}" --query 'logGroups[].logGroupName' --output text)
+if [ -n "${LEFT_GROUPS}" ]; then
+  echo "FAIL: log groups survived the sweep: ${LEFT_GROUPS}" >&2
+  exit 1
+fi
 
 echo ""
 echo "[verify] PASS — custom-resource-physid-replace (#6117: the old physical id gets a Delete with the old properties after the Update; clean destroy)"

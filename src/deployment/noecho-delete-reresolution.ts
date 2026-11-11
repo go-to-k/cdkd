@@ -167,8 +167,10 @@ async function fingerprintsUnchanged(
  * CLI route that replaces a custom resource still in its template is
  * `cdkd deploy --recreate-via-cc-api <id>`: validation does not refuse a custom
  * type and `getProviderFor` rule 1 sends both halves to the custom-resource
- * provider. Nothing else does (no create-only list, #1016; a `ServiceToken`
- * change is refused, #4749), and this fails closed where it cannot re-resolve.
+ * provider. The other route is an in-place update whose handler answered a
+ * new physical id, whose old id is deleted after the deploy (#6117). Nothing
+ * else does (no create-only list, #1016; a `ServiceToken` change is refused,
+ * #4749), and this fails closed where it cannot re-resolve.
  */
 export async function noEchoDeleteValuesFromResolved(options: {
   record: ResourceState;

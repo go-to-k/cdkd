@@ -35,7 +35,16 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((value: unknown) => Promise.resolve(value)),
+    // `{ Ref: 'Secret' }` resolves to the NoEcho parameter's value.
+    resolve: vi.fn().mockImplementation((value: unknown) =>
+      Promise.resolve(
+        JSON.parse(JSON.stringify(value), (_k, v: unknown) =>
+          v !== null && typeof v === 'object' && (v as { Ref?: unknown }).Ref === 'Secret'
+            ? 's3cret'
+            : v
+        ) as unknown
+      )
+    ),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
@@ -110,7 +119,10 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       }),
       delete: vi.fn(async (logicalId: string, physicalId: string) => {
         calls.push(`delete ${logicalId} ${physicalId}`);
-        if (deleteMode === 'throw') throw new Error('AccessDenied: lambda:InvokeFunction');
+        // What the real provider throws rather than skips (a non-string token).
+        if (deleteMode === 'throw') {
+          throw new Error('Custom Resource Res: ServiceToken is not a resolved string ARN');
+        }
         if (deleteMode === 'skip') {
           return { outcome: 'skipped', reason: 'the Delete handler returned FAILED' };
         }
@@ -121,7 +133,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     } as unknown as ResourceProvider;
   });
 
-  function makeEngine(noRollback: boolean): InstanceType<typeof DeployEngine> {
+  function makeEngine(noRollback: boolean, skipFinalSnapshot = false): InstanceType<typeof DeployEngine> {
     const registry = {
       getProvider: vi.fn().mockReturnValue(provider),
       getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' as const }),
@@ -150,25 +162,38 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       } as unknown as never,
       {} as unknown as never,
       registry as unknown as never,
-      { concurrency: 4, noRollback } as never,
+      { concurrency: 4, noRollback, ...(skipFinalSnapshot && { skipFinalSnapshot: true }) } as never,
       'us-east-1'
     );
   }
 
   async function deploy(
-    opts: { noRollback?: boolean; updateReplacePolicy?: string; oldRecord?: Partial<ResourceState> } = {}
+    opts: {
+      noRollback?: boolean;
+      updateReplacePolicy?: string;
+      skipFinalSnapshot?: boolean;
+      oldRecord?: Partial<ResourceState>;
+      /** The template's `Res` properties (default {@link NEW_PROPS}). */
+      newProps?: Record<string, unknown>;
+      /** Another record of the stack, unchanged by the deploy. */
+      other?: ResourceState;
+      /** `Res` already moved to name-2, with name-1 recorded as superseded. */
+      carried?: boolean;
+    } = {}
   ): Promise<{ updatePartial: number; final: StackState }> {
-    const engine = makeEngine(opts.noRollback ?? true);
+    const engine = makeEngine(opts.noRollback ?? true, opts.skipFinalSnapshot ?? false);
     const template = {
+      Parameters: { Secret: { Type: 'String', NoEcho: true } },
       Resources: {
         Res: {
           Type: CR,
-          Properties: NEW_PROPS,
+          Properties: opts.newProps ?? NEW_PROPS,
           ...(opts.updateReplacePolicy !== undefined && {
             UpdateReplacePolicy: opts.updateReplacePolicy,
           }),
         },
         Topic: { Type: TOPIC, Properties: { DisplayName: 'v2' } },
+        ...(opts.other !== undefined && { Other: { Type: CR, Properties: opts.other.properties } }),
       },
     } as unknown as CloudFormationTemplate;
     const record = (physicalId: string, resourceType: string, properties: Record<string, unknown>) =>
@@ -185,26 +210,34 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       stackName: 'MyStack',
       region: 'us-east-1',
       resources: {
-        Res: { ...record('name-1', CR, OLD_PROPS), ...opts.oldRecord },
+        Res: opts.carried
+          ? record('name-2', CR, NEW_PROPS)
+          : { ...record('name-1', CR, OLD_PROPS), ...opts.oldRecord },
         Topic: record('topic', TOPIC, { DisplayName: 'v1' }),
+        ...(opts.other !== undefined && { Other: opts.other }),
       },
+      ...(opts.carried && {
+        supersededResources: [
+          { logicalId: 'Res', supersededAt: 1, state: record('name-1', CR, OLD_PROPS) },
+        ],
+      }),
       outputs: {},
       lastModified: 0,
     } as unknown as StackState;
     const changes = new Map<string, ResourceChange>([
-      [
+      ...(opts.carried ? [] : ([[
         'Res',
         {
           logicalId: 'Res',
           changeType: 'UPDATE',
           resourceType: CR,
           currentProperties: OLD_PROPS,
-          desiredProperties: NEW_PROPS,
+          desiredProperties: opts.newProps ?? NEW_PROPS,
           propertyChanges: [
             { path: 'Name', oldValue: 'name-1', newValue: 'name-2', requiresReplacement: false },
           ],
         } as unknown as ResourceChange,
-      ],
+      ]] as [string, ResourceChange][])),
       [
         'Topic',
         {
@@ -225,7 +258,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       currentState,
       changes,
       {} as never,
-      [['Res'], ['Topic']],
+      opts.carried ? [['Topic']] : [['Res'], ['Topic']],
       'MyStack',
       template,
       undefined,
@@ -255,6 +288,11 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     ]);
     expect(updatePartial).toBe(0);
     expect(printed.info.some((l) => l.includes('Old Res (name-1) deleted'))).toBe(true);
+    // Announced as a delete, never as a retry of a failed one.
+    expect(
+      printed.info.some((l) => l.includes('Deleting the old physical id of 1 replaced custom resource(s)'))
+    ).toBe(true);
+    expect(printed.info.some((l) => l.includes('Retrying the delete of'))).toBe(false);
     expect(printed.warn).toEqual([]);
   });
 
@@ -292,9 +330,26 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
   it('leaves the rollback of a failed deploy as it was: the old id is never deleted', async () => {
     topicFails = true;
     await expect(deploy({ noRollback: false })).rejects.toThrow(/Failed to update resource Topic/);
-    // The reverse replacement takes name-1 back and removes name-2.
     expect(oldIdDeletes()).toEqual([]);
-    expect(calls).toContain('delete Res name-2');
+    // The reverse replacement, unchanged by #6117: it re-creates name-1 and
+    // deletes name-2 (CloudFormation sends an Update instead: #6120).
+    expect(calls.slice(2)).toEqual(['create Res name-1', 'delete Res name-2']);
+  });
+
+  it('says to delete it manually when a failed deploy leaves an old id it could not record', async () => {
+    topicFails = true;
+    const masked = { ServiceToken: TOKEN, Name: 'name-1', Secret: '***' };
+    await expect(
+      deploy({ oldRecord: { properties: masked, noEchoLeaves: [['Secret']] } })
+    ).rejects.toThrow(/Failed to update resource Topic/);
+    expect(oldIdDeletes()).toEqual([]);
+    expect(
+      printed.warn.some(
+        (l) =>
+          l.includes('The old physical id of Res (name-1) was not sent its Delete') &&
+          l.includes('no longer tracked in state, so delete it manually')
+      )
+    ).toBe(true);
   });
 
   it('warns naming the old id when its Delete fails, and the deploy completes', async () => {
@@ -304,7 +359,9 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     expect(updatePartial).toBe(0);
     expect(
       printed.warn.some(
-        (l) => l.includes('Failed to delete old resource Res (name-1)') && l.includes('AccessDenied')
+        (l) =>
+          l.includes('Failed to delete old resource Res (name-1)') &&
+          l.includes('not a resolved string ARN')
       )
     ).toBe(true);
     // Kept in state: the next deploy or `cdkd destroy` sends it again.
@@ -315,11 +372,12 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
 
   it('warns naming the old id when the handler declines the Delete, counting the row partial', async () => {
     deleteMode = 'skip';
-    const { updatePartial } = await deploy();
+    const { updatePartial, final } = await deploy();
     expect(updatePartial).toBe(1);
     expect(printed.warn.some((l) => l.includes('name-1') && l.includes('no longer tracked'))).toBe(
       true
     );
+    expect(final.supersededResources).toBeUndefined();
   });
 
   it('sends no Delete under UpdateReplacePolicy: Retain', async () => {
@@ -327,6 +385,58 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     expect(provider.delete).not.toHaveBeenCalled();
     expect(saved.length).toBeGreaterThan(0);
     expect(saved.every((s) => s.supersededResources === undefined)).toBe(true);
+    expect(final.supersededResources).toBeUndefined();
+  });
+
+  it('sends no Delete under UpdateReplacePolicy: Snapshot, which a custom resource cannot take', async () => {
+    await deploy({ updateReplacePolicy: 'Snapshot' });
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(printed.warn.some((l) => l.includes('UpdateReplacePolicy: Snapshot') && l.includes('name-1'))).toBe(
+      true
+    );
+  });
+
+  it('deletes under UpdateReplacePolicy: Snapshot with --skip-final-snapshot', async () => {
+    await deploy({ updateReplacePolicy: 'Snapshot', skipFinalSnapshot: true });
+    expect(oldIdDeletes()).toHaveLength(1);
+  });
+
+  it('never deletes an old id another record of the stack names', async () => {
+    const other = {
+      physicalId: 'name-1',
+      resourceType: CR,
+      properties: OLD_PROPS,
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk',
+    } as ResourceState;
+    const { final } = await deploy({ other });
+    expect(oldIdDeletes()).toEqual([]);
+    expect(
+      printed.warn.some(
+        (l) => l.includes("Res's old physical id (name-1) is not sent a Delete") && l.includes('Other')
+      )
+    ).toBe(true);
+    expect(final.supersededResources).toBeUndefined();
+  });
+
+  it('re-resolves the NoEcho value of the old record into the Delete payload', async () => {
+    const masked = { ServiceToken: TOKEN, Name: 'name-1', Secret: '***' };
+    await deploy({
+      newProps: { ...NEW_PROPS, Secret: { Ref: 'Secret' } },
+      oldRecord: { properties: masked, noEchoLeaves: [['Secret']] },
+    });
+    const context = oldIdDeletes()[0]?.[4] as {
+      noEchoDeleteValues?: { leaves: { coordinate: string[]; value: unknown }[] };
+    };
+    expect(context.noEchoDeleteValues?.leaves).toEqual([{ coordinate: ['Secret'], value: 's3cret' }]);
+    // The value never reaches a printed line.
+    expect([...printed.info, ...printed.warn].some((l) => l.includes('s3cret'))).toBe(false);
+  });
+
+  it('a later deploy sends the Delete of an old id an earlier deploy left in state', async () => {
+    const { final } = await deploy({ carried: true });
+    expect(oldIdDeletes()).toEqual([['Res', 'name-1', CR, OLD_PROPS, expect.anything()]]);
     expect(final.supersededResources).toBeUndefined();
   });
 
