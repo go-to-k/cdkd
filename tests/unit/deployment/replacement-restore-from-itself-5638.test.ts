@@ -103,24 +103,36 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       'us-east-1'
     );
 
-  const record = (properties: Record<string, unknown> = {}) => ({
+  /** go-to-k/cdkd#5639: a case may name another type, its desired bag and the record's attributes. */
+  interface Case {
+    type?: string;
+    desired?: Record<string, unknown>;
+    attributes?: Record<string, unknown>;
+  }
+
+  const record = (properties: Record<string, unknown> = {}, c: Case = {}) => ({
     physicalId: PHYSICAL,
-    resourceType: CLUSTER,
+    resourceType: c.type ?? CLUSTER,
     properties,
-    attributes: {},
+    attributes: c.attributes ?? {},
     dependencies: [],
     provisionedBy: 'sdk' as const,
   });
 
   const recreateWith = async (
     flag: 'viaCcApi' | 'viaSdkProvider',
-    source: string
+    source: string,
+    c: Case = {}
   ): Promise<unknown> => {
-    const desired = { SourceDBClusterIdentifier: source, UseLatestRestorableTime: true };
+    const type = c.type ?? CLUSTER;
+    const desired = c.desired ?? {
+      SourceDBClusterIdentifier: source,
+      UseLatestRestorableTime: true,
+    };
     const change = {
       logicalId: 'Cluster',
       changeType: 'UPDATE',
-      resourceType: CLUSTER,
+      resourceType: type,
       currentProperties: {},
       desiredProperties: desired,
       propertyChanges: [
@@ -136,9 +148,9 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       makeEngine(flag) as never,
       'Cluster',
       change as never,
-      { Cluster: record() } as never,
+      { Cluster: record({}, c) } as never,
       'MyStack',
-      { Resources: { Cluster: { Type: CLUSTER, Properties: desired } } } as never,
+      { Resources: { Cluster: { Type: type, Properties: desired } } } as never,
       undefined,
       undefined,
       undefined
@@ -171,15 +183,19 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
   });
 
   /** An in-place update the provider refuses, on the `--replace` fallback. */
-  const fallbackWith = (source: string): Promise<unknown> => {
+  const fallbackWith = (source: string, c: Case = {}): Promise<unknown> => {
+    const type = c.type ?? CLUSTER;
     provider.update.mockReset().mockRejectedValue(
-      new ResourceUpdateNotSupportedError(CLUSTER, 'Cluster', 'immutable')
+      new ResourceUpdateNotSupportedError(type, 'Cluster', 'immutable')
     );
-    const desired = { SourceDBClusterIdentifier: source, UseLatestRestorableTime: true };
+    const desired = c.desired ?? {
+      SourceDBClusterIdentifier: source,
+      UseLatestRestorableTime: true,
+    };
     const change = {
       logicalId: 'Cluster',
       changeType: 'UPDATE',
-      resourceType: CLUSTER,
+      resourceType: type,
       currentProperties: {},
       desiredProperties: desired,
       propertyChanges: [
@@ -190,10 +206,10 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       makeEngine(undefined, true) as never,
       'Cluster',
       change as never,
-      { Cluster: record() } as never,
+      { Cluster: record({}, c) } as never,
       'MyStack',
       {
-        Resources: { Cluster: { Type: CLUSTER, Properties: desired } },
+        Resources: { Cluster: { Type: type, Properties: desired } },
       } as never,
       undefined,
       undefined,
@@ -217,7 +233,7 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     expect(provider.delete).toHaveBeenCalledTimes(1);
   });
 
-  const replaceWith = (source: string): Promise<unknown> => {
+  const replaceWith = (source: string, c: Case = {}): Promise<unknown> => {
     const engine = makeEngine() as unknown as {
       replacementRun: never;
       replacementDeps(): never;
@@ -226,12 +242,12 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       engine.replacementRun,
       engine.replacementDeps(),
       'Cluster',
-      CLUSTER,
-      CLUSTER,
-      record() as never,
+      c.type ?? CLUSTER,
+      c.type ?? CLUSTER,
+      record({}, c) as never,
       provider as never,
       provider as never,
-      { SourceDBClusterIdentifier: source, UseLatestRestorableTime: true },
+      c.desired ?? { SourceDBClusterIdentifier: source, UseLatestRestorableTime: true },
       new Map() as never,
       'Delete',
       'sdk',
@@ -252,6 +268,46 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
   it('lets the --replace fallback through for another source', async () => {
     expect(await replaceWith('another-cluster')).toBeUndefined();
     expect(provider.delete).toHaveBeenCalledTimes(1);
+  });
+
+  // go-to-k/cdkd#5639: an RDS point-in-time restore may name its source by
+  // resource id; each delete-first path hands the guard the record's id.
+  describe('by the recorded DBClusterResourceId (go-to-k/cdkd#5639)', () => {
+    const RDS = 'AWS::RDS::DBCluster';
+    const OWN = { DBClusterResourceId: 'cluster-OWNID123' };
+    const byId = (id: string) => ({ SourceDbClusterResourceId: id, UseLatestRestorableTime: true });
+    const paths: Array<[string, (c: Case) => Promise<unknown>]> = [
+      ['--recreate via the SDK provider', (c) => recreateWith('viaSdkProvider', '', c)],
+      ['--recreate via Cloud Control', (c) => recreateWith('viaCcApi', '', c)],
+      ['the update-failure fallback', (c) => fallbackWith('', c)],
+      ['the --replace delete-first fallback', (c) => replaceWith('', c)],
+    ];
+
+    it.each(paths)('%s refuses the own resource id before any delete', async (_path, run) => {
+      const failure = await run({ type: RDS, attributes: OWN, desired: byId('CLUSTER-ownid123') });
+      expect(chain(failure)).toMatch(/SourceDbClusterResourceId must be another cluster's/);
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)(
+      '%s goes ahead for another id, a record without one, or another type',
+      async (_path, run) => {
+        for (const c of [
+          { type: RDS, attributes: OWN, desired: byId('cluster-OTHER') },
+          { type: RDS, attributes: {}, desired: byId('cluster-OWNID123') },
+          { type: RDS, attributes: { DBClusterResourceId: '' }, desired: byId('') },
+          { type: 'AWS::DocDB::DBCluster', attributes: OWN, desired: byId('cluster-OWNID123') },
+          { type: 'AWS::Neptune::DBCluster', attributes: OWN, desired: byId('cluster-OWNID123') },
+        ]) {
+          provider.delete.mockClear();
+          provider.create.mockClear();
+          const failure = await run(c);
+          expect(chain(failure), JSON.stringify(c)).not.toMatch(/must be another cluster/);
+          expect(provider.delete, JSON.stringify(c)).toHaveBeenCalledTimes(1);
+        }
+      }
+    );
   });
 });
 

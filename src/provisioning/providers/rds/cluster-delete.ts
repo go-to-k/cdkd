@@ -178,7 +178,7 @@ export async function deleteDBClusterOnce(
     // Issue #4029: a global-cluster member cannot be deleted until it is
     // detached, which is what the Cloud Control handler did before its own
     // (unwanted) final snapshot.
-    // go-to-k/cdkd#5639: a point-in-time restore joins none (the restore call
+    // go-to-k/cdkd#5639: a restore (point in time or snapshot) joins none (no restore call
     // has no member for it), so a restored record's one is detached only when
     // AWS lists the cluster as its member.
     const restored = isRestoredRecord(properties);
@@ -201,7 +201,7 @@ export async function deleteDBClusterOnce(
 
     // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer it
     // created for an express-configuration cluster exists.
-    // go-to-k/cdkd#5639: a point-in-time restore creates no writer, and its
+    // go-to-k/cdkd#5639: a restore (point in time or snapshot) creates no writer, and its
     // record holds no writer id; a restored record is then never handed a
     // writer by name. One that holds an id (a plain create recorded with its
     // source under `--prefer-sdk-route`) made a writer: delete it, matched by

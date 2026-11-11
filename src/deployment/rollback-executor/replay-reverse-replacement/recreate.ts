@@ -71,6 +71,7 @@ export async function recreateOldResource(
     // the old record restores from.
     refuseRestoreFromItself(oldType, prev.properties ?? {}, current.physicalId, op.logicalId, {
       region: ctx.region,
+      attributes: current.attributes,
     });
     const finalSnapshotIdentifier = rollbackFinalSnapshotId(
       op.resourceType,

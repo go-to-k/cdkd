@@ -13,6 +13,8 @@ const RESTORING_TYPES: ReadonlySet<string> = new Set([
 export interface RestoreSourceScope {
   region?: string | undefined;
   account?: string | undefined;
+  /** The replaced record's attributes: its `DBClusterResourceId` names it too. */
+  attributes?: Record<string, unknown> | undefined;
 }
 
 /** A cluster's name in any spelling AWS takes: an ARN ends in it, and case does not count. */
@@ -48,7 +50,8 @@ function automatedSnapshotOf(snapshot: string, name: string): boolean {
 
 /**
  * Refuses a restore whose source is the very cluster `physicalId` names
- * (#5638), or one of that cluster's automated snapshots, which its delete
+ * (#5638; by name, or by the `DBClusterResourceId` its record holds), or one
+ * of that cluster's automated snapshots, which its delete
  * removes too (go-to-k/cdkd#5628). Every delete-first replacement calls this BEFORE its delete: the
  * restore after it would read a source that no longer exists. A final snapshot
  * under `UpdateReplacePolicy: Snapshot` keeps the data, but this restore never
@@ -73,6 +76,26 @@ export function refuseRestoreFromItself(
     throw markNonRetryable(
       new ProvisioningError(
         safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier names an automated snapshot of the cluster this creates or replaces, which its delete removes; restore from a manual snapshot instead. Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  // go-to-k/cdkd#5639: an RDS point-in-time restore may name its source by
+  // resource id, which only the record knows.
+  const sourceResourceId = properties['SourceDbClusterResourceId'];
+  const ownResourceId = scope.attributes?.['DBClusterResourceId'];
+  if (
+    resourceType === 'AWS::RDS::DBCluster' &&
+    typeof sourceResourceId === 'string' &&
+    typeof ownResourceId === 'string' &&
+    ownResourceId !== '' &&
+    sourceResourceId.toLowerCase() === ownResourceId.toLowerCase()
+  ) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: SourceDbClusterResourceId must be another cluster's than the one this replaces; nothing was changed.`,
         resourceType,
         logicalId,
         physicalId

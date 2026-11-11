@@ -81,6 +81,7 @@ export async function replaceDeleteFirstAndRecreate(
   refuseRestoreFromItself(resourceType, replaceProps, currentResource.physicalId, logicalId, {
     region: deps.stackRegion,
     account: deps.options.consumerAccount,
+    attributes: currentResource.attributes,
   });
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // go-to-k/cdkd#2007: the bag this deploy resolved plus the name bag, which

@@ -88,8 +88,10 @@ export function getDriftUnknownPaths(
     'DBInstanceParameterGroupName',
     // go-to-k/cdkd#5984: a CreateDBCluster input DescribeDBClusters has no member for.
     'WithExpressConfiguration',
-    // go-to-k/cdkd#5639: RestoreDBClusterToPointInTime inputs, none read back.
+    // go-to-k/cdkd#5639: RestoreDBClusterToPointInTime / FromSnapshot inputs, none read back.
     'SourceDBClusterIdentifier',
+    'SourceDbClusterResourceId',
+    'SnapshotIdentifier',
     'RestoreToTime',
     'RestoreType',
     'UseLatestRestorableTime',

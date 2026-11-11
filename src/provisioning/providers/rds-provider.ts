@@ -156,10 +156,8 @@ export class RDSProvider implements ResourceProvider {
         'DeletionProtection',
         'ServerlessV2ScalingConfiguration',
         'Tags',
-        // #609 security-cluster backfill. Create and modify both carry these,
-        // except `PubliclyAccessible` (create-only: not a ModifyDBCluster
-        // member). CFn `MasterUserSecret` is sent as `MasterUserSecretKmsKeyId`;
-        // `MonitoringInterval` is coerced with Number().
+        // #609: create and modify carry these (`PubliclyAccessible` create only). CFn
+        // `MasterUserSecret` goes as `MasterUserSecretKmsKeyId`, `MonitoringInterval` as Number().
         'ManageMasterUserPassword',
         'MasterUserSecret',
         'MonitoringRoleArn',
@@ -230,8 +228,11 @@ export class RDSProvider implements ResourceProvider {
         // go-to-k/cdkd#5984: create-only, CreateDBCluster alone; never read back. RDS
         // creates a writer with it, which the delete removes first (`./rds/express-writer.ts`).
         'WithExpressConfiguration',
-        // go-to-k/cdkd#5639: create-only, a RestoreDBClusterToPointInTime (`./rds/cluster-restore.ts`).
+        // go-to-k/cdkd#5639: create-only, a RestoreDBClusterToPointInTime or, for
+        // `SnapshotIdentifier`, a RestoreDBClusterFromSnapshot (`./rds/cluster-restore.ts`).
         'SourceDBClusterIdentifier',
+        'SourceDbClusterResourceId',
+        'SnapshotIdentifier',
         'RestoreToTime',
         'RestoreType',
         'UseLatestRestorableTime',

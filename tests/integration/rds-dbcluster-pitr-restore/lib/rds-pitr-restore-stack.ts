@@ -21,6 +21,11 @@ import type { Construct } from 'constructs';
  *   window, the Data API flag). `TimeCluster` declares no retention: the
  *   follow-up sends 1, as CloudFormation's `ModelAdapter.setDefaults` fills it,
  *   where the source holds 3.
+ * - CDKD_TEST_RESTORE=true also adds `IdCluster`, restored at the latest time
+ *   from `Source` named by its resource id (`SourceDbClusterResourceId`), and,
+ *   with CDKD_TEST_SNAPSHOT_ID set (verify.sh takes a manual snapshot of
+ *   `Source`), `SnapCluster`, restored from that snapshot (`SnapshotIdentifier`).
+ *   Each declares the same kinds of members as `PitrCluster`.
  * - CDKD_TEST_UPDATE=true: `PitrCluster`'s `BackupRetentionPeriod` 5 -> 6, in
  *   place.
  *
@@ -32,6 +37,7 @@ export class RdsPitrRestoreStack extends cdk.Stack {
     const isRestore = process.env.CDKD_TEST_RESTORE === 'true';
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const restoreTime = process.env.CDKD_TEST_RESTORE_TIME;
+    const snapshotId = process.env.CDKD_TEST_SNAPSHOT_ID;
 
     // 2 AZs, public subnets, no NAT: nothing connects to the clusters.
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -91,6 +97,44 @@ export class RdsPitrRestoreStack extends cdk.Stack {
       deletionProtection: false,
     });
     pitr.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // go-to-k/cdkd#5639: the source named by its resource id.
+    const byId = new rds.CfnDBCluster(this, 'IdCluster', {
+      dbClusterIdentifier: 'cdkd-integ-rds-pitr-id-5639',
+      engine: 'aurora-postgresql',
+      sourceDbClusterResourceId: source.attrDbClusterResourceId,
+      useLatestRestorableTime: true,
+      masterUsername: 'otheradmin',
+      dbSubnetGroupName: subnetGroup.ref,
+      port: 5436,
+      serverlessV2ScalingConfiguration: { minCapacity: 0.5, maxCapacity: 1 },
+      dbClusterParameterGroupName: params.ref,
+      backupRetentionPeriod: 2,
+      deletionProtection: false,
+    });
+    byId.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // go-to-k/cdkd#5639: a manual snapshot of the source, taken by verify.sh.
+    if (snapshotId !== undefined && snapshotId !== '') {
+      const snap = new rds.CfnDBCluster(this, 'SnapCluster', {
+        dbClusterIdentifier: 'cdkd-integ-rds-pitr-snap-5639',
+        engine: 'aurora-postgresql',
+        engineVersion: '17.9',
+        snapshotIdentifier: snapshotId,
+        masterUsername: 'otheradmin',
+        dbSubnetGroupName: subnetGroup.ref,
+        // On the restore call.
+        port: 5435,
+        copyTagsToSnapshot: true,
+        dbClusterParameterGroupName: params.ref,
+        serverlessV2ScalingConfiguration: { minCapacity: 0.5, maxCapacity: 1 },
+        // On the follow-up ModifyDBCluster only.
+        backupRetentionPeriod: 4,
+        preferredBackupWindow: '06:00-06:30',
+        deletionProtection: false,
+      });
+      snap.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
 
     if (restoreTime === undefined || restoreTime === '') return;
     const timed = new rds.CfnDBCluster(this, 'TimeCluster', {

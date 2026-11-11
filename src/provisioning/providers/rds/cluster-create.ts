@@ -3,7 +3,6 @@ import {
   DeleteDBClusterCommand,
   DeleteDBInstanceCommand,
   ModifyDBClusterCommand,
-  RestoreDBClusterToPointInTimeCommand,
   type CreateDBClusterCommandInput,
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -46,13 +45,16 @@ import {
 } from './express-writer.js';
 import {
   isLimitlessSource,
-  pointInTimeRestoreFollowUp,
-  pointInTimeRestoreInput,
   readClusterRestore,
+  readRestoreBackup,
   readRestoreSource,
+  readSnapshotIsLimitless,
   refuseRestoreEncryption,
+  restoreCallName,
+  restoreFollowUp,
   restoredDifferences,
   restoreWaitMs,
+  sendClusterRestore,
   sendRestoreFollowUp,
   unusedRestoreKeys,
 } from './cluster-restore.js';
@@ -131,15 +133,15 @@ export async function createDBCluster(
   // a rollback re-create leaves it out (a cluster without express configuration).
   const expressFlag = expressConfigurationFlag(properties['WithExpressConfiguration']);
   const expressSkipped = expressFlag === 'malformed';
-  // go-to-k/cdkd#5639: a point-in-time restore (`readClusterRestore`), refused
-  // before any call where CloudFormation refuses its keys. It creates no
-  // express writer: the restore call has no such member.
+  // go-to-k/cdkd#5639: a point-in-time or snapshot restore (`readClusterRestore`),
+  // refused before any call where CloudFormation refuses its keys. It creates
+  // no express writer: neither restore call has such a member.
   const restore = readClusterRestore(properties, resourceType, logicalId);
   const express = expressFlag === true && restore === undefined;
   const unused = unusedRestoreKeys(properties, restore);
   if (unused.length > 0) {
     this.logger.warn(
-      safeMsg`DBCluster ${logicalId}: this ${restore === undefined ? 'create' : 'point-in-time restore'} does not apply ${unused.join(', ')}, as in CloudFormation.`
+      safeMsg`DBCluster ${logicalId}: this ${restore === undefined ? 'create' : `${restore.kind} restore`} does not apply ${unused.join(', ')}, as in CloudFormation.`
     );
   }
   const classSkipped = malformedInstanceClass(properties['DBClusterInstanceClass']);
@@ -222,15 +224,20 @@ export async function createDBCluster(
     (properties['DBClusterIdentifier'] as string | undefined) ||
     // go-to-k/cdkd#5984: an express cluster's name leaves room for its writer's.
     generatedNameFor('AWS::RDS::DBCluster', logicalId, { properties });
-  // go-to-k/cdkd#5639: a replacement's generated name may be the source's.
-  // Names only, as for DocDB: no account is known here.
-  if (restore !== undefined && !/^arn:/i.test(restore.sourceDBClusterIdentifier)) {
+  // go-to-k/cdkd#5639: a replacement's generated name may be the source's, or
+  // its automated snapshot's. Names only, as for DocDB: no account is known
+  // here, so a source cluster ARN is left to the engine's guard.
+  if (
+    restore !== undefined &&
+    !(restore.kind === 'point-in-time' && /^arn:/i.test(restore.sourceDBClusterIdentifier ?? ''))
+  ) {
     refuseRestoreFromItself(resourceType, properties, dbClusterIdentifier, logicalId, {});
   }
   // go-to-k/cdkd#5639: CloudFormation reads the source before restoring: its
-  // scalability type picks the request, its encryption is checked.
+  // scalability type picks the request, and a point-in-time source's
+  // encryption is checked (a snapshot's is not).
   let limitless = false;
-  if (restore !== undefined) {
+  if (restore?.kind === 'point-in-time' && restore.sourceDBClusterIdentifier !== undefined) {
     const source = await readRestoreSource.call(
       this,
       restore.sourceDBClusterIdentifier,
@@ -240,6 +247,25 @@ export async function createDBCluster(
     );
     refuseRestoreEncryption(properties, source, resourceType, logicalId);
     limitless = isLimitlessSource(source);
+  } else if (restore?.kind === 'point-in-time') {
+    // Named by its resource id: the source's automated backups are read instead.
+    const backup = await readRestoreBackup.call(
+      this,
+      restore.sourceDbClusterResourceId ?? '',
+      resourceType,
+      logicalId,
+      mask
+    );
+    refuseRestoreEncryption(properties, backup, resourceType, logicalId);
+    limitless = backup.limitless;
+  } else if (restore?.kind === 'snapshot') {
+    limitless = await readSnapshotIsLimitless.call(
+      this,
+      restore.snapshotIdentifier,
+      resourceType,
+      logicalId,
+      mask
+    );
   }
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
@@ -259,18 +285,13 @@ export async function createDBCluster(
     const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
 
     const response = await (restore !== undefined
-      ? this.getCreateClient().send(
-          new RestoreDBClusterToPointInTimeCommand(
-            pointInTimeRestoreInput(
-              properties,
-              restore,
-              dbClusterIdentifier,
-              tags,
-              logExports,
-              limitless
-            )
-          )
-        )
+      ? sendClusterRestore.call(this, properties, restore, {
+          dbClusterIdentifier,
+          tags,
+          logExports,
+          availabilityZones,
+          limitless,
+        })
       : this.getCreateClient().send(
           new CreateDBClusterCommand({
             DBClusterIdentifier: dbClusterIdentifier,
@@ -361,9 +382,7 @@ export async function createDBCluster(
       // Theoretical AWS SDK contract violation: CreateDBCluster returned
       // success but with no DBCluster. Cannot clean up — we have no
       // identifier to delete. Has never been observed in practice.
-      throw new Error(
-        `${restore === undefined ? 'CreateDBCluster' : 'RestoreDBClusterToPointInTime'} did not return DBCluster`
-      );
+      throw new Error(`${restoreCallName(restore)} did not return DBCluster`);
     }
     if (restore !== undefined) {
       const differs = restoredDifferences(properties, cluster);
@@ -408,7 +427,7 @@ export async function createDBCluster(
           this,
           logicalId,
           dbClusterIdentifier,
-          pointInTimeRestoreFollowUp(properties, logExports, limitless)
+          restoreFollowUp(properties, logExports, limitless)
         );
         if (httpEndpoint === true && properties['EngineMode'] !== 'serverless') {
           const arn =

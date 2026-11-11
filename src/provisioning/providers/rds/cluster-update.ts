@@ -791,7 +791,7 @@ export async function planGlobalClusterUpdate(
     if (!stateBorne || desiredId === undefined) return { kind: 'none' };
     const live = await liveGlobalClusterMembership.call(this, physicalId, desiredId);
     if (live.kind !== 'answered' || live.member) return { kind: 'none' };
-    // go-to-k/cdkd#5639: a point-in-time restore never joined it, so the key
+    // go-to-k/cdkd#5639: a restore (point in time or snapshot) never joined it, so the key
     // records the template, not a membership that ended: dropping it would
     // make the next deploy of the same template an add, which is refused.
     if (isRestoredRecord(previousProperties)) return { kind: 'none' };

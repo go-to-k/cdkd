@@ -1,8 +1,14 @@
 import {
+  DescribeDBClusterAutomatedBackupsCommand,
+  DescribeDBClusterSnapshotsCommand,
   DescribeDBClustersCommand,
   ModifyDBClusterCommand,
+  RestoreDBClusterFromSnapshotCommand,
+  RestoreDBClusterToPointInTimeCommand,
   type DBCluster,
+  type DBClusterAutomatedBackup,
   type ModifyDBClusterCommandInput,
+  type RestoreDBClusterFromSnapshotCommandInput,
   type RestoreDBClusterToPointInTimeCommandInput,
   type Tag,
 } from '@aws-sdk/client-rds';
@@ -22,22 +28,47 @@ import {
   clusterSizeValue,
 } from './cluster-members.js';
 import { engineLifecycleSupportOf } from './instance-members.js';
+import { awsErrorName } from './shared.js';
 
 /**
  * go-to-k/cdkd#5639: a DBCluster created from another cluster's backups. Read
  * from CloudFormation's handler (the archived
  * `aws-cloudformation-resource-providers-rds` `aws-rds-dbcluster`, not
- * measured): a non-empty `SourceDBClusterIdentifier` makes the create a
+ * measured): a non-empty `SourceDBClusterIdentifier` or
+ * `SourceDbClusterResourceId` makes the create a
  * `RestoreDBClusterToPointInTime` (`ResourceModelHelper.isRestoreToPointInTime`)
  * instead of a `CreateDBCluster`, whatever the other keys say.
  */
 export interface ClusterPointInTimeRestore {
-  sourceDBClusterIdentifier: string;
+  kind: 'point-in-time';
+  /** Exactly one of the two sources is set: the handler refuses both. */
+  sourceDBClusterIdentifier: string | undefined;
+  sourceDbClusterResourceId: string | undefined;
   /** Sent only when `UseLatestRestorableTime` is not true, as the handler sends it. */
   restoreToTime: Date | undefined;
   /** The declared flag, `undefined` when absent (the handler sends it as declared). */
   useLatestRestorableTime: boolean | undefined;
   restoreType: string | undefined;
+}
+
+/**
+ * Otherwise a non-empty `SnapshotIdentifier` makes it a
+ * `RestoreDBClusterFromSnapshot` (`isRestoreFromSnapshot`): the handler tests
+ * the point-in-time sources first.
+ */
+export interface ClusterSnapshotRestore {
+  kind: 'snapshot';
+  snapshotIdentifier: string;
+}
+
+export type ClusterRestore = ClusterPointInTimeRestore | ClusterSnapshotRestore;
+
+/** The call a restore of this kind makes, for messages. */
+export function restoreCallName(restore: ClusterRestore | undefined): string {
+  if (restore === undefined) return 'CreateDBCluster';
+  return restore.kind === 'snapshot'
+    ? 'RestoreDBClusterFromSnapshot'
+    : 'RestoreDBClusterToPointInTime';
 }
 
 /**
@@ -72,13 +103,13 @@ export function parseZonedTimestamp(text: string): Date | undefined {
 }
 
 /**
- * The point-in-time restore a template declares, `undefined` for a plain
- * create. Each refusal is one CloudFormation fails the create with too
- * (`RestoreToTime` that `ZonedDateTime` cannot parse, on ANY create, as its
- * `validateRequest` reads it before choosing the call), or a schema type it
- * refuses. They hold on a state replay too: CloudFormation refuses each, so no
- * record of one was written by a deploy it would accept, and falling through
- * would make an EMPTY cluster where a restore was meant.
+ * The restore a template declares, `undefined` for a plain create. Each
+ * refusal is one CloudFormation fails the create with too (`RestoreToTime`
+ * that `ZonedDateTime` cannot parse, on ANY create, as its `validateRequest`
+ * reads it before choosing the call; both point-in-time sources at once), or
+ * a schema type it refuses. They hold on a state replay too: CloudFormation
+ * refuses each, so no record of one was written by a deploy it would accept,
+ * and falling through would make an EMPTY cluster where a restore was meant.
  *
  * `UseLatestRestorableTime: true` beside a `RestoreToTime` restores to the
  * latest time and leaves the timestamp out, as the handler does; a source
@@ -88,7 +119,7 @@ export function readClusterRestore(
   properties: Record<string, unknown>,
   resourceType: string,
   logicalId: string
-): ClusterPointInTimeRestore | undefined {
+): ClusterRestore | undefined {
   const refuse = (reason: string): never => {
     throw markNonRetryable(
       new ProvisioningError(
@@ -115,56 +146,85 @@ export function readClusterRestore(
   if (declaredLatest != null && useLatestRestorableTime === undefined) {
     return refuse('UseLatestRestorableTime must be true or false');
   }
-  const restoreType = properties['RestoreType'];
-  if (restoreType != null && typeof restoreType !== 'string') {
-    return refuse('RestoreType must be a string');
+  // A string key as the handler's `StringUtils.hasValue` reads it: empty is unset.
+  const stringKey = (key: string): string | undefined => {
+    const value = properties[key];
+    if (value == null) return undefined;
+    if (typeof value !== 'string') return refuse(`${key} must be a string`);
+    return value === '' ? undefined : value;
+  };
+  const restoreType = stringKey('RestoreType');
+  const source = stringKey('SourceDBClusterIdentifier');
+  const sourceResourceId = stringKey('SourceDbClusterResourceId');
+  const snapshotIdentifier = stringKey('SnapshotIdentifier');
+  if (source !== undefined && sourceResourceId !== undefined) {
+    return refuse('set either SourceDBClusterIdentifier or SourceDbClusterResourceId, not both');
   }
-  const source = properties['SourceDBClusterIdentifier'];
-  if (source == null) return undefined;
-  if (typeof source !== 'string') return refuse('SourceDBClusterIdentifier must be a string');
-  if (source === '') return undefined;
+  if (source === undefined && sourceResourceId === undefined) {
+    return snapshotIdentifier === undefined ? undefined : { kind: 'snapshot', snapshotIdentifier };
+  }
   return {
+    kind: 'point-in-time',
     sourceDBClusterIdentifier: source,
+    sourceDbClusterResourceId: sourceResourceId,
     restoreToTime: useLatestRestorableTime === true ? undefined : restoreToTime,
     useLatestRestorableTime,
-    restoreType: restoreType === '' ? undefined : (restoreType as string | undefined),
+    restoreType,
   };
 }
 
+/** The keys whose non-empty value makes a create a restore ({@link readClusterRestore}). */
+const RESTORE_SOURCE_KEYS = [
+  'SourceDBClusterIdentifier',
+  'SourceDbClusterResourceId',
+  'SnapshotIdentifier',
+] as const;
+
 /**
- * Whether a recorded bag is a point-in-time restore's: its create applied no
+ * Whether a recorded bag is a restore's: its create applied no
  * `GlobalClusterIdentifier` or `WithExpressConfiguration`, which the record
  * still carries (create-only; dropping them would re-diff as an addition).
  */
 export function isRestoredRecord(properties: Record<string, unknown> | undefined): boolean {
-  const source = properties?.['SourceDBClusterIdentifier'];
-  return typeof source === 'string' && source !== '';
+  return RESTORE_SOURCE_KEYS.some((key) => {
+    const source = properties?.[key];
+    return typeof source === 'string' && source !== '';
+  });
 }
 
 /**
  * The declared keys a create of this kind does not apply, as CloudFormation's
  * does not: on a plain create the point-in-time keys; on a restore the keys
- * neither `RestoreDBClusterToPointInTime` nor the handler's follow-up
- * `ModifyDBCluster` carries (the source decides them, or nothing does), and a
- * `RestoreToTime` that `UseLatestRestorableTime: true` overrides. The engine,
- * version, master user, database name and engine mode are named instead by
+ * neither its restore call nor the handler's follow-up `ModifyDBCluster`
+ * carries (the source decides them, or nothing does), and on a point-in-time
+ * restore a `RestoreToTime` that `UseLatestRestorableTime: true` overrides and
+ * the `SnapshotIdentifier` it does not read. The engine, version, master
+ * user, database name and engine mode are named instead by
  * {@link restoredDifferences}, against the restored cluster.
  */
 export function unusedRestoreKeys(
   properties: Record<string, unknown>,
-  restore: ClusterPointInTimeRestore | undefined
+  restore: ClusterRestore | undefined
 ): string[] {
+  const pointInTimeKeys = ['RestoreType', 'RestoreToTime', 'UseLatestRestorableTime'];
+  const restoreUnused = [
+    'GlobalClusterIdentifier',
+    'WithExpressConfiguration',
+    'ClusterScalabilityType',
+    'MasterUserAuthenticationType',
+  ];
   const keys =
     restore === undefined
-      ? ['RestoreType', 'RestoreToTime', 'UseLatestRestorableTime']
-      : [
-          'AvailabilityZones',
-          'GlobalClusterIdentifier',
-          'WithExpressConfiguration',
-          'ClusterScalabilityType',
-          'MasterUserAuthenticationType',
-          ...(restore.useLatestRestorableTime === true ? ['RestoreToTime'] : []),
-        ];
+      ? pointInTimeKeys
+      : restore.kind === 'snapshot'
+        ? [...restoreUnused, ...pointInTimeKeys]
+        : [
+            // RestoreDBClusterFromSnapshot takes the zones; this call does not.
+            'AvailabilityZones',
+            ...restoreUnused,
+            'SnapshotIdentifier',
+            ...(restore.useLatestRestorableTime === true ? ['RestoreToTime'] : []),
+          ];
   return keys.filter((key) => {
     const value = properties[key];
     if (value == null || value === '' || value === false || value === 'false') return false;
@@ -188,13 +248,13 @@ export function restoredDifferences(
     ['DatabaseName', cluster.DatabaseName],
   ];
   return pairs
-    .filter(
-      ([key, live]) =>
-        properties[key] != null &&
-        properties[key] !== '' &&
-        live !== undefined &&
-        String(properties[key]) !== live
-    )
+    .filter(([key, live]) => {
+      const declared = properties[key];
+      // A scalar the schema types as a string; anything else names nothing to compare.
+      const text =
+        typeof declared === 'string' || typeof declared === 'number' ? String(declared) : '';
+      return text !== '' && live !== undefined && text !== live;
+    })
     .map(([key]) => key);
 }
 
@@ -274,6 +334,159 @@ export async function readRestoreSource(
   );
 }
 
+/** What the handler reads off an automated backup's engine version (`-limitless` suffix). */
+export function isLimitlessEngineVersion(engineVersion: string | undefined): boolean {
+  return (engineVersion ?? '').split('-')[1] === 'limitless';
+}
+
+/** The automated backup a `SourceDbClusterResourceId` restore reads from. */
+export interface RestoreBackupSource {
+  StorageEncrypted?: boolean | undefined;
+  limitless: boolean;
+}
+
+/**
+ * The automated backups of the source cluster, as CloudFormation's create
+ * reads them before a `SourceDbClusterResourceId` restore
+ * (`fetchSourceDBClusterAutomatedBackup`; `DescribeDBClusterAutomatedBackups`
+ * lists a live cluster's as well as a deleted one's): the engine version's
+ * `-limitless` suffix picks the request shape, a `retained` limitless backup
+ * is refused with the handler's message, and the encryption is validated
+ * against the template. Any failure stops the create before anything is
+ * made, as the handler's unguarded read does.
+ *
+ * The handler filters that read by the model's read-only `DBClusterResourceId`,
+ * which is unset on a create, so it reads whichever backup the account lists
+ * first; cdkd filters by the `SourceDbClusterResourceId` the restore names,
+ * which is the backup the restore call reads.
+ */
+export async function readRestoreBackup(
+  this: RDSProvider,
+  resourceId: string,
+  resourceType: string,
+  logicalId: string,
+  mask: ((text: string) => string) | undefined
+): Promise<RestoreBackupSource> {
+  const refuse = (reason: string): never => {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: ${reason}; nothing was changed.`,
+        resourceType,
+        logicalId
+      )
+    );
+  };
+  let backup: DBClusterAutomatedBackup | undefined;
+  try {
+    const response = await this.getClient().send(
+      new DescribeDBClusterAutomatedBackupsCommand({
+        DbClusterResourceId: resourceId,
+      })
+    );
+    backup = response.DBClusterAutomatedBackups?.[0];
+  } catch (error) {
+    if (!this.isNotFoundError(error, 'DBClusterAutomatedBackupNotFoundFault')) {
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DBCluster ${logicalId}: reading the restore source's automated backups failed, so nothing was changed: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+  }
+  if (backup === undefined) {
+    return refuse(
+      `SourceDbClusterResourceId ${resourceId} does not name a DB cluster or retained automated backup this account can read, so there is nothing to restore`
+    );
+  }
+  const limitless = isLimitlessEngineVersion(backup.EngineVersion);
+  if (limitless && backup.Status === 'retained') {
+    refuse(
+      "SourceDbClusterResourceId names a retained automated backup of an Aurora Limitless Database cluster, which can't be restored (automated backup retention isn't supported with Aurora Limitless Database clusters; restore from a manual snapshot instead), as CloudFormation requires"
+    );
+  }
+  return { StorageEncrypted: backup.StorageEncrypted, limitless };
+}
+
+/** What the handler's snapshot read treats as a missing permission (`ACCESS_DENIED_RULE_SET`). */
+const ACCESS_DENIED_CODES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'NotAuthorized',
+  'UnauthorizedOperation',
+]);
+
+/**
+ * Whether the snapshot is an Aurora Limitless Database cluster's, as
+ * CloudFormation's create reads it before a snapshot restore
+ * (`getClusterScalabilityTypeFromSnapshot`; the engine version's `-limitless`
+ * suffix picks the request shape). A DB instance snapshot's ARN is not read
+ * (a standard restore). A denied read restores as standard, as the handler's
+ * `fetchResourceForValidation` lets it; any other failure, a snapshot it does
+ * not find among the account's, shared and public ones included, stops the
+ * create before anything is made. The handler checks no encryption here.
+ */
+export async function readSnapshotIsLimitless(
+  this: RDSProvider,
+  snapshotIdentifier: string,
+  resourceType: string,
+  logicalId: string,
+  mask: ((text: string) => string) | undefined
+): Promise<boolean> {
+  if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot:/i.test(snapshotIdentifier)) return false;
+  let found = false;
+  let engineVersion: string | undefined;
+  try {
+    const response = await this.getClient().send(
+      new DescribeDBClusterSnapshotsCommand({
+        DBClusterSnapshotIdentifier: snapshotIdentifier,
+        IncludeShared: true,
+        IncludePublic: true,
+      })
+    );
+    const snapshot = response.DBClusterSnapshots?.[0];
+    found = snapshot !== undefined;
+    engineVersion = snapshot?.EngineVersion;
+  } catch (error) {
+    if (ACCESS_DENIED_CODES.has(awsErrorName(error))) {
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: could not read the restore snapshot (${awsErrorName(error)}), so it is restored as a standard (not limitless) cluster, as in CloudFormation.`
+      );
+      return false;
+    }
+    if (!this.isNotFoundError(error, 'DBClusterSnapshotNotFoundFault')) {
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DBCluster ${logicalId}: reading the restore snapshot failed, so nothing was changed: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+  }
+  if (!found) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier ${snapshotIdentifier} does not name a DB cluster snapshot this account can read, so there is nothing to restore; nothing was changed.`,
+        resourceType,
+        logicalId
+      )
+    );
+  }
+  return isLimitlessEngineVersion(engineVersion);
+}
+
 /**
  * CloudFormation's encryption checks before a restore
  * (`CreateHandler.validateStorageEncryption`), each refused with its message:
@@ -283,7 +496,7 @@ export async function readRestoreSource(
  */
 export function refuseRestoreEncryption(
   properties: Record<string, unknown>,
-  source: DBCluster,
+  source: { StorageEncrypted?: boolean | undefined },
   resourceType: string,
   logicalId: string
 ): void {
@@ -322,21 +535,16 @@ export function isLimitlessSource(source: DBCluster): boolean {
 }
 
 /**
- * The `RestoreDBClusterToPointInTime` input, member for member what
- * CloudFormation's `Translator.restoreDbClusterToPointInTimeRequest` sends,
- * limited to the keys cdkd's SDK route handles (a key it does not routes the
- * resource to Cloud Control): each declared value. A limitless source also
- * takes the monitoring and Performance Insights members
- * (`restoreLimitlessDbClusterToPointInTimeRequest`).
+ * The members both restore calls take from the template, each declared value
+ * of the keys cdkd's SDK route handles (a key it does not routes the resource
+ * to Cloud Control), as CloudFormation's `Translator` sends them in
+ * `restoreDbClusterToPointInTimeRequest` and `restoreDbClusterFromSnapshotRequest`.
  */
-export function pointInTimeRestoreInput(
+function sharedRestoreMembers(
   properties: Record<string, unknown>,
-  restore: ClusterPointInTimeRestore,
-  dbClusterIdentifier: string,
   tags: Tag[],
-  logExports: string[] | undefined,
-  limitless: boolean
-): RestoreDBClusterToPointInTimeCommandInput {
+  logExports: string[] | undefined
+): Partial<RestoreDBClusterToPointInTimeCommandInput & RestoreDBClusterFromSnapshotCommandInput> {
   const string = (key: string): string | undefined =>
     properties[key] != null ? (properties[key] as string) : undefined;
   const scaling = properties['ServerlessV2ScalingConfiguration'] as
@@ -344,16 +552,8 @@ export function pointInTimeRestoreInput(
     | undefined;
   const multiAz = clusterCreateMultiAzMembers(properties);
   const backfill = clusterCreateBackfillMembers(properties);
-  const scalars = clusterCreateScalarMembers(properties);
   const engineLifecycleSupport = engineLifecycleSupportOf(properties);
   return {
-    DBClusterIdentifier: dbClusterIdentifier,
-    SourceDBClusterIdentifier: restore.sourceDBClusterIdentifier,
-    ...(restore.restoreType !== undefined && { RestoreType: restore.restoreType }),
-    ...(restore.useLatestRestorableTime !== undefined && {
-      UseLatestRestorableTime: restore.useLatestRestorableTime,
-    }),
-    ...(restore.restoreToTime !== undefined && { RestoreToTime: restore.restoreToTime }),
     ...(backfill.CopyTagsToSnapshot !== undefined && {
       CopyTagsToSnapshot: backfill.CopyTagsToSnapshot,
     }),
@@ -381,24 +581,162 @@ export function pointInTimeRestoreInput(
     }),
     ...(engineLifecycleSupport !== undefined && { EngineLifecycleSupport: engineLifecycleSupport }),
     ...(tags.length > 0 && { Tags: tags }),
-    ...(limitless && {
-      ...(string('MonitoringRoleArn') !== undefined && {
-        MonitoringRoleArn: string('MonitoringRoleArn'),
-      }),
-      ...(properties['MonitoringInterval'] != null && {
-        MonitoringInterval: Number(properties['MonitoringInterval']),
-      }),
-      ...(scalars.EnablePerformanceInsights !== undefined && {
-        EnablePerformanceInsights: scalars.EnablePerformanceInsights,
-      }),
-      ...(scalars.PerformanceInsightsRetentionPeriod !== undefined && {
-        PerformanceInsightsRetentionPeriod: scalars.PerformanceInsightsRetentionPeriod,
-      }),
-      ...(scalars.PerformanceInsightsKMSKeyId !== undefined && {
-        PerformanceInsightsKMSKeyId: scalars.PerformanceInsightsKMSKeyId,
-      }),
+  };
+}
+
+/**
+ * What a limitless source adds to either restore call: the monitoring and
+ * Performance Insights members (`restoreLimitlessDbClusterToPointInTimeRequest`,
+ * `restoreLimitlessDbClusterFromSnapshotRequest`).
+ */
+function limitlessRestoreMembers(
+  properties: Record<string, unknown>
+): Pick<
+  RestoreDBClusterToPointInTimeCommandInput,
+  | 'MonitoringRoleArn'
+  | 'MonitoringInterval'
+  | 'EnablePerformanceInsights'
+  | 'PerformanceInsightsRetentionPeriod'
+  | 'PerformanceInsightsKMSKeyId'
+> {
+  const scalars = clusterCreateScalarMembers(properties);
+  return {
+    ...(properties['MonitoringRoleArn'] != null && {
+      MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+    }),
+    ...(properties['MonitoringInterval'] != null && {
+      MonitoringInterval: Number(properties['MonitoringInterval']),
+    }),
+    ...(scalars.EnablePerformanceInsights !== undefined && {
+      EnablePerformanceInsights: scalars.EnablePerformanceInsights,
+    }),
+    ...(scalars.PerformanceInsightsRetentionPeriod !== undefined && {
+      PerformanceInsightsRetentionPeriod: scalars.PerformanceInsightsRetentionPeriod,
+    }),
+    ...(scalars.PerformanceInsightsKMSKeyId !== undefined && {
+      PerformanceInsightsKMSKeyId: scalars.PerformanceInsightsKMSKeyId,
     }),
   };
+}
+
+/** Drops the members a spread left `undefined`, so a request carries only what is sent. */
+function definedMembers<T extends object>(members: T): T {
+  return Object.fromEntries(
+    Object.entries(members).filter(([, value]) => value !== undefined)
+  ) as T;
+}
+
+/**
+ * The `RestoreDBClusterToPointInTime` input, member for member what
+ * CloudFormation's `Translator.restoreDbClusterToPointInTimeRequest` sends
+ * ({@link sharedRestoreMembers}, the source and the point-in-time keys), and
+ * for a limitless source {@link limitlessRestoreMembers}.
+ */
+export function pointInTimeRestoreInput(
+  properties: Record<string, unknown>,
+  restore: ClusterPointInTimeRestore,
+  dbClusterIdentifier: string,
+  tags: Tag[],
+  logExports: string[] | undefined,
+  limitless: boolean
+): RestoreDBClusterToPointInTimeCommandInput {
+  return definedMembers({
+    ...sharedRestoreMembers(properties, tags, logExports),
+    DBClusterIdentifier: dbClusterIdentifier,
+    SourceDBClusterIdentifier: restore.sourceDBClusterIdentifier,
+    SourceDbClusterResourceId: restore.sourceDbClusterResourceId,
+    RestoreType: restore.restoreType,
+    UseLatestRestorableTime: restore.useLatestRestorableTime,
+    RestoreToTime: restore.restoreToTime,
+    ...(limitless && limitlessRestoreMembers(properties)),
+  });
+}
+
+/**
+ * The `RestoreDBClusterFromSnapshot` input, member for member what
+ * CloudFormation's `Translator.restoreDbClusterFromSnapshotRequest` sends
+ * ({@link sharedRestoreMembers}, the snapshot, the zones, the engine, version
+ * and mode, the database name, the parameter group, deletion protection, IAM
+ * authentication and the backtrack window), and for a limitless snapshot
+ * {@link limitlessRestoreMembers}. `availabilityZones` is the create's
+ * validated list.
+ */
+export function snapshotRestoreInput(
+  properties: Record<string, unknown>,
+  restore: ClusterSnapshotRestore,
+  dbClusterIdentifier: string,
+  tags: Tag[],
+  logExports: string[] | undefined,
+  availabilityZones: string[] | undefined,
+  limitless: boolean
+): RestoreDBClusterFromSnapshotCommandInput {
+  const string = (key: string): string | undefined =>
+    properties[key] != null ? (properties[key] as string) : undefined;
+  const boolean = (key: string): boolean | undefined =>
+    properties[key] != null ? (properties[key] as boolean) : undefined;
+  return definedMembers({
+    ...sharedRestoreMembers(properties, tags, logExports),
+    DBClusterIdentifier: dbClusterIdentifier,
+    SnapshotIdentifier: restore.snapshotIdentifier,
+    Engine: string('Engine'),
+    EngineVersion: string('EngineVersion'),
+    EngineMode: string('EngineMode'),
+    DatabaseName: string('DatabaseName'),
+    DBClusterParameterGroupName:
+      clusterCreateBackfillMembers(properties).DBClusterParameterGroupName,
+    DeletionProtection: boolean('DeletionProtection'),
+    EnableIAMDatabaseAuthentication: boolean('EnableIAMDatabaseAuthentication'),
+    BacktrackWindow: clusterCreateScalarMembers(properties).BacktrackWindow,
+    ...(availabilityZones !== undefined &&
+      availabilityZones.length > 0 && { AvailabilityZones: availabilityZones }),
+    ...(limitless && limitlessRestoreMembers(properties)),
+  });
+}
+
+/** What a restore call is built from beside the template. */
+export interface ClusterRestoreCall {
+  dbClusterIdentifier: string;
+  tags: Tag[];
+  logExports: string[] | undefined;
+  /** The create's validated `AvailabilityZones`. */
+  availabilityZones: string[] | undefined;
+  limitless: boolean;
+}
+
+/** Sends the restore call `restore` makes, on the create client. */
+export async function sendClusterRestore(
+  this: RDSProvider,
+  properties: Record<string, unknown>,
+  restore: ClusterRestore,
+  call: ClusterRestoreCall
+): Promise<{ DBCluster?: DBCluster | undefined }> {
+  const { dbClusterIdentifier, tags, logExports, availabilityZones, limitless } = call;
+  return restore.kind === 'snapshot'
+    ? this.getCreateClient().send(
+        new RestoreDBClusterFromSnapshotCommand(
+          snapshotRestoreInput(
+            properties,
+            restore,
+            dbClusterIdentifier,
+            tags,
+            logExports,
+            availabilityZones,
+            limitless
+          )
+        )
+      )
+    : this.getCreateClient().send(
+        new RestoreDBClusterToPointInTimeCommand(
+          pointInTimeRestoreInput(
+            properties,
+            restore,
+            dbClusterIdentifier,
+            tags,
+            logExports,
+            limitless
+          )
+        )
+      );
 }
 
 /** The `ModifyDBCluster` members sent once a restored cluster is `available`. */
@@ -420,7 +758,7 @@ const DEFAULT_BACKUP_RETENTION_PERIOD = 1;
  * (`modifyLimitlessDbClusterAfterCreateRequest`). The engine version, master
  * user name and database name stay the source's: no call sets them.
  */
-export function pointInTimeRestoreFollowUp(
+export function restoreFollowUp(
   properties: Record<string, unknown>,
   logExports: string[] | undefined,
   limitless: boolean

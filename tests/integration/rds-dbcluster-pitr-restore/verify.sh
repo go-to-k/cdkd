@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd RDS DB cluster point-in-time restores (go-to-k/cdkd#5639).
+# verify.sh — cdkd RDS DB cluster point-in-time and snapshot restores
+# (go-to-k/cdkd#5639).
 #
 # `AWS::RDS::DBCluster` `SourceDBClusterIdentifier`, `RestoreToTime`,
-# `RestoreType` and `UseLatestRestorableTime` on the SDK route. Before this,
-# cdkd routed such a template to Cloud Control (the four keys were SDK-unwired),
-# so phase 3's provisionedBy=sdk assertion is red on a pre-fix binary.
+# `RestoreType`, `UseLatestRestorableTime`, `SourceDbClusterResourceId` and
+# `SnapshotIdentifier` on the SDK route. Before each was wired, cdkd routed such
+# a template to Cloud Control (the keys were SDK-unwired), so phase 3's
+# provisionedBy=sdk assertion is red on a binary without them.
 #
 # What CloudFormation's handler does (the archived
 # aws-cloudformation-resource-providers-rds source, `aws-rds-dbcluster`): a
@@ -16,18 +18,22 @@
 #
 # Phases:
 #   1. Deploy `Source` (retention 3). provisionedBy=sdk.
-#   2. Wait for the source's latest restorable time.
+#   2. Wait for the source's latest restorable time, and take a manual cluster
+#      snapshot of it (a template cannot make one), waited to `available`.
 #   3. CDKD_TEST_RESTORE=true + CDKD_TEST_RESTORE_TIME=<that time>:
 #      `PitrCluster` (latest time) and `TimeCluster` (RestoreToTime). Both hold
 #      the source's user name (so they were restored, not created) and the
 #      fixture's own parameter group; `PitrCluster` port 5434, retention 5, the
 #      declared backup window, CopyTagsToSnapshot and the Data API on;
 #      `TimeCluster` retention 1. Both provisionedBy=sdk, and the deploy warned
-#      that each keeps the source's MasterUsername.
+#      that each keeps the source's MasterUsername. Likewise `IdCluster`
+#      (`SourceDbClusterResourceId`: the source's resource id, latest time)
+#      and `SnapCluster` (`SnapshotIdentifier`: the manual snapshot), each with
+#      its declared port, parameter group and retention.
 #   4. + CDKD_TEST_UPDATE=true: `PitrCluster` BackupRetentionPeriod 5 -> 6:
 #      the same cluster (resource id), retention 6.
 #   5. Destroy: every cluster, the parameter group, the subnet group, the VPC
-#      and the state are gone.
+#      and the state are gone; then the manual snapshot (not cdkd's) is deleted.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -82,6 +88,10 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 SOURCE_ID="cdkd-integ-rds-pitr-src-5639"
 PITR_CLUSTER_ID="cdkd-integ-rds-pitr-latest-5639"
 TIME_CLUSTER_ID="cdkd-integ-rds-pitr-time-5639"
+ID_CLUSTER_ID="cdkd-integ-rds-pitr-id-5639"
+SNAP_CLUSTER_ID="cdkd-integ-rds-pitr-snap-5639"
+# The manual snapshot verify.sh takes of the source (fixed: the sweep finds it).
+SNAPSHOT_ID="cdkd-integ-rds-pitr-manual-5639"
 PARAM_GROUP="cdkd-integ-rds-pitr-5639"
 SUBNET_GROUP="cdkd-integ-rds-pitr-5639"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -113,7 +123,12 @@ sweep() { (
   set +eu
   sweep_cluster "${PITR_CLUSTER_ID}"
   sweep_cluster "${TIME_CLUSTER_ID}"
+  sweep_cluster "${ID_CLUSTER_ID}"
+  sweep_cluster "${SNAP_CLUSTER_ID}"
   sweep_cluster "${SOURCE_ID}"
+  # Not cdkd's: verify.sh made it, so verify.sh deletes it.
+  aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+    --region "${REGION}" >/dev/null 2>&1
   aws rds delete-db-cluster-parameter-group --db-cluster-parameter-group-name "${PARAM_GROUP}" \
     --region "${REGION}" >/dev/null 2>&1
   aws rds delete-db-subnet-group --db-subnet-group-name "${SUBNET_GROUP}" \
@@ -222,7 +237,7 @@ assert_record() { # usage: assert_record <phase> <logical id> <field> <want>
 
 # --- Phase 1: deploy the source --------------------------------------------
 echo "==> Phase 1: deploy the source cluster"
-env -u CDKD_TEST_RESTORE -u CDKD_TEST_UPDATE -u CDKD_TEST_RESTORE_TIME \
+env -u CDKD_TEST_RESTORE -u CDKD_TEST_UPDATE -u CDKD_TEST_RESTORE_TIME -u CDKD_TEST_SNAPSHOT_ID \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_record "Phase 1" Source provisionedBy sdk
 assert_cluster "Phase 1" "${SOURCE_ID}" MasterUsername cdkdadmin
@@ -241,12 +256,28 @@ if [ -z "${LATEST}" ] || [ "${LATEST}" = "None" ]; then
   exit 1
 fi
 echo "    source restorable to ${LATEST}"
+echo "    taking manual snapshot ${SNAPSHOT_ID} of ${SOURCE_ID}"
+aws rds create-db-cluster-snapshot --db-cluster-identifier "${SOURCE_ID}" \
+  --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" --region "${REGION}" >/dev/null
+SNAP_STATUS=""
+for _ in $(seq 1 90); do
+  SNAP_STATUS="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+    --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text)"
+  [ "${SNAP_STATUS}" = "available" ] && break
+  sleep 10
+done
+if [ "${SNAP_STATUS}" != "available" ]; then
+  echo "FAIL: Phase 2: snapshot ${SNAPSHOT_ID} is '${SNAP_STATUS}' after 15 minutes, want available" >&2
+  exit 1
+fi
+# What SnapCluster restores from, in every later step.
+export CDKD_TEST_SNAPSHOT_ID="${SNAPSHOT_ID}"
 # What TimeCluster restores to, in every later step (a mode-gated resource
 # leaves the template in any step without it).
 export CDKD_TEST_RESTORE_TIME="${LATEST}"
 
 # --- Phase 3: both restores ---------------------------------------------------
-echo "==> Phase 3: restore PitrCluster (latest time) and TimeCluster (${LATEST})"
+echo "==> Phase 3: restore PitrCluster (latest time), TimeCluster (${LATEST}), IdCluster (resource id) and SnapCluster (${SNAPSHOT_ID})"
 DEPLOY_LOG="$(mktemp)"
 set +e
 env -u CDKD_TEST_UPDATE CDKD_TEST_RESTORE=true \
@@ -259,7 +290,7 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   tail -n 60 "${DEPLOY_LOG}" >&2
   exit 1
 fi
-for logical in PitrCluster TimeCluster; do
+for logical in PitrCluster TimeCluster IdCluster SnapCluster; do
   # The discriminator: a pre-fix binary routes these to Cloud Control.
   assert_record "Phase 3" "${logical}" provisionedBy sdk
   # Here-strings, not pipes: under pipefail an early `grep -q` exit can
@@ -276,7 +307,7 @@ for logical in PitrCluster TimeCluster; do
   fi
 done
 rm -f "${DEPLOY_LOG}"
-for id in "${PITR_CLUSTER_ID}" "${TIME_CLUSTER_ID}"; do
+for id in "${PITR_CLUSTER_ID}" "${TIME_CLUSTER_ID}" "${ID_CLUSTER_ID}" "${SNAP_CLUSTER_ID}"; do
   # The source's user name, not the template's: the cluster was restored.
   assert_cluster "Phase 3" "${id}" MasterUsername cdkdadmin
   # The fixture's own group: a restore that skipped the follow-up holds the default.
@@ -298,8 +329,20 @@ assert_cluster "Phase 3" "${PITR_CLUSTER_ID}" HttpEndpointEnabled True
 TIME_RETENTION="$(cluster_field "${TIME_CLUSTER_ID}" BackupRetentionPeriod)"
 echo "    TimeCluster BackupRetentionPeriod=${TIME_RETENTION} (source 3)"
 assert_cluster "Phase 3" "${TIME_CLUSTER_ID}" BackupRetentionPeriod 1
+# go-to-k/cdkd#5639: IdCluster, named by the source's resource id. Its port
+# rides the restore call, its retention the follow-up.
+assert_cluster "Phase 3" "${ID_CLUSTER_ID}" Port 5436
+assert_cluster "Phase 3" "${ID_CLUSTER_ID}" BackupRetentionPeriod 2
+# SnapCluster, from the manual snapshot: the port, tag copying and engine
+# version ride RestoreDBClusterFromSnapshot, the retention and backup window
+# only the follow-up ModifyDBCluster.
+assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" Port 5435
+assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" CopyTagsToSnapshot True
+assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" EngineVersion 17.9
+assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" BackupRetentionPeriod 4
+assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" PreferredBackupWindow 06:00-06:30
 PITR_RESOURCE_ID="$(cluster_field "${PITR_CLUSTER_ID}" DbClusterResourceId)"
-echo "    both restored (source user name, own parameter group, declared and default retention), provisionedBy=sdk"
+echo "    all four restored (source user name, own parameter group, declared and default retention), provisionedBy=sdk"
 
 # --- Phase 4: an in-place update of a restored cluster ------------------------
 echo "==> Phase 4: PitrCluster BackupRetentionPeriod 5 -> 6"
@@ -315,7 +358,7 @@ echo "==> Phase 5: destroy"
 CDKD_TEST_RESTORE=true CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-for id in "${PITR_CLUSTER_ID}" "${TIME_CLUSTER_ID}" "${SOURCE_ID}"; do
+for id in "${PITR_CLUSTER_ID}" "${TIME_CLUSTER_ID}" "${ID_CLUSTER_ID}" "${SNAP_CLUSTER_ID}" "${SOURCE_ID}"; do
   # cdkd's destroy returns once AWS took the delete; wait out `deleting`.
   for _ in $(seq 1 90); do
     gone_probe aws rds describe-db-clusters --db-cluster-identifier "${id}" --region "${REGION}" && break
@@ -335,8 +378,17 @@ if [ -n "${VPC_LEFT}" ]; then
 fi
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    clusters, parameter group, subnet group, VPC and state all gone"
+# The manual snapshot outlives the source; verify.sh made it, so it deletes it.
+aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+  --region "${REGION}" >/dev/null
+for _ in $(seq 1 60); do
+  gone_probe aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" --region "${REGION}" && break
+  sleep 10
+done
+assert_gone "manual snapshot ${SNAPSHOT_ID} still exists after its delete" aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" --region "${REGION}"
+echo "    manual snapshot ${SNAPSHOT_ID} deleted"
 
 trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-dbcluster-pitr-restore state teardown"
-echo "[verify] PASS — RDS DB cluster point-in-time restores on the SDK route with CloudFormation's follow-up ModifyDBCluster, updated in place, destroyed clean"
+echo "[verify] PASS — RDS DB cluster point-in-time (by name and by resource id) and snapshot restores on the SDK route with CloudFormation's follow-up ModifyDBCluster, updated in place, destroyed clean"

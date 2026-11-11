@@ -345,6 +345,7 @@ export async function replaceFallbackFor(
     refuseRestoreFromItself(resourceType, replProps, currentResource.physicalId, logicalId, {
       region: engine.stackRegion,
       account: engine.options.consumerAccount,
+      attributes: currentResource.attributes,
     });
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
     // old resource before the fallback replacement's delete. The

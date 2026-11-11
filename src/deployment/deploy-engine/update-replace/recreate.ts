@@ -56,6 +56,7 @@ export async function recreateDestroyThenCreate(
   refuseRestoreFromItself(resourceType, replaceProps, currentResource.physicalId, logicalId, {
     region: engine.stackRegion,
     account: engine.options.consumerAccount,
+    attributes: currentResource.attributes,
   });
   // Destroy-then-create path. Same `UpdateReplacePolicy:
   // Retain` semantics — retained old resources leak (named the
