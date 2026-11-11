@@ -88,7 +88,7 @@ export function warnDeletedOutsideCdkd(
         (recordDropped
           ? ` and no rollback record is kept for it.`
           : `: 'cdkd rollback --revert-failed' cannot revert it.`) +
-        ` ${DELETED_RESOURCE_REMEDY}`
+        safeMsg` ${DELETED_RESOURCE_REMEDY}`
     );
   }
 }

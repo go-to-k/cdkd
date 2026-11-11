@@ -2826,6 +2826,11 @@
       "scenarios": []
     },
     {
+      "name": "update-deleted-outside",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "update-policy-mutations",
       "annotated": true,
       "scenarios": [
@@ -3855,6 +3860,7 @@
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",
+    "update-deleted-outside",
     "wide-independent",
     "wide-web-functions"
   ]
