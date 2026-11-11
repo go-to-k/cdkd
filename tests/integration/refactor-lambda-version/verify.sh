@@ -81,12 +81,12 @@ state_etag() {
   return 1
 }
 
-# The logical id of the ONE state resource whose logical id starts with $1.
-logical_id_of() { # usage: logical_id_of <logical-id-prefix> <resources-listing>
+# The logical id of the ONE state resource of type $1.
+logical_id_of_type() { # usage: logical_id_of_type <resource-type> <resources-listing>
   local matches
-  matches="$(printf '%s\n' "$2" | awk -v p="$1" 'index($1, p) == 1 { print $1 }')"
+  matches="$(printf '%s\n' "$2" | awk -v t="$1" '$2 == t { print $1 }')"
   if [ "$(printf '%s\n' "${matches}" | grep -c .)" != "1" ]; then
-    echo "FAIL: expected exactly one logical id starting with $1, got: ${matches:-<none>}" >&2
+    echo "FAIL: expected exactly one state resource of type $1, got: ${matches:-<none>}" >&2
     return 1
   fi
   printf '%s' "${matches}"
@@ -165,8 +165,8 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 RES_A="$(cdkd state resources "${STACK}" "${STATE_FLAGS[@]}")"
-OLD_VERSION_ID="$(logical_id_of FnCurrentVersion "${RES_A}")"
-OLD_DEPLOYMENT_ID="$(logical_id_of ApiDeployment "${RES_A}")"
+OLD_VERSION_ID="$(logical_id_of_type AWS::Lambda::Version "${RES_A}")"
+OLD_DEPLOYMENT_ID="$(logical_id_of_type AWS::ApiGateway::Deployment "${RES_A}")"
 API_ID="$(printf '%s\n' "${RES_A}" | awk '$2 == "AWS::ApiGateway::RestApi" { print $3 }')"
 [ -n "${API_ID}" ] || { echo "FAIL: no AWS::ApiGateway::RestApi in state" >&2; exit 1; }
 
