@@ -99,9 +99,7 @@ read — so open it here), with `Severity` / `Effort` ALSO as labels
 (`--label severity:<v> --label effort:<v>`): the label workflow applies a missing
 one, so write them yourself, and the fix PR inherits them — never hand-add.
 Filing shapes and the mint-vs-fold decision are in
-[../work-issues/references/filing.md](../work-issues/references/filing.md). A
-hunt is the best moment for the four lines: `Severity` is measured against real
-AWS rather than guessed, and you already know which fixture the fix will drag.
+[../work-issues/references/filing.md](../work-issues/references/filing.md).
 
 When you then WORK an issue — this hunt's own or one already filed — **run
 `/work-issues` and follow it** (its §0 screens untrusted comments; its §4
@@ -120,8 +118,10 @@ claims the issue BEFORE the first edit). Then fix:
    (`work-issues/references/ship.md` §9 has the restore arm).
 3. **Add a unit test that fails without the fix and passes with it** —
    mandatory: a bug found by integ MUST leave a unit test behind.
-4. **Re-run the live repro with the fixed binary** to confirm the real-AWS
-   behavior is now correct.
+4. **Re-run the live repro with the fixed binary**, then destroy it and run
+   `bughunt-track.sh clear` in its OWN call before the first commit: the gate
+   blocks your commit while your stacks are tracked and judges a command
+   before it runs, so `clear && git commit` is refused whole (#6106).
 5. **Add a committed integ fixture** under `tests/integration/<name>/`
    exercising the fixed path end-to-end, in the SAME PR — never defer it.
 6. Run `/verify-pr`, then open the PR.
@@ -148,9 +148,8 @@ verification gotcha — so the next sweep starts smarter.
 
 **Parallel-safe by design**: the sentinel is per-owner (owner key =
 `$CDKD_BUGHUNT_OWNER` if set, else the per-worktree `git rev-parse
---show-toplevel`), so concurrent hunts cannot release each other's resources;
-the gate aggregates across all owners. Run one hunt's add/verify/clear from
-the same worktree (or pin `CDKD_BUGHUNT_OWNER`).
+--show-toplevel`), so concurrent hunts cannot release each other's resources.
+Run one hunt's add/verify/clear from the same worktree (or pin `CDKD_BUGHUNT_OWNER`).
 
 ## Gotchas
 
