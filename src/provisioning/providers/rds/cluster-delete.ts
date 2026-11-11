@@ -31,6 +31,8 @@ import {
   expressConfigurationFlag,
   recordedExpressWriterId,
 } from './express-writer.js';
+import { isRestoredRecord } from './cluster-restore.js';
+import { restoredOutsideGlobalCluster } from './cluster-update.js';
 import {
   RDS_DELETE_WAIT_MS,
   deleteAutomatedBackupsInput,
@@ -176,8 +178,15 @@ export async function deleteDBClusterOnce(
     // Issue #4029: a global-cluster member cannot be deleted until it is
     // detached, which is what the Cloud Control handler did before its own
     // (unwanted) final snapshot.
+    // go-to-k/cdkd#5639: a point-in-time restore joins none (the restore call
+    // has no member for it), so a restored record's one is detached only when
+    // AWS lists the cluster as its member.
+    const restored = isRestoredRecord(properties);
     const globalClusterId = recordedGlobalClusterIdentifier(properties);
-    if (globalClusterId !== undefined) {
+    if (
+      globalClusterId !== undefined &&
+      !(await restoredOutsideGlobalCluster.call(this, properties, physicalId, globalClusterId))
+    ) {
       detachedFrom = (await this.detachFromGlobalCluster(
         logicalId,
         physicalId,
@@ -192,13 +201,22 @@ export async function deleteDBClusterOnce(
 
     // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer it
     // created for an express-configuration cluster exists.
-    if (expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true) {
+    // go-to-k/cdkd#5639: a point-in-time restore creates no writer, and its
+    // record holds no writer id; a restored record is then never handed a
+    // writer by name. One that holds an id (a plain create recorded with its
+    // source under `--prefer-sdk-route`) made a writer: delete it, matched by
+    // that id and by the live cluster listing it, as for any other record.
+    const recordedWriterId = recordedExpressWriterId(context?.recordedAttributes);
+    if (
+      !(restored && recordedWriterId === undefined) &&
+      expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true
+    ) {
       const writerDeleted = await deleteExpressWriter.call(
         this,
         logicalId,
         physicalId,
         await this.describeDBCluster(physicalId),
-        recordedExpressWriterId(context?.recordedAttributes),
+        recordedWriterId,
         // The read can lag the flip this run just made.
         flip.flippedOffByThisRun,
         maskerOrIdentity(context?.maskSecrets)

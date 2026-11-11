@@ -31,13 +31,9 @@
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
       "ReplicationSourceIdentifier",
-      "RestoreToTime",
-      "RestoreType",
       "SnapshotIdentifier",
-      "SourceDBClusterIdentifier",
       "SourceDbClusterResourceId",
-      "SourceRegion",
-      "UseLatestRestorableTime"
+      "SourceRegion"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",

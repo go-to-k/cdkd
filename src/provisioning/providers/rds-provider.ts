@@ -230,6 +230,11 @@ export class RDSProvider implements ResourceProvider {
         // go-to-k/cdkd#5984: create-only, CreateDBCluster alone; never read back. RDS
         // creates a writer with it, which the delete removes first (`./rds/express-writer.ts`).
         'WithExpressConfiguration',
+        // go-to-k/cdkd#5639: create-only, a RestoreDBClusterToPointInTime (`./rds/cluster-restore.ts`).
+        'SourceDBClusterIdentifier',
+        'RestoreToTime',
+        'RestoreType',
+        'UseLatestRestorableTime',
       ]),
     ],
     [
@@ -409,18 +414,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance`
-   * go through: SDK retries on, except a 5xx (`withoutServerErrorRetries`,
-   * issue #4639). Separate so every other call keeps the full SDK retry.
-   *
-   * None of the three carries an idempotency token, and each name is unique
-   * per account and region, so the SDK's own replay of a 5xx whose request
-   * had succeeded collides with what the first send made, and that "already
-   * exists" surfaced from the engine's FIRST attempt as a name somebody else
-   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
-   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
-   * adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * The client the creates (`CreateDBSubnetGroup` / `CreateDBCluster` /
+   * `RestoreDBClusterToPointInTime` / `CreateDBInstance`) go through: SDK
+   * retries on, except a 5xx (`withoutServerErrorRetries`, issue #4639). None
+   * carries an idempotency token, so the SDK's replay of a 5xx that succeeded
+   * would collide with what the first send made; the 5xx reaches the engine's
+   * retry instead (`withRetry`, #3978), and nothing is adopted on a collision.
    */
   getCreateClient(): RDSClient {
     this.getClient();

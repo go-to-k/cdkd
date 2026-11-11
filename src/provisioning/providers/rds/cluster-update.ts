@@ -72,6 +72,7 @@ import {
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
 import { EXPRESS_WRITER_RESOURCE_ID_KEY, recordedExpressWriterId } from './express-writer.js';
+import { isRestoredRecord } from './cluster-restore.js';
 
 export async function updateDBCluster(
   this: RDSProvider,
@@ -389,7 +390,16 @@ export async function updateDBCluster(
     // handler does (`removeFromGlobalCluster`): the detach leaves it
     // `modifying` until it is out and `available` again. The wait runs under
     // `--no-wait` too, since RDS refuses the ModifyDBCluster meanwhile.
-    if (globalClusterPlan.kind === 'detach') {
+    // A restored cluster never joined one: nothing to detach unless AWS lists it.
+    if (
+      globalClusterPlan.kind === 'detach' &&
+      !(await restoredOutsideGlobalCluster.call(
+        this,
+        previousProperties,
+        physicalId,
+        globalClusterPlan.globalClusterId
+      ))
+    ) {
       const detached = await this.detachFromGlobalCluster(
         logicalId,
         physicalId,
@@ -781,6 +791,10 @@ export async function planGlobalClusterUpdate(
     if (!stateBorne || desiredId === undefined) return { kind: 'none' };
     const live = await liveGlobalClusterMembership.call(this, physicalId, desiredId);
     if (live.kind !== 'answered' || live.member) return { kind: 'none' };
+    // go-to-k/cdkd#5639: a point-in-time restore never joined it, so the key
+    // records the template, not a membership that ended: dropping it would
+    // make the next deploy of the same template an add, which is refused.
+    if (isRestoredRecord(previousProperties)) return { kind: 'none' };
     this.logger.warn(
       mask(
         safeMsg`${logicalId} (${resourceType}): the cluster is no longer a member of global cluster ${desiredId}, so the record drops GlobalClusterIdentifier.`
@@ -860,7 +874,11 @@ export async function liveGlobalClusterMembership(
       }
       marker = page.Marker;
     } while (marker);
-    return { kind: 'answered', member: liveId === desiredId };
+    // A global cluster id in any spelling AWS takes: an ARN ends in it, and
+    // case does not count.
+    const idOf = (id: string | undefined): string | undefined =>
+      id === undefined ? undefined : (id.split(':').pop() ?? id).toLowerCase();
+    return { kind: 'answered', member: idOf(liveId) === idOf(desiredId) };
   } catch (error) {
     const failure = describeAwsFailure(error);
     this.logger.debug(
@@ -868,4 +886,22 @@ export async function liveGlobalClusterMembership(
     );
     return { kind: 'unreadable', summary: failure.summary };
   }
+}
+
+/**
+ * Whether a detach from `globalClusterId` is to be skipped: only for a
+ * restored record, and only when AWS answers that the cluster is not that
+ * global cluster's member. A restored cluster a global cluster adopted later
+ * (its `SourceDBClusterIdentifier`), or an unreadable membership, still
+ * detaches, as before.
+ */
+export async function restoredOutsideGlobalCluster(
+  this: RDSProvider,
+  properties: Record<string, unknown> | undefined,
+  physicalId: string,
+  globalClusterId: string
+): Promise<boolean> {
+  if (!isRestoredRecord(properties)) return false;
+  const live = await liveGlobalClusterMembership.call(this, physicalId, globalClusterId);
+  return live.kind === 'answered' && !live.member;
 }

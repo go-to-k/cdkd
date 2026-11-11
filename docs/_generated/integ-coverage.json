@@ -1520,6 +1520,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -1708,6 +1709,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -1818,6 +1822,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -1995,6 +2000,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbcluster-pitr-restore": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -2135,6 +2143,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2324,6 +2333,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -2433,6 +2445,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2619,6 +2632,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbcluster-pitr-restore": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -3002,6 +3018,7 @@
         "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3221,6 +3238,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -3347,6 +3367,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3527,6 +3548,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -3643,6 +3667,7 @@
         "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3879,6 +3904,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -4005,6 +4033,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -4192,6 +4221,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbcluster-pitr-restore": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -7279,6 +7311,7 @@
         "cc-final-snapshot-handlers",
         "import-attribute-readback-final",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-express-cluster",
         "rds-fix-forward-orphan",
         "rds-multiaz-cluster"
@@ -7294,6 +7327,10 @@
         "rds-aurora": [
           "l1",
           "l2"
+        ],
+        "rds-dbcluster-pitr-restore": [
+          "l1",
+          "literal"
         ],
         "rds-express-cluster": [
           "l1",
@@ -7365,6 +7402,7 @@
         "import-attribute-readback-final",
         "list-parameters",
         "rds-aurora",
+        "rds-dbcluster-pitr-restore",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -7386,6 +7424,9 @@
         ],
         "rds-aurora": [
           "l2"
+        ],
+        "rds-dbcluster-pitr-restore": [
+          "l1"
         ],
         "rds-dbinstance-backfill": [
           "l2"
