@@ -125,6 +125,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).',
   'getstackoutput-cross-region':
     'Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).',
+  'destroy-manifest-dependents':
+    'Destroy along the cloud assembly\'s stack dependencies (issue #6115): a dependency that is NOT an `Fn::ImportValue` -- a `crossRegionReferences` strong reference (CDK\'s `Custom::CrossRegionExportWriter` / `Reader`) or an explicit `addDependency()` -- widens `cdkd destroy <producer>` to the deployed dependents and destroys them first; `-e` / `--exclusively` keeps to the named stacks, and two named stacks are destroyed dependent first.',
   'multi-stack-importvalue-strong-ref':
     'Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).',
   'cfn-fallback-cross-stack':
