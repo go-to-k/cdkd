@@ -140,20 +140,20 @@ You may fan out **one subagent per lane** (disjoint files): give each its
 tree, allowed files, "do NOT touch other lanes' files; STOP and report
 if the fix needs a forbidden one or meets a design branch (options plus what
 CFn does, never a lenient pick of its own; #5107, #5109)", any premise you
-did not measure as a hypothesis for it to measure, never as fact (#5664, #5640:
-a triage "create-only" that the schema refuted) — an AWS precondition (call
+did not measure as a hypothesis for it to measure, never as fact (#5664,
+#5640) — an AWS precondition (call
 ORDER, a value AWS may refuse) too: probe it on ONE throwaway resource before a
 mock or fixture arm encodes it, and SHIP the probed literals verbatim — a probe
-proves only the values it SENT (#5830: mocked green, live
-`InvalidCidrBlock.InUse`; #6019: probed one ULA /48, shipped another, which
-`CreateIpamPoolCidr` refused), and **the REPORT
+proves only the values it SENT (#5830, #6019), and **the REPORT
 SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
 never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
 Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
 `completed`, or running with a frozen tool count and its PR green (#5593); ask
 any lane silent past 30 min what is pending plus an ETA, and relay that to
-the user unasked (the user asked "not yet?" twice during #6068's lane). Read
+the user unasked (#6068). A lane reporting "CI pending": read
+`gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
+(#5628, #6110). Read
 a completion when it arrives, and check the PR and tree before believing it.
 A subagent's Bash bypasses the PreToolUse hooks.
 
