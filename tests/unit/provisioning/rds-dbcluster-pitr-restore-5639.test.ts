@@ -766,6 +766,22 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
     expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
   });
 
+  it('a replay of a created cluster reads an ARN-spelled id as the membership it is', async () => {
+    arm({ globalMemberOf: 'global-1' });
+    const created = { DBClusterIdentifier: CLUSTER, Engine: 'aurora-postgresql' };
+    const id = `arn:aws:rds::${ACCOUNT}:global-cluster:Global-1`;
+    await provider.update(
+      'Cluster',
+      CLUSTER,
+      'AWS::RDS::DBCluster',
+      { ...created, GlobalClusterIdentifier: id },
+      { ...created, GlobalClusterIdentifier: id },
+      { replayingState: true }
+    );
+    expect(sent('DescribeGlobalClustersCommand').length).toBeGreaterThan(0);
+    expect(warnings().some((w) => /drops GlobalClusterIdentifier/.test(w))).toBe(false);
+  });
+
   it('an update removing a restored member detaches it', async () => {
     arm({ globalMemberOf: 'global-1' });
     await provider.update(
