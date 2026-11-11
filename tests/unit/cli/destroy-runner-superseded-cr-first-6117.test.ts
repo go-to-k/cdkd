@@ -72,6 +72,8 @@ const superseded = (logicalId: string, state: ResourceState): SupersededResource
 describe("runDestroyForStack deletes a custom resource's superseded old id first (#6117)", () => {
   const order: string[] = [];
   const mockDeleteState = vi.fn();
+  /** The answers the old id's deletes give, in turn (default: deleted). */
+  let oldIdAnswers: Array<'throw' | 'skip'> = [];
 
   function run(state: StackState): ReturnType<typeof runDestroyForStack> {
     return runDestroyForStack('TestStack', state, {
@@ -90,6 +92,11 @@ describe("runDestroyForStack deletes a custom resource's superseded old id first
           provider: {
             delete: vi.fn(async (_logicalId: string, physicalId: string) => {
               order.push(physicalId);
+              if (physicalId !== 'name-1') return undefined;
+              const answer = oldIdAnswers.shift();
+              if (answer === 'throw') throw new Error('the old id is still in use');
+              if (answer === 'skip') return { outcome: 'skipped', reason: 'handler answered FAILED' };
+              return undefined;
             }),
           },
         }),
@@ -103,6 +110,7 @@ describe("runDestroyForStack deletes a custom resource's superseded old id first
 
   beforeEach(() => {
     order.length = 0;
+    oldIdAnswers = [];
     mockDeleteState.mockReset().mockResolvedValue(undefined);
   });
 
@@ -149,5 +157,39 @@ describe("runDestroyForStack deletes a custom resource's superseded old id first
 
     // Deleted once, as Other's own resource; never as Res's superseded copy.
     expect(order).toEqual(['name-1']);
+  });
+
+  const withOldId = (): StackState => ({
+    version: 15,
+    stackName: 'TestStack',
+    region: REGION,
+    resources: {
+      Handler: record('handler', 'AWS::Lambda::Function'),
+      Res: record('name-2', 'Custom::Thing', ['Handler']),
+    },
+    outputs: {},
+    lastModified: 1,
+    supersededResources: [superseded('Res', record('name-1', 'Custom::Thing'))],
+  });
+
+  it("sends a failed early Delete again after the stack's own resources", async () => {
+    oldIdAnswers = ['throw'];
+
+    const result = await run(withOldId());
+
+    expect(order).toEqual(['name-1', 'name-2', 'handler', 'name-1']);
+    expect(result.errorCount).toBe(0);
+    expect(result.skippedCount).toBe(0);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a skip once, from the second attempt', async () => {
+    oldIdAnswers = ['skip', 'skip'];
+
+    const result = await run(withOldId());
+
+    expect(order).toEqual(['name-1', 'name-2', 'handler', 'name-1']);
+    expect(result.skippedCount).toBe(1);
+    expect(result.errorCount).toBe(0);
   });
 });

@@ -505,7 +505,13 @@ export async function destroyStackUnderLock({
 
     // go-to-k/cdkd#5111: the old copies a replacement left to delete. A failure
     // or a skip keeps its entry, and with it the state, for a re-run.
-    const deleteSupersededRow = async (entry: SupersededResourceRecord): Promise<void> => {
+    // `early` (go-to-k/cdkd#6117): an attempt before the stack's own resources,
+    // whose failure or skip is neither counted nor dropped but answers `true`,
+    // so the entry is sent again after them, as before #6117.
+    const deleteSupersededRow = async (
+      entry: SupersededResourceRecord,
+      early = false
+    ): Promise<boolean> => {
       const { logicalId } = entry;
       const { physicalId, resourceType } = entry.state;
       const drop = (): void => {
@@ -531,9 +537,9 @@ export async function destroyStackUnderLock({
             )
           );
         }
-        return;
+        return false;
       }
-      await withPrintingSecrets(bag, async () => {
+      return withPrintingSecrets(bag, async (): Promise<boolean> => {
         logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
         let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
         try {
@@ -564,7 +570,15 @@ export async function destroyStackUnderLock({
           result.deletedCount++;
           drop();
           logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
-          return;
+          return false;
+        }
+        if (early) {
+          // A not-yet-updated resource of a failed deploy may still use the
+          // old id; nothing printed carries the failure's text.
+          logger.info(
+            safeMsg`  ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted yet; retrying after the stack's own resources`
+          );
+          return true;
         }
         const why =
           outcome.kind === 'notDeleted'
@@ -580,23 +594,27 @@ export async function destroyStackUnderLock({
             safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
               'Delete it manually — it is no longer tracked in state.'
           );
-          return;
+          return false;
         }
         result.errorCount++;
         logger.warn(
           safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
             'State preserved: it stays recorded, and a re-run of the destroy retries it.'
         );
+        return false;
       });
     };
 
     // go-to-k/cdkd#6117: a custom resource's old physical id is deleted
     // BEFORE the stack's own resources: its Delete runs through the handler
     // (the ServiceToken function, a provider framework), which those take
-    // down, and no resource of the stack references an old id.
+    // down. After a failed deploy a resource not yet updated may still name
+    // the old id, so one that is not deleted here is sent again after them.
+    const retryLate = new Set<SupersededResourceRecord>();
     for (const entry of supersededResourcesOf(state)) {
       if (lock.interrupted) break;
-      if (isCustomResourceType(entry.state.resourceType)) await deleteSupersededRow(entry);
+      if (!isCustomResourceType(entry.state.resourceType)) continue;
+      if (await deleteSupersededRow(entry, true)) retryLate.add(entry);
     }
 
     // Process levels in reverse order for deletion.
@@ -634,10 +652,11 @@ export async function destroyStackUnderLock({
     }
 
     // AFTER the stack's own resources, any of which may still have used one.
-    // A custom resource's old physical id went BEFORE them (above).
+    // A custom resource's old physical id went BEFORE them (above), unless
+    // that attempt did not delete it.
     for (const entry of supersededResourcesOf(state)) {
       if (lock.interrupted) break;
-      if (isCustomResourceType(entry.state.resourceType)) continue;
+      if (isCustomResourceType(entry.state.resourceType) && !retryLate.has(entry)) continue;
       await deleteSupersededRow(entry);
     }
 
