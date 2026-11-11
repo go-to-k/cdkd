@@ -142,9 +142,14 @@ if ! grep -qF "${MARKER}" <<<"${OUT}"; then
 fi
 echo "    OK: the deploy refused with '${MARKER}' (rc=${RC})"
 P2B="$(bucket_policy)" || exit 1
-grep -q "${FOREIGN_SID}" <<<"${P2B}" || { echo "FAIL: the other owner's policy is gone after the refused deploy: ${P2B:-<no policy>}" >&2; exit 1; }
-if grep -q "${TEMPLATE_SID}" <<<"${P2B}"; then
-  echo "FAIL: the template's statement reached the bucket despite the refusal: ${P2B}" >&2
+[ -n "${P2B}" ] || { echo "FAIL: the other owner's policy is gone after the refused deploy" >&2; exit 1; }
+# Byte-exact after key-sorting: a rewrite that kept the Sid must fail too.
+P2A_NORM="$(jq -S -c . <<<"${P2A}")" || { echo "FAIL: could not parse the policy read before the deploy: ${P2A}" >&2; exit 1; }
+P2B_NORM="$(jq -S -c . <<<"${P2B}")" || { echo "FAIL: could not parse the policy read after the deploy: ${P2B}" >&2; exit 1; }
+if [ "${P2A_NORM}" != "${P2B_NORM}" ]; then
+  echo "FAIL: the other owner's policy changed across the refused deploy" >&2
+  echo "  before: ${P2A_NORM}" >&2
+  echo "  after:  ${P2B_NORM}" >&2
   exit 1
 fi
 echo "    OK: the other owner's policy survived the refused deploy untouched"
