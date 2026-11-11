@@ -431,6 +431,17 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(false);
     });
 
+    it('a refused UPDATE beside a non-refused one still prints the remedy (mixed set)', async () => {
+      const { engine, provider } = failingUpdateEngine(undefined, ['B', 'C']);
+      provider.update.mockImplementation((id: string) =>
+        Promise.reject(
+          id === 'B' ? markRefusedBeforeApplying(new Error('B refused')) : new Error('C failed')
+        )
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
     it('control: a non-refused failed UPDATE still prints the --revert-failed remedy', async () => {
       const { engine } = failingUpdateEngine(undefined);
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
@@ -856,6 +867,29 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const infoCalls = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
     expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(true);
     expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(true);
+  });
+
+  it('next deploy prints no revert note for a failed-only journal of refused UPDATEs (#6118)', async () => {
+    const changes = new Map([['A', makeChange('A')]]);
+    const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
+    journal.loadRollbackJournal.mockResolvedValue({
+      journalVersion: 1,
+      stackName,
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'auto-rollback-clean',
+          initialDeploy: false,
+          operations: [],
+          failedOperations: [{ logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket' }],
+        },
+      ],
+    });
+    await engine.deploy(stackName, template);
+    const infoCalls = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+    expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(false);
+    expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(false);
   });
 
   // go-to-k/cdkd#3252: the next deploy settles a journaled abandoned Cloud

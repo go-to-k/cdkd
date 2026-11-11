@@ -609,7 +609,7 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
             {
               reason: 'auto-rollback-clean',
               operations: [],
-              failedOperations: [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE' } as never],
+              failedOperations: [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE', attemptedProperties: {} } as never],
             },
           ],
         },
@@ -632,7 +632,7 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     const notes: Array<[string, string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
       for (const [kind, reason, operations, failed] of [
-        ['failed-only', 'auto-rollback-clean', [], [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE' }]],
+        ['failed-only', 'auto-rollback-clean', [], [{ logicalId: 'Q', resourceType: TYPE, changeType: 'UPDATE', attemptedProperties: {} }]],
         ['generic', 'no-rollback-failure', [{ logicalId: 'Q', resourceType: TYPE, changeType: 'CREATE' }], undefined],
       ] as const) {
         logs.info.length = 0;

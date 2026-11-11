@@ -8,7 +8,7 @@ import type { DeployEngine } from '../../deploy-engine.js';
 import type { StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { StackScope } from '../../../provisioning/resource-name.js';
-
+import { appliedNothing } from '../rollback/applied-nothing.js';
 /**
  * Steps 1b-pre and 1b of a deploy: the pending Cloud Control requests an
  * earlier run left, then the rollback journal note (moved from `deploy-flow.ts`).
@@ -139,29 +139,35 @@ export async function settleJournalAtStart(
       const failedOnly =
         journal.segments.every((s) => s.operations.length === 0) &&
         journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
-      engine.logger.info(
-        failedOnly
-          ? safeMsg`A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
-              `The failed resource may be partially applied — revert it, or continue ` +
-              safeMsg`deploying to fix forward (${
-                // Issue #3754: a nested child's journal is cleared by its
-                // TOP-LEVEL stack's success, not by its own.
-                engine.options.parentStackInfo
-                  ? 'a successful deploy of the top-level stack clears this note'
-                  : 'a successful deploy clears this note'
-              }).` +
-              safeMsg`\nRevert it with: ${
-                pasteableCommand('cdkd rollback', [
-                  { value: stackName, hole: 'stack' },
-                  { literal: '--revert-failed' },
-                ]).command
-              }`
-          : safeMsg`A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
-              `or continue deploying to fix forward.` +
-              safeMsg`\nRevert it with: ${
-                pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
-              }`
-      );
+      // go-to-k/cdkd#6118: every kept failed op is a refused update that
+      // applied nothing, so there is nothing to revert and no note to print.
+      const nothingToRevert =
+        failedOnly &&
+        journal.segments.every((s) => (s.failedOperations ?? []).every(appliedNothing));
+      if (!nothingToRevert)
+        engine.logger.info(
+          failedOnly
+            ? safeMsg`A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
+                `The failed resource may be partially applied — revert it, or continue ` +
+                safeMsg`deploying to fix forward (${
+                  // Issue #3754: a nested child's journal is cleared by its
+                  // TOP-LEVEL stack's success, not by its own.
+                  engine.options.parentStackInfo
+                    ? 'a successful deploy of the top-level stack clears this note'
+                    : 'a successful deploy clears this note'
+                }).` +
+                safeMsg`\nRevert it with: ${
+                  pasteableCommand('cdkd rollback', [
+                    { value: stackName, hole: 'stack' },
+                    { literal: '--revert-failed' },
+                  ]).command
+                }`
+            : safeMsg`A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
+                `or continue deploying to fix forward.` +
+                safeMsg`\nRevert it with: ${
+                  pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+                }`
+        );
     }
   } catch {
     // ignore — journal is advisory here
