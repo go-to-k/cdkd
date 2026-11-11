@@ -338,6 +338,7 @@ recreate-via-sdk-provider	2026-11-04T19:47:52Z	PASS	85	verify.sh	rc ok, orph cle
 redacted-delete-address	2026-11-04T20:42:09Z	PASS	91	verify.sh	rc ok; #3952 redacted ApiId skip + clean destroy; us-east-1; orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
+refactor-lambda-version	2026-11-11T06:47:37Z	PASS	125	verify.sh	rc ok, orph clean; #6097 new fixture
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 remove-protection	2026-11-10T16:42:03Z	PASS	764	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-11-08T03:59:38Z	PASS	267	verify.sh	#6039 split head with the #6045 CC-route fixture; rc ok, orph clean
