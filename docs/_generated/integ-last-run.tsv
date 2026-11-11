@@ -320,7 +320,7 @@ profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
 rds-aurora	2026-11-09T12:13:54Z	PASS	4754	verify.sh	rc ok, orph clean (#5639 DBInstanceParameterGroupName, PR #6068)
-rds-dbcluster-pitr-restore	2026-11-11T09:01:33Z	FAIL	437	verify.sh	fixture: backup/maintenance window overlap, CloudTrail
+rds-dbcluster-pitr-restore	2026-11-11T09:12:17Z	PASS	496	verify.sh	rc ok, orph clean
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
