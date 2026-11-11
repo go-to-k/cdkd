@@ -218,9 +218,7 @@ export function unusedRestoreKeys(
     restore === undefined
       ? pointInTimeKeys
       : restore.kind === 'snapshot'
-        ? // Neither restore call has a StorageEncrypted member, and for a
-          // snapshot CloudFormation checks it against nothing.
-          [...restoreUnused, ...pointInTimeKeys, 'StorageEncrypted']
+        ? [...restoreUnused, ...pointInTimeKeys]
         : [
             // RestoreDBClusterFromSnapshot takes the zones; this call does not.
             'AvailabilityZones',
@@ -431,6 +429,33 @@ const ACCESS_DENIED_CODES: ReadonlySet<string> = new Set([
   'UnauthorizedOperation',
 ]);
 
+/** What a snapshot restore reads off its snapshot (`undefined` encryption: not read). */
+export interface RestoreSnapshotSource {
+  limitless: boolean;
+  storageEncrypted: boolean | undefined;
+}
+
+const UNREAD_SNAPSHOT: RestoreSnapshotSource = { limitless: false, storageEncrypted: undefined };
+
+/**
+ * Whether a snapshot restore of `source` leaves a cluster the template wants
+ * encrypted unencrypted: an unencrypted snapshot, `StorageEncrypted: true` and
+ * no `KmsKeyId`. RDS restores it unencrypted and CloudFormation checks
+ * nothing for a snapshot, so cdkd only names it.
+ */
+export function snapshotRestoreStaysUnencrypted(
+  properties: Record<string, unknown>,
+  source: RestoreSnapshotSource
+): boolean {
+  const kmsKeyId = properties['KmsKeyId'];
+  const hasKey = typeof kmsKeyId === 'string' ? kmsKeyId !== '' : kmsKeyId != null;
+  return (
+    source.storageEncrypted === false &&
+    coerceCfnBoolean(properties['StorageEncrypted']) === true &&
+    !hasKey
+  );
+}
+
 /**
  * Whether the snapshot is an Aurora Limitless Database cluster's, as
  * CloudFormation's create reads it before a snapshot restore
@@ -441,17 +466,18 @@ const ACCESS_DENIED_CODES: ReadonlySet<string> = new Set([
  * not find among the account's, shared and public ones included, stops the
  * create before anything is made. The handler checks no encryption here.
  */
-export async function readSnapshotIsLimitless(
+export async function readRestoreSnapshot(
   this: RDSProvider,
   snapshotIdentifier: string,
   resourceType: string,
   logicalId: string,
   mask: ((text: string) => string) | undefined
-): Promise<boolean> {
+): Promise<RestoreSnapshotSource> {
   // `ArnHelper.getResourceType`: the resource type is matched exactly, before `:` or `/`.
-  if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot[:/]/.test(snapshotIdentifier)) return false;
+  if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot[:/]/.test(snapshotIdentifier)) return UNREAD_SNAPSHOT;
   let found = false;
   let engineVersion: string | undefined;
+  let storageEncrypted: boolean | undefined;
   try {
     const response = await this.getClient().send(
       new DescribeDBClusterSnapshotsCommand({
@@ -463,12 +489,13 @@ export async function readSnapshotIsLimitless(
     const snapshot = response.DBClusterSnapshots?.[0];
     found = snapshot !== undefined;
     engineVersion = snapshot?.EngineVersion;
+    storageEncrypted = snapshot?.StorageEncrypted;
   } catch (error) {
     if (ACCESS_DENIED_CODES.has(awsErrorName(error))) {
       this.logger.warn(
         safeMsg`DBCluster ${logicalId}: could not read the restore snapshot (${awsErrorName(error)}), so it is restored as a standard (not limitless) cluster, as in CloudFormation.`
       );
-      return false;
+      return UNREAD_SNAPSHOT;
     }
     if (!this.isNotFoundError(error, 'DBClusterSnapshotNotFoundFault')) {
       throw this.wrapCaughtError(
@@ -494,7 +521,7 @@ export async function readSnapshotIsLimitless(
       )
     );
   }
-  return isLimitlessEngineVersion(engineVersion);
+  return { limitless: isLimitlessEngineVersion(engineVersion), storageEncrypted };
 }
 
 /**

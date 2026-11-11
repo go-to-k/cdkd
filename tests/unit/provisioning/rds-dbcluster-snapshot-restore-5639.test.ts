@@ -306,11 +306,25 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(sent('DescribeDBInstancesCommand')).toHaveLength(0);
     });
 
-    it('names StorageEncrypted as not applied: neither restore call takes it', async () => {
-      await create(SNAP_BASE, { StorageEncrypted: true });
-      expect(only('RestoreDBClusterFromSnapshotCommand')).not.toHaveProperty('StorageEncrypted');
-      expect(warnings().some((w) => /snapshot restore does not apply StorageEncrypted/.test(w))).toBe(true);
-    });
+    it.each([
+      ['an unencrypted snapshot, no key', { StorageEncrypted: false }, {}, true],
+      ['an unencrypted snapshot with a key', { StorageEncrypted: false }, { KmsKeyId: 'alias/aws/rds' }, false],
+      ['an encrypted snapshot', { StorageEncrypted: true }, {}, false],
+      ['an unread snapshot (denied)', undefined, {}, false],
+    ] as const)(
+      'names a cluster StorageEncrypted: true leaves unencrypted only when it does: %s',
+      async (_n, snapshot, extra, warns) => {
+        arm(
+          snapshot === undefined
+            ? { snapshotError: named('AccessDenied', 'not authorized') }
+            : { snapshot: { EngineVersion: '16.4', ...snapshot } }
+        );
+        await create(SNAP_BASE, { StorageEncrypted: true, ...extra });
+        expect(only('RestoreDBClusterFromSnapshotCommand')).not.toHaveProperty('StorageEncrypted');
+        expect(warnings().some((w) => /the restored cluster is not encrypted/.test(w))).toBe(warns);
+        expect(warnings().some((w) => /does not apply StorageEncrypted/.test(w))).toBe(false);
+      }
+    );
 
     it('names only a differing MasterUsername as kept: the engine, version, mode and name are sent', async () => {
       const base = (arm(), mockSend.getMockImplementation()!);

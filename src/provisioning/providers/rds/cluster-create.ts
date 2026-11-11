@@ -48,13 +48,14 @@ import {
   readClusterRestore,
   readRestoreBackup,
   readRestoreSource,
-  readSnapshotIsLimitless,
+  readRestoreSnapshot,
   refuseRestoreEncryption,
   restoreCallName,
   restoreFollowUp,
   restoredDifferences,
   restoreWaitMs,
   sendClusterRestore,
+  snapshotRestoreStaysUnencrypted,
   sendRestoreFollowUp,
   unusedRestoreKeys,
 } from './cluster-restore.js';
@@ -263,13 +264,19 @@ export async function createDBCluster(
     refuseRestoreEncryption(properties, backup, resourceType, logicalId);
     limitless = backup.limitless;
   } else if (restore?.kind === 'snapshot') {
-    limitless = await readSnapshotIsLimitless.call(
+    const snapshot = await readRestoreSnapshot.call(
       this,
       restore.snapshotIdentifier,
       resourceType,
       logicalId,
       mask
     );
+    limitless = snapshot.limitless;
+    if (snapshotRestoreStaysUnencrypted(properties, snapshot)) {
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: StorageEncrypted is true but the restore snapshot is not encrypted and no KmsKeyId is set, so the restored cluster is not encrypted, as in CloudFormation. Set KmsKeyId (alias/aws/rds is the default key) to encrypt it.`
+      );
+    }
   }
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
