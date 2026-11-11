@@ -153,7 +153,7 @@ Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
 any lane silent past 30 min what is pending plus an ETA, and relay that to
 the user unasked (#6068). A lane reporting "CI pending": read
 `gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
-(#5628, #6110). Read
+(#6110). Read
 a completion when it arrives, and check the PR and tree before believing it.
 A subagent's Bash bypasses the PreToolUse hooks.
 
