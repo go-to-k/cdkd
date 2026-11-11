@@ -256,11 +256,14 @@ you name them.
 
 When a dependent is not destroyed (you answered `n` at its prompt, it is
 termination-protected, or its destroy failed), cdkd does not destroy the
-stacks it depends on in that run, and warns:
+stacks it depends on through the cloud assembly in that run, and warns:
 
 ```text
 Not destroying stack Producer: Consumer depends on it and was not destroyed in this run.
 ```
+
+A stack whose output another stack still imports is refused on its own; see
+[What can stop a destroy](#what-can-stop-a-destroy).
 
 `--all` does not reach into a CDK Stage. It leaves the stacks inside a Stage
 running and names them in one warning line, except a Stage stack that depends

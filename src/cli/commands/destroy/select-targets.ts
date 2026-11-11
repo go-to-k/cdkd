@@ -7,7 +7,7 @@ import { StageLoadError } from '../../../synthesis/failed-stages.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
 import type { ConsoleLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
-import { displaySafe } from '../../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
 import { commandHole } from '../../../utils/pasteable-command.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
@@ -282,14 +282,12 @@ export async function selectDestroyTargets(
     const added = expandDestroyTargetsDownstream(selected, appStacks, inState);
     for (const t of added.notDeployed) {
       logger.debug(
-        `Not destroying ${describeStack(t)}, which depends on a selected stack: it is not deployed`
+        safeMsg`Not destroying ${describeStack(t)}, which depends on a selected stack: it is not deployed`
       );
     }
     if (added.targets.length > 0) {
       logger.info(
-        `Also destroying ${added.targets.length} stack(s) that depend on the selected stack(s) ` +
-          `(pass -e / --exclusively to destroy only the named stacks): ` +
-          added.targets.map(describeWithDependency).join(', ')
+        safeMsg`Also destroying ${added.targets.length} stack(s) that depend on the selected stack(s) (pass -e / --exclusively to destroy only the named stacks): ${added.targets.map((t) => describeWithDependency(t)).join(', ')}`
       );
     }
     return [...selected, ...added.targets];
@@ -450,8 +448,12 @@ function manifestAncestors(stack: AppStack, appStacks: readonly AppStack[]): Set
 }
 
 /** A target as the selection lines show it: a stack added as a dependent says so. */
-export function describeWithDependency(t: DestroyTarget): string {
-  const name = t.synth !== undefined ? describeStack(t.synth) : displaySafe(t.stackName);
+export function describeWithDependency(
+  t: DestroyTarget,
+  describe: (t: DestroyTarget) => string = (x) =>
+    x.synth !== undefined ? describeStack(x.synth) : displaySafe(x.stackName)
+): string {
+  const name = describe(t);
   return t.dependsOnSelected === undefined
     ? name
     : `${name} (depends on ${describeStack(t.dependsOnSelected)})`;
@@ -549,14 +551,7 @@ export async function orderDestroyTargets(
       : displaySafe(t.stackName);
 
   logger.info(
-    `Found ${targets.length} stack(s) to destroy: ` +
-      targets
-        .map((t) =>
-          t.dependsOnSelected === undefined
-            ? describeTarget(t)
-            : `${describeTarget(t)} (depends on ${describeStack(t.dependsOnSelected)})`
-        )
-        .join(', ')
+    safeMsg`Found ${targets.length} stack(s) to destroy: ${targets.map((t) => describeWithDependency(t, describeTarget)).join(', ')}`
   );
 
   // go-to-k/cdkd#6115: each target's dependents in this run, by the cloud

@@ -481,8 +481,7 @@ export async function destroyCommand(
       const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
       if (keptDependents.length > 0) {
         logger.warn(
-          `Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} ` +
-            'depends on it and was not destroyed in this run.'
+          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
         );
         notDestroyed.add(target);
         continue;
