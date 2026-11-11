@@ -33,6 +33,7 @@ import {
   deletedOutsideCdkdMessage,
   partitionDeletedOutsideCdkd,
 } from '../../deleted-outside-cdkd.js';
+import { appliedNothing } from '../rollback/applied-nothing.js';
 import { deletedOutsideReadDeps } from '../rollback/deleted-outside-read.js';
 import type { DeployRun } from './run.js';
 
@@ -234,7 +235,7 @@ export async function rollbackFailedDeploy(
           rollbackResult.remainingFailedOps
         );
         for (const op of gone) engine.logger.warn(deletedOutsideCdkdMessage(op, false));
-        if (kept.some((op) => op.changeType !== 'DELETE')) {
+        if (kept.some((op) => op.changeType !== 'DELETE' && !appliedNothing(op))) {
           engine.logger.warn(
             safeMsg`The record of the operation that failed is kept too. Revert it with: ${
               pasteableCommand('cdkd rollback', [

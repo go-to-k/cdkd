@@ -146,6 +146,13 @@ echo "${BLOCK_OUT}" | grep -iE "force-stateful-recreation|stateful" >/dev/null |
   echo "----- output -----" >&2; echo "${BLOCK_OUT}" >&2
   exit 1
 }
+# Issue #6118: the guard refuses before anything is applied, so there is
+# nothing to revert and the deploy must not advise `--revert-failed`.
+if echo "${BLOCK_OUT}" | grep -F -- '--revert-failed' >/dev/null; then
+  echo "FAIL: the pre-flight stateful refusal advised --revert-failed (#6118)" >&2
+  echo "----- output -----" >&2; echo "${BLOCK_OUT}" >&2
+  exit 1
+fi
 # Filesystem must be UNCHANGED (same id, still maxIO).
 FS_ID_BLOCK="$(fs_id_by_tag)"
 if [ "${FS_ID_BLOCK}" != "${FS_ID_P1}" ]; then
@@ -158,8 +165,20 @@ echo "    blocked as expected; filesystem unchanged (${FS_ID_P1}, still maxIO)"
 
 # --- Phase 4: deploy WITH the flag performs the replacement -----------
 echo "==> Phase 4: deploy --force-stateful-recreation performs DELETE+CREATE"
+P4_LOG="$(mktemp)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force-stateful-recreation --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force-stateful-recreation --yes \
+  2>&1 | tee "${P4_LOG}"
+# Issue #6118: Phase 3's refusal journaled an op that applied nothing, so
+# this deploy's start must not print the "Revert it with" note for it.
+# Sentinel: the replacement this phase performs must be in the same log.
+grep -qiE 'replac' "${P4_LOG}" || {
+  echo "FAIL: Phase 4 log lacks the replacement line (sentinel); log capture broken?" >&2; exit 1
+}
+if grep -F -- '--revert-failed' "${P4_LOG}" >/dev/null; then
+  echo "FAIL: Phase 4 deploy advised --revert-failed for Phase 3's refused op (#6118)" >&2; exit 1
+fi
+rm -f "${P4_LOG}"
 
 FS_ID_P4="$(fs_id_by_tag)"
 if [ -z "${FS_ID_P4}" ] || [ "${FS_ID_P4}" = "None" ]; then
