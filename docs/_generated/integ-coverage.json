@@ -8265,6 +8265,7 @@
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
+        "rollback-attribute-only-revert",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
@@ -8456,6 +8457,9 @@
           "l2"
         ],
         "retain-orphan-secret": [
+          "l1"
+        ],
+        "rollback-attribute-only-revert": [
           "l1"
         ],
         "rollback-command": [
@@ -8670,6 +8674,7 @@
         "replacement-immutable-name",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
+        "rollback-attribute-only-revert",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-failure-injection",
@@ -9004,6 +9009,10 @@
           "l2"
         ],
         "retain-orphan-secret": [
+          "l2",
+          "literal"
+        ],
+        "rollback-attribute-only-revert": [
           "l2",
           "literal"
         ],

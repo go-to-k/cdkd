@@ -265,6 +265,8 @@ export function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean):
       return `  - orphan   ${safe(op.logicalId)} (${safe(op.resourceType)}) [--orphan]`;
     case 'revert':
       return `  - revert   ${safe(op.logicalId)} (${safe(op.resourceType)})${rep}`;
+    case 'restore-policies':
+      return `  - revert   ${safe(op.logicalId)} (${safe(op.resourceType)}) [DeletionPolicy / UpdateReplacePolicy only, in state; no AWS call]`;
     // Issue #2598: both labels used to promise "delete new" unconditionally,
     // and `UpdateReplacePolicy: Retain` on the new copy means the replay will
     // NOT delete it — a promise the run does not keep, in the one preview the

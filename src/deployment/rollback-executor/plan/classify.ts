@@ -455,8 +455,50 @@ export function classifyRollbackOp(
     return retained ? 'reverse-replacement-readopt' : 'reverse-replacement';
   }
   if (op.previousState && deepEqual(current.properties, op.previousState.properties)) {
+    // go-to-k/cdkd#6101: equal properties with different template policies is
+    // a metadata-only update (`applyAttributeOnlyUpdate`), which called no
+    // provider and so needs none to undo. Only the record moves back.
+    if (templatePoliciesDiffer(current, op.previousState)) return 'restore-policies';
     // Already reverted (idempotent re-run).
     return 'skip-already-done';
   }
   return 'revert';
+}
+
+/**
+ * go-to-k/cdkd#6101: do the two records disagree on the template attributes a
+ * deploy records (`extractTemplateAttributes`)? An absent key and an
+ * `undefined` one both mean "not declared".
+ */
+export function templatePoliciesDiffer(
+  current: Pick<ResourceState, 'deletionPolicy' | 'updateReplacePolicy'>,
+  previous: Pick<ResourceState, 'deletionPolicy' | 'updateReplacePolicy'>
+): boolean {
+  return (
+    current.deletionPolicy !== previous.deletionPolicy ||
+    current.updateReplacePolicy !== previous.updateReplacePolicy
+  );
+}
+
+/**
+ * go-to-k/cdkd#6101: `current` with `previous`'s two template policies and
+ * nothing else changed. A policy `previous` does not declare is dropped, not
+ * written as `undefined`.
+ */
+export function withPreviousPolicies(
+  current: ResourceState,
+  previous: Pick<ResourceState, 'deletionPolicy' | 'updateReplacePolicy'>
+): ResourceState {
+  const {
+    deletionPolicy: _deletionPolicy,
+    updateReplacePolicy: _updateReplacePolicy,
+    ...rest
+  } = current;
+  return {
+    ...rest,
+    ...(previous.deletionPolicy !== undefined && { deletionPolicy: previous.deletionPolicy }),
+    ...(previous.updateReplacePolicy !== undefined && {
+      updateReplacePolicy: previous.updateReplacePolicy,
+    }),
+  };
 }

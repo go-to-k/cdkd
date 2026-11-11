@@ -76,6 +76,7 @@ export {
   isTypeChangeOp,
   isReplacementOp,
   classifyRollbackOp,
+  withPreviousPolicies,
   classifyFailedOp,
   demoteSupersededOrphans,
   isJournaledOrphan,

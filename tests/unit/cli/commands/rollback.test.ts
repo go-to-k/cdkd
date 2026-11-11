@@ -325,7 +325,10 @@ const EXPECTED_STACK_NAME_RENDERS = 5;
 // matched the `'../../utils/display-safe.js'` import path, and the split's
 // family read drops import statements (`rollbackFamilySource`), so that
 // non-reference no longer counts. Every `safe` reference is where it was.
-const EXPECTED_SAFE_REFERENCES = 49;
+//
+// 49 -> 51 (go-to-k/cdkd#6101): the `restore-policies` plan label renders the
+// op's logical id and type, as the `revert` row does.
+const EXPECTED_SAFE_REFERENCES = 51;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of

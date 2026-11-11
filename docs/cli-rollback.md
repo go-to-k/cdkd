@@ -76,7 +76,8 @@ cdkd rollback replays it, newest first
 | The failed deploy | The rollback |
 | --- | --- |
 | Created a resource | Deletes it |
-| Updated a resource | Restores its previous properties |
+| Updated a resource | Restores its previous properties, `DeletionPolicy` and `UpdateReplacePolicy` |
+| Changed only a resource's `DeletionPolicy` / `UpdateReplacePolicy` | Restores the previous policies in state, with no AWS call |
 | Replaced a resource | Re-creates the old one and deletes the new one |
 | Deleted a resource | Does nothing |
 | Failed on a resource | Leaves that resource as it is |
