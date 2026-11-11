@@ -54,22 +54,8 @@ import { describeStack, renderNotInAppWarning } from '../../stack-matcher.js';
 import { runDestroyForStack } from '../destroy-runner.js';
 import { skippedDestroyMessage } from '../destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../../deployment/noecho-delete-reresolution.js';
-import {
-  selectDestroyTargets,
-  orderDestroyTargets,
-  type AppStack,
-  type DestroyTarget,
-} from './select-targets.js';
-import { plannedDestroyRegion, purgeEventsAfterDestroy } from './helpers.js';
-
-/**
- * go-to-k/cdkd#6115: the line under a termination-protection refusal of a
- * stack the run ADDED, when `--remove-protection` was passed: the flag reaches
- * only the stacks the user named.
- */
-function protectionNotNamed(dependsOn: AppStack): string {
-  return safeMsg`    --remove-protection applies only to the stacks you name; this stack was added because it depends on ${describeStack(dependsOn)}. Name it to remove its protection too.`;
-}
+import { selectDestroyTargets, orderDestroyTargets, type DestroyTarget } from './select-targets.js';
+import { plannedDestroyRegion, protectionNotNamed, purgeEventsAfterDestroy } from './helpers.js';
 
 /**
  * Destroy command implementation
