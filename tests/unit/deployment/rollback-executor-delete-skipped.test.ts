@@ -400,6 +400,8 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
     await replayFailedOperations(failed, {}, 'S', ctx, {});
 
     expect(contextOf(del)['recordedNoEchoLeaves']).toEqual([['Cfg', 'Pw']]);
+    // go-to-k/cdkd#6104: no record names the op's id, so no drops either.
+    expect(contextOf(del)['recordedCreateOnlyDrops']).toBeUndefined();
   });
 
   it('--revert-failed partially-created delete with NO *** in the journal bag: no recordedNoEchoLeaves (round 10 negative)', async () => {

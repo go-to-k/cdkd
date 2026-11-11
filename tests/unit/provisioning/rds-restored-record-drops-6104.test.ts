@@ -225,29 +225,29 @@ describe('DBCluster records holding a restore source key only as an accepted dro
   });
 
   describe('delete, global cluster detach', () => {
-    it('detaches a plain create whose source key is a recorded drop through the by-name read', async () => {
-      arm({ member: 'g-1' });
-      await provider.delete(
+    const del = (source: Input, drops: string[]) =>
+      provider.delete(
         'Cluster',
         ID,
         TYPE,
-        { ...BASE, SourceDBClusterIdentifier: 'source-1', GlobalClusterIdentifier: 'g-1' },
-        { recordedCreateOnlyDrops: ['SourceDBClusterIdentifier'] }
+        { ...BASE, ...source, GlobalClusterIdentifier: 'g-1' },
+        { recordedCreateOnlyDrops: drops }
       );
-      // The restored arm's membership listing (no identifier) is not asked first.
-      expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({ GlobalClusterIdentifier: 'g-1' });
-      expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
-    });
 
-    it('asks a genuine restore for its membership first', async () => {
+    it.each(SOURCES)(
+      'detaches a plain create whose %s is a recorded drop through the by-name read',
+      async (key, source) => {
+        arm({ member: 'g-1' });
+        await del(source, [key]);
+        // The restored arm's membership listing (no identifier) is not asked first.
+        expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({ GlobalClusterIdentifier: 'g-1' });
+        expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
+      }
+    );
+
+    it.each(SOURCES)('asks a genuine %s restore for its membership first', async (_key, source) => {
       arm({ member: 'g-1' });
-      await provider.delete(
-        'Cluster',
-        ID,
-        TYPE,
-        { ...BASE, SourceDBClusterIdentifier: 'source-1', GlobalClusterIdentifier: 'g-1' },
-        { recordedCreateOnlyDrops: [] }
-      );
+      await del(source, []);
       expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({});
       expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
     });
@@ -278,47 +278,58 @@ describe('DBCluster records holding a restore source key only as an accepted dro
       }
     );
 
+    // `none` records the desired bag as is: no `effectiveProperties` at all.
     it.each(SOURCES)('keeps the key of a genuine %s restore', async (_key, source) => {
       const result = await replay(
         { ...source, GlobalClusterIdentifier: 'g-1' },
         { recordedCreateOnlyDrops: [] }
       );
-      expect(result.effectiveProperties?.['GlobalClusterIdentifier'] ?? 'g-1').toBe('g-1');
+      expect(result.effectiveProperties).toBeUndefined();
       expect(warn.mock.calls.flat().join('\n')).not.toMatch(/no longer a member/);
     });
 
-    it('keeps the key with no list, as before', async () => {
+    it.each([
+      ['no list', {}],
+      ['a malformed list', { recordedCreateOnlyDrops: 'SourceDBClusterIdentifier' }],
+    ])('keeps the key with %s, as before', async (_label, context) => {
       const result = await replay(
         { SourceDBClusterIdentifier: 'source-1', GlobalClusterIdentifier: 'g-1' },
-        {}
+        context
       );
-      expect(result.effectiveProperties?.['GlobalClusterIdentifier'] ?? 'g-1').toBe('g-1');
+      expect(result.effectiveProperties).toBeUndefined();
+      expect(warn.mock.calls.flat().join('\n')).not.toMatch(/no longer a member/);
     });
   });
 
   describe('update, template-path removal of GlobalClusterIdentifier', () => {
-    const update = (context: Input) =>
+    const update = (source: Input, drops: string[]) =>
       provider.update(
         'Cluster',
         ID,
         TYPE,
-        { ...BASE, SourceDBClusterIdentifier: 'source-1' },
-        { ...BASE, SourceDBClusterIdentifier: 'source-1', GlobalClusterIdentifier: 'g-1' },
-        context
+        { ...BASE, ...source },
+        { ...BASE, ...source, GlobalClusterIdentifier: 'g-1' },
+        { recordedCreateOnlyDrops: drops }
       );
 
-    it('detaches a plain create whose source key is a recorded drop without the restored pre-check', async () => {
-      arm({ member: 'g-1' });
-      await update({ recordedCreateOnlyDrops: ['SourceDBClusterIdentifier'] });
-      expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({ GlobalClusterIdentifier: 'g-1' });
-      expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
-    });
+    it.each(SOURCES)(
+      'detaches a plain create whose %s is a recorded drop without the restored pre-check',
+      async (key, source) => {
+        arm({ member: 'g-1' });
+        await update(source, [key]);
+        expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({ GlobalClusterIdentifier: 'g-1' });
+        expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(1);
+      }
+    );
 
-    it('pre-checks a genuine restore, and detaches nothing it is not a member of', async () => {
-      await update({ recordedCreateOnlyDrops: [] });
-      expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({});
-      expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
-    });
+    it.each(SOURCES)(
+      'pre-checks a genuine %s restore, and detaches nothing it is not a member of',
+      async (_key, source) => {
+        await update(source, []);
+        expect(sent('DescribeGlobalClustersCommand')[0]).toEqual({});
+        expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
+      }
+    );
   });
 
   describe("readRestoreSnapshot's wording", () => {

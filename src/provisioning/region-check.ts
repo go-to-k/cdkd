@@ -240,8 +240,8 @@ export interface DeleteContext extends SecretMaskingContext {
    * The same record's `ResourceState.acceptedCreateOnlyDrops`
    * (go-to-k/cdkd#6104), the delete twin of
    * `UpdateContext.recordedCreateOnlyDrops`: threaded beside
-   * `recordedAttributes` by every `delete()` caller, verbatim (malformed =
-   * none). An `AWS::RDS::DBCluster` delete reads it to tell a plain create
+   * `recordedAttributes`, from the same record, verbatim (malformed = none);
+   * a delete of a resource no record names yet passes neither. An `AWS::RDS::DBCluster` delete reads it to tell a plain create
    * from a restore. ABSENT keeps the pre-#6104 reading.
    */
   recordedCreateOnlyDrops?: readonly string[] | undefined;
