@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "destroy-manifest-dependents"
+  ]
+}

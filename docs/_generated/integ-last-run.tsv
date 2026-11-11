@@ -98,6 +98,7 @@ deployment-events	2026-11-04T18:01:46Z	PASS	36	verify.sh	rc ok, orph clean (stat
 destroy-data-guard	2026-11-04T09:11:36Z	PASS	75	verify.sh	rc 0, guard fired + clean second destroy, orph clean; own state bucket
 destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	#6026 destroy-runner split head; rc ok, orph clean
 destroy-interrupt	2026-11-04T21:24:38Z	PASS	381	verify.sh	rc 0, re-run destroy clean resume; 2 auto-created /aws/lambda log groups deleted; orphans clean
+destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean, XR log-group sweep ok
 destroy-nested-cross-region	2026-11-07T16:30:32Z	PASS	176	verify.sh	#6026 destroy-runner split head; rc ok, orph clean
 diff-fail-on-destructive	2026-11-10T15:30:20Z	PASS	90	verify.sh	rc ok, orph clean
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean

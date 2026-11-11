@@ -4,6 +4,8 @@
  * public names.
  */
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
+import { describeStack } from '../../stack-matcher.js';
+import type { AppStack } from './select-targets.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { DeploymentRunResult } from '../../../types/deployment-events.js';
 import type {
@@ -156,4 +158,13 @@ export async function purgeEventsAfterDestroy(
     );
     return null;
   }
+}
+
+/**
+ * go-to-k/cdkd#6115: the line under a termination-protection refusal of a
+ * stack the run ADDED, when `--remove-protection` was passed: the flag reaches
+ * only the stacks the user named.
+ */
+export function protectionNotNamed(dependsOn: AppStack): string {
+  return safeMsg`    --remove-protection applies only to the stacks you name; this stack was added because it depends on ${describeStack(dependsOn)}. Name it to remove its protection too.`;
 }

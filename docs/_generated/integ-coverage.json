@@ -8627,6 +8627,7 @@
         "deployment-events",
         "destroy-failed-delete-keeps-dependencies",
         "destroy-interrupt",
+        "destroy-manifest-deps",
         "diff-fail-on-destructive",
         "docdb-neptune",
         "drift-revert",
@@ -8799,6 +8800,10 @@
           "literal"
         ],
         "destroy-interrupt": [
+          "l2",
+          "literal"
+        ],
+        "destroy-manifest-deps": [
           "l2",
           "literal"
         ],

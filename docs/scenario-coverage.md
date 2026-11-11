@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**95 / 95 canonical scenarios** have at least one integ fixture exercising them. **223 / 439 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**96 / 96 canonical scenarios** have at least one integ fixture exercising them. **224 / 440 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -31,7 +31,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (95 scenarios)
+## Per-scenario coverage (96 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -60,6 +60,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deployment-events/) |
 | `destroy-data-guard` | CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans. | [`destroy-data-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-data-guard/)<br>[`s3-directory-bucket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-directory-bucket/) |
 | `destroy-interrupt` | Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly). | [`destroy-interrupt`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-interrupt/) |
+| `destroy-manifest-dependents` | Destroy along the cloud assembly's stack dependencies (issue #6115): a dependency that is NOT an `Fn::ImportValue` -- a `crossRegionReferences` strong reference (CDK's `Custom::CrossRegionExportWriter` / `Reader`) or an explicit `addDependency()` -- widens `cdkd destroy <producer>` to the deployed dependents and destroys them first; `-e` / `--exclusively` keeps to the named stacks, and two named stacks are destroyed dependent first. | [`destroy-manifest-deps`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-manifest-deps/) |
 | `docker-image-asset-ecr-publish` | cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy. | [`docker-image-asset`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docker-image-asset/) |
 | `drift-revert-array-canonicalization` | cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) and on an unordered OBJECT array at a provider-declared path (issue #1620 — ELBv2 `TargetGroup.Targets`, asserted by TWO consecutive clean drift runs, since one run cannot detect a reorder disagreement), while still detecting real value / Action / SG-rule / added-target drift. | [`drift-revert-arrays`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-arrays/) |
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert/)<br>[`drift-revert-arrays`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-vpc/)<br>[`secrets-array-nested`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/secrets-array-nested/) |

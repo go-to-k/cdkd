@@ -50,12 +50,12 @@ import { withNestedStackContext } from '../../../provisioning/nested-stack-conte
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../../utils/interrupt-signals.js';
 import { resolveStateBucketWithDefault } from '../../config-loader.js';
-import { renderNotInAppWarning } from '../../stack-matcher.js';
+import { describeStack, renderNotInAppWarning } from '../../stack-matcher.js';
 import { runDestroyForStack } from '../destroy-runner.js';
 import { skippedDestroyMessage } from '../destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../../deployment/noecho-delete-reresolution.js';
 import { selectDestroyTargets, orderDestroyTargets, type DestroyTarget } from './select-targets.js';
-import { plannedDestroyRegion, purgeEventsAfterDestroy } from './helpers.js';
+import { plannedDestroyRegion, protectionNotNamed, purgeEventsAfterDestroy } from './helpers.js';
 
 /**
  * Destroy command implementation
@@ -69,6 +69,7 @@ export async function destroyCommand(
     statePrefix: string;
     stack?: string;
     all?: boolean;
+    exclusively?: boolean;
     region?: string;
     profile?: string;
     roleArn?: string;
@@ -381,7 +382,12 @@ export async function destroyCommand(
       logger
     );
     targets = ordering.targets;
-    const { uniqueNames, strictRegion, describeTarget } = ordering;
+    const { uniqueNames, strictRegion, describeTarget, dependentsOf } = ordering;
+    // go-to-k/cdkd#6115: the targets this run has not destroyed -- declined at
+    // the prompt, refused, failed or stopped -- so a stack one of them depends
+    // on is kept rather than deleted under it. A target with no state record
+    // is not here: nothing of it is left to use the stack.
+    const notDestroyed = new Set<DestroyTarget>();
 
     // accountId is only used to synthesize the parent's fake `Ref` ARN inside
     // `NestedStackProvider.create` — the destroy path never re-synthesizes
@@ -459,7 +465,12 @@ export async function destroyCommand(
       );
     };
     for (const target of targets) {
-      if (target.synth?.terminationProtection === true && !options.removeProtection) continue;
+      if (
+        target.synth?.terminationProtection === true &&
+        !(options.removeProtection === true && target.dependsOnSelected === undefined)
+      ) {
+        continue;
+      }
       const planned = plannedRegionFor(target);
       if (planned !== undefined) {
         void crossPrefixCheck.cache.full(target.stackName, planned, 'prestart');
@@ -468,6 +479,11 @@ export async function destroyCommand(
     for (const [stackIndex, target] of targets.entries()) {
       const stackName = target.stackName;
       logger.info(`\nPreparing to destroy stack: ${describeTarget(target)}`);
+      // go-to-k/cdkd#6115: `--remove-protection` reaches only the stacks the
+      // user NAMED. A stack added because it depends on one is still refused
+      // when protected: its protection is what guards an unasked delete.
+      const removeProtection =
+        options.removeProtection === true && target.dependsOnSelected === undefined;
       if (wrongAccount.has(target)) {
         // Counted like a termination-protection refusal (exit 2): the user named
         // a stack and it was not destroyed.
@@ -476,6 +492,7 @@ export async function destroyCommand(
             ? safeMsg`  ✗ Stack ${describeTarget(target)} is pinned to account ${target.synth!.account!}, and the account this run's credentials resolve to could not be read (STS GetCallerIdentity failed), so it was not destroyed: another stack of the app shares its name, and only that account's credentials address its record. Check the credentials (aws sts get-caller-identity) and re-run destroy.`
             : safeMsg`  ✗ Stack ${describeTarget(target)} is pinned to account ${target.synth!.account!}, which is not the account this run's credentials resolve to; not destroyed. Run destroy with that account's credentials.`
         );
+        notDestroyed.add(target);
         totalErrors++;
         continue;
       }
@@ -497,7 +514,7 @@ export async function destroyCommand(
       // the explicit opt-in bypass: log at WARN so the bypass is visible
       // in CI logs, then proceed with the destroy.
       if (synthStack?.terminationProtection === true) {
-        if (options.removeProtection) {
+        if (removeProtection) {
           logger.warn(
             `Stack ${displaySafe(stackName)} has terminationProtection: true — bypassing because --remove-protection set`
           );
@@ -507,6 +524,10 @@ export async function destroyCommand(
             clause: withheldAccountClause(accountRecovery, 'the command below prints'),
           });
           logger.error(`  ✗ ${err.message}`);
+          if (options.removeProtection === true && target.dependsOnSelected !== undefined) {
+            logger.error(protectionNotNamed(target.dependsOnSelected));
+          }
+          notDestroyed.add(target);
           totalErrors++;
           continue;
         }
@@ -568,7 +589,7 @@ export async function destroyCommand(
         synthStack?.terminationProtection !== true &&
         stateResult.state.terminationProtection === true
       ) {
-        if (options.removeProtection) {
+        if (removeProtection) {
           logger.warn(
             safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
           );
@@ -583,6 +604,10 @@ export async function destroyCommand(
             { command: 'cdkd destroy' }
           );
           logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+          if (options.removeProtection === true && target.dependsOnSelected !== undefined) {
+            logger.error(protectionNotNamed(target.dependsOnSelected));
+          }
+          notDestroyed.add(target);
           totalErrors++;
           continue;
         }
@@ -611,7 +636,22 @@ export async function destroyCommand(
           stateCommandAccount
         );
         logger.error(`  ✗ ${err.message}`);
+        notDestroyed.add(target);
         totalErrors++;
+        continue;
+      }
+
+      // A stack whose dependent this run did not destroy keeps running, as
+      // `cdk destroy` stops before it (go-to-k/cdkd#6115). Below every refusal
+      // above, which count as errors on their own. Not counted as an error: a
+      // dependent that failed counted already, and one the user declined is
+      // the user's choice. A later run destroys both.
+      const keptDependents = (dependentsOf.get(target) ?? []).filter((d) => notDestroyed.has(d));
+      if (keptDependents.length > 0) {
+        logger.warn(
+          safeMsg`Not destroying stack ${describeTarget(target)}: ${keptDependents.map(describeTarget).join(', ')} depends on it and was not destroyed in this run.`
+        );
+        notDestroyed.add(target);
         continue;
       }
 
@@ -682,7 +722,7 @@ export async function destroyCommand(
               destroyOptions: {
                 ...(options.profile && { profile: options.profile }),
                 statePrefix: options.statePrefix,
-                ...(options.removeProtection === true && { removeProtection: true }),
+                ...(removeProtection && { removeProtection: true }),
                 ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                 ...(options.resourceWarnAfter?.globalMs !== undefined && {
                   resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
@@ -716,7 +756,11 @@ export async function destroyCommand(
                 stateBucket,
                 statePrefix: options.statePrefix,
                 skipConfirmation: options.yes || options.force,
-                removeProtection: options.removeProtection === true,
+                // go-to-k/cdkd#6115: a stack the run added says why at its prompt.
+                ...(target.dependsOnSelected !== undefined && {
+                  confirmationNote: `it depends on ${describeStack(target.dependsOnSelected)}`,
+                }),
+                removeProtection,
                 skipFinalSnapshot: options.skipFinalSnapshot === true,
                 // go-to-k/cdkd#4150: a top-level destroy may resolve a
                 // secret-derived principal list; a deploy never does.
@@ -770,6 +814,16 @@ export async function destroyCommand(
         stackInterrupted = result.interrupted;
         stackCancelled = result.cancelled === true;
         if (result.interrupted) interrupted = true;
+        // `skippedCount` counts journaled orphans the run kept too: a resource
+        // of the dependent may still exist, so its producer is kept as well.
+        if (
+          result.errorCount > 0 ||
+          result.skippedCount > 0 ||
+          result.interrupted ||
+          result.cancelled === true
+        ) {
+          notDestroyed.add(target);
+        }
 
         // Map the per-stack runner outcome to a run-level result. A
         // partial-failure (errorCount > 0) is a FAILED run, and so is a run

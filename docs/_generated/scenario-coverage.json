@@ -101,6 +101,10 @@
       "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly)."
     },
     {
+      "tag": "destroy-manifest-dependents",
+      "description": "Destroy along the cloud assembly's stack dependencies (issue #6115): a dependency that is NOT an `Fn::ImportValue` -- a `crossRegionReferences` strong reference (CDK's `Custom::CrossRegionExportWriter` / `Reader`) or an explicit `addDependency()` -- widens `cdkd destroy <producer>` to the deployed dependents and destroys them first; `-e` / `--exclusively` keeps to the named stacks, and two named stacks are destroyed dependent first."
+    },
+    {
       "tag": "docker-image-asset-ecr-publish",
       "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy."
     },
@@ -915,6 +919,13 @@
         "custom-resource-async-poll",
         "destroy-interrupt",
         "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "destroy-manifest-deps",
+      "annotated": true,
+      "scenarios": [
+        "destroy-manifest-dependents"
       ]
     },
     {
@@ -3094,6 +3105,13 @@
       "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).",
       "fixtures": [
         "destroy-interrupt"
+      ]
+    },
+    {
+      "scenario": "destroy-manifest-dependents",
+      "description": "Destroy along the cloud assembly's stack dependencies (issue #6115): a dependency that is NOT an `Fn::ImportValue` -- a `crossRegionReferences` strong reference (CDK's `Custom::CrossRegionExportWriter` / `Reader`) or an explicit `addDependency()` -- widens `cdkd destroy <producer>` to the deployed dependents and destroys them first; `-e` / `--exclusively` keeps to the named stacks, and two named stacks are destroyed dependent first.",
+      "fixtures": [
+        "destroy-manifest-deps"
       ]
     },
     {

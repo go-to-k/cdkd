@@ -89,6 +89,13 @@ export interface DestroyRunnerContext {
   skipConfirmation: boolean;
 
   /**
+   * A clause the confirmation prompt adds after the stack name, in
+   * parentheses: `cdkd destroy` says why it added a stack the user did not
+   * name (go-to-k/cdkd#6115). Already rendered for display.
+   */
+  confirmationNote?: string;
+
+  /**
    * If true, providers MUST flip per-resource deletion protection off
    * in-place before delete. Mirrors `--remove-protection` on
    * `cdkd destroy` / `cdkd state destroy`. Threaded into each

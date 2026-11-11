@@ -10,6 +10,7 @@ import {
   resourceTimeoutOptions,
   skipFinalSnapshotOption,
   contextOptions,
+  exclusivelyOption,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { destroyCommand } from './destroy/command.js';
@@ -88,6 +89,7 @@ export function createDestroyCommand(): Command {
     ...stateOptions,
     ...stackOptions,
     ...destroyOptions,
+    exclusivelyOption('destroy'),
     ...resourceTimeoutOptions,
     skipFinalSnapshotOption,
     ...contextOptions,

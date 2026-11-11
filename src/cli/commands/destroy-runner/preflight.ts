@@ -619,10 +619,13 @@ export async function announceOrphansAndConfirm({
       journaledOrphans.count > 0
         ? ` and ${journaledOrphans.count} recorded only in its rollback journal`
         : '';
+    const stackLabel =
+      displayStackName(stackName) +
+      (ctx.confirmationNote !== undefined ? ` (${ctx.confirmationNote})` : '');
     const prompt = ctx.removeProtection
-      ? `\nAbout to destroy ${resourceCount} resources${journaledClause} from stack ${displayStackName(stackName)}, ` +
+      ? `\nAbout to destroy ${resourceCount} resources${journaledClause} from stack ${stackLabel}, ` +
         `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
-      : `\nAre you sure you want to destroy stack ${displayStackName(stackName)} and delete all ${resourceCount} resources${journaledClause}? (Y/n): `;
+      : `\nAre you sure you want to destroy stack ${stackLabel} and delete all ${resourceCount} resources${journaledClause}? (Y/n): `;
     const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();

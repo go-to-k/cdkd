@@ -561,6 +561,22 @@ export const annotationMessageOptions = [
   ).default(false),
 ];
 
+/**
+ * `-e, --exclusively`, shared by `cdkd deploy` and `cdkd destroy` (CDK CLI
+ * parity). Selection is widened along the cloud assembly's stack dependencies
+ * by default: deploy adds the stacks a selected stack DEPENDS ON (upstream),
+ * destroy adds the stacks that depend ON a selected stack (downstream,
+ * go-to-k/cdkd#6115). The flag keeps the selection to the named stacks.
+ */
+export function exclusivelyOption(command: 'deploy' | 'destroy'): Option {
+  return new Option(
+    '-e, --exclusively',
+    command === 'deploy'
+      ? 'Only deploy requested stacks, do not include dependencies'
+      : 'Only destroy requested stacks, do not include the stacks that depend on them'
+  ).default(false);
+}
+
 export const deployOptions = [
   // go-to-k/cdkd#5242: measured on 48 independent resources, Cloud Control
   // route: the resource DAG took 103s at 10, 68s at 20, and 72s at 30, where
@@ -629,10 +645,7 @@ export const deployOptions = [
   noWaitOption,
   fullWaitOption,
   aggressiveVpcParallelOption,
-  new Option(
-    '-e, --exclusively',
-    'Only deploy requested stacks, do not include dependencies'
-  ).default(false),
+  exclusivelyOption('deploy'),
   allowUnsupportedTypesOption,
   preferSdkRouteOption,
   allowUnsupportedPropertiesOption,
