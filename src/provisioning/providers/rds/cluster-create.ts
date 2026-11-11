@@ -229,7 +229,11 @@ export async function createDBCluster(
   // here, so a source cluster ARN is left to the engine's guard.
   if (
     restore !== undefined &&
-    !(restore.kind === 'point-in-time' && /^arn:/i.test(restore.sourceDBClusterIdentifier ?? ''))
+    !(
+      restore.kind === 'point-in-time' &&
+      restore.source.by === 'identifier' &&
+      /^arn:/i.test(restore.source.value)
+    )
   ) {
     refuseRestoreFromItself(resourceType, properties, dbClusterIdentifier, logicalId, {});
   }
@@ -237,10 +241,10 @@ export async function createDBCluster(
   // scalability type picks the request, and a point-in-time source's
   // encryption is checked (a snapshot's is not).
   let limitless = false;
-  if (restore?.kind === 'point-in-time' && restore.sourceDBClusterIdentifier !== undefined) {
+  if (restore?.kind === 'point-in-time' && restore.source.by === 'identifier') {
     const source = await readRestoreSource.call(
       this,
-      restore.sourceDBClusterIdentifier,
+      restore.source.value,
       resourceType,
       logicalId,
       mask
@@ -251,7 +255,7 @@ export async function createDBCluster(
     // Named by its resource id: the source's automated backups are read instead.
     const backup = await readRestoreBackup.call(
       this,
-      restore.sourceDbClusterResourceId ?? '',
+      restore.source.value,
       resourceType,
       logicalId,
       mask
@@ -385,7 +389,7 @@ export async function createDBCluster(
       throw new Error(`${restoreCallName(restore)} did not return DBCluster`);
     }
     if (restore !== undefined) {
-      const differs = restoredDifferences(properties, cluster);
+      const differs = restoredDifferences(properties, cluster, restore);
       if (differs.length > 0) {
         this.logger.warn(
           safeMsg`DBCluster ${logicalId}: the restored cluster keeps its source's ${differs.join(', ')}, not the template's, as in CloudFormation: a restore does not set ${differs.length === 1 ? 'it' : 'them'}.`

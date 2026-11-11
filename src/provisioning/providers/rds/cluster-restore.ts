@@ -41,9 +41,8 @@ import { awsErrorName } from './shared.js';
  */
 export interface ClusterPointInTimeRestore {
   kind: 'point-in-time';
-  /** Exactly one of the two sources is set: the handler refuses both. */
-  sourceDBClusterIdentifier: string | undefined;
-  sourceDbClusterResourceId: string | undefined;
+  /** The one source it names: the handler refuses both. */
+  source: { by: 'identifier' | 'resource-id'; value: string };
   /** Sent only when `UseLatestRestorableTime` is not true, as the handler sends it. */
   restoreToTime: Date | undefined;
   /** The declared flag, `undefined` when absent (the handler sends it as declared). */
@@ -165,8 +164,10 @@ export function readClusterRestore(
   }
   return {
     kind: 'point-in-time',
-    sourceDBClusterIdentifier: source,
-    sourceDbClusterResourceId: sourceResourceId,
+    source:
+      source !== undefined
+        ? { by: 'identifier', value: source }
+        : { by: 'resource-id', value: sourceResourceId as string },
     restoreToTime: useLatestRestorableTime === true ? undefined : restoreToTime,
     useLatestRestorableTime,
     restoreType,
@@ -217,7 +218,9 @@ export function unusedRestoreKeys(
     restore === undefined
       ? pointInTimeKeys
       : restore.kind === 'snapshot'
-        ? [...restoreUnused, ...pointInTimeKeys]
+        ? // Neither restore call has a StorageEncrypted member, and for a
+          // snapshot CloudFormation checks it against nothing.
+          [...restoreUnused, ...pointInTimeKeys, 'StorageEncrypted']
         : [
             // RestoreDBClusterFromSnapshot takes the zones; this call does not.
             'AvailabilityZones',
@@ -235,18 +238,24 @@ export function unusedRestoreKeys(
 /**
  * The declared keys the restored cluster does not hold, read off the restore
  * call's own answer (no extra call): a restore takes them from its source.
+ * A snapshot restore sends the engine, version, mode and database name, so
+ * only the master user is compared for it.
  */
 export function restoredDifferences(
   properties: Record<string, unknown>,
-  cluster: DBCluster
+  cluster: DBCluster,
+  restore: ClusterRestore
 ): string[] {
-  const pairs: Array<[string, string | undefined]> = [
-    ['Engine', cluster.Engine],
-    ['EngineVersion', cluster.EngineVersion],
-    ['EngineMode', cluster.EngineMode],
-    ['MasterUsername', cluster.MasterUsername],
-    ['DatabaseName', cluster.DatabaseName],
-  ];
+  const pairs: Array<[string, string | undefined]> =
+    restore.kind === 'snapshot'
+      ? [['MasterUsername', cluster.MasterUsername]]
+      : [
+          ['Engine', cluster.Engine],
+          ['EngineVersion', cluster.EngineVersion],
+          ['EngineMode', cluster.EngineMode],
+          ['MasterUsername', cluster.MasterUsername],
+          ['DatabaseName', cluster.DatabaseName],
+        ];
   return pairs
     .filter(([key, live]) => {
       const declared = properties[key];
@@ -439,7 +448,8 @@ export async function readSnapshotIsLimitless(
   logicalId: string,
   mask: ((text: string) => string) | undefined
 ): Promise<boolean> {
-  if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot:/i.test(snapshotIdentifier)) return false;
+  // `ArnHelper.getResourceType`: the resource type is matched exactly, before `:` or `/`.
+  if (/^arn:[^:]*:rds:[^:]*:[^:]*:snapshot[:/]/.test(snapshotIdentifier)) return false;
   let found = false;
   let engineVersion: string | undefined;
   try {
@@ -643,8 +653,9 @@ export function pointInTimeRestoreInput(
   return definedMembers({
     ...sharedRestoreMembers(properties, tags, logExports),
     DBClusterIdentifier: dbClusterIdentifier,
-    SourceDBClusterIdentifier: restore.sourceDBClusterIdentifier,
-    SourceDbClusterResourceId: restore.sourceDbClusterResourceId,
+    ...(restore.source.by === 'identifier'
+      ? { SourceDBClusterIdentifier: restore.source.value }
+      : { SourceDbClusterResourceId: restore.source.value }),
     RestoreType: restore.restoreType,
     UseLatestRestorableTime: restore.useLatestRestorableTime,
     RestoreToTime: restore.restoreToTime,

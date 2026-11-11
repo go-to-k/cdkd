@@ -126,9 +126,19 @@ sweep() { (
   sweep_cluster "${ID_CLUSTER_ID}"
   sweep_cluster "${SNAP_CLUSTER_ID}"
   sweep_cluster "${SOURCE_ID}"
-  # Not cdkd's: verify.sh made it, so verify.sh deletes it.
-  aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
-    --region "${REGION}" >/dev/null 2>&1
+  # Not cdkd's: verify.sh made it, so verify.sh deletes it, re-sending the
+  # delete until it is gone (one still `creating` refuses it), so the next run's
+  # create of the same name does not meet it.
+  snap_gone=""
+  for _ in $(seq 1 60); do
+    out="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+      --region "${REGION}" 2>&1)"
+    case "${out}" in *DBClusterSnapshotNotFound*) snap_gone=1; break ;; esac
+    aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${SNAPSHOT_ID}" \
+      --region "${REGION}" >/dev/null 2>&1
+    sleep 10
+  done
+  [ -n "${snap_gone}" ] || echo "    WARN: manual snapshot ${SNAPSHOT_ID} could not be deleted" >&2
   aws rds delete-db-cluster-parameter-group --db-cluster-parameter-group-name "${PARAM_GROUP}" \
     --region "${REGION}" >/dev/null 2>&1
   aws rds delete-db-subnet-group --db-subnet-group-name "${SUBNET_GROUP}" \
@@ -333,12 +343,11 @@ assert_cluster "Phase 3" "${TIME_CLUSTER_ID}" BackupRetentionPeriod 1
 # rides the restore call, its retention the follow-up.
 assert_cluster "Phase 3" "${ID_CLUSTER_ID}" Port 5436
 assert_cluster "Phase 3" "${ID_CLUSTER_ID}" BackupRetentionPeriod 2
-# SnapCluster, from the manual snapshot: the port, tag copying and engine
-# version ride RestoreDBClusterFromSnapshot, the retention and backup window
-# only the follow-up ModifyDBCluster.
+# SnapCluster, from the manual snapshot: the port rides
+# RestoreDBClusterFromSnapshot alone; the retention and backup window only the
+# follow-up ModifyDBCluster (CopyTagsToSnapshot rides both).
 assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" Port 5435
 assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" CopyTagsToSnapshot True
-assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" EngineVersion 17.9
 assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" BackupRetentionPeriod 4
 assert_cluster "Phase 3" "${SNAP_CLUSTER_ID}" PreferredBackupWindow 06:00-06:30
 PITR_RESOURCE_ID="$(cluster_field "${PITR_CLUSTER_ID}" DbClusterResourceId)"

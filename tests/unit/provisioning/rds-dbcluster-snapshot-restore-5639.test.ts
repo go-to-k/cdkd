@@ -306,6 +306,40 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(sent('DescribeDBInstancesCommand')).toHaveLength(0);
     });
 
+    it('names StorageEncrypted as not applied: neither restore call takes it', async () => {
+      await create(SNAP_BASE, { StorageEncrypted: true });
+      expect(only('RestoreDBClusterFromSnapshotCommand')).not.toHaveProperty('StorageEncrypted');
+      expect(warnings().some((w) => /snapshot restore does not apply StorageEncrypted/.test(w))).toBe(true);
+    });
+
+    it('names only a differing MasterUsername as kept: the engine, version, mode and name are sent', async () => {
+      const base = (arm(), mockSend.getMockImplementation()!);
+      mockSend.mockImplementation((command: Command) =>
+        command.constructor.name === 'RestoreDBClusterFromSnapshotCommand'
+          ? Promise.resolve({
+              DBCluster: {
+                DBClusterIdentifier: CLUSTER,
+                DBClusterArn: CLUSTER_ARN,
+                MasterUsername: 'cdkdadmin',
+                EngineVersion: '16.4',
+                DatabaseName: 'other',
+              },
+            })
+          : base(command)
+      );
+      await create(SNAP_BASE, { MasterUsername: 'otheradmin', EngineVersion: '17.9', DatabaseName: 'app' });
+      const kept = warnings().find((w) => /the restored cluster keeps its source's/.test(w)) ?? '';
+      expect(kept).toContain('MasterUsername');
+      expect(kept).not.toContain('EngineVersion');
+      expect(kept).not.toContain('DatabaseName');
+    });
+
+    it('restores the same way on a rollback replay of the record', async () => {
+      await provider.create('Cluster', 'AWS::RDS::DBCluster', { ...SNAP_BASE }, { replayingState: true });
+      expect(only('RestoreDBClusterFromSnapshotCommand')['SnapshotIdentifier']).toBe(SNAPSHOT);
+      expect(only('ModifyDBClusterCommand')['BackupRetentionPeriod']).toBe(1);
+    });
+
     it('checks no encryption, as the handler checks none for a snapshot', async () => {
       arm({ snapshot: { EngineVersion: '16.4', StorageEncrypted: true } });
       await create(SNAP_BASE, { StorageEncrypted: false, KmsKeyId: 'alias/aws/rds' });
@@ -342,11 +376,24 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
       expect(restore).not.toHaveProperty('EnablePerformanceInsights');
     });
 
-    it('reads no DB instance snapshot, which the handler restores as standard', async () => {
-      const instanceSnapshot = `arn:aws:rds:us-east-1:${ACCOUNT}:snapshot:db-snap-1`;
+    it.each([
+      `arn:aws:rds:us-east-1:${ACCOUNT}:snapshot:db-snap-1`,
+      `arn:aws:rds:us-east-1:${ACCOUNT}:snapshot/db-snap-1`,
+    ])('reads no DB instance snapshot (%s), which the handler restores as standard', async (instanceSnapshot) => {
       await create(SNAP_BASE, { SnapshotIdentifier: instanceSnapshot });
       expect(sent('DescribeDBClusterSnapshotsCommand')).toHaveLength(0);
       expect(only('RestoreDBClusterFromSnapshotCommand')['SnapshotIdentifier']).toBe(instanceSnapshot);
+    });
+
+    it('reads a cluster snapshot ARN, and one whose type is not spelled exactly', async () => {
+      for (const arn of [
+        `arn:aws:rds:us-east-1:${ACCOUNT}:cluster-snapshot:snap-1`,
+        `arn:aws:rds:us-east-1:${ACCOUNT}:SNAPSHOT:snap-1`,
+      ]) {
+        mockSend.mockClear();
+        await create(SNAP_BASE, { SnapshotIdentifier: arn });
+        expect(sent('DescribeDBClusterSnapshotsCommand'), arn).toHaveLength(1);
+      }
     });
 
     it.each([
@@ -418,6 +465,11 @@ describe('RDSProvider DBCluster snapshot and resource-id restores (go-to-k/cdkd#
   });
 
   describe('SourceDbClusterResourceId', () => {
+    it('restores the same way on a rollback replay of the record', async () => {
+      await provider.create('Cluster', 'AWS::RDS::DBCluster', { ...ID_BASE }, { replayingState: true });
+      expect(only('RestoreDBClusterToPointInTimeCommand')['SourceDbClusterResourceId']).toBe(RESOURCE_ID);
+    });
+
     it('restores to a point in time from the source resource id, reading its automated backups first', async () => {
       await create(ID_BASE, { Port: 5433, KmsKeyId: 'alias/aws/rds', StorageEncrypted: true });
       expect(only('DescribeDBClusterAutomatedBackupsCommand')).toEqual({
