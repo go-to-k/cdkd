@@ -7,14 +7,22 @@ import {
 } from '@aws-sdk/client-s3';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
+  isAmbiguousOutcomeError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import {
+  getPriorAttempts,
+  markRefusedBeforeApplying,
+} from '../../deployment/prior-attempt-scope.js';
+import { policyContentKey } from '../policy-document-content.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -51,6 +59,12 @@ const IAM_UNIQUE_ID_RE = /^A[A-Z0-9]{15,}$/;
  * bucket policies issues at most one `GetCloudFrontOriginAccessIdentity` per OAI.
  */
 const oaiCanonicalUserIdCache = new Map<string, string | null>();
+
+/** What a create's look at the bucket found (go-to-k/cdkd#6109). */
+type ExistingBucketPolicy =
+  | { kind: 'absent' }
+  | { kind: 'present'; policy: string }
+  | { kind: 'unreadable'; error: unknown };
 
 /** Test-only: reset the OAI canonical-user-id cache between unit tests. */
 export function clearOaiCanonicalUserIdCacheForTest(): void {
@@ -175,11 +189,39 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       );
     }
 
-    try {
-      // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+    const mask = context?.maskSecrets ?? ((t: string) => t);
+    // Serialize policy document
+    const policyDoc =
+      typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
+    // go-to-k/cdkd#6109: PutBucketPolicy REPLACES whatever policy the bucket
+    // holds, so a create without this look is an upsert that silently drops
+    // statements another owner attached (a vended-log delivery service's
+    // grant, a hand-written Deny). CloudFormation refuses the same create.
+    let existing: ExistingBucketPolicy;
+    try {
+      existing = await this.probeExistingPolicy(bucketName);
+    } catch (error) {
+      throw this.wrapOperationError(
+        'create',
+        logicalId,
+        resourceType,
+        bucketName,
+        error,
+        context?.maskSecrets
+      );
+    }
+    this.decideOnExistingPolicy(
+      logicalId,
+      resourceType,
+      bucketName,
+      policyDoc,
+      existing,
+      context?.replayingState === true,
+      mask
+    );
+
+    try {
       await this.s3Client.send(
         new PutBucketPolicyCommand({
           Bucket: bucketName,
@@ -195,6 +237,10 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      // A Put that got no definite answer may have attached this policy. An
+      // engine retry of this dispatch then finds it, and may only proceed
+      // because this dispatch recorded the doubt (assertNoForeignBucketPolicy).
+      if (isAmbiguousOutcomeError(error)) getPriorAttempts(logicalId)?.notePossiblyLanded();
       throw this.wrapOperationError(
         'create',
         logicalId,
@@ -344,6 +390,112 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         context?.maskSecrets
       );
     }
+  }
+
+  /**
+   * What the bucket already holds before a create (go-to-k/cdkd#6109).
+   *
+   * `NoSuchBucketPolicy` is `absent`. So is `NoSuchBucket`: the Put that
+   * follows reports it exactly as it did before this look existed. An
+   * `AccessDenied` is `unreadable`, never `absent` — a least-privilege role may
+   * hold `s3:PutBucketPolicy` without `s3:GetBucketPolicy`, and the caller
+   * decides what that means. Any other failure is thrown, so a throttle or a
+   * wrong-region redirect fails the create as the Put would have.
+   */
+  private async probeExistingPolicy(bucketName: string): Promise<ExistingBucketPolicy> {
+    try {
+      const resp = await this.s3Client.send(new GetBucketPolicyCommand({ Bucket: bucketName }));
+      return resp.Policy ? { kind: 'present', policy: resp.Policy } : { kind: 'absent' };
+    } catch (error) {
+      if (error instanceof NoSuchBucket) return { kind: 'absent' };
+      const name =
+        error !== null && typeof error === 'object' ? (error as { name?: unknown }).name : undefined;
+      if (name === 'NoSuchBucketPolicy' || name === 'NoSuchBucket') return { kind: 'absent' };
+      if (name === 'AccessDenied') return { kind: 'unreadable', error };
+      throw error;
+    }
+  }
+
+  /**
+   * Refuse a create onto a bucket that already holds a policy, as
+   * CloudFormation does ("The bucket policy already exists on bucket ...",
+   * go-to-k/cdkd#6109). Returns to let the Put go ahead:
+   *
+   * - no policy is attached;
+   * - the policy could not be read (`AccessDenied`): warned, and the Put goes
+   *   ahead as it always did — refusing would break every deploy by a role
+   *   without `s3:GetBucketPolicy`, with no way around it;
+   * - a rollback replay (`replayingState`) restores a policy this deploy
+   *   removed: its bag is a state record, so it is warned and put back;
+   * - an earlier Put of THIS dispatch got no definite answer
+   *   (`notePossiblyLanded`) and the bucket holds a policy equivalent to the
+   *   one being created: that Put landed, and re-sending it changes nothing.
+   *
+   * Anything else is another owner's policy, and overwriting it would drop
+   * its statements. The refusal names no AWS text (there is none), so the
+   * name-collision classifiers never read it as a collision.
+   */
+  private decideOnExistingPolicy(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string,
+    policyDoc: string,
+    existing: ExistingBucketPolicy,
+    replayingState: boolean,
+    mask: (text: string) => string
+  ): void {
+    if (existing.kind === 'absent') return;
+    const bucketShown = mask(bucketName);
+    if (existing.kind === 'unreadable') {
+      const failure = describeAwsFailure(existing.error);
+      this.logger.debug(
+        safeMsg`S3 bucket policy ${logicalId}: GetBucketPolicy on ${bucketShown} failed: ${mask(failure.detail)}`
+      );
+      this.logger.warn(
+        safeMsg`S3 bucket policy ${logicalId}: could not read the policy bucket ${bucketShown} already holds (${mask(failure.summary)}), so cdkd cannot tell whether this create replaces a policy it does not own; creating it anyway.`
+      );
+      return;
+    }
+    if (replayingState) {
+      this.logger.warn(
+        safeMsg`S3 bucket policy ${logicalId}: the rollback replay restores the recorded policy on bucket ${bucketShown}, replacing the policy attached there since.`
+      );
+      return;
+    }
+    const ownAttemptMayHaveLanded = getPriorAttempts(logicalId)?.possiblyLanded() === true;
+    if (
+      ownAttemptMayHaveLanded &&
+      policyContentKey(existing.policy) === policyContentKey(policyDoc)
+    ) {
+      this.logger.debug(
+        safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
+      );
+      return;
+    }
+    const refusal = markNonRetryable(
+      new ProvisioningError(
+        mask(
+          `Failed to create S3 bucket policy ${logicalId}: The bucket policy already exists on ` +
+            `bucket ${bucketShown}. cdkd does not overwrite it: PutBucketPolicy replaces the ` +
+            `whole policy, so the statements its owner attached (a log-delivery service's ` +
+            `grant, for example) would be dropped, and CloudFormation refuses this create the ` +
+            `same way. Either remove the existing policy if nothing relies on it ` +
+            `('aws s3api delete-bucket-policy --bucket <bucketName>'), or merge its statements ` +
+            `into this resource's PolicyDocument and adopt it into the stack with ` +
+            `'cdkd import <stackName> --resource <logicalId>=<bucketName>', then re-deploy.` +
+            (ownAttemptMayHaveLanded
+              ? ' An earlier attempt of this create got no definite answer from AWS, but the ' +
+                'policy the bucket holds differs from the one it sent.'
+              : '')
+        ),
+        resourceType,
+        logicalId,
+        bucketName
+      )
+    );
+    // Nothing was applied, so the journal must not keep this attempt's bag as
+    // evidence; unless an earlier Put of this dispatch may have landed.
+    throw ownAttemptMayHaveLanded ? refusal : markRefusedBeforeApplying(refusal);
   }
 
   /**
