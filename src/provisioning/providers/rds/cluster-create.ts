@@ -3,6 +3,7 @@ import {
   DeleteDBClusterCommand,
   DeleteDBInstanceCommand,
   ModifyDBClusterCommand,
+  RestoreDBClusterToPointInTimeCommand,
   type CreateDBClusterCommandInput,
 } from '@aws-sdk/client-rds';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -13,6 +14,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { generatedNameFor } from '../../resource-name.js';
+import { refuseRestoreFromItself } from '../../restore-source-guard.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
@@ -42,6 +44,18 @@ import {
   isOwnExpressWriter,
   readExpressWriterId,
 } from './express-writer.js';
+import {
+  isLimitlessSource,
+  pointInTimeRestoreFollowUp,
+  pointInTimeRestoreInput,
+  readClusterRestore,
+  readRestoreSource,
+  refuseRestoreEncryption,
+  restoredDifferences,
+  restoreWaitMs,
+  sendRestoreFollowUp,
+  unusedRestoreKeys,
+} from './cluster-restore.js';
 
 // ─── DBCluster ────────────────────────────────────────────────────
 
@@ -117,7 +131,17 @@ export async function createDBCluster(
   // a rollback re-create leaves it out (a cluster without express configuration).
   const expressFlag = expressConfigurationFlag(properties['WithExpressConfiguration']);
   const expressSkipped = expressFlag === 'malformed';
-  const express = expressFlag === true;
+  // go-to-k/cdkd#5639: a point-in-time restore (`readClusterRestore`), refused
+  // before any call where CloudFormation refuses its keys. It creates no
+  // express writer: the restore call has no such member.
+  const restore = readClusterRestore(properties, resourceType, logicalId);
+  const express = expressFlag === true && restore === undefined;
+  const unused = unusedRestoreKeys(properties, restore);
+  if (unused.length > 0) {
+    this.logger.warn(
+      safeMsg`DBCluster ${logicalId}: this ${restore === undefined ? 'create' : 'point-in-time restore'} does not apply ${unused.join(', ')}, as in CloudFormation.`
+    );
+  }
   const classSkipped = malformedInstanceClass(properties['DBClusterInstanceClass']);
   const allocatedSkipped = clusterSizeValue(properties['AllocatedStorage']) === 'malformed';
   const iopsSkipped = clusterSizeValue(properties['Iops']) === 'malformed';
@@ -198,6 +222,25 @@ export async function createDBCluster(
     (properties['DBClusterIdentifier'] as string | undefined) ||
     // go-to-k/cdkd#5984: an express cluster's name leaves room for its writer's.
     generatedNameFor('AWS::RDS::DBCluster', logicalId, { properties });
+  // go-to-k/cdkd#5639: a replacement's generated name may be the source's.
+  // Names only, as for DocDB: no account is known here.
+  if (restore !== undefined && !restore.sourceDBClusterIdentifier.startsWith('arn:')) {
+    refuseRestoreFromItself(resourceType, properties, dbClusterIdentifier, logicalId, {});
+  }
+  // go-to-k/cdkd#5639: CloudFormation reads the source before restoring: its
+  // scalability type picks the request, its encryption is checked.
+  let limitless = false;
+  if (restore !== undefined) {
+    const source = await readRestoreSource.call(
+      this,
+      restore.sourceDBClusterIdentifier,
+      resourceType,
+      logicalId,
+      mask
+    );
+    refuseRestoreEncryption(properties, source, resourceType, logicalId);
+    limitless = isLimitlessSource(source);
+  }
 
   // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
   // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -215,83 +258,99 @@ export async function createDBCluster(
     // read-only `SecretArn` / `SecretStatus` (ignored on the write side).
     const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
 
-    const response = await this.getCreateClient().send(
-      new CreateDBClusterCommand({
-        DBClusterIdentifier: dbClusterIdentifier,
-        Engine: properties['Engine'] as string,
-        EngineVersion: properties['EngineVersion'] as string | undefined,
-        MasterUsername: properties['MasterUsername'] as string | undefined,
-        MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
-        DatabaseName: properties['DatabaseName'] as string | undefined,
-        Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
-        VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
-        DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
-        StorageEncrypted: properties['StorageEncrypted'] as boolean | undefined,
-        KmsKeyId: properties['KmsKeyId'] as string | undefined,
-        BackupRetentionPeriod:
-          properties['BackupRetentionPeriod'] != null
-            ? Number(properties['BackupRetentionPeriod'])
-            : undefined,
-        DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-        // #609 security-cluster backfill. `!== undefined` for the booleans so
-        // an explicit `false` opt-out reaches AWS rather than being dropped by
-        // a truthy gate. `MonitoringInterval` is CFn-string-typed → Number().
-        ...(properties['ManageMasterUserPassword'] !== undefined && {
-          ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-        }),
-        ...(masterUserSecret?.KmsKeyId !== undefined && {
-          MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-        }),
-        ...(properties['MonitoringRoleArn'] !== undefined && {
-          MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
-        }),
-        ...(properties['MonitoringInterval'] !== undefined && {
-          MonitoringInterval: Number(properties['MonitoringInterval']),
-        }),
-        ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
-          EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as boolean,
-        }),
-        ...(properties['PubliclyAccessible'] !== undefined && {
-          PubliclyAccessible: properties['PubliclyAccessible'] as boolean,
-        }),
-        ...(serverlessV2Config && {
-          ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
-        }),
-        // go-to-k/cdkd#2762: parameter group, windows, tag copying, storage type.
-        ...clusterCreateBackfillMembers(properties),
-        // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class and storage.
-        ...clusterCreateMultiAzMembers(properties),
-        // go-to-k/cdkd#5639: the declared list, as CloudFormation's create sends it.
-        ...(logExports !== undefined &&
-          logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
-        // go-to-k/cdkd#5639: each declared scalar, as CloudFormation's create
-        // sends it (the Data API flag included: CreateDBCluster takes it for
-        // provisioned and Serverless v2 clusters).
-        ...clusterCreateScalarMembers(properties),
-        ...(httpEndpoint !== undefined && { EnableHttpEndpoint: httpEndpoint }),
-        // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
-        ...(properties['ClusterScalabilityType'] != null && {
-          ClusterScalabilityType: properties[
-            'ClusterScalabilityType'
-          ] as CreateDBClusterCommandInput['ClusterScalabilityType'],
-        }),
-        // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
-        ...(properties['EngineMode'] != null && {
-          EngineMode: properties['EngineMode'] as string,
-        }),
-        // go-to-k/cdkd#5639: CreateDBCluster alone, as CloudFormation's create
-        // sends it; ModifyDBCluster has no member for it.
-        // An empty list leaves the choice to RDS, as an absent one does.
-        ...(availabilityZones !== undefined &&
-          availabilityZones.length > 0 && { AvailabilityZones: availabilityZones }),
-        // go-to-k/cdkd#5639: the global cluster to join, as CloudFormation's
-        // create sends it (a blank one names none).
-        ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
-        // go-to-k/cdkd#5984: RDS creates the writer instance with the cluster.
-        ...(expressFlag !== undefined && !expressSkipped && { WithExpressConfiguration: express }),
-        ...(tags.length > 0 && { Tags: tags }),
-      })
-    );
+    const response = await (restore !== undefined
+      ? this.getCreateClient().send(
+          new RestoreDBClusterToPointInTimeCommand(
+            pointInTimeRestoreInput(
+              properties,
+              restore,
+              dbClusterIdentifier,
+              tags,
+              logExports,
+              limitless
+            )
+          )
+        )
+      : this.getCreateClient().send(
+          new CreateDBClusterCommand({
+            DBClusterIdentifier: dbClusterIdentifier,
+            Engine: properties['Engine'] as string,
+            EngineVersion: properties['EngineVersion'] as string | undefined,
+            MasterUsername: properties['MasterUsername'] as string | undefined,
+            MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
+            DatabaseName: properties['DatabaseName'] as string | undefined,
+            Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+            VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
+            DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
+            StorageEncrypted: properties['StorageEncrypted'] as boolean | undefined,
+            KmsKeyId: properties['KmsKeyId'] as string | undefined,
+            BackupRetentionPeriod:
+              properties['BackupRetentionPeriod'] != null
+                ? Number(properties['BackupRetentionPeriod'])
+                : undefined,
+            DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+            // #609 security-cluster backfill. `!== undefined` for the booleans so
+            // an explicit `false` opt-out reaches AWS rather than being dropped by
+            // a truthy gate. `MonitoringInterval` is CFn-string-typed → Number().
+            ...(properties['ManageMasterUserPassword'] !== undefined && {
+              ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+            }),
+            ...(masterUserSecret?.KmsKeyId !== undefined && {
+              MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+            }),
+            ...(properties['MonitoringRoleArn'] !== undefined && {
+              MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+            }),
+            ...(properties['MonitoringInterval'] !== undefined && {
+              MonitoringInterval: Number(properties['MonitoringInterval']),
+            }),
+            ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
+              EnableIAMDatabaseAuthentication: properties[
+                'EnableIAMDatabaseAuthentication'
+              ] as boolean,
+            }),
+            ...(properties['PubliclyAccessible'] !== undefined && {
+              PubliclyAccessible: properties['PubliclyAccessible'] as boolean,
+            }),
+            ...(serverlessV2Config && {
+              ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
+            }),
+            // go-to-k/cdkd#2762: parameter group, windows, tag copying, storage type.
+            ...clusterCreateBackfillMembers(properties),
+            // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class and storage.
+            ...clusterCreateMultiAzMembers(properties),
+            // go-to-k/cdkd#5639: the declared list, as CloudFormation's create sends it.
+            ...(logExports !== undefined &&
+              logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
+            // go-to-k/cdkd#5639: each declared scalar, as CloudFormation's create
+            // sends it (the Data API flag included: CreateDBCluster takes it for
+            // provisioned and Serverless v2 clusters).
+            ...clusterCreateScalarMembers(properties),
+            ...(httpEndpoint !== undefined && { EnableHttpEndpoint: httpEndpoint }),
+            // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
+            ...(properties['ClusterScalabilityType'] != null && {
+              ClusterScalabilityType: properties[
+                'ClusterScalabilityType'
+              ] as CreateDBClusterCommandInput['ClusterScalabilityType'],
+            }),
+            // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
+            ...(properties['EngineMode'] != null && {
+              EngineMode: properties['EngineMode'] as string,
+            }),
+            // go-to-k/cdkd#5639: CreateDBCluster alone, as CloudFormation's create
+            // sends it; ModifyDBCluster has no member for it.
+            // An empty list leaves the choice to RDS, as an absent one does.
+            ...(availabilityZones !== undefined &&
+              availabilityZones.length > 0 && { AvailabilityZones: availabilityZones }),
+            // go-to-k/cdkd#5639: the global cluster to join, as CloudFormation's
+            // create sends it (a blank one names none).
+            ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
+            // go-to-k/cdkd#5984: RDS creates the writer instance with the cluster.
+            ...(expressFlag !== undefined &&
+              !expressSkipped && { WithExpressConfiguration: express }),
+            ...(tags.length > 0 && { Tags: tags }),
+          })
+        ));
     clusterLeftBehind = true;
     createdResourceId = response.DBCluster?.DbClusterResourceId;
     // go-to-k/cdkd#5511: reported before the post-create wiring and waits.
@@ -302,7 +361,17 @@ export async function createDBCluster(
       // Theoretical AWS SDK contract violation: CreateDBCluster returned
       // success but with no DBCluster. Cannot clean up — we have no
       // identifier to delete. Has never been observed in practice.
-      throw new Error('CreateDBCluster did not return DBCluster');
+      throw new Error(
+        `${restore === undefined ? 'CreateDBCluster' : 'RestoreDBClusterToPointInTime'} did not return DBCluster`
+      );
+    }
+    if (restore !== undefined) {
+      const differs = restoredDifferences(properties, cluster);
+      if (differs.length > 0) {
+        this.logger.warn(
+          safeMsg`DBCluster ${logicalId}: the restored cluster keeps its source's ${differs.join(', ')}, not the template's, as in CloudFormation: a restore does not set ${differs.length === 1 ? 'it' : 'them'}.`
+        );
+      }
     }
 
     this.logger.debug(`Successfully created DBCluster ${logicalId}: ${dbClusterIdentifier}`);
@@ -324,9 +393,40 @@ export async function createDBCluster(
     // IS STILL RUNNING AND BILLING` with the exact recovery commands.
     const wantsDeletionProtection = properties['DeletionProtection'] === true;
     try {
+      // go-to-k/cdkd#5639: CloudFormation's create follows a restore with a
+      // ModifyDBCluster once the cluster is available (`shouldUpdateAfterCreate`),
+      // then turns the Data API on (`enableHttpEndpointV2`). The follow-up always
+      // carries a BackupRetentionPeriod, so this wait runs under --no-wait too.
+      if (restore !== undefined) {
+        await this.waitForClusterAvailable(
+          logicalId,
+          dbClusterIdentifier,
+          restoreWaitMs(),
+          'being restored'
+        );
+        await sendRestoreFollowUp.call(
+          this,
+          logicalId,
+          dbClusterIdentifier,
+          pointInTimeRestoreFollowUp(properties, logExports, limitless)
+        );
+        if (httpEndpoint === true && properties['EngineMode'] !== 'serverless') {
+          const arn =
+            cluster.DBClusterArn ??
+            (await this.describeDBCluster(dbClusterIdentifier))?.DBClusterArn;
+          if (arn === undefined)
+            throw new Error('The restored DBCluster has no ARN to enable the Data API on');
+          await this.sendHttpEndpointChange(logicalId, dbClusterIdentifier, arn, true);
+        }
+      }
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
+        await this.waitForClusterAvailable(
+          logicalId,
+          dbClusterIdentifier,
+          restore === undefined ? undefined : restoreWaitMs(),
+          restore === undefined ? undefined : 'applying the restored cluster settings'
+        );
         // go-to-k/cdkd#5639: CloudFormation's create stabilizes only once
         // local write forwarding is no longer `enabling`
         // (`BaseHandlerStd.isLocalWriteForwardingStabilized`).

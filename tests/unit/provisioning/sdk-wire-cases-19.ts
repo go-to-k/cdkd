@@ -244,6 +244,8 @@ function armCluster(_physicalId: string, bag: Bag): void {
       forwarding = input['EnableLocalWriteForwarding'] === true;
       return { DBCluster: { DBClusterIdentifier: CLUSTER_ID } };
     },
+    // go-to-k/cdkd#5639: a point-in-time restore answers like a create.
+    RestoreDBClusterToPointInTimeCommand: () => ({ DBCluster: { DBClusterIdentifier: CLUSTER_ID } }),
     EnableHttpEndpointCommand: () => {
       httpEndpoint = true;
       return {};
@@ -381,6 +383,18 @@ const CLUSTER_SCALARS_KEPT = Object.fromEntries(
   ].map((key) => [
     `update-remove:${key}`,
     `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's handler sends null for a removed ${key} with no default filled (${SRC} clusterModifyScalarMembers)`,
+  ])
+);
+
+/**
+ * go-to-k/cdkd#5639: a point-in-time restore takes its engine from the source:
+ * RestoreDBClusterToPointInTime has no Engine member, and CloudFormation's
+ * restore translation sends none (`Translator.restoreDbClusterToPointInTimeRequest`).
+ */
+const RESTORE_ENGINE_SILENT = Object.fromEntries(
+  ['create', 'create-vary'].map((d) => [
+    `${d}:Engine`,
+    `RestoreDBClusterToPointInTime has no Engine member, and CloudFormation's restore sends none: the restored cluster takes its source's engine (${SRC} cluster-restore.ts)`,
   ])
 );
 
@@ -587,6 +601,32 @@ const CLUSTER_CASE: TypeCase = {
         WithExpressConfiguration: true,
       },
       expectedSilent: CLUSTER_ENGINE_SILENT,
+    },
+    {
+      name: 'a point-in-time restore to the latest time (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        SourceDBClusterIdentifier: 'source-cluster',
+        UseLatestRestorableTime: true,
+        RestoreType: 'copy-on-write',
+        BackupRetentionPeriod: 7,
+        DeletionProtection: true,
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...RESTORE_ENGINE_SILENT,
+        'update-remove:DeletionProtection': KEPT('DeletionProtection'),
+      },
+    },
+    {
+      name: 'a point-in-time restore to a time (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        SourceDBClusterIdentifier: 'source-cluster',
+        RestoreToTime: '2026-11-10T00:30:00Z',
+      },
+      variants: { RestoreToTime: '2026-11-09T12:00:00Z' },
+      expectedSilent: { ...CLUSTER_ENGINE_SILENT, ...RESTORE_ENGINE_SILENT },
     },
     {
       name: 'Multi-AZ DB cluster (mysql), a declared Port',

@@ -2197,6 +2197,11 @@
       ]
     },
     {
+      "name": "rds-dbcluster-pitr-restore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-dbinstance-backfill",
       "annotated": false,
       "scenarios": []
@@ -3774,6 +3779,7 @@
     "perf-cross-backend-check",
     "pipes-fix-forward-orphan",
     "profile-region-default",
+    "rds-dbcluster-pitr-restore",
     "rds-dbinstance-backfill",
     "rds-dbinstance-backup-replication",
     "rds-dbinstance-charset-timezone",

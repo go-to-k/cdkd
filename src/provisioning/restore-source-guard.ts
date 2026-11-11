@@ -6,6 +6,7 @@ import { ProvisioningError } from '../utils/error-handler.js';
 const RESTORING_TYPES: ReadonlySet<string> = new Set([
   'AWS::DocDB::DBCluster',
   'AWS::Neptune::DBCluster',
+  'AWS::RDS::DBCluster',
 ]);
 
 /** Where a call runs, as far as the caller knows. */

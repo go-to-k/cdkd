@@ -88,6 +88,11 @@ export function getDriftUnknownPaths(
     'DBInstanceParameterGroupName',
     // go-to-k/cdkd#5984: a CreateDBCluster input DescribeDBClusters has no member for.
     'WithExpressConfiguration',
+    // go-to-k/cdkd#5639: RestoreDBClusterToPointInTime inputs, none read back.
+    'SourceDBClusterIdentifier',
+    'RestoreToTime',
+    'RestoreType',
+    'UseLatestRestorableTime',
   ];
   // An absent or empty bag records nothing to scope by: compare.
   if (properties === undefined || Object.keys(properties).length === 0) return neverRead;
