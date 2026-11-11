@@ -7972,6 +7972,7 @@
         "sns-sqs-event",
         "sns-subscription-filter",
         "sns-subscription-update",
+        "sqs-fifo-unnamed",
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
@@ -8144,6 +8145,10 @@
         ],
         "sns-subscription-update": [
           "l2",
+          "literal"
+        ],
+        "sqs-fifo-unnamed": [
+          "l1",
           "literal"
         ],
         "tags-propagation": [

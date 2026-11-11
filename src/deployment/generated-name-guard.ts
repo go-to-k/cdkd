@@ -103,15 +103,17 @@ export type {
  * again: a cdkd defect, never a lookup that could not answer.
  */
 export class GeneratedNameMismatchError extends Error {
-  constructor(
-    readonly checked: string,
-    readonly sent: string | undefined
-  ) {
+  readonly checked: string;
+  readonly sent: string | undefined;
+
+  constructor(checked: string, sent: string | undefined) {
     super(
       `the create would send ${sent === undefined ? 'no generated name' : `the name ${sent}`}, ` +
         `not ${checked}, which was checked before the deploy`
     );
     this.name = 'GeneratedNameMismatchError';
+    this.checked = checked;
+    this.sent = sent;
   }
 }
 
