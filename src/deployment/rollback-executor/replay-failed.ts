@@ -517,8 +517,7 @@ export async function replayFailedOperationsUnbound(
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                   ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                   deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
-                  // Issue #4157; as on the completed-CREATE arm, the record names
-                  // `op.physicalId` here.
+                  // #4157 / #6104: the record names `op.physicalId` (as on the CREATE arm).
                   recordedAttributes: failedCreateRecord?.attributes,
                   recordedCreateOnlyDrops: failedCreateRecord?.acceptedCreateOnlyDrops,
                   // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
@@ -814,9 +813,8 @@ export async function replayFailedOperationsUnbound(
                 // `revert` arm — so the replay licence is the same one. (The
                 // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
                 // desired bag; `replayingState` describes the desired side, which
-                // is the side a provider's refusals read.)
-                //
-                // `recordedAttributes` (issue #4051), as on the `revert` arm.
+                // is the side a provider's refusals read.) `recordedAttributes` (issue
+                // #4051) and `recordedCreateOnlyDrops` (#6104), as on the `revert` arm.
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
