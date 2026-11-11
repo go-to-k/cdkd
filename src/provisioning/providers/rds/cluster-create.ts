@@ -224,7 +224,7 @@ export async function createDBCluster(
     generatedNameFor('AWS::RDS::DBCluster', logicalId, { properties });
   // go-to-k/cdkd#5639: a replacement's generated name may be the source's.
   // Names only, as for DocDB: no account is known here.
-  if (restore !== undefined && !restore.sourceDBClusterIdentifier.startsWith('arn:')) {
+  if (restore !== undefined && !/^arn:/i.test(restore.sourceDBClusterIdentifier)) {
     refuseRestoreFromItself(resourceType, properties, dbClusterIdentifier, logicalId, {});
   }
   // go-to-k/cdkd#5639: CloudFormation reads the source before restoring: its

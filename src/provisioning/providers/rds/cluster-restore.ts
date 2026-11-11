@@ -43,12 +43,13 @@ export interface ClusterPointInTimeRestore {
 /**
  * The shape `java.time.ZonedDateTime.parse` takes, which the handler's
  * `Validations.validateTimestamp` applies to any non-blank `RestoreToTime`:
- * ISO 8601 date and time, either case of `T` / `Z`, a `Z` or `+hh:mm[:ss]`
- * offset, and an optional `[Region/Zone]` suffix. No space separator and no
- * `+hhmm`: Java refuses both.
+ * ISO 8601 date and time, either case of `T` / `Z`, a `Z` or `+hh[:mm[:ss]]`
+ * offset (`appendOffsetId` parses leniently, so an hours-only `+01` passes),
+ * and an optional `[Region/Zone]` suffix. No space separator and no `+hhmm`:
+ * Java refuses both.
  */
 const ZONED_DATE_TIME =
-  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:[Zz]|([+-])(\d{2}):(\d{2})(?::(\d{2}))?)(?:\[[^\]]+\])?$/;
+  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:[Zz]|([+-])(\d{2})(?::(\d{2})(?::(\d{2}))?)?)(?:\[[^\]]+\])?$/;
 
 /** A `RestoreToTime` as the instant it names, or `undefined` when Java would refuse it. */
 export function parseZonedTimestamp(text: string): Date | undefined {

@@ -71,6 +71,8 @@ interface Live {
   members?: Input[];
   /** The global clusters AWS lists, by identifier, with the cluster's ARN as member. */
   globalMemberOf?: string;
+  /** The instance DescribeDBInstances answers (else not found). */
+  writer?: Input;
 }
 
 function arm(live: Live = {}): void {
@@ -148,6 +150,9 @@ function arm(live: Live = {}): void {
       });
     }
     // No instance exists: a wait on one fails by name, never loops.
+    if (name === 'DescribeDBInstancesCommand' && live.writer !== undefined) {
+      return Promise.resolve({ DBInstances: [live.writer] });
+    }
     if (name === 'DescribeDBInstancesCommand') {
       const error = new Error('DBInstance not found');
       error.name = 'DBInstanceNotFoundFault';
@@ -460,6 +465,10 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
         new Date('2026-11-09T23:30:00Z')
       );
       expect(parseZonedTimestamp('2028-02-29T00:00:00Z')).toEqual(new Date('2028-02-29T00:00:00Z'));
+      // appendOffsetId parses leniently: an hours-only offset passes, colons stay required.
+      expect(parseZonedTimestamp('2026-11-10T00:30:00+01')).toEqual(new Date('2026-11-09T23:30:00Z'));
+      expect(parseZonedTimestamp('2026-11-10T00:30:00-05')).toEqual(new Date('2026-11-10T05:30:00Z'));
+      expect(parseZonedTimestamp('2026-11-10T00:30:00+0100')).toBeUndefined();
       expect(parseZonedTimestamp('2027-02-29T00:00:00Z')).toBeUndefined();
       // ZoneOffset spans +-18:00 in all.
       expect(parseZonedTimestamp('2026-11-10T00:30:00+18:00')).toEqual(
@@ -517,6 +526,14 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       warnings().some((w) => /keeps its source's EngineVersion, not the template's/.test(w))
     ).toBe(true);
     expect(warnings().some((w) => /MasterUsername/.test(w))).toBe(false);
+  });
+
+  it('names a differing MasterUsername the restored cluster keeps', async () => {
+    arm({ restored: { MasterUsername: 'cdkdadmin' } });
+    await create({ MasterUsername: 'otheradmin' });
+    expect(
+      warnings().some((w) => /keeps its source's MasterUsername, not the template's/.test(w))
+    ).toBe(true);
   });
 
   it('names no kept value the restore answer does not report, nor an empty declared one', async () => {
@@ -803,6 +820,57 @@ describe('RDSProvider DBCluster point-in-time restore (go-to-k/cdkd#5639)', () =
       { ...BASE, GlobalClusterIdentifier: 'global-1' }
     );
     expect(sent('DescribeGlobalClustersCommand').length).toBeGreaterThan(0);
+    expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
+  });
+
+  it('a restored record holding a writer id deletes the writer the live cluster lists, matched by id', async () => {
+    const writer = `${CLUSTER}-instance-1`;
+    arm({
+      members: [{ DBInstanceIdentifier: writer, IsClusterWriter: true }],
+      writer: { DBInstanceIdentifier: writer, DbiResourceId: 'db-WRITER1', DBInstanceStatus: 'available' },
+    });
+    await provider.delete(
+      'Cluster',
+      CLUSTER,
+      'AWS::RDS::DBCluster',
+      { ...BASE, WithExpressConfiguration: true },
+      { recordedAttributes: { 'cdkd:ExpressWriterResourceId': 'db-WRITER1' } }
+    );
+    expect(only('DeleteDBInstanceCommand')).toEqual({
+      DBInstanceIdentifier: writer,
+      SkipFinalSnapshot: true,
+    });
+  });
+
+  it('a restored record holding a writer id deletes no instance the live cluster does not list', async () => {
+    arm({
+      writer: {
+        DBInstanceIdentifier: `${CLUSTER}-instance-1`,
+        DbiResourceId: 'db-WRITER1',
+        DBInstanceStatus: 'available',
+      },
+    });
+    await provider.delete(
+      'Cluster',
+      CLUSTER,
+      'AWS::RDS::DBCluster',
+      { ...BASE, WithExpressConfiguration: true },
+      { recordedAttributes: { 'cdkd:ExpressWriterResourceId': 'db-WRITER1' } }
+    );
+    expect(sent('DeleteDBInstanceCommand')).toHaveLength(0);
+    expect(only('DeleteDBClusterCommand')['DBClusterIdentifier']).toBe(CLUSTER);
+  });
+
+  it('a rollback replay keeps a restored record\'s global cluster, and the next deploy is no change', async () => {
+    const record = { ...BASE, GlobalClusterIdentifier: 'global-1' };
+    const replay = await provider.update('Cluster', CLUSTER, 'AWS::RDS::DBCluster', { ...record }, { ...record }, {
+      replayingState: true,
+    });
+    expect(warnings().some((w) => /drops GlobalClusterIdentifier/.test(w))).toBe(false);
+    const recorded = replay.effectiveProperties ?? record;
+    expect(recorded['GlobalClusterIdentifier']).toBe('global-1');
+    // The same template deployed forward: neither refused nor detached.
+    await provider.update('Cluster', CLUSTER, 'AWS::RDS::DBCluster', { ...record }, { ...recorded });
     expect(sent('RemoveFromGlobalClusterCommand')).toHaveLength(0);
   });
 

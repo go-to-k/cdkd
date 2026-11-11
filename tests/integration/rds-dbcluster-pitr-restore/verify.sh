@@ -210,7 +210,10 @@ record_field() { # usage: record_field <logical id> <provisionedBy | properties.
 
 assert_record() { # usage: assert_record <phase> <logical id> <field> <want>
   local got
-  got="$(record_field "$2" "$3")" || return 1
+  if ! got="$(record_field "$2" "$3")"; then
+    echo "FAIL: ${1}: no state record for ${2} (or the state could not be read)" >&2
+    exit 1
+  fi
   if [ "${got}" != "$4" ]; then
     echo "FAIL: ${1}: ${2} record ${3}='${got}', want '${4}'" >&2
     exit 1
@@ -287,7 +290,13 @@ assert_cluster "Phase 3" "${PITR_CLUSTER_ID}" CopyTagsToSnapshot True
 assert_cluster "Phase 3" "${PITR_CLUSTER_ID}" BackupRetentionPeriod 5
 assert_cluster "Phase 3" "${PITR_CLUSTER_ID}" PreferredBackupWindow 05:00-05:30
 assert_cluster "Phase 3" "${PITR_CLUSTER_ID}" HttpEndpointEnabled True
-# None declared: the follow-up sends 1, as CloudFormation fills it (the source holds 3).
+# None declared: the follow-up sends 1, as CloudFormation fills it (the source
+# holds 3). INFERRED, not measured: whether a restore without the follow-up
+# keeps the source's 3 is unknown, so this alone may not prove the follow-up
+# ran (the parameter group and PitrCluster's retention 5 do). The value is
+# printed into the run log either way.
+TIME_RETENTION="$(cluster_field "${TIME_CLUSTER_ID}" BackupRetentionPeriod)"
+echo "    TimeCluster BackupRetentionPeriod=${TIME_RETENTION} (source 3)"
 assert_cluster "Phase 3" "${TIME_CLUSTER_ID}" BackupRetentionPeriod 1
 PITR_RESOURCE_ID="$(cluster_field "${PITR_CLUSTER_ID}" DbClusterResourceId)"
 echo "    both restored (source user name, own parameter group, declared and default retention), provisionedBy=sdk"

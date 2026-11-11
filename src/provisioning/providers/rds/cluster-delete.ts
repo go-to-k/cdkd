@@ -201,14 +201,22 @@ export async function deleteDBClusterOnce(
 
     // go-to-k/cdkd#5984: RDS refuses the cluster delete while the writer it
     // created for an express-configuration cluster exists.
-    // A restore creates no writer either: never delete one by name for it.
-    if (!restored && expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true) {
+    // go-to-k/cdkd#5639: a point-in-time restore creates no writer, and its
+    // record holds no writer id; a restored record is then never handed a
+    // writer by name. One that holds an id (a plain create recorded with its
+    // source under `--prefer-sdk-route`) made a writer: delete it, matched by
+    // that id and by the live cluster listing it, as for any other record.
+    const recordedWriterId = recordedExpressWriterId(context?.recordedAttributes);
+    if (
+      !(restored && recordedWriterId === undefined) &&
+      expressConfigurationFlag(properties?.['WithExpressConfiguration']) === true
+    ) {
       const writerDeleted = await deleteExpressWriter.call(
         this,
         logicalId,
         physicalId,
         await this.describeDBCluster(physicalId),
-        recordedExpressWriterId(context?.recordedAttributes),
+        recordedWriterId,
         // The read can lag the flip this run just made.
         flip.flippedOffByThisRun,
         maskerOrIdentity(context?.maskSecrets)
