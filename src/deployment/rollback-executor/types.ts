@@ -548,6 +548,12 @@ export interface FailedOpReplayResult extends RollbackReplayResult {
    * orphans among them as unaddressed (go-to-k/cdkd#4658).
    */
   skippedOps?: FailedOperation[];
+  /**
+   * go-to-k/cdkd#6106: the {@link skippedOps} skipped because AWS reports the
+   * resource gone (deleted outside cdkd); each skip already printed the
+   * remedy, so a caller adds no `--revert-failed` advice for them.
+   */
+  deletedOutsideOps?: FailedOperation[];
 }
 
 /** Outcome of replaying a list of ops (one journal segment). */

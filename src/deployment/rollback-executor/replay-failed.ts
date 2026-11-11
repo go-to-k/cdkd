@@ -152,7 +152,7 @@ export async function replayFailedOperationsUnbound(
     const opMasker = createOpMasker(logger, secrets, ctx.logOnlyNeedlesFor?.(op.logicalId));
     const mask = opMasker.mask;
     // go-to-k/cdkd#3338: what a skip arm below records its event through.
-    const skipScope = { ctx, stackName, result, mask };
+    const skipScope = { ctx, stackName, result, mask, stateResources };
     // The route a CREATE arm resolved (issue #1366), so the shared catch's
     // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.

@@ -51,7 +51,11 @@ import {
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import type { FailedOperation } from '../../../src/deployment/rollback-executor.js';
-import type { CloudFormationTemplate, UpdateContext } from '../../../src/types/resource.js';
+import {
+  RESOURCE_NOT_FOUND,
+  type CloudFormationTemplate,
+  type UpdateContext,
+} from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const TYPE = 'AWS::KinesisFirehose::DeliveryStream';
@@ -87,6 +91,8 @@ async function deploy(opts: {
   options?: Record<string, unknown>;
   /** Set the user's Ctrl-C (`userInterrupted`) when this answers true for a poll. */
   interruptAt?: (poll: number) => boolean;
+  /** `readCurrentState`'s answer; absent = no read path. */
+  read?: () => Promise<unknown>;
 }): Promise<Run> {
   const calls: Call[] = [];
   const segments: Array<Record<string, unknown>> = [];
@@ -122,6 +128,7 @@ async function deploy(opts: {
       return new Set(moving(poll));
     });
   }
+  if (opts.read !== undefined) provider['readCurrentState'] = vi.fn(opts.read);
   if (opts.live !== undefined) {
     const live = opts.live;
     provider['readUnsettled'] = vi.fn(async () => live(calls.length));
@@ -294,6 +301,26 @@ describe('the automatic rollback reverts what a failed update left unsettled (go
     expect(warned('could not revert what the failed update left unsettled')).toBe(true);
     // Not a rollback failure: the clean settle keeps it for `--revert-failed`.
     expect(keptForRevertFailed(run)).toBe(true);
+  });
+
+  // go-to-k/cdkd#6106: a revert that fails because the resource was deleted
+  // outside cdkd is skipped with the remedy, and no retry advice follows it.
+  it('names a resource deleted outside cdkd once, with no --revert-failed advice', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: failsThen(async () => {
+        throw failure('ResourceNotFoundException');
+      }),
+      moving: () => [],
+      // The unsettled read answers (so the revert runs); the existence read is gone.
+      live: () => ({}),
+      read: async () => RESOURCE_NOT_FOUND,
+    });
+    expect(run.calls).toHaveLength(2);
+    expect(warned('could not revert what the failed update left unsettled')).toBe(false);
+    expect(warned('AWS reports this resource no longer exists (deleted outside cdkd)')).toBe(true);
+    expect(warned('--revert-failed')).toBe(false);
+    expect(keptForRevertFailed(run)).toBe(false);
   });
 
   it('reverts nothing for a failed update that marked nothing (still opt-in)', async () => {

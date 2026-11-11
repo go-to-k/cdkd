@@ -325,6 +325,27 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
     expect(warns.join('\n')).toContain('remove it from the CDK app and deploy');
   });
 
+  // The revert targets the CURRENT record; when a later replacement moved it
+  // to another id, the old id reading gone says nothing about this failure.
+  it('a failed force-revert over a record that moved to another id stays a failure', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('Throttling'));
+    const readCurrentState = vi.fn().mockResolvedValue(RESOURCE_NOT_FOUND);
+    const { ctx, events } = makeCtx({ update, readCurrentState });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-F',
+      previousState: res({ physicalId: 'phys-F' }),
+      attemptedProperties: { a: 2 },
+    };
+    const result = await replayFailedOperations([op], { F: res({ physicalId: 'phys-F2' }) }, 'S', ctx);
+    expect(readCurrentState).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ failures: 1, skipped: 0 });
+    expect(skips(events)).toHaveLength(0);
+  });
+
   it('a failed force-revert whose resource still exists stays a failure', async () => {
     const update = vi.fn().mockRejectedValue(new Error('AccessDenied'));
     const readCurrentState = vi.fn().mockResolvedValue({ a: 1 });
