@@ -104,7 +104,7 @@ cleanup() {
       [ -n "${p}" ] && aws ssm delete-parameter --name "${p}" --region "${EAST}" >/dev/null 2>&1
     done
   case "${LOG_PREFIX}" in
-    /aws/lambda/CdkdDmdXr?*)
+    /aws/lambda/CdkdDmd?*)
       for r in "${XR_PRODUCER_REGION}" "${EAST}"; do
         aws logs describe-log-groups --log-group-name-prefix "${LOG_PREFIX}" --region "${r}" \
           --query 'logGroups[].logGroupName' --output text 2>/dev/null | tr '\t' '\n' | while read -r lg; do
