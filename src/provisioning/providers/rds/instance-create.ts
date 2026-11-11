@@ -252,6 +252,18 @@ export async function createDBInstance(
         ...(properties['AvailabilityZone'] != null && {
           AvailabilityZone: properties['AvailabilityZone'] as string,
         }),
+        // go-to-k/cdkd#5640: create-only, sent as declared, as CloudFormation's
+        // create translation sends them; RDS itself refuses one its engine
+        // does not take (a time zone outside SQL Server and Db2, an NCHAR
+        // character set outside Oracle). A read replica's create carries none
+        // of the three, under CloudFormation too: it inherits its source's.
+        ...(properties['CharacterSetName'] != null && {
+          CharacterSetName: properties['CharacterSetName'] as string,
+        }),
+        ...(properties['NcharCharacterSetName'] != null && {
+          NcharCharacterSetName: properties['NcharCharacterSetName'] as string,
+        }),
+        ...(properties['Timezone'] != null && { Timezone: properties['Timezone'] as string }),
         // go-to-k/cdkd#5640: as CloudFormation's create translation sends it.
         // `UseDefaultProcessorFeatures` is no CreateDBInstance member, so the
         // handler drops it here; a standalone create without the list runs

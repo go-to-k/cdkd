@@ -1522,6 +1522,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -1713,6 +1714,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -1816,6 +1820,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -1996,6 +2001,9 @@
           "l2"
         ],
         "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
+        "rds-dbinstance-charset-timezone": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -2129,6 +2137,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -2321,6 +2330,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2423,6 +2435,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -2614,6 +2627,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2698,6 +2714,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-full-stack",
         "rds-multiaz-cluster",
@@ -2832,6 +2849,9 @@
           "l2"
         ],
         "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
+        "rds-dbinstance-charset-timezone": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -2984,6 +3004,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3206,6 +3227,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3325,6 +3349,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3508,6 +3533,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3617,6 +3645,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -3856,6 +3885,9 @@
         "rds-dbinstance-backup-replication": [
           "l2"
         ],
+        "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3975,6 +4007,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -4165,6 +4198,9 @@
           "l2"
         ],
         "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
+        "rds-dbinstance-charset-timezone": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -7278,6 +7314,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack"
@@ -7291,6 +7328,10 @@
           "l1"
         ],
         "rds-dbinstance-backup-replication": [
+          "l1",
+          "literal"
+        ],
+        "rds-dbinstance-charset-timezone": [
           "l1",
           "literal"
         ],
@@ -7326,6 +7367,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
+        "rds-dbinstance-charset-timezone",
         "rds-dbinstance-processor-features",
         "rds-fix-forward-orphan",
         "rds-full-stack",
@@ -7349,6 +7391,9 @@
           "l2"
         ],
         "rds-dbinstance-backup-replication": [
+          "l2"
+        ],
+        "rds-dbinstance-charset-timezone": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [

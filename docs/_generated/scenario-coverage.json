@@ -2207,6 +2207,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-dbinstance-charset-timezone",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-dbinstance-processor-features",
       "annotated": false,
       "scenarios": []
@@ -3771,6 +3776,7 @@
     "profile-region-default",
     "rds-dbinstance-backfill",
     "rds-dbinstance-backup-replication",
+    "rds-dbinstance-charset-timezone",
     "rds-dbinstance-processor-features",
     "rds-express-cluster",
     "rds-fix-forward-orphan",

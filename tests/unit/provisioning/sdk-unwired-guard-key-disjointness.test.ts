@@ -179,7 +179,7 @@ describe('SDK-unwired keys are disjoint from what other layers read (#2750)', ()
         'case is asserting nothing. Check how `createOnlyProperties` is spelled ' +
         'in tests/fixtures/cfn-schemas/*.json before believing it.'
     ).toBeGreaterThan(10);
-    expect(createOnlyDropsSeen, 'too few create-only drops compared').toBeGreaterThan(30);
+    expect(createOnlyDropsSeen, 'too few create-only drops compared').toBeGreaterThan(27);
 
     expect(
       violations,
