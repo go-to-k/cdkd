@@ -212,14 +212,18 @@ export class SQSQueueProvider implements ResourceProvider {
   /**
    * Create an SQS queue
    */
-  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  /**
+   * go-to-k/cdkd#4705: the name `create()` sends when the template names none.
+   * The properties go to the rule: a FIFO queue's name ends with `.fifo`
+   * (go-to-k/cdkd#6100).
+   */
   generatedCreateName(
     _resourceType: string,
     logicalId: string,
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['QueueName']) return undefined;
-    return generatedNameFor('AWS::SQS::Queue', logicalId);
+    return generatedNameFor('AWS::SQS::Queue', logicalId, { properties });
   }
 
   /**
@@ -422,7 +426,7 @@ export class SQSQueueProvider implements ResourceProvider {
       const queueName =
         (properties['QueueName'] as string | undefined) ||
         physicalId.split('/').pop() ||
-        generatedNameFor('AWS::SQS::Queue', logicalId);
+        generatedNameFor('AWS::SQS::Queue', logicalId, { properties });
 
       return {
         physicalId,

@@ -1,3 +1,4 @@
+import { coerceCfnBoolean } from '../config-shape.js';
 import type { ResourceNameOptions } from './generate.js';
 
 /**
@@ -37,6 +38,13 @@ export interface GeneratedNameRule {
    * at most 63). Read by both routes, so they keep naming it alike.
    */
   reservedLength?: (properties: Record<string, unknown>) => number;
+  /**
+   * A suffix the service requires the name to end with for these properties
+   * (go-to-k/cdkd#6100: a FIFO queue's `.fifo`). It counts toward
+   * `options.maxLength` and survives truncation. Read by both routes, so they
+   * keep naming it alike.
+   */
+  nameSuffix?: (properties: Record<string, unknown>) => string;
   /**
    * A stack WITHOUT an instance id (a legacy stack) keeps what each route
    * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
@@ -83,7 +91,15 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'BucketName',
     options: { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g },
   },
-  'AWS::SQS::Queue': { nameProperty: 'QueueName', options: { maxLength: 80 } },
+  // go-to-k/cdkd#6100: SQS refuses a FIFO queue whose name does not end with
+  // `.fifo`, and CloudFormation names an un-named one
+  // `<stack>-<logicalId>-<random>.fifo`, the suffix inside the 80 characters.
+  // `FifoQueue` is read as CloudFormation reads a boolean (`'true'` too).
+  'AWS::SQS::Queue': {
+    nameProperty: 'QueueName',
+    options: { maxLength: 80 },
+    nameSuffix: (properties) => (coerceCfnBoolean(properties['FifoQueue']) === true ? '.fifo' : ''),
+  },
   'AWS::SNS::Topic': { nameProperty: 'TopicName', options: { maxLength: 256 } },
   'AWS::Lambda::Function': { nameProperty: 'FunctionName', options: { maxLength: 64 } },
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },

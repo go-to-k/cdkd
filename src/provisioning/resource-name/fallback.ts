@@ -30,10 +30,11 @@ function deriveRuleName(
     });
     return `${base}${suffix}`;
   }
-  const reserved = rule.reservedLength?.(input.properties ?? {}) ?? 0;
+  const suffix = rule.nameSuffix?.(input.properties ?? {}) ?? '';
+  const reserved = (rule.reservedLength?.(input.properties ?? {}) ?? 0) + suffix.length;
   const options =
     reserved > 0 ? { ...rule.options, maxLength: rule.options.maxLength - reserved } : rule.options;
-  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}`;
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, options)}${suffix}`;
   const refused = rule.refusedPrefix;
   if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
     return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;
