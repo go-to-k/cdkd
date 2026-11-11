@@ -54,6 +54,9 @@ import {
   withPriorAttempts,
 } from '../../../src/deployment/prior-attempt-scope.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { withStackRecords } from '../../../src/deployment/stack-records-scope.js';
+import { withStackScope } from '../../../src/provisioning/resource-name/stack-scope.js';
+import type { ResourceState } from '../../../src/types/state.js';
 
 const RESOURCE_TYPE = 'AWS::S3::BucketPolicy';
 const LOGICAL_ID = 'LogsBucketPolicy';
@@ -329,6 +332,141 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       await expect(
         withPriorAttempts(other, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
       ).rejects.toThrow(/The bucket policy already exists/);
+    });
+  });
+
+  describe('this stack\'s own evidence', () => {
+    const recordsHolding = (records: Record<string, Partial<ResourceState>>) => ({
+      live: () => Object.entries(records) as Array<[string, ResourceState]>,
+      survivors: () => Object.entries(records) as Array<[string, ResourceState]>,
+    });
+
+    it('refuses with own-holder advice when another record of the stack holds the bucket policy (a renamed construct)', async () => {
+      respond(() => Promise.resolve({ Policy: JSON.stringify(DESIRED) }));
+      const records = recordsHolding({
+        OldBucketPolicy: { resourceType: RESOURCE_TYPE, physicalId: BUCKET, properties: {} },
+      });
+
+      const thrown = await capture(() =>
+        withStackRecords(records, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+      );
+
+      expect(thrown.message).toContain('The bucket policy already exists');
+      expect(thrown.message).toContain("This stack's OldBucketPolicy already holds the policy");
+      expect(thrown.message).toContain('cdkd refactor');
+      // Deleting or importing it would leave the bucket with no policy once the old id's delete runs.
+      expect(thrown.message).not.toContain('delete-bucket-policy');
+      expect(thrown.message).not.toContain('cdkd import');
+      expect(sentPuts()).toBe(0);
+    });
+
+    it('a record of another TYPE or another bucket is no holder', async () => {
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+      const records = recordsHolding({
+        Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: BUCKET, properties: {} },
+        OtherPolicy: { resourceType: RESOURCE_TYPE, physicalId: 'another-bucket', properties: {} },
+      });
+
+      const thrown = await capture(() =>
+        withStackRecords(records, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+      );
+
+      expect(thrown.message).not.toContain('already holds the policy');
+      expect(thrown.message).toContain('aws s3api delete-bucket-policy --bucket ' + BUCKET);
+    });
+
+    it('replaces a policy the rollback journal shows an earlier deploy of this id attempted', async () => {
+      // An earlier deploy's Put landed and the run died before state recorded it.
+      const earlier = { ...DESIRED, Statement: [{ ...DESIRED.Statement[0], Sid: 'Earlier' }] };
+      respond(() => Promise.resolve({ Policy: JSON.stringify(earlier) }));
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: earlier }])
+      );
+
+      await withPriorAttempts(lookup, () =>
+        provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+      );
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('a journal bag for another bucket, or with another document, is no evidence', async () => {
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([
+          { Bucket: 'another-bucket', PolicyDocument: JSON.parse(AUTO_ATTACHED) as unknown },
+          { Bucket: BUCKET, PolicyDocument: DESIRED },
+        ])
+      );
+
+      await expect(
+        withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
+    });
+
+    it('an unreadable journal is no evidence', async () => {
+      respond(() => Promise.resolve({ Policy: JSON.stringify(DESIRED) }));
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.reject(awsError('AccessDenied', 403))
+      );
+
+      await expect(
+        withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES))
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
+    });
+  });
+
+  describe('the remedy', () => {
+    const scope = (stackName: string) => ({
+      stackName,
+      stackInstanceId: undefined,
+      nameGenerations: undefined,
+    });
+
+    it('names the stack, logical id and bucket', async () => {
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+
+      const thrown = await capture(() =>
+        withStackScope(scope('MyStack'), () =>
+          provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+        )
+      );
+
+      expect(thrown.message).toContain(
+        `'cdkd import MyStack --resource ${LOGICAL_ID}=${BUCKET}'`
+      );
+      expect(thrown.message).toContain(`'aws s3api delete-bucket-policy --bucket ${BUCKET}'`);
+    });
+
+    it('offers no cdkd import for a nested-stack child, which import cannot target', async () => {
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+
+      const thrown = await capture(() =>
+        withStackScope(scope('Parent~Child'), () =>
+          provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+        )
+      );
+
+      expect(thrown.message).not.toContain('cdkd import');
+      expect(thrown.message).toContain('aws s3api delete-bucket-policy');
+    });
+
+    it('puts a placeholder where the bucket name was masked', async () => {
+      const secret = 'secret-bucket-xyz';
+      respond(() => Promise.resolve({ Policy: AUTO_ATTACHED }));
+
+      const thrown = await capture(() =>
+        provider.create(
+          LOGICAL_ID,
+          RESOURCE_TYPE,
+          { Bucket: secret, PolicyDocument: DESIRED },
+          { maskSecrets: (t) => t.split(secret).join('***') }
+        )
+      );
+
+      expect(thrown.message).toContain('--bucket <bucketName>');
     });
   });
 });

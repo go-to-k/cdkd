@@ -7,7 +7,9 @@ import {
 } from '@aws-sdk/client-s3';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
+import { getCurrentStackName } from '../resource-name/stack-scope.js';
+import { getStackRecords } from '../../deployment/stack-records-scope.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -211,7 +213,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         context?.maskSecrets
       );
     }
-    this.decideOnExistingPolicy(
+    await this.decideOnExistingPolicy(
       logicalId,
       resourceType,
       bucketName,
@@ -239,7 +241,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     } catch (error) {
       // A Put that got no definite answer may have attached this policy. An
       // engine retry of this dispatch then finds it, and may only proceed
-      // because this dispatch recorded the doubt (assertNoForeignBucketPolicy).
+      // because this dispatch recorded the doubt (decideOnExistingPolicy).
       if (isAmbiguousOutcomeError(error)) getPriorAttempts(logicalId)?.notePossiblyLanded();
       throw this.wrapOperationError(
         'create',
@@ -429,15 +431,23 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *   without `s3:GetBucketPolicy`, with no way around it;
    * - a rollback replay (`replayingState`) restores a policy this deploy
    *   removed: its bag is a state record, so it is warned and put back;
-   * - an earlier Put of THIS dispatch got no definite answer
-   *   (`notePossiblyLanded`) and the bucket holds a policy equivalent to the
-   *   one being created: that Put landed, and re-sending it changes nothing.
+   * - the policy is this stack's own leftover, by content equal to what this
+   *   logical id sent: an earlier Put of THIS dispatch that got no definite
+   *   answer (`notePossiblyLanded`) compared with the policy being created, or
+   *   a bag the stack's rollback journal keeps for an earlier deploy's failed
+   *   or interrupted attempt ({@link getPriorAttempts}, the
+   *   `SecurityGroupIngress` rule of go-to-k/cdkd#4355). Content equality is
+   *   what makes it safe: the Put then drops no statement but this stack's.
    *
+   * Another record of THIS stack holding the bucket's policy (a construct
+   * moved or renamed: the new logical id is created before the old one is
+   * deleted) is refused with its own advice, since deleting or importing the
+   * policy would leave the bucket with none once the old id's delete runs.
    * Anything else is another owner's policy, and overwriting it would drop
-   * its statements. The refusal names no AWS text (there is none), so the
-   * name-collision classifiers never read it as a collision.
+   * its statements. The refusals carry no AWS text (there is none), so the
+   * name-collision classifiers never read them as a collision.
    */
-  private decideOnExistingPolicy(
+  private async decideOnExistingPolicy(
     logicalId: string,
     resourceType: string,
     bucketName: string,
@@ -445,7 +455,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     existing: ExistingBucketPolicy,
     replayingState: boolean,
     mask: (text: string) => string
-  ): void {
+  ): Promise<void> {
     if (existing.kind === 'absent') return;
     const bucketShown = mask(bucketName);
     if (existing.kind === 'unreadable') {
@@ -454,7 +464,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         safeMsg`S3 bucket policy ${logicalId}: GetBucketPolicy on ${bucketShown} failed: ${mask(failure.detail)}`
       );
       this.logger.warn(
-        safeMsg`S3 bucket policy ${logicalId}: could not read the policy bucket ${bucketShown} already holds (${mask(failure.summary)}), so cdkd cannot tell whether this create replaces a policy it does not own; creating it anyway.`
+        safeMsg`S3 bucket policy ${logicalId}: could not read the policy bucket ${bucketShown} already holds (${mask(failure.summary)}), so cdkd cannot tell whether this create replaces a policy it does not own; creating it anyway. Grant s3:GetBucketPolicy to the deploying principal to enable this check.`
       );
       return;
     }
@@ -464,40 +474,90 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       );
       return;
     }
-    const ownAttemptMayHaveLanded = getPriorAttempts(logicalId)?.possiblyLanded() === true;
-    if (
-      ownAttemptMayHaveLanded &&
-      policyContentKey(existing.policy) === policyContentKey(policyDoc)
-    ) {
+    const lookup = getPriorAttempts(logicalId);
+    const ownAttemptMayHaveLanded = lookup?.possiblyLanded() === true;
+    const refuse = (text: string): never => {
+      const refusal = markNonRetryable(
+        new ProvisioningError(
+          mask(
+            `Failed to create S3 bucket policy ${logicalId}: The bucket policy already exists on ` +
+              `bucket ${bucketShown}. ${text}` +
+              (ownAttemptMayHaveLanded
+                ? ' An earlier attempt of this create got no definite answer from AWS, but the ' +
+                  'policy the bucket holds differs from the one it sent.'
+                : '')
+          ),
+          resourceType,
+          logicalId,
+          bucketName
+        )
+      );
+      // Nothing was applied, so the journal must not keep this attempt's bag
+      // as evidence; unless an earlier Put of this dispatch may have landed.
+      throw ownAttemptMayHaveLanded ? refusal : markRefusedBeforeApplying(refusal);
+    };
+
+    const holderId = ownPolicyHolder(logicalId, bucketName);
+    const holder = holderId === undefined ? undefined : logicalIdShown(holderId);
+    if (holder !== undefined) {
+      refuse(
+        `This stack's ${holder} already holds the policy on that bucket: a BucketPolicy ` +
+          `construct moved or renamed gets a new logical id, which is created before the old ` +
+          `one is deleted. Nothing was sent. Move the record with 'cdkd refactor', or deploy ` +
+          `the removal of ${holder} first. Do not delete or import the existing policy: the ` +
+          `removal of ${holder} would then delete it, leaving the bucket with no policy.`
+      );
+    }
+
+    const liveKey = policyContentKey(existing.policy);
+    if (ownAttemptMayHaveLanded && liveKey === policyContentKey(policyDoc)) {
       this.logger.debug(
         safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
       );
       return;
     }
-    const refusal = markNonRetryable(
-      new ProvisioningError(
-        mask(
-          `Failed to create S3 bucket policy ${logicalId}: The bucket policy already exists on ` +
-            `bucket ${bucketShown}. cdkd does not overwrite it: PutBucketPolicy replaces the ` +
-            `whole policy, so the statements its owner attached (a log-delivery service's ` +
-            `grant, for example) would be dropped, and CloudFormation refuses this create the ` +
-            `same way. Either remove the existing policy if nothing relies on it ` +
-            `('aws s3api delete-bucket-policy --bucket <bucketName>'), or merge its statements ` +
-            `into this resource's PolicyDocument and adopt it into the stack with ` +
-            `'cdkd import <stackName> --resource <logicalId>=<bucketName>', then re-deploy.` +
-            (ownAttemptMayHaveLanded
-              ? ' An earlier attempt of this create got no definite answer from AWS, but the ' +
-                'policy the bucket holds differs from the one it sent.'
-              : '')
-        ),
-        resourceType,
-        logicalId,
-        bucketName
-      )
+    if (lookup !== undefined) {
+      try {
+        const attempts = await lookup.attempts();
+        if (
+          attempts.some(
+            (bag) =>
+              bag['Bucket'] === bucketName &&
+              bag['PolicyDocument'] != null &&
+              policyContentKey(bag['PolicyDocument']) === liveKey
+          )
+        ) {
+          this.logger.info(
+            safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
+          );
+          return;
+        }
+      } catch (error) {
+        // An unreadable journal is no evidence, never "attempted".
+        this.logger.debug(
+          safeMsg`S3 bucket policy ${logicalId}: rollback journal read failed: ${mask(describeAwsFailure(error).detail)}`
+        );
+      }
+    }
+
+    const bucketArg =
+      bucketShown === bucketName && isS3BucketName(bucketName) ? bucketName : '<bucketName>';
+    const stackName = getCurrentStackName();
+    // A nested-stack child (`<parent>~<child>`) is no `cdkd import` target.
+    const importArm =
+      stackName !== undefined && stackName.includes('~')
+        ? ''
+        : `, or merge its statements into this resource's PolicyDocument and adopt it into the ` +
+          `stack with 'cdkd import ${
+            stackName !== undefined && isPasteableIdent(stackName) ? stackName : '<stackName>'
+          } --resource ${remedyLogicalId(logicalId)}=${bucketArg}'`;
+    refuse(
+      `cdkd does not overwrite it: PutBucketPolicy replaces the whole policy, so the ` +
+        `statements its owner attached (a log-delivery service's grant, for example) would be ` +
+        `dropped, and CloudFormation refuses this create the same way. Nothing was sent. Either ` +
+        `remove the existing policy if nothing relies on it ('aws s3api delete-bucket-policy ` +
+        `--bucket ${bucketArg}')${importArm}, then re-deploy.`
     );
-    // Nothing was applied, so the journal must not keep this attempt's bag as
-    // evidence; unless an earlier Put of this dispatch may have landed.
-    throw ownAttemptMayHaveLanded ? refusal : markRefusedBeforeApplying(refusal);
   }
 
   /**
@@ -807,4 +867,21 @@ function isS3BucketName(value: string): boolean {
   if (value.startsWith('xn--')) return false;
   if (value.endsWith('-s3alias') || value.endsWith('--ol-s3')) return false;
   return true;
+}
+
+/**
+ * Another record of the bound stack holding the policy of `bucketName`
+ * (go-to-k/cdkd#6109), or `undefined` outside a deploy.
+ */
+function ownPolicyHolder(logicalId: string, bucketName: string): string | undefined {
+  for (const [otherId, record] of getStackRecords()?.live() ?? []) {
+    if (
+      otherId !== logicalId &&
+      record.resourceType === 'AWS::S3::BucketPolicy' &&
+      record.physicalId === bucketName
+    ) {
+      return otherId;
+    }
+  }
+  return undefined;
 }
