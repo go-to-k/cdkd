@@ -365,6 +365,10 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     // The reverse replacement, unchanged by #6117: it re-creates name-1 and
     // deletes name-2 (CloudFormation sends an Update instead: #6120).
     expect(calls.slice(2)).toEqual(['create Res name-1', 'delete Res name-2']);
+    // The record holds name-1 again, so the entry recorded for it is gone.
+    const last = saved.at(-1);
+    expect(last?.resources['Res']?.physicalId).toBe('name-1');
+    expect(last?.supersededResources).toBeUndefined();
   });
 
   it('says to delete it manually when a failed deploy leaves an old id it could not record', async () => {
