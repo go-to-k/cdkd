@@ -228,6 +228,7 @@ export class GeneratedNameGuard {
         provider: decision.provider,
         properties,
         deferred,
+        ...(generation !== undefined && { generation }),
       });
     }
     if (candidates.length === 0) return undefined;
@@ -408,10 +409,31 @@ export class GeneratedNameGuard {
     logicalId: string,
     resolvedProperties: Record<string, unknown>
   ): Promise<GeneratedNameVerdict | undefined> {
-    const c = this.candidates.get(logicalId);
+    let c = this.candidates.get(logicalId);
     if (c === undefined) return undefined;
+    // go-to-k/cdkd#6100: the name may depend on a property only the create
+    // resolves (a FIFO queue's `.fifo` behind an intrinsic `FifoQueue`), so
+    // it is derived again from the resolved properties. A deferred lookup
+    // asks for that name; a name asked at plan time that no longer matches
+    // would let the create take a holder nobody checked, so it refuses.
+    let sent: string | undefined;
+    try {
+      sent = this.deriveName(c, resolvedProperties);
+    } catch (error) {
+      return { kind: 'failed', error };
+    }
     if (c.deferred && !this.verdicts.has(logicalId)) {
-      this.ask([{ ...c, properties: resolvedProperties, deferred: false }]);
+      if (sent === undefined) return undefined;
+      c = { ...c, name: sent, properties: resolvedProperties, deferred: false };
+      this.candidates.set(logicalId, c);
+      this.ask([c]);
+    } else if (sent !== c.name) {
+      return {
+        kind: 'failed',
+        error: new Error(
+          `the name the create sends (${sent ?? 'none'}) is not the one checked before the deploy`
+        ),
+      };
     }
     const verdict = await this.verdicts.get(logicalId)!;
     if (verdict.kind !== 'free' && verdict.kind !== 'licensed') return verdict;
@@ -429,6 +451,21 @@ export class GeneratedNameGuard {
       return { kind: 'failed', error };
     }
     return verdict;
+  }
+
+  /**
+   * The generated name `c`'s create sends with `properties`, derived as
+   * {@link GeneratedNameGuard.start} derives it (under `c`'s generation for a
+   * replacement); `undefined` when the create sends no generated name.
+   */
+  private deriveName(c: Candidate, properties: Record<string, unknown>): string | undefined {
+    const derive = (): string | undefined =>
+      c.provider.generatedCreateName?.(c.resourceType, c.logicalId, properties);
+    const name =
+      c.generation === undefined
+        ? derive()
+        : withNameGeneration({ logicalId: c.logicalId, generation: c.generation }, derive);
+    return typeof name === 'string' && name !== '' ? name : undefined;
   }
 
   /** `logicalId`'s create is being sent now. */

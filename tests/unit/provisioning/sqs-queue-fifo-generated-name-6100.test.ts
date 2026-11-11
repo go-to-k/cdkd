@@ -102,6 +102,24 @@ describe('SQSQueueProvider names an un-named FIFO queue `.fifo` (go-to-k/cdkd#61
     });
   }
 
+  it('an unreadable FifoQueue defers the name lookup to the create; a readable one does not', () => {
+    for (const fifo of [{ Ref: 'IsFifo' }, { 'Fn::If': ['c', true, false] }, 'yes']) {
+      expect(provider.lookupNeedsResolvedProperties(TYPE, { FifoQueue: fifo })).toBe(true);
+    }
+    for (const props of [{}, { FifoQueue: null }, { FifoQueue: true }, { FifoQueue: 'false' }]) {
+      expect(provider.lookupNeedsResolvedProperties(TYPE, props)).toBe(false);
+    }
+  });
+
+  it('create() sends FifoQueue `TRUE` as `true`, as the name reads it', async () => {
+    await v13(() => provider.create('Q', TYPE, { FifoQueue: 'TRUE' }));
+    const create = mockSend.mock.calls
+      .map((c) => c[0])
+      .find((c): c is CreateQueueCommand => c instanceof CreateQueueCommand)!;
+    expect(create.input.Attributes?.['FifoQueue']).toBe('true');
+    expect(create.input.QueueName!.endsWith('.fifo')).toBe(true);
+  });
+
   it('a declared QueueName is the template’s, not generated', () => {
     expect(
       v13(() => provider.generatedCreateName(TYPE, 'Q', { FifoQueue: true, QueueName: 'mine.fifo' }))

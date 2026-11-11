@@ -488,7 +488,10 @@ async function refuseUnlicensedGeneratedName(
   const verdict = await engine.generatedNameGuard!.admit(logicalId, input.resolvedProps);
   if (verdict === undefined) return;
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
-  const named = `the cdkd-generated ${asked.property ?? 'name'} ${displaySafe(asked.name)}`;
+  // A deferred lookup asked for the name derived from the resolved
+  // properties (go-to-k/cdkd#6100), so read it again after `admit`.
+  const checked = engine.generatedNameGuard!.candidate(logicalId) ?? asked;
+  const named = `the cdkd-generated ${checked.property ?? 'name'} ${displaySafe(checked.name)}`;
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
     `refusing it`;

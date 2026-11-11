@@ -6,7 +6,7 @@ import { stackScopeStore } from './stack-scope.js';
 export interface GeneratedNameInput {
   /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
   zoneId?: string;
-  /** The resource's properties, for a rule's `reservedLength`. */
+  /** The resource's properties, for a rule's `reservedLength` and `nameSuffix`. */
   properties?: Record<string, unknown>;
 }
 

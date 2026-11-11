@@ -39,6 +39,12 @@ export interface Candidate {
    * the create, never against a guessed default.
    */
   deferred: boolean;
+  /**
+   * A replacement's name generation, under which `name` was derived (absent
+   * for a plain CREATE): `GeneratedNameGuard.admit` re-derives the name
+   * under the same one.
+   */
+  generation?: number;
 }
 
 /** A resource this stack's own history shows it created, then kept. */
