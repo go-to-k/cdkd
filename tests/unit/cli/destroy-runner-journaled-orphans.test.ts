@@ -870,6 +870,29 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     }
   });
 
+  // go-to-k/cdkd#6115: a stack `cdkd destroy` added as a dependent says why,
+  // under both prompt shapes; a stack without the note reads as before.
+  it.each([
+    [false, 'destroy stack TestStack (it depends on Prod) and delete all 1 resources?'],
+    [true, 'from stack TestStack (it depends on Prod), REMOVING DELETION PROTECTION'],
+  ])('adds the confirmation note after the stack name (removeProtection=%s)', async (rp, needle) => {
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    readlineQuestion.mockReset().mockResolvedValue('n');
+    try {
+      const base = { ...makeCtx(), skipConfirmation: false, removeProtection: rp };
+      await runDestroyForStack('TestStack', makeState({ R: res() }), {
+        ...base,
+        confirmationNote: 'it depends on Prod',
+      });
+      expect(String(readlineQuestion.mock.calls[0]![0])).toContain(needle);
+      await runDestroyForStack('TestStack', makeState({ R: res() }), base);
+      expect(String(readlineQuestion.mock.calls[1]![0])).not.toContain('depends on');
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+  });
+
   // A journaled failure and an ordinary skip together: the skip's remedy must
   // not offer to drop THIS stack's record, which deletes the journal.
   it('offers no state-orphan command for the stack when a journaled delete failed beside a skip', async () => {

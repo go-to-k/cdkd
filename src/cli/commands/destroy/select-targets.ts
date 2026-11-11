@@ -21,6 +21,7 @@ import {
   matchStacks,
   refuseStackNameRegionCollisions,
   stackMatchesPattern,
+  stacksForDependency,
   describeStack,
   partitionTopLevel,
   renderAllLeftOutStageStacks,
@@ -48,13 +49,22 @@ export type AppStack = StackLike & {
   // go-to-k/cdkd#4682: what a delete re-resolves a NoEcho coordinate from.
   template?: CloudFormationTemplate;
   nestedTemplates?: Record<string, string>;
+  // go-to-k/cdkd#6115: the cloud assembly's stack dependencies (physical
+  // names), which widen the selection downstream and order the destroy.
+  dependencyNames?: string[];
 };
 
 // The stacks to destroy, each with the app stack it was selected as (none
 // on the state-only fallback). Carried as the stack, not its name: two
 // Stages deployed to different regions share a physical name, and the
 // region each destroys is its own (#5176).
-export type DestroyTarget = { stackName: string; synth: AppStack | undefined };
+export type DestroyTarget = {
+  stackName: string;
+  synth: AppStack | undefined;
+  // go-to-k/cdkd#6115: set on a stack the run added because it depends on a
+  // selected stack (CDK's downstream expansion): the stack it depends on.
+  dependsOnSelected?: AppStack;
+};
 
 /** What {@link selectDestroyTargets} hands back to the command. */
 export interface DestroySelection {
@@ -73,7 +83,14 @@ export interface DestroySelection {
  */
 export async function selectDestroyTargets(
   stackArgs: string[],
-  options: { app?: string; output?: string; context?: string[]; all?: boolean; stack?: string },
+  options: {
+    app?: string;
+    output?: string;
+    context?: string[];
+    all?: boolean;
+    stack?: string;
+    exclusively?: boolean;
+  },
   stateBackend: S3StateBackend,
   logger: ConsoleLogger
 ): Promise<DestroySelection | undefined> {
@@ -127,6 +144,7 @@ export async function selectDestroyTargets(
         }),
         template: s.template,
         ...(s.nestedTemplates !== undefined && { nestedTemplates: s.nestedTemplates }),
+        dependencyNames: s.dependencyNames,
       }));
       synthScanStacks = result.stacks.map((s) => ({
         stackName: s.stackName,
@@ -247,6 +265,35 @@ export async function selectDestroyTargets(
     stackName: s.stackName,
     synth: appStackSet.has(s) ? (s as AppStack) : undefined,
   });
+  // go-to-k/cdkd#6115: add the deployed stacks that depend on a selected one,
+  // as `cdk destroy` does unless `--exclusively`. Without a synthesized app
+  // there is no dependency graph to read, so the selection stays as named.
+  const expandSelection = (selected: DestroyTarget[]): DestroyTarget[] => {
+    if (options.exclusively === true || selected.length === 0) return selected;
+    if (appStacks.length === 0) {
+      logger.warn(
+        'No synthesized app stack to read stack dependencies from, so only the named ' +
+          'stack(s) are destroyed: a deployed stack that depends on one stays deployed. ' +
+          'Run destroy from the CDK app to destroy its dependents too.'
+      );
+      return selected;
+    }
+    const inState = new Set(candidateStacks.map((s) => s.stackName));
+    const added = expandDestroyTargetsDownstream(selected, appStacks, inState);
+    for (const t of added.notDeployed) {
+      logger.debug(
+        `Not destroying ${describeStack(t)}, which depends on a selected stack: it is not deployed`
+      );
+    }
+    if (added.targets.length > 0) {
+      logger.info(
+        `Also destroying ${added.targets.length} stack(s) that depend on the selected stack(s) ` +
+          `(pass -e / --exclusively to destroy only the named stacks): ` +
+          added.targets.map(describeWithDependency).join(', ')
+      );
+    }
+    return [...selected, ...added.targets];
+  };
   let targets: DestroyTarget[];
   // Patterns that name a stack of this app by its CDK path (or exact
   // physical name) whether or not it is deployed. Filled by the pattern arm.
@@ -256,8 +303,12 @@ export async function selectDestroyTargets(
     // CLI's `destroy --all` (#4474). A Stage's stacks are left running and
     // named in one line, so the narrower set is never silent.
     const { topLevel, inStages } = partitionTopLevel(candidateStacks);
-    if (inStages.length > 0) logger.warn(renderAllLeftOutStageStacks(inStages));
-    targets = topLevel.map(toTarget);
+    targets = expandSelection(topLevel.map(toTarget));
+    // A Stage stack that depends on a top-level one is destroyed with it
+    // (go-to-k/cdkd#6115), so only the rest are named as left out.
+    const expanded = new Set<StackLike>(targets.flatMap((t) => (t.synth ? [t.synth] : [])));
+    const leftOut = inStages.filter((s) => !expanded.has(s));
+    if (leftOut.length > 0) logger.warn(renderAllLeftOutStageStacks(leftOut));
   } else if (stackPatterns.length > 0) {
     // Explicit stack names or wildcards. Resolved against the WHOLE app
     // and only then narrowed to what is in state: a pattern that is one
@@ -267,9 +318,11 @@ export async function selectDestroyTargets(
     const selectFrom = appStacks.length > 0 ? appStacks : candidateStacks;
     const inState = new Set(candidateStacks.map((s) => s.stackName));
     // Every selected stack, two sharing a physical name included (#5176).
-    targets = matchStacks(selectFrom, stackPatterns, { dedupe: 'identity' })
-      .filter((s) => inState.has(s.stackName))
-      .map(toTarget);
+    targets = expandSelection(
+      matchStacks(selectFrom, stackPatterns, { dedupe: 'identity' })
+        .filter((s) => inState.has(s.stackName))
+        .map(toTarget)
+    );
     // A deployed stack a pattern used to select by a physical-name wildcard
     // and no longer does is named, not dropped silently (#4474) -- also when
     // the pattern now matches only undeployed stacks and selects nothing.
@@ -312,7 +365,8 @@ export async function selectDestroyTargets(
     }
   } else if (candidateStacks.length === 1) {
     // Single stack: auto-select (CDK CLI compatible). A Stage that failed
-    // to load never gets here: synthesis failed on it above (#3507).
+    // to load never gets here: synthesis failed on it above (#3507). The
+    // only deployed stack has no deployed dependent to add.
     targets = candidateStacks.map(toTarget);
   } else if (candidateStacks.length === 0) {
     logger.info('No stacks found in state');
@@ -325,6 +379,78 @@ export async function selectDestroyTargets(
   }
 
   return { appStacks, synthScanStacks, stackPatterns, allStateRefs, targets, namesAppStack };
+}
+
+/**
+ * go-to-k/cdkd#6115: the stacks of the app that depend on a selected stack,
+ * directly or through other stacks, by the cloud assembly's dependencies
+ * (CDK's `expandDown`). Only a deployed one (its name in `inStateNames`) is a
+ * target; an undeployed one is still walked through, since a stack depending
+ * on it can be deployed (`cdk deploy -e`). A dependency name two Stages share
+ * resolves to the producer in the dependent's own Stage (#5176).
+ */
+export function expandDestroyTargetsDownstream(
+  selected: readonly DestroyTarget[],
+  appStacks: readonly AppStack[],
+  inStateNames: ReadonlySet<string>
+): { targets: DestroyTarget[]; notDeployed: AppStack[] } {
+  const dependentsOf = new Map<AppStack, AppStack[]>();
+  for (const stack of appStacks) {
+    for (const depName of stack.dependencyNames ?? []) {
+      for (const producer of stacksForDependency(depName, stack, appStacks)) {
+        const list = dependentsOf.get(producer) ?? [];
+        list.push(stack);
+        dependentsOf.set(producer, list);
+      }
+    }
+  }
+  const seen = new Set<AppStack>(selected.flatMap((t) => (t.synth ? [t.synth] : [])));
+  const queue = [...seen];
+  const targets: DestroyTarget[] = [];
+  const notDeployed: AppStack[] = [];
+  while (queue.length > 0) {
+    const producer = queue.shift()!;
+    for (const dependent of dependentsOf.get(producer) ?? []) {
+      if (seen.has(dependent)) continue;
+      seen.add(dependent);
+      queue.push(dependent);
+      if (inStateNames.has(dependent.stackName)) {
+        targets.push({ stackName: dependent.stackName, synth: dependent, dependsOnSelected: producer });
+      } else {
+        notDeployed.push(dependent);
+      }
+    }
+  }
+  return { targets, notDeployed };
+}
+
+/**
+ * Every app stack `stack` depends on through the cloud assembly's
+ * dependencies, directly or through other stacks. A dependency name two
+ * Stages share resolves to the producer in the dependent's own Stage (#5176).
+ */
+function manifestAncestors(stack: AppStack, appStacks: readonly AppStack[]): Set<AppStack> {
+  const found = new Set<AppStack>();
+  const queue = [stack];
+  while (queue.length > 0) {
+    const s = queue.shift()!;
+    for (const depName of s.dependencyNames ?? []) {
+      for (const producer of stacksForDependency(depName, s, appStacks)) {
+        if (producer === stack || found.has(producer)) continue;
+        found.add(producer);
+        queue.push(producer);
+      }
+    }
+  }
+  return found;
+}
+
+/** A target as the selection lines show it: a stack added as a dependent says so. */
+export function describeWithDependency(t: DestroyTarget): string {
+  const name = t.synth !== undefined ? describeStack(t.synth) : displaySafe(t.stackName);
+  return t.dependsOnSelected === undefined
+    ? name
+    : `${name} (depends on ${describeStack(t.dependsOnSelected)})`;
 }
 
 /**
@@ -342,27 +468,38 @@ export async function orderDestroyTargets(
   uniqueNames: string[];
   strictRegion: Map<DestroyTarget, string>;
   describeTarget: (t: DestroyTarget) => string;
+  dependentsOf: Map<DestroyTarget, DestroyTarget[]>;
 }> {
-  // Order stacks so that a consumer is destroyed BEFORE its producer.
-  // CDK's manifest dependency graph is unavailable here (state carries no
-  // dependency info and the per-stack loop never used it), but a raw
-  // cross-stack reference — `cdk.Fn.importValue('<exportName>')` or
-  // `Fn::GetStackOutput` — means destroying the producer first would trip
-  // cdkd's `StackHasActiveImportsError` and leave the consumer orphaned.
-  // We infer those consumer → producer edges from the synthesized templates
-  // and topologically sort so each consumer precedes its producers (the
-  // REVERSE of deploy order). Only edges between stacks both in this destroy
-  // set count. When synth was unavailable (state-only fallback) there are no
-  // templates to scan, so `inferred` is empty and the original order stands.
-  // The edges are by name, so the NAMES are ordered and each name's
-  // targets follow in selection order.
+  // Order stacks so that a dependent is destroyed BEFORE the stack it
+  // depends on (the REVERSE of deploy order), over the UNION of two edge
+  // sets, counting only edges between stacks both in this destroy set:
+  // - the cloud assembly's stack dependencies (go-to-k/cdkd#6115), which are
+  //   the ONLY edge a `crossRegionReferences` strong reference or an explicit
+  //   `addDependency()` leaves -- neither writes an `Fn::ImportValue`;
+  // - the consumer -> producer edges inferred from a raw cross-stack
+  //   reference -- `cdk.Fn.importValue('<exportName>')` or
+  //   `Fn::GetStackOutput` -- which no manifest dependency need record.
+  //   Destroying such a producer first would trip cdkd's
+  //   `StackHasActiveImportsError` and leave the consumer orphaned.
+  // A manifest edge counts through a stack outside the set too (Leaf -> Mid
+  // -> Prod with Mid undeployed still puts Leaf first).
+  // When synth was unavailable (state-only fallback) there is neither, and
+  // the original order stands. The edges are by name, so the NAMES are
+  // ordered and each name's targets follow in selection order.
   const uniqueNames = [...new Set(targets.map((t) => t.stackName))];
-  if (synthScanStacks.length > 0 && uniqueNames.length > 1) {
+  if (uniqueNames.length > 1) {
     const inSet = new Set(uniqueNames);
-    const inferred = inferCrossStackStackDeps(
-      synthScanStacks.filter((s) => inSet.has(s.stackName))
-    );
-    const ordered = orderConsumersBeforeProducers(uniqueNames, inferred);
+    const edges = inferCrossStackStackDeps(synthScanStacks.filter((s) => inSet.has(s.stackName)));
+    for (const t of targets) {
+      if (t.synth === undefined) continue;
+      for (const producer of manifestAncestors(t.synth, appStacks)) {
+        if (producer.stackName === t.stackName || !inSet.has(producer.stackName)) continue;
+        const producers = edges.get(t.stackName) ?? new Set<string>();
+        producers.add(producer.stackName);
+        edges.set(t.stackName, producers);
+      }
+    }
+    const ordered = orderConsumersBeforeProducers(uniqueNames, edges);
     targets = ordered.flatMap((name) => targets.filter((t) => t.stackName === name));
   }
 
@@ -408,8 +545,32 @@ export async function orderDestroyTargets(
       : displaySafe(t.stackName);
 
   logger.info(
-    `Found ${targets.length} stack(s) to destroy: ${targets.map(describeTarget).join(', ')}`
+    `Found ${targets.length} stack(s) to destroy: ` +
+      targets
+        .map((t) =>
+          t.dependsOnSelected === undefined
+            ? describeTarget(t)
+            : `${describeTarget(t)} (depends on ${describeStack(t.dependsOnSelected)})`
+        )
+        .join(', ')
   );
 
-  return { targets, uniqueNames, strictRegion, describeTarget };
+  // go-to-k/cdkd#6115: each target's dependents in this run, by the cloud
+  // assembly's dependencies, so the command can keep a stack whose dependent
+  // was not destroyed (declined, refused or failed) instead of deleting what
+  // that dependent still uses.
+  const dependentsOf = new Map<DestroyTarget, DestroyTarget[]>();
+  const bySynth = new Map(targets.flatMap((t) => (t.synth ? [[t.synth, t] as const] : [])));
+  for (const t of targets) {
+    if (t.synth === undefined) continue;
+    for (const producer of manifestAncestors(t.synth, appStacks)) {
+      const pt = bySynth.get(producer);
+      if (pt === undefined || pt === t) continue;
+      const list = dependentsOf.get(pt) ?? [];
+      list.push(t);
+      dependentsOf.set(pt, list);
+    }
+  }
+
+  return { targets, uniqueNames, strictRegion, describeTarget, dependentsOf };
 }
