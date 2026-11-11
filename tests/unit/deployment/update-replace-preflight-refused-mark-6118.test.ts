@@ -4,40 +4,40 @@
  * otherwise the journal records a failed update and the deploy advises
  * `--revert-failed` for a resource nothing touched.
  */
-import { describe, it, expect } from "vite-plus/test";
-import { refuseUnsafeReplacement } from "../../../src/deployment/deploy-engine/update-replace/preflight.js";
-import { isRefusedBeforeApplying } from "../../../src/deployment/prior-attempt-scope.js";
-import { isMarkedNonRetryable } from "../../../src/deployment/retryable-errors.js";
-import type { DeployEngine } from "../../../src/deployment/deploy-engine.js";
+import { describe, it, expect } from 'vite-plus/test';
+import { refuseUnsafeReplacement } from '../../../src/deployment/deploy-engine/update-replace/preflight.js';
+import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type {
   ResourceChange,
   ResourceState,
-} from "../../../src/types/state.js";
+} from '../../../src/types/state.js';
 
 function run(
   over: { recreateViaCcApi?: boolean; ccReason?: string },
-  type = "AWS::DynamoDB::Table",
+  type = 'AWS::DynamoDB::Table',
 ): unknown {
   const engine = {
     options: {},
-    stackRegion: "us-east-1",
+    stackRegion: 'us-east-1',
     providerRegistry: { ccRouteUnavailableReason: () => over.ccReason },
   } as unknown as DeployEngine;
   const change = {
-    logicalId: "T",
-    changeType: "UPDATE",
-    propertyChanges: [{ path: "KeySchema", requiresReplacement: true }],
+    logicalId: 'T',
+    changeType: 'UPDATE',
+    propertyChanges: [{ path: 'KeySchema', requiresReplacement: true }],
   } as unknown as ResourceChange;
   try {
     refuseUnsafeReplacement(engine, {
       change,
-      currentProps: { TableName: "x" },
+      currentProps: { TableName: 'x' },
       currentResource: {
-        physicalId: "x",
+        physicalId: 'x',
         resourceType: type,
         properties: {},
       } as ResourceState,
-      logicalId: "T",
+      logicalId: 'T',
       oldResourceType: type,
       propertyDrivenReplacement: !over.recreateViaCcApi,
       recreateFlagged: false,
@@ -52,23 +52,30 @@ function run(
   return undefined;
 }
 
-describe("refuseUnsafeReplacement marks its refusals refused-before-applying (#6118)", () => {
-  it("STATEFUL_REPLACE_BLOCKED carries the mark", () => {
+describe('refuseUnsafeReplacement marks its refusals refused-before-applying (#6118)', () => {
+  it('STATEFUL_REPLACE_BLOCKED carries the mark', () => {
     const e = run({}) as Error & { code?: string };
-    expect(e.code).toBe("STATEFUL_REPLACE_BLOCKED");
-    expect(isRefusedBeforeApplying(e, "T")).toBe(true);
+    expect(e.code).toBe('STATEFUL_REPLACE_BLOCKED');
+    expect(isRefusedBeforeApplying(e, 'T')).toBe(true);
     expect(isMarkedNonRetryable(e)).toBe(true);
   });
 
-  it("RECREATE_TARGETS_INVALID (no CC route) carries the mark", () => {
+  it('RECREATE_TARGETS_INVALID (no CC route) carries the mark', () => {
     const e = run({
       recreateViaCcApi: true,
-      ccReason: "no handlers",
+      ccReason: 'no handlers',
     }) as Error & {
       code?: string;
     };
-    expect(e.code).toBe("RECREATE_TARGETS_INVALID");
-    expect(isRefusedBeforeApplying(e, "T")).toBe(true);
+    expect(e.code).toBe('RECREATE_TARGETS_INVALID');
+    expect(isRefusedBeforeApplying(e, 'T')).toBe(true);
+    expect(isMarkedNonRetryable(e)).toBe(true);
+  });
+
+  it('RECREATE_TARGETS_INVALID (CC-broken type) carries the mark', () => {
+    const e = run({ recreateViaCcApi: true }, 'AWS::Scheduler::Schedule') as Error & { code?: string };
+    expect(e.code).toBe('RECREATE_TARGETS_INVALID');
+    expect(isRefusedBeforeApplying(e, 'T')).toBe(true);
     expect(isMarkedNonRetryable(e)).toBe(true);
   });
 });

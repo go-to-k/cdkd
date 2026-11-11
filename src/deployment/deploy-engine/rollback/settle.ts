@@ -269,6 +269,27 @@ export async function deleteRollbackJournalBestEffort(
 }
 
 /**
+ * go-to-k/cdkd#6118: a refused UPDATE that deleted and created nothing. Its
+ * record is still journaled (the #4355 / #5064 supersede semantics rely on
+ * it), but there is nothing for `cdkd rollback --revert-failed` to revert, so
+ * the settle must not advertise it. Provable only from what the journaled op
+ * itself says: an UPDATE with no attempted bag (the mark drops it) and none
+ * of the fields a made or deleted resource sets. A replacement-orphan
+ * companion op is a CREATE, so it never qualifies.
+ */
+function appliedNothing(op: FailedOperation): boolean {
+  return (
+    op.changeType === 'UPDATE' &&
+    op.attemptedProperties === undefined &&
+    op.replacementOrphaned === undefined &&
+    op.oldDeletedBeforeCreate !== true &&
+    op.physicalIdRecoveredFromError !== true &&
+    op.pendingCloudControlRequest === undefined &&
+    op.nameGeneration === undefined
+  );
+}
+
+/**
  * Settle the rollback journal after a CLEAN automatic rollback (issue
  * #1208). The completed ops are reverted, but the op that FAILED mid-deploy
  * may have left its resource half-applied — and its journaled record is the
@@ -340,6 +361,12 @@ export async function settleJournalAfterCleanRollback(
   );
   // The write warns on its own failure; claiming a kept record would contradict it.
   if (!kept) return true;
+  if (revertable.every(appliedNothing)) {
+    deps.logger.debug(
+      'Every failed operation was refused before anything was applied; no --revert-failed remedy printed.'
+    );
+    return true;
+  }
   deps.logger.info(
     `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
       `record was kept — if it was left partially applied, revert it.` +

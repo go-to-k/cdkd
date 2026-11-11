@@ -415,6 +415,28 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const logged = (level: 'info' | 'warn') =>
       (getLogger()[level] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
 
+    // go-to-k/cdkd#6118: a refused UPDATE (a stateful-replacement pre-flight
+    // refusal) is still journaled, but nothing was applied, so no
+    // `--revert-failed` remedy is printed for it.
+    it('a refused UPDATE keeps its journal record but prints no --revert-failed remedy (#6118)', async () => {
+      const { engine, provider } = failingUpdateEngine(undefined);
+      provider.update.mockRejectedValue(
+        markRefusedBeforeApplying(new Error('B requires replacement but it is stateful'))
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+      const retained = journal.appendRollbackJournalSegment.mock.calls[1]![2];
+      expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(false);
+    });
+
+    it('control: a non-refused failed UPDATE still prints the --revert-failed remedy', async () => {
+      const { engine } = failingUpdateEngine(undefined);
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
     it('names the resource as deleted outside cdkd and keeps no failed-only segment', async () => {
       const { engine, provider } = failingUpdateEngine(gone);
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
