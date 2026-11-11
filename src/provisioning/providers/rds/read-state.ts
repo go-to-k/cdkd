@@ -379,6 +379,11 @@ export async function readCurrentStateDBInstance(
   if (inst.AvailabilityZone !== undefined && inst.MultiAZ !== true) {
     result['AvailabilityZone'] = inst.AvailabilityZone;
   }
+  // go-to-k/cdkd#5640: same names on the Describe shape, read as
+  // CloudFormation's read handler reads them.
+  for (const key of ['CharacterSetName', 'NcharCharacterSetName', 'Timezone'] as const) {
+    if (inst[key] !== undefined) result[key] = inst[key];
+  }
   // go-to-k/cdkd#5640: same name on the Describe shape. Not for a cluster
   // member, whose lifecycle the CLUSTER owns (the member reports the
   // cluster's). `MasterUserAuthenticationType` is write-only in the registry

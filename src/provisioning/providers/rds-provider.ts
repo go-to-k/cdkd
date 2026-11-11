@@ -125,15 +125,11 @@ export class RDSProvider implements ResourceProvider {
   readonly protectionFlips = new ProtectionFlipRegistry();
 
   /**
-   * Issue #1160: the CFn default a property REMOVED from the template is
-   * reset to — the Modify/Update API keeps an absent field's live value.
-   *
-   * Empty for RDS: real CloudFormation A/Bs (issue #5004, #1160 comment
-   * 6401151077) showed CFn KEEPS most removed DBCluster / DBInstance values,
-   * so cdkd sends nothing for them (omission is "unchanged" on
-   * ModifyDBCluster / ModifyDBInstance). The resets it does make are coerced,
-   * engine-dependent or conditional, so they stay in `updateDBCluster` /
-   * `updateDBInstance`.
+   * Issue #1160: empty for RDS. CloudFormation A/Bs (issue #5004, #1160
+   * comment 6401151077) showed CFn KEEPS most removed DBCluster / DBInstance
+   * values, so cdkd sends nothing for them; the resets it does make are
+   * coerced, engine-dependent or conditional, so they stay in
+   * `updateDBCluster` / `updateDBInstance`.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
@@ -329,6 +325,10 @@ export class RDSProvider implements ResourceProvider {
         'AutomaticBackupReplicationRegion',
         'AutomaticBackupReplicationKmsKeyId',
         'AutomaticBackupReplicationRetentionPeriod',
+        // go-to-k/cdkd#5640: CreateDBInstance only; create-only, so a change replaces.
+        'CharacterSetName',
+        'NcharCharacterSetName',
+        'Timezone',
       ]),
     ],
   ]);

@@ -42,7 +42,6 @@
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
       "BackupTarget",
-      "CharacterSetName",
       "CustomIAMInstanceProfile",
       "DBClusterSnapshotIdentifier",
       "DBSnapshotIdentifier",
@@ -53,7 +52,6 @@
       "DomainFqdn",
       "DomainIAMRoleName",
       "DomainOu",
-      "NcharCharacterSetName",
       "ReplicaMode",
       "RestoreTime",
       "SourceDBClusterIdentifier",
@@ -61,7 +59,6 @@
       "SourceDbiResourceId",
       "TdeCredentialArn",
       "TdeCredentialPassword",
-      "Timezone",
       "UseLatestRestorableTime"
     ]
   },

@@ -1085,6 +1085,45 @@ const INSTANCE_CASE: TypeCase = {
         ),
       },
     },
+    {
+      // go-to-k/cdkd#5640: both create-only (create probes only).
+      name: 'Oracle character sets (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.small',
+        Engine: 'oracle-se2',
+        LicenseModel: 'license-included',
+        AllocatedStorage: '20',
+        MasterUsername: 'admin',
+        CharacterSetName: 'WE8ISO8859P1',
+        NcharCharacterSetName: 'UTF8',
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:LicenseModel': CFN_DIFF_KEPT('LicenseModel'),
+      },
+    },
+    {
+      // go-to-k/cdkd#5640: create-only (create probes only).
+      name: 'a SQL Server time zone (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.small',
+        Engine: 'sqlserver-ex',
+        LicenseModel: 'license-included',
+        AllocatedStorage: '20',
+        MasterUsername: 'admin',
+        Timezone: 'Tokyo Standard Time',
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:LicenseModel': CFN_DIFF_KEPT('LicenseModel'),
+      },
+    },
   ],
 };
 
