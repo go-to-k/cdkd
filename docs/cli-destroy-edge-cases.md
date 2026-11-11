@@ -209,6 +209,11 @@ depends on whether synthesis succeeded:
 When synthesis failed, the synthesis error prints as the `Caused by:` line of
 the refusal. The last row matches the AWS CDK CLI.
 
+Without a synthesized app, cdkd cannot read which stacks depend on the one you
+name, so it destroys only that stack and warns that a stack depending on it
+stays deployed. The order between named stacks then follows the order you name
+them in. See [Stacks that depend on a selected stack](cli-destroy.md#stacks-that-depend-on-a-selected-stack).
+
 `--all` and wildcards never fall back to every stack in the state bucket,
 because the bucket can hold the stacks of every app that shares it.
 

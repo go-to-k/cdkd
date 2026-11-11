@@ -415,7 +415,11 @@ export function expandDestroyTargetsDownstream(
       seen.add(dependent);
       queue.push(dependent);
       if (inStateNames.has(dependent.stackName)) {
-        targets.push({ stackName: dependent.stackName, synth: dependent, dependsOnSelected: producer });
+        targets.push({
+          stackName: dependent.stackName,
+          synth: dependent,
+          dependsOnSelected: producer,
+        });
       } else {
         notDeployed.push(dependent);
       }

@@ -68,7 +68,8 @@ To see the same list without starting a destroy, run
 ## What a destroy does, in order
 
 ```text diagram=destroy-flow
- Select stacks (a stack that reads another stack's outputs goes first)
+ Select stacks, plus every stack that depends on one (unless -e);
+ a stack that depends on another goes first
    │
    ▼
  Checks that refuse before anything changes
@@ -192,6 +193,7 @@ listing the bucket's prefixes.
 | `[stacks...]` | — | Stack name(s) to destroy: CDK display paths with `*` / `**`, or exact physical names. |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `--all` | off | Destroy every top-level stack in the CDK app (Stage stacks: `'**'`). |
+| `-e`, `--exclusively` | off | Destroy only the stacks you name, not the stacks that depend on them. |
 | `-y`, `--yes` | off | Answer the confirmation prompts automatically. |
 | `-f`, `--force` | off | Same as `--yes` on `cdkd destroy`. |
 | `--remove-protection` | off | Turn deletion protection off before each delete. |
@@ -226,11 +228,43 @@ syntax is in [stack selection](cli-list.md#selecting-stacks).
 | `'**'` | Every stack in the app, Stage stacks included |
 | `--all` | Every top-level stack, as `cdk destroy --all` does |
 
-When you select more than one stack, cdkd destroys a stack that reads another
-stack's outputs before the stack it reads from.
+### Stacks that depend on a selected stack
+
+As `cdk destroy` does, cdkd also destroys every deployed stack that depends on
+a stack you select, directly or through other stacks. The dependencies are the
+ones the CDK app records in its cloud assembly: a cross-stack reference, a
+`crossRegionReferences` reference, or an explicit `stack.addDependency()`.
+The run names the added stacks before it starts:
+
+```text
+Also destroying 1 stack(s) that depend on the selected stack(s) (pass -e / --exclusively to destroy only the named stacks): Consumer (depends on Producer)
+Found 2 stack(s) to destroy: Consumer (depends on Producer), Producer
+```
+
+Pass `-e` / `--exclusively` to destroy only the stacks you name. A stack that
+depends on them then stays deployed and keeps references to what was deleted.
+
+A dependent that is not deployed is not added. The selection does not grow
+upstream: `cdkd destroy Consumer` leaves `Producer` running.
+
+### Order
+
+cdkd destroys a stack before every stack it depends on: a dependency in the
+cloud assembly, or a reference it finds in the templates (`Fn::ImportValue`,
+`Fn::GetStackOutput`). This holds for the stacks you name too, in any order
+you name them.
+
+When a dependent is not destroyed (you answered `n` at its prompt, it is
+termination-protected, or its destroy failed), cdkd does not destroy the
+stacks it depends on in that run, and warns:
+
+```text
+Not destroying stack Producer: Consumer depends on it and was not destroyed in this run.
+```
 
 `--all` does not reach into a CDK Stage. It leaves the stacks inside a Stage
-running and names them in one warning line. If every stack of the app is
+running and names them in one warning line, except a Stage stack that depends
+on a top-level stack, which is destroyed with it. If every stack of the app is
 inside a Stage, `--all` is refused; use `'**'`.
 
 A name that matches nothing is reported with a warning, as in the AWS CDK CLI.

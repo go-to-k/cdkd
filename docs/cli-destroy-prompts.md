@@ -46,6 +46,10 @@ About to destroy 12 resources from stack MyStack, REMOVING DELETION PROTECTION o
 
 - **Nested stacks** are destroyed as part of their parent and never prompt
   separately.
+- **A stack cdkd added because it depends on a stack you named.** Its prompt
+  names the stack it depends on: `Are you sure you want to destroy stack
+  Consumer (it depends on Producer) and delete all 2 resources? (Y/n):`. See
+  [Stacks that depend on a selected stack](cli-destroy.md#stacks-that-depend-on-a-selected-stack).
 - **A stack with resources that only the rollback journal lists.** The prompt
   adds `and J recorded only in its rollback journal` after the resource count,
   and the count of protected resources includes them. See
