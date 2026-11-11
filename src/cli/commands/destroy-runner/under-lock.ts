@@ -68,6 +68,8 @@ import {
   printDestroySummary,
 } from './under-lock-steps.js';
 import { deleteStackResource, type DeleteResourceFrame } from './delete-resource.js';
+import { isCustomResourceType } from '../../../provisioning/custom-resource-secure-references.js';
+import type { SupersededResourceRecord } from '../../../types/state.js';
 
 /** What {@link destroyStackUnderLock} reads from `destroyStackInRegion`. */
 export interface UnderLockFrame {
@@ -501,45 +503,9 @@ export async function destroyStackUnderLock({
       secretPrincipalRegionsIncomplete,
     };
 
-    // Process levels in reverse order for deletion.
-    for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
-      // Graceful SIGINT (issue #816): once draining, do not start a new
-      // deletion level. Any level already in flight finished via its own
-      // `Promise.all` below; remaining levels are left untouched and their
-      // resources stay in the preserved state for a clean re-run.
-      if (lock.interrupted) {
-        logger.debug('Interrupted (draining) — not scheduling further deletion levels');
-        break;
-      }
-
-      const level = executionLevels[levelIndex];
-      if (!level) continue;
-
-      logger.debug(
-        `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
-      );
-
-      const stackRegion = state.region ?? ctx.baseRegion;
-
-      // go-to-k/cdkd#3869: each resource's delete runs under a PRINTING bag of
-      // its own name spellings and those of each secret-named sibling its
-      // record holds, so its provider's delete lines, a deleted reader's
-      // warnings and the final-snapshot lines mask a name derived from a
-      // secret. `getCurrentResourceSecrets` never returns it.
-      const deletePromises = level.map((logicalId) =>
-        withPrintingSecrets(printingBagOf(logicalId), () =>
-          deleteStackResource(resourceFrame, logicalId, stackRegion)
-        )
-      );
-
-      await Promise.all(deletePromises);
-    }
-
-    // go-to-k/cdkd#5111: the old copies a replacement left to delete, AFTER the
-    // stack's own resources, any of which may still have used one. A failure
+    // go-to-k/cdkd#5111: the old copies a replacement left to delete. A failure
     // or a skip keeps its entry, and with it the state, for a re-run.
-    for (const entry of supersededResourcesOf(state)) {
-      if (lock.interrupted) break;
+    const deleteSupersededRow = async (entry: SupersededResourceRecord): Promise<void> => {
       const { logicalId } = entry;
       const { physicalId, resourceType } = entry.state;
       const drop = (): void => {
@@ -565,7 +531,7 @@ export async function destroyStackUnderLock({
             )
           );
         }
-        continue;
+        return;
       }
       await withPrintingSecrets(bag, async () => {
         logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
@@ -622,6 +588,57 @@ export async function destroyStackUnderLock({
             'State preserved: it stays recorded, and a re-run of the destroy retries it.'
         );
       });
+    };
+
+    // go-to-k/cdkd#6117: a custom resource's old physical id is deleted
+    // BEFORE the stack's own resources: its Delete runs through the handler
+    // (the ServiceToken function, a provider framework), which those take
+    // down, and no resource of the stack references an old id.
+    for (const entry of supersededResourcesOf(state)) {
+      if (lock.interrupted) break;
+      if (isCustomResourceType(entry.state.resourceType)) await deleteSupersededRow(entry);
+    }
+
+    // Process levels in reverse order for deletion.
+    for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+      // Graceful SIGINT (issue #816): once draining, do not start a new
+      // deletion level. Any level already in flight finished via its own
+      // `Promise.all` below; remaining levels are left untouched and their
+      // resources stay in the preserved state for a clean re-run.
+      if (lock.interrupted) {
+        logger.debug('Interrupted (draining) — not scheduling further deletion levels');
+        break;
+      }
+
+      const level = executionLevels[levelIndex];
+      if (!level) continue;
+
+      logger.debug(
+        `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
+      );
+
+      const stackRegion = state.region ?? ctx.baseRegion;
+
+      // go-to-k/cdkd#3869: each resource's delete runs under a PRINTING bag of
+      // its own name spellings and those of each secret-named sibling its
+      // record holds, so its provider's delete lines, a deleted reader's
+      // warnings and the final-snapshot lines mask a name derived from a
+      // secret. `getCurrentResourceSecrets` never returns it.
+      const deletePromises = level.map((logicalId) =>
+        withPrintingSecrets(printingBagOf(logicalId), () =>
+          deleteStackResource(resourceFrame, logicalId, stackRegion)
+        )
+      );
+
+      await Promise.all(deletePromises);
+    }
+
+    // AFTER the stack's own resources, any of which may still have used one.
+    // A custom resource's old physical id went BEFORE them (above).
+    for (const entry of supersededResourcesOf(state)) {
+      if (lock.interrupted) break;
+      if (isCustomResourceType(entry.state.resourceType)) continue;
+      await deleteSupersededRow(entry);
     }
 
     // A superseded row cdkd cannot read is carried, never acted on, and may
