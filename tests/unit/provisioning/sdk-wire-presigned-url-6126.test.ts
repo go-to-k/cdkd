@@ -42,15 +42,20 @@ describe('sdk-wire harness: a presigned URL (go-to-k/cdkd#6126)', () => {
     vi.useRealTimers();
   });
 
-  it('records the same wire either side of a second boundary, and across midnight UTC', async () => {
-    const first = await recordAt('2026-11-11T23:59:59.900Z');
+  it('records the same wire either side of a second boundary', async () => {
+    const first = await recordAt('2026-11-11T12:00:00.999Z');
     // The URL is there to compare, signed: otherwise the equalities are vacuous.
     expect(first).toMatchObject({ threw: false });
     const wire = (first as { wire: string }).wire;
     expect(wire).toContain('PreSignedUrl=');
     expect(wire).toContain('X-Amz-Signature');
-    expect(await recordAt('2026-11-11T23:59:59.999Z')).toEqual(first);
-    expect(await recordAt('2026-11-12T00:00:01.000Z')).toEqual(first);
+    expect(await recordAt('2026-11-11T12:00:01.000Z')).toEqual(first);
+  });
+
+  it('records the same wire across midnight UTC, where the credential scope day changes', async () => {
+    const first = await recordAt('2026-11-11T23:59:59.999Z');
+    expect(first).toMatchObject({ threw: false });
+    expect(await recordAt('2026-11-12T00:00:00.000Z')).toEqual(first);
   });
 
   it('still sees a declared value carried inside the URL', async () => {

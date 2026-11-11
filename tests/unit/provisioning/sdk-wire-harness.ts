@@ -185,7 +185,7 @@ const EQ = '(?:=|%3D|%253D)';
 const SLASH = '(?:/|%2F|%252F)';
 const SIGV4_CLOCK = new RegExp(
   `(X-Amz-Date${EQ})\\d{8}T\\d{6}Z|(X-Amz-Signature${EQ})[0-9a-f]{64}|(${CREDENTIALS.accessKeyId}${SLASH})\\d{8}`,
-  'gi'
+  'g'
 );
 
 /** `text` with the SDK-filled tokens and presigning clock normalized. */
