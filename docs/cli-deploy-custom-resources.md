@@ -102,7 +102,12 @@ running deploy can re-resolve that value.
   under it by hand.
 - **`UpdateReplacePolicy: Retain`**, or **`Snapshot`** without
   `--skip-final-snapshot` (a custom resource takes no snapshot). No `Delete`
-  is sent, and the old id is no longer tracked.
+  is sent, and the old id is no longer tracked. Under `Snapshot` the deploy
+  warns and exits `2` unless `--allow-unaddressed`.
+- **cdkd cannot prepare the old properties** (re-reading a `NoEcho` value
+  fails). No `Delete` is sent; cdkd warns naming the old id and exits `2`
+  unless `--allow-unaddressed`. Tear down what the handler made under it by
+  hand.
 - **Another resource of the stack records the same physical id.** No `Delete`
   is sent; cdkd never deletes an id one of its records names.
 

@@ -76,6 +76,11 @@ export async function deleteOldIdAfterDeploy(
     return;
   }
   if (keptBy === 'Snapshot') {
+    // Left untracked: the row is a partial update (#1819), as for a skip.
+    run.replacedDeleteSkips.set(
+      logicalId,
+      `the old physical id ${oldResource.physicalId} was not sent a Delete (UpdateReplacePolicy: Snapshot) and is no longer tracked by cdkd`
+    );
     deps.logger.warn(
       safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Snapshot, which a custom resource cannot take — its old physical id (${shownOldId}) is not sent a Delete and is no longer tracked by cdkd`
     );
@@ -86,6 +91,10 @@ export async function deleteOldIdAfterDeploy(
     noEchoDeleteValues = await input.noEchoDeleteValues();
   } catch {
     // Its text is not shown: it may carry a re-resolved value.
+    run.replacedDeleteSkips.set(
+      logicalId,
+      `the old physical id ${oldResource.physicalId} was not sent a Delete (its properties could not be prepared) and is no longer tracked by cdkd`
+    );
     deps.logger.warn(
       safeMsg`  ⚠ ${logicalId}'s old physical id (${shownOldId}) is not sent a Delete: cdkd could not prepare its properties. It is no longer tracked by cdkd; delete what the handler made under it manually`
     );

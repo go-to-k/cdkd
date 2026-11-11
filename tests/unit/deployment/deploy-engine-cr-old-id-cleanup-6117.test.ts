@@ -11,6 +11,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { deleteOldIdAfterDeploy } from '../../../src/deployment/deploy-engine/replacement/cleanup-old-id.js';
+import {
+  ReplacementRunState,
+  type ReplacementDeps,
+} from '../../../src/deployment/deploy-engine/replacement/run-state.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -179,6 +185,8 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       other?: ResourceState;
       /** `Res` already moved to name-2, with name-1 recorded as superseded. */
       carried?: boolean;
+      /** `Other` (name-2) moves to name-1 in the same deploy: a swap. */
+      swap?: boolean;
     } = {}
   ): Promise<{ updatePartial: number; final: StackState }> {
     const engine = makeEngine(opts.noRollback ?? true, opts.skipFinalSnapshot ?? false);
@@ -194,6 +202,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
         },
         Topic: { Type: TOPIC, Properties: { DisplayName: 'v2' } },
         ...(opts.other !== undefined && { Other: { Type: CR, Properties: opts.other.properties } }),
+        ...(opts.swap && { Other: { Type: CR, Properties: OLD_PROPS } }),
       },
     } as unknown as CloudFormationTemplate;
     const record = (physicalId: string, resourceType: string, properties: Record<string, unknown>) =>
@@ -215,6 +224,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
           : { ...record('name-1', CR, OLD_PROPS), ...opts.oldRecord },
         Topic: record('topic', TOPIC, { DisplayName: 'v1' }),
         ...(opts.other !== undefined && { Other: opts.other }),
+        ...(opts.swap && { Other: record('name-2', CR, NEW_PROPS) }),
       },
       ...(opts.carried && {
         supersededResources: [
@@ -238,6 +248,23 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
           ],
         } as unknown as ResourceChange,
       ]] as [string, ResourceChange][])),
+      ...(opts.swap
+        ? ([
+            [
+              'Other',
+              {
+                logicalId: 'Other',
+                changeType: 'UPDATE',
+                resourceType: CR,
+                currentProperties: NEW_PROPS,
+                desiredProperties: OLD_PROPS,
+                propertyChanges: [
+                  { path: 'Name', oldValue: 'name-2', newValue: 'name-1', requiresReplacement: false },
+                ],
+              } as unknown as ResourceChange,
+            ],
+          ] as [string, ResourceChange][])
+        : []),
       [
         'Topic',
         {
@@ -258,7 +285,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       currentState,
       changes,
       {} as never,
-      opts.carried ? [['Topic']] : [['Res'], ['Topic']],
+      opts.carried ? [['Topic']] : opts.swap ? [['Res', 'Other'], ['Topic']] : [['Res'], ['Topic']],
       'MyStack',
       template,
       undefined,
@@ -389,8 +416,10 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
   });
 
   it('sends no Delete under UpdateReplacePolicy: Snapshot, which a custom resource cannot take', async () => {
-    await deploy({ updateReplacePolicy: 'Snapshot' });
+    const { updatePartial } = await deploy({ updateReplacePolicy: 'Snapshot' });
     expect(provider.delete).not.toHaveBeenCalled();
+    // Left untracked, so the row is a partial update (#1819).
+    expect(updatePartial).toBe(1);
     expect(printed.warn.some((l) => l.includes('UpdateReplacePolicy: Snapshot') && l.includes('name-1'))).toBe(
       true
     );
@@ -418,6 +447,24 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
       )
     ).toBe(true);
     expect(final.supersededResources).toBeUndefined();
+  });
+
+  it('deletes neither old id when two custom resources swap names, and records neither', async () => {
+    const { final, updatePartial } = await deploy({ swap: true });
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(updatePartial).toBe(0);
+    expect(final.supersededResources).toBeUndefined();
+    expect(saved.at(-1)?.supersededResources).toBeUndefined();
+    for (const [id, old, holder] of [
+      ['Res', 'name-1', 'Other'],
+      ['Other', 'name-2', 'Res'],
+    ]) {
+      expect(
+        printed.warn.some(
+          (l) => l.includes(`${id}'s old physical id (${old}) is not sent a Delete`) && l.includes(holder!)
+        )
+      ).toBe(true);
+    }
   });
 
   it('re-resolves the NoEcho value of the old record into the Delete payload', async () => {
@@ -461,5 +508,47 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     leavesOld = false;
     await deploy();
     expect(provider.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteOldIdAfterDeploy when the old properties cannot be prepared (#6117)', () => {
+  it('sends no Delete, warns naming the old id without the error text, and marks the row partial', async () => {
+    printed.info.length = 0;
+    printed.warn.length = 0;
+    const run = new ReplacementRunState();
+    run.deferredReplacedDeletes = new Map();
+    const deleteProvider = { delete: vi.fn() } as unknown as ResourceProvider;
+    await deleteOldIdAfterDeploy(
+      run,
+      {
+        logger: getLogger(),
+        options: {},
+        deployStateResources: () => ({}),
+      } as unknown as ReplacementDeps,
+      {
+        logicalId: 'Res',
+        oldResource: {
+          physicalId: 'name-1',
+          resourceType: CR,
+          properties: OLD_PROPS,
+          attributes: {},
+          dependencies: [],
+        } as unknown as ResourceState,
+        deleteProvider,
+        deleteProvisionedBy: 'sdk',
+        updateReplacePolicy: undefined,
+        secrets: new Map(),
+        noEchoDeleteValues: () => Promise.reject(new Error('resolved value s3cret-leak')),
+      }
+    );
+    expect(deleteProvider.delete).not.toHaveBeenCalled();
+    expect(run.deferredReplacedDeletes.size).toBe(0);
+    expect(run.replacedDeleteSkips.get('Res')).toContain('name-1');
+    expect(
+      printed.warn.some(
+        (l) => l.includes("Res's old physical id (name-1)") && l.includes('could not prepare its properties')
+      )
+    ).toBe(true);
+    expect([...printed.info, ...printed.warn].some((l) => l.includes('s3cret-leak'))).toBe(false);
   });
 });
