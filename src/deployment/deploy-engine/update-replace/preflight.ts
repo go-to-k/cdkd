@@ -11,6 +11,7 @@ import {
 import { type ResourceChange, type ResourceState } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { CdkdError } from '../../../utils/error-handler.js';
+import { markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 
 /**
@@ -97,6 +98,9 @@ export function refuseUnsafeReplacement(
       // guard below; both are declarations, not fixes for an observed
       // retry (the throws are outside `withRetry` today, but a nested
       // stack's child engine re-throws into the parent's).
+      // `markRefusedBeforeApplying` (#6118): this runs before any delete or
+      // create, so the journal keeps no failed-op bag and no `--revert-failed`
+      // remedy is printed. The `RECREATE_TARGETS_INVALID` throws below match.
       // Issue #2610 site 9: the advised flag cannot remove a resource AWS
       // protects, since the replacement's delete never carries
       // `removeProtection`. Read off the OLD resource's record, like the guard.
@@ -106,16 +110,18 @@ export function refuseUnsafeReplacement(
         currentResource.observedProperties,
         engine.stackRegion
       );
-      throw markNonRetryable(
-        new CdkdError(
-          safeMsg`${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
-            safeMsg`${renderStatefulReason(statefulReason)}. ` +
-            (protection
-              ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
-                `the resource's definition to avoid the immutable-property change.`
-              : `Re-run with --force-stateful-recreation to confirm the data loss, or change the ` +
-                `resource definition to avoid the immutable-property change.`),
-          'STATEFUL_REPLACE_BLOCKED'
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new CdkdError(
+            safeMsg`${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
+              safeMsg`${renderStatefulReason(statefulReason)}. ` +
+              (protection
+                ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
+                  `the resource's definition to avoid the immutable-property change.`
+                : `Re-run with --force-stateful-recreation to confirm the data loss, or change the ` +
+                  `resource definition to avoid the immutable-property change.`),
+            'STATEFUL_REPLACE_BLOCKED'
+          )
         )
       );
     }
@@ -131,12 +137,14 @@ export function refuseUnsafeReplacement(
   if (recreateViaCcApi) {
     const noCcRoute = engine.providerRegistry.ccRouteUnavailableReason(resourceType);
     if (noCcRoute !== undefined) {
-      throw markNonRetryable(
-        new CdkdError(
-          safeMsg`--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
-            safeMsg`Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
-            safeMsg`Drop ${logicalId} from --recreate-via-cc-api.`,
-          'RECREATE_TARGETS_INVALID'
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new CdkdError(
+            safeMsg`--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
+              safeMsg`Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
+              safeMsg`Drop ${logicalId} from --recreate-via-cc-api.`,
+            'RECREATE_TARGETS_INVALID'
+          )
         )
       );
     }
@@ -144,12 +152,14 @@ export function refuseUnsafeReplacement(
     // recreate would delete and recreate it on the SDK route.
     const ccBroken = ccBrokenReason(resourceType);
     if (ccBroken !== undefined) {
-      throw markNonRetryable(
-        new CdkdError(
-          safeMsg`--recreate-via-cc-api cannot move ${logicalId} (${resourceType}) to Cloud ` +
-            safeMsg`Control: ${ccBroken}, so cdkd keeps it on its SDK provider. Nothing was ` +
-            safeMsg`deleted. Drop ${logicalId} from --recreate-via-cc-api.`,
-          'RECREATE_TARGETS_INVALID'
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new CdkdError(
+            safeMsg`--recreate-via-cc-api cannot move ${logicalId} (${resourceType}) to Cloud ` +
+              safeMsg`Control: ${ccBroken}, so cdkd keeps it on its SDK provider. Nothing was ` +
+              safeMsg`deleted. Drop ${logicalId} from --recreate-via-cc-api.`,
+            'RECREATE_TARGETS_INVALID'
+          )
         )
       );
     }
