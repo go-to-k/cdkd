@@ -153,7 +153,21 @@ export async function replayFailedOperations(
         // a queue in (`cdkd rollback` runs it after the segment's completed
         // ops), else here, inside this replay's event envelope.
         const [ops, stateResources, stackName, ctx, options = {}] = args;
-        if (options.movedIdCleanups !== undefined) return replayFailedOperationsUnbound(...args);
+        if (options.movedIdCleanups !== undefined) {
+          const result = await replayFailedOperationsUnbound(...args);
+          // Interrupted, the caller's next replay never runs: nothing is sent.
+          if (result.interrupted) {
+            await runMovedIdCleanups(options.movedIdCleanups, {
+              stateResources,
+              stackName,
+              ctx,
+              result,
+              afterOp: options.afterOp,
+              interrupted: true,
+            });
+          }
+          return result;
+        }
         const movedIdCleanups = newMovedIdCleanupQueue(options);
         const envelope = options.emitEnvelope === true && ops.length > 0;
         if (envelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });

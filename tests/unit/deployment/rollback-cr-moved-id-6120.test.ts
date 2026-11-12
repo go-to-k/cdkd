@@ -447,6 +447,47 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(recorded[0]?.['eventType']).toBe('ROLLBACK_STARTED');
   });
 
+  it("an interrupted --revert-failed replay sends nothing from the caller's queue, and names the id", async () => {
+    answer = 'name-9';
+    const failed = (logicalId: string, resourceType: string, id: string) =>
+      ({
+        logicalId,
+        changeType: 'UPDATE',
+        resourceType,
+        provisionedBy: 'sdk',
+        physicalId: id,
+        previousState: record(id, OLD_PROPS, { resourceType }),
+      }) as FailedOperation;
+    const state: Record<string, ResourceState> = {
+      Res: record('name-1', NEW_PROPS),
+      Topic: record('topic', NEW_PROPS, { resourceType: TOPIC }),
+    };
+    const superseded: SupersededResourceRecord[] = [];
+    const queue = newMovedIdCleanupQueue({
+      onSuperseded: (entry) => superseded.push(entry),
+      onSupersededSettled: (entry) => superseded.splice(superseded.indexOf(entry), 1),
+    });
+    let interrupted = false;
+    // Replayed newest first: Res, then the interrupt stops Topic.
+    const outcome = await replayFailedOperations(
+      [failed('Topic', TOPIC, 'topic'), failed('Res', CR, 'name-1')],
+      state,
+      'S',
+      ctx,
+      {
+        movedIdCleanups: queue,
+        afterOp: () => {
+          interrupted = true;
+        },
+        isInterrupted: () => interrupted,
+      }
+    );
+    expect(outcome.interrupted).toBe(true);
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(superseded.map((e) => e.state.physicalId)).toEqual(['name-1']);
+    expect(printed.warn.some((l) => l.includes('the rollback was interrupted'))).toBe(true);
+  });
+
   it("a segment's shared queue deletes only after its completed ops", async () => {
     answer = 'name-9';
     const failed = {

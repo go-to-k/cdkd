@@ -9,12 +9,17 @@
  * its last op.
  */
 import type { ResourceProvider, ResourceUpdateResult } from '../../types/resource.js';
-import type { ResourceState, SupersededResourceRecord } from '../../types/state.js';
+import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { canRecordSuperseded, SUPERSEDED_KEPT_REMEDY } from '../superseded-resources.js';
+import {
+  addSuperseded,
+  canRecordSuperseded,
+  removeSuperseded,
+  SUPERSEDED_KEPT_REMEDY,
+} from '../superseded-resources.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { withReplayDeletePrinting } from './replay-scope.js';
 import { safe, shownLogicalId, throwIfDeleteSkipped } from './messages.js';
@@ -55,6 +60,28 @@ export function newMovedIdCleanupQueue(hooks: {
     onSuperseded: hooks.onSuperseded,
     onSupersededSettled: hooks.onSupersededSettled,
   };
+}
+
+/**
+ * `cdkd rollback`'s options for a segment's two replays (spread into both):
+ * the driver's superseded writers, plus ONE shared queue when the segment has
+ * completed ops, so an id a `--revert-failed` update moved off is deleted
+ * only after those are reverted too (the rollback's cleanup phase). The
+ * failed-op replay runs it itself only when interrupted (nothing is sent).
+ */
+export function segmentCleanupOptions(
+  shared: boolean,
+  host: Pick<StackState, 'supersededResources'>
+): {
+  onSuperseded: (entry: SupersededResourceRecord) => void;
+  onSupersededSettled: (entry: SupersededResourceRecord) => void;
+  movedIdCleanups?: MovedIdCleanupQueue;
+} {
+  const hooks = {
+    onSuperseded: (entry: SupersededResourceRecord) => addSuperseded(host, entry),
+    onSupersededSettled: (entry: SupersededResourceRecord) => removeSuperseded(host, entry),
+  };
+  return shared ? { ...hooks, movedIdCleanups: newMovedIdCleanupQueue(hooks) } : hooks;
 }
 
 /**
