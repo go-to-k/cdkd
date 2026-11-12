@@ -68,6 +68,8 @@ const TRAIL_CASE: TypeCase = {
         KMSKeyId: KMS,
         SnsTopicName: 'topic',
         IsOrganizationTrail: true,
+        // Not AWS's default `true`, so a dropped key is visible.
+        RecursiveLogging: false,
         EventSelectors: [
           {
             ReadWriteType: 'WriteOnly',
@@ -104,6 +106,8 @@ const TRAIL_CASE: TypeCase = {
         ),
         'update-remove:IsOrganizationTrail':
           'left in place on removal: CloudFormation\'s reset of IsOrganizationTrail is unmeasurable without an Organizations management account, so it is passed through rather than guessed (cloudtrail/update.ts, in update(): the IsOrganizationTrail removal note)',
+        'update-remove:RecursiveLogging':
+          'left in place on removal: CloudFormation\'s reset of RecursiveLogging is unmeasured, so a removal is passed through and a non-default value named in the kept-removal warning (cloudtrail/shared.ts, removalsLeftInPlace)',
         'update-remove:S3BucketName':
           'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail/core.ts, in create(): the S3BucketName check)',
       },

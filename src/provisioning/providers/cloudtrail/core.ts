@@ -109,6 +109,7 @@ export async function create(
   const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
   const snsTopicName = emptyToUndefined(properties['SnsTopicName']);
   const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+  const recursiveLogging = properties['RecursiveLogging'] as boolean | undefined;
   const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
   const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
   // Issue #2762: a present-but-non-array value is refused before any call
@@ -165,6 +166,7 @@ export async function create(
         KmsKeyId: kmsKeyId,
         SnsTopicName: snsTopicName,
         IsOrganizationTrail: isOrganizationTrail,
+        RecursiveLogging: recursiveLogging,
       })
     );
 

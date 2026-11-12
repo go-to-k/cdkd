@@ -30,14 +30,23 @@ in two:
 | `IncludeGlobalServiceEvents` | **reset** | sends `false` |
 | `CloudWatchLogsLogGroupArn` | retained | pass-through (parity) |
 | `CloudWatchLogsRoleArn` | retained | pass-through (parity) |
+| `RecursiveLogging` | unmeasured | kept, named in a deploy warning |
 
 Phase 1 deploys with every optional field set. Phase 2
 (`CDKD_TEST_REMOVAL=true`) drops them all and asserts BOTH halves: the six
 clear, the CloudWatch Logs pair still carries its phase-1 values. It also
-fails if any removal warning names the trail
-([#5541](https://github.com/go-to-k/cdkd/issues/5541)): every phase-2 removal
-is reset or a measured keep, so a hit means a property fell out of the
-`removalHandledInUpdate` audit.
+fails unless exactly one removal warning names the trail, and it names
+`RecursiveLogging` alone
+([#5541](https://github.com/go-to-k/cdkd/issues/5541)): every other phase-2
+removal is reset or a measured keep, so any other name means a property fell
+out of the `removalHandledInUpdate` audit.
+
+`RecursiveLogging` ([#6166](https://github.com/go-to-k/cdkd/issues/6166)) is
+deployed as its non-default `false`; phase 1 reads it back with `get-trail` and
+asserts the trail is still `provisionedBy: sdk` (before the fix the property
+routed it through Cloud Control, which applies the same value). Its phase-2
+removal keeps the live `false`: CloudFormation's removal behaviour is
+unmeasured, so cdkd sends nothing and says so.
 
 Asserting the retention is deliberate — a fixture that only checked the resets
 would pass just as happily against an over-eager provider that cleared the

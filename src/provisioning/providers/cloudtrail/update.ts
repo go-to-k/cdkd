@@ -209,6 +209,9 @@ export async function update(
     ''
   );
   const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+  // Like IsOrganizationTrail, a removal is not reset: CFn behaviour is
+  // unmeasured, so it is kept and named in removalsLeftInPlace's warning.
+  const recursiveLogging = properties['RecursiveLogging'] as boolean | undefined;
   // What a later failure leaves applied (issue #2762): the selector and
   // aggregation writes are separate calls, so the thrown message names the
   // one that already landed.
@@ -228,6 +231,7 @@ export async function update(
         KmsKeyId: kmsKeyId,
         SnsTopicName: snsTopicName,
         IsOrganizationTrail: isOrganizationTrail,
+        RecursiveLogging: recursiveLogging,
       })
     );
 

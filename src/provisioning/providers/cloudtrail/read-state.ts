@@ -128,6 +128,9 @@ export async function readCurrentState(
   result['KMSKeyId'] = trail.KmsKeyId ?? '';
   result['SnsTopicName'] = trail.SnsTopicName ?? '';
   result['IsOrganizationTrail'] = trail.IsOrganizationTrail ?? false;
+  // AWS documents `true` as the default (a trail that logs CloudTrail's own
+  // delivery events).
+  result['RecursiveLogging'] = trail.RecursiveLogging ?? true;
 
   // IsLogging — separate call. Treat any error as "feature not configured"
   // and omit the key.

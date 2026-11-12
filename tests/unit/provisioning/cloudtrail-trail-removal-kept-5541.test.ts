@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { UpdateTrailCommand } from '@aws-sdk/client-cloudtrail';
+import { CreateTrailCommand, UpdateTrailCommand } from '@aws-sdk/client-cloudtrail';
 
 const mockSend = vi.fn();
 // Hoisted with the logger factory: it builds its child logger EAGERLY, so an
@@ -208,6 +208,53 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
     });
   });
 
+  describe('RecursiveLogging (#6166)', () => {
+    it('created: CreateTrail carries the declared value', async () => {
+      mockSend.mockResolvedValueOnce({ TrailARN: TRAIL_ARN });
+      await new CloudTrailProvider().create('Trail', TYPE, {
+        ...BASE,
+        TrailName: 'my-trail',
+        IsLogging: false,
+        RecursiveLogging: false,
+      });
+
+      const creates = mockSend.mock.calls.filter((c) => c[0] instanceof CreateTrailCommand);
+      expect(creates).toHaveLength(1);
+      expect((creates[0]![0].input as Record<string, unknown>)['RecursiveLogging']).toBe(false);
+    });
+
+    it('present: UpdateTrail carries the declared value, with no warning', async () => {
+      await deployUpdate(
+        { ...BASE, RecursiveLogging: false },
+        { ...BASE, RecursiveLogging: true }
+      );
+
+      expect(updateTrailInput()['RecursiveLogging']).toBe(false);
+      expect(warnings()).toEqual([]);
+    });
+
+    it('removed false: sends nothing for it and names it in the kept-removal warning', async () => {
+      const unhandled = await deployUpdate(BASE, { ...BASE, RecursiveLogging: false });
+
+      expect(updateTrailInput()['RecursiveLogging']).toBeUndefined();
+      expect(unhandled).toEqual([]);
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('property RecursiveLogging was removed');
+      expect(warnings()[0]).toContain('whether CloudFormation resets it is unmeasured');
+    });
+
+    it.each([true, 'true'])(
+      'a removed %s is not named: it is the AWS default either answer leaves',
+      async (prev) => {
+        const unhandled = await deployUpdate(BASE, { ...BASE, RecursiveLogging: prev });
+
+        expect(updateTrailInput()['RecursiveLogging']).toBeUndefined();
+        expect(unhandled).toEqual([]);
+        expect(warnings()).toEqual([]);
+      }
+    );
+  });
+
   it('the audit covers every writable schema Trail property the provider wires: the shared caller line names only the SDK-unwired ones', () => {
     const provider = new CloudTrailProvider();
     const schema = loadSchemaFixture(TYPE)!;
@@ -217,9 +264,8 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
     const prep = prepareRemovalForUpdate(provider, TYPE, {}, previous);
 
     expect(writable.length).toBeGreaterThan(10);
-    // RecursiveLogging (2026-11-12 schema refresh) is SDK-unwired: update()
-    // never writes it, so the shared line naming its removal is the truth.
-    // Wiring it means adding it to removalHandledInUpdate and dropping it here.
-    expect(prep.unhandled).toEqual(['RecursiveLogging']);
+    // Every writable property is wired and its removal handled in update(),
+    // so a newly published one shows up here first.
+    expect(prep.unhandled).toEqual([]);
   });
 });

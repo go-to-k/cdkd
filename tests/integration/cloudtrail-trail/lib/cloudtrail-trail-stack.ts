@@ -40,6 +40,9 @@ import type { Construct } from 'constructs';
  * one selector set per trail, so they cannot share phase 1 with the basic
  * `EventSelectors`. Dropping the flag again is their removal.
  *
+ * `RecursiveLogging` (issue #6166) is set to its non-default `false` in phase
+ * 1 and dropped in phase 2, whose removal cdkd leaves in place with a warning.
+ *
  * The trail is created with `IsLogging: false` so it never delivers a log
  * file — the fixture exercises the control plane only, and the bucket stays
  * empty for a clean destroy.
@@ -199,6 +202,13 @@ export class CloudTrailTrailStack extends cdk.Stack {
           }
         : {}),
     });
+    // Issue #6166: `false` is NOT the AWS default (`true`), so the readback
+    // proves the value was sent. An override, since the L1 may predate the
+    // property. Dropped in the removal phase, where cdkd keeps the live value
+    // (CloudFormation's behaviour is unmeasured) and names it in a warning.
+    if (!removalPhase) {
+      trail.addPropertyOverride('RecursiveLogging', false);
+    }
     // CloudTrail validates its bucket AND topic permissions at create time,
     // and neither policy is referenced by the trail's properties, so neither
     // dependency is implied by the template — both must be explicit or the

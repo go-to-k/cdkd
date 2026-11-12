@@ -310,6 +310,9 @@ export function withoutTrailIdentifiers(text: string, physicalId: string): strin
  *   delegated-administrator account, and the integ account is in no
  *   organization. A removed `false` is not named: either answer leaves it
  *   false.
+ * - `RecursiveLogging` (#6166): likewise kept, CFn behaviour unmeasured. A
+ *   removed `true` is not named: it is AWS's default, so either answer leaves
+ *   it true.
  * - `IncludeGlobalServiceEvents`, only when its reset is skipped because the
  *   trail is, or may be, multi-region (see `update()`); the measured reset
  *   covered a single-region trail only.
@@ -331,9 +334,13 @@ export function removalsLeftInPlace(
   // trail without global events), and CloudFormation's measured reset is
   // `false` too, so the live value already equals it.
   const globalEvents = previousProperties['IncludeGlobalServiceEvents'];
+  const recursive = previousProperties['RecursiveLogging'];
   return [
     ...(wasRemoved('IsOrganizationTrail') && org !== false && org !== 'false'
       ? ['IsOrganizationTrail']
+      : []),
+    ...(wasRemoved('RecursiveLogging') && recursive !== true && recursive !== 'true'
+      ? ['RecursiveLogging']
       : []),
     ...(globalEventsResetSkipped &&
     wasRemoved('IncludeGlobalServiceEvents') &&
