@@ -107,58 +107,6 @@ jobs:
       # cannot silently re-disarm it -- the comment and the assertion are
       # deliberately redundant, because the comment alone is what failed here.
       - run: vp run build
-      # zsh for the paste harness (`tests/unit/utils/paste-harness.ts`), which
-      # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
-      # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
-      # the two shells disagree on an unquoted `(` after a displayed value.
-      # apt has hung here ~45 min until cancelled (docs/tooling-backlog.md);
-      # a passing run took at most 331 s (50 runs, measured 2026-10-23), so
-      # 12 min fails fast and a re-run passes. When apt cannot reach its mirror
-      # (2026-11-11: hours of `Temporary failure resolving 'security.ubuntu.com'`
-      # on every branch), the runner's Homebrew installs zsh from its own CDN.
-      - name: install zsh for the paste harness
-        timeout-minutes: 12
-        run: |
-          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
-            echo "::warning::apt could not install zsh; falling back to Homebrew"
-            /home/linuxbrew/.linuxbrew/bin/brew install zsh
-            sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
-          fi
-          zsh -f -c 'exit 0'
-      # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
-      # builds. `tests/unit/cli/version.test.ts` skips itself when `dist/` is
-      # absent -- correct for a contributor who has not built, and correct for
-      # the `once-leak-detect` / `runtime-compat` jobs, which do not build
-      # either. Keying the loud assertion on a bare `CI` reddened those two
-      # jobs; keying it on the build is what actually says "dist was produced,
-      # so a skip here means the step order regressed".
-      # Assert the suite actually RAN, not merely that the step exited 0.
-      # `vp run test` goes through the Vite+ task runner, and a task-runner
-      # failure that never reaches vitest exits 0 while printing no `Test Files`
-      # summary -- observed locally as a cache-encoder overflow
-      # (`Cache lookup failed: Encoded sequence length exceeded preallocation
-      # limit`) that ran nothing and looked green. The `test` task is now
-      # `cache: false`, which removes that particular path, but "the tests
-      # passed" and "the tests ran" are different claims and an exit code only
-      # ever carries the first.
-      - name: unit tests
-        run: |
-          set -o pipefail
-          vp run test 2>&1 | tee /tmp/unit-test.log
-          # Matched by CONTENT, not by line start, and not by a digit-free gap.
-          # Under CI the summary is ANSI coloured -- the real bytes are
-          # `\e[2m Test Files \e[22m \e[1m\e[32m845 passed` -- so a
-          # `^[[:space:]]*` anchor never matches (this step failed a green run
-          # that way), and a `[^0-9]*` gap stops inside `\e[22m`. Requiring a
-          # COUNT plus passed/failed after the phrase is what keeps prose that
-          # merely mentions it from satisfying the check.
-          if ! grep -qE 'Test Files.*[0-9]+ (passed|failed)' /tmp/unit-test.log; then
-            echo "::error::vitest printed no 'Test Files' summary — the suite did not run"
-            exit 1
-          fi
-        env:
-          CDKD_EXPECT_DIST: "1"
-
       # ONE regeneration step for every generated matrix, module and ledger this
       # repo commits (issues #399, #423, #1071, #1112, #1373, #1404, and the
       # property / unsupported-type / enrichment / sdk-attr / update-wrap
@@ -331,13 +279,114 @@ jobs:
   # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
   # and dropping it from the list is the intended ratchet direction; adding a
   # new entry is not, and a new test file that leaks fails this job.
-  once-leak-detect:
+  # The unit suite, split across a matrix by `vitest --shard`. Unsharded it
+  # took ~19 min on a 4-vCPU runner (and `once-leak-detect` ~29), which set
+  # CI's wall clock; a 3-way split measured each part at ~10 min (go-to-k/
+  # cdkd#6143), the per-shard install and build being the only duplicated
+  # cost. `--shard=<i>/<n>` partitions
+  # the test FILES, so the union of the shards is the whole suite: the shard
+  # list must stay exactly 1..n, with n read from `strategy.job-total` rather
+  # than written a second time. `fail-fast: false` so one red shard does not
+  # cancel the others and hide their verdicts.
+  #
+  # Changing the shard count is a one-line edit to `matrix.shard` here (and
+  # the identical list on `once-leak-detect`). More shards shorten the wall
+  # clock but take more of the account's concurrent-job allowance per run.
+  unit-tests:
     runs-on: ubuntu-latest
-    # observed at least 1538 s. Same cap as
-    # check-build-test: it runs the same unit suite, so the two grow together.
+    # Same cap as check-build-test: a runaway cap, not a latency target.
     timeout-minutes: 45
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      # Same reason as check-build-test: suites that compare this branch
+      # against `origin/main` cannot resolve that ref at the default depth 1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          fetch-depth: 0
+
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - run: vp install --frozen-lockfile
+      # `build` runs BEFORE the suite on purpose. `dist/` is gitignored, and
+      # `tests/unit/cli/version.test.ts` skips itself when `dist/cli.js` is
+      # absent -- so without this its fences for the `--version` fast path
+      # (issue #2002) would be green-by-SKIP. CDKD_EXPECT_DIST below turns that
+      # skip into a failure.
+      - run: vp run build
+      # zsh for the paste harness (`tests/unit/utils/paste-harness.ts`), which
+      # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
+      # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
+      # the two shells disagree on an unquoted `(` after a displayed value.
+      # apt has hung here ~45 min until cancelled (docs/tooling-backlog.md);
+      # a passing run took at most 331 s (50 runs, measured 2026-10-23), so
+      # 12 min fails fast and a re-run passes. When apt cannot reach its mirror
+      # (2026-11-11: hours of `Temporary failure resolving 'security.ubuntu.com'`
+      # on every branch), the runner's Homebrew installs zsh from its own CDN.
+      - name: install zsh for the paste harness
+        timeout-minutes: 12
+        run: |
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
+            echo "::warning::apt could not install zsh; falling back to Homebrew"
+            /home/linuxbrew/.linuxbrew/bin/brew install zsh
+            sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
+          fi
+          zsh -f -c 'exit 0'
+      # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
+      # builds before running the suite. `tests/unit/cli/version.test.ts` skips
+      # itself when `dist/` is absent -- correct for a contributor who has not
+      # built, and correct for the `once-leak-detect` job, which does not build. Keying the loud assertion on a bare `CI` reddened those two
+      # jobs; keying it on the build is what actually says "dist was produced,
+      # so a skip here means the step order regressed".
+      # Assert the suite actually RAN, not merely that the step exited 0.
+      # `vp run test` goes through the Vite+ task runner, and a task-runner
+      # failure that never reaches vitest exits 0 while printing no `Test Files`
+      # summary -- observed locally as a cache-encoder overflow
+      # (`Cache lookup failed: Encoded sequence length exceeded preallocation
+      # limit`) that ran nothing and looked green. The `test` task is now
+      # `cache: false`, which removes that particular path, but "the tests
+      # passed" and "the tests ran" are different claims and an exit code only
+      # ever carries the first.
+      - name: unit tests
+        run: |
+          set -o pipefail
+          vp run test --shard=${{ matrix.shard }}/${{ strategy.job-total }} 2>&1 | tee /tmp/unit-test.log
+          # Matched by CONTENT, not by line start, and not by a digit-free gap.
+          # Under CI the summary is ANSI coloured -- the real bytes are
+          # `\e[2m Test Files \e[22m \e[1m\e[32m845 passed` -- so a
+          # `^[[:space:]]*` anchor never matches (this step failed a green run
+          # that way), and a `[^0-9]*` gap stops inside `\e[22m`. Requiring a
+          # COUNT plus passed/failed after the phrase is what keeps prose that
+          # merely mentions it from satisfying the check.
+          if ! grep -qE 'Test Files.*[0-9]+ (passed|failed)' /tmp/unit-test.log; then
+            echo "::error::vitest printed no 'Test Files' summary — the suite did not run"
+            exit 1
+          fi
+        env:
+          CDKD_EXPECT_DIST: "1"
+
+  once-leak-detect:
+    runs-on: ubuntu-latest
+    # observed at least 1538 s unsharded. Same cap as unit-tests: it runs the
+    # same suite, sharded the same way, so the two grow together.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    # Sharded exactly like `unit-tests` (see there). The detector flags a
+    # primer consumed by a DIFFERENT TEST, and tests only share mock state
+    # within one file, so partitioning by file loses no detection.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       # Same reason as check-build-test: this job runs the unit suite too, so it
       # reaches the same `origin/main` projection and would fail closed without
@@ -358,7 +407,7 @@ jobs:
       # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
       # the two shells disagree on an unquoted `(` after a displayed value.
       - name: install zsh for the paste harness
-        timeout-minutes: 12  # why: see the check-build-test step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
+        timeout-minutes: 12  # why: see the unit-tests step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
         run: |
           if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
             echo "::warning::apt could not install zsh; falling back to Homebrew"
@@ -366,7 +415,7 @@ jobs:
             sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
           fi
           zsh -f -c 'exit 0'
-      - run: vp run test:once-leak
+      - run: vp run test:once-leak --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
       # Prove the detector still REJECTS, not just that it ran. With the
       # grandfather list honoured, "the detector went dead" and "the tree is
@@ -576,7 +625,7 @@ jobs:
   ci-ok:
     if: always()
     needs:
-      [check-build-test, once-leak-detect, runtime-compat, windows-env-precedence, release-pr-not-stale]
+      [check-build-test, unit-tests, once-leak-detect, runtime-compat, windows-env-precedence, release-pr-not-stale]
     runs-on: ubuntu-latest
     # observed at least 5 s -- a shell loop over five strings.
     timeout-minutes: 10
@@ -589,7 +638,7 @@ jobs:
       # Must equal the length of `needs:` above. Both halves are read out of
       # this file by tests/unit/scripts/ci-ok-gate.test.ts, which also asserts
       # `needs:` covers every other job — so this cannot drift silently.
-      EXPECTED_UPSTREAM: '5'
+      EXPECTED_UPSTREAM: '6'
     steps:
       - name: every upstream job succeeded or was skipped
         run: |
