@@ -295,6 +295,18 @@ export async function finishUpdate(
           (pendingParameterLeaves.has(key) || otherFreshAt(key).length > 0))
     )
   );
+  // go-to-k/cdkd#6140: the keys above named only for an unconfirmed fresh
+  // `NoEcho` parameter value, with nothing moved as written.
+  const noEchoOnlyChangedProperties = new Set(
+    [...changedProperties].filter(
+      (key) =>
+        !unsettledNames.has(key) &&
+        !movedAsWritten(key) &&
+        otherFreshAt(key).length === 0 &&
+        pendingParameterLeaves.has(key) &&
+        !confirmedPaths.has(key)
+    )
+  );
   // A leaf the witness CONFIRMED compares as the mask on both sides above,
   // but the provider diffs the previous side against the plaintext it is
   // sent: handed `***` there, a create-only one reads as changed and is
@@ -315,6 +327,7 @@ export async function finishUpdate(
       currentProps,
       currentPropsAsWritten: previousForProvider,
       changedProperties,
+      noEchoOnlyChangedProperties,
       currentResource,
       dependencies,
       desiredForSkipCheckAsWritten,

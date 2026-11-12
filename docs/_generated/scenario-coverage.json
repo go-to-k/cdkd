@@ -441,6 +441,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-restapi-spec",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-stage-props",
       "annotated": false,
       "scenarios": []
@@ -3685,6 +3690,7 @@
     "access-key-cloudmap-fix-forward-orphan",
     "acm-certificate",
     "apigatewayv2-update-removal",
+    "apigw-restapi-spec",
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",

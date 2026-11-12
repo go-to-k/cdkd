@@ -59,7 +59,16 @@ import {
   getMethodAttribute,
 } from './apigateway/method.js';
 import {
+  createRestApi,
+  updateRestApi,
+  deleteRestApi,
+  getRestApiAttribute,
+  readCurrentStateRestApi,
+  importRestApi,
+} from './apigateway/rest-api.js';
+import {
   canonicalizeDriftProperties,
+  getDriftUnknownPaths,
   getDriftUnorderedPaths,
   readCurrentState,
   readCurrentStateAuthorizer,
@@ -83,6 +92,7 @@ export { resetApiGatewayCreateRetryStateForTests, methodChildCalls } from './api
  * - AWS::ApiGateway::Deployment (API Gateway deployment)
  * - AWS::ApiGateway::Stage (API Gateway stage)
  * - AWS::ApiGateway::Method (API Gateway method)
+ * - AWS::ApiGateway::RestApi (the REST API itself; go-to-k/cdkd#6139)
  *
  * These resource types have issues with Cloud Control API:
  * - Account: Needs IAM trust propagation retry logic
@@ -148,6 +158,29 @@ export class ApiGatewayProvider implements ResourceProvider {
         'AuthorizationScopes',
         'Integration',
         'MethodResponses',
+      ]),
+    ],
+    [
+      'AWS::ApiGateway::RestApi',
+      new Set([
+        'Name',
+        'Description',
+        'Version',
+        'Body',
+        'BodyS3Location',
+        'Mode',
+        'FailOnWarnings',
+        'Parameters',
+        'CloneFrom',
+        'Policy',
+        'EndpointConfiguration',
+        'BinaryMediaTypes',
+        'MinimumCompressionSize',
+        'ApiKeySourceType',
+        'DisableExecuteApiEndpoint',
+        'SecurityPolicy',
+        'EndpointAccessMode',
+        'Tags',
       ]),
     ],
   ]);
@@ -519,6 +552,62 @@ export class ApiGatewayProvider implements ResourceProvider {
     return getMethodAttribute.call(this, physicalId, attributeName);
   }
 
+  createRestApi(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceCreateResult> {
+    return createRestApi.call(this, logicalId, resourceType, properties, log);
+  }
+
+  updateRestApi(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks,
+    changedProperties?: ReadonlySet<string>,
+    noEchoOnlyChanged?: ReadonlySet<string>
+  ): Promise<ResourceUpdateResult> {
+    return updateRestApi.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log,
+      changedProperties,
+      noEchoOnlyChanged
+    );
+  }
+
+  deleteRestApi(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context?: DeleteContext
+  ): Promise<void> {
+    return deleteRestApi.call(this, logicalId, physicalId, resourceType, context);
+  }
+
+  getRestApiAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getRestApiAttribute.call(this, physicalId, attributeName);
+  }
+
+  readCurrentStateRestApi(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readCurrentStateRestApi.call(this, physicalId, properties);
+  }
+
+  importRestApi(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importRestApi.call(this, input);
+  }
+
   buildStageArn(restApiId: string, stageName: string): Promise<string | undefined> {
     return buildStageArn.call(this, restApiId, stageName);
   }
@@ -553,6 +642,10 @@ export class ApiGatewayProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Record<string, unknown> {
     return canonicalizeDriftProperties.call(this, resourceType, properties);
+  }
+
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return getDriftUnknownPaths.call(this, resourceType);
   }
 
   getDriftUnorderedPaths(resourceType: string): string[] {

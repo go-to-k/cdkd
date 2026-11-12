@@ -5,6 +5,7 @@
     "AWS::ApiGateway::Deployment",
     "AWS::ApiGateway::Method",
     "AWS::ApiGateway::Resource",
+    "AWS::ApiGateway::RestApi",
     "AWS::ApiGateway::Stage",
     "AWS::ApiGatewayV2::Api",
     "AWS::ApiGatewayV2::Authorizer",
@@ -197,6 +198,7 @@
         "apigateway",
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
+        "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target"
@@ -213,6 +215,9 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-restapi-spec": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -234,6 +239,7 @@
         "apigateway",
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
+        "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target"
@@ -250,6 +256,9 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-restapi-spec": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -270,6 +279,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-restapi-spec",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -280,7 +290,52 @@
           "l1",
           "literal"
         ],
+        "apigw-restapi-spec": [
+          "literal"
+        ],
         "apigw-stage-throttling": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RestApi",
+      "integs": [
+        "apigw-cloudwatch-role-redeploy",
+        "apigw-gateway-response",
+        "apigw-restapi-spec",
+        "apigw-stage-props",
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target",
+        "destroy-nested-cross-region",
+        "wafv2"
+      ],
+      "signals": {
+        "apigw-cloudwatch-role-redeploy": [
+          "literal"
+        ],
+        "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-restapi-spec": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-props": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-throttling": [
+          "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1"
+        ],
+        "destroy-nested-cross-region": [
+          "l1",
+          "literal"
+        ],
+        "wafv2": [
           "literal"
         ]
       }
@@ -292,6 +347,7 @@
         "apigateway",
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
+        "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target"
@@ -307,6 +363,9 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-restapi-spec": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -9451,7 +9510,6 @@
     "AWS::ApiGateway::GatewayResponse",
     "AWS::ApiGateway::Model",
     "AWS::ApiGateway::RequestValidator",
-    "AWS::ApiGateway::RestApi",
     "AWS::ApiGateway::UsagePlanKey",
     "AWS::ApiGatewayV2::VpcLink",
     "AWS::AppConfig::Application",

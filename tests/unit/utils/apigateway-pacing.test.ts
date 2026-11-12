@@ -6,10 +6,16 @@
  */
 import { Readable } from 'node:stream';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
-import { APIGatewayClient, CreateResourceCommand, GetRestApiCommand } from '@aws-sdk/client-api-gateway';
+import {
+  APIGatewayClient,
+  CreateResourceCommand,
+  CreateRestApiCommand,
+  GetRestApiCommand,
+} from '@aws-sdk/client-api-gateway';
 import {
   API_GATEWAY_MAX_ATTEMPTS,
   ApiGatewayPacer,
+  pacingLane,
   apiGatewayPacerFor,
   resetApiGatewayPacersForTests,
   withApiGatewayPacing,
@@ -84,6 +90,37 @@ describe('ApiGatewayPacer', () => {
       ...calls('DeleteResource', 1),
     ]);
     expect(sent).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it('spaces DeleteRestApi calls 30 seconds apart (one per 30 s per account, go-to-k/cdkd#6139)', () => {
+    const sent = simulate(new ApiGatewayPacer(), calls('DeleteRestApi', 3));
+    expect(sent).toEqual([0, 30_000, 60_000]);
+  });
+
+  it('spaces edge-optimized REST API creates 30 s apart and Regional ones 3 s apart, in separate lanes', () => {
+    const sent = simulate(new ApiGatewayPacer(), [
+      ...calls('CreateRestApi:EDGE', 3),
+      ...calls('CreateRestApi:REGIONAL', 3),
+      ...calls('ImportRestApi:EDGE', 2),
+    ]);
+    expect(sent).toEqual([0, 30_000, 60_000, 0, 3_000, 6_000, 0, 30_000]);
+  });
+
+  it('spaces PutRestApi calls one second apart', () => {
+    expect(simulate(new ApiGatewayPacer(), calls('PutRestApi', 3))).toEqual([0, 1_000, 2_000]);
+  });
+
+  it.each([
+    ['CreateRestApi', {}, 'CreateRestApi:EDGE'],
+    ['CreateRestApi', { cloneFrom: 'src' }, 'CreateRestApi:EDGE'],
+    ['CreateRestApi', { endpointConfiguration: { types: ['REGIONAL'] } }, 'CreateRestApi:REGIONAL'],
+    ['CreateRestApi', { endpointConfiguration: { types: ['PRIVATE'] } }, 'CreateRestApi:REGIONAL'],
+    ['CreateRestApi', { endpointConfiguration: { types: ['EDGE'] } }, 'CreateRestApi:EDGE'],
+    ['ImportRestApi', { parameters: { endpointConfigurationTypes: 'regional' } }, 'ImportRestApi:REGIONAL'],
+    ['ImportRestApi', {}, 'ImportRestApi:EDGE'],
+    ['PutRestApi', { mode: 'overwrite' }, 'PutRestApi'],
+  ])('paces %s %j in lane %s', (operation, input, lane) => {
+    expect(pacingLane(operation, input)).toBe(lane);
   });
 
   it('does not make an operation with no limit of its own wait for its own bucket', () => {
@@ -219,6 +256,20 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     // The burst of 5 goes out together, the rest at the steady rate.
     expect(sentAt[4]! - sentAt[0]!).toBe(0);
     expect(gaps).toEqual([250, 250, 250]);
+  });
+
+  it('reads the endpoint type off a CreateRestApi request: edge 30 s apart, Regional 3 s apart', async () => {
+    const { client, sentAt } = makeClient([]);
+    withApiGatewayPacing(client);
+    const edge = () => client.send(new CreateRestApiCommand({ name: 'e' }));
+    const regional = () =>
+      client.send(
+        new CreateRestApiCommand({ name: 'r', endpointConfiguration: { types: ['REGIONAL'] } })
+      );
+    const settled = Promise.all([edge(), edge(), regional(), regional()]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settled;
+    expect(sentAt.map((at) => at - sentAt[0]!).sort((a, b) => a - b)).toEqual([0, 0, 3_000, 30_000]);
   });
 
   it('holds calls past the shared burst of 30 and sends them at 8 per second', async () => {

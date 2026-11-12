@@ -4207,11 +4207,11 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          // AWS::ApiGateway::RestApi is in the deny list (write-only Body field).
-          RestApi1: makeResource({
-            physicalId: 'rest-api-id',
-            resourceType: 'AWS::ApiGateway::RestApi',
-            properties: { Body: { swagger: '2.0' } },
+          // AWS::EC2::LaunchTemplate is in the deny list (version-bumped data).
+          LaunchTemplate1: makeResource({
+            physicalId: 'lt-0123',
+            resourceType: 'AWS::EC2::LaunchTemplate',
+            properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
           }),
         })
       );
@@ -4221,7 +4221,7 @@ describe('cdkd drift', () => {
 
       expect(error).toBeUndefined();
       expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-      expect(output).toContain('? RestApi1 (AWS::ApiGateway::RestApi)');
+      expect(output).toContain('? LaunchTemplate1 (AWS::EC2::LaunchTemplate)');
       expect(output).toContain('1 unsupported');
     });
 

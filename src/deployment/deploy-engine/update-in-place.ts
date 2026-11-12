@@ -73,6 +73,7 @@ export async function updateInPlace(
   engine: DeployEngine,
   {
     changedProperties,
+    noEchoOnlyChangedProperties,
     conditions,
     counts,
     currentProps,
@@ -99,6 +100,8 @@ export async function updateInPlace(
      * template to template (`UpdateContext.changedProperties`).
      */
     changedProperties: ReadonlySet<string>;
+    /** go-to-k/cdkd#6140: `UpdateContext.noEchoOnlyChangedProperties`. */
+    noEchoOnlyChangedProperties?: ReadonlySet<string>;
     conditions: Record<string, boolean> | undefined;
     counts: ProvisionCounts | undefined;
     currentProps: Record<string, unknown>;
@@ -276,6 +279,7 @@ export async function updateInPlace(
   // re-attachment) is a change the provider must not skip. The `NoEcho` held
   // paths are not: their previous side was set EQUAL to what is sent.
   const changedForProvider = new Set(changedProperties);
+  const noEchoOnlyForProvider = new Set(noEchoOnlyChangedProperties ?? []);
   for (const key of new Set([
     ...Object.keys(previousWithNoEchoHeld),
     ...Object.keys(previousForUpdate),
@@ -284,6 +288,7 @@ export async function updateInPlace(
       keyOrderFreeJson(previousForUpdate[key]) !== keyOrderFreeJson(previousWithNoEchoHeld[key])
     ) {
       changedForProvider.add(key);
+      noEchoOnlyForProvider.delete(key);
     }
   }
   // go-to-k/cdkd#5380: the keys an earlier failed update left unsettled, which
@@ -296,6 +301,7 @@ export async function updateInPlace(
   // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
   // Every key counts, so no provider skips the write the update exists for.
   if (changedForProvider.size === 0) {
+    noEchoOnlyForProvider.clear();
     for (const key of new Set([...Object.keys(updateProps), ...Object.keys(previousForUpdate)])) {
       changedForProvider.add(key);
     }
@@ -447,6 +453,7 @@ export async function updateInPlace(
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
               changedProperties: changedForProvider,
+              noEchoOnlyChangedProperties: noEchoOnlyForProvider,
               // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
               // outlives this call's promise (deadline race, Ctrl-C, retry).
               markUnsettled: (propertyName: string) => {

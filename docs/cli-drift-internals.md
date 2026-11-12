@@ -558,8 +558,6 @@ the fallback:
 1. **Deny-list.** Types with verified structural divergence, or a physical id
    Cloud Control cannot address, short-circuit to `drift unknown` before the
    Cloud Control call fires. Current entries are
-   `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
-   inputs the response omits, while cdkd state preserves them),
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
