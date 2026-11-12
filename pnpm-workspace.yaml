@@ -10,6 +10,8 @@ allowBuilds:
   # page uses mermaid, and the OG renderer runs on playwright (whose Chromium
   # CI installs explicitly) — so skip puppeteer's per-install Chrome download.
   puppeteer: false
+  # EXPERIMENT ONLY: ships prebuilt addons; skip the implied node-gyp rebuild.
+  vitest-pool-fastforks: false
 minimumReleaseAgeExclude:
   # Unversioned, unlike every entry below it, and the asymmetry is the point.
   # `cdk-local` is this maintainer's own package: cdkd tracks it release by
@@ -34,6 +36,8 @@ minimumReleaseAgeExclude:
   # Accepted deliberately, and it is the reason the entries below stay pinned
   # per version — they are third-party and get no such treatment.
   - 'cdk-local'
+  # EXPERIMENT ONLY (not for merge): published 2026-11-11, measured in CI.
+  - 'vitest-pool-fastforks@0.1.1'
   - '@aws-sdk/client-lambda-microvms@3.1092.0'
   - '@aws-sdk/core@3.976.0'
   - '@aws-sdk/credential-provider-env@3.972.60'

@@ -143,6 +143,7 @@
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",
     "vite-plus": "^1.0.0",
+    "vitest-pool-fastforks": "0.1.1",
     "vize": "^0.692.0",
     "vue": "^3.5.43"
   }
