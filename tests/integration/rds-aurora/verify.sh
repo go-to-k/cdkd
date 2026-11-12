@@ -382,6 +382,34 @@ cleanup() {
       esac
     done
   fi
+  # go-to-k/cdkd#5639: the ReplicaCluster and its source instance. A failed
+  # phase 1 never set their ids, so read them from a leftover state record,
+  # before state destroy deletes it. RDS refuses to delete a cluster or an
+  # instance still `creating`, so let either settle first (up to 60 minutes);
+  # a gone one ends the wait at once.
+  if [ -z "${REPLICA_CLUSTER_ID}${REPLICA_SOURCE_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    REPLICA_STATE_CLEAN=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null || true)
+    if [ -n "${REPLICA_STATE_CLEAN}" ]; then
+      REPLICA_CLUSTER_ID=$(jq -r '.resources.ReplicaCluster.physicalId // ""' <<<"${REPLICA_STATE_CLEAN}" 2>/dev/null)
+      REPLICA_SOURCE_ID=$(jq -r '.resources.ReplicaSourceInstance.physicalId // ""' <<<"${REPLICA_STATE_CLEAN}" 2>/dev/null)
+    fi
+  fi
+  if [ -n "${REPLICA_CLUSTER_ID}${REPLICA_SOURCE_ID}" ]; then
+    for _ in $(seq 1 120); do
+      REPLICA_STATUS_CLEAN=""
+      [ -n "${REPLICA_CLUSTER_ID}" ] && REPLICA_STATUS_CLEAN=$(aws rds describe-db-clusters \
+        --db-cluster-identifier "${REPLICA_CLUSTER_ID}" --region "${REGION}" \
+        --query 'DBClusters[0].Status' --output text 2>&1)
+      REPLICA_SOURCE_STATUS_CLEAN=""
+      [ -n "${REPLICA_SOURCE_ID}" ] && REPLICA_SOURCE_STATUS_CLEAN=$(aws rds describe-db-instances \
+        --db-instance-identifier "${REPLICA_SOURCE_ID}" --region "${REGION}" \
+        --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1)
+      case "${REPLICA_STATUS_CLEAN} ${REPLICA_SOURCE_STATUS_CLEAN}" in
+        creating* | *" creating" | *" backing-up" | *" modifying") sleep 30 ;;
+        *) break ;;
+      esac
+    done
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture

@@ -139,15 +139,6 @@ export async function createDBCluster(
   const globalClusterId = globalClusterSkipped
     ? undefined
     : recordedGlobalClusterIdentifier(properties);
-  // go-to-k/cdkd#5639: likewise a replication source that is not a string. A
-  // string makes the cluster a read replica of that DB instance or cluster
-  // (`Translator.createDbClusterRequest`); a cross-region source ARN gets its
-  // `PreSignedUrl` from the AWS SDK for JavaScript's RDS middleware, from the
-  // ARN's region.
-  const replicationSourceSkipped = !readableGlobalClusterId(
-    properties['ReplicationSourceIdentifier']
-  );
-  const replicationSource = replicationSourceSkipped ? undefined : replicationSourceOf(properties);
   // go-to-k/cdkd#5639: `SourceRegion` is never sent, as for a DB instance
   // (`refuseUnknownSourceRegion`): CloudFormation's handler validates it on
   // every request and otherwise only hands it to the Java SDK, which presigns
@@ -164,6 +155,18 @@ export async function createDBCluster(
   // no express writer: neither restore call has such a member.
   const restore = readClusterRestore(properties, resourceType, logicalId);
   const express = expressFlag === true && restore === undefined;
+  // go-to-k/cdkd#5639: likewise a replication source that is not a string,
+  // on a plain create only: neither restore uses the key (`unusedRestoreKeys`
+  // warns instead). A string makes the cluster a read replica of that DB
+  // instance or cluster (`Translator.createDbClusterRequest`); a cross-region
+  // source ARN gets its `PreSignedUrl` from the AWS SDK for JavaScript's RDS
+  // middleware, from the ARN's region.
+  const replicationSourceSkipped =
+    restore === undefined && !readableGlobalClusterId(properties['ReplicationSourceIdentifier']);
+  const replicationSource =
+    restore === undefined && !replicationSourceSkipped
+      ? replicationSourceOf(properties)
+      : undefined;
   const unused = unusedRestoreKeys(properties, restore);
   if (unused.length > 0) {
     this.logger.warn(
@@ -514,13 +517,21 @@ export async function createDBCluster(
           }
         }
       }
-      // Wait for cluster to become available (skip with --no-wait)
+      // Wait for cluster to become available (skip with --no-wait). A
+      // restore or a read replica copies its source's data first, so either
+      // waits to the resource deadline when `--resource-timeout` allows more
+      // than a create's 30 minutes (go-to-k/cdkd#5639): a create timing out
+      // here deletes the cluster, where CloudFormation would have waited.
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
         await this.waitForClusterAvailable(
           logicalId,
           dbClusterIdentifier,
-          restore === undefined ? undefined : restoreWaitMs(),
-          restore === undefined ? undefined : 'applying the restored cluster settings'
+          restore === undefined && replicationSource === undefined ? undefined : restoreWaitMs(),
+          restore !== undefined
+            ? 'applying the restored cluster settings'
+            : replicationSource !== undefined
+              ? 'replicating from its source'
+              : undefined
         );
         // go-to-k/cdkd#5639: CloudFormation's create stabilizes only once
         // local write forwarding is no longer `enabling`

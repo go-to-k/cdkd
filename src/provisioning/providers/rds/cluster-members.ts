@@ -619,13 +619,13 @@ export function globalWriteForwardingFlag(value: unknown): boolean | undefined |
 /**
  * go-to-k/cdkd#5639: whether a cluster's global write forwarding has settled,
  * exactly as CloudFormation's stabilization decides it
- * (`BaseHandlerStd.isGlobalWriteForwardingStabilized`): once forwarding is not
- * requested, or its status is neither `enabling` nor `disabling`. Forwarding
- * requested on a primary, or on a secondary with no reader, does not start,
- * and that is settled too. The request flag is deliberately NOT matched
- * against the value sent: RDS may not report a request it ignores, and a
- * cluster CloudFormation reports done must not hold a cdkd deploy until its
- * timeout.
+ * (`BaseHandlerStd.isGlobalWriteForwardingStabilized`, read from the handler
+ * source, not measured): once forwarding is not requested, or its status is
+ * neither `enabling` nor `disabling`. The handler's own comment says
+ * forwarding does not start until a reader exists; this predicate takes no
+ * view on that and only mirrors the handler. The request flag is deliberately
+ * NOT matched against the value sent: a request RDS does not report would
+ * otherwise hold a deploy CloudFormation completes until its timeout.
  */
 export function globalWriteForwardingApplied(cluster: DBCluster): boolean {
   if (cluster.GlobalWriteForwardingRequested !== true) return true;

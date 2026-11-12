@@ -1561,7 +1561,7 @@ Checklist when writing or reviewing an `update()`:
   `SourceDBInstanceIdentifier` promotes the read replica in place
   (`PromoteReadReplica`, with the declared `BackupRetentionPeriod` and
   `PreferredBackupWindow`); an added or changed one is refused unless the live
-  instance already replicates that source. A changed or removed DBCluster
+  instance already replicates that source. An added, changed or removed DBCluster
   `ReplicationSourceIdentifier`, by contrast, sends nothing and the cluster
   keeps replicating: `ModifyDBCluster` has no such member, and the handler
   neither sends it nor promotes the replica. cdkd warns instead.

@@ -609,6 +609,19 @@ function askedUnchanged(
 }
 
 /**
+ * Handled create-only keys the SDK provider validates but never SENDS, so a
+ * resource built before they were handled lacks nothing AWS would hold:
+ * {@link findHandledUnwrittenCreateOnly} must not read them as unwritten, or
+ * the deploy refuses with a replacement nothing needs. `SourceRegion` on both
+ * RDS types (go-to-k/cdkd#5640, #5639) only picks the presigned URL's region,
+ * which the AWS SDK for JavaScript derives from the source ARN instead.
+ */
+const HANDLED_NEVER_SENT_CREATE_ONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['AWS::RDS::DBInstance', new Set(['SourceRegion'])],
+  ['AWS::RDS::DBCluster', new Set(['SourceRegion'])],
+]);
+
+/**
  * The keys a state record NAMES in `acceptedCreateOnlyDrops` (`evidence`) and
  * still holds, that this type's SDK provider now WRITES (issue
  * [#5572](https://github.com/go-to-k/cdkd/issues/5572)). Sorted by property.
@@ -623,6 +636,9 @@ function askedUnchanged(
  * only), so the flag cannot keep it quiet: the SDK route would send it, and
  * sending a create-only value means creating the resource again.
  *
+ * A key in {@link HANDLED_NEVER_SENT_CREATE_ONLY} never counts: the provider
+ * sends it on no path, so AWS holding nothing for it is the handled state.
+ *
  * Only a key the committed snapshot still marks create-only AT THE TOP LEVEL
  * counts: the writer only ever named top-level create-only keys. One a schema refresh made mutable is an ordinary addition: the
  * next update sends it, and the writer must then stop naming it, or every
@@ -636,6 +652,7 @@ export function findHandledUnwrittenCreateOnly(
   if (evidence.size === 0) return [];
   const handled = getPropertyCoverage(resourceType)?.handled;
   if (handled === undefined) return [];
+  const neverSent = HANDLED_NEVER_SENT_CREATE_ONLY.get(resourceType);
   const createOnlyRoots = new Set(
     (CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType) ?? [])
       .filter((path) => path.length === 1)
@@ -645,6 +662,7 @@ export function findHandledUnwrittenCreateOnly(
     .filter(
       (property) =>
         handled.has(property) &&
+        neverSent?.has(property) !== true &&
         createOnlyRoots.has(property) &&
         Object.hasOwn(recordedProperties, property)
     )

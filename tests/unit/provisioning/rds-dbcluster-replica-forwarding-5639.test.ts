@@ -21,6 +21,12 @@ vi.mock('@aws-sdk/client-rds', async () => {
   };
 });
 
+const deadline = vi.hoisted(() => ({ remainingMs: Number.POSITIVE_INFINITY }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  enclosingDeadlineRemainingMs: () => deadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -45,6 +51,7 @@ import { globalWriteForwardingApplied } from '../../../src/provisioning/provider
 import {
   AWS_CN_CROSS_REGION_REPLICA_RATIONALE,
   findActionableSdkUnwired,
+  findHandledUnwrittenCreateOnly,
   findSdkUnwiredProperties,
 } from '../../../src/provisioning/property-coverage.js';
 
@@ -122,6 +129,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
 
   afterEach(() => {
     delete process.env['CDKD_NO_WAIT'];
+    deadline.remainingMs = Number.POSITIVE_INFINITY;
   });
 
   const create = (props: Input, replaying = false) =>
@@ -217,6 +225,44 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       expect(sleeps).toBe(0);
     });
 
+    it('a rollback-replay re-create sends the recorded replica source', async () => {
+      arm();
+      await create({ ReplicationSourceIdentifier: SOURCE_ARN, SourceRegion: 'us-east-1' }, true);
+      expect(sent('CreateDBClusterCommand')[0]).toMatchObject({ ReplicationSourceIdentifier: SOURCE_ARN });
+    });
+
+    it.each([
+      ['a read replica', { ReplicationSourceIdentifier: SOURCE_ARN }, 7_200_000 - 30_000],
+      ['a plain create', {}, 1_800_000],
+    ])('%s waits for available up to %s', async (_, props, cap) => {
+      arm();
+      deadline.remainingMs = 7_200_000;
+      const wait = vi.spyOn(provider, 'waitForClusterAvailable');
+      await create(props);
+      expect(wait.mock.calls[0]![2] ?? 1_800_000).toBe(cap);
+    });
+
+    it('a restore does not refuse a non-string replica source it never uses', async () => {
+      arm();
+      await create({ SnapshotIdentifier: 'snap-1', ReplicationSourceIdentifier: ['arn-1'] });
+      expect(sent('RestoreDBClusterFromSnapshotCommand')).toHaveLength(1);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(
+        /snapshot restore does not apply ReplicationSourceIdentifier/
+      );
+    });
+
+    it('a restore waits for its follow-up to settle global write forwarding', async () => {
+      arm([
+        {},
+        {},
+        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' },
+        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' },
+      ]);
+      await create({ SnapshotIdentifier: 'snap-1', EnableGlobalWriteForwarding: true });
+      expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({ EnableGlobalWriteForwarding: true });
+      expect(sleeps).toBe(1);
+    });
+
     it("a snapshot restore sends the forwarding flag on CloudFormation's follow-up ModifyDBCluster and no replica source", async () => {
       arm();
       await create({
@@ -275,9 +321,11 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
     ])('sends no forwarding flag when %s', async (_, next, prev) => {
       arm();
       await update({ ...next, BackupRetentionPeriod: 3 }, { ...prev, BackupRetentionPeriod: 1 });
-      for (const input of sent('ModifyDBClusterCommand')) {
-        expect(input).not.toHaveProperty('EnableGlobalWriteForwarding');
-      }
+      // The companion change sends a ModifyDBCluster, so the absence is not vacuous.
+      expect(sent('ModifyDBClusterCommand')).toEqual([
+        expect.objectContaining({ BackupRetentionPeriod: 3 }),
+      ]);
+      expect(sent('ModifyDBClusterCommand')[0]).not.toHaveProperty('EnableGlobalWriteForwarding');
     });
 
     it('refuses a malformed forwarding flag before any call; a replay keeps the previous one', async () => {
@@ -298,6 +346,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
     });
 
     it.each([
+      ['added', { ReplicationSourceIdentifier: SOURCE_ARN }, {}],
       ['changed', { ReplicationSourceIdentifier: CROSS_ARN }, { ReplicationSourceIdentifier: SOURCE_ARN }],
       ['removed', {}, { ReplicationSourceIdentifier: SOURCE_ARN }],
     ])('a %s replica source sends nothing and warns that it stays', async (_, next, prev) => {
@@ -308,7 +357,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       }
       expect(sent('PromoteReadReplicaDBClusterCommand')).toEqual([]);
       expect(warn.mock.calls.flat().join('\n')).toMatch(
-        /changed ReplicationSourceIdentifier is not applied.*promote-read-replica-db-cluster/
+        /added, changed or removed ReplicationSourceIdentifier is not applied.*promote-read-replica-db-cluster/
       );
     });
 
@@ -444,6 +493,15 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
         routeDriving({ ReplicationSourceIdentifier: CN_SOURCE }, new Set([`${CLUSTER}:ReplicationSourceIdentifier`]))
       ).toEqual([]);
     });
+
+    it.each(['AWS::RDS::DBCluster', 'AWS::RDS::DBInstance'])(
+      '%s: an accepted SourceRegion drop is never read as unwritten (it is never sent)',
+      (type) => {
+        expect(
+          findHandledUnwrittenCreateOnly(type, { SourceRegion: 'us-west-2' }, new Set(['SourceRegion']))
+        ).toEqual([]);
+      }
+    );
 
     it('narrows nothing away: the three keys are handled ones', () => {
       expect(

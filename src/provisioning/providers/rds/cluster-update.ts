@@ -232,8 +232,8 @@ export async function updateDBCluster(
   }
   // go-to-k/cdkd#5639: ModifyDBCluster has no ReplicationSourceIdentifier
   // member, and CloudFormation's update sends none (`Translator.
-  // modifyDbClusterRequest`) nor promotes the replica, so a change or removal
-  // leaves the live replication as it is; the record keeps the template's
+  // modifyDbClusterRequest`) nor promotes the replica, so an addition, change or
+  // removal leaves the live replication as it is; the record keeps the template's
   // value, as CloudFormation's model does.
   if (
     context?.replayingState !== true &&
@@ -244,7 +244,7 @@ export async function updateDBCluster(
     replicationSourceOf(properties) !== replicationSourceOf(previousProperties)
   ) {
     this.logger.warn(
-      safeMsg`DBCluster ${logicalId}: a changed ReplicationSourceIdentifier is not applied to the existing cluster, as in CloudFormation (ModifyDBCluster has no such member); to stop replicating, promote the cluster with aws rds promote-read-replica-db-cluster`
+      safeMsg`DBCluster ${logicalId}: an added, changed or removed ReplicationSourceIdentifier is not applied to the existing cluster, as in CloudFormation (ModifyDBCluster has no such member); to stop replicating, promote the cluster with aws rds promote-read-replica-db-cluster`
     );
   }
 

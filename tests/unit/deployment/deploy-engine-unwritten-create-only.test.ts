@@ -356,6 +356,50 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     expect(callOrder).toEqual([]);
   });
 
+  // go-to-k/cdkd#5639 / #5640: SourceRegion is handled on both RDS types but
+  // never sent, so a record that accepted it as a create-only drop lacks
+  // nothing: no refusal, no replacement, nothing sent (HANDLED_NEVER_SENT_CREATE_ONLY).
+  it.each([
+    ['AWS::RDS::DBCluster', { Engine: 'aurora-mysql' }],
+    ['AWS::RDS::DBInstance', { Engine: 'mysql', DBInstanceClass: 'db.t3.micro' }],
+  ])('%s: an accepted SourceRegion drop is not refused and skips as NO_CHANGE', async (type, base) => {
+    const recorded = { ...base, SourceRegion: 'us-west-2', DeletionProtection: true };
+    const change: ResourceChange = {
+      logicalId: 'MyDb',
+      changeType: 'UPDATE',
+      resourceType: type,
+      currentProperties: recorded,
+      desiredProperties: recorded,
+      propertyChanges: [
+        { path: 'SourceRegion', oldValue: undefined, newValue: 'us-west-2', requiresReplacement: true },
+      ],
+    };
+    expect(getPropertyCoverage(type)?.handled.has('SourceRegion')).toBe(true);
+    const err = await provisionResource(
+      makeEngine(),
+      'MyDb',
+      change,
+      {
+        MyDb: {
+          physicalId: 'db-1',
+          resourceType: type,
+          properties: recorded,
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+          acceptedCreateOnlyDrops: ['SourceRegion'],
+        },
+      } as unknown as Record<string, never>,
+      'MyStack',
+      { Resources: { MyDb: { Type: type, Properties: recorded } } }
+    ).then(
+      () => null,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeNull();
+    expect(callOrder).toEqual([]);
+  });
+
   describe('a record with NO evidence is not refused, and skips as NO_CHANGE (B1)', () => {
     it.each([
       ['an imported record (provisionedBy sdk, no marker)', { evidence: null }],
