@@ -643,7 +643,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
         const completedSplit = splitImportedOps(segment.operations, segment, orphanLogicalIds);
         const completedOps = completedSplit.replay;
         // go-to-k/cdkd#6120: one cleanup queue for the segment's two replays.
-        const cleanup = segmentCleanupOptions(completedOps.length > 0, supersededHost);
+        const cleanup = segmentCleanupOptions(completedOps.length > 0, supersededHost, baseState);
         // A displaced FAILED op counts whether or not `--revert-failed` is
         // passed: the plan lists it either way, and nothing ever reverts it,
         // so a run that then pops the segment must still say so (exit 2).

@@ -111,7 +111,7 @@ const RES_FAILED = {
 let calls: string[];
 let saves: StackState[];
 
-function install(): void {
+function install(stacked = false): void {
   const record: StackState = {
     version: 9,
     stackName: STACK,
@@ -121,6 +121,12 @@ function install(): void {
       Topic: rec('topic', TOPIC, { DisplayName: 'v2' }),
     },
     outputs: {},
+    // An earlier segment's forward deploy already recorded the same id.
+    ...(stacked && {
+      supersededResources: [
+        { logicalId: 'Res', supersededAt: 1, state: rec('name-1', CR, { Name: 'new' }) },
+      ],
+    }),
     lastModified: 1,
   };
   const backend = {
@@ -198,5 +204,17 @@ describe('cdkd rollback --revert-failed deletes a moved-off id after the segment
     expect(ids[0]).toEqual(['name-1']);
     expect(ids.at(-1)).toEqual([]);
     expect(saves.at(-1)?.resources['Res']?.physicalId).toBe('name-9');
+  });
+
+  it('a settled id an earlier deploy recorded leaves the saved state too', async () => {
+    install(true);
+    await rollbackCommand(STACK, {
+      yes: true,
+      stateBucket: 'b',
+      region: REGION,
+      revertFailed: true,
+    } as unknown as Parameters<typeof rollbackCommand>[1]);
+    expect(calls.at(-1)).toBe('delete Res name-1');
+    expect(saves.at(-1)?.supersededResources ?? []).toEqual([]);
   });
 });

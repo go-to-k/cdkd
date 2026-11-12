@@ -18,6 +18,7 @@ import {
   addSuperseded,
   canRecordSuperseded,
   removeSuperseded,
+  supersededResourcesOf,
   SUPERSEDED_KEPT_REMEDY,
 } from '../superseded-resources.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -71,7 +72,13 @@ export function newMovedIdCleanupQueue(hooks: {
  */
 export function segmentCleanupOptions(
   shared: boolean,
-  host: Pick<StackState, 'supersededResources'>
+  host: Pick<StackState, 'supersededResources'>,
+  /**
+   * The state the run loaded. A settled id an earlier deploy already
+   * recorded there (stacked segments) leaves it too, or the save would carry
+   * it and the next deploy would send a deleted id its Delete again.
+   */
+  base: Pick<StackState, 'supersededResources'>
 ): {
   onSuperseded: (entry: SupersededResourceRecord) => void;
   onSupersededSettled: (entry: SupersededResourceRecord) => void;
@@ -79,7 +86,17 @@ export function segmentCleanupOptions(
 } {
   const hooks = {
     onSuperseded: (entry: SupersededResourceRecord) => addSuperseded(host, entry),
-    onSupersededSettled: (entry: SupersededResourceRecord) => removeSuperseded(host, entry),
+    onSupersededSettled: (entry: SupersededResourceRecord) => {
+      removeSuperseded(host, entry);
+      for (const own of supersededResourcesOf(base)) {
+        if (
+          own.state.physicalId === entry.state.physicalId &&
+          own.state.resourceType === entry.state.resourceType
+        ) {
+          removeSuperseded(base, own);
+        }
+      }
+    },
   };
   return shared ? { ...hooks, movedIdCleanups: newMovedIdCleanupQueue(hooks) } : hooks;
 }
