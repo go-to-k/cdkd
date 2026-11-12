@@ -540,7 +540,7 @@ export async function createDBCluster(
           await this.waitForClusterState(
             logicalId,
             dbClusterIdentifier,
-            (cluster) => globalWriteForwardingApplied(cluster, true),
+            globalWriteForwardingApplied,
             'global write forwarding setting'
           );
         }

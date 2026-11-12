@@ -191,14 +191,20 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
     it('waits until requested forwarding is no longer enabling', async () => {
       arm([
         {},
-        { GlobalWriteForwardingRequested: false },
+        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' },
         { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' },
         { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' },
       ]);
       await create({ EnableGlobalWriteForwarding: true });
-      // The available wait settles at once; the forwarding wait polls past a
-      // read before the request shows and one while it is enabling.
+      // The available wait settles at once; the forwarding wait polls past
+      // the two reads while it is enabling.
       expect(sleeps).toBe(2);
+    });
+
+    it('ends the wait when RDS reports no request, as CloudFormation does', async () => {
+      arm([{ GlobalWriteForwardingRequested: false, GlobalWriteForwardingStatus: 'enabling' }]);
+      await create({ EnableGlobalWriteForwarding: true });
+      expect(sleeps).toBe(0);
     });
 
     it('does not wait for forwarding declared false, nor under --no-wait', async () => {
@@ -233,7 +239,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
   describe('update', () => {
     it('sends a changed forwarding flag and waits for it', async () => {
       arm([
-        { GlobalWriteForwardingRequested: false },
+        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' },
         { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' },
         { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabled' },
       ]);
@@ -241,17 +247,26 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       expect(sent('ModifyDBClusterCommand')).toEqual([
         expect.objectContaining({ EnableGlobalWriteForwarding: true }),
       ]);
-      // Past the read before the request shows and the one while enabling.
+      // Past the two reads while it is enabling.
       expect(sleeps).toBe(2);
+    });
+
+    it('does not wait for a changed flag under --no-wait', async () => {
+      arm([{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' }]);
+      process.env['CDKD_NO_WAIT'] = 'true';
+      await update({ EnableGlobalWriteForwarding: true }, { EnableGlobalWriteForwarding: false });
+      expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({ EnableGlobalWriteForwarding: true });
+      expect(sleeps).toBe(0);
     });
 
     it('waits for a turned-off flag only until it is no longer requested', async () => {
       arm([
-        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' },
+        { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabling' },
         { GlobalWriteForwardingRequested: false, GlobalWriteForwardingStatus: 'disabling' },
       ]);
       await update({ EnableGlobalWriteForwarding: false }, { EnableGlobalWriteForwarding: true });
       expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({ EnableGlobalWriteForwarding: false });
+      expect(sleeps).toBe(1);
     });
 
     it.each([
@@ -297,10 +312,12 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       );
     });
 
-    it('an unchanged replica source, or a replay, warns nothing', async () => {
+    it('an unchanged or non-string replica source, a replay or a drift revert warns nothing', async () => {
       arm();
       await update({ ReplicationSourceIdentifier: SOURCE_ARN }, { ReplicationSourceIdentifier: SOURCE_ARN });
+      await update({ ReplicationSourceIdentifier: ['arn-1'] }, { ReplicationSourceIdentifier: SOURCE_ARN });
       await update({}, { ReplicationSourceIdentifier: SOURCE_ARN }, { replayingState: true });
+      await update({}, { ReplicationSourceIdentifier: SOURCE_ARN }, { desiredFromAwsReadback: true });
       expect(warn.mock.calls.flat().join('\n')).not.toContain('ReplicationSourceIdentifier');
     });
   });
@@ -314,17 +331,16 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
 
   describe('globalWriteForwardingApplied', () => {
     it.each([
-      [true, {}, true],
-      [true, { GlobalWriteForwardingRequested: false }, false],
-      [true, { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' }, false],
-      [true, { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabling' }, false],
-      [true, { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' }, true],
-      [true, { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabled' }, true],
-      [true, { GlobalWriteForwardingRequested: true }, true],
-      [false, { GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' }, false],
-      [false, { GlobalWriteForwardingRequested: false, GlobalWriteForwardingStatus: 'disabling' }, true],
-    ] as const)('sent %s, live %j: %s', (enabled, live, expected) => {
-      expect(globalWriteForwardingApplied(live, enabled)).toBe(expected);
+      [{}, true],
+      [{ GlobalWriteForwardingRequested: false }, true],
+      [{ GlobalWriteForwardingRequested: false, GlobalWriteForwardingStatus: 'disabling' }, true],
+      [{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' }, false],
+      [{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabling' }, false],
+      [{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabled' }, true],
+      [{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'disabled' }, true],
+      [{ GlobalWriteForwardingRequested: true }, true],
+    ] as const)('live %j: %s', (live, expected) => {
+      expect(globalWriteForwardingApplied(live)).toBe(expected);
     });
   });
 

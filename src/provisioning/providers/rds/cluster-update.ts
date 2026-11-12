@@ -238,6 +238,9 @@ export async function updateDBCluster(
   if (
     context?.replayingState !== true &&
     context?.desiredFromAwsReadback !== true &&
+    // A non-string side is never sent either, and says nothing about a change.
+    readableGlobalClusterId(properties['ReplicationSourceIdentifier']) &&
+    readableGlobalClusterId(previousProperties['ReplicationSourceIdentifier']) &&
     replicationSourceOf(properties) !== replicationSourceOf(previousProperties)
   ) {
     this.logger.warn(
@@ -584,7 +587,7 @@ export async function updateDBCluster(
       await this.waitForClusterState(
         logicalId,
         physicalId,
-        (cluster) => globalWriteForwardingApplied(cluster, globalForwardingSent),
+        globalWriteForwardingApplied,
         'global write forwarding setting'
       );
     }

@@ -484,7 +484,9 @@ export function clusterCreateScalarMembers(
  * (`localWriteForwardingToSend`). `EnableGlobalWriteForwarding` goes out only
  * when changed, and a removal sends nothing (RDS keeps the live setting): the
  * handler sends the desired value, unsent when removed, and no default fills
- * it (read from the same archived source, not measured).
+ * it (read from the same archived source, not measured). The handler re-sends
+ * an unchanged value on every update, which would also undo an out-of-band
+ * change; cdkd skips that no-op, as for the other scalars here.
  *
  * `EngineLifecycleSupport` and
  * `MasterUserAuthenticationType` are not here: `engineLifecycleSupportAction`
@@ -615,20 +617,18 @@ export function globalWriteForwardingFlag(value: unknown): boolean | undefined |
 }
 
 /**
- * go-to-k/cdkd#5639: whether a cluster has settled on the global write
- * forwarding value sent. CloudFormation's stabilization
- * (`BaseHandlerStd.isGlobalWriteForwardingStabilized`) is done once forwarding
- * is not requested, or its status is neither `enabling` nor `disabling`:
- * forwarding requested on a primary, or on a secondary with no reader, does not
- * start, and that is settled too. The request flag is matched against the value
- * sent, so a describe answering before the change starts does not end the
- * wait; a describe reporting no flag ends it.
+ * go-to-k/cdkd#5639: whether a cluster's global write forwarding has settled,
+ * exactly as CloudFormation's stabilization decides it
+ * (`BaseHandlerStd.isGlobalWriteForwardingStabilized`): once forwarding is not
+ * requested, or its status is neither `enabling` nor `disabling`. Forwarding
+ * requested on a primary, or on a secondary with no reader, does not start,
+ * and that is settled too. The request flag is deliberately NOT matched
+ * against the value sent: RDS may not report a request it ignores, and a
+ * cluster CloudFormation reports done must not hold a cdkd deploy until its
+ * timeout.
  */
-export function globalWriteForwardingApplied(cluster: DBCluster, enabled: boolean): boolean {
-  const requested = cluster.GlobalWriteForwardingRequested;
-  if (requested === undefined) return true;
-  if (requested !== enabled) return false;
-  if (!requested) return true;
+export function globalWriteForwardingApplied(cluster: DBCluster): boolean {
+  if (cluster.GlobalWriteForwardingRequested !== true) return true;
   const status = cluster.GlobalWriteForwardingStatus;
   return status !== 'enabling' && status !== 'disabling';
 }
