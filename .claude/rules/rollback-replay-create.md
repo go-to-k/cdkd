@@ -8,8 +8,8 @@ paths:
 # The replay-CREATE bag
 
 Both arms live in the `reverse-replacement` branch
-(`deployment/rollback-executor/replay-reverse-replacement.ts`, the re-create in
-`deployment/rollback-executor/replay-reverse-replacement/recreate.ts`): create-first,
+(`rollback-executor/replay-reverse-replacement.ts`, the re-create in its
+`recreate.ts`): create-first,
 and delete-new-first, reached from the name-collision catch or, up front, a
 journaled `oldDeletedBeforeCreate` (#4690).
 **`effectiveProperties` is honoured** (#1682): `create()` gets
@@ -23,11 +23,11 @@ wholesale, reporting none keeps it. Do not re-narrow that result type. Its
 `FALLBACK_NAME_RULES` name the recorded bag leaves unset exactly as
 `preparePropertiesForCcApi` does at the engine's three create sites;
 otherwise the replay is a FOURTH create site sending no name, and AWS mints
-one. The arm is picked by a CHANGED PHYSICAL ID not journaled
-`wasReplaced: false` (#4615) or a changed `Type` (fill keyed on the OLD
-type), so a create-only edit
-on a type whose id is NOT its name lands here nameless; a handler REJECTING a
-nameless create then fails the replay after delete-new-first dropped it.
+one. The arm is picked by a CHANGED PHYSICAL ID (not journaled
+`wasReplaced: false`, #4615, nor a moved id left live, #6120) or a changed
+`Type` (fill keyed on the OLD type), so a create-only edit on a type whose id
+is NOT its name lands here nameless; a handler REJECTING a nameless create
+then fails the replay after delete-new-first dropped it.
 
 Decisions:
 
