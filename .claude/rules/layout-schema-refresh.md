@@ -72,7 +72,7 @@ earns no exemption. The signal is the title's decision count and the
 itself before its PR's CI may start. **Not signalled is not unblocked**: with
 `ci-ok` as the required status check, a decision-carrying refresh PR is
 unmergeable while HELD, and once approved for most of `countDecisions`'s terms,
-which also red `check-build-test`.
+which also red `check-build-test` or the sharded `unit-tests`.
 
 Two caveats:
 
