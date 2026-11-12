@@ -93,22 +93,6 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
   defineOwnKey(cursor, segments[segments.length - 1]!, value);
 }
 
-/**
- * {@link setAtPath}, or REMOVE the leaf when `value` is `undefined` (the
- * source bag holds nothing there), OWN keys only.
- */
-function restoreAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
-  if (value !== undefined) {
-    setAtPath(target, path, value);
-    return;
-  }
-  const segments = path.split('.');
-  const parent = segments.length === 1 ? target : getAtPath(target, segments.slice(0, -1).join('.'));
-  if (parent === null || typeof parent !== 'object' || Array.isArray(parent)) return;
-  const leaf = segments[segments.length - 1]!;
-  if (hasOwnKey(parent, leaf)) delete (parent as Record<string, unknown>)[leaf];
-}
-
 // `hasOwnKey` / `ownValue` / `defineOwnKey` / `hasPlainPrototype` were
 // file-local here until issue #3121 moved them to `src/utils/own-keys.ts`, so
 // the analyzer-side canonicalizers rebuild by the same rule.
@@ -307,12 +291,13 @@ export async function runAccept(
         // overlays without preserving untemplated paths, the deploy-start
         // auto-refresh skips it), so a template-shaped one would surface every
         // AWS-defaulted sub-key as drift and let `--revert` strip it. A
-        // refused path is put back to what drift compared it against below.
-        const seeded = existing.observedProperties === undefined;
-        const compared = existing.observedProperties ?? existing.properties ?? {};
-        const newBaseline = seeded
-          ? structuredClone(outcome.awsProperties)
-          : (JSON.parse(JSON.stringify(compared)) as Record<string, unknown>);
+        // DECLINED path then holds what the persist passes below make of the
+        // readback there (the reference, or `***`), as a refresh writes it:
+        // every refusal is a value those same passes masked in the report.
+        const newBaseline =
+          existing.observedProperties === undefined
+            ? structuredClone(outcome.awsProperties)
+            : (JSON.parse(JSON.stringify(existing.observedProperties)) as Record<string, unknown>);
         const accepted: PropertyDrift[] = [];
         for (const change of outcome.changes) {
           // Issue #1914: anything the report had to MASK is not a value — it
@@ -342,9 +327,6 @@ export async function runAccept(
                     `re-deploy if the reference changed.` +
                     `\nRevert with: ${revert}`)
             );
-            // The seed carries the readback here; what is not accepted stays
-            // what the record held.
-            if (seeded) restoreAtPath(newBaseline, change.path, getAtPath(compared, change.path));
             continue;
           }
           setAtPath(newBaseline, change.path, change.awsValue);

@@ -36,8 +36,7 @@ of the resource cdkd read from AWS at deploy time. The properties from your
 last deployed template stay as they were. A resource with no snapshot, recorded
 by an older cdkd, gets one: `--accept` captures it from AWS, as
 [`cdkd state refresh-observed`](cli-state-writing.md#cdkd-state-refresh-observed) does, so the template
-properties stay as they were too. A property `--accept` declines keeps the
-value drift compared it against.
+properties stay as they were too.
 That keeps your next `cdkd deploy` from undoing what you accepted. A list entry
 added in AWS and accepted is not read as an entry to remove.
 

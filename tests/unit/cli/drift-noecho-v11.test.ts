@@ -468,7 +468,9 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
     // go-to-k/cdkd#6125: the baseline is the readback, so the readback arm
     // pairs a list by its identity field; plain strings have none, so the
-    // whole list is masked (over-masking, the fail-closed direction).
+    // whole list is masked (over-masking, the fail-closed direction). The
+    // trade, shared with `cdkd state refresh-observed`: a later edit to the
+    // PUBLIC element compares equal modulo the mask, so it is not reported.
     expect(saved.observedProperties!['L']).toEqual([SECRET_MASK, SECRET_MASK]);
     expect(saved.properties['L']).toEqual(['a', 'q7z']);
   });
@@ -493,8 +495,13 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
 
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("not accepting 'L'"))).toBe(true);
     for (const call of mockSaveState.mock.calls) {
-      expect((call[2] as StackState).resources['Token']!.properties['L']).toEqual(['a', SECRET_MASK]);
+      const saved = (call[2] as StackState).resources['Token']!;
+      expect(saved.properties['L']).toEqual(['a', SECRET_MASK]);
+      // go-to-k/cdkd#6125: the baseline captured for this record masks the
+      // marked list as a readback capture does (whole: no identity field).
+      expect(saved.observedProperties!['L']).toEqual([SECRET_MASK, SECRET_MASK]);
     }
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain('secret-live-value');
   });
 
