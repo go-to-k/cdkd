@@ -231,8 +231,9 @@ container that shares another container's network. The container's sidecar
 credentials and its aliases work as before. Two things change:
 
 - The task metadata endpoint reports no networks for the container.
-- The container cannot listen on the endpoint's own port on `127.0.0.1`,
-  because the forwarder holds it.
+- The container cannot listen on the endpoint's own port, because the
+  forwarder holds it on `127.0.0.1`. When the essential container exits with
+  an error and maps that port, cdkd prints a warning that names the clash.
 
 ### Credential edge cases
 

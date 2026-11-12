@@ -40,13 +40,14 @@ const execFileAsync = promisify(execFile);
  *
  * When the forwarder runs but reports FAIL, or never reports, it is removed.
  * Under `--aws-emulator` that throws (nothing of the container has started
- * yet); under `forward` it is a once-per-port-per-run warning and resolves
+ * yet); under `forward` it is a warning (once per port per run for a FAIL
+ * report, once per container for a start failure) and resolves
  * `false`: the caller starts the container on its own network endpoint,
  * without a forwarder, as before.
  */
 export async function startNamespaceForwarder(
   state: EcsRunState,
-  forwarder: { name: string; namespace: LoopbackForwarderNamespace },
+  forwarder: { name: string; container: string; namespace: LoopbackForwarderNamespace },
   containerName: string,
   ports: readonly number[],
   wiring: WorkloadAwsWiring
@@ -75,7 +76,7 @@ export async function startNamespaceForwarder(
       state,
       () => runForwarderContainer(args, containerName),
       (id) => {
-        state.forwarders.push({ name, id, joined: false });
+        state.forwarders.push({ name, id, container: forwarder.container, joined: false });
       },
       () => removeContainer(name),
       namedSubject([{ kind: 'container', name, rm: 'docker rm -f', list: 'docker ps -a' }])
@@ -87,7 +88,7 @@ export async function startNamespaceForwarder(
     if (wiring.mode === 'emulator') throw err;
     // `forward`: the container starts on its own endpoint as before. A host
     // port clash then fails ITS `docker run`, under its own name.
-    return failed(state, wiring, 'start', `${label}: ${(err as Error).message}`);
+    return failed(state, wiring, `start:${containerName}`, `${label}: ${(err as Error).message}`);
   }
   let result: LoopbackForwarderResult;
   try {
@@ -96,7 +97,7 @@ export async function startNamespaceForwarder(
     if (state.closing) throw interruptedError();
     // The forwarder exited before reporting, or never reported.
     await removeNamespaceForwarder(state, name);
-    return failed(state, wiring, 'start', `${label}: ${(err as Error).message}`);
+    return failed(state, wiring, `start:${containerName}`, `${label}: ${(err as Error).message}`);
   }
   if (state.closing) throw interruptedError();
   if (result.ok) return true;

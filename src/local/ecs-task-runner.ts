@@ -108,6 +108,37 @@ export function mergeHostGatewayAddHostFlags(
 }
 
 /**
+ * The container port of `container` that is also one of the loopback AWS
+ * endpoint ports its forwarder holds on 127.0.0.1 (go-to-k/cdkd#6142), or
+ * `undefined`. Only a container that joined a forwarder can clash: the app
+ * binding that port fails with EADDRINUSE. Pure — exported for its test.
+ */
+export function loopbackPortClash(
+  container: Pick<ResolvedEcsContainer, 'portMappings'>,
+  loopbackPorts: readonly number[],
+  joined: boolean
+): number | undefined {
+  if (!joined) return undefined;
+  return container.portMappings.find(
+    (pm) => pm.protocol !== 'udp' && loopbackPorts.includes(pm.containerPort)
+  )?.containerPort;
+}
+
+/**
+ * The `--detach` notice for task containers that joined a loopback forwarder
+ * (go-to-k/cdkd#6142), or `undefined` when none did. Such a container has no
+ * endpoint of its own, so `docker ps --filter network=<name>` lists only the
+ * forwarders. Built with `safeMsg`: the names derive from the template.
+ */
+export function describeDetachedForwarders(state: EcsRunState): string | undefined {
+  const joined = state.forwarders.filter((f) => f.joined);
+  if (joined.length === 0) return undefined;
+  const containers = joined.map((f) => f.container).join(', ');
+  const forwarders = joined.map((f) => f.name).join(', ');
+  return safeMsg`Under the loopback AWS endpoint, these task containers share the network of a forwarder container, so that filter does not list them: ${containers}. Remove them before their forwarders: ${forwarders}.`;
+}
+
+/**
  * Top-level entry point. Mutates `state` as it makes progress so the
  * caller's `cleanup(state)` can roll back partial side effects on any
  * thrown error.
@@ -402,8 +433,6 @@ export async function runEcsTask(
   // remaining condition gating fires inside the per-container
   // `awaitDependencies` step.
   const startedByName = new Map<string, { id: string; container: ResolvedEcsContainer }>();
-  // Docker names of the containers started in a forwarder's namespace.
-  const joinedContainers: string[] = [];
   for (const containerName of startOrder) {
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
@@ -483,7 +512,6 @@ export async function runEcsTask(
       if (joined !== undefined && !started) await removeNamespaceForwarder(state, joined);
       throw err;
     });
-    if (joined !== undefined) joinedContainers.push(dockerName);
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
@@ -492,16 +520,6 @@ export async function runEcsTask(
   }
 
   if (options.detach) {
-    // A container in a forwarder's namespace has no endpoint of its own, so
-    // `docker ps --filter network=<name>` (the CLI's hint) lists only the
-    // forwarders: name the containers.
-    if (joinedContainers.length > 0) {
-      const containers = joinedContainers.join(', ');
-      const forwarders = state.forwarders.map((f) => f.name).join(', ');
-      logger.info(
-        safeMsg`Under the loopback AWS endpoint, task containers share the network of a forwarder container, so a network filter does not list them. Task containers: ${containers}. Remove them before the forwarders (${forwarders}).`
-      );
-    }
     return { exitCode: 0, state };
   }
 
@@ -522,5 +540,15 @@ export async function runEcsTask(
   // containers up and stops their followers, still shows all of it.
   const essentialLogs = state.logStreams.find((l) => l.containerId === essentialId);
   if (essentialLogs) await essentialLogs.stream.drain(CONTAINER_LOG_DRAIN_TIMEOUT_MS);
+  const clash = loopbackPortClash(
+    essential,
+    dockerLoopbackPorts.get(essential.name) ?? [],
+    state.forwarders.some((f) => f.joined && f.container === dockerNames.get(essential.name))
+  );
+  if (exitCode !== 0 && clash !== undefined) {
+    logger.warn(
+      safeMsg`Container ${essential.name} exited with code ${exitCode} and listens on port ${clash}, which is also the loopback AWS endpoint's port: cdkd's forwarder holds 127.0.0.1:${clash} inside the task to reach the endpoint, so the app cannot bind it. Run the endpoint on another port.`
+    );
+  }
   return { exitCode, essentialContainerName: essential.name, state };
 }

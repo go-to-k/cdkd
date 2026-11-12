@@ -4,7 +4,9 @@ import {
   buildDockerRunArgs,
   cleanupEcsRun,
   createEcsRunState,
+  describeDetachedForwarders,
   EcsTaskRunnerError,
+  loopbackPortClash,
   mergeHostGatewayAddHostFlags,
   topoSort,
 } from '../../../src/local/ecs-task-runner.js';
@@ -949,5 +951,39 @@ describe('buildDockerRunArgs namespace-owning forwarder (go-to-k/cdkd#6142)', ()
     const built = buildDockerRunArgs(full());
     expect(built.forwarder).toBeUndefined();
     expect(built.args[built.args.indexOf('--network') + 1]).toBe('cdkd-local-task-xx');
+  });
+});
+
+describe('loopbackPortClash (go-to-k/cdkd#6142)', () => {
+  const c = makeContainer({
+    portMappings: [
+      { containerPort: 53, protocol: 'udp' },
+      { containerPort: 4566, protocol: 'tcp' },
+    ],
+  });
+  it('names a TCP container port that is also a loopback endpoint port', () => {
+    expect(loopbackPortClash(c, [4566], true)).toBe(4566);
+  });
+  it('ignores a container that joined no forwarder, a UDP port, and other ports', () => {
+    expect(loopbackPortClash(c, [4566], false)).toBeUndefined();
+    expect(loopbackPortClash(c, [53], true)).toBeUndefined();
+    expect(loopbackPortClash(c, [9297], true)).toBeUndefined();
+  });
+});
+
+describe('describeDetachedForwarders (go-to-k/cdkd#6142)', () => {
+  it('names only joined containers and their forwarders', () => {
+    const state = createEcsRunState();
+    state.forwarders.push(
+      { name: 'c1-awsfwd', id: 'f1', container: 'c1', joined: true },
+      { name: 'c2-awsfwd', id: 'f2', container: 'c2', joined: false }
+    );
+    const notice = describeDetachedForwarders(state)!;
+    expect(notice).toContain('c1');
+    expect(notice).toContain('c1-awsfwd');
+    expect(notice).not.toContain('c2');
+  });
+  it('is undefined when nothing joined a forwarder', () => {
+    expect(describeDetachedForwarders(createEcsRunState())).toBeUndefined();
   });
 });

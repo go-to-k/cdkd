@@ -26,6 +26,7 @@ import {
 import {
   cleanupEcsRun,
   createEcsRunState,
+  describeDetachedForwarders,
   runEcsTask,
   type EcsRunState,
   type RunEcsTaskOptions,
@@ -441,6 +442,10 @@ export async function localRunTaskCommand(
         `Use 'docker ps -a --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
           `tear down with 'docker rm -f' and 'docker network rm'.`
       );
+      // Under a loopback AWS endpoint a joined task container is not on the
+      // network itself (go-to-k/cdkd#6142), so name it.
+      const forwarderNotice = describeDetachedForwarders(result.state);
+      if (forwarderNotice) logger.info(forwarderNotice);
       // Detach mode skips cleanup — the caller manages container lifecycle —
       // and that includes the profile credentials file, which is
       // mode-0600 but holds LIVE AWS credentials and is bind-mounted into the

@@ -160,6 +160,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   forwarder?: {
     /** The forwarder container's name (`<dockerName>-awsfwd`). */
     name: string;
+    /** {@link dockerName}: the container that joins it. */
+    container: string;
     /** What Docker refuses on a `--network container:` joiner, carried by the forwarder. */
     namespace: LoopbackForwarderNamespace;
     /** This container's `docker run` argv joined to the forwarder's namespace. */
@@ -426,6 +428,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     ...(loopbackPorts.length > 0 && {
       forwarder: {
         name: forwarderName,
+        container: dockerName,
         namespace: {
           network,
           networkAliases: ownerAliases,

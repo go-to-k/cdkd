@@ -208,7 +208,13 @@ export interface EcsRunState {
    * started in the forwarder's namespace; an unjoined forwarder is removed
    * even under `--keep-running` (it holds the container's published ports).
    */
-  forwarders: { name: string; id: string; joined: boolean }[];
+  forwarders: {
+    name: string;
+    id: string;
+    /** The docker name of the task container that joins (or would join) it. */
+    container: string;
+    joined: boolean;
+  }[];
   /** Forwarder failure keys already warned about in this run (once per port). */
   forwarderWarnings?: Set<string>;
   /**

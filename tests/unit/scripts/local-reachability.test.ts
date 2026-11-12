@@ -128,7 +128,7 @@ describe('local reachability critic — the real tree', () => {
 
   it('classifies the three states a module-level rule collapses together', () => {
     const RUNNER = 'src/local/ecs-task-runner.ts';
-    const VALUE_IMPORTS = '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,';
+    const VALUE_IMPORTS = '\n  cleanupEcsRun,\n  createEcsRunState,\n  describeDetachedForwarders,\n  runEcsTask,\n  type EcsRunState,';
     const classOf = (sources?: ReadonlyMap<string, string>) =>
       analyze(sources).modules.find((m) => m.file === RUNNER);
     // LIVE: `cdkd local run-task`'s handler module imports it directly.
@@ -292,7 +292,7 @@ describe('local reachability critic — RED probes against real code', () => {
     // from the ECS task runner (`local-run-task/credentials.ts` imports a type).
     const mutated = withMutation(
       'src/cli/commands/local-run-task/command.ts',
-      '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,',
+      '\n  cleanupEcsRun,\n  createEcsRunState,\n  describeDetachedForwarders,\n  runEcsTask,\n  type EcsRunState,',
       '\n  type EcsRunState,'
     );
     const before = analyze();
@@ -308,7 +308,7 @@ describe('local reachability critic — RED probes against real code', () => {
     // everything below it with it, including files the mutation never named.
     const mutated = withMutation(
       'src/cli/commands/local-run-task/command.ts',
-      '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,',
+      '\n  cleanupEcsRun,\n  createEcsRunState,\n  describeDetachedForwarders,\n  runEcsTask,\n  type EcsRunState,',
       '\n  type EcsRunState,'
     );
     const reported = symbolsReported(analyze(mutated), 'unannotated');

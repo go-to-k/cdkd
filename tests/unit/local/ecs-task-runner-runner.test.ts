@@ -2488,7 +2488,9 @@ describe('runEcsTask — namespace-owning loopback forwarder (go-to-k/cdkd#6142)
       expect(workload).not.toContain(flag);
     }
     expect(workload).toContain('busybox:latest');
-    expect(state.forwarders).toEqual([{ name: fwdName, id: `fwd-${fwdName}`, joined: true }]);
+    expect(state.forwarders).toEqual([
+      { name: fwdName, id: `fwd-${fwdName}`, container: fwdName.replace(/-awsfwd$/, ''), joined: true },
+    ]);
   });
 
   it('removes the forwarders after the containers at teardown', async () => {
@@ -2511,8 +2513,8 @@ describe('runEcsTask — namespace-owning loopback forwarder (go-to-k/cdkd#6142)
   it('keeps the joined forwarders under --keep-running, and removes one nothing joined', async () => {
     const state = createEcsRunState();
     state.startedContainers.push({ name: 'a', id: 'c1' });
-    state.forwarders.push({ name: 'a-awsfwd', id: 'f1', joined: true });
-    state.forwarders.push({ name: 'b-awsfwd', id: 'f2', joined: false });
+    state.forwarders.push({ name: 'a-awsfwd', id: 'f1', container: 'a', joined: true });
+    state.forwarders.push({ name: 'b-awsfwd', id: 'f2', container: 'b', joined: false });
     await cleanupEcsRun(state, { keepRunning: true });
     expect(dockerRunnerStubs.removeContainer.mock.calls.map((c) => c[0])).toEqual(['f2']);
     expect(state.forwarders.map((f) => f.id)).toEqual(['f1']);
@@ -2555,6 +2557,52 @@ describe('runEcsTask — namespace-owning loopback forwarder (go-to-k/cdkd#6142)
     expect(workload[workload.indexOf('--network') + 1]).toBe('cdkd-local-task-fake');
     expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/Unable to find image locally/));
     expect(state.forwarders).toEqual([]);
+  });
+
+  it('warns for EACH container whose forwarder fails to start, not once per run', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring(forwardWiring);
+    const base = responder('unused');
+    captured.responder = (cmd: string, args: string[]) =>
+      args[0] === 'run' && isForwarder(args)
+        ? { err: new Error('exit 125'), stderr: 'Unable to find image locally' }
+        : base(cmd, args);
+    const a = makeContainer({ name: 'a', essential: true, image: { kind: 'public', uri: 'busybox:latest' } });
+    const b = makeContainer({ name: 'b', essential: false, image: { kind: 'public', uri: 'busybox:latest' } });
+    await runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), createEcsRunState());
+    const starts = warnSpy.mock.calls.filter((c) => /Unable to find image locally/.test(String(c[0])));
+    expect(starts).toHaveLength(2);
+    expect(String(starts[0]![0])).toContain("container 'a'");
+    expect(String(starts[1]![0])).toContain("container 'b'");
+  });
+
+  it('still warns once per port for a FAIL report across containers', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring(forwardWiring);
+    captured.responder = responder('CDKL-FWD FAIL 4566 ECONNREFUSED 192.168.65.254');
+    const a = makeContainer({ name: 'a', essential: true, image: { kind: 'public', uri: 'busybox:latest' } });
+    const b = makeContainer({ name: 'b', essential: false, image: { kind: 'public', uri: 'busybox:latest' } });
+    await runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), createEcsRunState());
+    const fails = warnSpy.mock.calls.filter((c) => /cannot reach port 4566/.test(String(c[0])));
+    expect(fails).toHaveLength(1);
+  });
+
+  it('names the endpoint port clash when the essential container exits non-zero', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring(forwardWiring);
+    const base = responder('CDKL-FWD READY x');
+    captured.responder = (cmd: string, args: string[]) =>
+      args[0] === 'wait' ? { stdout: '1\n' } : base(cmd, args);
+    const c = makeContainer({
+      name: 'app',
+      image: { kind: 'public', uri: 'busybox:latest' },
+      portMappings: [{ containerPort: 4566, hostPort: 4566, protocol: 'tcp' }],
+    });
+    const result = await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(result.exitCode).toBe(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/app exited with code 1 and listens on port 4566.*loopback AWS endpoint's port/)
+    );
   });
 
   it('a ^C during the readiness wait stops the task and leaves the forwarder for teardown', async () => {
