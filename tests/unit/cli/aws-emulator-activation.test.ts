@@ -11,6 +11,7 @@ vi.mock('cdk-local/internal', async (importOriginal) => {
 });
 
 import {
+  getActiveWorkloadAwsWiring,
   getAwsEndpointOverride,
   setActiveWorkloadAwsWiring,
   setAwsEndpointOverride,
@@ -57,11 +58,28 @@ describe('activateAwsEmulatorForCommand', () => {
         caPem: 'PEM',
         credentials: { accessKeyId: 'EMU', secretAccessKey: 's' },
       });
+      // Held, so its exit hook disposes the CA temp copy.
+      expect(getActiveWorkloadAwsWiring()?.caHostPath).toBe(ca);
       const lines = info.mock.calls.map((c) => String(c[0]));
       expect(lines).toEqual(['Using AWS Emulator at https://127.0.0.1:9331 for every AWS call.']);
     } finally {
       info.mockRestore();
     }
+  });
+
+  it('a wiring that is not in emulator mode is refused, never run on without an override', async () => {
+    mockResolve.mockResolvedValueOnce({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => {},
+    });
+    const err = await activateAwsEmulatorForCommand('https://127.0.0.1:1').catch((e: unknown) => e);
+    expect((err as CdkdError).code).toBe('AWS_EMULATOR_UNAVAILABLE');
+    expect(getAwsEndpointOverride()).toBeUndefined();
   });
 
   it('an unreachable emulator is AWS_EMULATOR_UNAVAILABLE, not the cdkd local code', async () => {

@@ -34,7 +34,11 @@ export async function activateAwsEmulatorForCommand(
     // Held so its exit hook disposes the CA / trust-store temp copies.
     setActiveWorkloadAwsWiring(wiring);
     const endpoint = wiring.emulatorEndpoint;
-    if (wiring.mode !== 'emulator' || endpoint === undefined) return;
+    if (wiring.mode !== 'emulator' || endpoint === undefined) {
+      // Only reachable if the flag and cdk-local's resolver disagree: refuse
+      // rather than run on with no override.
+      throw new Error('--aws-emulator: the AWS Emulator wiring did not resolve to an endpoint.');
+    }
     setAwsEndpointOverride({
       endpoint: endpoint.url,
       ...(wiring.caHostPath !== undefined && { caPem: readFileSync(wiring.caHostPath, 'utf8') }),
