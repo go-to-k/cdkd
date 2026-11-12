@@ -33,14 +33,25 @@ describe('Cloud Control poll schedule', () => {
       sleeps.push(ms);
       return Promise.resolve();
     });
-    // Six IN_PROGRESS answers, then SUCCESS.
-    let poll = 0;
-    mockCloudControlSend.mockImplementation(() =>
-      Promise.resolve({
-        ProgressEvent: { OperationStatus: poll++ < 6 ? 'IN_PROGRESS' : 'SUCCESS', Identifier: 'x' },
-      })
-    );
+    answer(Array(6).fill('IN_PROGRESS'));
   });
+
+  /**
+   * Poll answers in order, then SUCCESS: a status string, or an Error the
+   * status call REJECTS with (a transport failure the poll re-polls through).
+   */
+  function answer(seq: (string | Error)[]): void {
+    let poll = 0;
+    mockCloudControlSend.mockReset();
+    mockCloudControlSend.mockImplementation(() => {
+      const next = seq[poll++];
+      if (next instanceof Error) return Promise.reject(next);
+      return Promise.resolve({
+        ProgressEvent: { OperationStatus: next ?? 'SUCCESS', Identifier: 'x' },
+      });
+    });
+  }
+  const transport = (): Error => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -60,6 +71,24 @@ describe('Cloud Control poll schedule', () => {
   it('real AWS with a source registered but no emulator active: unchanged', async () => {
     setAwsEndpointOverrideSource(() => undefined);
     expect(await waitAndRecord()).toEqual([1000, 1500, 2250, 3375, 5063, 7595]);
+  });
+
+  it('real AWS: the backoff is capped at 10 s', async () => {
+    answer(Array(9).fill('IN_PROGRESS'));
+    expect(await waitAndRecord()).toEqual([
+      1000, 1500, 2250, 3375, 5063, 7595, 10000, 10000, 10000,
+    ]);
+  });
+
+  it('a transport re-poll and an unknown status keep each schedule', async () => {
+    answer([transport(), 'SOMETHING_NEW', 'IN_PROGRESS']);
+    vi.spyOn(provider.logger, 'warn').mockImplementation(() => {});
+    expect(await waitAndRecord()).toEqual([1000, 1500, 2250]);
+    sleeps = [];
+    answer([transport(), 'SOMETHING_NEW', 'IN_PROGRESS']);
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
+    const fixed = provider.EMULATOR_POLL_INTERVAL_MS;
+    expect(await waitAndRecord()).toEqual([fixed, fixed, fixed]);
   });
 
   it('--aws-emulator: a fixed short interval', async () => {

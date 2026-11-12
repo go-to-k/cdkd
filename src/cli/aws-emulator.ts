@@ -36,7 +36,8 @@ import {
   resolveAwsEmulatorOption,
 } from 'cdk-local/internal';
 
-import { activateLocalAwsWiring, assertAwsEmulatorValue } from '../local/local-aws-wiring.js';
+import { assertAwsEmulatorValue } from '../local/local-aws-wiring.js';
+import { activateAwsEmulatorForCommand } from './aws-emulator-activation.js';
 import { awsEmulatorOption } from './options/aws-emulator.js';
 import { setAwsEndpointOverrideSource } from '../utils/aws-client-defaults.js';
 import {
@@ -171,7 +172,7 @@ export function prepareAwsEmulatorForCommand(
   pointEnvironmentAtEmulator(url, endpoint.port, caBundle);
   if (local) return undefined;
   setAwsEndpointOverrideSource(getAwsEndpointOverride);
-  return () => onStderr(() => activateLocalAwsWiring({ awsEmulator: flag }));
+  return () => onStderr(() => activateAwsEmulatorForCommand(flag));
 }
 
 /**

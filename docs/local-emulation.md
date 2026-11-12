@@ -351,14 +351,11 @@ On a `cdkd local` command the flag also drops `--profile` and your credential
 variables, and keeps the `--role-arn` hop, which the emulator answers.
 
 > [!NOTE]
-> A REST API (`AWS::ApiGateway::RestApi`, e.g. `LambdaRestApi`) that cdkd
-> creates through Cloud Control does not work on AWS Emulator: the emulator
-> returns an identifier that is not the API id, so its resources and methods
-> cannot be created. When [Supported resources](supported-resources.md) lists
-> an SDK provider for `AWS::ApiGateway::RestApi`, a new REST API is created
-> through it and is not affected; one already recorded on Cloud Control stays
-> there, so destroy and redeploy that stack. Otherwise deploy REST API stacks
-> with `cdk deploy` and run them with `--from-cfn-stack`.
+> cdkd creates a REST API (`AWS::ApiGateway::RestApi`, e.g. `LambdaRestApi`)
+> through its SDK provider, which works on AWS Emulator. A REST API that an
+> older cdkd created through Cloud Control is still recorded on that route,
+> where the emulator returns an identifier that is not the API id, so its
+> resources and methods fail. Destroy and redeploy that stack once.
 
 `CDKD_AWS_EMULATOR` applies to every command, so a shell that exports it for
 `cdkd local` also deploys into the emulator.

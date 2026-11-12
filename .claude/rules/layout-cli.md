@@ -85,7 +85,8 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
   Split from `index.ts`, whose import runs `main()`.
 - **src/cli/aws-emulator.ts** - `--aws-emulator` on every `--profile` command
-  (#6138): drops the real identity, points the env at the emulator. A client
+  (#6138): drops the real identity, points the env at the emulator, activates
+  via `aws-emulator-activation.ts` (not `cdkd local`'s path). A client
   setting `credentials` / `endpoint` past `awsClientDefaults` needs a reviewed
   entry in `aws-emulator-client-factories.test.ts`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on

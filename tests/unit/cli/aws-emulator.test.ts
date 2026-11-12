@@ -5,18 +5,17 @@ import { join } from 'node:path';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/local/local-aws-wiring.js')>();
+vi.mock('../../../src/cli/aws-emulator-activation.js', () => ({
   // The real activation probes the emulator's health endpoint over the network.
-  return { ...actual, activateLocalAwsWiring: vi.fn(async () => {}) };
-});
+  activateAwsEmulatorForCommand: vi.fn(async () => {}),
+}));
 
 import { buildProgram } from '../../../src/cli/program.js';
 import {
   defaultProfileRegion,
   prepareAwsEmulatorForCommand,
 } from '../../../src/cli/aws-emulator.js';
-import { activateLocalAwsWiring } from '../../../src/local/local-aws-wiring.js';
+import { activateAwsEmulatorForCommand } from '../../../src/cli/aws-emulator-activation.js';
 import { getLogger, isStdoutReservedForPayload } from '../../../src/utils/logger.js';
 import { pasteableRunFlags } from '../../../src/utils/pasteable-run-context.js';
 import {
@@ -60,7 +59,7 @@ let saved: Record<string, string | undefined>;
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   for (const k of ENV_KEYS) delete process.env[k];
-  vi.mocked(activateLocalAwsWiring).mockClear();
+  vi.mocked(activateAwsEmulatorForCommand).mockClear();
 });
 
 afterEach(() => {
@@ -106,8 +105,17 @@ describe('registration', () => {
     ['state', 'destroy'],
     ['state', 'orphan'],
     ['state', 'info'],
+    // Declared on the ancestor `events`, inherited by its subcommand.
+    ['events'],
   ])('cdkd %s declares --aws-emulator', (...path) => {
     expect(declares(find(program, path), '--aws-emulator')).toBe(true);
+  });
+
+  it('a subcommand inheriting the flag from its parent honours it (events prune)', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    await parse(['events', 'prune'], ['MyStack', '--aws-emulator=https://127.0.0.1:1']);
+    expect(process.env['AWS_PROFILE']).toBeUndefined();
+    expect(activateAwsEmulatorForCommand).toHaveBeenCalledWith('https://127.0.0.1:1');
   });
 
   it('every command declaring --profile declares --aws-emulator exactly once', () => {
@@ -195,7 +203,7 @@ describe('under the flag (a non-local command)', () => {
       expect(process.env['AWS_CONFIG_FILE']).toBe(devNull);
       expect(process.env['AWS_SHARED_CREDENTIALS_FILE']).toBe(devNull);
       expect(process.env['AWS_EC2_METADATA_DISABLED']).toBe('true');
-      expect(activateLocalAwsWiring).toHaveBeenCalledWith({ awsEmulator: EMULATOR_URL });
+      expect(activateAwsEmulatorForCommand).toHaveBeenCalledWith(EMULATOR_URL);
       // cdkd's clients follow cdk-local's override once it is activated.
       setAwsEndpointOverride({ endpoint: EMULATOR_URL });
       try {
@@ -221,7 +229,7 @@ describe('under the flag (a non-local command)', () => {
 
   it('prints its notices off stdout, which a payload command reserves only later', async () => {
     process.env['AWS_PROFILE'] = 'prod';
-    vi.mocked(activateLocalAwsWiring).mockImplementationOnce(async () => {
+    vi.mocked(activateAwsEmulatorForCommand).mockImplementationOnce(async () => {
       getLogger().info('activation line');
     });
     const reservedAt: boolean[] = [];
@@ -246,7 +254,7 @@ describe('under the flag (a non-local command)', () => {
     const opts = await parse(['state', 'list'], ['--profile', 'prod']);
     expect(opts['profile']).toBeUndefined();
     expect(process.env['AWS_PROFILE']).toBeUndefined();
-    expect(activateLocalAwsWiring).toHaveBeenCalledTimes(1);
+    expect(activateAwsEmulatorForCommand).toHaveBeenCalledTimes(1);
     // Only a TYPED flag rides pasteable hints; the env reaches them from the shell.
     expect(pasteableRunFlags().awsEmulator).toBeUndefined();
   });
@@ -277,8 +285,8 @@ describe('under the flag (a non-local command)', () => {
   });
 
   it('an unreachable emulator is rendered and exits 1, never a Fatal stack', async () => {
-    vi.mocked(activateLocalAwsWiring).mockRejectedValueOnce(
-      new CdkdError('--aws-emulator https://127.0.0.1:1: no AWS Emulator answers', 'LOCAL_AWS_WIRING_FAILED')
+    vi.mocked(activateAwsEmulatorForCommand).mockRejectedValueOnce(
+      new CdkdError('--aws-emulator https://127.0.0.1:1: no AWS Emulator answers', 'AWS_EMULATOR_UNAVAILABLE')
     );
     const program = buildProgram();
     const action = vi.fn();
@@ -352,7 +360,7 @@ describe('under the flag (a non-local command)', () => {
     expect(process.env['AWS_PROFILE']).toBe('prod');
     expect(process.env['AWS_ACCESS_KEY_ID']).toBe('HOSTKEYID00000000000');
     expect(process.env['AWS_ENDPOINT_URL']).toBeUndefined();
-    expect(activateLocalAwsWiring).not.toHaveBeenCalled();
+    expect(activateAwsEmulatorForCommand).not.toHaveBeenCalled();
   });
 
   it('refuses a credential-shaped value before anything runs', async () => {
@@ -362,7 +370,7 @@ describe('under the flag (a non-local command)', () => {
     expect(() => prepareAwsEmulatorForCommand(deploy)).toThrow(
       /user name, password, query or fragment/
     );
-    expect(activateLocalAwsWiring).not.toHaveBeenCalled();
+    expect(activateAwsEmulatorForCommand).not.toHaveBeenCalled();
   });
 });
 
@@ -386,6 +394,6 @@ describe('under the flag (a `cdkd local` command)', () => {
     expect(process.env['AWS_PROFILE']).toBeUndefined();
     expect(process.env['AWS_ACCESS_KEY_ID']).toBeUndefined();
     expect(process.env['AWS_ENDPOINT_URL']).toBe(EMULATOR_URL);
-    expect(activateLocalAwsWiring).not.toHaveBeenCalled();
+    expect(activateAwsEmulatorForCommand).not.toHaveBeenCalled();
   });
 });
