@@ -1501,6 +1501,7 @@
         "lambda-esm-documentdb",
         "neptune-fix-forward-orphan",
         "neptune-restore",
+        "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
         "remove-protection",
         "schema-v14-to-v15-migration",
