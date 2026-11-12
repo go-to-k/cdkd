@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 139,
+    "classifiedCount": 140,
     "covered": 67,
-    "noArnAttr": 72,
+    "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0
   },
@@ -34,6 +34,12 @@
     },
     {
       "resourceType": "AWS::ApiGateway::Resource",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RestApi",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

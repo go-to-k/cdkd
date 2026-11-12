@@ -158,6 +158,35 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::ApiGateway::RestApi',
+    {
+      handled: new Set<string>([
+        'ApiKeySourceType',
+        'BinaryMediaTypes',
+        'Body',
+        'BodyS3Location',
+        'CloneFrom',
+        'Description',
+        'DisableExecuteApiEndpoint',
+        'EndpointAccessMode',
+        'EndpointConfiguration',
+        'FailOnWarnings',
+        'MinimumCompressionSize',
+        'Mode',
+        'Name',
+        'Parameters',
+        'Policy',
+        'SecurityPolicy',
+        'Tags',
+        'Version',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['RestApiId', 'RootResourceId']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::ApiGateway::Stage',
     {
       handled: new Set<string>([

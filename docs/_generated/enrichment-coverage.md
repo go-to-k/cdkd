@@ -16,8 +16,8 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **139**
-- Fully enriched: **48**
+- Classified types (cached schema): **140**
+- Fully enriched: **49**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **73**
@@ -116,6 +116,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGateway::Deployment` | yes | enriched | `DeploymentId` (allow) |
 | `AWS::ApiGateway::Method` | yes | no-computed-attr | _(none)_ |
 | `AWS::ApiGateway::Resource` | yes | enriched | `ResourceId` (allow) |
+| `AWS::ApiGateway::RestApi` | yes | enriched | `RestApiId` (OK), `RootResourceId` (OK) |
 | `AWS::ApiGateway::Stage` | yes | no-computed-attr | _(none)_ |
 | `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (allow), `ExecuteApiArn` (GAP) |
 | `AWS::ApiGatewayV2::Authorizer` | yes | enriched | `AuthorizerId` (allow) |
@@ -255,7 +256,6 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 
 These types have an `enrichResourceAttributes` case but no cached CFn schema, so their readOnly coverage cannot be verified offline. Refresh the fixture (`node scripts/refresh-cfn-schemas.mjs`) to bring them under the matrix.
 
-- `AWS::ApiGateway::RestApi`
 - `AWS::Backup::BackupPlan`
 - `AWS::Backup::BackupSelection`
 - `AWS::Backup::BackupVault`

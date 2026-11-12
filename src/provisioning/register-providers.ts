@@ -199,6 +199,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   registry.register('AWS::ApiGateway::Deployment', apigwProvider);
   registry.register('AWS::ApiGateway::Stage', apigwProvider);
   registry.register('AWS::ApiGateway::Method', apigwProvider);
+  registry.register('AWS::ApiGateway::RestApi', apigwProvider);
 
   // API Gateway V2 (HTTP API)
   const apigwV2Provider = new ApiGatewayV2Provider();

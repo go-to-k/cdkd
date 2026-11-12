@@ -26,9 +26,9 @@
  *      `src/analyzer/diff-calculator.ts` consults the hand-authored
  *      `ReplacementRulesRegistry` first and falls back to
  *      `create-only-properties.ts`'s schema resolution for every type the
- *      registry does not cover, which is all but three of tier 2
- *      (`AWS::ApiGateway::RestApi`, `AWS::EC2::Volume`, `AWS::Lambda::Version`
- *      have rules; the other 1369 take the schema fallback). A registry rule is
+ *      registry does not cover, which is all but two of tier 2
+ *      (`AWS::EC2::Volume` and `AWS::Lambda::Version` have rules; the rest
+ *      take the schema fallback). A registry rule is
  *      deliberately NOT an exemption here: it makes the replacement
  *      classification more certain, not less.
  *   2. At least one DATA-BEARING SIGNAL fires on the schema's own property

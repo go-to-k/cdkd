@@ -334,6 +334,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
       // go-to-k/cdkd#5380: the engine's sink for what a failed update left unsettled.
       'markUnsettled',
       'maskSecrets',
+      'noEchoOnlyChangedProperties',
       'recordedAttributes',
       // go-to-k/cdkd#6104: the record's accepted drops, evidence like the attributes.
       'recordedCreateOnlyDrops',

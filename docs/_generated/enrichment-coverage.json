@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 139,
-    "enriched": 48,
+    "classifiedCount": 140,
+    "enriched": 49,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
     "sdkFallbackGap": 73,
@@ -82,6 +82,30 @@
           "name": "ResourceId",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RestApi",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "RestApiId",
+        "RootResourceId"
+      ],
+      "enrichedKeys": [
+        "RestApiId",
+        "RootResourceId"
+      ],
+      "attributes": [
+        {
+          "name": "RestApiId",
+          "status": "enriched"
+        },
+        {
+          "name": "RootResourceId",
+          "status": "enriched"
         }
       ],
       "gaps": []
@@ -3436,7 +3460,6 @@
     }
   ],
   "enrichedWithoutCachedSchema": [
-    "AWS::ApiGateway::RestApi",
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",

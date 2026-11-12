@@ -19,6 +19,7 @@ import {
   METHOD_SETTING_PATCH_FIELDS,
   methodSettingKey,
 } from './shared.js';
+import { REST_API_WRITE_ONLY_PATHS } from './rest-api.js';
 
 /**
  * Authorizer `ProviderARNs` and Method `AuthorizationScopes` are unordered:
@@ -28,6 +29,8 @@ import {
  * clear on the template-`properties` baseline (go-to-k/cdkd#5408).
  */
 /**
+ * RestApi: a `Policy` written as JSON text is parsed, as the read-back is.
+ *
  * Method `AuthorizationScopes` is a set on the update path (see
  * `updateMethod`), so a repeated scope is compared once: a template
  * declaring `['a', 'a']` against a live `['a']` is not drift
@@ -38,15 +41,34 @@ export function canonicalizeDriftProperties(
   resourceType: string,
   properties: Record<string, unknown>
 ): Record<string, unknown> {
+  if (resourceType === 'AWS::ApiGateway::RestApi') {
+    // A Policy the template wrote as JSON TEXT is compared as the document
+    // the read-back parses it into (go-to-k/cdkd#6139).
+    const key = 'Policy';
+    const policy = properties[key];
+    if (typeof policy !== 'string') return properties;
+    try {
+      return { ...properties, [key]: JSON.parse(policy) as unknown };
+    } catch {
+      return properties;
+    }
+  }
   if (resourceType !== 'AWS::ApiGateway::Method') return properties;
   const scopes = properties['AuthorizationScopes'];
   if (!Array.isArray(scopes) || new Set(scopes).size === scopes.length) return properties;
   return { ...properties, AuthorizationScopes: [...new Set(scopes)] };
 }
 
+/** RestApi's write-only inputs are never read back (go-to-k/cdkd#6139). */
+export function getDriftUnknownPaths(this: ApiGatewayProvider, resourceType: string): string[] {
+  return resourceType === 'AWS::ApiGateway::RestApi' ? [...REST_API_WRITE_ONLY_PATHS] : [];
+}
+
 export function getDriftUnorderedPaths(this: ApiGatewayProvider, resourceType: string): string[] {
   if (resourceType === 'AWS::ApiGateway::Authorizer') return ['ProviderARNs'];
   if (resourceType === 'AWS::ApiGateway::Method') return ['AuthorizationScopes'];
+  // API Gateway lists a REST API's binary media types in its own order.
+  if (resourceType === 'AWS::ApiGateway::RestApi') return ['BinaryMediaTypes'];
   return [];
 }
 
@@ -83,6 +105,8 @@ export async function readCurrentState(
       return this.readCurrentStateDeployment(physicalId, properties);
     case 'AWS::ApiGateway::Stage':
       return this.readCurrentStateStage(physicalId, properties);
+    case 'AWS::ApiGateway::RestApi':
+      return this.readCurrentStateRestApi(physicalId, properties);
     default:
       return undefined;
   }
@@ -333,9 +357,8 @@ export async function readCurrentStateMethod(
  * walk every RestApi in the account, then every sub-resource within
  * each, which is impractical and error-prone.
  *
- * `AWS::ApiGateway::RestApi` itself is handled by the Cloud Control
- * API fallback (also explicit-override only — see
- * `cloud-control-provider.ts`).
+ * `AWS::ApiGateway::RestApi` itself is verified with `GetRestApi`
+ * (`importRestApi`, also explicit-override only).
  *
  * Users adopting an existing API Gateway should pass
  * `--resource <logicalId>=<physicalId>` for each sub-resource; the
@@ -356,11 +379,11 @@ export async function readCurrentStateMethod(
  * unambiguously scalar refuses a composite up front, where the user can
  * still act on it.
  */
-// eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
 export async function importImpl(
   this: ApiGatewayProvider,
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
+  if (input.resourceType === 'AWS::ApiGateway::RestApi') return await this.importRestApi(input);
   if (input.knownPhysicalId) {
     // Scoped to Resource deliberately: `Method` IS a composite, and this
     // type cannot take the #614 Cloud-Control route (all three of its CFn

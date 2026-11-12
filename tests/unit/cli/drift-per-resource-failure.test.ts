@@ -1935,7 +1935,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     base.state.resources['Z1Custom'] = resource('Custom::Thing', { ServiceToken: 'arn' });
     // Deny-listed for the Cloud Control fallback: reported `unsupported`
     // without a read, with or without the breaker.
-    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Name: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::EC2::LaunchTemplate', { LaunchTemplateName: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
 
@@ -1997,16 +1997,16 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
 
   it('a deny-listed type whose provider DOES read is aborted like any provider read', async () => {
     const base = stackOf('BBBBB');
-    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Name: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::EC2::LaunchTemplate', { LaunchTemplateName: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
     const lambdaProvider = mockRegistryGetProvider.getMockImplementation()!;
     mockRegistryGetProvider.mockImplementation((type: string) =>
-      type === 'AWS::ApiGateway::RestApi'
+      type === 'AWS::EC2::LaunchTemplate'
         ? {
             readCurrentState: async (_p: string, logicalId: string) => {
               reads.push(logicalId);
-              return { Name: 'api' };
+              return { LaunchTemplateName: 'api' };
             },
           }
         : lambdaProvider(type)

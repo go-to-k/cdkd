@@ -457,17 +457,29 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
     ]),
   });
 
-  // API Gateway RestApi
+  // API Gateway RestApi — no property is create-only: CloudFormation renames
+  // the API in place (same id) and updates every other property in place,
+  // a changed Body included (CFn A/B in us-east-1, go-to-k/cdkd#6139).
   this.rules.set('AWS::ApiGateway::RestApi', {
-    replacementProperties: new Set([
-      'Name', // Changing API name can require replacement in some cases
-    ]),
+    replacementProperties: new Set(),
     updateableProperties: new Set([
+      'Name',
       'Description',
+      'Version',
+      'Body',
+      'BodyS3Location',
+      'Mode',
+      'FailOnWarnings',
+      'Parameters',
+      'CloneFrom',
       'Policy',
       'EndpointConfiguration',
       'BinaryMediaTypes',
       'MinimumCompressionSize',
+      'ApiKeySourceType',
+      'DisableExecuteApiEndpoint',
+      'SecurityPolicy',
+      'EndpointAccessMode',
       'Tags',
     ]),
   });

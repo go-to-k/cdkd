@@ -18,6 +18,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ['AWS::ApiGateway::Deployment', [['DeploymentCanarySettings'], ['RestApiId']]],
   ['AWS::ApiGateway::Method', [['HttpMethod'], ['ResourceId'], ['RestApiId']]],
   ['AWS::ApiGateway::Resource', [['ParentId'], ['PathPart'], ['RestApiId']]],
+  ['AWS::ApiGateway::RestApi', []],
   ['AWS::ApiGateway::Stage', [['RestApiId'], ['StageName']]],
   ['AWS::ApiGatewayV2::Api', [['ProtocolType']]],
   ['AWS::ApiGatewayV2::Authorizer', [['ApiId']]],

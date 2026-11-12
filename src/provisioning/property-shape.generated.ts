@@ -22,6 +22,10 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"AuthorizationScopes":"array","Integration":"object","Integration.CacheKeyParameters":"array","Integration.IntegrationResponses":"array","Integration.IntegrationResponses[]":"object","Integration.IntegrationResponses[].ResponseParameters":"object","Integration.IntegrationResponses[].ResponseTemplates":"object","Integration.RequestParameters":"object","Integration.RequestTemplates":"object","MethodResponses":"array","MethodResponses[]":"object","MethodResponses[].ResponseModels":"object","MethodResponses[].ResponseParameters":"object","RequestModels":"object","RequestParameters":"object"}',
   ],
   [
+    'AWS::ApiGateway::RestApi',
+    '{"BinaryMediaTypes":"array","BodyS3Location":"object","EndpointConfiguration":"object","EndpointConfiguration.Types":"array","EndpointConfiguration.VpcEndpointIds":"array","Tags":"array","Tags[]":"object"}',
+  ],
+  [
     'AWS::ApiGateway::Stage',
     '{"AccessLogSetting":"object","CanarySetting":"object","CanarySetting.StageVariableOverrides":"object","MethodSettings":"array","MethodSettings[]":"object","Tags":"array","Tags[]":"object","Variables":"object"}',
   ],

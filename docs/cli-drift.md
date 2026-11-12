@@ -357,7 +357,7 @@ A type that neither route can read is reported as drift unknown.
 
 | Service | Types |
 | --- | --- |
-| `AWS::ApiGateway` | `Account`, `Authorizer`, `Deployment`, `Method`, `Resource`, `Stage` |
+| `AWS::ApiGateway` | `Account`, `Authorizer`, `Deployment`, `Method`, `Resource`, `RestApi`, `Stage` |
 | `AWS::ApiGatewayV2` | `Api`, `Authorizer`, `Integration`, `Route`, `Stage` |
 | `AWS::AppSync` | `ApiKey`, `DataSource`, `GraphQLApi`, `GraphQLSchema`, `Resolver` |
 | `AWS::AutoScaling` | `AutoScalingGroup` |
@@ -421,14 +421,13 @@ described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md).
 
 ### Types that are always drift unknown
 
-For five types, what Cloud Control returns differs from what state holds even
+For four types, what Cloud Control returns differs from what state holds even
 when nothing changed, or Cloud Control cannot address the resource by its
 physical id. Asking Cloud Control would report false drift or a read failure
 on every run, so cdkd reports them as drift unknown.
 
 | Type | Reason |
 | --- | --- |
-| `AWS::ApiGateway::RestApi` | `Body` / `BodyS3Location` are write-only inputs the response omits. |
 | `AWS::EC2::LaunchTemplate` | The response carries version-bumped `LaunchTemplateData` and a synthetic `LatestVersionNumber`. |
 | `AWS::CloudWatch::AnomalyDetector` | Its physical id is a cdkd-derived descriptor Cloud Control cannot address. |
 | `AWS::EMR::InstanceFleetConfig`, `AWS::EMR::InstanceGroupConfig` | The physical id is the bare fleet / group id; Cloud Control needs the cluster id with it. |
