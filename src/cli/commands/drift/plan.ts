@@ -122,7 +122,7 @@ export function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink)
         lines.push(
           `  ~ ${reportResource(o)}\n` +
             `    SKIPPED — a 'cdkd import' run refused this resource's observed-properties ` +
-            `baseline; accepting would write the AWS readback into properties it already ` +
+            `baseline; accepting would write a baseline seeded from properties it already ` +
             `found untrustworthy. ` +
             (refusedBaselineRemedy(report.state.resources[o.logicalId]) ??
               `Deploy a change to this resource first.`) +

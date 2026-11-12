@@ -569,7 +569,7 @@ describe('the --accept / --revert plans treat record- and readback-derived value
         '— every drifted change below is refused (the run still writes the positioned re-redaction):\n' +
         '  ~ R (T)\n' +
         "    SKIPPED — a 'cdkd import' run refused this resource's observed-properties baseline; " +
-        'accepting would write the AWS readback into properties it already found untrustworthy. ' +
+        'accepting would write a baseline seeded from properties it already found untrustworthy. ' +
         'Deploy a change to this resource first.\n'
     );
     const skipped = render(

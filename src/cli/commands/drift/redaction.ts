@@ -24,9 +24,6 @@ import {
   maskReadbackAtCoordinates,
   valueAtCoordinate,
   maskAtCoordinates,
-  readbackPathFor,
-  type NoEchoCoordinate,
-  canonicalCoordinates,
 } from '../../../deployment/secret-redaction.js';
 import type { ResourceState } from '../../../types/state.js';
 import type { SecretPathSet } from './secret-resolution.js';
@@ -548,8 +545,8 @@ export function redactDriftChanges(
  * a changed parent path, or a provider's echo of what the revert sent, can put
  * the plaintext at a marked leaf. An `observedProperties` baseline is a
  * readback, so a list is paired by its identity field and masked whole where
- * nothing pairs; a `properties` baseline is masked by index, as the deploy
- * writes it.
+ * nothing pairs; a baseline in the record's order (`properties`, or one
+ * `--accept` seeds from them) is masked by index, as the deploy writes it.
  */
 /** @internal Exported for its unit tests. */
 export function maskMarkedNoEchoBaseline(
@@ -557,35 +554,18 @@ export function maskMarkedNoEchoBaseline(
   record: ResourceState,
   observed: boolean
 ): Record<string, unknown> {
-  return maskMarkedNoEchoBaselineWithLeaves(baseline, record, observed).baseline;
-}
-
-/**
- * {@link maskMarkedNoEchoBaseline}, plus the record's `noEchoLeaves` widened by
- * every list the `properties` arm masked whole (absent when none was).
- *
- * @internal Exported for its unit tests.
- */
-export function maskMarkedNoEchoBaselineWithLeaves(
-  baseline: Record<string, unknown>,
-  record: ResourceState,
-  observed: boolean
-): { baseline: Record<string, unknown>; noEchoLeaves?: (string | number)[][] } {
   const marked = noEchoLeavesOf(record) ?? [];
   // An observed baseline also at every `***` leaf of `properties`, named or
   // not: a pre-v11 record names no coordinate for a value it holds only as
   // the mask (as the deploy's capture masks it).
   if (observed) {
     const coordinates = [...marked, ...maskedLeafCoordinatesOf(record.properties ?? {})];
-    return {
-      baseline:
-        coordinates.length === 0
-          ? baseline
-          : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates),
-    };
+    return coordinates.length === 0
+      ? baseline
+      : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
   }
-  if (marked.length === 0) return { baseline };
-  // By index, except where an accepted value REPLACED the list a coordinate
+  if (marked.length === 0) return baseline;
+  // By index, except where a written value REPLACED the list a coordinate
   // runs through (AWS's order, not the record's): that coordinate is paired
   // through the list's identity field against the record instead, which masks
   // the whole list where nothing pairs.
@@ -613,18 +593,11 @@ export function maskMarkedNoEchoBaselineWithLeaves(
     baseline,
     marked.filter((coordinate) => !replaced.includes(coordinate))
   );
-  if (replaced.length === 0) return { baseline: byIndex };
-  // A list masked WHOLE (nothing paired an element) is named by its own path,
-  // as the rollback replay names it, so every `***` the record holds stays a
-  // coordinate it lists: drift and export read an unlisted mask as another
-  // population's.
-  const widened = replaced
-    .map((coordinate) => readbackPathFor(byIndex, recorded, coordinate))
-    .filter(
-      (path, i): path is NoEchoCoordinate => path !== undefined && path.length < replaced[i]!.length
-    );
-  return {
-    baseline: maskReadbackAtCoordinates(byIndex, recorded, replaced),
-    ...(widened.length > 0 && { noEchoLeaves: canonicalCoordinates([...marked, ...widened]) }),
-  };
+  if (replaced.length === 0) return byIndex;
+  // No `noEchoLeaves` widening for a list masked WHOLE here: the one writer
+  // that replaces a list on this arm is `--accept` seeding a baseline from
+  // `properties`, which it writes to `observedProperties` since
+  // go-to-k/cdkd#6125 — where a whole-masked list is what the readback arm
+  // above writes too. `--revert` only DROPS keys from `properties`.
+  return maskReadbackAtCoordinates(byIndex, recorded, replaced);
 }

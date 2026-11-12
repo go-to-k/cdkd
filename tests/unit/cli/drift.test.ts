@@ -199,6 +199,7 @@ import {
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -2346,20 +2347,72 @@ describe('cdkd drift', () => {
       expect(stackName).toBe('TestStack');
       expect(region).toBe('us-east-1');
       expect(opts?.expectedEtag).toBe('"etag-1"');
-      expect(savedState.resources['Bucket1']!.properties).toEqual({
+      // go-to-k/cdkd#6125: a record with no baseline gets one, seeded from its
+      // `properties`; the `properties` themselves (the next deploy's previous
+      // side) stay as the template left them.
+      expect(savedState.resources['Bucket1']!.observedProperties).toEqual({
         BucketName: 'b',
         VersioningConfiguration: { Status: 'Suspended' },
       });
+      expect(savedState.resources['Bucket1']!.properties).toEqual({
+        BucketName: 'b',
+        VersioningConfiguration: { Status: 'Enabled' },
+      });
+    });
+
+    it('an accepted out-of-band list entry on a record with no baseline is not a removal for the next deploy (go-to-k/cdkd#6125)', async () => {
+      // The issue's shape: a volume attached outside cdkd, then accepted. Had
+      // the readback landed in `properties` (the next deploy's previous side),
+      // the template's shorter list would read as removing that volume, and
+      // the RDS provider derives `SetForDelete: true` from exactly that.
+      const templated = {
+        DBInstanceClass: 'db.t3.micro',
+        AdditionalStorageVolumes: [{ VolumeName: 'rdsdbdata2', AllocatedStorage: '100' }],
+      };
+      const outOfBand = { VolumeName: 'rdsdbdata3', AllocatedStorage: '200' };
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Db: makeResource({
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: templated,
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          ...templated,
+          AdditionalStorageVolumes: [...templated.AdditionalStorageVolumes, outOfBand],
+        }),
+      });
+
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      expect(error).toBeUndefined();
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const savedState = mockSaveState.mock.calls[0]![2] as StackState;
+      const db = savedState.resources['Db']!;
+      // Accepted: the drift baseline now records the volume...
+      expect(db.observedProperties!['AdditionalStorageVolumes']).toEqual([
+        ...templated.AdditionalStorageVolumes,
+        outOfBand,
+      ]);
+      // ...and the template intent is what it was.
+      expect(db.properties).toEqual(templated);
+      // The next deploy of the same template sees nothing to change, so no
+      // provider update runs and nothing derives a delete for the volume.
+      const changes = await new DiffCalculator().calculateDiff(savedState, {
+        Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: templated } },
+      });
+      expect(changes.get('Db')?.changeType).toBe('NO_CHANGE');
     });
 
     it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
-      // Accepting drift rewrites the very properties an attribute may be
-      // constructed FROM, so an Output the last deploy skipped for want of one
-      // can become resolvable here — with no template resource change, which
-      // is the only thing `cdkd diff`'s change map un-binds on. Carried
-      // through, the record would preview that key as absent while the next
-      // deploy publishes it and its `Export.Name`. `cdkd import` drops it for
-      // the same reason.
+      // The flat rule `cdkd import` and `cdkd state refresh-observed` follow:
+      // every writer that rebuilds state outside a deploy drops the record,
+      // whichever map it writes (go-to-k/cdkd#6125 moved this one to
+      // `observedProperties` only).
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       const handed = makeState({
         Bucket1: makeResource({
@@ -2383,7 +2436,7 @@ describe('cdkd drift', () => {
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       const [, , savedState] = mockSaveState.mock.calls[0]!;
       // The accepted VALUE lands, so the save itself is the one under test...
-      expect(savedState.resources['Bucket1']!.properties).toEqual({
+      expect(savedState.resources['Bucket1']!.observedProperties).toEqual({
         BucketName: 'b',
         VersioningConfiguration: { Status: 'Suspended' },
       });
@@ -2465,7 +2518,7 @@ describe('cdkd drift', () => {
       await runDrift(['TestStack', '--accept', '--yes']);
 
       const [, , savedState] = mockSaveState.mock.calls[0]!;
-      expect(savedState.resources['Bucket1']!.properties).toEqual({
+      expect(savedState.resources['Bucket1']!.observedProperties).toEqual({
         PublicAccessBlockConfiguration: {
           BlockPublicAcls: true,
           BlockPublicPolicy: false,
@@ -2474,14 +2527,11 @@ describe('cdkd drift', () => {
     });
 
     it('leaves an import-REFUSED record ENTIRELY untouched, while accepting its sibling (issue #2944)', async () => {
-      // A marked record has NO `observedProperties`, so `--accept` takes the
-      // `properties` branch and writes the AWS readback straight into
-      // `properties` — the bag `--revert` later pushes BACK to AWS, which makes
-      // this the worst of the four refused-baseline writers rather than the
-      // mildest. It positions that write against `existing.properties`, which
-      // after an import refusal hold the wrong-branch literal; a literal source
-      // leaf against a string readback pairs as ordinary drift, so nothing
-      // refuses and the decrypted value lands in `state.json`.
+      // A marked record has NO `observedProperties`, so `--accept` would seed
+      // a baseline from `properties` and position the redaction against them,
+      // which after an import refusal hold the wrong-branch literal; a literal
+      // source leaf against a string readback pairs as ordinary drift, so
+      // nothing refuses and the decrypted value lands in `state.json`.
       //
       // THE SIBLING IS MANDATORY. Every assertion below is an absence, and
       // absence is satisfied by a run that accepted nothing at all — a clean
@@ -2528,7 +2578,7 @@ describe('cdkd drift', () => {
       // the refusal, only honour it.
       expect(savedState.resources['Refused']!.observedBaselineRefused).toBe(true);
       // THE CONTROL: the sibling's drift really was accepted in this same save.
-      expect(savedState.resources['Sibling']!.properties).toEqual({
+      expect(savedState.resources['Sibling']!.observedProperties).toEqual({
         VersioningConfiguration: { Status: 'Suspended' },
       });
       // The readback value reached the persisted blob by NO route — not
@@ -5209,7 +5259,7 @@ describe('cdkd drift', () => {
 
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       const saved = mockSaveState.mock.calls[0]![2];
-      expect(saved.resources['Bucket1']?.properties).toEqual({
+      expect(saved.resources['Bucket1']?.observedProperties).toEqual({
         VersioningConfiguration: { Status: 'Suspended' },
       });
       // The deleted resource's record is kept as it was.
