@@ -405,7 +405,7 @@ cleanup() {
         --db-instance-identifier "${REPLICA_SOURCE_ID}" --region "${REGION}" \
         --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1)
       case "${REPLICA_STATUS_CLEAN} ${REPLICA_SOURCE_STATUS_CLEAN}" in
-        creating* | *" creating" | *" backing-up" | *" modifying") sleep 30 ;;
+        creating* | backing-up* | modifying* | *" creating" | *" backing-up" | *" modifying") sleep 30 ;;
         *) break ;;
       esac
     done
