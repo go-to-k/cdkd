@@ -166,7 +166,9 @@ export function prepareAwsEmulatorForCommand(
     endpoint.hostname === 'localhost'
       ? endpoint.url.replace('//localhost', '//127.0.0.1')
       : endpoint.url;
-  pointEnvironmentAtEmulator(url, endpoint.port);
+  // A typed `--ca-bundle` (the `cdkd local` commands) is the CA the run trusts.
+  const caBundle = actionCommand.optsWithGlobals<{ caBundle?: string }>().caBundle;
+  pointEnvironmentAtEmulator(url, endpoint.port, caBundle);
   if (local) return undefined;
   setAwsEndpointOverrideSource(getAwsEndpointOverride);
   return () => onStderr(() => activateLocalAwsWiring({ awsEmulator: flag }));
@@ -203,7 +205,7 @@ function onStderr<T>(fn: () => T): T {
  * endpoint, its run's config (region) and keys — or no file at all, so the
  * default chain finds no real credential.
  */
-function pointEnvironmentAtEmulator(url: string, port: number): void {
+function pointEnvironmentAtEmulator(url: string, port: number, caBundle?: string): void {
   const run = readEmulatorRunFiles(port);
   const runFile = (name: string): string => {
     const p = join(run.dir, name);
@@ -221,7 +223,7 @@ function pointEnvironmentAtEmulator(url: string, port: number): void {
   }
   process.env['AWS_SHARED_CREDENTIALS_FILE'] = runFile('emulator_credentials');
   process.env['AWS_EC2_METADATA_DISABLED'] = 'true';
-  const ca = runFile('ca.pem');
+  const ca = caBundle !== undefined && caBundle !== '' ? caBundle : runFile('ca.pem');
   setPasteableAwsCaBundle(url.startsWith('https:') && ca !== devNull ? ca : undefined);
 }
 

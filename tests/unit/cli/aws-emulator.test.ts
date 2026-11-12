@@ -19,7 +19,11 @@ import {
 import { activateLocalAwsWiring } from '../../../src/local/local-aws-wiring.js';
 import { getLogger, isStdoutReservedForPayload } from '../../../src/utils/logger.js';
 import { pasteableRunFlags } from '../../../src/utils/pasteable-run-context.js';
-import { setAwsEndpointOverride } from 'cdk-local/internal';
+import {
+  pasteableAwsProfileFlag,
+  setPasteableAwsCaBundle,
+} from '../../../src/utils/pasteable-aws-profile.js';
+import { getAwsEndpointOverride, setAwsEndpointOverride } from 'cdk-local/internal';
 import {
   awsEndpointOverrideActive,
   setAwsEndpointOverrideSource,
@@ -65,12 +69,24 @@ afterEach(() => {
     else process.env[k] = saved[k];
   }
   setAwsEndpointOverrideSource(undefined);
+  setPasteableAwsCaBundle(undefined);
 });
 
 function find(program: Command, path: string[]): Command {
   let cmd = program;
   for (const name of path) cmd = cmd.commands.find((c) => c.name() === name)!;
   return cmd;
+}
+
+/** Run `fn` with cdk-local's override set, as the (mocked) activation would. */
+function withActiveOverride<T>(fn: () => T): T {
+  setAwsEndpointOverrideSource(getAwsEndpointOverride);
+  setAwsEndpointOverride({ endpoint: EMULATOR_URL });
+  try {
+    return fn();
+  } finally {
+    setAwsEndpointOverride(undefined);
+  }
 }
 
 const declares = (cmd: Command, long: string): boolean => cmd.options.some((o) => o.long === long);
@@ -240,6 +256,26 @@ describe('under the flag (a non-local command)', () => {
     expect(process.env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:1');
   });
 
+  it('a pasted aws hint gets no --ca-bundle without a run ca.pem, or for an http endpoint', async () => {
+    await parse(['deploy'], [`--aws-emulator=${EMULATOR_URL}`]);
+    expect(withActiveOverride(pasteableAwsProfileFlag)).not.toContain('--ca-bundle');
+    const home = mkdtempSync(join(tmpdir(), 'cdkd-emu-home-'));
+    const run = join(home, '.aws', 'emulator', '1');
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, 'ca.pem'), 'pem');
+    process.env['HOME'] = home;
+    await parse(['deploy'], ['--aws-emulator=http://127.0.0.1:1']);
+    expect(withActiveOverride(pasteableAwsProfileFlag)).not.toContain('--ca-bundle');
+  });
+
+  it('a typed --ca-bundle (cdkd local) is the CA a pasted aws hint trusts', async () => {
+    await parse(
+      ['local', 'invoke'],
+      ['Stack/Fn', '--ca-bundle', '/tmp/my-ca.pem', `--aws-emulator=${EMULATOR_URL}`]
+    );
+    expect(withActiveOverride(pasteableAwsProfileFlag)).toContain('--ca-bundle /tmp/my-ca.pem');
+  });
+
   it('an unreachable emulator is rendered and exits 1, never a Fatal stack', async () => {
     vi.mocked(activateLocalAwsWiring).mockRejectedValueOnce(
       new CdkdError('--aws-emulator https://127.0.0.1:1: no AWS Emulator answers', 'LOCAL_AWS_WIRING_FAILED')
@@ -282,8 +318,13 @@ describe('under the flag (a non-local command)', () => {
       join(run, 'emulator_credentials'),
       '[default]\naws_access_key_id = EMU\naws_secret_access_key = s\n'
     );
+    writeFileSync(join(run, 'ca.pem'), 'pem');
     process.env['HOME'] = home;
     await parse(['deploy'], [`--aws-emulator=${EMULATOR_URL}`]);
+    // A pasted `aws` remedy names the emulator and trusts the run's CA.
+    expect(withActiveOverride(pasteableAwsProfileFlag)).toBe(
+      `--endpoint-url ${EMULATOR_URL} --ca-bundle ${join(run, 'ca.pem')}`
+    );
     expect(process.env['AWS_CONFIG_FILE']).toBe(join(run, 'config'));
     expect(process.env['AWS_SHARED_CREDENTIALS_FILE']).toBe(join(run, 'emulator_credentials'));
     expect(process.env['AWS_REGION']).toBe('eu-west-1');
