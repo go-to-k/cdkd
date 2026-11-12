@@ -5,6 +5,7 @@
     "--allow-unsupported-types",
     "--app",
     "--asset-publish-concurrency",
+    "--aws-emulator",
     "--concurrency",
     "--context",
     "--dry-run",
@@ -2434,6 +2435,7 @@
   "uncovered": [
     "--allow-unsupported-types",
     "--asset-publish-concurrency",
+    "--aws-emulator",
     "--context",
     "--ignore-errors",
     "--image-build-concurrency",

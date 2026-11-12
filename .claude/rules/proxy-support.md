@@ -21,8 +21,8 @@ Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
   from `proxy-routing-agent.ts` PLUS an injected `defaultProvider` chain
   carrying that handler; the SDK never reads `HTTPS_PROXY`, and a client's own
   handler never reaches the SSO portal.
-- An endpoint override (`setAwsEndpointOverrideSource`, `cdkd local
-  --aws-emulator`) outranks both: endpoint, CA-trusting handler, its keys.
+- An endpoint override (`setAwsEndpointOverrideSource`, `--aws-emulator`)
+  outranks both: endpoint, CA-trusting handler, its keys.
 - **Built FRESH per call, never shared**: one client's `destroy()` would abort
   another's request, and `defaultProvider` memoizes per instance.
 - **`ignoreAssumedRole` INJECTS the caller's identity**; `{}` would be a no-op,

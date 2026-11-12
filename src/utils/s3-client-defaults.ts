@@ -200,7 +200,7 @@ export interface S3ClientDefaultsOptions {
  * when the client is built.
  */
 export function s3ClientDefaults(options: S3ClientDefaultsOptions = {}): { forcePathStyle?: true } {
-  // `cdkd local --aws-emulator` (go-to-k/cdkd#6132): every client then talks
+  // `--aws-emulator` (go-to-k/cdkd#6132, #6138): every client then talks
   // to the one local endpoint, which serves S3 path-style only; a host NAME
   // there would otherwise make the SDK address `<bucket>.<host>`.
   if (awsEndpointOverrideActive()) return { forcePathStyle: true };

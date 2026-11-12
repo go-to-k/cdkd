@@ -29,7 +29,7 @@ asset-bootstrap	2026-11-04T10:48:42Z	PASS	166	verify.sh	rc ok, orph clean; eu-we
 asset-migration	2026-11-04T18:21:35Z	PASS	707	verify.sh	rc 0 in eu-west-1, destroy clean, 0 orphans
 aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
-basic	2026-11-04T10:48:42Z	PASS	111	standard	rc ok, orph clean (#5745 PR #5752)
+basic	2026-11-12T12:35:56Z	PASS	100	standard	rc ok, orph clean, PR 6149 (merged main)
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
@@ -40,8 +40,8 @@ bucket-deployment	2026-11-04T10:48:42Z	PASS	101	verify.sh	rc ok, orph clean (#57
 budgets	2026-11-06T21:48:30Z	PASS	94	verify.sh	#5919 budgets-budget split head; rc ok, orph clean
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
-cc-api-fallback	2026-11-06T18:31:36Z	PASS	218	verify.sh	rc ok, orph clean (#5904)
-cc-api-fallback-transitions	2026-11-03T14:15:44Z	PASS	115	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
+cc-api-fallback	2026-11-12T12:35:56Z	PASS	210	verify.sh	rc ok, orph clean, PR 6149 (merged main)
+cc-api-fallback-transitions	2026-11-12T12:35:56Z	PASS	100	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
 cc-getatt-readback	2026-11-04T21:32:32Z	PASS	90	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
 cc-protection-flip	2026-11-02T01:39:49Z	PASS	551	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
@@ -109,7 +109,7 @@ docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @7
 docdb-global-cluster	2026-11-06T17:37:57Z	PASS	267	verify.sh	#5898 docdb split head; rc ok, orph clean
 docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
 docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split head; rc ok, orph clean
-docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
+docker-image-asset	2026-11-12T12:35:56Z	PASS	95	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 drift-revert	2026-11-10T16:28:35Z	PASS	346	verify.sh	rc ok, orph clean (after mise trust)
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
 drift-revert-vpc	2026-11-05T11:30:20Z	PASS	333	verify.sh	rc ok, VPC/NAT/EIP gone, orph clean
@@ -246,7 +246,7 @@ legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow 
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
 local-ecs-service-connect	2026-11-05T06:57:20Z	PASS	19	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-engine-role-identity	2026-11-12T09:39:26Z	PASS	87	verify.sh	rc ok, orph clean (PR 6136, fixture arm C updated)
+local-engine-role-identity	2026-11-12T12:35:56Z	PASS	90	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 local-invoke	2026-11-12T09:17:24Z	PASS	33	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-agentcore	2026-11-12T09:18:34Z	PASS	103	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
@@ -255,7 +255,7 @@ local-invoke-container	2026-11-07T15:32:43Z	PASS	50	verify.sh	rc ok, docker swee
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-from-cfn-stack	2026-11-12T09:15:04Z	PASS	124	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-from-cfn-stack-multi-stack	2026-11-05T06:54:12Z	PASS	112	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
-local-invoke-from-state	2026-11-12T09:13:00Z	PASS	227	verify.sh	rc ok, orph clean (PR 6136)
+local-invoke-from-state	2026-11-12T12:35:56Z	PASS	215	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 local-invoke-java	2026-11-05T06:48:29Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-layers	2026-11-05T06:48:04Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 passed
 local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 passed (provided.* + go1.x rejection)
@@ -337,7 +337,7 @@ recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph cle
 recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc ok, orph clean
 recreate-parent-child-permission	2026-11-10T15:28:59Z	PASS	100	verify.sh	rc ok, orph clean; own bucket
 recreate-target-readers	2026-11-04T06:43:31Z	PASS	75	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
-recreate-via-cc-api	2026-11-03T14:15:44Z	PASS	146	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
+recreate-via-cc-api	2026-11-12T12:35:56Z	PASS	145	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 recreate-via-sdk-provider	2026-11-04T19:47:52Z	PASS	85	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-11-04T20:42:09Z	PASS	91	verify.sh	rc ok; #3952 redacted ApiId skip + clean destroy; us-east-1; orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)

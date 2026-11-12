@@ -405,12 +405,12 @@ let preAssumeEnvCredentials: CallerEnvCredentials | undefined;
 
 /**
  * A process-wide local AWS endpoint for every client built through
- * {@link awsClientDefaults} — `cdkd local --aws-emulator`
- * (go-to-k/cdkd#6132). One endpoint serves every service; `caPem` is trusted
+ * {@link awsClientDefaults} — `--aws-emulator` on `cdkd local`
+ * (go-to-k/cdkd#6132) and every other command (#6138). One endpoint serves every service; `caPem` is trusted
  * on top of the public roots, and `credentials` are the endpoint's own keys.
  *
- * Structurally cdk-local's `AwsEndpointOverride`: the `cdkd local` commands
- * register cdk-local's getter with {@link setAwsEndpointOverrideSource}, so the
+ * Structurally cdk-local's `AwsEndpointOverride`: `createLocalCommand` and
+ * `src/cli/aws-emulator.ts` register cdk-local's getter with {@link setAwsEndpointOverrideSource}, so the
  * one activation (`activateWorkloadAwsWiring`) points cdk-local's clients and
  * cdkd's at the same endpoint. Kept as a SOURCE rather than a copied value
  * because `src/utils` must not import `cdk-local/internal`, and the engine
@@ -438,6 +438,11 @@ export function setAwsEndpointOverrideSource(
 /** True while an endpoint override is active (S3 then forces path-style). */
 export function awsEndpointOverrideActive(): boolean {
   return endpointOverrideSource?.() !== undefined;
+}
+
+/** The active endpoint override's URL, or `undefined` (pasteable `aws` hints). */
+export function awsEndpointOverrideUrl(): string | undefined {
+  return endpointOverrideSource?.()?.endpoint;
 }
 
 /**

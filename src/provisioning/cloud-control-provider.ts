@@ -1,6 +1,7 @@
 import { CloudControlClient, type ProgressEvent } from '@aws-sdk/client-cloudcontrol';
 import type { AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { awsEndpointOverrideActive } from '../utils/aws-client-defaults.js';
 import {
   ProtectionFlipRegistry,
   type ProtectionFlipRecord,
@@ -132,6 +133,30 @@ export class CloudControlProvider implements ResourceProvider {
   readonly INITIAL_POLL_INTERVAL_MS = 1_000;
   // Maximum poll interval (10 seconds)
   readonly MAX_POLL_INTERVAL_MS = 10_000;
+  /**
+   * The FIXED poll interval under `--aws-emulator` (go-to-k/cdkd#6138). A
+   * local emulator settles an operation in tens of milliseconds, so the real-AWS
+   * backoff above — tuned to spare API calls against a service that takes
+   * seconds — is most of a deploy's wall clock there. Never used against real
+   * AWS: the extra `GetResourceRequestStatus` calls would buy nothing.
+   */
+  readonly EMULATOR_POLL_INTERVAL_MS = 100;
+
+  /**
+   * The `waitForOperation` poll schedule: the real-AWS exponential backoff, or
+   * {@link EMULATOR_POLL_INTERVAL_MS} while an `--aws-emulator` endpoint
+   * override is active. Asked once per wait.
+   */
+  pollSchedule(): { initialMs: number; next: (previousMs: number) => number } {
+    if (awsEndpointOverrideActive()) {
+      const fixed = this.EMULATOR_POLL_INTERVAL_MS;
+      return { initialMs: fixed, next: () => fixed };
+    }
+    return {
+      initialMs: this.INITIAL_POLL_INTERVAL_MS,
+      next: (previousMs) => Math.min(Math.ceil(previousMs * 1.5), this.MAX_POLL_INTERVAL_MS),
+    };
+  }
   /**
    * How long an UNBROKEN run of transient poll failures is tolerated before
    * `waitForOperation` gives up and throws {@link CloudControlWaitAbandonedError}

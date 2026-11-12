@@ -1,7 +1,6 @@
 import { Command, Option } from 'commander';
 import { addAwsEndpointOptions, getAwsEndpointOverride } from 'cdk-local/internal';
 import { setAwsEndpointOverrideSource } from '../../utils/aws-client-defaults.js';
-import { assertAwsEmulatorValue } from '../../local/local-aws-wiring.js';
 import {
   appOptions,
   commonOptions,
@@ -12,7 +11,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { terminalSafe } from '../../utils/display-safe.js';
-import { handleError, withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling } from '../../utils/error-handler.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
@@ -160,18 +159,9 @@ export function createLocalCommand(): Command {
   const local = new Command('local').description(
     'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'
   );
-  // Every subcommand, the cdk-local engine ones included: refuse an
-  // `--aws-emulator` / CDKD_AWS_EMULATOR value carrying a credential-shaped
-  // part, or no URL at all, before cdk-local can echo it (go-to-k/cdkd#6132).
-  local.hook('preAction', (_local, action) => {
-    // Rendered and exited like an action's own error (a hook is outside
-    // `withErrorHandling`, so a throw would surface as `Fatal error:` + stack).
-    try {
-      assertAwsEmulatorValue(action.opts()['awsEmulator'] as string | boolean | undefined);
-    } catch (err) {
-      handleError(err);
-    }
-  });
+  // The `--aws-emulator` value refusal runs in `buildProgram`'s `preAction`
+  // hook for every subcommand, the cdk-local engine ones included
+  // (go-to-k/cdkd#6132, moved there by #6138).
 
   const invoke = new Command('invoke')
     .description(

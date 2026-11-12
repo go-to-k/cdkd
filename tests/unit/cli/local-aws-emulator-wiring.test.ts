@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
+import { buildProgram } from '../../../src/cli/program.js';
 import { applyLambdaCredentialEnv } from '../../../src/cli/commands/local-invoke/credentials.js';
 import { applyAgentCoreCredentialEnv } from '../../../src/cli/commands/local-invoke-agentcore/env.js';
 import { setAwsEndpointOverride } from 'cdk-local/internal';
@@ -197,7 +198,7 @@ describe('a value that is not an http(s) URL (the optional value swallowed the t
   });
 });
 
-describe('the `cdkd local` preAction hook covers every subcommand', () => {
+describe('the program preAction hook covers every `cdkd local` subcommand', () => {
   /**
    * Parse `argv` through the parent `local` command with the target
    * subcommand's action replaced by a spy; return the spy and the line the
@@ -207,7 +208,9 @@ describe('the `cdkd local` preAction hook covers every subcommand', () => {
     name: string,
     argv: string[]
   ): Promise<{ action: ReturnType<typeof vi.fn>; logged: string }> {
-    const local = createLocalCommand();
+    const program = buildProgram();
+    program.exitOverride();
+    const local = program.commands.find((c) => c.name() === 'local')!;
     local.exitOverride();
     for (const c of local.commands) c.exitOverride();
     const action = vi.fn();
@@ -217,7 +220,7 @@ describe('the `cdkd local` preAction hook covers every subcommand', () => {
       throw new Error(`exit ${code}`);
     }) as never);
     try {
-      await local.parseAsync(argv, { from: 'user' }).catch(() => undefined);
+      await program.parseAsync(['local', ...argv], { from: 'user' }).catch(() => undefined);
       expect(exitSpy).toHaveBeenCalledWith(1);
       return { action, logged: errorSpy.mock.calls.map((c) => String(c[0])).join('\n') };
     } finally {

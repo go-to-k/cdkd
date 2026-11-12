@@ -17,6 +17,7 @@ import { displayIdent } from '../utils/display-safe.js';
 import { buildDockerImage } from './docker-build.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
+import { refuseDockerAssetUnderAwsEmulator } from './docker-asset-emulator-refusal.js';
 
 /**
  * The ECR registry host suffix for a region (issue #1745).
@@ -107,6 +108,7 @@ export class DockerAssetPublisher {
     accountId: string,
     region: string
   ): Promise<void> {
+    refuseDockerAssetUnderAwsEmulator(asset.displayName || assetHash);
     for (const [, dest] of Object.entries(asset.destinations)) {
       const repositoryName = this.resolvePlaceholders(dest.repositoryName, accountId, region);
       const imageTag = this.resolvePlaceholders(dest.imageTag, accountId, region);
@@ -171,6 +173,7 @@ export class DockerAssetPublisher {
      */
     assetOutdir: string
   ): Promise<void> {
+    refuseDockerAssetUnderAwsEmulator(asset.displayName || localTag);
     await this.buildImage(asset, cdkOutputDir, localTag, assetOutdir);
   }
 
@@ -183,6 +186,7 @@ export class DockerAssetPublisher {
     region: string,
     localTag: string
   ): Promise<void> {
+    refuseDockerAssetUnderAwsEmulator(asset.displayName || localTag);
     for (const [, dest] of Object.entries(asset.destinations)) {
       const repositoryName = this.resolvePlaceholders(dest.repositoryName, accountId, region);
       const imageTag = this.resolvePlaceholders(dest.imageTag, accountId, region);
