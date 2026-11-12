@@ -23,7 +23,7 @@ import {
   stackInstanceIdCarriedFrom,
 } from '../../../types/state.js';
 import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outcome.js';
-import { acceptRefusalReason, maskMarkedNoEchoBaselineWithLeaves } from './redaction.js';
+import { acceptRefusalReason, maskMarkedNoEchoBaseline } from './redaction.js';
 import { otherPhysicalIds } from './baseline-keys.js';
 import { deepEqualUnordered } from './revert-payload.js';
 import { humanTextSink, printAcceptPlan, confirmPrompt, revertCommandLine } from './plan.js';
@@ -206,12 +206,17 @@ export async function runAccept(
     try {
       // Build the mutated resources map. The drift comparator's baseline
       // is `observedProperties ?? properties` (see runDriftForStack), so
-      // `--accept` mutates `observedProperties` to match AWS-current and
+      // `--accept` writes `observedProperties` to match AWS-current and
       // leaves `properties` (= the user's last-deployed template intent)
-      // untouched. For resources that have no observedProperties yet
-      // (older binary's state, or providers without readCurrentState),
-      // `--accept` falls back to mutating `properties` — which matches
-      // the pre-v3 behavior for those resources.
+      // untouched — on EVERY record (go-to-k/cdkd#6125). A record with no
+      // `observedProperties` yet (an older binary's state) gets one, captured
+      // from the live readback. It used to have the readback written INTO
+      // `properties`,
+      // the previous side of the next deploy's diff: an accepted list entry
+      // that exists only in AWS became recorded, the template's shorter list
+      // then read as its REMOVAL, and a provider deriving deletes from the
+      // recorded list (RDS `AdditionalStorageVolumes` -> `SetForDelete`)
+      // destroyed what the user had just accepted.
       const resources: Record<string, ResourceState> = { ...report.state.resources };
       // Resources that actually gained a RECORDED value, which is not the same
       // as resources that DRIFTED (issue #1958). Every outcome reaches the loop
@@ -238,16 +243,15 @@ export async function runAccept(
         // issue -- the issue enumerates the deploy auto-refresh and `cdkd state
         // refresh-observed`, and this is the same defect one command over.
         //
-        // A marked record USUALLY has no `observedProperties`, and then the arm
-        // below takes the `properties` branch and writes the redacted readback
-        // INTO `properties` -- positioned against `existing.properties`, which after
-        // an import refusal can hold the WRONG-BRANCH LITERAL the refusal
-        // distrusted. A literal source leaf against a string readback PAIRS as
-        // an ordinary drifted literal, so nothing refuses and the DECRYPTED
-        // value lands in the record. Worse than the two writers the issue
-        // names: those write a baseline, this writes `properties`, the bag
-        // `--revert` later pushes to AWS.
-        //
+        // A marked record USUALLY has no `observedProperties`, and then the
+        // write below captures a baseline from the readback and positions the
+        // redaction against `existing.properties` -- which after an import refusal can hold
+        // the WRONG-BRANCH LITERAL the refusal distrusted. A literal source leaf
+        // against a string readback PAIRS as an ordinary drifted literal, so
+        // nothing refuses and the DECRYPTED value lands in the record. (Before
+        // go-to-k/cdkd#6125 that write went INTO `properties`, the bag
+        // `--revert` later pushes to AWS; it is a baseline now, the same shape
+        // as the two writers the issue names.)
         //
         // SECOND LAYER since issue #2952. Detection now reports a marked record
         // `notCompared`, so it never becomes `drifted` and never reaches this
@@ -269,7 +273,7 @@ export async function runAccept(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
               `NOT accepted — a 'cdkd import' run refused to capture this resource's ` +
               `observed-properties baseline, because its recorded properties can no longer ` +
-              `position the secret redaction. Accepting would write the AWS readback into ` +
+              `position the secret redaction. Accepting would write a baseline positioned against ` +
               `those properties, which can persist a resolved secret into state.json in ` +
               `plaintext. ` +
               safeMsg`${
@@ -279,11 +283,21 @@ export async function runAccept(
           );
           continue;
         }
-        const hasObserved = existing.observedProperties !== undefined;
-        const baselineSource = hasObserved
-          ? existing.observedProperties
-          : (existing.properties ?? {});
-        const newBaseline = JSON.parse(JSON.stringify(baselineSource)) as Record<string, unknown>;
+        // go-to-k/cdkd#6125: written to `observedProperties` either way. A
+        // record with no baseline gets one SEEDED from the live readback, as
+        // `cdkd state refresh-observed` captures it, never from `properties`:
+        // every reader of a present baseline takes it for a full readback (the
+        // drift walk descends the union of its keys and AWS's, `--revert`
+        // overlays without preserving untemplated paths, the deploy-start
+        // auto-refresh skips it), so a template-shaped one would surface every
+        // AWS-defaulted sub-key as drift and let `--revert` strip it. A
+        // DECLINED path then holds what the persist passes below make of the
+        // readback there (the reference, or `***`), as a refresh writes it:
+        // every refusal is a value those same passes masked in the report.
+        const newBaseline =
+          existing.observedProperties === undefined
+            ? structuredClone(outcome.awsProperties)
+            : (JSON.parse(JSON.stringify(existing.observedProperties)) as Record<string, unknown>);
         const accepted: PropertyDrift[] = [];
         for (const change of outcome.changes) {
           // Issue #1914: anything the report had to MASK is not a value — it
@@ -370,23 +384,19 @@ export async function runAccept(
         // check catches any future cause of it too.
         //
         // THE RULES CONSTANT FOLLOWS THE DESTINATION (issue
-        // [#2939](https://github.com/go-to-k/cdkd/issues/2939)), which this
-        // site has already computed: `hasObserved` decides two lines below
-        // whether the bag lands in `observedProperties` or in `properties`.
-        // `failClosedOnUncertifiedPositions` is DECLARED by the caller rather
-        // than derived inside `secret-redaction.ts` precisely because that
-        // module cannot see the destination — and here it is in scope. On the
-        // `observedProperties` arm the bag IS a drift baseline, so an
-        // uncertifiable position is written as `SECRET_MASK` by the same
-        // reasoning #2852 applied to `cdkd state refresh-observed` and #2885
-        // to `cdkd import`: the re-redaction exists to clean a stored plaintext
-        // the value map cannot recognise (a pre-GHSA record, or last week's
-        // rotated-away value), and at a position the walk cannot pair the
-        // non-failing constant left it in the clear. On the `properties` arm
-        // the non-failing constant stays: a mask there is a REGRESSION rather
-        // than a refusal (`cdkd export` blocks the record and the rollback
-        // replay refuses the operation over a template value that was never
-        // unknown), which is the whole reason the flag is declared per site.
+        // [#2939](https://github.com/go-to-k/cdkd/issues/2939)), and since
+        // go-to-k/cdkd#6125 the destination is always `observedProperties`.
+        // The bag IS a drift baseline, so an uncertifiable position is written
+        // as `SECRET_MASK` by the same reasoning #2852 applied to `cdkd state
+        // refresh-observed` and #2885 to `cdkd import`: the re-redaction exists
+        // to clean a stored plaintext the value map cannot recognise (a
+        // pre-GHSA record, or last week's rotated-away value), and at a
+        // position the walk cannot pair the non-failing constant left it in
+        // the clear. The non-failing constant belongs to a write into
+        // `properties`, where a mask is a REGRESSION rather than a refusal
+        // (`cdkd export` blocks the record and the rollback replay refuses the
+        // operation over a template value that was never unknown) — the write
+        // this site no longer makes.
         // go-to-k/cdkd#4810: a reader's copy of another record's physical id is
         // kept as the id is. Scoped to THIS write: the bag also redacts the
         // drift report, which keeps rewriting it.
@@ -395,7 +405,7 @@ export async function runAccept(
           otherPhysicalIds(report.state.resources, outcome.logicalId),
           () =>
             redactForState(newBaseline, {
-              provenance: hasObserved ? 'state-baseline' : 'state-readback',
+              provenance: 'state-baseline',
               secrets: outcome.secrets,
               source: existing.properties ?? {},
             })
@@ -424,7 +434,10 @@ export async function runAccept(
         // go-to-k/cdkd#4043 Phase C: AFTER the recorded check, which compares
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.
-        const written = maskMarkedNoEchoBaselineWithLeaves(redactedBaseline, existing, hasObserved);
+        // Readback-shaped on both record shapes since go-to-k/cdkd#6125 (a
+        // seeded baseline IS the readback), so the readback arm: lists paired
+        // by their identity field, as the deploy-start refresh masks them.
+        const written = maskMarkedNoEchoBaseline(redactedBaseline, existing, true);
         // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
         // a failed deploy left unsettled on this resource is settled, except a
         // key AWS is still changing (the readback is not where it will end).
@@ -440,28 +453,20 @@ export async function runAccept(
               provisionedBy: existing.provisionedBy,
             }).provider
         );
-        resources[outcome.logicalId] = hasObserved
-          ? { ...settled, observedProperties: written.baseline }
-          : {
-              ...settled,
-              properties: written.baseline,
-              ...(written.noEchoLeaves !== undefined && { noEchoLeaves: written.noEchoLeaves }),
-            };
+        resources[outcome.logicalId] = { ...settled, observedProperties: written };
       }
 
       // `skippedOutputs` (issue #2740) is dropped rather than spread through,
-      // for the same reason `cdkd import` drops it: the record says what the
-      // last DEPLOY could not resolve, and on the arm above that writes
-      // `properties` — the one a resource with no `observedProperties` takes —
-      // accepting drift rewrites the very values an attribute may be
-      // constructed from, so a key the deploy skipped can become resolvable
-      // with no template resource change to un-bind the record. The
-      // `observedProperties` arm cannot do that (no attribute is built from
-      // that map), but the drop is not conditioned on which arm ran: the two
-      // are chosen per RESOURCE inside one save, so a save that took both
-      // would need the record dropped anyway. Left in place it would make
-      // `cdkd diff` preview that key as absent while the next deploy publishes
-      // it. The field is informational and the next deploy rewrites it, so
+      // by the flat rule `cdkd import` and `cdkd state refresh-observed` follow
+      // too: every writer that rebuilds state outside a deploy drops the
+      // record. Since go-to-k/cdkd#6125 this one writes only
+      // `observedProperties`, which no attribute is built from — but that is
+      // a per-writer safety argument of exactly the kind that was wrong three
+      // times for this field (before #6125 this very site rewrote
+      // `properties`, the values an attribute IS constructed from), so the
+      // rule is applied rather than re-argued. Left in place a stale record
+      // would make `cdkd diff` preview a key as absent while the next deploy
+      // publishes it. The field is informational and the next deploy rewrites it, so
       // dropping it is the safe direction: that key returns to pre-#2740
       // behaviour until the next deploy recomputes the record — a row where
       // the diff can resolve it, the ordinary whole-section suppression where

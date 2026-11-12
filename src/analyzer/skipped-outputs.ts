@@ -103,8 +103,9 @@
  * every writer that rebuilds state outside a deploy DROPS the record rather
  * than carry it (one enumerated exception, the partial-destroy snapshot, is
  * explained with the field) — `cdkd import` refreshes `attributes` for the
- * resources it imports, `cdkd drift --accept` rewrites the properties an
- * attribute may be built from, `cdkd rollback`'s replacement arm rebuilds a
+ * resources it imports, `cdkd drift --accept` rewrites the record's
+ * observed baseline (and, before go-to-k/cdkd#6125, the properties an
+ * attribute may be built from), `cdkd rollback`'s replacement arm rebuilds a
  * record with the attributes a FRESH create returned, and the rest are listed
  * with the field.
  * Dropping returns those keys to pre-#2740 behaviour until the next deploy

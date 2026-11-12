@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudTrail::Trail",
-  "generatedAt": "2026-11-06",
+  "generatedAt": "2026-11-12",
   "properties": [
     "AdvancedEventSelectors",
     "AggregationConfigurations",
@@ -15,6 +15,7 @@
     "IsMultiRegionTrail",
     "IsOrganizationTrail",
     "KMSKeyId",
+    "RecursiveLogging",
     "S3BucketName",
     "S3KeyPrefix",
     "SnsTopicArn",
@@ -38,18 +39,6 @@
     "TrailName"
   ],
   "nestedProperties": {
-    "EventSelectors": [
-      "DataResources",
-      "ExcludeManagementEventSources",
-      "IncludeManagementEvents",
-      "ReadWriteType",
-      "Type",
-      "Values"
-    ],
-    "AggregationConfigurations": [
-      "EventCategory",
-      "Templates"
-    ],
     "AdvancedEventSelectors": [
       "EndsWith",
       "Equals",
@@ -61,28 +50,28 @@
       "NotStartsWith",
       "StartsWith"
     ],
-    "InsightSelectors": [
-      "EventCategories",
-      "InsightType"
+    "EventSelectors": [
+      "DataResources",
+      "ExcludeManagementEventSources",
+      "IncludeManagementEvents",
+      "ReadWriteType",
+      "Type",
+      "Values"
     ],
     "Tags": [
       "Key",
       "Value"
-    ]
-  },
-  "nestedPropertyPaths": {
-    "EventSelectors": [
-      "DataResources",
-      "DataResources.Type",
-      "DataResources.Values",
-      "ExcludeManagementEventSources",
-      "IncludeManagementEvents",
-      "ReadWriteType"
+    ],
+    "InsightSelectors": [
+      "EventCategories",
+      "InsightType"
     ],
     "AggregationConfigurations": [
       "EventCategory",
       "Templates"
-    ],
+    ]
+  },
+  "nestedPropertyPaths": {
     "AdvancedEventSelectors": [
       "FieldSelectors",
       "FieldSelectors.EndsWith",
@@ -94,40 +83,76 @@
       "FieldSelectors.StartsWith",
       "Name"
     ],
-    "InsightSelectors": [
-      "EventCategories",
-      "InsightType"
+    "EventSelectors": [
+      "DataResources",
+      "DataResources.Type",
+      "DataResources.Values",
+      "ExcludeManagementEventSources",
+      "IncludeManagementEvents",
+      "ReadWriteType"
     ],
     "Tags": [
       "Key",
       "Value"
+    ],
+    "InsightSelectors": [
+      "EventCategories",
+      "InsightType"
+    ],
+    "AggregationConfigurations": [
+      "EventCategory",
+      "Templates"
     ]
   },
   "definitionShapes": {
     "#top": {
-      "IncludeGlobalServiceEvents": "scalar",
-      "EventSelectors": "array",
-      "KMSKeyId": "scalar",
-      "AggregationConfigurations": "array",
-      "CloudWatchLogsRoleArn": "scalar",
-      "S3KeyPrefix": "scalar",
-      "AdvancedEventSelectors": "array",
-      "TrailName": "scalar",
-      "IsOrganizationTrail": "scalar",
-      "InsightSelectors": "array",
       "CloudWatchLogsLogGroupArn": "scalar",
-      "SnsTopicName": "scalar",
-      "IsMultiRegionTrail": "scalar",
-      "S3BucketName": "scalar",
-      "SnsTopicArn": "scalar",
+      "CloudWatchLogsRoleArn": "scalar",
       "EnableLogFileValidation": "scalar",
-      "Arn": "scalar",
+      "RecursiveLogging": "scalar",
+      "AdvancedEventSelectors": "array",
+      "EventSelectors": "array",
+      "IncludeGlobalServiceEvents": "scalar",
+      "IsLogging": "scalar",
+      "IsMultiRegionTrail": "scalar",
+      "IsOrganizationTrail": "scalar",
+      "KMSKeyId": "scalar",
+      "S3BucketName": "scalar",
+      "S3KeyPrefix": "scalar",
+      "SnsTopicName": "scalar",
       "Tags": "array",
-      "IsLogging": "scalar"
+      "TrailName": "scalar",
+      "Arn": "scalar",
+      "SnsTopicArn": "scalar",
+      "InsightSelectors": "array",
+      "AggregationConfigurations": "array"
+    },
+    "DataResource": {
+      "Type": "scalar",
+      "Values": "array"
+    },
+    "AdvancedFieldSelector": {
+      "Field": "scalar",
+      "Equals": "array",
+      "StartsWith": "array",
+      "EndsWith": "array",
+      "NotEquals": "array",
+      "NotStartsWith": "array",
+      "NotEndsWith": "array"
     },
     "AdvancedEventSelector": {
-      "FieldSelectors": "array",
-      "Name": "scalar"
+      "Name": "scalar",
+      "FieldSelectors": "array"
+    },
+    "EventSelector": {
+      "DataResources": "array",
+      "IncludeManagementEvents": "scalar",
+      "ReadWriteType": "scalar",
+      "ExcludeManagementEventSources": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
     },
     "InsightSelector": {
       "InsightType": "scalar",
@@ -136,29 +161,6 @@
     "AggregationConfiguration": {
       "EventCategory": "scalar",
       "Templates": "array"
-    },
-    "EventSelector": {
-      "IncludeManagementEvents": "scalar",
-      "ReadWriteType": "scalar",
-      "ExcludeManagementEventSources": "array",
-      "DataResources": "array"
-    },
-    "DataResource": {
-      "Type": "scalar",
-      "Values": "array"
-    },
-    "Tag": {
-      "Value": "scalar",
-      "Key": "scalar"
-    },
-    "AdvancedFieldSelector": {
-      "Field": "scalar",
-      "Equals": "array",
-      "NotStartsWith": "array",
-      "NotEndsWith": "array",
-      "StartsWith": "array",
-      "EndsWith": "array",
-      "NotEquals": "array"
     }
   },
   "definitionRequired": {
@@ -166,22 +168,22 @@
       "IsLogging",
       "S3BucketName"
     ],
-    "AdvancedEventSelector": [
-      "FieldSelectors"
-    ],
-    "AggregationConfiguration": [
-      "EventCategory",
-      "Templates"
-    ],
     "DataResource": [
       "Type"
+    ],
+    "AdvancedFieldSelector": [
+      "Field"
+    ],
+    "AdvancedEventSelector": [
+      "FieldSelectors"
     ],
     "Tag": [
       "Key",
       "Value"
     ],
-    "AdvancedFieldSelector": [
-      "Field"
+    "AggregationConfiguration": [
+      "EventCategory",
+      "Templates"
     ]
   },
   "nestedRequired": {
@@ -278,6 +280,7 @@
     "IsMultiRegionTrail": "boolean",
     "IsOrganizationTrail": "boolean",
     "KMSKeyId": "string",
+    "RecursiveLogging": "boolean",
     "S3BucketName": "string",
     "S3KeyPrefix": "string",
     "SnsTopicArn": "string",

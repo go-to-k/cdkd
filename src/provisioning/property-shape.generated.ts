@@ -362,7 +362,7 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
   ],
   [
     'AWS::S3Tables::TableBucket',
-    '{"EncryptionConfiguration":"object","MetricsConfiguration":"object","ReplicationConfiguration":"object","ReplicationConfiguration.Rules":"array","ReplicationConfiguration.Rules[]":"object","ReplicationConfiguration.Rules[].Destinations":"array","ReplicationConfiguration.Rules[].Destinations[]":"object","StorageClassConfiguration":"object","Tags":"array","Tags[]":"object","UnreferencedFileRemoval":"object"}',
+    '{"EncryptionConfiguration":"object","LoggingConfiguration":"object","LoggingConfiguration.TargetObjectKeyFormat":"object","LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix":"object","MetricsConfiguration":"object","ReplicationConfiguration":"object","ReplicationConfiguration.Rules":"array","ReplicationConfiguration.Rules[]":"object","ReplicationConfiguration.Rules[].Destinations":"array","ReplicationConfiguration.Rules[].Destinations[]":"object","StorageClassConfiguration":"object","Tags":"array","Tags[]":"object","UnreferencedFileRemoval":"object"}',
   ],
   [
     'AWS::S3Vectors::VectorBucket',

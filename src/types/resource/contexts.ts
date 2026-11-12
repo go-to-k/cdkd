@@ -144,8 +144,9 @@ export interface SecretMaskingContext {
  * readback reading this paragraph is about.
  *
  * **One bounded caveat on "a TEMPLATE recorded earlier"** (found in review):
- * `cdkd drift --accept` writes the AWS readback into `properties` for a
- * resource that has no `observedProperties` baseline (`drift.ts`), so a later
+ * a binary before go-to-k/cdkd#6125 had `cdkd drift --accept` write the AWS
+ * readback into `properties` for a resource with no `observedProperties`
+ * baseline, and a record it accepted still carries that bag, so a later
  * rollback revert of that resource DOES hand `update()` a readback-derived bag
  * with no flag, and the provider takes the SKIP arm. The direction is the safe
  * one — the live configuration is left alone, nothing is destroyed — and it
@@ -201,11 +202,11 @@ export interface UpdateContext extends SecretMaskingContext {
    * Names only, like {@link declaredEmptyProperties}: no recorded value
    * reaches the provider. Absent on every other caller.
    *
-   * "Template side" is the record's `properties`. On a record with no
-   * `observedProperties`, `cdkd drift --accept` writes an accepted readback
-   * value there, so a flag the user accepted counts as declared; and the
-   * revert's desired bag is that same `properties`, so the set adds a
-   * constraint only on a record that has an observed baseline.
+   * "Template side" is the record's `properties`, which `cdkd drift --accept`
+   * leaves alone since go-to-k/cdkd#6125 (a record accepted before it may
+   * still carry an accepted readback value there, which then counts as
+   * declared). The revert's desired bag is that same `properties`, so the set
+   * adds a constraint only on a record that has an observed baseline.
    */
   declaredTrueProperties?: ReadonlySet<string> | undefined;
 

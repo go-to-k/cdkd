@@ -27,8 +27,8 @@ export const DEFAULT_EVENT_SELECTORS: readonly EventSelector[] = Object.freeze([
  * `undefined` for an absent / null / EMPTY optional string field.
  *
  * Module-scoped since issue #1565 so `create()` can use it too: an always-emit
- * placeholder can reach `create()` — `drift --accept` falls back to mutating
- * `properties` when `observedProperties` is absent, and the rollback executor
+ * placeholder can reach `create()` — `drift --accept` before go-to-k/cdkd#6125
+ * wrote readback values into `properties`, and the rollback executor
  * replays `previousState.properties` through `create()` on a reverse
  * replacement — and `CreateTrail` with `CloudWatchLogsLogGroupArn: ''` is an
  * UNPROBED shape that may 400 on ARN format. `''` there means "not
