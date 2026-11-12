@@ -641,6 +641,18 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       ).not.toThrow();
     });
 
+    it("reads a 'true' UseLatestRestorableTime string as a point-in-time restore", () => {
+      expect(() =>
+        refuseRestoreFromItself(
+          INSTANCE,
+          { UseLatestRestorableTime: 'TRUE', SourceDBInstanceIdentifier: 'db-1' },
+          'db-1',
+          'L',
+          scope
+        )
+      ).toThrow(/SourceDBInstanceIdentifier names the DB instance/);
+    });
+
     it('lets a read replica of itself through, which no point-in-time key makes a restore', () => {
       // A read replica of itself RDS refuses on its own; nothing here is a restore.
       expect(() =>
@@ -679,7 +691,9 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       expect(() =>
         refuseRestoreFromItself(
           INSTANCE,
-          pitr({ SourceDBInstanceIdentifier: 'db-2', DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04' }),
+          // No source key: the snapshot check would otherwise read it (a
+          // declared source skips it as a read replica's).
+          { RestoreTime: '2026-11-01T00:00:00Z', DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04' },
           'db-1',
           'L',
           scope

@@ -170,12 +170,12 @@ describe('reversing a delete-first replacement whose old record restores from th
     ['the new instance', { SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}' }, 'db-new', 0],
     ['another instance', { SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}' }, 'db-src', 1],
     [
-      'another instance, beside its own automated snapshot',
+      'a time, beside its own automated snapshot',
       {
-        SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}',
-        DBSnapshotIdentifier: 'rds:db-new-2026-11-02-03-00',
+        RestoreTime: '2026-11-01T00:00:00Z',
+        DBSnapshotIdentifier: '{{resolve:ssm:/cdkd/snap}}',
       },
-      'db-src',
+      'rds:db-new-2026-11-02-03-00',
       1,
     ],
   ] as const)(

@@ -1,10 +1,7 @@
 import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../types/resource.js';
-import {
-  automatedBackupsArnNames,
-  declaresInstancePointInTime,
-} from '../provisioning/restore-source-guard.js';
+import { automatedBackupsArnNames } from '../provisioning/restore-source-guard.js';
 import { markNonRetryable } from './retryable-errors.js';
 
 /** What {@link verifyRestoreSourceIdentity} needs about the cluster a replacement deletes first. */
@@ -97,7 +94,7 @@ export async function verifyRestoreSourceIdentity(
 /**
  * go-to-k/cdkd#5640: the DB instance's twin. A point-in-time restore naming
  * its source by `SourceDbiResourceId` or `SourceDBInstanceAutomatedBackupsArn`
- * may name the instance the replacement deletes first, which takes its
+ * (either key makes the create one) may name the instance the replacement deletes first, which takes its
  * automated backups with it (`DeleteAutomatedBackups` defaults to true). Its
  * record holds no `DbiResourceId`, so the live one is read through the
  * provider's read-only `resourceIdentity` (`DescribeDBInstances` by name) and
@@ -107,7 +104,6 @@ export async function verifyRestoreSourceIdentity(
  * call.
  */
 async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput): Promise<void> {
-  if (!declaresInstancePointInTime(input.properties)) return;
   const nonEmpty = (key: string): string | undefined => {
     const value = input.properties[key];
     return typeof value === 'string' && value !== '' ? value : undefined;

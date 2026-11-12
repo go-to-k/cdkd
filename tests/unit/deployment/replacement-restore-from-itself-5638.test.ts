@@ -562,9 +562,12 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
 
     it.each(paths)('%s skips the own-snapshot check under a point-in-time key', async (_p, run) => {
       // The handler restores to a point in time and never reads the snapshot.
-      const failure = await run(
-        pitr({ SourceDBInstanceIdentifier: 'another-db', DBSnapshotIdentifier: `rds:${PHYSICAL}-2026-11-01-03-04` })
-      );
+      // No source key: a declared source would skip the snapshot check as a replica's.
+      const failure = await run({
+        type: INSTANCE,
+        attributes: {},
+        desired: { RestoreTime: '2026-11-01T00:00:00Z', DBSnapshotIdentifier: `rds:${PHYSICAL}-2026-11-01-03-04` },
+      });
       expect(failure).toBeUndefined();
       expect(provider.delete).toHaveBeenCalledTimes(1);
     });
