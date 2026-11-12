@@ -115,7 +115,8 @@ binds to.
 > (the container's credentials, `{{resolve:...}}` references, what
 > `--from-cfn-stack` reads and any `--assume-role` hop) use your own identity,
 > not the role. No startup warning applies. When your own credentials are not
-> a static access key, the container receives none and cdkd warns once. See
+> a static access key, cdkd warns once, and the container gets what your
+> credential chain resolves without the `AWS_*` variables, which hold the role. See
 > [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Target resolution

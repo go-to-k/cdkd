@@ -29,6 +29,14 @@ import { Command } from 'commander';
 // namespaces are non-configurable, so `vi.spyOn` does not work).
 const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
 
+// go-to-k/cdkd#6132: the loopback forwarder dies with the restart (it shares
+// the container's pid namespace), so the soft reload re-attaches it.
+const { reattachMock } = vi.hoisted(() => ({ reattachMock: vi.fn(async () => {}) }));
+vi.mock('../../../src/local/local-aws-wiring.js', async () => ({
+  ...(await vi.importActual<object>('../../../src/local/local-aws-wiring.js')),
+  attachLocalLoopbackForwarder: reattachMock,
+}));
+
 vi.mock('node:child_process', () => ({
   execFile: (...rest: unknown[]) => {
     const cb = rest[rest.length - 1] as (
@@ -458,6 +466,27 @@ describe('loadAgentCoreAssetContext — code-artifact path', () => {
       assetLoader: { loadManifest: vi.fn() } as never,
     });
     expect(ctx).toBeUndefined();
+  });
+});
+
+describe('softReloadAgentContainer — loopback forwarder re-attach (go-to-k/cdkd#6132)', () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+    reattachMock.mockClear();
+  });
+
+  it('re-attaches the forwarder to the restarted container, after the restart', async () => {
+    const order: string[] = [];
+    execFileMock.mockImplementation((_cmd: string, argv: string[]) => {
+      order.push(argv[0]!);
+      return argv[0] === 'inspect' ? '/srv/app\n' : '';
+    });
+    reattachMock.mockImplementation(async () => {
+      order.push('reattach');
+    });
+    await softReloadAgentContainer('cidXYZ', '/cdk.out/asset.HASH');
+    expect(reattachMock).toHaveBeenCalledWith('cidXYZ');
+    expect(order).toEqual(['inspect', 'cp', 'restart', 'reattach']);
   });
 });
 

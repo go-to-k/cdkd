@@ -70,6 +70,12 @@ export { cleanupEcsRun } from './ecs-task-runner/cleanup.js';
 export { buildDependencyGraph, topoSort } from './ecs-task-runner/containers.js';
 export { buildDockerRunArgs } from './ecs-task-runner/docker-run-args.js';
 
+import {
+  attachLocalLoopbackForwarder,
+  getActiveWorkloadAwsWiring,
+  prepareLocalLoopbackForwarder,
+} from './local-aws-wiring.js';
+
 const execFileAsync = promisify(execFile);
 
 /**
@@ -320,6 +326,9 @@ export async function runEcsTask(
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
+  // Loopback ports each container's final env still points at; the loopback
+  // forwarder serves them (`local-aws-wiring.ts`).
+  const dockerLoopbackPorts = new Map<string, number[]>();
   const dockerNames = new Map<string, string>();
   // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
   // container name and forwarded to each `docker run` via the spawn `env`.
@@ -361,6 +370,7 @@ export async function runEcsTask(
       }),
     });
     dockerCmds.set(container.name, built.args);
+    dockerLoopbackPorts.set(container.name, built.loopbackPorts);
     dockerNames.set(container.name, built.dockerName);
     dockerEnvs.set(container.name, built.sensitiveEnv);
     // A resolved secret whose NAME collides with a var the docker CLIENT reads
@@ -393,6 +403,12 @@ export async function runEcsTask(
 
     const args = dockerCmds.get(container.name)!;
     const dockerName = dockerNames.get(container.name)!;
+    const loopbackPorts = dockerLoopbackPorts.get(container.name) ?? [];
+    // Pull the forwarder image before the container starts.
+    const forwarderWiring = getActiveWorkloadAwsWiring();
+    if (loopbackPorts.length > 0 && forwarderWiring) {
+      await prepareLocalLoopbackForwarder(forwarderWiring);
+    }
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     const sensitiveEnv = dockerEnvs.get(container.name)!;
     warnFinchArgvExposure(Object.keys(sensitiveEnv));
@@ -428,6 +444,10 @@ export async function runEcsTask(
       ])
     );
     startedByName.set(container.name, { id, container });
+    // Reach a loopback AWS endpoint on the host from inside the container. The
+    // app may already be booting: an SDK call racing the forwarder's first
+    // moment fails with a retryable connection error.
+    if (loopbackPorts.length > 0) await attachLocalLoopbackForwarder(id, loopbackPorts);
 
     if (!options.detach) {
       state.logStreams.push({ containerId: id, stream: streamContainerLogs(container.name, id) });

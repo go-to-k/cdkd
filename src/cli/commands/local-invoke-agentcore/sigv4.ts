@@ -10,6 +10,7 @@ import {
 } from '../../../local/agentcore-sigv4-sign.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../../local/cognito-jwt.js';
 import { resolveProfileCredentials } from '../local-start-api.js';
+import { localAwsEmulatorCredentials } from '../../../local/local-aws-wiring.js';
 import {
   callerEnvCredentials,
   envCredentialsAreAssumedRole,
@@ -233,6 +234,16 @@ export async function resolveHostCredentialsForSigV4(
   region: string
 ): Promise<SigV4Credentials> {
   const logger = getLogger();
+  // Under `--aws-emulator` the emulator's keys are the only identity, in the
+  // container and here alike (go-to-k/cdkd#6132): no real key is sent.
+  const emulatorKeys = localAwsEmulatorCredentials();
+  if (emulatorKeys) {
+    return {
+      accessKeyId: emulatorKeys.accessKeyId,
+      secretAccessKey: emulatorKeys.secretAccessKey,
+      ...(emulatorKeys.sessionToken && { sessionToken: emulatorKeys.sessionToken }),
+    };
+  }
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   if (assumeRoleArn) {
     try {

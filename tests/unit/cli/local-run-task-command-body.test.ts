@@ -78,11 +78,25 @@ vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
 }));
 
+// go-to-k/cdkd#6132: the activation order is read off these two spies' calls.
+const callOrder = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  applyRoleArnIfSet: vi.fn().mockResolvedValue(undefined),
+  applyRoleArnIfSet: vi.fn(async () => {
+    callOrder.push('role-arn');
+  }),
 }));
-
+// cdk-local's activation, doubled so no emulator is needed; cdkd's own
+// `activateLocalAwsAndRoleArn` runs for real around it.
+const activateMock = vi.hoisted(() => vi.fn());
+vi.mock('cdk-local/internal', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('cdk-local/internal')>();
+  activateMock.mockImplementation(async (o: Parameters<typeof actual.activateWorkloadAwsWiring>[0]) => {
+    callOrder.push('activate');
+    return actual.activateWorkloadAwsWiring(o);
+  });
+  return { ...actual, activateWorkloadAwsWiring: activateMock };
+});
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   resolveApp: vi.fn().mockReturnValue('node app.js'),
@@ -798,5 +812,44 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
       profileCredentialsFile?: unknown;
     };
     expect(runOpts.profileCredentialsFile).toBeUndefined();
+  });
+});
+
+describe('localRunTaskCommand body: --aws-emulator (go-to-k/cdkd#6132)', () => {
+  const EMULATOR_KEYS = { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 'emu-secret' };
+  afterEach(async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring(undefined);
+    callOrder.length = 0;
+  });
+
+  it('activates the wiring with the options BEFORE --role-arn, then serves only the emulator keys and writes no --profile file', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    activateMock.mockImplementationOnce(async () => {
+      callOrder.push('activate');
+      setActiveWorkloadAwsWiring({
+        mode: 'emulator',
+        env: {},
+        scrubEnvKeys: [],
+        mounts: [],
+        loopbackPorts: [],
+        probeHealth: false,
+        emulatorCredentials: EMULATOR_KEYS,
+        dispose: () => {},
+      });
+    });
+    await runTask(['--aws-emulator']);
+    expect(activateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ awsEmulator: true, profile: PROFILE_NAME })
+    );
+    expect(callOrder.slice(0, 2)).toEqual(['activate', 'role-arn']);
+    expect(runEcsTaskMock, 'the command body never reached runEcsTask').toHaveBeenCalledTimes(1);
+    const runOpts = runEcsTaskMock.mock.calls[0]?.[1] as {
+      profileCredentialsFile?: unknown;
+      taskCredentials?: { accessKeyId: string };
+    };
+    expect(runOpts.profileCredentialsFile).toBeUndefined();
+    expect(runOpts.taskCredentials?.accessKeyId).toBe(EMULATOR_KEYS.accessKeyId);
+    expect(mountedBytes).toBeUndefined();
   });
 });

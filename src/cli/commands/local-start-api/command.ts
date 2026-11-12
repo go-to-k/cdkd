@@ -7,7 +7,10 @@ import {
 } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { applyRoleArnForLocal } from '../../../local/local-role-arn.js';
+import {
+  activateLocalAwsAndRoleArn,
+  profileCredentialsForWorkload,
+} from '../../../local/local-aws-wiring.js';
 import { explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import {
   Synthesizer,
@@ -179,7 +182,10 @@ export async function localStartApiCommand(
   if (options.layerRoleArn !== undefined) {
     explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
   }
-  await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
+  // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
+  // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
+  // follow the emulator (`local-aws-wiring.ts`).
+  await activateLocalAwsAndRoleArn(options);
 
   // Issue #256 Option 1: compose `--assume-role` (value-form
   // accumulator) and the separate `--assume-role-auto` boolean flag
@@ -475,9 +481,12 @@ export async function localStartApiCommand(
     // SSO temp creds typically last 1h+; long-running `--watch` sessions
     // outliving the creds need a cdkd restart (auto-refresh deferred,
     // see issue #654).
-    const profileCredentials = options.profile
-      ? await resolveProfileCredentials(options.profile)
-      : undefined;
+    // Under `--aws-emulator` the container gets the emulator's keys only, so
+    // the real `--profile` is neither resolved nor written to a file.
+    const profileCredentials = await profileCredentialsForWorkload(
+      options.profile,
+      resolveProfileCredentials
+    );
 
     // Issue #2 deferred from #655: when `--profile <p>` is set, ALSO
     // synthesize a shared AWS credentials file with the resolved creds

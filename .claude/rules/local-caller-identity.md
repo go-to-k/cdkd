@@ -39,11 +39,10 @@ is the caller": `applyProfileCredentialsOverlay` answers the second, runs AFTER
 the restore, and outranks it.
 
 **Nothing to restore is a STRIP, not an inherit.** When the triple was ABSENT
-before the assume (SSO / IMDS / container role), all three keys are REMOVED and
-the container falls back to its own resolution: a missing credential the user
-can see beats a privileged one they cannot. The restore is CREDENTIAL-ONLY
-(region keys untouched), and a restored long-lived key pair strips any inherited
-session token.
+before the assume (SSO / IMDS / container role), all three keys are REMOVED;
+the docker-run layer then fills the default chain read WITHOUT its env link
+(`local-aws-wiring.ts`, #6129), never the role. The restore is CREDENTIAL-ONLY
+and a restored long-lived pair strips any inherited token.
 
 ## The fence
 

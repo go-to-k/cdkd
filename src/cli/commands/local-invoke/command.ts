@@ -3,7 +3,10 @@ import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
-import { applyRoleArnForLocal } from '../../../local/local-role-arn.js';
+import {
+  activateLocalAwsAndRoleArn,
+  profileCredentialsForWorkload,
+} from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn, explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import {
   Synthesizer,
@@ -291,7 +294,10 @@ export async function localInvokeCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
+    // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
+    // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
+    // follow the emulator (`local-aws-wiring.ts`).
+    await activateLocalAwsAndRoleArn(options);
 
     await ensureDockerAvailable();
 
@@ -303,9 +309,12 @@ export async function localInvokeCommand(
     // `cdkd local start-api` family; the helper itself is exported from
     // `local-start-api.ts` and shared. Resolved once per invoke
     // (per the issue spec: "ONCE per invoke (NOT per-container)").
-    const profileCredentials = options.profile
-      ? await resolveProfileCredentials(options.profile)
-      : undefined;
+    // Under `--aws-emulator` the container gets the emulator's keys only, so
+    // the real `--profile` is neither resolved nor written to a file.
+    const profileCredentials = await profileCredentialsForWorkload(
+      options.profile,
+      resolveProfileCredentials
+    );
 
     // Issue #2 deferred from #655: synthesize an AWS shared credentials
     // file with the resolved creds under `[<options.profile>]` so handler
@@ -442,6 +451,7 @@ export async function localInvokeCommand(
     await applyLambdaCredentialEnv(dockerEnv, {
       ...(resolvedAssumeRoleArn && { assumeRoleArn: resolvedAssumeRoleArn }),
       ...(options.region !== undefined && { region: options.region }),
+      ...(lambda.stack.region !== undefined && { stackRegion: lambda.stack.region }),
       ...(profileCredentials && { profileCredentials }),
       ...(profileCredsFile && { profileCredsFile }),
     });

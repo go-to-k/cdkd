@@ -1,3 +1,4 @@
+import { getActiveWorkloadAwsWiring, resolveHostDefaultCredentials } from 'cdk-local/internal';
 import { resolveProfileCredentials } from '../local-start-api.js';
 import {
   writeProfileCredentialsFile,
@@ -16,10 +17,14 @@ import type { LocalRunTaskOptions } from './types.js';
  *   2. `--profile <p>` → resolved via {@link resolveProfileCredentials}
  *      (the SDK's default credential provider chain — SSO / IAM
  *      Identity Center / fromIni / role-assumption). NEW in this PR.
- *   3. Neither set → `undefined`; the sidecar runs with its own
- *      default credential chain (typically empty inside a fresh
- *      container — user containers will get 4xx from the credentials
- *      endpoint, mimicking IAM-misconfigured prod).
+ *   3. Neither set → the host's default credential chain (`AWS_PROFILE`,
+ *      the shared files, SSO; go-to-k/cdkd#6129), read without its env
+ *      link once a `--role-arn` assume is recorded, so it is the caller's;
+ *      `undefined` when it finds nothing, and the user containers then get
+ *      4xx from the credentials endpoint.
+ *
+ * Under `--aws-emulator` the emulator's credentials replace all three, so no
+ * real credential is served to the task (go-to-k/cdkd#6132).
  *
  * Extracted as an exported helper so a unit test can exercise every
  * branch without having to mock the full Synth + Docker + AWS pipeline
@@ -31,9 +36,14 @@ export async function resolveSidecarCredentials(
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
-  return undefined;
+  // cdkd-local-env-identity: the host's default chain, which cdk-local reads
+  // without its env link once `applyRoleArnForLocal` recorded a `--role-arn`
+  // assume, so it answers as the caller, never as the deploy role.
+  return resolveHostDefaultCredentials();
 }
 
 /**
@@ -101,7 +111,10 @@ export async function resolveTaskCredentialChannels(
   profileCredsFile: ProfileCredentialsFile | undefined;
 }> {
   const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
-  if (options.profile && sidecarCredentials && !assumedCredentials) {
+  // Under `--aws-emulator` the sidecar serves the emulator's keys and no host
+  // credentials file reaches a container, so none is written.
+  const emulator = getActiveWorkloadAwsWiring()?.mode === 'emulator';
+  if (options.profile && sidecarCredentials && !assumedCredentials && !emulator) {
     return {
       sidecarCredentials,
       // cdkd-local-env-identity: the `!assumedCredentials` gate above means

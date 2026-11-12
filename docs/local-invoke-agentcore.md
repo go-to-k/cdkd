@@ -236,7 +236,9 @@ hand, `--no-verify-auth` skips the verification with a warning. A
 
 A signature identifies the caller, so cdkd signs as you. It uses the first of
 these that is present: the `--assume-role` role, then `--profile`, then the
-credentials in your shell.
+credentials in your shell. Under [`--aws-emulator`](local-emulation.md#aws-emulator)
+it signs with the emulator's keys instead, the only credentials the container
+holds.
 
 The `--role-arn` role is never used to sign. That role is the identity for
 cdkd's own AWS calls, not yours. This matters in one case: you pass

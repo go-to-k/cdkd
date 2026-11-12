@@ -1,4 +1,5 @@
 import { getLogger } from '../../../utils/logger.js';
+import { setContainerRegion } from '../../../local/local-aws-wiring.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../../utils/pasteable-command.js';
@@ -282,7 +283,7 @@ export async function applyAgentCoreCredentialEnv(
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+      setContainerRegion(dockerEnv, stsRegion);
       assumeSucceeded = true;
     } catch (err) {
       logger.warn(
@@ -293,6 +294,14 @@ export async function applyAgentCoreCredentialEnv(
   }
   if (!assumeSucceeded) {
     forwardAwsEnv(dockerEnv);
+    // The same chain as the `--assume-role` arm: `--region` wins over the
+    // forwarded host region, written to both region variables.
+    setContainerRegion(
+      dockerEnv,
+      canonicalizeRegion(
+        args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+      )
+    );
     applyProfileCredentialsOverlay(dockerEnv, args.profileCredentials, false);
     if (args.profileCredsFile) {
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;

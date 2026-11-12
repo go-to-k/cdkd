@@ -449,15 +449,17 @@ describe('cdkd local invoke: container AWS_REGION on the DEFAULT path (issue #18
     expect(env['AWS_DEFAULT_REGION']).toBe('cn-north-1');
   });
 
-  it('folds BOTH region vars in one pass', async () => {
+  it('folds the region and writes it to BOTH region vars (go-to-k/cdkd#6132: no split)', async () => {
     process.env['AWS_REGION'] = 'CN-NORTH-1';
     process.env['AWS_DEFAULT_REGION'] = 'CN-NORTHWEST-1';
     const env: Record<string, string> = {};
 
     await applyLambdaCredentialEnv(env, {});
 
+    // `AWS_REGION` leads the chain, and both variables carry it, so an SDK
+    // reading either (boto3 reads the second) agrees with the first.
     expect(env['AWS_REGION']).toBe('cn-north-1');
-    expect(env['AWS_DEFAULT_REGION']).toBe('cn-northwest-1');
+    expect(env['AWS_DEFAULT_REGION']).toBe('cn-north-1');
   });
 
   it('leaves already-canonical region vars byte-identical', async () => {
@@ -919,10 +921,12 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   ])('%s folds the ENV half at its handler entry (issues #2103, #3622)', (file) => {
     const lines = liveLinesOf(memberHolding(file, SHARED_FOLD));
     const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
-    const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnForLocal('));
+    // `activateLocalAwsAndRoleArn` runs the `--aws-emulator` wiring and then
+    // `applyRoleArnForLocal` (go-to-k/cdkd#6132): the first AWS call.
+    const roleArnAt = lines.findIndex((line) => line.includes('await activateLocalAwsAndRoleArn('));
 
     expect(foldAt, `live '${SHARED_FOLD}' not found in ${file}`).toBeGreaterThan(-1);
-    expect(roleArnAt, 'applyRoleArnForLocal anchor drifted').toBeGreaterThan(-1);
+    expect(roleArnAt, 'activateLocalAwsAndRoleArn anchor drifted').toBeGreaterThan(-1);
     expect(foldAt).toBeLessThan(roleArnAt);
   });
 

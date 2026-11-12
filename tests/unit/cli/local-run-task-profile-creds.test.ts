@@ -26,6 +26,15 @@ import {
 // Lambda container env overlay); the helper-extraction pattern mirrors
 // PR #655's `resolveProfileCredentials` test surface.
 
+// The no-flag arm reads the host default chain through cdk-local
+// (go-to-k/cdkd#6129); mocked so the case cannot depend on the machine's own
+// credentials.
+const hostChainMock = vi.hoisted(() => vi.fn());
+vi.mock('cdk-local/internal', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resolveHostDefaultCredentials: hostChainMock,
+}));
+
 const credsProviderMock = vi.fn();
 const stsDestroyMock = vi.fn();
 const stsCtorMock = vi.fn();
@@ -42,6 +51,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
 
 describe('resolveSidecarCredentials (issue #658)', () => {
   beforeEach(() => {
+    hostChainMock.mockReset();
     credsProviderMock.mockReset();
     stsDestroyMock.mockReset();
     stsCtorMock.mockReset();
@@ -79,12 +89,24 @@ describe('resolveSidecarCredentials (issue #658)', () => {
     expect(stsDestroyMock).toHaveBeenCalledOnce();
   });
 
-  it('returns undefined when neither --profile nor --assume-task-role is set (sidecar falls back to its own default chain)', async () => {
+  it('serves the host default chain when neither --profile nor --assume-task-role is set (go-to-k/cdkd#6129)', async () => {
+    const chain = { accessKeyId: 'HOSTCHAINKEY00000000', secretAccessKey: 'host-chain-secret' };
+    hostChainMock.mockResolvedValue(chain);
     const result = await resolveSidecarCredentials({}, undefined);
-    expect(result).toBeUndefined();
-    // No AWS calls at all — pre-existing "lowest precedence" path.
+    expect(result).toBe(chain);
     expect(stsCtorMock).not.toHaveBeenCalled();
     expect(credsProviderMock).not.toHaveBeenCalled();
+  });
+
+  it('serves nothing when the host chain finds nothing', async () => {
+    hostChainMock.mockResolvedValue(undefined);
+    await expect(resolveSidecarCredentials({}, undefined)).resolves.toBeUndefined();
+  });
+
+  it('does not consult the default chain when --profile is given', async () => {
+    credsProviderMock.mockResolvedValue({ accessKeyId: 'AKIA-PROFILE', secretAccessKey: 'S' });
+    await resolveSidecarCredentials({ profile: 'my-sso' }, undefined);
+    expect(hostChainMock).not.toHaveBeenCalled();
   });
 
   it('propagates resolveProfileCredentials errors (expired SSO etc.) — no silent fallback', async () => {

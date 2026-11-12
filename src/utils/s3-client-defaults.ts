@@ -75,7 +75,7 @@
 
 import { S3Client } from '@aws-sdk/client-s3';
 import { getProfileName, loadSharedConfigFiles } from '@smithy/shared-ini-file-loader';
-import { awsClientDefaults } from './aws-client-defaults.ts';
+import { awsClientDefaults, awsEndpointOverrideActive } from './aws-client-defaults.ts';
 
 /** The values botocore accepts for `s3.addressing_style`. */
 export type S3AddressingStyle = 'auto' | 'path' | 'virtual';
@@ -200,6 +200,10 @@ export interface S3ClientDefaultsOptions {
  * when the client is built.
  */
 export function s3ClientDefaults(options: S3ClientDefaultsOptions = {}): { forcePathStyle?: true } {
+  // `cdkd local --aws-emulator` (go-to-k/cdkd#6132): every client then talks
+  // to the one local endpoint, which serves S3 path-style only; a host NAME
+  // there would otherwise make the SDK address `<bucket>.<host>`.
+  if (awsEndpointOverrideActive()) return { forcePathStyle: true };
   const decision = currentDecision();
   const forcePathStyle =
     options.explicitEndpoint === true

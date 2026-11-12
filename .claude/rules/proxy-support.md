@@ -19,14 +19,14 @@ Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
 
 - No proxy and no role assumed: it returns `{}`. Otherwise a `requestHandler`
   from `proxy-routing-agent.ts` PLUS an injected `defaultProvider` chain
-  carrying that handler in `clientConfig`. The chain is not optional: the SDK
-  never reads `HTTPS_PROXY`, and a client's own handler reaches the STS hops
-  but never the SSO portal.
-- **Built FRESH per call, never shared**: a shared agent lets one client's
-  `destroy()` abort another's in-flight request, and `defaultProvider` memoizes
-  credentials per instance.
-- **`ignoreAssumedRole` INJECTS the caller's identity**; returning `{}` is a
-  no-op, since the chain then re-reads the `AWS_*` triple the helper overwrote.
+  carrying that handler; the SDK never reads `HTTPS_PROXY`, and a client's own
+  handler never reaches the SSO portal.
+- An endpoint override (`setAwsEndpointOverrideSource`, `cdkd local
+  --aws-emulator`) outranks both: endpoint, CA-trusting handler, its keys.
+- **Built FRESH per call, never shared**: one client's `destroy()` would abort
+  another's request, and `defaultProvider` memoizes per instance.
+- **`ignoreAssumedRole` INJECTS the caller's identity**; `{}` would be a no-op,
+  the chain re-reading the `AWS_*` triple the helper overwrote.
 - `resetAwsClientDefaults()` also drops the published role and pre-assume caller
   snapshot ([local-caller-identity.md](local-caller-identity.md)).
 - `ambientClientDefaults()` adds the ACTIVE clients' explicit `credentials`,
@@ -35,9 +35,8 @@ Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
 ## `proxy-routing-agent.ts`
 
 An `agent-base` subclass choosing per REQUEST between a proxy agent and a plain
-one via `proxy-from-env`'s `getProxyForUrl` — per request because
-`NodeHttpHandler` picks by PROTOCOL alone and `https-proxy-agent` ignores
-`NO_PROXY`. The inner-agent cache is scoped to the agent INSTANCE, never
+one via `proxy-from-env`'s `getProxyForUrl`: `NodeHttpHandler` picks by
+PROTOCOL, `https-proxy-agent` ignores `NO_PROXY`. The inner-agent cache is scoped to the agent INSTANCE, never
 module-global. `NO_PROXY` matching is `proxy-from-env`'s: exact hostname unless
 the entry starts with `.` or `*`; CIDR never matches.
 

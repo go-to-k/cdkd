@@ -1,4 +1,7 @@
 import { Command, Option } from 'commander';
+import { addAwsEndpointOptions, getAwsEndpointOverride } from 'cdk-local/internal';
+import { setAwsEndpointOverrideSource } from '../../utils/aws-client-defaults.js';
+import { assertAwsEmulatorValue } from '../../local/local-aws-wiring.js';
 import {
   appOptions,
   commonOptions,
@@ -9,7 +12,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { terminalSafe } from '../../utils/display-safe.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { handleError, withErrorHandling } from '../../utils/error-handler.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
@@ -149,10 +152,26 @@ export function createLocalCommand(): Command {
   // local-emulation module reads it. Idempotent + process-wide; one call
   // covers every `export { ... } from 'cdk-local'` shim cdkd mounts.
   setEmbedConfig(CDKD_EMBED_CONFIG);
+  // cdkd's own AWS clients follow the `--aws-emulator` endpoint whichever
+  // command activates it: cdkd's four commands through `activateLocalAwsWiring`,
+  // the cdk-local engine commands inside cdk-local's own handler.
+  setAwsEndpointOverrideSource(getAwsEndpointOverride);
 
   const local = new Command('local').description(
     'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'
   );
+  // Every subcommand, the cdk-local engine ones included: refuse an
+  // `--aws-emulator` / CDKD_AWS_EMULATOR value carrying a credential-shaped
+  // part, or no URL at all, before cdk-local can echo it (go-to-k/cdkd#6132).
+  local.hook('preAction', (_local, action) => {
+    // Rendered and exited like an action's own error (a hook is outside
+    // `withErrorHandling`, so a throw would surface as `Fatal error:` + stack).
+    try {
+      assertAwsEmulatorValue(action.opts()['awsEmulator'] as string | boolean | undefined);
+    } catch (err) {
+      handleError(err);
+    }
+  });
 
   const invoke = new Command('invoke')
     .description(
@@ -270,6 +289,9 @@ export function createLocalCommand(): Command {
     invoke.addOption(opt)
   );
   invoke.addOption(deprecatedRegionOption);
+  // `--aws-emulator [url]` / `--ca-bundle <file>` (go-to-k/cdkd#6131, #6132),
+  // the same spelling the cdk-local engine commands register.
+  addAwsEndpointOptions(invoke);
 
   local.addCommand(invoke);
   local.addCommand(createLocalStartApiCommand());
