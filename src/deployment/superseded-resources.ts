@@ -178,8 +178,44 @@ export function supersededAfterRollback(
 ): Pick<StackState, 'supersededResources'> {
   const added = Array.isArray(pending.supersededResources) ? pending.supersededResources : [];
   if (added.length === 0) return {};
+  return { supersededResources: [...ownNotPending(base, added), ...added] };
+}
+
+/**
+ * go-to-k/cdkd#6120: the automatic rollback's save, which builds the record
+ * afresh rather than carrying the state's fields: the state's own entries
+ * (those a record of the same type holds again dropped, as every deploy save
+ * drops them) plus the rollback's pending ones. Without it a superseded id
+ * the deploy recorded (an old id a rollback did not take back) was dropped
+ * from the record and never deleted.
+ */
+export function supersededAfterAutoRollback(
+  base: Pick<StackState, 'supersededResources'>,
+  pending: Pick<StackState, 'supersededResources'>,
+  resources: Record<string, ResourceState>
+): Pick<StackState, 'supersededResources'> {
+  const added = Array.isArray(pending.supersededResources) ? pending.supersededResources : [];
+  const own = ownNotPending(base, added).filter(
+    (entry) => !isSupersededHeldBySameType(entry, resources)
+  );
+  const all = [...own, ...added];
+  return all.length === 0 ? {} : { supersededResources: all };
+}
+
+/** `base`'s entries, minus one naming the same resource as a pending entry. */
+function ownNotPending(
+  base: Pick<StackState, 'supersededResources'>,
+  added: readonly SupersededResourceRecord[]
+): SupersededResourceRecord[] {
   const own = Array.isArray(base.supersededResources) ? base.supersededResources : [];
-  return { supersededResources: [...own, ...added] };
+  return own.filter(
+    (entry) =>
+      !added.some(
+        (a) =>
+          a.state.physicalId === entry.state.physicalId &&
+          a.state.resourceType === entry.state.resourceType
+      )
+  );
 }
 
 /** The remedy a kept entry's warning names. */

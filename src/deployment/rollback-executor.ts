@@ -148,12 +148,18 @@ export async function replayFailedOperations(
     // resource another record still holds leaves it in place.
     () =>
       withStackRecords(replayStackRecordsView(args[1]), async () => {
-        // go-to-k/cdkd#6120: the ids a `--revert-failed` update moved off,
-        // deleted after the last op, as `replayRollback` deletes its own.
+        // go-to-k/cdkd#6120: the ids a `--revert-failed` update moved off are
+        // deleted after the last op: by the caller's own replay when it hands
+        // a queue in (`cdkd rollback` runs it after the segment's completed
+        // ops), else here, inside this replay's event envelope.
         const [ops, stateResources, stackName, ctx, options = {}] = args;
+        if (options.movedIdCleanups !== undefined) return replayFailedOperationsUnbound(...args);
         const movedIdCleanups = newMovedIdCleanupQueue(options);
+        const envelope = options.emitEnvelope === true && ops.length > 0;
+        if (envelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
         const result = await replayFailedOperationsUnbound(ops, stateResources, stackName, ctx, {
           ...options,
+          emitEnvelope: false,
           movedIdCleanups,
         });
         await runMovedIdCleanups(movedIdCleanups, {
@@ -164,6 +170,7 @@ export async function replayFailedOperations(
           afterOp: options.afterOp,
           interrupted: result.interrupted || options.isInterrupted?.() === true,
         });
+        if (envelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
         return result;
       })
   );

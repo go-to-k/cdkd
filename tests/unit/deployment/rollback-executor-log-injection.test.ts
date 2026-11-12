@@ -1066,9 +1066,9 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // their labelled `To orphan it:` remedy stays a line of its own on the
     // terminal (M1 of the go-to-k/cdkd#3764 review) while every line of it is
     // still sanitized. Both call sites, and both arms, are pinned by shape.
-    // A second wrapped render since go-to-k/cdkd#6120: the delete of an id a
-    // rollback `update()` moved off.
-    expect((src.match(wrapped) ?? []).length).toBe(2);
+    // Two more since go-to-k/cdkd#6120: the delete of an id a rollback
+    // `update()` moved off, and the state save after it settles.
+    expect((src.match(wrapped) ?? []).length).toBe(3);
     // Since issue #4037 both call sites reach it through `maskedFailureText`,
     // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408)
     // and a deferred new-resource delete's (go-to-k/cdkd#5064).

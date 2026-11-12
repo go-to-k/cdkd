@@ -122,6 +122,11 @@ export async function replayRollbackUnbound(
      */
     onSuperseded?: (entry: SupersededResourceRecord) => void;
     onSupersededSettled?: (entry: SupersededResourceRecord) => void;
+    /**
+     * go-to-k/cdkd#6120: a queue the segment's `--revert-failed` replay
+     * already filled, run with this replay's own after its last op.
+     */
+    movedIdCleanups?: MovedIdCleanupQueue;
   } = {}
 ): Promise<RollbackReplayResult> {
   const orphanLogicalIds = options.orphanLogicalIds ?? new Set<string>();
@@ -135,8 +140,27 @@ export async function replayRollbackUnbound(
     rolledBackCreates: [],
   };
 
+  // go-to-k/cdkd#6120: the ids a rollback `update()` moved off, deleted once
+  // every op has run (CloudFormation's rollback cleanup phase).
+  const movedIdCleanups =
+    options.movedIdCleanups ??
+    newMovedIdCleanupQueue({
+      onSuperseded: options.onSuperseded,
+      onSupersededSettled: options.onSupersededSettled,
+    });
+  const runCleanups = (): Promise<void> =>
+    runMovedIdCleanups(movedIdCleanups, {
+      stateResources,
+      stackName,
+      ctx,
+      result,
+      afterOp: options.afterOp,
+      interrupted: result.interrupted || options.isInterrupted?.() === true,
+    });
+
   if (operations.length === 0) {
     ctx.logger.info('No completed operations to roll back.');
+    await runCleanups();
     // go-to-k/cdkd#4408: a failed-only segment's removals (see below).
     await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, stackName, ctx, result);
     return result;
@@ -159,12 +183,6 @@ export async function replayRollbackUnbound(
   // have, and both loops below are strictly sequential, so sharing adds no
   // concurrency exposure the failed-op sibling does not already carry.
   const resolver = new ReplayResolvers(ctx.region);
-  // go-to-k/cdkd#6120: the ids a rollback `update()` moved off, deleted once
-  // every op below has run (CloudFormation's rollback cleanup phase).
-  const movedIdCleanups = newMovedIdCleanupQueue({
-    onSuperseded: options.onSuperseded,
-    onSupersededSettled: options.onSupersededSettled,
-  });
 
   // go-to-k/cdkd#4408: until an op completes, its resource's record is the
   // failed deploy's, which the put-back at the end never reads from.
@@ -344,14 +362,7 @@ export async function replayRollbackUnbound(
 
   // go-to-k/cdkd#6120: after the last op, as CloudFormation's
   // UPDATE_ROLLBACK_COMPLETE_CLEANUP sends them.
-  await runMovedIdCleanups(movedIdCleanups, {
-    stateResources,
-    stackName,
-    ctx,
-    result,
-    afterOp: options.afterOp,
-    interrupted: result.interrupted || options.isInterrupted?.() === true,
-  });
+  await runCleanups();
 
   // go-to-k/cdkd#4408: an inline policy a removal above (or the segment's
   // failed-op replay before it, which shares `inlinePolicyWriters`) took off a

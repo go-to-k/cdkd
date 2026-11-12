@@ -59,6 +59,10 @@ import {
 } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
 import {
+  newMovedIdCleanupQueue,
+  runMovedIdCleanups,
+} from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
+import {
   STATE_SCHEMA_VERSION_CURRENT,
   type ResourceState,
   type StackState,
@@ -643,6 +647,16 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
         // import replaced under the id) is a warning: nothing reverts it.
         const completedSplit = splitImportedOps(segment.operations, segment, orphanLogicalIds);
         const completedOps = completedSplit.replay;
+        // go-to-k/cdkd#6120: one queue for the segment's two replays, so an id
+        // a `--revert-failed` update moved off is deleted only after the
+        // completed ops are reverted too (the rollback's cleanup phase).
+        const movedIdCleanups =
+          completedOps.length > 0
+            ? newMovedIdCleanupQueue({
+                onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+                onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+              })
+            : undefined;
         // A displaced FAILED op counts whether or not `--revert-failed` is
         // passed: the plan lists it either way, and nothing ever reverts it,
         // so a run that then pops the segment must still say so (exit 2).
@@ -741,6 +755,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                           // update moved off is kept in state until deleted.
                           onSuperseded: (entry) => addSuperseded(supersededHost, entry),
                           onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+                          ...(movedIdCleanups !== undefined && { movedIdCleanups }),
                           // Same reason as the sibling replay below: `afterOp`
                           // saves per op, so a record appended only after this
                           // returns is absent from every intermediate save
@@ -817,6 +832,17 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                     }
                   }
                   if (failedResult.interrupted) {
+                    // The shared queue is kept, never sent, on an interrupt.
+                    if (movedIdCleanups !== undefined) {
+                      await runMovedIdCleanups(movedIdCleanups, {
+                        stateResources,
+                        stackName,
+                        ctx,
+                        result: failedResult,
+                        afterOp: saveState,
+                        interrupted: true,
+                      });
+                    }
                     return {
                       failures: failedOpFailures,
                       warnings: failedOpWarnings,
@@ -846,6 +872,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                       failedOperations: failedForGuard,
                       onSuperseded: (entry) => addSuperseded(supersededHost, entry),
                       onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+                      ...(movedIdCleanups !== undefined && { movedIdCleanups }),
                     })
                 );
                 return {

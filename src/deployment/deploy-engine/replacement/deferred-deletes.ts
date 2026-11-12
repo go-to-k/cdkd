@@ -154,9 +154,9 @@ export function warnUnretriedReplacedDeletes(
       deps.logger.warn(
         entry.failureMessage === undefined
           ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
-            // update re-creates the old resource (#6120): tracked again only
-            // when the handler answers the same id.
-            safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback re-creates the old resource, and it is tracked again only if the handler answers this id; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
+            // update sends the new id an Update with the old properties
+            // (#6120): tracked again only when the handler answers this id.
+            safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
           : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
       )
     );

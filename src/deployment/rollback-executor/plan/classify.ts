@@ -20,6 +20,7 @@ import {
   rollbackCannotAddress,
 } from '../messages.js';
 import { hasAddressablePhysicalId } from '../../../state/malformed-resources-bag.js';
+import { isCustomResourceType } from '../../../provisioning/custom-resource-secure-references.js';
 
 /** The two places a journal can name the old resource's type, each `undefined` when unusable. */
 function journaledOldTypes(op: OldTypeSources): {
@@ -188,6 +189,9 @@ export function movedIdLeftForCleanup(op: CompletedOperation): boolean {
   return (
     op.changeType === 'UPDATE' &&
     op.oldPhysicalIdLeftForCleanup === true &&
+    // Only a custom resource's handler leaves the old id live; a planted mark
+    // on any other type keeps the reverse-replacement arm.
+    isCustomResourceType(op.resourceType) &&
     op.wasReplaced === true &&
     op.oldDeletedBeforeCreate !== true &&
     typeof op.physicalId === 'string' &&

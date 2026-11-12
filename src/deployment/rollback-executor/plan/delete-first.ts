@@ -1,4 +1,5 @@
 import type { CompletedOperation, FailedOperation } from '../types.js';
+import { movedIdLeftForCleanup } from './classify.js';
 
 /**
  * go-to-k/cdkd#4690: the delete-first reversal deletes the NEW resource before
@@ -84,7 +85,9 @@ export function markDeleteFirstBlocked(
       (op.changeType === 'UPDATE' &&
         op.physicalId !== prev &&
         op.wasReplaced !== false &&
-        op.oldResourceRetained !== true);
+        op.oldResourceRetained !== true &&
+        // go-to-k/cdkd#6120: a custom resource's handler still holds its old id.
+        !movedIdLeftForCleanup(op));
     if (replacedAway) add(op.logicalId, prev, op.previousState?.attributes);
   }
   if (gone.length === 0) return;

@@ -149,9 +149,11 @@ export function queueMovedIdCleanup(
 /**
  * Send every queued delete, after the replay's last op. Never throws: a
  * failed or declined delete warns naming the id; a recorded one stays in
- * `supersededResources` for the next deploy, anything else is untracked.
- * Interrupted, a recorded id is kept for the next deploy rather than deleted.
- * An id a record of the stack holds by then is never deleted.
+ * `supersededResources` for the next deploy, anything else is untracked (a
+ * line and a `ROLLBACK_RESOURCE_SUCCEEDED` event name it). Interrupted,
+ * nothing is sent: a recorded id is kept for the next deploy, an unrecorded
+ * one is named as untracked. An id a record of the stack holds by then is
+ * never deleted. A failed state save after a settled entry only warns.
  */
 export async function runMovedIdCleanups(
   queue: MovedIdCleanupQueue,
@@ -170,20 +172,50 @@ export async function runMovedIdCleanups(
   for (const entry of entries) {
     const { logicalId, sent, mask, superseded } = entry;
     const shown = displaySafe(mask(String(displayPhysicalId(sent.resourceType, sent.physicalId))));
-    if (scope.interrupted && superseded !== undefined) {
+    const untracked = (why: string): void => {
+      ctx.recordEvent?.({
+        eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+        stackName,
+        operation: 'UPDATE',
+        logicalId,
+        resourceType: sent.resourceType,
+        ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
+        physicalId: sent.physicalId,
+        reason: mask(
+          `The rollback moved ${logicalId} off ${sent.physicalId}, which ${why}; it is no ` +
+            `longer tracked by cdkd.`
+        ),
+      });
+    };
+    if (scope.interrupted) {
       logger.warn(
         mask(
           `  Rollback: the physical id ${safe(logicalId)} moved off (${shown}) was not sent its ` +
-            `Delete: the rollback was interrupted. ${SUPERSEDED_KEPT_REMEDY}.`
+            `Delete: the rollback was interrupted. ` +
+            (superseded !== undefined
+              ? `${SUPERSEDED_KEPT_REMEDY}.`
+              : `It is no longer tracked by cdkd; delete what the handler made under it manually.`)
         )
       );
       result.warnings++;
+      if (superseded === undefined) untracked('was not sent its Delete (interrupted)');
       continue;
     }
     const settle = async (): Promise<void> => {
       if (superseded === undefined) return;
       queue.onSupersededSettled?.(superseded);
-      await afterOp?.(logicalId);
+      try {
+        await afterOp?.(logicalId);
+      } catch (saveError) {
+        // The next save writes it; the delete itself is settled.
+        logger.warn(
+          mask(
+            `  Rollback: saving state after settling the physical id ${safe(logicalId)} moved ` +
+              `off (${shown}) failed: ${displaySafe(describeAwsFailure(saveError).detail)}`
+          )
+        );
+        result.warnings++;
+      }
     };
     const holder = Object.entries(stateResources).find(
       ([, record]) =>
@@ -201,8 +233,9 @@ export async function runMovedIdCleanups(
       await settle();
       continue;
     }
+    let deleted = false;
     try {
-      const deleted = await withReplayDeletePrinting(
+      const outcome = await withReplayDeletePrinting(
         {
           ctx,
           op: { logicalId, changeType: 'UPDATE', resourceType: sent.resourceType },
@@ -221,7 +254,7 @@ export async function runMovedIdCleanups(
           })
       );
       throwIfDeleteSkipped(
-        deleted,
+        outcome,
         logicalId,
         sent.physicalId,
         'while deleting the physical id the rollback moved off',
@@ -233,8 +266,7 @@ export async function runMovedIdCleanups(
           mask,
         }
       );
-      logger.info(mask(`  ✓ Rollback: ${safe(logicalId)}'s old physical id (${shown}) deleted`));
-      await settle();
+      deleted = true;
     } catch (deleteError) {
       logger.warn(
         mask(
@@ -246,21 +278,11 @@ export async function runMovedIdCleanups(
         )
       );
       result.warnings++;
-      if (superseded === undefined) {
-        ctx.recordEvent?.({
-          eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
-          stackName,
-          operation: 'UPDATE',
-          logicalId,
-          resourceType: sent.resourceType,
-          ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
-          physicalId: sent.physicalId,
-          reason: mask(
-            `The rollback moved ${logicalId} off ${sent.physicalId}, whose Delete failed; it is ` +
-              `no longer tracked by cdkd.`
-          ),
-        });
-      }
+      if (superseded === undefined) untracked('its Delete did not complete');
+    }
+    if (deleted) {
+      logger.info(mask(`  ✓ Rollback: ${safe(logicalId)}'s old physical id (${shown}) deleted`));
+      await settle();
     }
   }
 }
