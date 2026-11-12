@@ -150,6 +150,41 @@ describe('AWS::S3Tables::TableBucket LoggingConfiguration (go-to-k/cdkd#6167)', 
     );
   });
 
+  it.each([
+    ['TargetBucket', { ...LOGGING, TargetBucket: undefined }],
+    ['TargetPrefix', { ...LOGGING, TargetPrefix: 7 }],
+    [
+      'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      { ...LOGGING, TargetObjectKeyFormat: { PartitionedPrefix: {} } },
+    ],
+    [
+      'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      { ...LOGGING, TargetObjectKeyFormat: 'x' },
+    ],
+  ])('refuses a missing or non-string %s before any call, on create and update', async (member, logging) => {
+    const needle = new RegExp(
+      `LoggingConfiguration\\.${member.replace(/\./g, '\\.')} for ${BUCKET} B must be a string; refusing before any call`
+    );
+    await expect(
+      provider.create('B', BUCKET, { TableBucketName: 'tb', LoggingConfiguration: logging })
+    ).rejects.toThrow(needle);
+    // An earlier write (encryption) would otherwise land before logging's.
+    await expect(
+      provider.update(
+        'B',
+        BUCKET_ARN,
+        BUCKET,
+        {
+          TableBucketName: 'tb',
+          EncryptionConfiguration: { SSEAlgorithm: 'AES256' },
+          LoggingConfiguration: logging,
+        },
+        { TableBucketName: 'tb' }
+      )
+    ).rejects.toThrow(needle);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   describe('update', () => {
     it('sends nothing when it did not change', async () => {
       await provider.update(

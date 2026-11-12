@@ -256,6 +256,44 @@ export function sdkReplication(cfn: CfnObject): TableBucketReplicationConfigurat
 }
 
 /**
+ * Refuse, before any call, a `LoggingConfiguration` whose required string
+ * members (`TargetBucket`, `TargetPrefix`,
+ * `TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource`) are missing
+ * or not strings: sent as-is, AWS would reject it only after the create or
+ * the earlier configuration writes landed.
+ */
+export function refuseMalformedLogging(
+  cfn: CfnObject,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): void {
+  const keyFormat = isCfnObject(cfn['TargetObjectKeyFormat'])
+    ? cfn['TargetObjectKeyFormat']
+    : undefined;
+  const partitioned = isCfnObject(keyFormat?.['PartitionedPrefix'])
+    ? keyFormat['PartitionedPrefix']
+    : undefined;
+  const members: [string, unknown][] = [
+    ['TargetBucket', cfn['TargetBucket']],
+    ['TargetPrefix', cfn['TargetPrefix']],
+    [
+      'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      partitioned?.['PartitionDateSource'],
+    ],
+  ];
+  for (const [member, value] of members) {
+    if (typeof value === 'string') continue;
+    throw new ProvisioningError(
+      `LoggingConfiguration.${member} for ${resourceType} ${logicalId} must be a string; refusing before any call`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+}
+
+/**
  * CFn `LoggingConfiguration` -> PutTableBucketLogging's status. The schema
  * requires every member, so a declared configuration always enables logging;
  * the empty status, which turns it off, is sent only for a removal.

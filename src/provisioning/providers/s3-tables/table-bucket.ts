@@ -38,6 +38,7 @@ import {
   sdkStorageClass,
   sdkReplication,
   sdkLogging,
+  refuseMalformedLogging,
   sdkUnreferencedFileRemoval,
   metricsEnabled,
   type TableMaintenanceWrite,
@@ -95,6 +96,7 @@ export async function createTableBucket(
     logicalId
   );
   const logging = desiredObject(properties, 'LoggingConfiguration', resourceType, logicalId);
+  if (logging !== undefined) refuseMalformedLogging(logging, resourceType, logicalId);
   // Converted before any call: a non-integer day count is refused here.
   const unreferencedValue =
     unreferenced &&
