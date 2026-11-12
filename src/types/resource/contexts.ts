@@ -379,6 +379,19 @@ export interface UpdateContext extends SecretMaskingContext {
   changedProperties?: ReadonlySet<string> | undefined;
 
   /**
+   * go-to-k/cdkd#6140: the keys of {@link changedProperties} named ONLY because
+   * they carry a fresh `NoEcho` parameter value AWS did not confirm holding:
+   * the key's as-written form (`***` at the `NoEcho` positions, a dynamic
+   * reference as its `{{resolve:...}}` token) equals the record, nothing
+   * else marks it, and its previous side was not rewritten. Such a key may be
+   * unchanged; cdkd cannot tell, since the record keeps only the mask. A
+   * provider for which re-sending it is destructive (an `overwrite` OpenAPI
+   * put) may leave it alone and warn. Set alongside `changedProperties`, and
+   * empty when the engine forces every key.
+   */
+  noEchoOnlyChangedProperties?: ReadonlySet<string> | undefined;
+
+  /**
    * go-to-k/cdkd#5380: declare, IMMEDIATELY BEFORE an irreversible call that
    * starts changing a top-level property (a Start / Stop that AWS finishes
    * asynchronously, a second write after a first one landed), that the change

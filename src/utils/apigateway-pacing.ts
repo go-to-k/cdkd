@@ -37,7 +37,53 @@ const GLOBAL_BUCKET = { capacity: 30, perSecond: 8 };
  * (`AWS::ApiGateway::ApiKey` goes through Cloud Control, which is not paced).
  */
 const OPERATION_BUCKET = { capacity: 5, perSecond: 4 };
-const LIMITED_OPERATIONS: ReadonlySet<string> = new Set(['CreateResource', 'DeleteResource']);
+/**
+ * `DeleteRestApi`: one request every 30 seconds per account. A destroy of a
+ * stack with several REST APIs sends their deletes at once, and the SDK's
+ * throttle backoff gives up after about 50 s, so the third would fail.
+ */
+const DELETE_REST_API_BUCKET = { capacity: 1, perSecond: 1 / 30 };
+/**
+ * `CreateRestApi` / `ImportRestApi`: one request every 3 seconds for a
+ * Regional or private API, one every 30 seconds for an edge-optimized one,
+ * each per account (the quotas table lists the four separately). Edge is the
+ * default endpoint type, CDK's too. `PutRestApi`: one request per second.
+ */
+const REGIONAL_CREATE_BUCKET = { capacity: 1, perSecond: 1 / 3 };
+const EDGE_CREATE_BUCKET = { capacity: 1, perSecond: 1 / 30 };
+const PUT_REST_API_BUCKET = { capacity: 1, perSecond: 1 };
+const LIMITED_OPERATIONS: ReadonlyMap<string, { capacity: number; perSecond: number }> = new Map([
+  ['CreateResource', OPERATION_BUCKET],
+  ['DeleteResource', OPERATION_BUCKET],
+  ['DeleteRestApi', DELETE_REST_API_BUCKET],
+  ['CreateRestApi:REGIONAL', REGIONAL_CREATE_BUCKET],
+  ['CreateRestApi:EDGE', EDGE_CREATE_BUCKET],
+  ['ImportRestApi:REGIONAL', REGIONAL_CREATE_BUCKET],
+  ['ImportRestApi:EDGE', EDGE_CREATE_BUCKET],
+  ['PutRestApi', PUT_REST_API_BUCKET],
+]);
+
+/**
+ * The pacing lane of one call: the operation, or for a REST API create the
+ * operation and its endpoint type, which have separate quotas. A create that
+ * names no Regional or private type (none at all, or a clone that inherits its
+ * source's) is paced as edge-optimized, the default and the slower quota.
+ */
+export function pacingLane(operation: string, input: unknown): string {
+  if (operation !== 'CreateRestApi' && operation !== 'ImportRestApi') return operation;
+  const request = (input ?? {}) as {
+    endpointConfiguration?: { types?: unknown };
+    parameters?: Record<string, unknown>;
+  };
+  const declared =
+    operation === 'CreateRestApi'
+      ? Array.isArray(request.endpointConfiguration?.types)
+        ? request.endpointConfiguration.types[0]
+        : undefined
+      : request.parameters?.['endpointConfigurationTypes'];
+  const type = typeof declared === 'string' ? declared.toUpperCase() : '';
+  return `${operation}:${type === 'REGIONAL' || type === 'PRIVATE' ? 'REGIONAL' : 'EDGE'}`;
+}
 
 /**
  * SDK attempts for an API Gateway call. Pacing keeps this process under the
@@ -99,10 +145,11 @@ export class ApiGatewayPacer {
 
   /** Milliseconds `operation` waits for its own bucket; 0 when it has none. */
   reserveOperation(operation: string, now: number = performance.now()): number {
-    if (!LIMITED_OPERATIONS.has(operation)) return 0;
+    const config = LIMITED_OPERATIONS.get(operation);
+    if (config === undefined) return 0;
     let lane = this.perOperation.get(operation);
     if (lane === undefined) {
-      lane = new Bucket(OPERATION_BUCKET);
+      lane = new Bucket(config);
       this.perOperation.set(operation, lane);
     }
     const start = lane.availableAt(now);
@@ -175,7 +222,9 @@ export function withApiGatewayPacing<
       const operation = (context.commandName ?? '').replace(/Command$/, '');
       const pacer = apiGatewayPacerFor(region);
       const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-      const ownWait = pacer.reserveOperation(operation);
+      const ownWait = pacer.reserveOperation(
+        pacingLane(operation, (args as { input?: unknown } | undefined)?.input)
+      );
       if (ownWait > 0) await sleep(ownWait);
       // A call that loses the shared token to another asks again.
       for (let wait = pacer.takeShared(); wait > 0; wait = pacer.takeShared()) await sleep(wait);

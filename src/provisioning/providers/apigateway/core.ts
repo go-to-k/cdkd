@@ -168,6 +168,8 @@ export async function create(
       );
     case 'AWS::ApiGateway::Method':
       return this.createMethod(logicalId, resourceType, properties, log, context);
+    case 'AWS::ApiGateway::RestApi':
+      return this.createRestApi(logicalId, resourceType, properties, log);
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -258,6 +260,17 @@ export async function update(
         log,
         context?.desiredFromAwsReadback === true
       );
+    case 'AWS::ApiGateway::RestApi':
+      return this.updateRestApi(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        log,
+        context?.changedProperties,
+        context?.noEchoOnlyChangedProperties
+      );
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -304,6 +317,8 @@ export async function deleteImpl(
       return this.deleteStage(logicalId, physicalId, resourceType, properties, context);
     case 'AWS::ApiGateway::Method':
       return this.deleteMethod(logicalId, physicalId, resourceType, context);
+    case 'AWS::ApiGateway::RestApi':
+      return this.deleteRestApi(logicalId, physicalId, resourceType, context);
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -337,6 +352,8 @@ export async function getAttribute(
       return this.getStageAttribute(physicalId, attributeName);
     case 'AWS::ApiGateway::Method':
       return this.getMethodAttribute(physicalId, attributeName);
+    case 'AWS::ApiGateway::RestApi':
+      return this.getRestApiAttribute(physicalId, attributeName);
     default:
       return undefined;
   }

@@ -527,7 +527,7 @@ of the same name.
 
 | Service | Types |
 | --- | --- |
-| API Gateway | `AWS::ApiGateway::Account`, `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Stage` |
+| API Gateway | `AWS::ApiGateway::Account`, `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::RestApi`, `AWS::ApiGateway::Stage` |
 | API Gateway v2 | `AWS::ApiGatewayV2::Authorizer`, `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Stage` |
 | AppSync | `AWS::AppSync::ApiKey`, `AWS::AppSync::DataSource`, `AWS::AppSync::GraphQLSchema`, `AWS::AppSync::Resolver` |
 | Bedrock AgentCore | `AWS::BedrockAgentCore::Evaluator`, `AWS::BedrockAgentCore::Runtime` |

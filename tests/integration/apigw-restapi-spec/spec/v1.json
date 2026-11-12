@@ -1,0 +1,29 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "CdkdApigwRestApiSpec-asset",
+    "version": "1"
+  },
+  "paths": {
+    "/x": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        },
+        "x-amazon-apigateway-integration": {
+          "type": "mock",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          },
+          "responses": {
+            "default": {
+              "statusCode": "200"
+            }
+          }
+        }
+      }
+    }
+  }
+}

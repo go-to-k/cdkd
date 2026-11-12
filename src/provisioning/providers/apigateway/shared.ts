@@ -18,7 +18,7 @@ import {
 import { AmbiguousCreateLatch, RecentIdSet } from '../ambiguous-create.js';
 
 /**
- * Retry-safety state for the two API Gateway creates that mint their id and
+ * Retry-safety state for the API Gateway creates that mint their id and
  * carry no idempotency token, `CreateAuthorizer` and `CreateDeployment`
  * (issue [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
  * `orphan-report.ts`. Module-scoped: a provider instance is per
@@ -27,6 +27,9 @@ import { AmbiguousCreateLatch, RecentIdSet } from '../ambiguous-create.js';
 export const createAuthorizerLatch = new AmbiguousCreateLatch('apigateway:CreateAuthorizer');
 
 export const createDeploymentLatch = new AmbiguousCreateLatch('apigateway:CreateDeployment');
+
+/** `CreateRestApi` / `ImportRestApi` (go-to-k/cdkd#6139): same shape as the two above. */
+export const createRestApiLatch = new AmbiguousCreateLatch('apigateway:CreateRestApi');
 
 /**
  * Children this process created and recorded, never reported as orphan
@@ -37,6 +40,9 @@ export const authorizersCreatedByThisProcess = new RecentIdSet();
 
 export const deploymentsCreatedByThisProcess = new RecentIdSet();
 
+/** REST APIs this process created and recorded; a REST API id is account-unique per Region. */
+export const restApisCreatedByThisProcess = new RecentIdSet();
+
 /** `limit` of each orphan-lookup list page (the API's maximum). */
 export const ORPHAN_LIST_PAGE_SIZE = 500;
 
@@ -46,6 +52,8 @@ export function resetApiGatewayCreateRetryStateForTests(): void {
   createDeploymentLatch.resetForTests();
   authorizersCreatedByThisProcess.resetForTests();
   deploymentsCreatedByThisProcess.resetForTests();
+  createRestApiLatch.resetForTests();
+  restApisCreatedByThisProcess.resetForTests();
 }
 
 /** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */

@@ -29,17 +29,6 @@
  * `Record<string, string>` for trivial JSON serialization if ever needed).
  */
 export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
-  // AWS::ApiGateway::RestApi: the `Body` property (OpenAPI spec object
-  // when supplied via `Body` rather than `BodyS3Location`) is write-only
-  // — `GetRestApi` does NOT return it, but cdkd state preserves the
-  // object the user passed in. CC API GetResource inherits this — the
-  // returned shape omits `Body`, so every drift run flags it as
-  // missing-on-AWS. Comparison silently dropping it would also be
-  // wrong; the right move is a dedicated SDK provider that knows to
-  // skip `Body` entirely.
-  'AWS::ApiGateway::RestApi':
-    'Body / BodyS3Location are write-only inputs not returned by CC API GetResource; cdkd state preserves them',
-
   // AWS::CloudFormation::Stack: `NestedStackProvider` deploys the child's
   // resources itself, so the row's physicalId is a `cdkd-local` placeholder
   // ARN and no CloudFormation stack exists to read; the provider has no

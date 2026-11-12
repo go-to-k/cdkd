@@ -25,6 +25,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['MethodResponses', ['StatusCode']],
     ]),
   ],
+  ['AWS::ApiGateway::RestApi', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   ['AWS::ApiGateway::Stage', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   [
     'AWS::ApiGatewayV2::Route',

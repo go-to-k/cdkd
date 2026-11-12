@@ -100,6 +100,8 @@ interface Run {
   thrown: unknown;
   /** `UpdateContext.changedProperties` per updated logical id, sorted. */
   changed: Record<string, string[] | undefined>;
+  /** `UpdateContext.noEchoOnlyChangedProperties` per updated logical id, sorted. */
+  noEchoOnly: Record<string, string[] | undefined>;
   updated: string[];
   /** The previous side each update was handed. */
   previous: Record<string, Record<string, unknown>>;
@@ -119,6 +121,7 @@ async function deploy(opts: {
 }): Promise<Run> {
   const levels = opts.levels ?? [['R']];
   const changed: Record<string, string[] | undefined> = {};
+  const noEchoOnly: Record<string, string[] | undefined> = {};
   const updated: string[] = [];
   const created: string[] = [];
   const reads: string[] = [];
@@ -141,6 +144,10 @@ async function deploy(opts: {
         previous[id] = prev;
         changed[id] =
           context?.changedProperties === undefined ? undefined : [...context.changedProperties].sort();
+        noEchoOnly[id] =
+          context?.noEchoOnlyChangedProperties === undefined
+            ? undefined
+            : [...context.noEchoOnlyChangedProperties].sort();
         return opts.results?.[id] ?? { physicalId: pid, attributes: {} };
       }
     ),
@@ -186,7 +193,7 @@ async function deploy(opts: {
   await engine.deploy('s', opts.template).catch((e: unknown) => {
     thrown = e;
   });
-  return { thrown, changed, updated, previous, reads, created };
+  return { thrown, changed, noEchoOnly, updated, previous, reads, created };
 }
 
 function stateOf(resources: Record<string, ResourceState>): StackState {
@@ -355,7 +362,35 @@ describe('UpdateContext.changedProperties (go-to-k/cdkd#5112)', () => {
       });
       expect(run.thrown).toBeUndefined();
       expect(run.changed['R']).toEqual(['Description', 'Value']);
+      // go-to-k/cdkd#6140: named only for the unconfirmed value.
+      expect(run.noEchoOnly['R']).toEqual(['Value']);
     });
+
+    it.each([
+      ['a dynamic reference', REF, '***'],
+      ['a dynamic reference behind the same literal prefix', `Bearer ${REF}`, 'Bearer ***'],
+      // The remedy the RestApi provider's warning advises: edit a non-masked part.
+      ['the same NoEcho value behind an edited literal', { 'Fn::Join': ['', ['v2-', { Ref: 'Token' }]] }, 'v1-***'],
+    ])(
+      'swapped for %s is not NoEcho-only: the key moved as written (go-to-k/cdkd#6140)',
+      async (_label, desired, recorded) => {
+        const run = await deploy({
+          state: stateOf({
+            R: ssmRecord(
+              { Name: '/p/r', Type: 'String', Value: recorded, Description: 'd' },
+              { noEchoLeaves: [['Value']] } as never
+            ),
+          }),
+          template: ssmTemplate(
+            { Name: '/p/r', Type: 'String', Value: desired, Description: 'd2' },
+            parameters('token-6140')
+          ),
+        });
+        expect(run.thrown).toBeUndefined();
+        expect(run.changed['R']).toEqual(['Description', 'Value']);
+        expect(run.noEchoOnly['R']).toEqual([]);
+      }
+    );
 
     it('that AWS confirmed holding is left out beside another change (a create-only path, read back)', async () => {
       const topicArn = 'arn:aws:sns:us-east-1:123456789012:topic-5112';

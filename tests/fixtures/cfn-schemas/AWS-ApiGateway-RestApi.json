@@ -1,0 +1,164 @@
+{
+  "resourceType": "AWS::ApiGateway::RestApi",
+  "generatedAt": "2026-11-12",
+  "properties": [
+    "ApiKeySourceType",
+    "BinaryMediaTypes",
+    "Body",
+    "BodyS3Location",
+    "CloneFrom",
+    "Description",
+    "DisableExecuteApiEndpoint",
+    "EndpointAccessMode",
+    "EndpointConfiguration",
+    "FailOnWarnings",
+    "MinimumCompressionSize",
+    "Mode",
+    "Name",
+    "Parameters",
+    "Policy",
+    "RestApiId",
+    "RootResourceId",
+    "SecurityPolicy",
+    "Tags",
+    "Version"
+  ],
+  "readOnlyProperties": [
+    "RestApiId",
+    "RootResourceId"
+  ],
+  "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
+  "primaryIdentifier": [
+    "RestApiId"
+  ],
+  "nestedProperties": {
+    "BodyS3Location": [
+      "Bucket",
+      "ETag",
+      "Key",
+      "Version"
+    ],
+    "EndpointConfiguration": [
+      "IpAddressType",
+      "Types",
+      "VpcEndpointIds"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "BodyS3Location": [
+      "Bucket",
+      "ETag",
+      "Key",
+      "Version"
+    ],
+    "EndpointConfiguration": [
+      "IpAddressType",
+      "Types",
+      "VpcEndpointIds"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Policy": "mixed",
+      "BodyS3Location": "object",
+      "Description": "scalar",
+      "MinimumCompressionSize": "scalar",
+      "Parameters": "mixed",
+      "CloneFrom": "scalar",
+      "Mode": "scalar",
+      "RestApiId": "scalar",
+      "DisableExecuteApiEndpoint": "scalar",
+      "FailOnWarnings": "scalar",
+      "BinaryMediaTypes": "array",
+      "Name": "scalar",
+      "RootResourceId": "scalar",
+      "Version": "scalar",
+      "SecurityPolicy": "scalar",
+      "ApiKeySourceType": "scalar",
+      "EndpointConfiguration": "object",
+      "Body": "mixed",
+      "Tags": "array",
+      "EndpointAccessMode": "scalar"
+    },
+    "EndpointConfiguration": {
+      "IpAddressType": "scalar",
+      "Types": "array",
+      "VpcEndpointIds": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "S3Location": {
+      "Bucket": "scalar",
+      "ETag": "scalar",
+      "Version": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "BinaryMediaTypes": "array",
+    "BodyS3Location": "object",
+    "EndpointConfiguration": "object",
+    "EndpointConfiguration.Types": "array",
+    "EndpointConfiguration.VpcEndpointIds": "array",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "ApiKeySourceType": "string",
+    "BinaryMediaTypes": "array",
+    "BinaryMediaTypes[]": "string",
+    "Body": "object|string",
+    "BodyS3Location": "object",
+    "BodyS3Location.Bucket": "string",
+    "BodyS3Location.ETag": "string",
+    "BodyS3Location.Key": "string",
+    "BodyS3Location.Version": "string",
+    "CloneFrom": "string",
+    "Description": "string",
+    "DisableExecuteApiEndpoint": "boolean",
+    "EndpointAccessMode": "string",
+    "EndpointConfiguration": "object",
+    "EndpointConfiguration.IpAddressType": "string",
+    "EndpointConfiguration.Types": "array",
+    "EndpointConfiguration.Types[]": "string",
+    "EndpointConfiguration.VpcEndpointIds": "array",
+    "EndpointConfiguration.VpcEndpointIds[]": "string",
+    "FailOnWarnings": "boolean",
+    "MinimumCompressionSize": "integer",
+    "Mode": "string",
+    "Name": "string",
+    "Parameters": "object|string",
+    "Policy": "object|string",
+    "RestApiId": "string",
+    "RootResourceId": "string",
+    "SecurityPolicy": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "Version": "string"
+  }
+}

@@ -460,6 +460,111 @@ const APIGW_METHOD_CASE: TypeCase = {
   ],
 };
 
+// --- AWS::ApiGateway::RestApi -------------------------------------------------------
+
+/** A property CloudFormation LEAVES live on removal (CFn A/B, go-to-k/cdkd#6139). */
+const apigwRestApiKept = (prop: string): string =>
+  `a removed ${prop} is left at its live value, as CloudFormation leaves it (CFn A/B us-east-1, go-to-k/cdkd#6139; ${APIGW_SRC}/rest-api.ts)`;
+
+const APIGW_REST_API_POLICY = {
+  Version: '2012-10-17',
+  Statement: [{ Effect: 'Allow', Principal: '*', Action: 'execute-api:Invoke', Resource: 'execute-api:/*' }],
+};
+
+const APIGW_REST_API_KEPT_ON_REMOVAL: Record<string, string> = {
+  'update-remove:Name': `Name is required unless a body defines the API (${APIGW_SRC}/rest-api.ts), so a removal names nothing to send`,
+  'update-remove:Description': apigwRestApiKept('Description'),
+  'update-remove:Version': apigwRestApiKept('Version'),
+  'update-remove:MinimumCompressionSize': apigwRestApiKept('MinimumCompressionSize'),
+  'update-remove:ApiKeySourceType': apigwRestApiKept('ApiKeySourceType'),
+  'update-remove:DisableExecuteApiEndpoint': apigwRestApiKept('DisableExecuteApiEndpoint'),
+  'update-remove:SecurityPolicy': apigwRestApiKept('SecurityPolicy'),
+  'update-remove:EndpointAccessMode': apigwRestApiKept('EndpointAccessMode'),
+  'update-remove:Policy': apigwRestApiKept('Policy'),
+  'update-remove:EndpointConfiguration.IpAddressType': apigwRestApiKept(
+    'EndpointConfiguration.IpAddressType'
+  ),
+};
+
+const APIGW_REST_API_CASE: TypeCase = {
+  resourceType: 'AWS::ApiGateway::RestApi',
+  provider: () => new ApiGatewayProvider(),
+  physicalId: APIGW_API_ID,
+  createOnly: createOnlyOf('AWS::ApiGateway::RestApi'),
+  exempt: {
+    BodyS3Location: `read through S3 GetObject, whose bytes go out as the ImportRestApi / PutRestApi body exactly as an inline Body's do (the Body bag probes that wire); pinned by apigateway-rest-api-6139.test.ts and the apigw-restapi-spec integ fixture`,
+  },
+  targets: [
+    { path: ['Tags', 0], command: 'UntagResourceCommand', names: '"k1"', notNames: '"k2"' },
+    { path: ['Tags', 1], command: 'UntagResourceCommand', names: '"k2"', notNames: '"k1"' },
+    {
+      path: ['BinaryMediaTypes', 0],
+      command: 'UpdateRestApiCommand',
+      names: 'image~1png',
+      notNames: 'image~1gif',
+    },
+    {
+      path: ['BinaryMediaTypes', 1],
+      command: 'UpdateRestApiCommand',
+      names: 'image~1gif',
+      notNames: 'image~1png',
+    },
+  ],
+  bags: [
+    {
+      name: 'every top-level property (CreateRestApi)',
+      bag: {
+        Name: 'api',
+        Description: 'd',
+        Version: 'v1',
+        BinaryMediaTypes: ['image/png', 'image/gif'],
+        MinimumCompressionSize: 100,
+        ApiKeySourceType: 'AUTHORIZER',
+        DisableExecuteApiEndpoint: true,
+        EndpointConfiguration: {
+          Types: ['PRIVATE'],
+          VpcEndpointIds: ['vpce-1'],
+          IpAddressType: 'dualstack',
+        },
+        Policy: fresh(APIGW_REST_API_POLICY),
+        SecurityPolicy: 'SecurityPolicy_TLS13_1_3_2025_09',
+        EndpointAccessMode: 'STRICT',
+        CloneFrom: 'src-api',
+        Tags: fresh(APIGW_TAG_LIST),
+      },
+      expectedSilent: {
+        ...APIGW_REST_API_KEPT_ON_REMOVAL,
+        'update-add:CloneFrom': `CloneFrom is write-only and applies only at creation (${APIGW_SRC}/rest-api.ts)`,
+        'update-remove:CloneFrom': `CloneFrom is write-only and applies only at creation (${APIGW_SRC}/rest-api.ts)`,
+        'update-vary:CloneFrom': `CloneFrom is write-only and applies only at creation (${APIGW_SRC}/rest-api.ts)`,
+      },
+      expectedRemovalThrows: {
+        'create:Name': {
+          why: `create() refuses a REST API with neither a Name nor a body before any call (${APIGW_SRC}/rest-api.ts)`,
+          says: /Name is required for API Gateway RestApi/,
+        },
+        ...TAG_THROWS(APIGW_ALL_DIRECTIONS, 2),
+      },
+    },
+    {
+      name: 'an OpenAPI Body (ImportRestApi / PutRestApi)',
+      bag: {
+        Name: 'api',
+        Body: { openapi: '3.0.1', info: { title: 'spec-title', version: '1' } },
+        Mode: 'merge',
+        FailOnWarnings: true,
+        Parameters: { ignore: 'documentation' },
+      },
+      expectedSilent: {
+        'update-remove:Name': APIGW_REST_API_KEPT_ON_REMOVAL['update-remove:Name']!,
+        'create:Mode': `Mode applies to a put into an EXISTING API; a create imports the definition whole (${APIGW_SRC}/rest-api.ts)`,
+        'create-vary:Mode': `Mode applies to a put into an EXISTING API; a create imports the definition whole (${APIGW_SRC}/rest-api.ts)`,
+        'update-remove:Body': `a body removed from the template changes nothing, as CloudFormation changes nothing (CFn A/B us-east-1, go-to-k/cdkd#6139; ${APIGW_SRC}/rest-api.ts)`,
+      },
+    },
+  ],
+};
+
 const APIGW_CASES: TypeCase[] = [
   APIGW_ACCOUNT_CASE,
   APIGW_AUTHORIZER_CASE,
@@ -467,6 +572,7 @@ const APIGW_CASES: TypeCase[] = [
   APIGW_DEPLOYMENT_CASE,
   APIGW_STAGE_CASE,
   APIGW_METHOD_CASE,
+  APIGW_REST_API_CASE,
 ];
 
 // === CognitoUserPoolProvider =================================================

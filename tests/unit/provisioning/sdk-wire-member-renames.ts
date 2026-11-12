@@ -72,6 +72,21 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       Variables: ['patchOperations'],
     },
   },
+  'AWS::ApiGateway::RestApi': {
+    members: {
+      ApiKeySourceType: ['apiKeySource'],
+      // A media type is a JSON-pointer segment of the patch path (`/binaryMediaTypes/image~1png`).
+      BinaryMediaTypes: ['path'],
+    },
+    containers: {
+      EndpointConfiguration: ['patchOperations'],
+      Policy: ['patchOperations'],
+    },
+    transformed: {
+      'EndpointConfiguration.Types':
+        'an endpoint-type change is one replace whose path names the CURRENT type and whose value is the new one',
+    },
+  },
   'AWS::ApiGatewayV2::Integration': {
     transformed: {
       'ResponseParameters.200.ResponseParameters.Destination':
