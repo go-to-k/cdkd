@@ -347,16 +347,15 @@ export function removalsLeftInPlace(
   const globalEvents = previousProperties['IncludeGlobalServiceEvents'];
   const recursive = previousProperties['RecursiveLogging'];
   return [
-    ...(wasRemoved('IsOrganizationTrail') && org !== false && org !== 'false'
+    ...(wasRemoved('IsOrganizationTrail') && trailBoolean(org) !== false
       ? ['IsOrganizationTrail']
       : []),
-    ...(wasRemoved('RecursiveLogging') && recursive !== true && recursive !== 'true'
+    ...(wasRemoved('RecursiveLogging') && trailBoolean(recursive) !== true
       ? ['RecursiveLogging']
       : []),
     ...(globalEventsResetSkipped &&
     wasRemoved('IncludeGlobalServiceEvents') &&
-    globalEvents !== false &&
-    globalEvents !== 'false'
+    trailBoolean(globalEvents) !== false
       ? ['IncludeGlobalServiceEvents']
       : []),
   ];

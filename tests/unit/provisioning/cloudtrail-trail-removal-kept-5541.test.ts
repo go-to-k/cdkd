@@ -109,13 +109,16 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
       expect(warnings()).toEqual([]);
     });
 
-    it('a removed FALSE is not named: either CloudFormation answer leaves it false', async () => {
-      const unhandled = await deployUpdate(BASE, { ...BASE, IsOrganizationTrail: false });
+    it.each([false, 'false', 'False'])(
+      'a removed %s is not named: either CloudFormation answer leaves it false',
+      async (prev) => {
+        const unhandled = await deployUpdate(BASE, { ...BASE, IsOrganizationTrail: prev });
 
-      expect(updateTrailInput()['IsOrganizationTrail']).toBeUndefined();
-      expect(unhandled).toEqual([]);
-      expect(warnings()).toEqual([]);
-    });
+        expect(updateTrailInput()['IsOrganizationTrail']).toBeUndefined();
+        expect(unhandled).toEqual([]);
+        expect(warnings()).toEqual([]);
+      }
+    );
 
     it('a direct call (no caller context) warns from the two bags', async () => {
       await new CloudTrailProvider().update('Trail', TRAIL_ARN, TYPE, BASE, {
@@ -173,7 +176,7 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
       expect(warnings()).toEqual([]);
     });
 
-    it.each([false, 'false'])(
+    it.each([false, 'false', 'False'])(
       'a removed previous %s is not named: the trail was single-region, live already equals the reset',
       async (prev) => {
         for (const desired of [BASE, { ...BASE, IsMultiRegionTrail: true }]) {
@@ -243,7 +246,7 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
       expect(warnings()[0]).toContain('whether CloudFormation resets it is unmeasured');
     });
 
-    it.each([true, 'true'])(
+    it.each([true, 'true', 'True'])(
       'a removed %s is not named: it is the AWS default either answer leaves',
       async (prev) => {
         const unhandled = await deployUpdate(BASE, { ...BASE, RecursiveLogging: prev });
