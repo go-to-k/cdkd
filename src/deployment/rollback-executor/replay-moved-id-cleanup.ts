@@ -8,7 +8,7 @@
  * completed; so does cdkd, from the queue below, which a replay runs after
  * its last op.
  */
-import type { ResourceProvider } from '../../types/resource.js';
+import type { ResourceProvider, ResourceUpdateResult } from '../../types/resource.js';
 import type { ResourceState, SupersededResourceRecord } from '../../types/state.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
@@ -72,27 +72,32 @@ export function newMovedIdCleanupQueue(hooks: {
  *   refuses one holding a NoEcho mask).
  */
 export function queueMovedIdCleanup(
-  queue: MovedIdCleanupQueue,
-  input: {
-    logicalId: string;
-    sent: ResourceState;
-    /** The id the record holds after the rollback `update()`. */
-    recordedId: string;
-    oldPhysicalIdLeftForCleanup: boolean;
-    provider: ResourceProvider;
-    provisionedBy: 'sdk' | 'cc-api' | undefined;
+  queue: MovedIdCleanupQueue | undefined,
+  scope: {
     ctx: Pick<RollbackExecutorContext, 'logger' | 'skipFinalSnapshot'>;
     result: Pick<RollbackReplayResult, 'warnings'>;
-    secrets: RecordedSecretValues;
     mask: MaskerFn;
+    /** The records after the arm recorded the `update()`'s answer. */
+    stateResources: Record<string, ResourceState>;
+  },
+  op: { logicalId: string },
+  /** The record the rollback `update()` was sent to. */
+  sent: ResourceState,
+  answer: Pick<ResourceUpdateResult, 'oldPhysicalIdLeftForCleanup'> | undefined,
+  route: {
+    provider: ResourceProvider;
+    provisionedBy: 'sdk' | 'cc-api' | undefined;
+    secrets: RecordedSecretValues;
   }
 ): void {
-  const { logicalId, sent, mask } = input;
-  if (!input.oldPhysicalIdLeftForCleanup || input.recordedId === sent.physicalId) return;
+  const { logicalId } = op;
+  const { mask } = scope;
+  if (queue === undefined || answer?.oldPhysicalIdLeftForCleanup !== true) return;
+  if (scope.stateResources[logicalId]?.physicalId === sent.physicalId) return;
   const shown = displaySafe(mask(String(displayPhysicalId(sent.resourceType, sent.physicalId))));
   const policy = sent.updateReplacePolicy;
   if (policy === 'Retain') {
-    input.ctx.logger.info(
+    scope.ctx.logger.info(
       mask(
         `  Rollback: ${safe(logicalId)} has UpdateReplacePolicy: Retain — the physical id it ` +
           `moved off (${shown}) is not sent a Delete and is no longer tracked by cdkd`
@@ -100,15 +105,15 @@ export function queueMovedIdCleanup(
     );
     return;
   }
-  if (policy === 'Snapshot' && input.ctx.skipFinalSnapshot !== true) {
-    input.ctx.logger.warn(
+  if (policy === 'Snapshot' && scope.ctx.skipFinalSnapshot !== true) {
+    scope.ctx.logger.warn(
       mask(
         `  ⚠ Rollback: ${safe(logicalId)} has UpdateReplacePolicy: Snapshot, which a custom ` +
           `resource cannot take — the physical id it moved off (${shown}) is not sent a Delete ` +
           `and is no longer tracked by cdkd`
       )
     );
-    input.result.warnings++;
+    scope.result.warnings++;
     return;
   }
   const record = canRecordSuperseded(sent, {});
@@ -127,13 +132,13 @@ export function queueMovedIdCleanup(
   queue.pending.push({
     logicalId,
     sent,
-    provider: input.provider,
-    provisionedBy: input.provisionedBy,
+    provider: route.provider,
+    provisionedBy: route.provisionedBy,
     superseded,
-    secrets: input.secrets,
+    secrets: route.secrets,
     mask,
   });
-  input.ctx.logger.info(
+  scope.ctx.logger.info(
     mask(
       `  Rollback: ${safe(logicalId)} moved off ${shown}, which is sent a Delete once the ` +
         `rollback completes`

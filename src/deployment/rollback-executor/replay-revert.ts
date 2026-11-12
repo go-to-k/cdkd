@@ -693,20 +693,11 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   // go-to-k/cdkd#6120: the provider moved the resource off the id the update
   // was sent to and left that id live: it is deleted once the rollback
   // completes, as CloudFormation's rollback cleanup phase deletes it.
-  if (s.movedIdCleanups !== undefined) {
-    queueMovedIdCleanup(s.movedIdCleanups, {
-      logicalId: op.logicalId,
-      sent: current,
-      recordedId: stateResources[op.logicalId]!.physicalId,
-      oldPhysicalIdLeftForCleanup: revertResult?.oldPhysicalIdLeftForCleanup === true,
-      provider,
-      provisionedBy: revertVia,
-      ctx,
-      result: s.result,
-      secrets,
-      mask,
-    });
-  }
+  queueMovedIdCleanup(s.movedIdCleanups, s, op, current, revertResult, {
+    provider,
+    provisionedBy: revertVia,
+    secrets,
+  });
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.
   if (updatePartialReason(revertResult) === undefined) {

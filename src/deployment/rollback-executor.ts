@@ -49,6 +49,10 @@
 import { replayProducerRegionEvidence } from './rollback-executor/replay-secrets.js';
 import { replayRollbackUnbound } from './rollback-executor/replay-completed.js';
 import { replayFailedOperationsUnbound } from './rollback-executor/replay-failed.js';
+import {
+  newMovedIdCleanupQueue,
+  runMovedIdCleanups,
+} from './rollback-executor/replay-moved-id-cleanup.js';
 import { withProducerRegions } from './producer-regions-scope.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
@@ -143,8 +147,24 @@ export async function replayFailedOperations(
     // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
     // resource another record still holds leaves it in place.
     () =>
-      withStackRecords(replayStackRecordsView(args[1]), () =>
-        replayFailedOperationsUnbound(...args)
-      )
+      withStackRecords(replayStackRecordsView(args[1]), async () => {
+        // go-to-k/cdkd#6120: the ids a `--revert-failed` update moved off,
+        // deleted after the last op, as `replayRollback` deletes its own.
+        const [ops, stateResources, stackName, ctx, options = {}] = args;
+        const movedIdCleanups = newMovedIdCleanupQueue(options);
+        const result = await replayFailedOperationsUnbound(ops, stateResources, stackName, ctx, {
+          ...options,
+          movedIdCleanups,
+        });
+        await runMovedIdCleanups(movedIdCleanups, {
+          stateResources,
+          stackName,
+          ctx,
+          result,
+          afterOp: options.afterOp,
+          interrupted: result.interrupted || options.isInterrupted?.() === true,
+        });
+        return result;
+      })
   );
 }

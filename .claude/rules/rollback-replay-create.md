@@ -8,8 +8,8 @@ paths:
 # The replay-CREATE bag
 
 Both arms live in the `reverse-replacement` branch
-(`rollback-executor/replay-reverse-replacement.ts`, the re-create in its
-`recreate.ts`): create-first,
+(`deployment/rollback-executor/replay-reverse-replacement.ts`, the re-create
+in its `recreate.ts`): create-first,
 and delete-new-first, reached from the name-collision catch or, up front, a
 journaled `oldDeletedBeforeCreate` (#4690).
 **`effectiveProperties` is honoured** (#1682): `create()` gets
@@ -43,4 +43,4 @@ Both entry points bind `withStackScope` (the record's id);
 `replayPrefixScope` binds the OLD record's name generation, never the
 replacement's (#5064). The prefix flag is the segment's (#4018) unless the old physical id shows the
 OTHER flag created it: then both arms and the holder proof run under that one
-(`replayPrefixScope`, #4024).
+(#4024).

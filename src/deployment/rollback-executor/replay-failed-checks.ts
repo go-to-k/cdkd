@@ -10,6 +10,7 @@ import type {
   SupersededResourceRecord,
 } from '../../types/state.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import type { MovedIdCleanupQueue } from './replay-moved-id-cleanup.js';
 import { type RollbackExecutorContext, type FailedOperation } from './types.js';
 import {
   askForeignHolder,
@@ -169,6 +170,8 @@ export interface ReplayFailedOperationsOptions {
    */
   onSuperseded?: (entry: SupersededResourceRecord) => void;
   onSupersededSettled?: (entry: SupersededResourceRecord) => void;
+  /** Set by the bound `replayFailedOperations`, which runs it after the replay. */
+  movedIdCleanups?: MovedIdCleanupQueue;
   /**
    * A `cdkd destroy` replays these ops before it deletes the stack: a line
    * says what happens next in that run, not in a later deploy.
