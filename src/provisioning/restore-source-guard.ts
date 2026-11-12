@@ -52,8 +52,8 @@ function automatedSnapshotOf(
 
 /**
  * Whether a DB instance's bag declares a point-in-time restore, as the
- * handler's `isRestoreToPointInTime` reads it (`providers/rds/instance-pitr.ts`
- * holds the provider's copy; a LEAF cannot import it).
+ * handler's `isRestoreToPointInTime` reads it; `providers/rds/instance-pitr.ts`
+ * reads it from here.
  */
 export function declaresInstancePointInTime(properties: Record<string, unknown>): boolean {
   const latest = properties['UseLatestRestorableTime'];

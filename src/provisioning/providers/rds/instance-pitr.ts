@@ -9,6 +9,7 @@ import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
+import { declaresInstancePointInTime } from '../../restore-source-guard.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { parseZonedTimestamp } from './cluster-restore.js';
 import { engineLifecycleSupportOf } from './instance-members.js';
@@ -65,19 +66,13 @@ export interface InstancePointInTimeRestore {
 /**
  * Whether a bag declares a point-in-time restore, as
  * `ResourceModelHelper.isRestoreToPointInTime` reads it. No refusal: the
- * update, drift and replacement paths ask it of recorded bags.
+ * update, drift and replacement paths ask it of recorded bags. The predicate
+ * lives in the restore-source guard, a leaf the deploy engine loads.
  */
 export function declaresPointInTimeRestore(
   properties: Record<string, unknown> | undefined
 ): boolean {
-  if (properties === undefined) return false;
-  if (coerceCfnBoolean(properties['UseLatestRestorableTime']) === true) return true;
-  return (
-    ['RestoreTime', 'SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId'] as const
-  ).some((key) => {
-    const value = properties[key];
-    return value != null && value !== '';
-  });
+  return properties !== undefined && declaresInstancePointInTime(properties);
 }
 
 /**
