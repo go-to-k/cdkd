@@ -716,6 +716,45 @@ describe('ApiGatewayProvider: AWS::ApiGateway::RestApi (#6139)', () => {
       );
       expect(names()).toEqual(['UpdateRestApiCommand']);
     });
+
+    // go-to-k/cdkd#6141: the put would delete every resource the stack added
+    // outside the definition. A Description- or Tags-only change, with the
+    // engine's verdict (a deploy, a Cloud Control record's flip) or without it
+    // (rollback, `drift --revert`), sends no put, whatever the key order.
+    describe('a Body unchanged beside another change is not put (go-to-k/cdkd#6141)', () => {
+      const body = { openapi: '3.0.1', info: { title: 'spec', version: '1' }, paths: { '/a': {} } };
+      const reordered = { paths: { '/a': {} }, info: { version: '1', title: 'spec' }, openapi: '3.0.1' };
+      it.each([
+        ['the engine names Description', { changedProperties: new Set(['Description']) }],
+        ['no engine verdict (rollback, drift --revert)', {}],
+      ])('Description only: %s', async (_label, context) => {
+        await provider.update(
+          'Api',
+          'api123',
+          TYPE,
+          { Description: 'after', Body: reordered },
+          { Description: 'before', Body: body },
+          context
+        );
+        expect(names()).toEqual(['UpdateRestApiCommand']);
+        expect(sent('UpdateRestApiCommand')[0]!.input['patchOperations']).toEqual([
+          { op: 'replace', path: '/description', value: 'after' },
+        ]);
+      });
+
+      it('Tags only: no put and no patch', async () => {
+        await provider.update(
+          'Api',
+          'api123',
+          TYPE,
+          { Body: body, Tags: [{ Key: 'k', Value: 'b' }] },
+          { Body: body, Tags: [{ Key: 'k', Value: 'a' }] },
+          { changedProperties: new Set(['Tags']) }
+        );
+        expect(names()).not.toContain('PutRestApiCommand');
+        expect(names()).not.toContain('UpdateRestApiCommand');
+      });
+    });
   });
 
   describe('restApiPatchOperations', () => {

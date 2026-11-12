@@ -118,6 +118,8 @@ async function deploy(opts: {
   /** A provider result per logical id (an update's or a create's). */
   results?: Record<string, Record<string, unknown>>;
   options?: Record<string, unknown>;
+  /** The routing decision; an ordinary SDK update when omitted. */
+  route?: { provisionedBy: 'sdk' | 'cc-api'; sdkMigration?: boolean };
 }): Promise<Run> {
   const levels = opts.levels ?? [['R']];
   const changed: Record<string, string[] | undefined> = {};
@@ -181,7 +183,9 @@ async function deploy(opts: {
     new DiffCalculator(),
     {
       getProvider: vi.fn().mockReturnValue(provider),
-      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+      getProviderFor: vi
+        .fn()
+        .mockReturnValue({ provider, ...(opts.route ?? { provisionedBy: 'sdk' }) }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
@@ -635,6 +639,69 @@ describe('UpdateContext.changedProperties (go-to-k/cdkd#5112)', () => {
       });
       expect(run.thrown).toBeUndefined();
       expect(run.changed['R']).toEqual(['Description']);
+    });
+  });
+
+  // go-to-k/cdkd#6141: an OpenAPI `Body` the provider puts in `overwrite` mode
+  // deletes every resource the stack added to the API outside the definition,
+  // so a Description-only (or Tags-only) change must not name `Body`, on a
+  // record returning from Cloud Control as on one the SDK provider created.
+  // Both layers record the resolved desired bag, so the Body compares equal
+  // whatever its key order.
+  describe('a definition-bodied REST API (go-to-k/cdkd#6141)', () => {
+    const body = {
+      openapi: '3.0.1',
+      info: { title: 'spec', version: '1' },
+      paths: { '/from-spec': { get: { responses: { '200': { description: 'ok' } } } } },
+    };
+    const reordered = {
+      paths: body.paths,
+      info: { version: '1', title: 'spec' },
+      openapi: '3.0.1',
+    };
+    const apiRecord = (provisionedBy: 'sdk' | 'cc-api'): ResourceState =>
+      ({
+        physicalId: 'api123',
+        resourceType: 'AWS::ApiGateway::RestApi',
+        properties: { Description: 'before', Body: body, Tags: [{ Key: 'k', Value: 'a' }] },
+        attributes: { RestApiId: 'api123', RootResourceId: 'root1' },
+        dependencies: [],
+        provisionedBy,
+      }) as ResourceState;
+    const apiTemplate = (properties: Record<string, unknown>): CloudFormationTemplate =>
+      ({
+        Resources: { R: { Type: 'AWS::ApiGateway::RestApi', Properties: properties } },
+      }) as CloudFormationTemplate;
+
+    it.each([
+      ['a Cloud Control record returning to the SDK provider', 'cc-api', true],
+      ['a record the SDK provider created', 'sdk', false],
+    ] as const)('%s: a Description-only change does not name Body', async (_l, by, migrates) => {
+      const run = await deploy({
+        state: stateOf({ R: apiRecord(by) }),
+        template: apiTemplate({
+          Description: 'after',
+          Body: reordered,
+          Tags: [{ Key: 'k', Value: 'a' }],
+        }),
+        route: { provisionedBy: 'sdk', ...(migrates && { sdkMigration: true }) },
+      });
+      expect(run.thrown).toBeUndefined();
+      expect(run.updated).toEqual(['R']);
+      expect(run.changed['R']).toEqual(['Description']);
+    });
+
+    it('a Tags-only change does not name Body', async () => {
+      const run = await deploy({
+        state: stateOf({ R: apiRecord('sdk') }),
+        template: apiTemplate({
+          Description: 'before',
+          Body: body,
+          Tags: [{ Key: 'k', Value: 'b' }],
+        }),
+      });
+      expect(run.thrown).toBeUndefined();
+      expect(run.changed['R']).toEqual(['Tags']);
     });
   });
 });

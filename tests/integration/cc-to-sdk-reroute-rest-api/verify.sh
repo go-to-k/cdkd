@@ -4,8 +4,10 @@
 # Admission evidence for the type's `'sdk-coverage'` sticky exemption. Phases:
 # deploy on the SDK route -> force the API onto Cloud Control
 # (--recreate-via-cc-api) -> the plan announces the return -> --pin-cc-api
-# declines it -> redeploy with a real change: the id is unchanged, the record
-# flipped to 'sdk', the update reached AWS -> no drift -> destroy.
+# declines it for the named API while the unpinned definition-bodied API flips
+# (keeping its out-of-definition child) -> redeploy with a real change: the id
+# is unchanged, the record flipped to 'sdk', the update reached AWS -> no
+# drift -> destroy.
 
 set -euo pipefail
 
@@ -198,19 +200,33 @@ if grep -q 'via CC API: sticky' <<<"${DIFF_OUT}"; then
 fi
 echo "    OK: plan says 'returning to SDK provider'"
 
-echo "==> Phase 4: --pin-cc-api DECLINES the flip"
+echo "==> Phase 4: --pin-cc-api DECLINES the flip; the definition-bodied API flips"
+# Only the named API is pinned. Cloud Control's own RestApi handler puts the
+# Body again on EVERY update, a Description-only one included (CloudTrail: a
+# PutRestApi from cloudformation.amazonaws.com), which deletes the stack's
+# out-of-definition /extra -- CloudFormation's behavior too (cfn-lint W3660).
+# A pinned update of the definition-bodied API would wipe /extra before the
+# SDK provider ever saw it, so that API flips here, unpinned.
 env CDKD_TEST_PHASE=pinned \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --pin-cc-api "${LOGICAL_ID}" --pin-cc-api "${SPEC_ID}" --yes
+    --pin-cc-api "${LOGICAL_ID}" --yes
 LAYER_PINNED=$(record '.provisionedBy')
 [ "${LAYER_PINNED}" = "cc-api" ] || { echo "FAIL: --pin-cc-api did not hold the API on Cloud Control (provisionedBy=${LAYER_PINNED})" >&2; exit 1; }
 [ "$(record '.physicalId')" = "${P1}" ] || { echo "FAIL: the pinned deploy changed the API id" >&2; exit 1; }
 # Without this, "still cc-api" is equally explained by a NO_CHANGE deploy.
 [ "$(live_comment "${P1}")" = "pinned-on-cc" ] || { echo "FAIL: the pinned deploy did not reach AWS" >&2; exit 1; }
-[ "$(record_spec '.provisionedBy')" = "cc-api" ] || { echo "FAIL: --pin-cc-api did not hold the definition-bodied API on Cloud Control" >&2; exit 1; }
-[ "$(record_spec '.physicalId')" = "${S1}" ] || { echo "FAIL: the pinned deploy changed the definition-bodied API id" >&2; exit 1; }
-[ "$(live_comment "${S1}")" = "pinned-on-cc" ] || { echo "FAIL: the pinned deploy did not reach the definition-bodied API" >&2; exit 1; }
-echo "    OK: still on Cloud Control, update applied via CC"
+# THE RISKY PATH: the definition-bodied API returns to the SDK provider, whose
+# overwrite put would delete the out-of-definition child. A Description-only
+# change must send no put: it keeps its id, its root, /extra and its title.
+[ "$(record_spec '.provisionedBy')" = "sdk" ] || { echo "FAIL: the definition-bodied API did not flip back to sdk" >&2; exit 1; }
+[ "$(record_spec '.physicalId')" = "${S1}" ] || { echo "FAIL: PHYSICAL ID CHURN on the definition-bodied API: ${S1} -> $(record_spec '.physicalId')" >&2; exit 1; }
+[ "$(live_comment "${S1}")" = "pinned-on-cc" ] || { echo "FAIL: the flip did not reach the definition-bodied API" >&2; exit 1; }
+[ "$(live_root "${S1}")" = "${SROOT1}" ] || { echo "FAIL: the definition-bodied API's root resource moved across the flip" >&2; exit 1; }
+[ "$(record_spec '.attributes.RootResourceId')" = "${SROOT1}" ] || { echo "FAIL: the flipped record's RootResourceId for the definition-bodied API changed" >&2; exit 1; }
+assert_serves "phase 4 flip (/from-spec)" "${S1}" "$(live_path_id "${S1}" "/from-spec")"
+assert_serves "phase 4 flip (/extra, not in the definition)" "${S1}" "$(live_path_id "${S1}" "/extra")"
+[ "$(live_name "${S1}")" = "${SPEC_TITLE}" ] || { echo "FAIL: the definition-bodied API is named $(live_name "${S1}") after the flip, expected ${SPEC_TITLE}" >&2; exit 1; }
+echo "    OK: named API still on Cloud Control, update applied via CC; definition-bodied ${S1} flipped to sdk keeping id, root, /extra and its title"
 
 echo "==> Phase 5: THE ARM -- redeploy unpinned; the flip must be churn-free"
 env CDKD_TEST_PHASE=flip \
@@ -228,11 +244,11 @@ LAYER2=$(record '.provisionedBy')
 [ "$(output ApiRootResourceId)" = "${ROOT1}" ] || { echo "FAIL: GetAtt RootResourceId resolved to $(output ApiRootResourceId) after the flip, expected ${ROOT1}" >&2; exit 1; }
 [ "$(output ResourceRef)" = "${RES1}" ] || { echo "FAIL: the child resource id moved across the flip" >&2; exit 1; }
 assert_serves "phase 5 (SDK update)" "${P2}" "${RES1}"
-# THE RISKY PATH: the definition-bodied API goes through the SDK provider's
-# overwrite import. It must keep its id, its root, the out-of-definition child
-# and its definition title, with the Description-only change applied.
+# The definition-bodied API, already on the SDK route since phase 4, takes a
+# plain SDK Description-only update: still no put, so the out-of-definition
+# child and the definition title survive.
 S2=$(record_spec '.physicalId')
-[ "$(record_spec '.provisionedBy')" = "sdk" ] || { echo "FAIL: the definition-bodied API did not flip back to sdk" >&2; exit 1; }
+[ "$(record_spec '.provisionedBy')" = "sdk" ] || { echo "FAIL: the definition-bodied API left the sdk route" >&2; exit 1; }
 [ "${S2}" = "${S1}" ] || { echo "FAIL: PHYSICAL ID CHURN on the definition-bodied API: ${S1} -> ${S2}" >&2; exit 1; }
 [ "$(live_comment "${S2}")" = "after-reroute" ] || { echo "FAIL: the update did not reach the definition-bodied API" >&2; exit 1; }
 [ "$(live_root "${S2}")" = "${SROOT1}" ] || { echo "FAIL: the definition-bodied API's root resource moved across the flip" >&2; exit 1; }
