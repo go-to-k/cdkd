@@ -225,6 +225,9 @@ LAYER_PINNED=$(record '.provisionedBy')
 [ "$(record_spec '.attributes.RootResourceId')" = "${SROOT1}" ] || { echo "FAIL: the flipped record's RootResourceId for the definition-bodied API changed" >&2; exit 1; }
 assert_serves "phase 4 flip (/from-spec)" "${S1}" "$(live_path_id "${S1}" "/from-spec")"
 assert_serves "phase 4 flip (/extra, not in the definition)" "${S1}" "$(live_path_id "${S1}" "/extra")"
+# The same ids: "serves GET" alone would also pass a child deleted and re-created.
+[ "$(live_path_id "${S1}" "/from-spec")" = "${FROM1}" ] || { echo "FAIL: /from-spec was re-created across the flip" >&2; exit 1; }
+[ "$(live_path_id "${S1}" "/extra")" = "${EXTRA1}" ] || { echo "FAIL: /extra was deleted and re-created across the flip" >&2; exit 1; }
 [ "$(live_name "${S1}")" = "${SPEC_TITLE}" ] || { echo "FAIL: the definition-bodied API is named $(live_name "${S1}") after the flip, expected ${SPEC_TITLE}" >&2; exit 1; }
 echo "    OK: named API still on Cloud Control, update applied via CC; definition-bodied ${S1} flipped to sdk keeping id, root, /extra and its title"
 
@@ -255,6 +258,7 @@ S2=$(record_spec '.physicalId')
 [ "$(record_spec '.attributes.RootResourceId')" = "${SROOT1}" ] || { echo "FAIL: the flipped record's RootResourceId for the definition-bodied API changed" >&2; exit 1; }
 assert_serves "phase 5 (/from-spec)" "${S2}" "$(live_path_id "${S2}" "/from-spec")"
 assert_serves "phase 5 (/extra, not in the definition)" "${S2}" "$(live_path_id "${S2}" "/extra")"
+[ "$(live_path_id "${S2}" "/extra")" = "${EXTRA1}" ] || { echo "FAIL: /extra was deleted and re-created by the SDK update" >&2; exit 1; }
 [ "$(live_name "${S2}")" = "${SPEC_TITLE}" ] || { echo "FAIL: the definition-bodied API is named $(live_name "${S2}") after the flip, expected ${SPEC_TITLE}" >&2; exit 1; }
 echo "    OK: same id ${P2}, record flipped to sdk, update applied in place, Ref / GetAtt intact; definition-bodied ${S2} kept id, root, /extra and its title"
 
