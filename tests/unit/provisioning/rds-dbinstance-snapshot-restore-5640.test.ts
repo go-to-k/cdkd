@@ -513,11 +513,15 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('changes nothing for a removed snapshot and sends none on the modify', async () => {
+    it.each([
+      ['removed', undefined],
+      ['emptied', ''],
+    ])('changes nothing for a %s snapshot and sends none on the modify', async (_name, value) => {
       await update(
-        { ...FROM_SNAPSHOT, DBSnapshotIdentifier: undefined, BackupRetentionPeriod: '5' },
+        { ...FROM_SNAPSHOT, DBSnapshotIdentifier: value, BackupRetentionPeriod: '5' },
         { ...FROM_SNAPSHOT }
       );
+      expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
       for (const modify of sent('ModifyDBInstanceCommand')) {
         expect(modify).not.toHaveProperty('DBSnapshotIdentifier');
         expect(modify).not.toHaveProperty('DBClusterSnapshotIdentifier');
