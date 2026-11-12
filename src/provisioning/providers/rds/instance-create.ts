@@ -2,6 +2,7 @@ import {
   CreateDBInstanceCommand,
   CreateDBInstanceReadReplicaCommand,
   ModifyDBInstanceCommand,
+  RestoreDBInstanceFromDBSnapshotCommand,
   type CreateDBInstanceCommandInput,
   type DBInstance,
 } from '@aws-sdk/client-rds';
@@ -33,6 +34,16 @@ import {
   replicaSourceOf,
 } from './read-replica.js';
 import { desiredAdditionalStorageVolumes } from './additional-storage-volumes.js';
+import {
+  declaredSnapshotKeys,
+  readInstanceSnapshotRestore,
+  readSnapshotRestoreSource,
+  snapshotRestoredDifferences,
+  snapshotRestoreInput,
+  unusedSnapshotRestoreKeys,
+} from './instance-restore.js';
+import { refuseRestoreFromItself } from '../../restore-source-guard.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 // ─── DBInstance ───────────────────────────────────────────────────
 
@@ -77,10 +88,25 @@ export async function createDBInstance(
     this.logger.warn(message)
   );
   const replicaSource = replicaSourceOf(properties);
+  // go-to-k/cdkd#5640: a declared snapshot makes the create a restore
+  // (`./instance-restore.ts`), unless a source makes it a read replica, which
+  // CloudFormation's handler tests first and which reads neither key.
+  const declaredRestore = readInstanceSnapshotRestore(properties, resourceType, logicalId);
+  const snapshotRestore = replicaSource === undefined ? declaredRestore : undefined;
+  if (declaredRestore !== undefined && replicaSource !== undefined) {
+    this.logger.warn(
+      `DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
+    );
+  }
 
   const dbInstanceIdentifier =
     (properties['DBInstanceIdentifier'] as string | undefined) ||
     generatedNameFor('AWS::RDS::DBInstance', logicalId);
+  // go-to-k/cdkd#5640: never the instance's own automated snapshot, which its
+  // delete removes; a replacement's name may be generated here.
+  if (snapshotRestore !== undefined) {
+    refuseRestoreFromItself(resourceType, properties, dbInstanceIdentifier, logicalId, {});
+  }
 
   // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
   let instanceCreated = false;
@@ -284,33 +310,59 @@ export async function createDBInstance(
       replicaSource === undefined
         ? undefined
         : await replicaEngine.call(this, properties, replicaSource);
-    const response =
-      replicaSource === undefined
-        ? await this.getCreateClient().send(standaloneCreate())
-        : await createReadReplicaWhenSourceAvailable.call(
+    // go-to-k/cdkd#5640: the snapshot reads CloudFormation's create makes
+    // before a restore; any failure stops it before anything is made.
+    const restoreSource =
+      snapshotRestore === undefined
+        ? undefined
+        : await readSnapshotRestoreSource.call(
             this,
+            properties,
+            snapshotRestore,
+            resourceType,
             logicalId,
-            replicaSource,
-            new CreateDBInstanceReadReplicaCommand({
-              ...replicaCreateInput(properties, {
+            mask
+          );
+    const response =
+      snapshotRestore !== undefined && restoreSource !== undefined
+        ? await this.getCreateClient().send(
+            new RestoreDBInstanceFromDBSnapshotCommand(
+              snapshotRestoreInput(properties, {
                 identifier: dbInstanceIdentifier,
-                source: replicaSource,
-                engine: replicaEngineName,
-                currentRegion: await this.getClient().config.region(),
+                restore: snapshotRestore,
+                source: restoreSource,
                 tags,
                 logExports,
-              }),
-              // go-to-k/cdkd#5640: both, as CloudFormation's replica create
-              // translation sends them.
-              ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
-              ...(processor.useDefault !== undefined && {
-                UseDefaultProcessorFeatures: processor.useDefault,
-              }),
-              // go-to-k/cdkd#5640: the replica's own volumes, a
-              // CreateDBInstanceReadReplica member like the standalone one.
-              ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
-            })
-          );
+                processor,
+              })
+            )
+          )
+        : replicaSource === undefined
+          ? await this.getCreateClient().send(standaloneCreate())
+          : await createReadReplicaWhenSourceAvailable.call(
+              this,
+              logicalId,
+              replicaSource,
+              new CreateDBInstanceReadReplicaCommand({
+                ...replicaCreateInput(properties, {
+                  identifier: dbInstanceIdentifier,
+                  source: replicaSource,
+                  engine: replicaEngineName,
+                  currentRegion: await this.getClient().config.region(),
+                  tags,
+                  logExports,
+                }),
+                // go-to-k/cdkd#5640: both, as CloudFormation's replica create
+                // translation sends them.
+                ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
+                ...(processor.useDefault !== undefined && {
+                  UseDefaultProcessorFeatures: processor.useDefault,
+                }),
+                // go-to-k/cdkd#5640: the replica's own volumes, a
+                // CreateDBInstanceReadReplica member like the standalone one.
+                ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
+              })
+            );
     instanceCreated = true;
     createdResourceId = response.DBInstance?.DbiResourceId;
     // go-to-k/cdkd#5511: reported before the available wait.
@@ -319,17 +371,30 @@ export async function createDBInstance(
     const instance = response.DBInstance;
     if (!instance) {
       throw new Error(
-        `${replicaSource === undefined ? 'CreateDBInstance' : 'CreateDBInstanceReadReplica'} did not return DBInstance`
+        `${snapshotRestore !== undefined ? 'RestoreDBInstanceFromDBSnapshot' : replicaSource === undefined ? 'CreateDBInstance' : 'CreateDBInstanceReadReplica'} did not return DBInstance`
       );
+    }
+    if (snapshotRestore !== undefined) {
+      // go-to-k/cdkd#5640: what the snapshot decided instead of the template.
+      const unused = [
+        ...unusedSnapshotRestoreKeys(properties),
+        ...snapshotRestoredDifferences(properties, instance),
+      ];
+      if (unused.length > 0) {
+        this.logger.warn(
+          safeMsg`DBInstance ${logicalId}: ${unused.join(', ')} not applied: a restore from a snapshot takes them from the snapshot, as in CloudFormation.`
+        );
+      }
     }
 
     this.logger.debug(`Successfully created DBInstance ${logicalId}: ${dbInstanceIdentifier}`);
 
-    // go-to-k/cdkd#5640: CloudFormation's after-create update of a replica,
-    // which needs it `available`, under --no-wait too.
+    // go-to-k/cdkd#5640: CloudFormation's after-create update of a replica or
+    // a restored instance, which needs it `available`, under --no-wait too.
+    const followUpEngine = replicaEngineName ?? restoreSource?.engine;
     const modifyAfterCreate =
-      replicaSource !== undefined &&
-      replicaNeedsModifyAfterCreate(properties, replicaEngineName, instance.Engine);
+      (replicaSource !== undefined || snapshotRestore !== undefined) &&
+      replicaNeedsModifyAfterCreate(properties, followUpEngine, instance.Engine);
 
     // Wait for instance to become available (skip with --no-wait)
     if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate) {
@@ -342,7 +407,7 @@ export async function createDBInstance(
         logicalId,
         dbInstanceIdentifier,
         properties,
-        replicaEngineName
+        followUpEngine
       );
     }
 
@@ -417,7 +482,7 @@ export async function createDBInstance(
 }
 
 /**
- * go-to-k/cdkd#5640: the replica's after-create `ModifyDBInstance`
+ * go-to-k/cdkd#5640: the replica's (or restored instance's) after-create `ModifyDBInstance`
  * (`replicaModifyAfterCreateInput`), then, as the handler reboots when a
  * parameter group is declared, a reboot of one left `pending-reboot`.
  */

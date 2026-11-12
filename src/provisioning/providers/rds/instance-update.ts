@@ -57,6 +57,7 @@ import {
   replicaSourceOf,
   withPreviousReplicaSource,
 } from './read-replica.js';
+import { changedSnapshotRestoreKeys } from './instance-restore.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -167,6 +168,50 @@ export async function updateDBInstance(
   // go-to-k/cdkd#5640: the read replica's source (`./read-replica.ts`).
   refuseMalformedReplicaSource(properties, resourceType, logicalId, physicalId);
   const sourceChange = replicaSourceChange(properties, previousProperties);
+  // go-to-k/cdkd#5640: an added or changed restore snapshot is refused before
+  // any change, as CloudFormation fails the update ("Resource is immutable");
+  // a removed one changes nothing, and neither is ever sent. A rollback replay
+  // or a `drift --revert` restores the record the instance was created from,
+  // so it sends nothing and records it as it is.
+  const changedSnapshots = changedSnapshotRestoreKeys(properties, previousProperties);
+  if (
+    changedSnapshots.length > 0 &&
+    context?.replayingState !== true &&
+    context?.desiredFromAwsReadback !== true
+  ) {
+    const { mask: snapshotMask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['DBInstanceIdentifier'], physicalId]]
+    );
+    throw new ResourceUpdateNotSupportedError(
+      resourceType,
+      logicalId,
+      snapshotMask(
+        `${changedSnapshots.join(' and ')} cannot be added or changed on an existing DB instance — ` +
+          `an instance is restored from a snapshot only when it is created, and CloudFormation ` +
+          `refuses the same update ("Resource is immutable"). Removing it changes nothing. ` +
+          `Nothing was applied to DB instance ${physicalId}. To keep the instance as it is, ` +
+          `declare the snapshot the previous deploy declared (or none, if it declared none). ` +
+          `To replace it with an instance restored from the snapshot, ` +
+          (String(previousProperties['DeletionProtection']) === 'true'
+            ? protectedReplacementAdvice({
+                evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
+                replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                disable: {
+                  before: 'aws rds modify-db-instance --db-instance-identifier',
+                  identifier: physicalId,
+                  after: '--no-deletion-protection --apply-immediately',
+                  maskSecrets: snapshotMask,
+                },
+              })
+            : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
+              'cdkd deploy --replace --force-stateful-recreation (this deletes the instance ' +
+              'and its data). The replace flags apply to the WHOLE deploy, so run them with ' +
+              'nothing else pending')
+      )
+    );
+  }
 
   try {
     // go-to-k/cdkd#5640: only the changed, new and removed volumes, as

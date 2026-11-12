@@ -259,14 +259,10 @@ export class RDSProvider implements ResourceProvider {
         'Port',
         'StorageEncrypted',
         'VPCSecurityGroups',
-        // #609 security-cluster backfill (sibling of the DBCluster set).
-        // `KmsKeyId` is the storage-encryption key (pairs with the already-
-        // handled StorageEncrypted) — create-only + immutable, so it is NOT
-        // forwarded on update. The other 5 mirror DBCluster: `MasterUserSecret`
-        // → SDK `MasterUserSecretKmsKeyId`, `ManageMasterUserPassword` (bool),
-        // `MonitoringRoleArn` / `MonitoringInterval` (Number-coerced),
-        // `EnableIAMDatabaseAuthentication` (bool) — all ride CreateDBInstance
-        // AND ModifyDBInstance (mutable).
+        // #609 security-cluster backfill (sibling of the DBCluster set). `KmsKeyId`
+        // (the storage key) is create-only, so NOT sent on update. The other 5 ride
+        // CreateDBInstance AND ModifyDBInstance; `MasterUserSecret` → SDK
+        // `MasterUserSecretKmsKeyId`, the two monitoring values Number-coerced.
         'KmsKeyId',
         'MasterUserSecret',
         'ManageMasterUserPassword',
@@ -320,9 +316,12 @@ export class RDSProvider implements ResourceProvider {
         'MasterUserAuthenticationType',
         // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`); SourceRegion is never sent.
+        // go-to-k/cdkd#5640: a read replica or snapshot restore (`./rds/{read-replica,
+        // instance-restore}.ts`); SourceRegion is never sent.
         'SourceDBInstanceIdentifier',
         'SourceRegion',
+        'DBSnapshotIdentifier',
+        'DBClusterSnapshotIdentifier',
         // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`, `./rds/additional-storage-volumes.ts`.
         'ProcessorFeatures',
         'AdditionalStorageVolumes',

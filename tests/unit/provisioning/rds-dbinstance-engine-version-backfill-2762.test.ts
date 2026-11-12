@@ -288,13 +288,15 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
       // write-only too; ProcessorFeatures is compared only where declared.
       // AutomaticBackupReplicationKmsKeyId is write-only; the replication
       // retention is compared only where declared, as are the additional
-      // storage volumes.
+      // storage volumes. The restore snapshots are never read back.
       expect([...paths].sort()).toEqual([
         'AdditionalStorageVolumes',
         'AllowMajorVersionUpgrade',
         'AutomaticBackupReplicationKmsKeyId',
         'AutomaticBackupReplicationRetentionPeriod',
         'CertificateRotationRestart',
+        'DBClusterSnapshotIdentifier',
+        'DBSnapshotIdentifier',
         'ProcessorFeatures',
         'SourceRegion',
         'UseDefaultProcessorFeatures',
