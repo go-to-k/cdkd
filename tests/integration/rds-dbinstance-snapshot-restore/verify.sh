@@ -201,7 +201,7 @@ cleanup() {
   rm -f "${DEPLOY_LOG:-}"
   if [ -f "${LOCAL_DIST}" ]; then
     CDKD_TEST_SNAPSHOT_ID="${SNAPSHOT_ID}" CDKD_TEST_CLUSTER_SNAPSHOT_ID="${CLUSTER_SNAPSHOT_ID}" \
-      node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
+      node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
@@ -307,6 +307,22 @@ wait_snapshot_available() { # usage: wait_snapshot_available <label> <not-found 
 echo "==> Phase 2: take manual snapshots ${SNAPSHOT_ID} and ${CLUSTER_SNAPSHOT_ID}"
 aws rds create-db-snapshot --db-instance-identifier "${SOURCE_ID}" \
   --db-snapshot-identifier "${SNAPSHOT_ID}" --region "${REGION}" >/dev/null
+# A Multi-AZ DB cluster refuses a snapshot while it is not `available`
+# (`backing-up` right after its create): wait that out first.
+CLUSTER_STATUS=""
+for _ in $(seq 1 90); do
+  if ! CLUSTER_STATUS="$(aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0].Status' --output text 2>&1)"; then
+    echo "FAIL: Phase 2: reading cluster ${CLUSTER_ID} failed: ${CLUSTER_STATUS}" >&2
+    exit 1
+  fi
+  [ "${CLUSTER_STATUS}" = "available" ] && break
+  sleep 10
+done
+if [ "${CLUSTER_STATUS}" != "available" ]; then
+  echo "FAIL: Phase 2: cluster ${CLUSTER_ID} is '${CLUSTER_STATUS}' after 15 minutes, want available" >&2
+  exit 1
+fi
 aws rds create-db-cluster-snapshot --db-cluster-identifier "${CLUSTER_ID}" \
   --db-cluster-snapshot-identifier "${CLUSTER_SNAPSHOT_ID}" --region "${REGION}" >/dev/null
 wait_snapshot_available "snapshot ${SNAPSHOT_ID}" DBSnapshotNotFound \

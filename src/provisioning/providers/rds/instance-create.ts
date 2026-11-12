@@ -36,6 +36,7 @@ import {
 import { desiredAdditionalStorageVolumes } from './additional-storage-volumes.js';
 import {
   declaredSnapshotKeys,
+  followUpOnlyKeys,
   readInstanceSnapshotRestore,
   readSnapshotRestoreSource,
   snapshotRestoredDifferences,
@@ -397,6 +398,16 @@ export async function createDBInstance(
     const modifyAfterCreate =
       (replicaSource !== undefined || snapshotRestore !== undefined) &&
       replicaNeedsModifyAfterCreate(properties, followUpEngine, instance.Engine);
+    // go-to-k/cdkd#5640: the members only that follow-up carries, when it does not run.
+    const unappliedFollowUp =
+      modifyAfterCreate || (replicaSource === undefined && snapshotRestore === undefined)
+        ? []
+        : followUpOnlyKeys(properties, snapshotRestore !== undefined ? 'restore' : 'replica');
+    if (unappliedFollowUp.length > 0) {
+      this.logger.warn(
+        safeMsg`DBInstance ${logicalId}: ${unappliedFollowUp.join(', ')} not applied: only CloudFormation's after-create ModifyDBInstance carries them, and nothing else declared calls for it, as in CloudFormation.`
+      );
+    }
 
     // Wait for instance to become available (skip with --no-wait)
     if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate) {

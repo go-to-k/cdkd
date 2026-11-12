@@ -141,7 +141,9 @@ export async function readSnapshotRestoreSource(
   const refuseNotFound = (key: string, value: string, noun: string): never => {
     throw markNonRetryable(
       new ProvisioningError(
-        safeMsg`${resourceType} ${logicalId}: ${key} ${value} does not name a ${noun} this account can read, so there is nothing to restore; nothing was changed.`,
+        (mask ?? ((text: string) => text))(
+          safeMsg`${resourceType} ${logicalId}: ${key} ${value} does not name a ${noun} this account can read, so there is nothing to restore; nothing was changed.`
+        ),
         resourceType,
         logicalId
       )
@@ -295,9 +297,11 @@ export function snapshotRestoreInput(
 }
 
 /**
- * The declared keys a snapshot restore does not apply, as CloudFormation's
- * does not: neither its restore call nor the after-create ModifyDBInstance
- * carries them, so the snapshot (or nothing) decides them. `MasterUsername`
+ * The declared keys a snapshot restore does not apply: cdkd does not send them
+ * on the restore, and the after-create ModifyDBInstance does not carry them,
+ * so the snapshot (or nothing) decides them (CloudFormation's archived handler
+ * sends none of them either; some are newer RestoreDBInstanceFromDBSnapshot
+ * members than it). `MasterUsername`
  * and `StorageEncrypted` are compared against the restored instance instead
  * ({@link snapshotRestoredDifferences}).
  */
@@ -315,6 +319,35 @@ export function unusedSnapshotRestoreKeys(properties: Record<string, unknown>): 
     const value = properties[key];
     if (value == null || value === '') return false;
     return !(Array.isArray(value) && value.length === 0);
+  });
+}
+
+/**
+ * The declared keys only CloudFormation's after-create ModifyDBInstance
+ * carries (`modifyDbInstanceAfterCreateRequest`) that do not by themselves
+ * call for it (`shouldUpdateAfterCreate`): when nothing else does, the handler
+ * sends no follow-up and they are not applied, so cdkd sends none either and
+ * names them. A read replica's create carries the Database Insights and
+ * Performance Insights members itself.
+ */
+export function followUpOnlyKeys(
+  properties: Record<string, unknown>,
+  kind: 'replica' | 'restore'
+): string[] {
+  return [
+    'MaxAllocatedStorage',
+    'AllowMajorVersionUpgrade',
+    'MasterUserSecret',
+    ...(kind === 'restore'
+      ? [
+          'DatabaseInsightsMode',
+          'PerformanceInsightsRetentionPeriod',
+          'PerformanceInsightsKMSKeyId',
+        ]
+      : []),
+  ].filter((key) => {
+    const value = properties[key];
+    return value != null && value !== '' && value !== false && value !== 'false';
   });
 }
 

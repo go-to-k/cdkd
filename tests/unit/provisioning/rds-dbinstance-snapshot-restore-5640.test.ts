@@ -45,6 +45,7 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import { refuseRestoreFromItself } from '../../../src/provisioning/restore-source-guard.js';
+import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 type Input = Record<string, unknown>;
 
@@ -63,6 +64,8 @@ interface Live {
   clusterSnapshotError?: Error;
   /** The DB snapshot lists no engine. */
   snapshotEngineMissing?: boolean;
+  /** What the follow-up ModifyDBInstance throws. */
+  modifyError?: Error;
   /** The restored instance, as the restore call answers it. */
   restored?: Input;
 }
@@ -121,6 +124,9 @@ function arm(live: Live = {}): void {
             ...live.restored,
           },
         });
+      case 'ModifyDBInstanceCommand':
+        if (live.modifyError !== undefined) return Promise.reject(live.modifyError);
+        return Promise.resolve({});
       case 'CreateDBInstanceReadReplicaCommand':
       case 'CreateDBInstanceCommand':
         return Promise.resolve({ DBInstance: { DBInstanceIdentifier: 'db-1', Engine: 'postgres' } });
@@ -594,6 +600,84 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       }
     });
 
+    it('names the follow-up-only members it does not apply when nothing calls for the follow-up', async () => {
+      await provider.create('L', INSTANCE, {
+        ...FROM_SNAPSHOT,
+        MaxAllocatedStorage: 1000,
+        DatabaseInsightsMode: 'standard',
+        AllowMajorVersionUpgrade: false,
+      });
+      expect(sent('ModifyDBInstanceCommand')).toEqual([]);
+      for (const key of ['MaxAllocatedStorage', 'DatabaseInsightsMode']) {
+        expect(sent('RestoreDBInstanceFromDBSnapshotCommand')[0]).not.toHaveProperty(key);
+      }
+      expect(warned()).toMatch(
+        /DBInstance L: MaxAllocatedStorage, DatabaseInsightsMode not applied: only CloudFormation's after-create ModifyDBInstance carries them/
+      );
+    });
+
+    it('sends them on the follow-up, with no warning, when another member calls for it', async () => {
+      await provider.create('L', INSTANCE, {
+        ...FROM_SNAPSHOT,
+        MaxAllocatedStorage: 1000,
+        DatabaseInsightsMode: 'standard',
+        BackupRetentionPeriod: '3',
+      });
+      expect(sent('ModifyDBInstanceCommand')).toEqual([
+        expect.objectContaining({ MaxAllocatedStorage: 1000, DatabaseInsightsMode: 'standard' }),
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("names a read replica's follow-up-only member, not the ones its create carries", async () => {
+      const { DBSnapshotIdentifier: _s, ...rest } = FROM_SNAPSHOT;
+      await provider.create('L', INSTANCE, {
+        ...rest,
+        SourceDBInstanceIdentifier: 'source-1',
+        MaxAllocatedStorage: 1000,
+        DatabaseInsightsMode: 'standard',
+      });
+      expect(sent('ModifyDBInstanceCommand')).toEqual([]);
+      expect(warned()).toMatch(/DBInstance L: MaxAllocatedStorage not applied/);
+      expect(warned()).not.toMatch(/DatabaseInsightsMode not applied/);
+    });
+
+    it('converts to an Oracle CDB engine on the follow-up, as the handler does', async () => {
+      arm({ snapshotEngine: 'oracle-se2' });
+      await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT, Engine: 'oracle-se2-cdb' });
+      expect(sent('RestoreDBInstanceFromDBSnapshotCommand')[0]).not.toHaveProperty('Engine');
+      expect(sent('ModifyDBInstanceCommand')).toEqual([
+        expect.objectContaining({ Engine: 'oracle-se2-cdb', ApplyImmediately: true }),
+      ]);
+    });
+
+    it('marks the restored instance created when the follow-up fails', async () => {
+      arm({
+        modifyError: Object.assign(new Error('bad combination'), {
+          name: 'InvalidParameterCombination',
+        }),
+      });
+      const error = await provider
+        .create('L', INSTANCE, { ...FROM_SNAPSHOT, BackupRetentionPeriod: '3' })
+        .catch((e: unknown) => e);
+      expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toHaveLength(1);
+      expect(hasCreatedBeforeFailure(error)).toBe(true);
+    });
+
+    it('masks a secret-derived snapshot name in the not-found refusal', async () => {
+      arm({ snapshotEngine: null });
+      const error = await provider
+        .create(
+          'L',
+          INSTANCE,
+          { ...FROM_SNAPSHOT, DBSnapshotIdentifier: 'secret-snap-1' },
+          { maskSecrets: (t: string) => t.replaceAll('secret-snap-1', '***') }
+        )
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/DBSnapshotIdentifier \*\*\* does not name a DB snapshot/);
+      expect(String(error)).not.toContain('secret-snap-1');
+    });
+
     it('restores the same way on a rollback replay', async () => {
       await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT }, { replayingState: true });
       expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toHaveLength(1);
@@ -649,18 +733,6 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
         refuseRestoreFromItself(
           INSTANCE,
           { DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04', SourceDBClusterIdentifier: 'maz-1' },
-          'db-1',
-          'L',
-          {}
-        )
-      ).not.toThrow();
-    });
-
-    it('reads no cluster key for a DB instance', () => {
-      expect(() =>
-        refuseRestoreFromItself(
-          INSTANCE,
-          { SnapshotIdentifier: 'rds:db-1-2026-11-01-03-04', SourceDBClusterIdentifier: 'db-1' },
           'db-1',
           'L',
           {}

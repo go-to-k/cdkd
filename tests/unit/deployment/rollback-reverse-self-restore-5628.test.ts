@@ -18,8 +18,11 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
 });
 
+// go-to-k/cdkd#5640: an `ssm` reference in the old record resolves through this.
+const ssmSend = vi.hoisted(() => vi.fn());
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({ tag: 'process-global' }),
+  getAwsClients: () => ({ tag: 'process-global', ssm: { send: ssmSend } }),
   setAwsClients: vi.fn(),
   AwsClients: vi.fn(),
 }));
@@ -129,6 +132,36 @@ describe('reversing a delete-first replacement whose old record restores from th
       expect(m.logged.join('\n')).toContain("SourceDbClusterResourceId must be another cluster's");
     }
   });
+
+  // go-to-k/cdkd#5640: the guard reads the RESOLVED bag the re-create sends,
+  // so a snapshot named through a dynamic reference is compared by its value.
+  it.each([
+    ['its own automated snapshot', 'rds:db-new-2026-11-02-03-00', 0],
+    ['a manual snapshot', 'manual-snap-1', 1],
+  ] as const)(
+    'a DB instance whose DBSnapshotIdentifier resolves (ssm) to %s',
+    async (_name, resolved, deletes) => {
+      ssmSend.mockReset().mockResolvedValue({ Parameter: { Value: resolved } });
+      const m = harness();
+      const instance = 'AWS::RDS::DBInstance';
+      const state = { Cluster: { ...rec('db-new', {}), resourceType: instance } };
+      const operation = op({ DBSnapshotIdentifier: '{{resolve:ssm:/cdkd/snap}}' });
+      operation.resourceType = instance;
+      operation.physicalId = 'db-new';
+      operation.previousState = {
+        ...operation.previousState!,
+        physicalId: 'db-old',
+        resourceType: instance,
+      };
+      const result = await replayRollback([operation], state, 'S', m.ctx);
+      expect(ssmSend).toHaveBeenCalled();
+      expect(m.calls.filter((c) => c.startsWith('delete'))).toHaveLength(deletes);
+      if (deletes === 0) {
+        expect(result.failures).toBe(1);
+        expect(m.logged.join('\n')).toContain('DBSnapshotIdentifier names an automated snapshot');
+      }
+    }
+  );
 
   it('deletes then re-creates for another source', async () => {
     const m = harness();

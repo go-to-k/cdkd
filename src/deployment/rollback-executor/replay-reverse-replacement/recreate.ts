@@ -68,8 +68,9 @@ export async function recreateOldResource(
   // journal is kept for a re-run.
   const deleteNewResourceFirst = async (purpose: string): Promise<void> => {
     // go-to-k/cdkd#5628: before the delete, which is what would lose the source
-    // the old record restores from.
-    refuseRestoreFromItself(oldType, prev.properties ?? {}, current.physicalId, op.logicalId, {
+    // the old record restores from. The RESOLVED bag the re-create sends: a
+    // record keeps a dynamic reference as its `{{resolve:...}}` token.
+    refuseRestoreFromItself(oldType, replayCreateProps(), current.physicalId, op.logicalId, {
       region: ctx.region,
       attributes: current.attributes,
     });
