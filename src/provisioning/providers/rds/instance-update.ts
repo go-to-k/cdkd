@@ -44,6 +44,11 @@ import {
 } from './instance-members.js';
 import { applyBackupReplication } from './calls.js';
 import {
+  additionalStorageVolumeChanges,
+  additionalStorageVolumesSettled,
+  sendableVolumeLists,
+} from './additional-storage-volumes.js';
+import {
   isLiveReadReplica,
   refuseMalformedReplicaSource,
   replicaSourceChange,
@@ -82,6 +87,18 @@ export async function updateDBInstance(
     resourceType,
     logicalId,
     physicalId
+  );
+  // go-to-k/cdkd#5640: a malformed desired volume list the update would send,
+  // or a case-only rename, is refused before any call
+  // (`./additional-storage-volumes.ts`).
+  // A rollback replay warns instead (inside the update), sending no volume change.
+  sendableVolumeLists(
+    properties,
+    previousProperties,
+    resourceType,
+    logicalId,
+    physicalId,
+    context?.replayingState === true ? () => {} : undefined
   );
   // go-to-k/cdkd#5640: decided as CloudFormation decides it, refused before
   // any call when the template misuses it (a state-borne bag only warns).
@@ -152,6 +169,21 @@ export async function updateDBInstance(
   const sourceChange = replicaSourceChange(properties, previousProperties);
 
   try {
+    // go-to-k/cdkd#5640: only the changed, new and removed volumes, as
+    // CloudFormation was measured to send them (`./additional-storage-volumes.ts`).
+    const volumeChanges = await additionalStorageVolumeChanges(
+      properties,
+      previousProperties,
+      () => this.describeDBInstance(physicalId),
+      {
+        rollback: context?.replayingState === true,
+        fromReadback: context?.desiredFromAwsReadback === true,
+      },
+      resourceType,
+      logicalId,
+      physicalId,
+      (message) => this.logger.warn(message)
+    );
     // go-to-k/cdkd#5640: an added or changed source is refused before any
     // change, as CloudFormation fails the update ("Resource is immutable"),
     // unless the live instance already replicates the declared source (a
@@ -543,6 +575,7 @@ export async function updateDBInstance(
             // go-to-k/cdkd#5640: a removed ProcessorFeatures sends nothing,
             // so the instance keeps its features, as under CloudFormation.
             ...processorMembers,
+            ...(volumeChanges !== undefined && { AdditionalStorageVolumes: volumeChanges }),
             // go-to-k/cdkd#5640: only a drift revert sends it; only a change
             // sends the authentication type, beside the credential settings.
             ...(engineLifecycleSupport !== undefined && {
@@ -593,6 +626,16 @@ export async function updateDBInstance(
         physicalId,
         processorFeaturesSettled(processorMembers.ProcessorFeatures, modified),
         'processor features change'
+      );
+    }
+    // go-to-k/cdkd#5640: likewise a volume change, which CloudFormation's
+    // update waits out (a grow took ~17 minutes in the A/B).
+    if (process.env['CDKD_NO_WAIT'] !== 'true' && volumeChanges !== undefined) {
+      await this.waitForInstanceState(
+        logicalId,
+        physicalId,
+        additionalStorageVolumesSettled(volumeChanges, modified),
+        'additional storage volumes change'
       );
     }
 

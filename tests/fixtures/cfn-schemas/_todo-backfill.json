@@ -34,7 +34,6 @@
       "SourceRegion"
     ],
     "AWS::RDS::DBInstance": [
-      "AdditionalStorageVolumes",
       "BackupTarget",
       "CustomIAMInstanceProfile",
       "DBClusterSnapshotIdentifier",

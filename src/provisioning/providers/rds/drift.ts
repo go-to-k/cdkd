@@ -2,6 +2,10 @@ import { canonicalAssociatedRoles } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { sameReplicaSource } from './read-replica.js';
 import {
+  canonicalAdditionalStorageVolumes,
+  withDeclaredVolumeMembers,
+} from './additional-storage-volumes.js';
+import {
   type ServerlessV2ScalingProps,
   CLUSTER_BOOLEAN_SCALARS,
   retentionPeriodValue,
@@ -15,7 +19,13 @@ import {
 export function getDriftUnorderedPaths(this: RDSProvider, resourceType: string): string[] {
   // go-to-k/cdkd#5640: an instance's processor features, in RDS's own order.
   if (resourceType === 'AWS::RDS::DBInstance') {
-    return ['EnableCloudwatchLogsExports', 'AssociatedRoles', 'ProcessorFeatures'];
+    return [
+      'EnableCloudwatchLogsExports',
+      'AssociatedRoles',
+      'ProcessorFeatures',
+      // go-to-k/cdkd#5640: keyed by VolumeName; RDS lists them in its own order.
+      'AdditionalStorageVolumes',
+    ];
   }
   return resourceType === 'AWS::RDS::DBCluster'
     ? ['EnableCloudwatchLogsExports', 'AssociatedRoles']
@@ -61,7 +71,16 @@ export function getDriftUnknownPaths(
     // it is compared only where declared (and not with no bag).
     const retention = properties?.['AutomaticBackupReplicationRetentionPeriod'];
     const declared = properties?.['ProcessorFeatures'];
+    // go-to-k/cdkd#5640: likewise the additional storage volumes, compared
+    // only where the bag declares a non-empty list; with no bag (the
+    // post-update unsettled proof) not at all, since that comparison does not
+    // narrow a live volume to the members its entry declares
+    // (`withDeclaredVolumeMembers`) and RDS lists its defaults.
+    const volumes = properties?.['AdditionalStorageVolumes'];
     return [
+      ...(volumes == null || (Array.isArray(volumes) && volumes.length === 0)
+        ? ['AdditionalStorageVolumes']
+        : []),
       ...instanceUnknown,
       ...(declared == null || (Array.isArray(declared) && declared.length === 0)
         ? ['ProcessorFeatures']
@@ -135,7 +154,16 @@ export function canonicalizeDriftProperties(
   if (Array.isArray(properties['AssociatedRoles'])) {
     set('AssociatedRoles', canonicalAssociatedRoles(properties['AssociatedRoles']));
   }
-  if (resourceType !== 'AWS::RDS::DBCluster') return out ?? properties;
+  if (resourceType !== 'AWS::RDS::DBCluster') {
+    // go-to-k/cdkd#5640: a template's string volume sizes, as numbers.
+    if (Array.isArray(properties['AdditionalStorageVolumes'])) {
+      set(
+        'AdditionalStorageVolumes',
+        canonicalAdditionalStorageVolumes(properties['AdditionalStorageVolumes'])
+      );
+    }
+    return out ?? properties;
+  }
   for (const key of CLUSTER_BOOLEAN_SCALARS) {
     const value = properties[key];
     if (value === 'true' || value === 'false') set(key, value === 'true');
@@ -171,7 +199,7 @@ export async function canonicalizeDriftPair(
   aws: Record<string, unknown>
 ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
   if (resourceType === 'AWS::RDS::DBInstance') {
-    aws = withDeclaredProcessorFeatures(baseline, aws);
+    aws = withDeclaredVolumeMembers(baseline, withDeclaredProcessorFeatures(baseline, aws));
   }
   const recorded = baseline['SourceDBInstanceIdentifier'];
   const live = aws['SourceDBInstanceIdentifier'];

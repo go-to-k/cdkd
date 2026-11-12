@@ -723,6 +723,35 @@ const CLUSTER_CASE: TypeCase = {
  * storage is the previous bag's, which a removed MaxAllocatedStorage sends
  * (go-to-k/cdkd#2762).
  */
+/** go-to-k/cdkd#5640: a bag's volumes as DescribeDBInstances lists them. */
+function liveVolumes(value: unknown): Bag[] {
+  if (!Array.isArray(value)) return [];
+  return (value as Bag[]).map((volume) => {
+    const out: Bag = { VolumeName: volume['VolumeName'] };
+    if (volume['StorageType'] != null) out['StorageType'] = volume['StorageType'];
+    for (const [cfn, sdk] of [
+      ['AllocatedStorage', 'AllocatedStorage'],
+      ['Iops', 'IOPS'],
+      ['MaxAllocatedStorage', 'MaxAllocatedStorage'],
+      ['StorageThroughput', 'StorageThroughput'],
+    ] as const) {
+      if (volume[cfn] != null) out[sdk] = Number(volume[cfn]);
+    }
+    return out;
+  });
+}
+
+/** go-to-k/cdkd#5640: a ModifyDBInstance's volume changes applied to the live list. */
+function applyVolumeChanges(volumes: Bag[], sent: unknown): Bag[] {
+  if (!Array.isArray(sent)) return volumes;
+  let out = [...volumes];
+  for (const change of sent as Bag[]) {
+    out = out.filter((volume) => volume['VolumeName'] !== change['VolumeName']);
+    if (change['SetForDelete'] !== true) out.push(change);
+  }
+  return out;
+}
+
 function armInstance(_physicalId?: string, live: Bag = {}): void {
   let logs = liveLogs(live);
   const roles = { current: liveRoles(live) };
@@ -733,6 +762,9 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
   // go-to-k/cdkd#5640: the features a modify sent apply at once, so the
   // update's processor wait settles.
   let processorFeatures = live['ProcessorFeatures'] as unknown;
+  // go-to-k/cdkd#5640: the volumes a modify sent apply at once (a delete drops
+  // one), so the update's volume wait settles.
+  let volumes = liveVolumes(live['AdditionalStorageVolumes']);
   // go-to-k/cdkd#5640: the replication the bag declares is live until a stop;
   // a start lists one again (its region is the client's, which no input
   // carries, so the replication waits are skipped: INSTANCE_CASE.provider).
@@ -743,6 +775,7 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
     ModifyDBInstanceCommand: (input) => {
       logs = applyLogDelta(logs, input);
       if (input['ProcessorFeatures'] !== undefined) processorFeatures = input['ProcessorFeatures'];
+      volumes = applyVolumeChanges(volumes, input['AdditionalStorageVolumes']);
       return {};
     },
     StopDBInstanceAutomatedBackupsReplicationCommand: () => {
@@ -774,6 +807,7 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
             ReadReplicaSourceDBInstanceIdentifier: replicaSource,
           }),
           ...(Array.isArray(processorFeatures) && { ProcessorFeatures: processorFeatures }),
+          AdditionalStorageVolumes: volumes,
           DBInstanceAutomatedBackupsReplications:
             replicationRegion === undefined
               ? []
@@ -808,6 +842,22 @@ const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (
 const CFN_DIFF_KEPT = (key: string): string =>
   `left in place on removal: update() sends ${key} only when the template changed it (instanceModifyBackfillMembers in ${SRC}), as CloudFormation's handler sends diff(previous, desired), which is null for a removal (go-to-k/cdkd#2762)`;
 
+/** go-to-k/cdkd#5640: a volume is keyed by its name, which RDS requires. */
+const VOLUME_NAME_REFUSED = {
+  says: /AdditionalStorageVolumes must be a list of/,
+  why: `VolumeName is required on every AdditionalStorageVolume and ModifyAdditionalStorageVolume (the SDK types it non-optional) and is the key an update diffs volumes by, so an entry without it is refused before any call (${SRC} desiredAdditionalStorageVolumes / additionalStorageVolumeChanges)`,
+};
+
+/**
+ * go-to-k/cdkd#5640: a member removed from a volume entry is no change, as the
+ * handler's `diff(previous, desired)` is null for a removal: RDS keeps it.
+ */
+const VOLUME_MEMBER_KEPT = (member: string): string =>
+  `left in place on removal: additionalStorageVolumeChanges (${SRC}) sends a volume only when a member its entry declares changed, so a removed ${member} sends nothing and RDS keeps the live value, as for the instance's own storage members (go-to-k/cdkd#2762)`;
+
+/** go-to-k/cdkd#5640: status members the schema lists as read-only. */
+const VOLUME_STATUS_READ_ONLY = `read-only in the registry schema (readOnlyProperties) and on no CreateDBInstance / ModifyDBInstance volume shape: a storage operation's progress, never sent and not read back (${SRC} readAdditionalStorageVolumes)`;
+
 const INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::RDS::DBInstance',
   // go-to-k/cdkd#5640: a flag-only processor change waits out a few quiet
@@ -841,6 +891,8 @@ const INSTANCE_CASE: TypeCase = {
   },
   nestedExempt: {
     'MasterUserSecret.SecretArn': SECRET_ARN_READ_ONLY,
+    'AdditionalStorageVolumes.StorageOperationStatus': VOLUME_STATUS_READ_ONLY,
+    'AdditionalStorageVolumes.StorageOperationPercentProgress': VOLUME_STATUS_READ_ONLY,
   },
   targets: [
     ...TAG_TARGETS,
@@ -1192,6 +1244,51 @@ const INSTANCE_CASE: TypeCase = {
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
         'update-remove:LicenseModel': CFN_DIFF_KEPT('LicenseModel'),
+      },
+    },
+    {
+      // go-to-k/cdkd#5640: CreateDBInstance's list; an update sends the changed
+      // volume in full, a removed one as SetForDelete.
+      name: 'SQL Server additional storage volumes (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.m6i.large',
+        Engine: 'sqlserver-se',
+        LicenseModel: 'license-included',
+        AllocatedStorage: '20',
+        MasterUsername: 'admin',
+        AdditionalStorageVolumes: [
+          {
+            VolumeName: 'rdsdbdata2',
+            StorageType: 'io2',
+            AllocatedStorage: '100',
+            Iops: 1000,
+            MaxAllocatedStorage: 200,
+            StorageThroughput: 125,
+          },
+        ],
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:LicenseModel': CFN_DIFF_KEPT('LicenseModel'),
+        ...Object.fromEntries(
+          [
+            'AllocatedStorage',
+            'Iops',
+            'MaxAllocatedStorage',
+            'StorageThroughput',
+            'StorageType',
+          ].map((member) => [
+            `update-remove:AdditionalStorageVolumes.0.${member}`,
+            VOLUME_MEMBER_KEPT(member),
+          ])
+        ),
+      },
+      expectedRemovalThrows: {
+        'create:AdditionalStorageVolumes.0.VolumeName': VOLUME_NAME_REFUSED,
+        'update-remove:AdditionalStorageVolumes.0.VolumeName': VOLUME_NAME_REFUSED,
       },
     },
   ],
