@@ -3,7 +3,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin, type ViteBuilder } from 'vite-plus';
-import { fastForks } from 'vitest-pool-fastforks';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,8 +92,6 @@ export default defineConfig({
   },
 
   test: {
-    // EXPERIMENT ONLY: fallback 'error' so a silent fall back to forks cannot pass as a measurement.
-    pool: fastForks({ fallback: 'error' }),
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
