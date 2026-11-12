@@ -259,10 +259,8 @@ export class RDSProvider implements ResourceProvider {
         'Port',
         'StorageEncrypted',
         'VPCSecurityGroups',
-        // #609 security-cluster backfill (sibling of the DBCluster set). `KmsKeyId`
-        // (the storage key) is create-only, so NOT sent on update. The other 5 ride
-        // CreateDBInstance AND ModifyDBInstance; `MasterUserSecret` → SDK
-        // `MasterUserSecretKmsKeyId`, the two monitoring values Number-coerced.
+        // #609: `KmsKeyId` is create-only (not sent on update); the other 5 ride both calls
+        // (`MasterUserSecret` as `MasterUserSecretKmsKeyId`, the monitoring values as numbers).
         'KmsKeyId',
         'MasterUserSecret',
         'ManageMasterUserPassword',
@@ -288,11 +286,8 @@ export class RDSProvider implements ResourceProvider {
         'StorageThroughput',
         'OptionGroupName',
         'CACertificateIdentifier',
-        // go-to-k/cdkd#2762: network type, license model, promotion tier,
-        // Database Insights mode and dedicated log volume ride
-        // CreateDBInstance and, when changed, ModifyDBInstance under the same
-        // name. `AllowMajorVersionUpgrade` and `CertificateRotationRestart`
-        // are ModifyDBInstance-only flags RDS never reads back
+        // go-to-k/cdkd#2762: CreateDBInstance and, when changed, ModifyDBInstance under the
+        // same names; the last two are ModifyDBInstance-only flags RDS never reads back
         // (`instanceModifyBackfillMembers`).
         'NetworkType',
         'LicenseModel',
@@ -316,12 +311,16 @@ export class RDSProvider implements ResourceProvider {
         'MasterUserAuthenticationType',
         // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica or snapshot restore (`./rds/{read-replica,
-        // instance-restore}.ts`); SourceRegion is never sent.
+        // go-to-k/cdkd#5640: a read replica, snapshot or point-in-time restore
+        // (`./rds/{read-replica,instance-restore,instance-pitr}.ts`); SourceRegion is never sent.
         'SourceDBInstanceIdentifier',
         'SourceRegion',
         'DBSnapshotIdentifier',
         'DBClusterSnapshotIdentifier',
+        'RestoreTime',
+        'UseLatestRestorableTime',
+        'SourceDBInstanceAutomatedBackupsArn',
+        'SourceDbiResourceId',
         // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`, `./rds/additional-storage-volumes.ts`.
         'ProcessorFeatures',
         'AdditionalStorageVolumes',

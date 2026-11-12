@@ -3,6 +3,7 @@ import {
   CreateDBInstanceReadReplicaCommand,
   ModifyDBInstanceCommand,
   RestoreDBInstanceFromDBSnapshotCommand,
+  RestoreDBInstanceToPointInTimeCommand,
   type CreateDBInstanceCommandInput,
   type DBInstance,
 } from '@aws-sdk/client-rds';
@@ -43,6 +44,13 @@ import {
   snapshotRestoreInput,
   unusedSnapshotRestoreKeys,
 } from './instance-restore.js';
+import {
+  pointInTimeRestoreEngine,
+  pointInTimeRestoreInput,
+  readInstancePointInTimeRestore,
+  unusedPointInTimeRestoreKeys,
+} from './instance-pitr.js';
+import { restoreWaitMs } from './cluster-restore.js';
 import { refuseRestoreFromItself } from '../../restore-source-guard.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 
@@ -88,17 +96,23 @@ export async function createDBInstance(
   refuseUnknownSourceRegion(properties, resourceType, logicalId, replaying, (message) =>
     this.logger.warn(message)
   );
-  const replicaSource = replicaSourceOf(properties);
+  // go-to-k/cdkd#5640: a point-in-time key makes the create a
+  // RestoreDBInstanceToPointInTime (`./instance-pitr.ts`), which CloudFormation's
+  // handler tests first: a declared SourceDBInstanceIdentifier is then its source.
+  const pointInTime = readInstancePointInTimeRestore(properties, resourceType, logicalId);
+  const replicaSource = pointInTime === undefined ? replicaSourceOf(properties) : undefined;
   // go-to-k/cdkd#5640: a declared snapshot makes the create a restore
   // (`./instance-restore.ts`), unless a source makes it a read replica, which
   // CloudFormation's handler tests first and which reads neither key.
   const snapshotRestore =
-    replicaSource === undefined
+    pointInTime === undefined && replicaSource === undefined
       ? readInstanceSnapshotRestore(properties, resourceType, logicalId)
       : undefined;
-  if (replicaSource !== undefined && declaredSnapshotKeys(properties).length > 0) {
+  if (snapshotRestore === undefined && declaredSnapshotKeys(properties).length > 0) {
     this.logger.warn(
-      safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
+      pointInTime !== undefined
+        ? safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: a point-in-time key makes the create a restore to a point in time, which reads no snapshot, as in CloudFormation.`
+        : safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
     );
   }
 
@@ -107,7 +121,7 @@ export async function createDBInstance(
     generatedNameFor('AWS::RDS::DBInstance', logicalId);
   // go-to-k/cdkd#5640: never the instance's own automated snapshot, which its
   // delete removes; a replacement's name may be generated here.
-  if (snapshotRestore !== undefined) {
+  if (snapshotRestore !== undefined || pointInTime !== undefined) {
     refuseRestoreFromItself(resourceType, properties, dbInstanceIdentifier, logicalId, {});
   }
 
@@ -326,46 +340,74 @@ export async function createDBInstance(
             logicalId,
             mask
           );
+    // go-to-k/cdkd#5640: the engine a point-in-time restore sends, the
+    // source's when undeclared; any read failure stops it before anything is made.
+    const pointInTimeEngine =
+      pointInTime === undefined
+        ? undefined
+        : await pointInTimeRestoreEngine.call(
+            this,
+            properties,
+            pointInTime,
+            resourceType,
+            logicalId,
+            mask
+          );
     const response =
-      snapshotRestore !== undefined && restoreSource !== undefined
+      pointInTime !== undefined
         ? await this.getCreateClient().send(
-            new RestoreDBInstanceFromDBSnapshotCommand(
-              snapshotRestoreInput(properties, {
+            new RestoreDBInstanceToPointInTimeCommand(
+              pointInTimeRestoreInput(properties, {
                 identifier: dbInstanceIdentifier,
-                restore: snapshotRestore,
-                source: restoreSource,
+                restore: pointInTime,
+                engine: pointInTimeEngine,
                 tags,
                 logExports,
                 processor,
               })
             )
           )
-        : replicaSource === undefined
-          ? await this.getCreateClient().send(standaloneCreate())
-          : await createReadReplicaWhenSourceAvailable.call(
-              this,
-              logicalId,
-              replicaSource,
-              new CreateDBInstanceReadReplicaCommand({
-                ...replicaCreateInput(properties, {
+        : snapshotRestore !== undefined && restoreSource !== undefined
+          ? await this.getCreateClient().send(
+              new RestoreDBInstanceFromDBSnapshotCommand(
+                snapshotRestoreInput(properties, {
                   identifier: dbInstanceIdentifier,
-                  source: replicaSource,
-                  engine: replicaEngineName,
-                  currentRegion: await this.getClient().config.region(),
+                  restore: snapshotRestore,
+                  source: restoreSource,
                   tags,
                   logExports,
-                }),
-                // go-to-k/cdkd#5640: both, as CloudFormation's replica create
-                // translation sends them.
-                ...(processor.features !== undefined && { ProcessorFeatures: processor.features }),
-                ...(processor.useDefault !== undefined && {
-                  UseDefaultProcessorFeatures: processor.useDefault,
-                }),
-                // go-to-k/cdkd#5640: the replica's own volumes, a
-                // CreateDBInstanceReadReplica member like the standalone one.
-                ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
-              })
-            );
+                  processor,
+                })
+              )
+            )
+          : replicaSource === undefined
+            ? await this.getCreateClient().send(standaloneCreate())
+            : await createReadReplicaWhenSourceAvailable.call(
+                this,
+                logicalId,
+                replicaSource,
+                new CreateDBInstanceReadReplicaCommand({
+                  ...replicaCreateInput(properties, {
+                    identifier: dbInstanceIdentifier,
+                    source: replicaSource,
+                    engine: replicaEngineName,
+                    currentRegion: await this.getClient().config.region(),
+                    tags,
+                    logExports,
+                  }),
+                  // go-to-k/cdkd#5640: both, as CloudFormation's replica create
+                  // translation sends them.
+                  ...(processor.features !== undefined && {
+                    ProcessorFeatures: processor.features,
+                  }),
+                  ...(processor.useDefault !== undefined && {
+                    UseDefaultProcessorFeatures: processor.useDefault,
+                  }),
+                  // go-to-k/cdkd#5640: the replica's own volumes, a
+                  // CreateDBInstanceReadReplica member like the standalone one.
+                  ...(volumes !== undefined && { AdditionalStorageVolumes: volumes }),
+                })
+              );
     instanceCreated = true;
     createdResourceId = response.DBInstance?.DbiResourceId;
     // go-to-k/cdkd#5511: reported before the available wait.
@@ -374,7 +416,7 @@ export async function createDBInstance(
     const instance = response.DBInstance;
     if (!instance) {
       throw new Error(
-        `${snapshotRestore !== undefined ? 'RestoreDBInstanceFromDBSnapshot' : replicaSource === undefined ? 'CreateDBInstance' : 'CreateDBInstanceReadReplica'} did not return DBInstance`
+        `${pointInTime !== undefined ? 'RestoreDBInstanceToPointInTime' : snapshotRestore !== undefined ? 'RestoreDBInstanceFromDBSnapshot' : replicaSource === undefined ? 'CreateDBInstance' : 'CreateDBInstanceReadReplica'} did not return DBInstance`
       );
     }
     if (snapshotRestore !== undefined) {
@@ -389,20 +431,40 @@ export async function createDBInstance(
         );
       }
     }
+    if (pointInTime !== undefined) {
+      // go-to-k/cdkd#5640: what the source decided instead of the template.
+      const unused = [
+        ...unusedPointInTimeRestoreKeys(properties),
+        ...snapshotRestoredDifferences(properties, instance),
+      ];
+      if (unused.length > 0) {
+        this.logger.warn(
+          safeMsg`DBInstance ${logicalId}: ${unused.join(', ')} not applied: a restore to a point in time takes them from its source, as in CloudFormation.`
+        );
+      }
+    }
 
     this.logger.debug(`Successfully created DBInstance ${logicalId}: ${dbInstanceIdentifier}`);
 
     // go-to-k/cdkd#5640: CloudFormation's after-create update of a replica or
     // a restored instance, which needs it `available`, under --no-wait too.
-    const followUpEngine = replicaEngineName ?? restoreSource?.engine;
+    const followUpEngine = replicaEngineName ?? restoreSource?.engine ?? pointInTimeEngine;
+    const restored = snapshotRestore !== undefined || pointInTime !== undefined;
     const modifyAfterCreate =
-      (replicaSource !== undefined || snapshotRestore !== undefined) &&
+      (replicaSource !== undefined || restored) &&
       replicaNeedsModifyAfterCreate(properties, followUpEngine, instance.Engine);
     // go-to-k/cdkd#5640: the members only that follow-up carries, when it does not run.
     const unappliedFollowUp =
-      modifyAfterCreate || (replicaSource === undefined && snapshotRestore === undefined)
+      modifyAfterCreate || (replicaSource === undefined && !restored)
         ? []
-        : followUpOnlyKeys(properties, snapshotRestore !== undefined ? 'restore' : 'replica');
+        : followUpOnlyKeys(
+            properties,
+            pointInTime !== undefined
+              ? 'pitr'
+              : snapshotRestore !== undefined
+                ? 'restore'
+                : 'replica'
+          );
     if (unappliedFollowUp.length > 0) {
       this.logger.warn(
         safeMsg`DBInstance ${logicalId}: ${unappliedFollowUp.join(', ')} not applied: only CloudFormation's after-create ModifyDBInstance carries them, and nothing else declared calls for it, as in CloudFormation.`
@@ -410,8 +472,15 @@ export async function createDBInstance(
     }
 
     // Wait for instance to become available (skip with --no-wait)
+    // A restore copies its source's data first, so it waits to the resource
+    // deadline when `--resource-timeout` allows more than a create's 30 minutes.
     if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate) {
-      await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
+      await this.waitForInstanceAvailable(
+        logicalId,
+        dbInstanceIdentifier,
+        restored ? restoreWaitMs() : undefined,
+        restored ? 'being restored' : undefined
+      );
     }
 
     if (modifyAfterCreate) {

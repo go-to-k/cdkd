@@ -163,6 +163,48 @@ describe('reversing a delete-first replacement whose old record restores from th
     }
   );
 
+  // go-to-k/cdkd#5640: a point-in-time restore's source instance, read off the
+  // same resolved bag, and the own-snapshot check it skips (the handler
+  // restores to a point in time and reads no snapshot).
+  it.each([
+    ['the new instance', { SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}' }, 'db-new', 0],
+    ['another instance', { SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}' }, 'db-src', 1],
+    [
+      'another instance, beside its own automated snapshot',
+      {
+        SourceDBInstanceIdentifier: '{{resolve:ssm:/cdkd/src}}',
+        DBSnapshotIdentifier: 'rds:db-new-2026-11-02-03-00',
+      },
+      'db-src',
+      1,
+    ],
+  ] as const)(
+    'a DB instance restoring to a point in time from %s',
+    async (_name, previous, resolved, deletes) => {
+      ssmSend.mockReset().mockResolvedValue({ Parameter: { Value: resolved } });
+      const m = harness();
+      const instance = 'AWS::RDS::DBInstance';
+      const state = { Cluster: { ...rec('db-new', {}), resourceType: instance } };
+      const operation = op({ ...previous, UseLatestRestorableTime: true });
+      operation.resourceType = instance;
+      operation.physicalId = 'db-new';
+      operation.previousState = {
+        ...operation.previousState!,
+        physicalId: 'db-old',
+        resourceType: instance,
+      };
+      const result = await replayRollback([operation], state, 'S', m.ctx);
+      expect(ssmSend).toHaveBeenCalled();
+      expect(m.calls.filter((c) => c.startsWith('delete'))).toHaveLength(deletes);
+      if (deletes === 0) {
+        expect(result.failures).toBe(1);
+        expect(m.logged.join('\n')).toContain(
+          'SourceDBInstanceIdentifier names the DB instance this creates or replaces'
+        );
+      }
+    }
+  );
+
   it('deletes then re-creates for another source', async () => {
     const m = harness();
     const state: Record<string, ResourceState> = { Cluster: rec('cluster-new', {}) };

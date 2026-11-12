@@ -288,7 +288,8 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
       // write-only too; ProcessorFeatures is compared only where declared.
       // AutomaticBackupReplicationKmsKeyId is write-only; the replication
       // retention is compared only where declared, as are the additional
-      // storage volumes. The restore snapshots are never read back.
+      // storage volumes. The restore snapshots and point-in-time keys are
+      // never read back.
       expect([...paths].sort()).toEqual([
         'AdditionalStorageVolumes',
         'AllowMajorVersionUpgrade',
@@ -298,8 +299,12 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
         'DBClusterSnapshotIdentifier',
         'DBSnapshotIdentifier',
         'ProcessorFeatures',
+        'RestoreTime',
+        'SourceDBInstanceAutomatedBackupsArn',
+        'SourceDbiResourceId',
         'SourceRegion',
         'UseDefaultProcessorFeatures',
+        'UseLatestRestorableTime',
       ]);
     });
   });

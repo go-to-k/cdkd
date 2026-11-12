@@ -13,7 +13,7 @@ const RESTORING_TYPES: ReadonlySet<string> = new Set([
 export interface RestoreSourceScope {
   region?: string | undefined;
   account?: string | undefined;
-  /** The replaced record's attributes: its `DBClusterResourceId` names it too. */
+  /** The replaced record's attributes: its `DBClusterResourceId` (an instance's `DbiResourceId`) names it too. */
   attributes?: Record<string, unknown> | undefined;
 }
 
@@ -51,6 +51,81 @@ function automatedSnapshotOf(
 }
 
 /**
+ * Whether a DB instance's bag declares a point-in-time restore, as the
+ * handler's `isRestoreToPointInTime` reads it (`providers/rds/instance-pitr.ts`
+ * holds the provider's copy; a LEAF cannot import it).
+ */
+export function declaresInstancePointInTime(properties: Record<string, unknown>): boolean {
+  const latest = properties['UseLatestRestorableTime'];
+  if (latest === true || (typeof latest === 'string' && latest.toLowerCase() === 'true')) {
+    return true;
+  }
+  return ['RestoreTime', 'SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId'].some(
+    (key) => properties[key] != null && properties[key] !== ''
+  );
+}
+
+/**
+ * The automated backup ARN's `ab-<id>` against a `DbiResourceId` `db-<id>`:
+ * RDS names an instance's automated backups after its resource id (the
+ * `DescribeDBInstanceAutomatedBackups` reference shows the pair; not measured).
+ */
+export function automatedBackupsArnNames(arn: string, dbiResourceId: string): boolean {
+  const id = /:auto-backup:ab-([^:]+)$/i.exec(arn)?.[1];
+  const own = /^db-(.+)$/i.exec(dbiResourceId)?.[1];
+  return id !== undefined && own !== undefined && id.toLowerCase() === own.toLowerCase();
+}
+
+/**
+ * A DB instance's point-in-time source that is the instance `physicalId`
+ * names: by `SourceDBInstanceIdentifier`, or, where the record holds its
+ * `DbiResourceId` (`scope.attributes`), by `SourceDbiResourceId` or the
+ * automated backups ARN named after it. `deployment/restore-source-identity.ts`
+ * reads the live id for a record without one.
+ */
+function refuseInstancePointInTimeFromItself(
+  resourceType: string,
+  properties: Record<string, unknown>,
+  physicalId: string,
+  logicalId: string,
+  scope: RestoreSourceScope
+): void {
+  const refuse = (key: string): never => {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: ${key} names the DB instance this creates or replaces, whose delete removes the automated backups a point-in-time restore reads; restore from another instance's backups instead. Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  };
+  const source = properties['SourceDBInstanceIdentifier'];
+  if (
+    typeof source === 'string' &&
+    source !== '' &&
+    clusterName(source) === clusterName(physicalId) &&
+    !elsewhere(source, scope)
+  ) {
+    refuse('SourceDBInstanceIdentifier');
+  }
+  const own = scope.attributes?.['DbiResourceId'];
+  if (typeof own !== 'string' || own === '') return;
+  const resourceId = properties['SourceDbiResourceId'];
+  if (typeof resourceId === 'string' && resourceId.toLowerCase() === own.toLowerCase()) {
+    refuse('SourceDbiResourceId');
+  }
+  const backups = properties['SourceDBInstanceAutomatedBackupsArn'];
+  if (
+    typeof backups === 'string' &&
+    automatedBackupsArnNames(backups, own) &&
+    !elsewhere(backups, scope)
+  ) {
+    refuse('SourceDBInstanceAutomatedBackupsArn');
+  }
+}
+
+/**
  * Refuses a restore whose source is the very cluster `physicalId` names
  * (#5638; by name, or by the `DBClusterResourceId` its record holds), or one
  * of that cluster's automated snapshots, which its delete
@@ -72,6 +147,13 @@ export function refuseRestoreFromItself(
   // delete removes its automated ones (`DeleteAutomatedBackups` defaults to
   // true) as a cluster's does.
   if (resourceType === 'AWS::RDS::DBInstance') {
+    // go-to-k/cdkd#5640: a point-in-time key makes a restore from the
+    // source's automated backups, tested before the replica and the snapshot
+    // (which it then does not read), and the delete removes those backups.
+    if (declaresInstancePointInTime(properties)) {
+      refuseInstancePointInTimeFromItself(resourceType, properties, physicalId, logicalId, scope);
+      return;
+    }
     const instanceSnapshot = properties['DBSnapshotIdentifier'];
     // A declared source (an instance's or a Multi-AZ DB cluster's) makes a
     // read replica, which reads no snapshot.

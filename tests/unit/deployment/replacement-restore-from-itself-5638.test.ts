@@ -32,6 +32,7 @@ const { refuseRestoreFromItself } = await import(
   '../../../src/provisioning/restore-source-guard.js'
 );
 const { isMarkedNonRetryable } = await import('../../../src/deployment/retryable-errors.js');
+const { RESOURCE_NOT_FOUND } = await import('../../../src/types/resource.js');
 const { ResourceUpdateNotSupportedError } = await import('../../../src/utils/error-handler.js');
 
 const CLUSTER = 'AWS::Neptune::DBCluster';
@@ -58,6 +59,8 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     getAttribute: vi.fn(),
     // go-to-k/cdkd#5639: the live read of a record holding no resource id.
     import: vi.fn(),
+    // go-to-k/cdkd#5640: the live DbiResourceId of a DB instance record.
+    resourceIdentity: vi.fn(),
     disableOuterRetry: true,
   };
 
@@ -65,6 +68,7 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     provider.create.mockReset().mockResolvedValue({ physicalId: 'new-id', attributes: {} });
     provider.delete.mockReset().mockResolvedValue(undefined);
     provider.import.mockReset().mockResolvedValue(null);
+    provider.resourceIdentity.mockReset().mockResolvedValue(undefined);
   });
 
   const makeEngine = (recreate?: 'viaCcApi' | 'viaSdkProvider', replace = false) =>
@@ -423,6 +427,145 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
 
     it.each(paths)('%s lets a manual snapshot through', async (_path, run) => {
       expect(await run(fromSnapshot('manual-snap-1'))).toBeUndefined();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // go-to-k/cdkd#5640: a DB instance restored to a point in time from its own
+  // automated backups, which its delete removes; each delete-first path refuses it.
+  describe('a DB instance restoring to a point in time from itself (go-to-k/cdkd#5640)', () => {
+    const INSTANCE = 'AWS::RDS::DBInstance';
+    const OWN_ID = 'db-OWNID123';
+    const OWN_BACKUPS = `arn:aws:rds:us-east-1:${ACCOUNT}:auto-backup:ab-ownid123`;
+    const pitr = (source: Record<string, unknown>, attributes: Record<string, unknown> = {}): Case => ({
+      type: INSTANCE,
+      attributes,
+      desired: { ...source, UseLatestRestorableTime: true },
+    });
+    const paths: Array<[string, (c: Case) => Promise<unknown>]> = [
+      ['--recreate via the SDK provider', (c) => recreateWith('viaSdkProvider', '', c)],
+      ['--recreate via Cloud Control', (c) => recreateWith('viaCcApi', '', c)],
+      ['the update-failure fallback', (c) => fallbackWith('', c)],
+      ['the --replace delete-first fallback', (c) => replaceWith('', c)],
+    ];
+
+    it.each(paths)('%s refuses its own SourceDBInstanceIdentifier before any delete', async (_p, run) => {
+      for (const source of [PHYSICAL, PHYSICAL.toUpperCase(), `arn:aws:rds:us-east-1:${ACCOUNT}:db:${PHYSICAL}`]) {
+        provider.delete.mockClear();
+        const failure = await run(pitr({ SourceDBInstanceIdentifier: source }));
+        expect(chain(failure), source).toMatch(
+          /SourceDBInstanceIdentifier names the DB instance this creates or replaces/
+        );
+        expect(provider.delete, source).not.toHaveBeenCalled();
+        expect(provider.create, source).not.toHaveBeenCalled();
+      }
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s lets another source instance through, with no live read', async (_p, run) => {
+      for (const source of ['another-db', `arn:aws:rds:eu-west-1:${ACCOUNT}:db:${PHYSICAL}`]) {
+        provider.delete.mockClear();
+        expect(await run(pitr({ SourceDBInstanceIdentifier: source })), source).toBeUndefined();
+        expect(provider.delete, source).toHaveBeenCalledTimes(1);
+      }
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s refuses when the live instance holds the source id, before any delete', async (_p, run) => {
+      provider.resourceIdentity.mockResolvedValue(OWN_ID);
+      for (const [key, value, refusal] of [
+        ['SourceDbiResourceId', 'DB-ownid123', /SourceDbiResourceId must be another DB instance's/],
+        [
+          'SourceDBInstanceAutomatedBackupsArn',
+          OWN_BACKUPS,
+          /SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups/,
+        ],
+      ] as const) {
+        provider.delete.mockClear();
+        provider.resourceIdentity.mockClear();
+        const failure = await run(pitr({ [key]: value }));
+        expect(chain(failure), key).toMatch(refusal);
+        expect(provider.resourceIdentity, key).toHaveBeenCalledWith(PHYSICAL, INSTANCE, {
+          expectedRegion: 'us-east-1',
+        });
+        expect(provider.delete, key).not.toHaveBeenCalled();
+        expect(provider.create, key).not.toHaveBeenCalled();
+      }
+    });
+
+    it.each(paths)('%s proceeds when the live instance holds another id', async (_p, run) => {
+      provider.resourceIdentity.mockResolvedValue('db-OTHER');
+      for (const source of [{ SourceDbiResourceId: OWN_ID }, { SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }]) {
+        provider.delete.mockClear();
+        expect(await run(pitr(source)), JSON.stringify(source)).toBeUndefined();
+        expect(provider.delete, JSON.stringify(source)).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it.each([
+      [
+        'the read throws',
+        () =>
+          provider.resourceIdentity.mockRejectedValue(
+            Object.assign(new Error('User arn:aws:iam::123456789012:role/x is not authorized'), {
+              name: 'AccessDenied',
+            })
+          ),
+        '(the read failed (AccessDenied))',
+      ],
+      [
+        'the instance is not found',
+        () => provider.resourceIdentity.mockResolvedValue(RESOURCE_NOT_FOUND),
+        '(it was not found)',
+      ],
+      [
+        'the read answers no id',
+        () => provider.resourceIdentity.mockResolvedValue(undefined),
+        '(no resource id was read)',
+      ],
+    ] as const)('refuses when %s, before any delete', async (_n, arrange, why) => {
+      arrange();
+      for (const [path, run] of paths) {
+        provider.delete.mockClear();
+        const text = chain(await run(pitr({ SourceDbiResourceId: OWN_ID })));
+        expect(text, path).toMatch(/SourceDbiResourceId may name the DB instance this replacement deletes first/);
+        expect(text, path).toContain(why);
+        expect(text, path).not.toContain('arn:aws:iam::123456789012:role/x');
+        expect(provider.delete, path).not.toHaveBeenCalled();
+      }
+    });
+
+    it('refuses when no provider can read the instance, before any delete', async () => {
+      const read = provider.resourceIdentity;
+      (provider as { resourceIdentity?: unknown }).resourceIdentity = undefined;
+      try {
+        for (const [path, run] of paths) {
+          provider.delete.mockClear();
+          const failure = await run(pitr({ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }));
+          expect(chain(failure), path).toMatch(/could not be verified \(no provider can read it\)/);
+          expect(provider.delete, path).not.toHaveBeenCalled();
+        }
+      } finally {
+        (provider as { resourceIdentity?: unknown }).resourceIdentity = read;
+      }
+    });
+
+    it.each(paths)('%s compares a recorded DbiResourceId without a live read', async (_p, run) => {
+      const failure = await run(pitr({ SourceDbiResourceId: OWN_ID }, { DbiResourceId: OWN_ID }));
+      expect(chain(failure)).toMatch(/SourceDbiResourceId names the DB instance this creates or replaces/);
+      expect(provider.delete).not.toHaveBeenCalled();
+      provider.delete.mockClear();
+      expect(await run(pitr({ SourceDbiResourceId: 'db-OTHER' }, { DbiResourceId: OWN_ID }))).toBeUndefined();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s skips the own-snapshot check under a point-in-time key', async (_p, run) => {
+      // The handler restores to a point in time and never reads the snapshot.
+      const failure = await run(
+        pitr({ SourceDBInstanceIdentifier: 'another-db', DBSnapshotIdentifier: `rds:${PHYSICAL}-2026-11-01-03-04` })
+      );
+      expect(failure).toBeUndefined();
       expect(provider.delete).toHaveBeenCalledTimes(1);
     });
   });
