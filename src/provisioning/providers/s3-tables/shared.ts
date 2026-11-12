@@ -5,7 +5,9 @@ import type {
   IcebergPartitionField,
   IcebergSortDirection,
   IcebergSortField,
+  LoggingEnabled,
   MaintenanceStatus,
+  PartitionDateSource,
   ReplicationDestination,
   SSEAlgorithm,
   SchemaField,
@@ -13,6 +15,7 @@ import type {
   SchemaV2FieldType,
   StorageClass,
   StorageClassConfiguration,
+  TableBucketLoggingStatus,
   TableBucketMaintenanceConfigurationValue,
   TableBucketReplicationConfiguration,
   TableBucketReplicationRule,
@@ -252,6 +255,73 @@ export function sdkReplication(cfn: CfnObject): TableBucketReplicationConfigurat
   });
 }
 
+/**
+ * Refuse, before any call, a `LoggingConfiguration` whose required string
+ * members (`TargetBucket`, `TargetPrefix`,
+ * `TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource`) are missing
+ * or not strings: sent as-is, AWS would reject it only after the create or
+ * the earlier configuration writes landed.
+ */
+export function refuseMalformedLogging(
+  cfn: CfnObject,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): void {
+  const keyFormat = isCfnObject(cfn['TargetObjectKeyFormat'])
+    ? cfn['TargetObjectKeyFormat']
+    : undefined;
+  const partitioned = isCfnObject(keyFormat?.['PartitionedPrefix'])
+    ? keyFormat['PartitionedPrefix']
+    : undefined;
+  const members: [string, unknown][] = [
+    ['TargetBucket', cfn['TargetBucket']],
+    ['TargetPrefix', cfn['TargetPrefix']],
+    [
+      'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      partitioned?.['PartitionDateSource'],
+    ],
+  ];
+  for (const [member, value] of members) {
+    if (typeof value === 'string') continue;
+    throw new ProvisioningError(
+      `LoggingConfiguration.${member} for ${resourceType} ${logicalId} must be a string; refusing before any call`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+}
+
+/**
+ * CFn `LoggingConfiguration` -> PutTableBucketLogging's status. The schema
+ * requires every member, so a declared configuration always enables logging;
+ * the empty status, which turns it off, is sent only for a removal.
+ */
+export function sdkLogging(cfn: CfnObject): TableBucketLoggingStatus {
+  const keyFormat = isCfnObject(cfn['TargetObjectKeyFormat'])
+    ? cfn['TargetObjectKeyFormat']
+    : undefined;
+  const partitioned = isCfnObject(keyFormat?.['PartitionedPrefix'])
+    ? keyFormat['PartitionedPrefix']
+    : undefined;
+  return {
+    loggingEnabled: defined({
+      targetBucket: cfn['TargetBucket'] as string,
+      targetPrefix: cfn['TargetPrefix'] as string,
+      targetObjectKeyFormat:
+        keyFormat &&
+        defined({
+          partitionedPrefix:
+            partitioned &&
+            defined({
+              partitionDateSource: partitioned['PartitionDateSource'] as PartitionDateSource,
+            }),
+        }),
+    }) as LoggingEnabled,
+  };
+}
+
 /** CFn `UnreferencedFileRemoval` -> a maintenance configuration value. */
 export function sdkUnreferencedFileRemoval(
   cfn: CfnObject
@@ -375,6 +445,7 @@ export const UPDATABLE_CONFIG_KEYS: Readonly<Record<string, readonly string[]>> 
     'MetricsConfiguration',
     'UnreferencedFileRemoval',
     'ReplicationConfiguration',
+    'LoggingConfiguration',
   ],
   'AWS::S3Tables::Table': ['Compaction', 'SnapshotManagement'],
 };

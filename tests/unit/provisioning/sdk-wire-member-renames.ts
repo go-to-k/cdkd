@@ -866,6 +866,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       TableBucketName: ['name'],
     },
     containers: {
+      // PutTableBucketLogging's status: the members sit under `loggingEnabled`.
+      LoggingConfiguration: ['tableBucketLoggingStatus.loggingEnabled'],
       ReplicationConfiguration: ['configuration'],
       UnreferencedFileRemoval: ['value', 'value.settings.icebergUnreferencedFileRemoval'],
     },

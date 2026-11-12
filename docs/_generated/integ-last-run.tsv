@@ -56,7 +56,7 @@ cc-write-only-create-only	2026-11-06T16:34:39Z	PASS	160	verify.sh	#5878 cloud-co
 cdk-cross-account-lookup-role	2026-11-05T11:58:48Z	PASS	175	verify.sh	sweep n7 rc ok, orph clean; shared bucket (lookup role reads the default bucket)
 ci-cd	2026-11-04T18:07:14Z	PASS	55	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cloudfront-function-url	2026-11-05T11:24:43Z	PASS	226	verify.sh	rc ok, orph clean
-cloudtrail-trail	2026-11-06T21:56:11Z	PASS	320	verify.sh	#5921 cloudtrail split head; rc ok, orph clean
+cloudtrail-trail	2026-11-12T19:48:12Z	PASS	321	verify.sh	#6166 RecursiveLogging SDK route; rc ok, orph clean
 cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-11-10T16:09:51Z	PASS	70	verify.sh	rc ok, orph clean
 codebuild-project	2026-11-06T22:05:30Z	PASS	130	verify.sh	#5924 codebuild split head; rc ok, orph clean
@@ -383,7 +383,7 @@ s3-object-lock	2026-11-10T17:02:46Z	PASS	71	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
 s3-subconfig-removal	2026-11-06T16:07:14Z	PASS	270	verify.sh	post-hoc on main after #5842 split; rc ok, orph clean
-s3-tables	2026-11-06T20:38:34Z	PASS	251	verify.sh	#5912 s3-tables split head; rc ok, orph clean
+s3-tables	2026-11-12T21:12:16Z	PASS	261	verify.sh	#6167 TableBucket LoggingConfiguration; rc ok, orph clean
 s3-vectors	2026-11-04T09:11:36Z	PASS	41	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy clean, orph clean; own state bucket
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-11-06T23:58:18Z	PASS	119	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean

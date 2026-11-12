@@ -23,6 +23,11 @@
 # cleared the CloudWatch Logs pair too, which would be a NEW divergence from
 # CloudFormation rather than a fix.
 #
+# RecursiveLogging (issue #6166) is deployed as its non-default `false` and
+# asserted on the SDK route (pre-fix it was SDK-unwired, which routed the trail
+# through Cloud Control). Its phase-2 removal is KEPT -- CloudFormation's
+# behaviour is unmeasured -- and named in update()'s kept-removal warning.
+#
 # Phases 2c-2e (issue #2762) deploy AdvancedEventSelectors + AggregationConfigurations
 # (CDKD_TEST_ADVANCED=true), assert they landed on the SDK route and read back
 # drift-clean, revert an out-of-band switch to basic selectors with
@@ -209,6 +214,17 @@ assert_event_selector() { # usage: assert_event_selector <description> <jq-path>
 assert_event_selector "EventSelectors count" '(.EventSelectors | length)' '1'
 assert_event_selector "EventSelectors ReadWriteType" '.EventSelectors[0].ReadWriteType' 'WriteOnly'
 
+# Issue #6166. The readback alone does not tell the fix from the Cloud Control
+# fallback, which applies the same value: the routing assertion does.
+assert_field "RecursiveLogging" '.RecursiveLogging' 'false'
+STATE_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+TRAIL_PROVISIONED_BY_P1="$(printf '%s' "${STATE_P1}" | jq -r '.resources.Trail.provisionedBy // "<absent>"')"
+if [ "${TRAIL_PROVISIONED_BY_P1}" != "sdk" ]; then
+  echo "FAIL: AWS::CloudTrail::Trail routing layer is '${TRAIL_PROVISIONED_BY_P1}', expected 'sdk' (RecursiveLogging still routes it to Cloud Control, #6166)" >&2
+  exit 1
+fi
+echo "    ok: trail with RecursiveLogging stayed on the SDK route"
+
 # Issue #1533. Captured rather than asserted against a literal: the key ARN is
 # account- and run-specific. The emptiness guard below is what makes the
 # phase-2 reset assertion non-vacuous -- "KmsKeyId is null afterwards" is also
@@ -249,17 +265,22 @@ rm -f "${P2_LOG}"
 printf '%s\n' "${P2_PLAIN}" | sed 's/^/  /'
 
 # Issue #5541: the Trail now declares removalHandledInUpdate. Every removal in
-# this phase is either reset or a keep CloudFormation was measured to make, so
-# neither the shared caller's line nor update()'s own kept-removal line may
-# name the trail. A hit means a property fell out of the audit. Two separate
-# greps, not `grep | grep -q`: under pipefail the early exit of `grep -q` can
-# fail the first grep with SIGPIPE and hide a hit.
+# this phase is either reset or a keep CloudFormation was measured to make,
+# except RecursiveLogging (#6166), whose CloudFormation behaviour is unmeasured:
+# update()'s kept-removal line must name it, and it alone. Any other name means
+# a property fell out of the audit; no line at all means the wording drifted.
+# Here-strings, not `printf | grep -q`: under pipefail the early exit of
+# `grep -q` can fail the writer with SIGPIPE and hide a hit.
 P2_TRAIL_LINES="$(grep -F "(AWS::CloudTrail::Trail)" <<<"${P2_PLAIN}" || true)"
-if grep -qE "(was|were) removed from the template" <<<"${P2_TRAIL_LINES}"; then
-  echo "FAIL [phase 2]: a removal warning named the trail, but every phase-2 removal is reset or kept as CloudFormation keeps it (issue #5541):" >&2
-  printf '%s\n' "${P2_TRAIL_LINES}" >&2
+P2_REMOVED_LINES="$(grep -E "(was|were) removed from the template" <<<"${P2_TRAIL_LINES}" || true)"
+P2_KEPT_LINE="): property RecursiveLogging was removed from the template"
+if [ -z "${P2_REMOVED_LINES}" ] || [ "$(wc -l <<<"${P2_REMOVED_LINES}" | tr -d ' ')" != "1" ] ||
+   ! grep -qF "${P2_KEPT_LINE}" <<<"${P2_REMOVED_LINES}"; then
+  echo "FAIL [phase 2]: expected exactly one kept-removal warning naming only RecursiveLogging (issues #5541, #6166), got:" >&2
+  printf '%s\n' "${P2_TRAIL_LINES:-<no trail lines>}" >&2
   exit 1
 fi
+echo "    ok: the kept-removal warning names RecursiveLogging alone"
 
 echo "==> Phase 2: the six UpdateTrail fields CFn RESETS must be cleared"
 # Pre-fix these were absent -> undefined -> UpdateTrail merge no-op, so the
@@ -276,6 +297,9 @@ assert_field "KMSKeyId reset"                   '.KmsKeyId'                   'n
 assert_field "IsMultiRegionTrail reset"         '.IsMultiRegionTrail'         'false'
 assert_field "LogFileValidationEnabled reset"   '.LogFileValidationEnabled'   'false'
 assert_field "IncludeGlobalServiceEvents reset" '.IncludeGlobalServiceEvents' 'false'
+# Issue #6166: UpdateTrail keeps a field it is not sent, and cdkd sends none
+# for a removed RecursiveLogging, so the phase-1 `false` survives.
+assert_field "RecursiveLogging kept" '.RecursiveLogging' 'false'
 
 # Issue #1533. The KEY itself must still be alive here — only the trail's
 # REFERENCE to it was dropped from the template. Without this, a fixture that

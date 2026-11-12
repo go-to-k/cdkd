@@ -546,10 +546,11 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
     it('names ReplicationConfiguration as absent-means-default only while the template leaves it off', () => {
       expect(provider.getDriftAbsentMeansDefaultKeys(BUCKET, { TableBucketName: 'tb' })).toEqual([
         'ReplicationConfiguration',
+        'LoggingConfiguration',
       ]);
       expect(
         provider.getDriftAbsentMeansDefaultKeys(BUCKET, { ReplicationConfiguration: REPLICATION })
-      ).toEqual([]);
+      ).toEqual(['LoggingConfiguration']);
       expect(provider.getDriftAbsentMeansDefaultKeys(TABLE, {})).toEqual([]);
     });
   });
@@ -853,16 +854,18 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
           rules: [{ destinations: [{ destinationTableBucketARN: DEST_ARN }] }],
         },
       });
+      // Logging off (go-to-k/cdkd#6167): no key.
+      mockSend.mockResolvedValueOnce({ tableBucketLoggingStatus: {} });
 
       const result = await provider.readCurrentState(BUCKET_ARN, 'B', BUCKET);
 
       expect(result).toEqual({ ...FULL_BUCKET, Tags: [] });
     });
 
-    it('emits every TableBucket configuration key at its default when unset, but no ReplicationConfiguration', async () => {
+    it('emits every TableBucket configuration key at its default when unset, but no ReplicationConfiguration or LoggingConfiguration', async () => {
       mockSend.mockResolvedValueOnce({ name: 'tb', arn: BUCKET_ARN });
       mockSend.mockResolvedValueOnce({ tags: {} });
-      for (let i = 0; i < 5; i++) mockSend.mockRejectedValueOnce(notFound());
+      for (let i = 0; i < 6; i++) mockSend.mockRejectedValueOnce(notFound());
 
       const result = await provider.readCurrentState(BUCKET_ARN, 'B', BUCKET);
 
@@ -888,7 +891,7 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
       mockSend.mockResolvedValueOnce({ name: 'tb', arn: BUCKET_ARN });
       mockSend.mockResolvedValueOnce({ tags: {} });
       mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
-      for (let i = 0; i < 4; i++) mockSend.mockRejectedValueOnce(notFound());
+      for (let i = 0; i < 5; i++) mockSend.mockRejectedValueOnce(notFound());
 
       const result = await provider.readCurrentState(BUCKET_ARN, 'B', BUCKET);
 
@@ -944,7 +947,7 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
       mockSend.mockResolvedValueOnce({ encryptionConfiguration: { sseAlgorithm: 'AES256' } });
       mockSend.mockResolvedValueOnce({ storageClassConfiguration: { storageClass: 'STANDARD' } });
       mockSend.mockResolvedValueOnce({ tableBucketARN: BUCKET_ARN, id: 'm' });
-      for (let i = 0; i < 2; i++) mockSend.mockRejectedValueOnce(notFound());
+      for (let i = 0; i < 3; i++) mockSend.mockRejectedValueOnce(notFound());
 
       const live = await provider.readUnsettled(
         BUCKET_ARN,

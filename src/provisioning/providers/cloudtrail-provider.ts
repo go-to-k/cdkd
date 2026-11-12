@@ -95,6 +95,9 @@ export class CloudTrailProvider implements ResourceProvider {
         // the A/B needs an Organizations management/delegated-admin account
         // (Refs #5541).
         'IsOrganizationTrail',
+        // Kept and named in update()'s own warning when the removed value was
+        // not AWS's default `true`. CFn behaviour unmeasured (#6166).
+        'RecursiveLogging',
       ]),
     ],
   ]);
@@ -120,6 +123,7 @@ export class CloudTrailProvider implements ResourceProvider {
         'IsOrganizationTrail',
         'AdvancedEventSelectors',
         'AggregationConfigurations',
+        'RecursiveLogging',
       ]),
     ],
   ]);
