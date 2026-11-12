@@ -144,6 +144,7 @@ const MIN_REDACTION_SITES: Record<string, number> = {
   'src/local/ecs-task-runner/cleanup.ts': 3,
   'src/local/ecs-task-runner/containers.ts': 2,
   'src/local/ecs-task-runner/images.ts': 3,
+  'src/local/ecs-task-runner/loopback-forwarder.ts': 1,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
   'src/local/rie-mount.ts': 4,
 };
@@ -417,6 +418,7 @@ const MIN_DOCKER_EXEC_CATCHES: Record<string, number> = {
   'src/local/ecs-task-runner/cleanup.ts': 1,
   'src/local/ecs-task-runner/containers.ts': 2,
   'src/local/ecs-task-runner/images.ts': 2,
+  'src/local/ecs-task-runner/loopback-forwarder.ts': 1,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
   'src/local/rie-mount.ts': 4,
 };
@@ -482,6 +484,7 @@ describe('docker argv redaction fence (issue #2440)', () => {
       'src/local/ecs-task-runner/cleanup.ts',
       'src/local/ecs-task-runner/containers.ts',
       'src/local/ecs-task-runner/images.ts',
+      'src/local/ecs-task-runner/loopback-forwarder.ts',
       'src/local/invoke-agentcore-watch-loop.ts',
       'src/local/rie-mount.ts',
     ]);

@@ -222,8 +222,17 @@ the emulator's keys whatever the flags say, no credentials file is mounted, and
 `--profile` adds nothing.
 
 With a loopback AWS endpoint (`--aws-emulator`, or a forwarded
-`AWS_ENDPOINT_URL` on `127.0.0.1`), the forwarder attaches just after each task
-container starts, so an app that calls AWS in its first moment may need a retry.
+`AWS_ENDPOINT_URL` on `127.0.0.1`), cdkd starts each task container's forwarder
+first and waits until it can reach the endpoint. The container then starts in
+the forwarder's network namespace, so its first AWS call already goes through.
+The forwarder holds the container's network identity: its network aliases,
+published ports, host mappings and links. Docker allows none of them on a
+container that shares another container's network. The container's sidecar
+credentials and its aliases work as before. Two things change:
+
+- The task metadata endpoint reports no networks for the container.
+- The container cannot listen on the endpoint's own port on `127.0.0.1`,
+  because the forwarder holds it.
 
 ### Credential edge cases
 
@@ -391,7 +400,10 @@ Two flags change the teardown.
 
 `--detach` makes cdkd exit as soon as the containers are started. Nothing is
 torn down. cdkd prints the network name, and you find the containers with
-`docker ps --filter network=<name>` and remove them yourself.
+`docker ps --filter network=<name>` and remove them yourself. With a loopback
+AWS endpoint, that filter lists the forwarders but not the task containers,
+which share the forwarders' networks. cdkd prints the names of both. Remove
+the task containers first, then the forwarders.
 
 `--keep-running` skips step 2: the other containers are neither stopped nor
 removed, so you can `docker exec` into them. The network and the sidecar are

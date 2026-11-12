@@ -850,3 +850,104 @@ describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)'
     expect(credsIdx).toBeLessThan(userVolIdx);
   });
 });
+
+describe('buildDockerRunArgs namespace-owning forwarder (go-to-k/cdkd#6142)', () => {
+  const full = (): Parameters<typeof buildDockerRunArgs>[0] => {
+    const c = makeContainer({
+      environment: { AWS_ENDPOINT_URL: 'https://127.0.0.1:9297', FOO: 'bar' },
+      portMappings: [
+        { containerPort: 80, hostPort: 8080, protocol: 'tcp' },
+        { containerPort: 53, protocol: 'udp' },
+      ],
+      links: ['db:database'],
+      mountPoints: [{ sourceVolume: 'data', containerPath: '/data', readOnly: true }],
+      user: '1000',
+      workingDirectory: '/srv',
+      ulimits: [{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }],
+      healthCheck: { command: ['CMD-SHELL', 'true'], interval: 5 },
+      entryPoint: ['sh', '-c'],
+      command: ['aws s3 ls'],
+    });
+    return {
+      task: makeTask({ containers: [c], runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' } }),
+      container: c,
+      image: 'app:latest',
+      network: 'cdkd-local-task-xx',
+      volumeByName: new Map([['data', { name: 'data', kind: 'host', hostPath: '/tmp/d' }]]),
+      secrets: [{ name: 'TOKEN', value: 's3cret' }],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: 'us-east-1',
+      addHostFlags: ['--add-host', 'svc.ns:169.254.170.5', '--add-host', 'host.docker.internal:192.168.65.254'],
+      networkAliases: ['app', 'app.svc', 'app.svc.local'],
+    };
+  };
+
+  async function withWiring<T>(fn: () => T): Promise<T> {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297],
+      probeHealth: false,
+      dispose: () => {},
+    });
+    try {
+      return fn();
+    } finally {
+      setActiveWorkloadAwsWiring(undefined);
+    }
+  }
+
+  it('moves exactly the flags Docker refuses on a joiner to the forwarder', async () => {
+    const built = await withWiring(() => buildDockerRunArgs(full()));
+    expect(built.loopbackPorts).toEqual([9297]);
+    const fwd = built.forwarder!;
+    expect(fwd.name).toBe(`${built.dockerName}-awsfwd`);
+    expect(fwd.namespace).toEqual({
+      network: 'cdkd-local-task-xx',
+      networkAliases: ['app', 'app.svc', 'app.svc.local'],
+      publish: ['127.0.0.1:8080:80/tcp', '127.0.0.1:53:53/udp'],
+      addHosts: ['svc.ns:169.254.170.5', 'host.docker.internal:192.168.65.254'],
+      links: ['db:database'],
+    });
+    // The joined argv is the own-network argv minus every network-scoped
+    // flag pair, with `--network <net>` replaced by the forwarder's namespace:
+    // no other flag may be dropped or added.
+    const owned = new Set(['--network', '--network-alias', '-p', '--add-host', '--link']);
+    const stripped: string[] = [];
+    for (let i = 0; i < built.args.length; i++) {
+      if (owned.has(built.args[i]!)) {
+        if (built.args[i] === '--network') stripped.push('--network', `container:${fwd.name}`);
+        i++;
+        continue;
+      }
+      stripped.push(built.args[i]!);
+    }
+    expect(fwd.args).toEqual(stripped);
+    for (const flag of ['--network-alias', '-p', '--add-host', '--link', '--hostname', '--dns', '--expose']) {
+      expect(fwd.args).not.toContain(flag);
+    }
+    // The secret stays off both argvs.
+    expect(fwd.args.join(' ')).not.toContain('s3cret');
+    expect(fwd.args).toContain('TOKEN');
+  });
+
+  it('builds no forwarder when the env points at no loopback endpoint', async () => {
+    const opts = full();
+    opts.container = { ...opts.container, environment: { FOO: 'bar' } };
+    const built = await withWiring(() => buildDockerRunArgs(opts));
+    expect(built.loopbackPorts).toEqual([]);
+    expect(built.forwarder).toBeUndefined();
+  });
+
+  it('builds no forwarder with no wiring active', () => {
+    const built = buildDockerRunArgs(full());
+    expect(built.forwarder).toBeUndefined();
+    expect(built.args[built.args.indexOf('--network') + 1]).toBe('cdkd-local-task-xx');
+  });
+});

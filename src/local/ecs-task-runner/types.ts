@@ -201,6 +201,17 @@ export interface EcsRunState {
   /** Container name → docker id, in start order. */
   startedContainers: { name: string; id: string }[];
   /**
+   * Loopback forwarders that own a task container's network namespace
+   * (go-to-k/cdkd#6142), by docker name and id. Each outlives its container,
+   * so teardown removes them after the containers, and `--keep-running`
+   * keeps them with the containers. `joined` turns true once the container
+   * started in the forwarder's namespace; an unjoined forwarder is removed
+   * even under `--keep-running` (it holds the container's published ports).
+   */
+  forwarders: { name: string; id: string; joined: boolean }[];
+  /** Forwarder failure keys already warned about in this run (once per port). */
+  forwarderWarnings?: Set<string>;
+  /**
    * Active `docker logs -f` followers, by container id. Teardown drains each
    * once its container has stopped, so the container's last lines are not
    * lost to the daemon's relay lag (issue #4480).
@@ -269,6 +280,7 @@ export function createEcsRunState(): EcsRunState {
     network: undefined,
     dockerVolumeNames: [],
     startedContainers: [],
+    forwarders: [],
     logStreams: [],
     closing: false,
     inFlight: undefined,

@@ -70,11 +70,11 @@ export { cleanupEcsRun } from './ecs-task-runner/cleanup.js';
 export { buildDependencyGraph, topoSort } from './ecs-task-runner/containers.js';
 export { buildDockerRunArgs } from './ecs-task-runner/docker-run-args.js';
 
+import { getActiveWorkloadAwsWiring } from './local-aws-wiring.js';
 import {
-  attachLocalLoopbackForwarder,
-  getActiveWorkloadAwsWiring,
-  prepareLocalLoopbackForwarder,
-} from './local-aws-wiring.js';
+  removeNamespaceForwarder,
+  startNamespaceForwarder,
+} from './ecs-task-runner/loopback-forwarder.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -326,9 +326,14 @@ export async function runEcsTask(
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
-  // Loopback ports each container's final env still points at; the loopback
-  // forwarder serves them (`local-aws-wiring.ts`).
+  // Loopback ports each container's final env still points at, and the
+  // forwarder that serves them by owning the container's network namespace
+  // (`local-aws-wiring.ts`, go-to-k/cdkd#6142).
   const dockerLoopbackPorts = new Map<string, number[]>();
+  const dockerForwarders = new Map<
+    string,
+    NonNullable<ReturnType<typeof buildDockerRunArgs>['forwarder']>
+  >();
   const dockerNames = new Map<string, string>();
   // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
   // container name and forwarded to each `docker run` via the spawn `env`.
@@ -371,6 +376,7 @@ export async function runEcsTask(
     });
     dockerCmds.set(container.name, built.args);
     dockerLoopbackPorts.set(container.name, built.loopbackPorts);
+    if (built.forwarder) dockerForwarders.set(container.name, built.forwarder);
     dockerNames.set(container.name, built.dockerName);
     dockerEnvs.set(container.name, built.sensitiveEnv);
     // A resolved secret whose NAME collides with a var the docker CLIENT reads
@@ -396,18 +402,37 @@ export async function runEcsTask(
   // remaining condition gating fires inside the per-container
   // `awaitDependencies` step.
   const startedByName = new Map<string, { id: string; container: ResolvedEcsContainer }>();
+  // Docker names of the containers started in a forwarder's namespace.
+  const joinedContainers: string[] = [];
   for (const containerName of startOrder) {
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
     if (state.closing) throw interruptedError();
 
-    const args = dockerCmds.get(container.name)!;
+    let args = dockerCmds.get(container.name)!;
     const dockerName = dockerNames.get(container.name)!;
     const loopbackPorts = dockerLoopbackPorts.get(container.name) ?? [];
-    // Pull the forwarder image before the container starts.
+    // Reach a loopback AWS endpoint on the host from inside the container: a
+    // forwarder that owns the container's network namespace starts FIRST, and
+    // on READY the container joins it, so its first AWS call cannot race the
+    // forwarder (go-to-k/cdkd#6142). Under `forward` mode a failed forwarder
+    // was warned about, and the container starts on its own network endpoint.
     const forwarderWiring = getActiveWorkloadAwsWiring();
-    if (loopbackPorts.length > 0 && forwarderWiring) {
-      await prepareLocalLoopbackForwarder(forwarderWiring);
+    const forwarder = dockerForwarders.get(container.name);
+    let joined: string | undefined;
+    if (loopbackPorts.length > 0 && forwarderWiring && forwarder) {
+      if (
+        await startNamespaceForwarder(
+          state,
+          forwarder,
+          container.name,
+          loopbackPorts,
+          forwarderWiring
+        )
+      ) {
+        args = forwarder.args;
+        joined = forwarder.name;
+      }
     }
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     const sensitiveEnv = dockerEnvs.get(container.name)!;
@@ -437,17 +462,29 @@ export async function runEcsTask(
       },
       (startedId) => {
         state.startedContainers.push({ name: container.name, id: startedId });
+        // Here, not after the step: cleanup waits for `record`, so a ^C
+        // landing now still sees the forwarder as joined (kept with its
+        // container under `--keep-running`).
+        if (joined !== undefined) {
+          const owner = state.forwarders.find((f) => f.name === joined);
+          if (owner) owner.joined = true;
+        }
       },
       () => removeContainer(dockerName),
       namedSubject([
         { kind: 'container', name: dockerName, rm: 'docker rm -f', list: 'docker ps -a' },
       ])
-    );
+    ).catch(async (err: unknown) => {
+      // The container never started: its forwarder owns a namespace nothing
+      // joins, holding the container's published ports (even under
+      // `--keep-running`, which keeps every JOINED forwarder). A container a
+      // ^C caught just after it started is recorded, and keeps its forwarder.
+      const started = state.startedContainers.some((c) => c.name === container.name);
+      if (joined !== undefined && !started) await removeNamespaceForwarder(state, joined);
+      throw err;
+    });
+    if (joined !== undefined) joinedContainers.push(dockerName);
     startedByName.set(container.name, { id, container });
-    // Reach a loopback AWS endpoint on the host from inside the container. The
-    // app may already be booting: an SDK call racing the forwarder's first
-    // moment fails with a retryable connection error.
-    if (loopbackPorts.length > 0) await attachLocalLoopbackForwarder(id, loopbackPorts);
 
     if (!options.detach) {
       state.logStreams.push({ containerId: id, stream: streamContainerLogs(container.name, id) });
@@ -455,6 +492,16 @@ export async function runEcsTask(
   }
 
   if (options.detach) {
+    // A container in a forwarder's namespace has no endpoint of its own, so
+    // `docker ps --filter network=<name>` (the CLI's hint) lists only the
+    // forwarders: name the containers.
+    if (joinedContainers.length > 0) {
+      const containers = joinedContainers.join(', ');
+      const forwarders = state.forwarders.map((f) => f.name).join(', ');
+      logger.info(
+        safeMsg`Under the loopback AWS endpoint, task containers share the network of a forwarder container, so a network filter does not list them. Task containers: ${containers}. Remove them before the forwarders (${forwarders}).`
+      );
+    }
     return { exitCode: 0, state };
   }
 
