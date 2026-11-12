@@ -95,8 +95,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       arn: BUCKET_ARN,
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
-    // The five configuration Gets (go-to-k/cdkd#2762), all unset.
-    primeUnsetConfigs(5);
+    // The six configuration Gets (go-to-k/cdkd#2762, #6167), all unset.
+    primeUnsetConfigs(6);
 
     const observed = (await provider.readCurrentState(
       BUCKET_ARN,
@@ -107,13 +107,13 @@ describe('S3TablesProvider read-update round-trip', () => {
       TableBucketName: 'my-bucket',
       // #609 backfill: empty Tags array (no tags on the live resource).
       Tags: [],
-      // Each at its AWS default; an unset replication emits no key.
+      // Each at its AWS default; an unset replication or logging emits no key.
       ...BUCKET_CONFIG_DEFAULTS,
     });
-    // GetTableBucket + ListTagsForResource + the five configuration Gets.
+    // GetTableBucket + ListTagsForResource + the six configuration Gets.
     // Every primed response must be consumed HERE, or the leftover shifts
     // every later test in this file (issue #1655).
-    expect(mockSend).toHaveBeenCalledTimes(7);
+    expect(mockSend).toHaveBeenCalledTimes(8);
 
     vi.clearAllMocks();
 

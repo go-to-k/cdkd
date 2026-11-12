@@ -21,6 +21,7 @@ import {
   UPDATABLE_CONFIG_KEYS,
   metricsEnabled,
   INTEGER_BEARING_CONFIGS,
+  refuseMalformedLogging,
 } from './shared.js';
 
 /**
@@ -169,6 +170,12 @@ export async function update(
       logicalId,
       physicalId
     );
+    // go-to-k/cdkd#6167: logging is the last write, so a malformed member is
+    // refused here, before the earlier configuration writes land.
+    const logging = recordedObject(properties, 'LoggingConfiguration');
+    if (logging !== undefined) {
+      refuseMalformedLogging(logging, resourceType, logicalId, physicalId);
+    }
   }
   try {
     return await this.applyUpdate(

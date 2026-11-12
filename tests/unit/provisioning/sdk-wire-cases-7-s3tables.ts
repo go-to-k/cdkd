@@ -44,6 +44,31 @@ const required = (name: string): Throw => ({
 });
 
 /**
+ * Each LoggingConfiguration member is required, so a removal of one (or of a
+ * container above PartitionDateSource) is refused before any call
+ * (s3-tables/shared.ts, refuseMalformedLogging; go-to-k/cdkd#6167).
+ */
+const LOGGING_THROWS: Record<string, Throw> = Object.fromEntries(
+  ALL_DIRECTIONS.flatMap((d) =>
+    [
+      ['TargetBucket', 'TargetBucket'],
+      ['TargetPrefix', 'TargetPrefix'],
+      ...[
+        'TargetObjectKeyFormat',
+        'TargetObjectKeyFormat.PartitionedPrefix',
+        'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      ].map((path) => [path, 'TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource']),
+    ].map(([path, member]) => [
+      `${d}:LoggingConfiguration.${path}`,
+      {
+        why: 'refuseMalformedLogging refuses a missing required member before any call',
+        says: new RegExp(`LoggingConfiguration\\.${member!.replace(/\./g, '\\.')} .* must be a string`),
+      },
+    ])
+  )
+);
+
+/**
  * The table the record names. It differs from every bag's Namespace and
  * TableName on purpose: `planTableRename` compares the desired names with the
  * PHYSICAL ID, not `previousProperties` (s3-tables/table.ts, planTableRename), so
@@ -98,6 +123,11 @@ export const S3TABLES_CASES: TypeCase[] = [
             Role: `arn:aws:iam::${ACCOUNT}:role/r`,
             Rules: [{ Destinations: [{ DestinationTableBucketARN: DEST_BUCKET_ARN }] }],
           },
+          LoggingConfiguration: {
+            TargetBucket: 'log-bucket',
+            TargetPrefix: 'logs/',
+            TargetObjectKeyFormat: { PartitionedPrefix: { PartitionDateSource: 'EventTime' } },
+          },
         },
         variants: { 'MetricsConfiguration.Status': 'Disabled' },
         expectedSilent: {
@@ -108,6 +138,7 @@ export const S3TABLES_CASES: TypeCase[] = [
         expectedRemovalThrows: {
           'create:TableBucketName': required('TableBucketName'),
           ...TAG_THROWS(ALL_DIRECTIONS, 2),
+          ...LOGGING_THROWS,
         },
       },
     ],

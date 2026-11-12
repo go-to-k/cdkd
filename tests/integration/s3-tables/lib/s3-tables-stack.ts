@@ -2,6 +2,8 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3tables from 'aws-cdk-lib/aws-s3tables';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class S3TablesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -20,9 +22,38 @@ export class S3TablesStack extends cdk.Stack {
     // updatable configuration property, so the redeploy reaches their Put*
     // calls in update(); Phases 1c / 1d keep that value.
     const configUpdated = process.env.CDKD_S3T_TEAM !== undefined;
+    // Issue #6167: Phase 1c (CDKD_S3T_TABLE_NAME set, and kept by every later
+    // phase) drops LoggingConfiguration, whose removal turns logging off.
+    const loggingRemoved = process.env.CDKD_S3T_TABLE_NAME !== undefined;
+
+    const tableBucketName = `${this.stackName}-table-bucket`.toLowerCase();
+
+    // Issue #6167: the general purpose bucket the TableBucket's server access
+    // logs go to. Its policy names the table bucket by a built ARN rather
+    // than a reference, so the TableBucket can depend on the policy (logging
+    // is configured after it exists) without a cycle.
+    const logBucket = new s3.Bucket(this, 'LogBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Log objects AWS delivers during the run would otherwise fail the
+      // bucket's delete.
+      autoDeleteObjects: true,
+    });
+    logBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        principals: [new iam.ServicePrincipal('logging.s3.amazonaws.com')],
+        actions: ['s3:PutObject'],
+        resources: [logBucket.arnForObjects('*')],
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+          ArnLike: {
+            'aws:SourceArn': `arn:${this.partition}:s3tables:${this.region}:${this.account}:bucket/${tableBucketName}`,
+          },
+        },
+      })
+    );
 
     const tableBucket = new s3tables.CfnTableBucket(this, 'TableBucket', {
-      tableBucketName: `${this.stackName}-table-bucket`.toLowerCase(),
+      tableBucketName,
       // Issue #2762: these used to route the bucket to Cloud Control; the SDK
       // provider now sends them (storage class on CreateTableBucket, the
       // others by their own Put* call). Each is a non-default value, so
@@ -37,6 +68,23 @@ export class S3TablesStack extends cdk.Stack {
         noncurrentDays: 7,
       },
     });
+    // Issue #6167: SDK-unwired until #6167, so it routed the bucket to Cloud
+    // Control; now sent by PutTableBucketLogging after the create. Phase 1b
+    // changes the prefix and the date source in place; Phase 1c removes it.
+    // An override: aws-cdk-lib's CfnTableBucket does not model the property
+    // yet (2.276.0).
+    if (!loggingRemoved) {
+      tableBucket.addPropertyOverride('LoggingConfiguration', {
+        TargetBucket: logBucket.bucketName,
+        TargetPrefix: configUpdated ? 'cdkd-logs-v2/' : 'cdkd-logs-v1/',
+        TargetObjectKeyFormat: {
+          PartitionedPrefix: {
+            PartitionDateSource: configUpdated ? 'DeliveryTime' : 'EventTime',
+          },
+        },
+      });
+    }
+    tableBucket.node.addDependency(logBucket.policy!);
 
     // Two tags on the TableBucket — issue #609 Tags backfill (this PR)
     // wires `Tags` for AWS::S3Tables::TableBucket via the SDK provider's
@@ -149,6 +197,10 @@ export class S3TablesStack extends cdk.Stack {
     });
     refConsumer.addDependency(icebergTable);
 
+    new cdk.CfnOutput(this, 'LogBucketName', {
+      value: logBucket.bucketName,
+      description: 'The TableBucket logging target (issue #6167)',
+    });
     new cdk.CfnOutput(this, 'TableBucketArn', {
       value: tableBucket.attrTableBucketArn,
       description: 'S3 Table Bucket ARN',

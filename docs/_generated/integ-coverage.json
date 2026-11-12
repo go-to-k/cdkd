@@ -7675,6 +7675,7 @@
         "s3-replication-and-filter",
         "s3-retry-own-bucket",
         "s3-subconfig-removal",
+        "s3-tables",
         "state-destroy",
         "stream-delete-redeploy",
         "synthetics-canary",
@@ -7886,6 +7887,9 @@
         "s3-subconfig-removal": [
           "l1",
           "literal"
+        ],
+        "s3-tables": [
+          "l2"
         ],
         "state-destroy": [
           "l2"
