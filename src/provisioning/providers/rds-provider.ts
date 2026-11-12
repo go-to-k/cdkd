@@ -97,14 +97,10 @@ import {
 /**
  * AWS RDS Provider
  *
- * Implements resource provisioning for RDS resources:
- * - AWS::RDS::DBSubnetGroup
- * - AWS::RDS::DBCluster
- * - AWS::RDS::DBInstance
+ * Implements AWS::RDS::DBSubnetGroup, AWS::RDS::DBCluster and AWS::RDS::DBInstance.
  *
- * WHY: RDS SDK calls are direct and avoid CC API polling overhead.
- * However, DBCluster and DBInstance creation can take time, so we
- * poll with DescribeDB* until available.
+ * WHY: RDS SDK calls are direct and avoid CC API polling overhead; DBCluster and
+ * DBInstance creation can take time, so we poll with DescribeDB* until available.
  */
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
@@ -236,6 +232,10 @@ export class RDSProvider implements ResourceProvider {
         'RestoreToTime',
         'RestoreType',
         'UseLatestRestorableTime',
+        // go-to-k/cdkd#5639: `./rds/cluster-{create,update}.ts`; SourceRegion is never sent.
+        'EnableGlobalWriteForwarding',
+        'ReplicationSourceIdentifier',
+        'SourceRegion',
       ]),
     ],
     [

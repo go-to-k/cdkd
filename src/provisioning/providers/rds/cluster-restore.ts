@@ -236,6 +236,8 @@ export function unusedRestoreKeys(
     'WithExpressConfiguration',
     'ClusterScalabilityType',
     'MasterUserAuthenticationType',
+    // go-to-k/cdkd#5639: neither restore request carries it, nor the follow-up.
+    'ReplicationSourceIdentifier',
   ];
   const keys =
     restore === undefined

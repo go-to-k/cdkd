@@ -410,7 +410,12 @@ const CLUSTER_CASE: TypeCase = {
   physicalId: CLUSTER_ID,
   createOnly: createOnlyOf('AWS::RDS::DBCluster'),
   arm: armCluster,
-  exempt: {},
+  exempt: {
+    // go-to-k/cdkd#5639: never on the wire, as for a DB instance (the JS SDK
+    // derives the presigned URL's region from the ReplicationSourceIdentifier
+    // ARN). Pinned by rds-dbcluster-replica-forwarding-5639.test.ts.
+    SourceRegion: `validated only (refuseUnknownSourceRegion in ${SRC}): no RDS request member carries it`,
+  },
   nestedExempt: {
     'MasterUserSecret.SecretArn': SECRET_ARN_READ_ONLY,
   },
@@ -598,6 +603,26 @@ const CLUSTER_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         'update-add:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED,
+      },
+    },
+    {
+      // A bare source name, not an ARN: the RDS middleware presigns only a
+      // cross-region ARN, which the harness's client has no credentials for.
+      name: 'a read replica forwarding global writes (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-mysql',
+        ReplicationSourceIdentifier: 'mysql-source',
+        EnableGlobalWriteForwarding: true,
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...Object.fromEntries(
+          ['update-add', 'update-remove', 'update-vary'].map((d) => [
+            `${d}:ReplicationSourceIdentifier`,
+            `ModifyDBCluster has no ReplicationSourceIdentifier member, and CloudFormation's update handler sends none nor promotes the replica (Translator.modifyDbClusterRequest; read from the handler source, not measured), so a change completes in place keeping the live replication (${SRC})`,
+          ])
+        ),
+        'update-remove:EnableGlobalWriteForwarding': `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's handler sends null for a removed EnableGlobalWriteForwarding, read from the handler source, not measured (${SRC} clusterModifyScalarMembers)`,
       },
     },
     {

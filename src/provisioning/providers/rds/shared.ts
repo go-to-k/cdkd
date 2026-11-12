@@ -52,6 +52,20 @@ export function readableGlobalClusterId(value: unknown): boolean {
 
 export const usableGlobalClusterId = (value: unknown): boolean => typeof value === 'string';
 
+/**
+ * go-to-k/cdkd#5639: the `ReplicationSourceIdentifier` CreateDBCluster sends
+ * (the source DB instance or cluster ARN of a read replica cluster), as
+ * {@link recordedGlobalClusterIdentifier} reads its key: a blank one names
+ * none. {@link readableGlobalClusterId} tells a readable value from one
+ * refused on a template path and left out on a state-borne one.
+ */
+export function replicationSourceOf(
+  properties: Record<string, unknown> | undefined
+): string | undefined {
+  const value = properties?.['ReplicationSourceIdentifier'];
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
 /** What an update does about `GlobalClusterIdentifier` (`planGlobalClusterUpdate`). */
 export type GlobalClusterUpdate =
   | { kind: 'none' }

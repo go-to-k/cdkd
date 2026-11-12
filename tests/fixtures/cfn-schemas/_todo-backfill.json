@@ -31,10 +31,7 @@
     ],
     "AWS::RDS::DBCluster": [
       "Domain",
-      "DomainIAMRoleName",
-      "EnableGlobalWriteForwarding",
-      "ReplicationSourceIdentifier",
-      "SourceRegion"
+      "DomainIAMRoleName"
     ],
     "AWS::RDS::DBInstance": [
       "BackupTarget",

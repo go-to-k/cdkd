@@ -443,6 +443,12 @@ export class RdsAuroraStack extends cdk.Stack {
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
       serverlessV2ScalingConfiguration: { minCapacity: 0.5, maxCapacity: 1 },
       ...(isUpdate ? {} : { globalClusterIdentifier: globalCluster.ref }),
+      // go-to-k/cdkd#5639 (DBCluster EnableGlobalWriteForwarding), every phase:
+      // CreateDBCluster carries it, as CloudFormation's create does. RDS keeps
+      // it on a primary for a later demotion (ModifyDBCluster docs; unmeasured
+      // on CreateDBCluster). Before #5639 the declared key routed the cluster
+      // to Cloud Control (verify.sh's provisionedBy=sdk check catches it).
+      enableGlobalWriteForwarding: true,
       ...(process.env.CDKD_TEST_RUN_ID
         ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
         : {}),
@@ -508,6 +514,48 @@ export class RdsAuroraStack extends cdk.Stack {
     });
     upgradeWriter.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
     upgradeWriter.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
+
+    // go-to-k/cdkd#5639 (DBCluster ReplicationSourceIdentifier / SourceRegion):
+    // an Aurora MySQL read replica cluster of an RDS for MySQL instance in the
+    // same region, created by CreateDBCluster with the instance's ARN, as
+    // CloudFormation's create sends it. 8.0.46 replicates into Aurora MySQL
+    // 3.14.0 (compatible with MySQL 8.0.46; DescribeDBEngineVersions,
+    // us-east-1). A replica takes its master user from the source, so none is
+    // declared. `SourceRegion` is validated and never sent (the AWS SDK for
+    // JavaScript presigns a cross-region source from its ARN). No instance:
+    // CloudFormation's create waits for the cluster alone, as cdkd does
+    // (unmeasured). Before #5639 either key routed the cluster to Cloud
+    // Control (verify.sh's provisionedBy=sdk check catches it). The replica
+    // depends on the source through the ARN, so destroy deletes it first.
+    const replicaSource = new rds.CfnDBInstance(this, 'ReplicaSourceInstance', {
+      engine: 'mysql',
+      engineVersion: '8.0.46',
+      dbInstanceClass: 'db.t3.micro',
+      allocatedStorage: '20',
+      masterUsername: 'admin',
+      masterUserPassword: cluster.secret!.secretValueFromJson('password').unsafeUnwrap(),
+      // Binary logs, which the replica reads, need automated backups.
+      backupRetentionPeriod: 1,
+      dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
+      ...(process.env.CDKD_TEST_RUN_ID
+        ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
+        : {}),
+    });
+    replicaSource.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    replicaSource.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
+    const replicaCluster = new rds.CfnDBCluster(this, 'ReplicaCluster', {
+      engine: 'aurora-mysql',
+      engineVersion: '8.0.mysql_aurora.3.14.0',
+      replicationSourceIdentifier: replicaSource.attrDbInstanceArn,
+      sourceRegion: this.region,
+      dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
+      backupRetentionPeriod: 1,
+      ...(process.env.CDKD_TEST_RUN_ID
+        ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
+        : {}),
+    });
+    replicaCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    replicaCluster.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
 
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {

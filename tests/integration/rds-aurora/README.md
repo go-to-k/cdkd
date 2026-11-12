@@ -56,6 +56,12 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
   CloudFormation replaces: verify.sh asserts the deploy is refused without
   `--force-stateful-recreation` and replaces the cluster with it (issue #5467).
+- **ReplicaCluster** (L1 `CfnDBCluster`, aurora-mysql 3.14.0, no instance) and
+  **ReplicaSourceInstance** (RDS for MySQL 8.0.46, db.t3.micro) - the cluster
+  is a read replica of the instance (`ReplicationSourceIdentifier`, with
+  `SourceRegion` declared); verify.sh asserts it stayed on the SDK route and
+  replicates from the instance's ARN (issue #5639). The GlobalMemberCluster
+  also declares `EnableGlobalWriteForwarding: true`, asserted requested live.
 
 ## Outputs
 
