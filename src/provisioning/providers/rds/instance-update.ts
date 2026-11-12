@@ -91,7 +91,15 @@ export async function updateDBInstance(
   // go-to-k/cdkd#5640: a malformed desired volume list the update would send,
   // or a case-only rename, is refused before any call
   // (`./additional-storage-volumes.ts`).
-  sendableVolumeLists(properties, previousProperties, resourceType, logicalId, physicalId);
+  // A rollback replay warns instead (inside the update), sending no volume change.
+  sendableVolumeLists(
+    properties,
+    previousProperties,
+    resourceType,
+    logicalId,
+    physicalId,
+    context?.replayingState === true ? () => {} : undefined
+  );
   // go-to-k/cdkd#5640: decided as CloudFormation decides it, refused before
   // any call when the template misuses it (a state-borne bag only warns).
   const replication = backupReplicationPlan(

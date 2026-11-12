@@ -383,7 +383,6 @@ describe('RDS DBInstance AdditionalStorageVolumes (go-to-k/cdkd#5640)', () => {
 
     it.each([
       ['a template update', undefined],
-      ['a rollback replay', { replayingState: true }],
       ['a drift revert', { desiredFromAwsReadback: true }],
     ] as const)('refuses a case-only volume rename before any call on %s', async (_n, context) => {
       await expect(
@@ -394,6 +393,53 @@ describe('RDS DBInstance AdditionalStorageVolumes (go-to-k/cdkd#5640)', () => {
         )
       ).rejects.toThrow(/renames volume rdsdbdata2 to RDSDBDATA2 by case only/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a rollback replay meeting a case-only rename warns and sends no volume change', async () => {
+      await update(
+        {
+          ...BASE,
+          BackupRetentionPeriod: 7,
+          AdditionalStorageVolumes: [vol('RDSDBDATA2', '20'), vol('rdsdbdata3', '20')],
+        },
+        { ...TWO, BackupRetentionPeriod: 1 },
+        { replayingState: true }
+      );
+      const [modify] = sent('ModifyDBInstanceCommand');
+      expect(modify?.['BackupRetentionPeriod']).toBe(7);
+      expect(modify).not.toHaveProperty('AdditionalStorageVolumes');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/rollback leaves AdditionalStorageVolumes as it is.*rdsdbdata2 to RDSDBDATA2/)
+      );
+    });
+
+    it('a case variant ADDED beside the kept name is no rename: it goes out as a new volume', async () => {
+      arm({
+        reads: [
+          {
+            AdditionalStorageVolumes: [
+              live('rdsdbdata2', 20),
+              live('rdsdbdata3', 20),
+              live('RDSDBDATA2', 20),
+            ],
+          },
+        ],
+      });
+      await update(
+        {
+          ...BASE,
+          AdditionalStorageVolumes: [
+            vol('rdsdbdata2', '20'),
+            vol('rdsdbdata3', '20'),
+            vol('RDSDBDATA2', '20'),
+          ],
+        },
+        TWO
+      );
+      // RDS decides whether it takes the name; cdkd deletes nothing.
+      expect(sent('ModifyDBInstanceCommand')[0]?.['AdditionalStorageVolumes']).toEqual([
+        wire('RDSDBDATA2', 20),
+      ]);
     });
 
     it('a different name beside a removed one is no rename', async () => {
@@ -563,6 +609,9 @@ describe('RDS DBInstance AdditionalStorageVolumes (go-to-k/cdkd#5640)', () => {
           { replayingState: true }
         );
         expect(sent('ModifyDBInstanceCommand')[0]).not.toHaveProperty('AdditionalStorageVolumes');
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringMatching(/rollback sends no delete for additional storage volume rdsdbdata4/)
+        );
       });
 
       it('a template update deletes a removed volume without reading the live list', async () => {
@@ -838,14 +887,15 @@ describe('RDS DBInstance AdditionalStorageVolumes (go-to-k/cdkd#5640)', () => {
     });
 
     it('keeps a live entry that is not an object as it is', async () => {
-      const aws = { AdditionalStorageVolumes: ['junk', live('rdsdbdata2', 20)] };
+      const aws = { AdditionalStorageVolumes: ['junk', null, live('rdsdbdata2', 20)] };
       const pair = await provider.canonicalizeDriftPair(
         INSTANCE,
         { AdditionalStorageVolumes: [vol('rdsdbdata2', '20')] },
         aws
       );
       expect((pair.aws['AdditionalStorageVolumes'] as unknown[])[0]).toBe('junk');
-      expect((pair.aws['AdditionalStorageVolumes'] as unknown[])[1]).toEqual(wire('rdsdbdata2', 20));
+      expect((pair.aws['AdditionalStorageVolumes'] as unknown[])[1]).toBeNull();
+      expect((pair.aws['AdditionalStorageVolumes'] as unknown[])[2]).toEqual(wire('rdsdbdata2', 20));
     });
 
     it('leaves the live list whole for a baseline it cannot read', async () => {

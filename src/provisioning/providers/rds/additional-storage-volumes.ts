@@ -115,14 +115,18 @@ export function desiredAdditionalStorageVolumes(
  *   the update would send the new name in full beside `SetForDelete` for the
  *   old one, and if RDS folds the case both name one volume, whose data the
  *   delete would destroy. A malformed record is not compared (that arm
- *   deletes nothing).
+ *   deletes nothing). On a rollback replay (`rollbackWarn` given) the rename
+ *   only warns and the update sends no volume change: the forward update this
+ *   replay reverses was refused the same way before any call, so there is
+ *   nothing to undo, and a throw would fail the rollback.
  */
 export function sendableVolumeLists(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   resourceType: string,
   logicalId: string,
-  physicalId: string
+  physicalId: string,
+  rollbackWarn?: (message: string) => void
 ):
   | {
       desired: AdditionalStorageVolume[] | undefined;
@@ -152,6 +156,12 @@ export function sendableVolumeLists(
       const renamed = [...before].find(
         (old) => old !== undefined && !after.has(old) && old.toLowerCase() === name.toLowerCase()
       );
+      if (renamed !== undefined && rollbackWarn !== undefined) {
+        rollbackWarn(
+          safeMsg`${logicalId}: the rollback leaves AdditionalStorageVolumes as it is, because restoring it would rename volume ${renamed} to ${name} by case only`
+        );
+        return undefined;
+      }
       if (renamed !== undefined) {
         throw markNonRetryable(
           new ProvisioningError(
@@ -236,7 +246,8 @@ export async function additionalStorageVolumeChanges(
     previousProperties,
     resourceType,
     logicalId,
-    physicalId
+    physicalId,
+    source.rollback ? warn : undefined
   );
   if (lists === undefined) return undefined;
   const { desired } = lists;
@@ -299,7 +310,12 @@ export async function additionalStorageVolumeChanges(
       ? new Set((await liveVolumes()).map((volume) => volume.VolumeName))
       : undefined;
     for (const volume of removed) {
-      if (listed !== undefined && !listed.has(volume.VolumeName)) continue;
+      if (listed !== undefined && !listed.has(volume.VolumeName)) {
+        warn(
+          safeMsg`${logicalId}: the rollback sends no delete for additional storage volume ${volume.VolumeName ?? ''}, which the instance does not list`
+        );
+        continue;
+      }
       out.push({ VolumeName: volume.VolumeName, SetForDelete: true });
     }
   } else if (source.fromReadback && removed.length > 0) {
