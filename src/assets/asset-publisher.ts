@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { isCfnTemplateAssetPath, parseAssetManifestBody } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
-import { DockerAssetPublisher } from './docker-asset-publisher.js';
+import {
+  DockerAssetPublisher,
+  refuseDockerAssetUnderAwsEmulator,
+} from './docker-asset-publisher.js';
 import {
   flattenAssetPlaceholders,
   isDefaultBootstrapBucketName,
@@ -196,6 +199,8 @@ export class AssetPublisher {
 
     // Docker assets: build node → publish node
     for (const [hash, rawAsset] of Object.entries(manifest.dockerImages || {})) {
+      // Before the graph runs, so no resource is created first (go-to-k/cdkd#6138).
+      refuseDockerAssetUnderAwsEmulator(rawAsset.displayName || hash);
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
       for (const dest of Object.values(asset.destinations)) {
         // `dest.region` unflattened, self-consistently — the same note as the

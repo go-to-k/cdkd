@@ -12,8 +12,8 @@
  * the `cdkd` sibling of `pasteable-aws-profile.ts`.
  *
  * Only values the operator TYPED are recorded: `--profile`, `--state-bucket`,
- * a `--state-prefix` given on the command line, and whether `--role-arn` was
- * given. An inherited `AWS_PROFILE`, `CDKD_STATE_BUCKET` or `CDKD_ROLE_ARN`
+ * a `--state-prefix` given on the command line, whether `--role-arn` was
+ * given, and a typed `--aws-emulator`. An inherited `AWS_PROFILE`, `CDKD_STATE_BUCKET` or `CDKD_ROLE_ARN`
  * reaches the pasted command from the same shell, and a default bucket
  * re-resolves to the same name under the same profile, so none of those is
  * printed (the default name also carries the account id, which cdkd keeps off
@@ -31,6 +31,11 @@ export interface PasteableRunFlags {
   readonly statePrefix?: string | undefined;
   /** True when `--role-arn` was passed on the command line. */
   readonly roleArn?: boolean | undefined;
+  /**
+   * `--aws-emulator` as typed (`true` for the bare flag), so a pasted hint
+   * talks to the same emulator instead of real AWS (go-to-k/cdkd#6138).
+   */
+  readonly awsEmulator?: string | true | undefined;
 }
 
 let runFlags: PasteableRunFlags = {};

@@ -310,12 +310,54 @@ cdkd local start-api --from-cfn-stack --aws-emulator https://127.0.0.1:9297
 | Reachability | For a loopback URL, the forwarder checks the emulator from inside the container network (its health endpoint when a CA is known, else a TCP connect); a failure stops the command. |
 
 When `emulator_credentials` is missing but the emulator answers, it runs with
-`--auth off`, and containers get fixed placeholder keys. `deploy`, `destroy`
-and `bootstrap` do not take the flag; point them at the emulator with
-`AWS_ENDPOINT_URL` and its credentials.
+`--auth off`, and containers get fixed placeholder keys. Getting a stack into
+the emulator in the first place takes the same flag on `bootstrap` and
+`deploy`: see [Deploying into AWS Emulator](#deploying-into-aws-emulator).
 
 A handler that misses the endpoint fails with a credential error rather than
 reaching real AWS, because the container holds no real credentials.
+
+### Deploying into AWS Emulator
+
+Every cdkd command that talks to AWS takes `--aws-emulator [url]` (and
+`CDKD_AWS_EMULATOR`): `bootstrap`, `deploy`, `diff`, `destroy`, `rollback`,
+`gc`, the `state` commands and the rest. So the whole loop needs no shell
+setup:
+
+```bash
+cdkd bootstrap --aws-emulator                                   # state bucket + asset storage in the emulator
+cdkd deploy MyStack --aws-emulator                              # resources and file assets
+cdkd local invoke MyStack/Handler --from-state --aws-emulator   # run against what was deployed
+cdkd destroy MyStack --aws-emulator
+```
+
+Under the flag, the emulator's identity is the only one cdkd uses:
+
+| What | Under `--aws-emulator` |
+| --- | --- |
+| Pre-flight | The same `/__admin/health` check as above; nothing runs when it fails. |
+| Every AWS call | Sent to the emulator, trusting the run's `ca.pem`, signed with its keys. |
+| Your own identity | `--profile`, `--role-arn`, `CDKD_ROLE_ARN`, `AWS_PROFILE` and the `AWS_ACCESS_KEY_ID` triple are ignored, with one line naming them. |
+| Region | `--region` or `AWS_REGION` when set, else the region in the run's `config`. |
+| Process environment | `AWS_ENDPOINT_URL`, `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` name the emulator and its run files, so nothing falls back to real AWS. |
+| Cloud Control | Status is polled every 100 ms instead of the backoff used against AWS. |
+| Docker image assets | Refused before anything is built: the emulator's ECR names the real `amazonaws.com` registry. |
+
+On a `cdkd local` command the flag also drops `--profile` and your credential
+variables, and keeps the `--role-arn` hop, which the emulator answers.
+
+> [!NOTE]
+> REST API stacks (`AWS::ApiGateway::RestApi`, e.g. `LambdaRestApi`) fail on
+> AWS Emulator when cdkd creates the REST API through Cloud Control: the
+> emulator returns an identifier that is not the API id, so its resources and
+> methods cannot be created. A cdkd release that creates REST APIs through its
+> own SDK provider ([#6139](https://github.com/go-to-k/cdkd/issues/6139)) is
+> not affected. With an earlier release, deploy REST API stacks with
+> `cdk deploy` and run them with `--from-cfn-stack`.
+
+The flag is specific to AWS Emulator. Other local AWS endpoints, such as
+LocalStack, keep working through the standard `AWS_ENDPOINT_URL*` and
+`AWS_CA_BUNDLE` variables.
 
 ## Reaching a server on the host
 

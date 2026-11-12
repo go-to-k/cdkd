@@ -68,12 +68,8 @@ Index of every area: [code-layout.md](code-layout.md).
   encoder is not the boundary for the `--long` / `--show-dependencies`
   payloads; the `--json` arm goes through `stringifyJsonPayload`
   ([#4045](https://github.com/go-to-k/cdkd/issues/4045)), which escapes only
-  what `displaySafe` leaves. Two
-  residuals, both on that issue's open helper-choice row: a control-only name
-  sanitizes to EMPTY, which reads as absent; and sanitizing is MANY-TO-ONE, so
-  two distinct manifest entries can emit one identical record — a `jq` select on
-  `name` can return two accounts for what reads as one stack. Selection is
-  unaffected (`matchStacks` matches the RAW name).
+  what `displaySafe` leaves. Residuals (#4045): a control-only name sanitizes
+  to EMPTY, and sanitizing is MANY-TO-ONE. Selection matches the RAW name.
 - **src/cli/region-options.ts** - shared region normalization
   ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars
@@ -88,9 +84,13 @@ Index of every area: [code-layout.md](code-layout.md).
   cdk-local builds an SDK client. `cli-region-fold.test.ts` fences it.
 - **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
   Split from `index.ts`, whose import runs `main()`.
+- **src/cli/aws-emulator.ts** - `--aws-emulator` on every `--profile` command
+  (#6138): drops the real identity, points the env at the emulator. A client
+  setting `credentials` / `endpoint` past `awsClientDefaults` needs a reviewed
+  entry in `aws-emulator-client-factories.test.ts`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
   EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
-  errors re-throw. Its own module so it stays unit-testable.
+  errors re-throw.
 - **src/cli/run-cli.ts** - `runCli(main)`, the ONE top-level runner: a `main()`
   rejection prints `Fatal error:` and exits 1, and a `beforeExit` with `main()`
   still PENDING (the event loop drained under an await) exits 70, replacing
@@ -169,7 +169,6 @@ Index of every area: [code-layout.md](code-layout.md).
   expansion and the work graph; `NestedStackProvider`'s per-row walk is the
   backstop, not a duplicate. Not in `AssemblyReader`: `diff` owns its refusal.
 - **src/cli/commands/pin-cc-api-reachability.ts** - the pure decision behind
-  `--pin-cc-api`'s pre-flight: which pinned logical ids match NO stack (an error
-  — the flag prints nothing on success, so an id that matched nowhere is
-  otherwise invisible) and which match some but not all (normal under `--all`,
-  reported ONCE naming the stacks, never once per non-matching stack).
+  `--pin-cc-api`'s pre-flight: which pinned logical ids match NO stack (an
+  error, else invisible) and which match some but not all (normal under
+  `--all`, reported ONCE naming the stacks).

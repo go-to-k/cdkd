@@ -9,6 +9,8 @@ import {
   setS3ClientDefaultsDebugLog,
 } from '../utils/s3-client-defaults.js';
 import { getLogger } from '../utils/logger.js';
+import { handleError } from '../utils/error-handler.js';
+import { addAwsEmulatorOptions, prepareAwsEmulatorForCommand } from './aws-emulator.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -67,6 +69,18 @@ export function buildProgram(): Command {
   setS3ClientDefaultsDebugLog((message) => getLogger().debug(message));
 
   program.hook('preAction', async (_thisCommand, actionCommand) => {
+    // FIRST: under `--aws-emulator` (go-to-k/cdkd#6138) the run's `--profile`,
+    // `--role-arn` and credential environment are dropped before anything
+    // below records or mirrors them. Also refuses a malformed flag value on
+    // every command declaring it, `cdkd local` included (go-to-k/cdkd#6132).
+    // Rendered like an action's own error: a hook is outside
+    // `withErrorHandling`, so a throw would surface as `Fatal error:` + stack.
+    let activateAwsEmulator: (() => Promise<void>) | undefined;
+    try {
+      activateAwsEmulator = prepareAwsEmulatorForCommand(actionCommand);
+    } catch (err) {
+      handleError(err);
+    }
     const { profile } = actionCommand.optsWithGlobals<{ profile?: string }>();
     // The EXPLICIT flag only: every pasteable `aws ...` command then carries it
     // (go-to-k/cdkd#3959). An inherited AWS_PROFILE is not recorded.
@@ -87,9 +101,24 @@ export function buildProgram(): Command {
         ? actionCommand.optsWithGlobals<{ statePrefix?: string }>().statePrefix
         : undefined,
       roleArn: roleArn !== undefined,
+      // Typed only, like the rest: an env-var emulator reaches the pasted
+      // command from the same shell.
+      awsEmulator:
+        actionCommand.getOptionValueSourceWithGlobals('awsEmulator') === 'cli'
+          ? actionCommand.optsWithGlobals<{ awsEmulator?: string | true }>().awsEmulator
+          : undefined,
     });
     if (profile !== undefined) {
       process.env['AWS_PROFILE'] = profile;
+    }
+    // The emulator wiring (a health probe) before any AWS client is built,
+    // the S3 probe below included.
+    if (activateAwsEmulator !== undefined) {
+      try {
+        await activateAwsEmulator();
+      } catch (err) {
+        handleError(err);
+      }
     }
     // AFTER the mirror above: profile config reaches the SDK only through
     // AWS_PROFILE, and the S3 endpoint override and addressing_style can both
@@ -123,6 +152,10 @@ export function buildProgram(): Command {
   // parser to. Sweeping the built tree covers those, and any future option
   // that arrives the same way, without each command having to know.
   guardStackRegionOptions(program);
+
+  // `--aws-emulator` on every command that talks to AWS (declares `--profile`),
+  // the `cdkd local` subtree aside: cdk-local registers it there.
+  addAwsEmulatorOptions(program);
 
   // Which long options each subcommand parses, read off the REAL tree, so a
   // pasteable hint only gains a run flag its command accepts (go-to-k/cdkd#4177).
