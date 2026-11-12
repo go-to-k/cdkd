@@ -17,7 +17,7 @@ export {
   driftProducerRegionEvidence,
 } from './drift/secret-resolution.js';
 export { DRIFT_READ_FAILURE_BREAKER_THRESHOLD } from './drift/read-failure.js';
-export { maskMarkedNoEchoBaseline, maskMarkedNoEchoBaselineWithLeaves } from './drift/redaction.js';
+export { maskMarkedNoEchoBaseline } from './drift/redaction.js';
 export {
   undeclaredUncomparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,

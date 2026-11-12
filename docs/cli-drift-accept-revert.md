@@ -33,8 +33,12 @@ Plan (--accept): update cdkd state for MyStack (us-east-1):
 
 The value is written to the snapshot drift compares against, which is the copy
 of the resource cdkd read from AWS at deploy time. The properties from your
-last deployed template stay as they were. A resource with no snapshot has only
-the template properties, so the value is written there.
+last deployed template stay as they were. A resource with no snapshot, recorded
+by an older cdkd, gets one: `--accept` captures it from AWS, as
+[`cdkd state refresh-observed`](cli-state-writing.md#cdkd-state-refresh-observed) does, so the template
+properties stay as they were too.
+That keeps your next `cdkd deploy` from undoing what you accepted. A list entry
+added in AWS and accepted is not read as an entry to remove.
 
 A `cdkd deploy` running at the same moment cannot be overwritten by this
 write. cdkd saves the state file only if it has not changed since `--accept`

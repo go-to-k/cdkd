@@ -1771,9 +1771,16 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     const saved = mockSaveState.mock.calls[0]![2];
-    const props = saved.resources['Db']!.properties;
-    expect(props['MasterUserPassword']).toBe(SECRET_EXPR);
-    expect(props['DBInstanceClass']).toBe('db.t3.small');
+    // go-to-k/cdkd#6125: the accepted bag is a baseline captured from the
+    // readback, never `properties`, which keep the reference as they were. A
+    // write-only key the readback cannot return is absent from that capture,
+    // as from every observed capture.
+    const observed = saved.resources['Db']!.observedProperties!;
+    expect(observed).toEqual({ DBInstanceClass: 'db.t3.small' });
+    expect(saved.resources['Db']!.properties).toEqual({
+      DBInstanceClass: 'db.t3.micro',
+      MasterUserPassword: SECRET_EXPR,
+    });
     expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
   });
 
@@ -4456,12 +4463,12 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
   // --- #2939 -----------------------------------------------------------------
   //
   // `--accept` re-redacts the bag it persists and passed the NON-failing
-  // `STATE_SOURCED_READBACK_RULES` unconditionally, though the same site had
-  // already computed the destination two lines away: on the `hasObserved` arm
-  // the bag IS a drift baseline (`observedProperties`), where an uncertifiable
-  // position must be masked rather than left holding a stored plaintext; on
-  // the `properties` arm a mask is a regression and the readback constant
-  // stays. One case per arm, each wanting the non-default direction.
+  // `STATE_SOURCED_READBACK_RULES` unconditionally, though the bag IS a drift
+  // baseline (`observedProperties`), where an uncertifiable position must be
+  // masked rather than left holding a stored plaintext. Since go-to-k/cdkd#6125
+  // every accept writes `observedProperties` — a record with no baseline gets
+  // one captured from the readback — so the fail-closed constant applies to both
+  // record shapes. One case per shape.
 
   it('#2939: on the observedProperties arm, a stored plaintext at an UNPAIRABLE position is MASKED', async () => {
     // A pre-#2852 record: `observedProperties` holds last week's (rotated-away)
@@ -4501,25 +4508,22 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     expect(JSON.stringify(saved.resources['Consumer']!.properties)).not.toContain(SECRET_MASK);
   });
 
-  it('#2939: on the properties arm (no observed baseline), an uncertifiable position is NOT masked', async () => {
-    // The half the issue keeps: a record with NO `observedProperties` writes
-    // its accepted bag into `properties`, where a mask blocks `cdkd export` and
-    // the rollback replay over a template value that was never unknown. A
-    // PUBLIC ssm reference in `properties` (the `cdkd import` warn path) whose
-    // live value came back as a container is an accepted, non-secret change
-    // that lands at a position the walk cannot pair — the fail-closed constant
-    // would mask it, the readback constant keeps it.
+  it('#2939 / #6125: a record with NO observed baseline gets one, masked at an uncertifiable position', async () => {
+    // A PUBLIC ssm reference in `properties` (the `cdkd import` warn path)
+    // whose live value came back as a container lands at a position the walk
+    // cannot pair. The accepted bag is a baseline captured from the readback, so
+    // the fail-closed constant masks it — and the user is told the value was
+    // not recorded. `properties` keep the reference: a mask there would block
+    // `cdkd export` and the rollback replay, and the readback there would be
+    // the next deploy's previous side.
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const properties = {
+      FunctionName: 'fn',
+      Environment: { Variables: { CFG: PUBLIC_SSM_EXPR, PLAIN: 'ok' } },
+    };
     mockGetState.mockResolvedValueOnce(
       makeState({
-        Consumer: {
-          physicalId: 'fn',
-          resourceType: LAMBDA_TYPE,
-          properties: {
-            FunctionName: 'fn',
-            Environment: { Variables: { CFG: PUBLIC_SSM_EXPR, PLAIN: 'ok' } },
-          },
-        },
+        Consumer: { physicalId: 'fn', resourceType: LAMBDA_TYPE, properties },
       })
     );
     mockRegistryGetProvider.mockReturnValue({
@@ -4534,12 +4538,41 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     const saved = mockSaveState.mock.calls[0]![2];
     const record = saved.resources['Consumer']!;
-    expect(record.observedProperties).toBeUndefined();
-    const props = record.properties as { Environment: { Variables: Record<string, unknown> } };
-    expect(props.Environment.Variables['CFG']).toEqual({ Nested: 'live-cfg-2939' });
-    expect(JSON.stringify(saved)).not.toContain(SECRET_MASK);
+    expect(record.properties).toEqual(properties);
+    const observed = record.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(observed.Environment.Variables['CFG']).toEqual({ Nested: SECRET_MASK });
+    expect(observed.Environment.Variables['PLAIN']).toBe('ok');
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(warned).not.toContain('was NOT recorded');
+    expect(warned).toContain("'Environment.Variables.CFG' was NOT recorded");
+  });
+
+  it('#6125: a baseline captured from the readback keeps an UNDRIFTED secret as its expression', async () => {
+    // The seed is the live readback, which carries the RESOLVED secret at a
+    // position that did not drift. Only the redaction against `properties`
+    // turns it back into the expression; skipping it for a record with no
+    // baseline would persist the plaintext with nothing in the report to show.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const resource = lambdaResource();
+    delete resource.observedProperties;
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: resource }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ PLAIN: 'x' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
+    const record = saved.resources['Consumer']!;
+    const observed = record.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(observed.Environment.Variables['SECRET_PASSWORD']).toBe(SECRET_EXPR);
+    expect(observed.Environment.Variables['PLAIN']).toBe('x');
+    expect(record.properties).toEqual(lambdaResource().properties);
   });
 
   it('#2939 sibling: the --revert narrowing write masks an UNPAIRABLE echo on the observed arm', async () => {

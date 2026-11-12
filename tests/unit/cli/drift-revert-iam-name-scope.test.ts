@@ -502,8 +502,11 @@ describe('drift keeps the recorded IAM name (issues #4023, #4081)', () => {
       );
       // The ordinary drift IS accepted — the marker that the write ran...
       expect(bags.some((bag) => bag['Description'] === 'changed out of band')).toBe(true);
-      // ...and the live name is written into neither bag.
-      expect(bags.map((bag) => bag['RoleName'])).not.toContain(ROLE_ID);
+      // ...and the live name never reaches `properties`. A record with no
+      // baseline gets one captured from the readback (go-to-k/cdkd#6125), which
+      // holds the live name as every observed capture does; the comparison
+      // canonicalizes a derived name either way.
+      expect(record.properties['RoleName']).toBe('my-role');
     }
     expect(lines(errorSpy)).toBe('');
   });

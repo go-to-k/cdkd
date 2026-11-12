@@ -351,8 +351,7 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
             // the source spells a reference, so a reordered literal list
             // is untouched. On the `properties` arm the redacted values
             // are discarded by the loop below, so the non-failing
-            // constant there changes nothing and is kept for symmetry
-            // with `--accept`.
+            // constant there changes nothing.
             keepBaselineAtUncertifiedPaths(
               redactForState(delta, {
                 provenance:
