@@ -383,6 +383,7 @@ type ClusterScalarMembers = Pick<
   | 'MasterUserAuthenticationType'
   | 'BacktrackWindow'
   | 'EnableLocalWriteForwarding'
+  | 'EnableGlobalWriteForwarding'
 >;
 
 /** go-to-k/cdkd#5639: the CFn name of each Performance Insights member, with its SDK name. */
@@ -448,6 +449,12 @@ export function clusterCreateScalarMembers(
         properties['EnableLocalWriteForwarding']
       ) as boolean,
     }),
+    ...(typeof globalWriteForwardingFlag(properties['EnableGlobalWriteForwarding']) ===
+      'boolean' && {
+      EnableGlobalWriteForwarding: globalWriteForwardingFlag(
+        properties['EnableGlobalWriteForwarding']
+      ) as boolean,
+    }),
   };
 }
 
@@ -474,7 +481,10 @@ export function clusterCreateScalarMembers(
  * window: the handler sends the desired value, unsent when removed (read from
  * the archived `aws-cloudformation-resource-providers-rds` source, not
  * measured). `EnableLocalWriteForwarding` follows the handler's own rule
- * (`localWriteForwardingToSend`).
+ * (`localWriteForwardingToSend`). `EnableGlobalWriteForwarding` goes out only
+ * when changed, and a removal sends nothing (RDS keeps the live setting): the
+ * handler sends the desired value, unsent when removed, and no default fills
+ * it (read from the same archived source, not measured).
  *
  * `EngineLifecycleSupport` and
  * `MasterUserAuthenticationType` are not here: `engineLifecycleSupportAction`
@@ -511,6 +521,12 @@ export function clusterModifyScalarMembers(
   const localWriteForwarding = localWriteForwardingToSend(properties, previousProperties, context);
   if (typeof localWriteForwarding === 'boolean') {
     members.EnableLocalWriteForwarding = localWriteForwarding;
+  }
+  const globalWriteForwarding = globalWriteForwardingFlag(
+    properties['EnableGlobalWriteForwarding']
+  );
+  if (typeof globalWriteForwarding === 'boolean' && changed('EnableGlobalWriteForwarding')) {
+    members.EnableGlobalWriteForwarding = globalWriteForwarding;
   }
   return members;
 }
@@ -588,6 +604,33 @@ export function localWriteForwardingApplied(cluster: DBCluster, enabled: boolean
   if (status === undefined) return true;
   if (status === 'enabling' || status === 'disabling') return false;
   return (status === 'requested' || status === 'enabled') === enabled;
+}
+
+/**
+ * go-to-k/cdkd#5639: a DBCluster `EnableGlobalWriteForwarding` read off a bag,
+ * as {@link httpEndpointFlag} reads the Data API flag.
+ */
+export function globalWriteForwardingFlag(value: unknown): boolean | undefined | 'malformed' {
+  return httpEndpointFlag(value);
+}
+
+/**
+ * go-to-k/cdkd#5639: whether a cluster has settled on the global write
+ * forwarding value sent. CloudFormation's stabilization
+ * (`BaseHandlerStd.isGlobalWriteForwardingStabilized`) is done once forwarding
+ * is not requested, or its status is neither `enabling` nor `disabling`:
+ * forwarding requested on a primary, or on a secondary with no reader, does not
+ * start, and that is settled too. The request flag is matched against the value
+ * sent, so a describe answering before the change starts does not end the
+ * wait; a describe reporting no flag ends it.
+ */
+export function globalWriteForwardingApplied(cluster: DBCluster, enabled: boolean): boolean {
+  const requested = cluster.GlobalWriteForwardingRequested;
+  if (requested === undefined) return true;
+  if (requested !== enabled) return false;
+  if (!requested) return true;
+  const status = cluster.GlobalWriteForwardingStatus;
+  return status !== 'enabling' && status !== 'disabling';
 }
 
 /**
@@ -722,6 +765,9 @@ export const usableBacktrackWindow = (value: unknown): boolean =>
 
 export const usableLocalWriteForwarding = (value: unknown): boolean =>
   typeof localWriteForwardingFlag(value) === 'boolean';
+
+export const usableGlobalWriteForwarding = (value: unknown): boolean =>
+  typeof globalWriteForwardingFlag(value) === 'boolean';
 
 /**
  * go-to-k/cdkd#5639: absent, or a DBCluster `AvailabilityZones` list of names

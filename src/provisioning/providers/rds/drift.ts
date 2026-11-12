@@ -114,6 +114,11 @@ export function getDriftUnknownPaths(
     'RestoreToTime',
     'RestoreType',
     'UseLatestRestorableTime',
+    // go-to-k/cdkd#5639: `readCurrentState` reads neither forwarding request
+    // nor replication source back; `SourceRegion` RDS never receives.
+    'EnableGlobalWriteForwarding',
+    'ReplicationSourceIdentifier',
+    'SourceRegion',
   ];
   // An absent or empty bag records nothing to scope by: compare.
   if (properties === undefined || Object.keys(properties).length === 0) return neverRead;

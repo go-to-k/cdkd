@@ -45,6 +45,9 @@ import {
   localWriteForwardingFlag,
   localWriteForwardingToSend,
   localWriteForwardingApplied,
+  globalWriteForwardingFlag,
+  globalWriteForwardingApplied,
+  usableGlobalWriteForwarding,
   retentionPeriodValue,
   clusterHttpEndpointAction,
   withPreviousValues,
@@ -66,6 +69,7 @@ import {
   usableGlobalClusterId,
   readableGlobalClusterId,
   recordedGlobalClusterIdentifier,
+  replicationSourceOf,
   GLOBAL_CLUSTER_CHANGE_REFUSED,
   type GlobalClusterUpdate,
 } from './shared.js';
@@ -170,6 +174,12 @@ export async function updateDBCluster(
       'true or false',
       usableLocalWriteForwarding,
     ],
+    [
+      globalWriteForwardingFlag(properties['EnableGlobalWriteForwarding']) === 'malformed',
+      'EnableGlobalWriteForwarding',
+      'true or false',
+      usableGlobalWriteForwarding,
+    ],
     // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, storage
     // size and IOPS.
     [
@@ -219,6 +229,20 @@ export async function updateDBCluster(
       safeMsg`DBCluster ${logicalId}: drift --revert does not turn local write forwarding (EnableLocalWriteForwarding) back on, because the template does not declare EnableLocalWriteForwarding: true; declare it and deploy, or turn it on with aws rds modify-db-cluster --enable-local-write-forwarding`
     );
     skippedKeys.push(['EnableLocalWriteForwarding', usableLocalWriteForwarding]);
+  }
+  // go-to-k/cdkd#5639: ModifyDBCluster has no ReplicationSourceIdentifier
+  // member, and CloudFormation's update sends none (`Translator.
+  // modifyDbClusterRequest`) nor promotes the replica, so a change or removal
+  // leaves the live replication as it is; the record keeps the template's
+  // value, as CloudFormation's model does.
+  if (
+    context?.replayingState !== true &&
+    context?.desiredFromAwsReadback !== true &&
+    replicationSourceOf(properties) !== replicationSourceOf(previousProperties)
+  ) {
+    this.logger.warn(
+      safeMsg`DBCluster ${logicalId}: a changed ReplicationSourceIdentifier is not applied to the existing cluster, as in CloudFormation (ModifyDBCluster has no such member); to stop replicating, promote the cluster with aws rds promote-read-replica-db-cluster`
+    );
   }
 
   // Set once this update detached the cluster, so a later failure says so.
@@ -551,6 +575,17 @@ export async function updateDBCluster(
         physicalId,
         (cluster) => localWriteForwardingApplied(cluster, forwardingSent),
         'local write forwarding setting'
+      );
+    }
+    // go-to-k/cdkd#5639: likewise global write forwarding
+    // (`BaseHandlerStd.isGlobalWriteForwardingStabilized`).
+    const globalForwardingSent = scalarMembers.EnableGlobalWriteForwarding;
+    if (!noWait && globalForwardingSent !== undefined) {
+      await this.waitForClusterState(
+        logicalId,
+        physicalId,
+        (cluster) => globalWriteForwardingApplied(cluster, globalForwardingSent),
+        'global write forwarding setting'
       );
     }
 

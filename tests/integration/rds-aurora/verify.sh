@@ -138,6 +138,11 @@
 # writer) records the 16 instance parameter group in phase 1 (route asserted),
 # and phase 2 upgrades it 16.13 -> 17.9 with the 17 group, which its writer
 # must hold once the upgrade settles (asserted live).
+# go-to-k/cdkd#5639 (EnableGlobalWriteForwarding / ReplicationSourceIdentifier /
+# SourceRegion): phase 1 asserts the GlobalMemberCluster requests global write
+# forwarding, and that the ReplicaCluster (an Aurora MySQL read replica of an
+# RDS for MySQL instance, SourceRegion declared) is provisionedBy=sdk and
+# replicates from that instance's ARN (live).
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -209,6 +214,10 @@ UPGRADE_CLUSTER_ID=""
 UPGRADE_WRITER_ID=""
 UPGRADE_PARAMS16=""
 UPGRADE_PARAMS17=""
+# go-to-k/cdkd#5639: the ReplicaCluster and its RDS for MySQL source instance,
+# resolved from state after phase 1.
+REPLICA_CLUSTER_ID=""
+REPLICA_SOURCE_ID=""
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -534,6 +543,31 @@ cleanup() {
         || echo "WARN: cleanup could not delete the #5639 global-cluster member ${member_id}; delete it by hand: ${MEMBER_DELETE_OUT}" >&2
     fi
   done
+  # go-to-k/cdkd#5639: the ReplicaCluster, then its source instance, which
+  # RDS keeps while a replica reads from it; a no-op once state destroy
+  # deleted them.
+  if [ -n "${REPLICA_CLUSTER_ID}" ]; then
+    if REPLICA_DELETE_OUT=$(aws rds delete-db-cluster --db-cluster-identifier "${REPLICA_CLUSTER_ID}" \
+      --region "${REGION}" --skip-final-snapshot 2>&1); then
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${REPLICA_CLUSTER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif grep -qiE 'already being deleted|deleting' <<<"${REPLICA_DELETE_OUT}"; then
+      # state destroy's delete is still in flight: wait for it instead.
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${REPLICA_CLUSTER_ID}" --region "${REGION}" >/dev/null 2>&1
+    elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${REPLICA_DELETE_OUT}"; then
+      echo "WARN: cleanup could not delete the #5639 ReplicaCluster ${REPLICA_CLUSTER_ID}; delete it by hand: ${REPLICA_DELETE_OUT}" >&2
+    fi
+  fi
+  if [ -n "${REPLICA_SOURCE_ID}" ]; then
+    if REPLICA_DELETE_OUT=$(aws rds delete-db-instance --db-instance-identifier "${REPLICA_SOURCE_ID}" \
+      --region "${REGION}" --skip-final-snapshot --delete-automated-backups 2>&1); then
+      :
+    elif grep -qiE 'already being deleted|deleting' <<<"${REPLICA_DELETE_OUT}"; then
+      # state destroy's delete is still in flight.
+      :
+    elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${REPLICA_DELETE_OUT}"; then
+      echo "WARN: cleanup could not delete the #5639 ReplicaSourceInstance ${REPLICA_SOURCE_ID}; delete it by hand: ${REPLICA_DELETE_OUT}" >&2
+    fi
+  fi
   if ! GLOBAL_DELETE_OUT=$(aws rds delete-global-cluster \
     --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" --region "${REGION}" 2>&1); then
     grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${GLOBAL_DELETE_OUT}" \
@@ -817,6 +851,52 @@ if [ "${GLOBAL_MEMBERS}" != "${GLOBAL_MEMBER_ARN}" ]; then
   exit 1
 fi
 echo "    OK: phase 1: GlobalMemberCluster provisionedBy=sdk and the only member of ${GLOBAL_CLUSTER_NAME} (#5639)"
+
+# go-to-k/cdkd#5639 (DBCluster EnableGlobalWriteForwarding): the
+# GlobalMemberCluster's CreateDBCluster carried the flag, which RDS reports as
+# requested. Before #5639 the declared key routed it to Cloud Control, which
+# the route check above fails.
+GLOBAL_FORWARDING_RECORD=$(echo "${STATE}" | jq -r '.resources.GlobalMemberCluster.properties.EnableGlobalWriteForwarding // "absent" | tostring')
+if [ "${GLOBAL_FORWARDING_RECORD}" != "true" ]; then
+  echo "FAIL: #5639: phase 1: GlobalMemberCluster recorded EnableGlobalWriteForwarding is '${GLOBAL_FORWARDING_RECORD}', want 'true'" >&2
+  exit 1
+fi
+GLOBAL_FORWARDING_LIVE=$(aws rds describe-db-clusters --db-cluster-identifier "${GLOBAL_MEMBER_ID}" \
+  --region "${REGION}" --query 'DBClusters[0].GlobalWriteForwardingRequested' --output text) \
+  || { echo "FAIL: #5639: DescribeDBClusters on the GlobalMemberCluster failed" >&2; exit 1; }
+if [ "${GLOBAL_FORWARDING_LIVE}" != "True" ]; then
+  echo "FAIL: #5639: phase 1: GlobalMemberCluster GlobalWriteForwardingRequested is '${GLOBAL_FORWARDING_LIVE}', want 'True' (CreateDBCluster did not send EnableGlobalWriteForwarding)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: GlobalMemberCluster requests global write forwarding (#5639)"
+
+# go-to-k/cdkd#5639 (DBCluster ReplicationSourceIdentifier / SourceRegion):
+# the ReplicaCluster is a read replica of the ReplicaSourceInstance. Before
+# #5639 either declared key routed it to Cloud Control, which the route check
+# fails; the live ReplicationSourceIdentifier proves CreateDBCluster sent it.
+REPLICA_CLUSTER_ID=$(echo "${STATE}" | jq -r '.resources.ReplicaCluster.physicalId // ""')
+REPLICA_SOURCE_ID=$(echo "${STATE}" | jq -r '.resources.ReplicaSourceInstance.physicalId // ""')
+if [ -z "${REPLICA_CLUSTER_ID}" ] || [ -z "${REPLICA_SOURCE_ID}" ]; then
+  echo "FAIL: #5639: could not resolve the ReplicaCluster / ReplicaSourceInstance identifiers from state" >&2
+  exit 1
+fi
+REPLICA_RECORD=$(echo "${STATE}" | jq -r '.resources.ReplicaCluster | "\(.provisionedBy // "sdk") \(.properties.SourceRegion // "absent")"')
+if [ "${REPLICA_RECORD}" != "sdk ${REGION}" ]; then
+  echo "FAIL: #5639: phase 1: ReplicaCluster record [provisionedBy, SourceRegion] is '${REPLICA_RECORD}', want 'sdk ${REGION}' (ReplicationSourceIdentifier or SourceRegion is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  exit 1
+fi
+REPLICA_SOURCE_ARN=$(aws rds describe-db-instances --db-instance-identifier "${REPLICA_SOURCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0].DBInstanceArn' --output text) \
+  || { echo "FAIL: #5639: DescribeDBInstances on the ReplicaSourceInstance failed" >&2; exit 1; }
+REPLICA_LIVE_SOURCE=$(aws rds describe-db-clusters --db-cluster-identifier "${REPLICA_CLUSTER_ID}" \
+  --region "${REGION}" --query 'DBClusters[0].ReplicationSourceIdentifier' --output text) \
+  || { echo "FAIL: #5639: DescribeDBClusters on the ReplicaCluster failed" >&2; exit 1; }
+if [ -z "${REPLICA_SOURCE_ARN}" ] || [ "${REPLICA_SOURCE_ARN}" = "None" ] \
+  || [ "${REPLICA_LIVE_SOURCE}" != "${REPLICA_SOURCE_ARN}" ]; then
+  echo "FAIL: #5639: phase 1: ReplicaCluster ReplicationSourceIdentifier is '${REPLICA_LIVE_SOURCE}', want the source ARN '${REPLICA_SOURCE_ARN}' (CreateDBCluster did not send it)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: ReplicaCluster provisionedBy=sdk and replicates from ${REPLICA_SOURCE_ID} (#5639)"
 
 # go-to-k/cdkd#5639 (DBCluster DBInstanceParameterGroupName): the
 # UpgradeCluster declares the 16 instance parameter group, which

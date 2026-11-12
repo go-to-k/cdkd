@@ -304,48 +304,49 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
   });
 
   it('names the deletion protection a replacement cannot clear (#2610)', async () => {
-    // A DBCluster create-only key still SDK-unwired (go-to-k/cdkd#5639 wired SnapshotIdentifier).
+    // A DBInstance create-only key still SDK-unwired (go-to-k/cdkd#5639 wired
+    // the last DBCluster one, SourceRegion; BackupTarget is out of #5640's scope).
     const recorded = {
-      Engine: 'aurora-mysql',
-      SourceRegion: 'us-west-2',
+      Engine: 'mysql',
+      BackupTarget: 'outposts',
       DeletionProtection: true,
     };
     const change: ResourceChange = {
-      logicalId: 'MyCluster',
+      logicalId: 'MyInstance',
       changeType: 'UPDATE',
-      resourceType: 'AWS::RDS::DBCluster',
+      resourceType: 'AWS::RDS::DBInstance',
       currentProperties: recorded,
       desiredProperties: recorded,
       propertyChanges: [
         {
-          path: 'SourceRegion',
+          path: 'BackupTarget',
           oldValue: undefined,
-          newValue: 'us-west-2',
+          newValue: 'outposts',
           requiresReplacement: true,
         },
       ],
     };
-    expect(getPropertyCoverage('AWS::RDS::DBCluster')?.createOnlyDrops.has('SourceRegion')).toBe(
+    expect(getPropertyCoverage('AWS::RDS::DBInstance')?.createOnlyDrops.has('BackupTarget')).toBe(
       true
     );
     const engine = makeEngine();
     const err = await provisionResource(
       engine,
-      'MyCluster',
+      'MyInstance',
       change,
       {
-        MyCluster: {
-          physicalId: 'cluster-1',
-          resourceType: 'AWS::RDS::DBCluster',
+        MyInstance: {
+          physicalId: 'instance-1',
+          resourceType: 'AWS::RDS::DBInstance',
           properties: recorded,
           attributes: {},
           dependencies: [],
           provisionedBy: 'sdk',
-          acceptedCreateOnlyDrops: ['SourceRegion'],
+          acceptedCreateOnlyDrops: ['BackupTarget'],
         },
       } as unknown as Record<string, never>,
       'MyStack',
-      { Resources: { MyCluster: { Type: 'AWS::RDS::DBCluster', Properties: recorded } } }
+      { Resources: { MyInstance: { Type: 'AWS::RDS::DBInstance', Properties: recorded } } }
     ).then(
       () => null,
       (e: unknown) => e as Error & { cause?: Error & { code?: string } }

@@ -129,7 +129,9 @@ export const AWS_CN_CROSS_REGION_REPLICA_RATIONALE =
  * go-to-k/cdkd#5640: an `AWS::RDS::DBInstance` whose `SourceDBInstanceIdentifier`
  * is an `aws-cn` ARN in another region than the one deploying it. RDS honours
  * the cross-region `PreSignedUrl` in China, and `@aws-sdk/middleware-sdk-rds`
- * builds it for `rds.<region>.amazonaws.com` whatever the partition. A region
+ * builds it for `rds.<region>.amazonaws.com` whatever the partition. The same
+ * holds for an `AWS::RDS::DBCluster` `ReplicationSourceIdentifier`
+ * (go-to-k/cdkd#5639), which the middleware presigns for CreateDBCluster. A region
  * the scope cannot name (`ambientRegion`) counts as another. Only a RESOLVED
  * string is read: a raw template value behind an intrinsic is not gated.
  */
@@ -137,15 +139,24 @@ function findValueRoutedProperties(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined
 ): Array<{ property: string; rationale: string }> {
-  if (resourceType !== 'AWS::RDS::DBInstance') return [];
-  const source = templateProperties?.['SourceDBInstanceIdentifier'];
+  const property = CROSS_REGION_REPLICA_SOURCE_KEYS[resourceType];
+  if (property === undefined) return [];
+  const source = templateProperties?.[property];
   if (typeof source !== 'string' || !source.startsWith('arn:aws-cn:')) return [];
   // `sameRegion` answers false for an unknown (`undefined`) own region.
   if (sameRegion(ambientRegion(), source.split(':')[3])) return [];
-  return [
-    { property: 'SourceDBInstanceIdentifier', rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE },
-  ];
+  return [{ property, rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE }];
 }
+
+/**
+ * The replica source key `@aws-sdk/middleware-sdk-rds` presigns a
+ * cross-region `PreSignedUrl` from, per type: go-to-k/cdkd#5640 for a DB
+ * instance, go-to-k/cdkd#5639 for a DB cluster (`CreateDBCluster`).
+ */
+const CROSS_REGION_REPLICA_SOURCE_KEYS: Readonly<Record<string, string>> = {
+  'AWS::RDS::DBInstance': 'SourceDBInstanceIdentifier',
+  'AWS::RDS::DBCluster': 'ReplicationSourceIdentifier',
+};
 
 /**
  * The {@link findUnrecognizedProperties} keys that route the resource through

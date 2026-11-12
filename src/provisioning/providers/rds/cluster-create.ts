@@ -31,11 +31,18 @@ import {
   backtrackWindowValue,
   localWriteForwardingFlag,
   localWriteForwardingApplied,
+  globalWriteForwardingFlag,
+  globalWriteForwardingApplied,
   httpEndpointFlag,
   retentionPeriodValue,
   usableAvailabilityZones,
 } from './cluster-members.js';
-import { readableGlobalClusterId, recordedGlobalClusterIdentifier } from './shared.js';
+import { refuseUnknownSourceRegion } from './read-replica.js';
+import {
+  readableGlobalClusterId,
+  recordedGlobalClusterIdentifier,
+  replicationSourceOf,
+} from './shared.js';
 import {
   EXPRESS_WRITER_RESOURCE_ID_KEY,
   expressConfigurationFlag,
@@ -115,6 +122,8 @@ export async function createDBCluster(
   const backtrackSkipped = backtrackWindowValue(properties['BacktrackWindow']) === 'malformed';
   const forwardingSkipped =
     localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === 'malformed';
+  const globalForwardingSkipped =
+    globalWriteForwardingFlag(properties['EnableGlobalWriteForwarding']) === 'malformed';
   // go-to-k/cdkd#5639: likewise the Availability Zones, which must be a list
   // of names; a rollback re-create sends none (RDS picks the zones).
   const rawAvailabilityZones = properties['AvailabilityZones'];
@@ -130,6 +139,22 @@ export async function createDBCluster(
   const globalClusterId = globalClusterSkipped
     ? undefined
     : recordedGlobalClusterIdentifier(properties);
+  // go-to-k/cdkd#5639: likewise a replication source that is not a string. A
+  // string makes the cluster a read replica of that DB instance or cluster
+  // (`Translator.createDbClusterRequest`); a cross-region source ARN gets its
+  // `PreSignedUrl` from the AWS SDK for JavaScript's RDS middleware, from the
+  // ARN's region.
+  const replicationSourceSkipped = !readableGlobalClusterId(
+    properties['ReplicationSourceIdentifier']
+  );
+  const replicationSource = replicationSourceSkipped ? undefined : replicationSourceOf(properties);
+  // go-to-k/cdkd#5639: `SourceRegion` is never sent, as for a DB instance
+  // (`refuseUnknownSourceRegion`): CloudFormation's handler validates it on
+  // every request and otherwise only hands it to the Java SDK, which presigns
+  // the same URL from it and keeps it off the wire.
+  refuseUnknownSourceRegion(properties, resourceType, logicalId, replaying, (message) =>
+    this.logger.warn(message)
+  );
   // go-to-k/cdkd#5984: create-only; likewise refused when not a boolean, and
   // a rollback re-create leaves it out (a cluster without express configuration).
   const expressFlag = expressConfigurationFlag(properties['WithExpressConfiguration']);
@@ -155,6 +180,18 @@ export async function createDBCluster(
   for (const [skipped, key, expected, created] of [
     [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
     [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
+    [
+      globalForwardingSkipped,
+      'EnableGlobalWriteForwarding',
+      'true or false',
+      'global write forwarding off',
+    ],
+    [
+      replicationSourceSkipped,
+      'ReplicationSourceIdentifier',
+      'a string',
+      'no replication source (not a read replica)',
+    ],
     [globalClusterSkipped, 'GlobalClusterIdentifier', 'a string', 'no global cluster'],
     [expressSkipped, 'WithExpressConfiguration', 'true or false', 'no express configuration'],
     // go-to-k/cdkd#5639: a Multi-AZ DB cluster's instance class, storage
@@ -207,6 +244,8 @@ export async function createDBCluster(
     ...(retentionSkipped ? ['PerformanceInsightsRetentionPeriod'] : []),
     ...(backtrackSkipped ? ['BacktrackWindow'] : []),
     ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
+    ...(globalForwardingSkipped ? ['EnableGlobalWriteForwarding'] : []),
+    ...(replicationSourceSkipped ? ['ReplicationSourceIdentifier'] : []),
     ...(availabilityZonesSkipped ? ['AvailabilityZones'] : []),
     ...(globalClusterSkipped ? ['GlobalClusterIdentifier'] : []),
     ...(expressSkipped ? ['WithExpressConfiguration'] : []),
@@ -388,6 +427,11 @@ export async function createDBCluster(
             // go-to-k/cdkd#5639: the global cluster to join, as CloudFormation's
             // create sends it (a blank one names none).
             ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
+            // go-to-k/cdkd#5639: the read replica's source, as CloudFormation's
+            // create sends it (a blank one names none).
+            ...(replicationSource !== undefined && {
+              ReplicationSourceIdentifier: replicationSource,
+            }),
             // go-to-k/cdkd#5984: RDS creates the writer instance with the cluster.
             ...(expressFlag !== undefined &&
               !expressSkipped && { WithExpressConfiguration: express }),
@@ -487,6 +531,17 @@ export async function createDBCluster(
             dbClusterIdentifier,
             (cluster) => localWriteForwardingApplied(cluster, true),
             'local write forwarding setting'
+          );
+        }
+        // go-to-k/cdkd#5639: likewise global write forwarding
+        // (`BaseHandlerStd.isGlobalWriteForwardingStabilized`), on a create or
+        // a restore's follow-up ModifyDBCluster.
+        if (globalWriteForwardingFlag(properties['EnableGlobalWriteForwarding']) === true) {
+          await this.waitForClusterState(
+            logicalId,
+            dbClusterIdentifier,
+            (cluster) => globalWriteForwardingApplied(cluster, true),
+            'global write forwarding setting'
           );
         }
         // go-to-k/cdkd#5984: CloudFormation's create completes with the

@@ -123,7 +123,7 @@ export function refuseUnknownSourceRegion(
   const message =
     typeof value === 'string'
       ? `${resourceType} ${logicalId}: Unknown source region (SourceRegion must name an AWS region, as CloudFormation requires)`
-      : `${resourceType} ${logicalId}: SourceRegion must be a string (the source DB instance's region)`;
+      : `${resourceType} ${logicalId}: SourceRegion must be a string (the replication source's region)`;
   if (replaying) {
     warn(`${message}; replaying a recorded state, so it is ignored (it is never sent to RDS)`);
     return;
