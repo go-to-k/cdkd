@@ -61,7 +61,10 @@ import { createSecretMasker, maskSecretsInText, unionOfSecretBags } from '../sec
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
-import { buildResolverContext } from './resolver-context.js';
+import { buildResolverContext, maskedInputSources } from './resolver-context.js';
+import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
+import { noEchoPositionSources } from './noecho.js';
+import { deleteOldIdAfterDeploy } from './replacement/cleanup-old-id.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 import { replaceFallbackFor } from './update-in-place/replace-fallback.js';
 
@@ -724,6 +727,43 @@ export async function updateInPlace(
     engine.logger.info(
       safeMsg`Resource ${logicalId} was replaced: ${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)} -> ${displayPhysicalId(resourceType, result.physicalId)}`
     );
+    // go-to-k/cdkd#6117: a custom resource's handler still owns the old id;
+    // CloudFormation's cleanup phase sends it a Delete with the old properties.
+    if (
+      result.oldPhysicalIdLeftForCleanup === true &&
+      result.physicalId !== currentResource.physicalId
+    ) {
+      await deleteOldIdAfterDeploy(engine.replacementRun, engine.replacementDeps(), {
+        logicalId,
+        oldResource: currentResource,
+        deleteProvider: updateProvider,
+        deleteProvisionedBy: updateDecision.provisionedBy,
+        updateReplacePolicy,
+        secrets: updateSecrets,
+        // go-to-k/cdkd#4682: today's values at the old record's NoEcho
+        // coordinates, as a replacement's delete of its old record gets them.
+        noEchoDeleteValues: () =>
+          noEchoDeleteValuesFromResolved({
+            record: currentResource,
+            templateResource: template?.Resources?.[logicalId],
+            resolvedProperties: resolvedProps,
+            noEchoParameters:
+              noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
+              new Set(),
+            conditions: engine.noEchoRun.noEchoConditions,
+            secrets: updateSecrets,
+            inputSources:
+              template &&
+              maskedInputSources(
+                engine.resolverContextDeps(),
+                template,
+                stateResources,
+                engine.noEchoRun.noEchoConditions,
+                stackName
+              ),
+          }),
+      });
+    }
   }
 
   // Issue #3462 — the ONE refusal class an in-place UPDATE may not

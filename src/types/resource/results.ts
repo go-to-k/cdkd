@@ -142,6 +142,17 @@ interface ResourceUpdateResultBase extends EffectivePropertiesResult, NoEchoAttr
    * sets it; absent means "may have written".
    */
   sentNothing?: true;
+  /**
+   * go-to-k/cdkd#6117: the update moved the resource to a NEW physical id
+   * (`wasReplaced`, `physicalId` changed) and left the OLD one for the engine
+   * to delete. A custom resource's handler answered a new
+   * `PhysicalResourceId`: CloudFormation then sends the old id a `Delete`
+   * (with the old properties) in the stack's cleanup phase, so the engine
+   * sends it once the deploy's every change succeeded. Only the
+   * custom-resource provider sets it; a provider replacing inside `update()`
+   * retires the old resource itself.
+   */
+  oldPhysicalIdLeftForCleanup?: true;
 }
 
 /**

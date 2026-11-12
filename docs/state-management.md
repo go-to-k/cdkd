@@ -284,7 +284,8 @@ Four of these fields change what a command does:
   new resources under new names, and `cdkd import` adopts one.
 - `supersededResources` lists the old copy of a replaced resource that was
   still in use when the deploy tried to delete it, such as a target group a
-  listener still pointed at. Every later `cdkd deploy` retries the delete once
+  listener still pointed at, and the old physical id of a custom resource whose
+  update answered a new one, from the update until the deploy's `Delete` of it. Every later `cdkd deploy` retries the delete once
   its own changes are done and drops the entry when it succeeds, and
   `cdkd destroy` deletes the resource after the stack's own resources. While
   the delete keeps failing, the entry stays and each attempt warns.

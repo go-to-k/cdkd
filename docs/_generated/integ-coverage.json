@@ -6325,6 +6325,7 @@
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
+        "custom-resource-physid-replace",
         "custom-resource-provider",
         "custom-resource-resolved-secret",
         "custom-resource-service-token-change",
@@ -6492,6 +6493,10 @@
           "literal"
         ],
         "custom-resource-noecho-nested": [
+          "l2",
+          "literal"
+        ],
+        "custom-resource-physid-replace": [
           "l2",
           "literal"
         ],

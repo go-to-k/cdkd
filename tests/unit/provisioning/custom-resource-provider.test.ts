@@ -650,9 +650,36 @@ describe('CustomResourceProvider', () => {
 
       expect(result.physicalId).toBe('sns-custom-id-456');
       expect(result.wasReplaced).toBe(false);
+      // go-to-k/cdkd#6117: no new id, nothing left for the cleanup phase.
+      expect(result.oldPhysicalIdLeftForCleanup).toBeUndefined();
       expect(result.attributes).toEqual({ UpdatedAttr: 'new-value' });
       expect(mockSnsSend).toHaveBeenCalledTimes(1);
       expect(mockLambdaSend).not.toHaveBeenCalled();
+    });
+
+    it('leaves the old id for the cleanup phase when the handler answers a new one (#6117)', async () => {
+      const snsTopicArn = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+      mockS3Send.mockResolvedValueOnce({});
+      mockSnsSend.mockResolvedValueOnce({ MessageId: 'msg-update' });
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(JSON.stringify({ Status: 'SUCCESS', PhysicalResourceId: 'name-2' })),
+        },
+      });
+      mockS3Send.mockResolvedValueOnce({});
+
+      const result = await provider.update(
+        'MySnsCustom',
+        'name-1',
+        'Custom::SnsResource',
+        { ServiceToken: snsTopicArn, Name: 'name-2' },
+        { ServiceToken: snsTopicArn, Name: 'name-1' }
+      );
+
+      expect(result.physicalId).toBe('name-2');
+      expect(result.wasReplaced).toBe(true);
+      expect(result.oldPhysicalIdLeftForCleanup).toBe(true);
     });
   });
 

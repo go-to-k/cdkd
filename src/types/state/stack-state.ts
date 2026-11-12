@@ -317,7 +317,9 @@ export interface StackState {
    * Resources a replacement superseded whose delete has not succeeded yet
    * (go-to-k/cdkd#5111): the old copy of a replaced resource, recorded the
    * moment its delete is deferred (an in-use target group a listener still
-   * points at, say), in the same save that records the replacement. Without
+   * points at, say, or a custom resource's old physical id, whose delete
+   * waits for the deploy to succeed, go-to-k/cdkd#6117), in the same save
+   * that records the replacement. Without
    * it, a deploy killed before its end-of-deploy retry left the old resource
    * in AWS with no record at all.
    *

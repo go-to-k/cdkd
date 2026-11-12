@@ -7,9 +7,10 @@ description: "How cdkd deploy handles a custom resource whose ServiceToken chang
 
 A custom resource is a resource whose create, update and delete are carried
 out by a handler you supply, usually a Lambda function. The resource's
-`ServiceToken` property is the handler's ARN. This page covers the two
+`ServiceToken` property is the handler's ARN. This page covers the three
 situations where `cdkd deploy` treats a custom resource differently from other
-resources: the `ServiceToken` changed, or cdkd could not send the delete.
+resources: the `ServiceToken` changed, an update answered a new physical id, or
+cdkd could not send the delete.
 Against an S3 emulator, see
 [The custom-resource response endpoint](troubleshooting-internals.md#the-custom-resource-response-endpoint).
 
@@ -74,6 +75,48 @@ as `***`. A new parameter value is therefore not detected, and the update goes
 to whichever handler the new value names. To have such a change refused, feed
 `ServiceToken` from a plain value.
 
+## An update that answers a new physical id
+
+A handler can answer an `Update` request with a `PhysicalResourceId` that
+differs from the one it was sent, for example when the id is derived from a
+property that changed. CloudFormation treats that as a replacement: once the
+whole stack update has succeeded, it sends the handler a `Delete` request for
+the OLD id, with the OLD properties.
+
+`cdkd deploy` does the same. It prints `Resource <id> was replaced: <old> ->
+<new>`, and once every other change of the deploy has succeeded, it sends the
+`Delete` for the old id. Until then the old id stays in the stack's state, so
+a deploy that is killed before the `Delete` leaves it for the next
+`cdkd deploy`, or for `cdkd destroy`, to delete. One exception: a record
+holding the masked value of a `NoEcho` parameter is not kept, because only the
+running deploy can re-resolve that value.
+
+The old properties are the ones recorded in state, except at a position that
+held a `NoEcho` parameter value: state keeps only `***` there, so cdkd sends
+the parameter's value as the template binds it today. When that value has
+changed since the old id was created, the `Delete` carries the new value,
+where CloudFormation sends the old one.
+
+- **The deploy fails.** No `Delete` is sent. The rollback records the old id
+  again by sending the handler a `Create` with the old properties, then
+  deletes the new id. CloudFormation sends an `Update` instead, so a handler
+  whose `Create` refuses a resource that already exists fails that rollback.
+- **The `Delete` does not complete** (the handler answers `FAILED`, or the
+  invoke fails). cdkd warns, naming the old id, and the deploy still
+  completes, with exit code `2` unless `--allow-unaddressed`. This is the skip
+  below: the old id is no longer tracked, so tear down what the handler made
+  under it by hand.
+- **`UpdateReplacePolicy: Retain`**, or **`Snapshot`** without
+  `--skip-final-snapshot` (a custom resource takes no snapshot). No `Delete`
+  is sent, and the old id is no longer tracked. Under `Snapshot` the deploy
+  warns and exits `2` unless `--allow-unaddressed`.
+- **cdkd cannot prepare the old properties** (re-reading a `NoEcho` value
+  fails). No `Delete` is sent; cdkd warns naming the old id and exits `2`
+  unless `--allow-unaddressed`. Tear down what the handler made under it by
+  hand.
+- **Another resource of the stack records the same physical id.** No `Delete`
+  is sent; cdkd never deletes an id one of its records names.
+
 ## A skipped custom-resource delete
 
 A deploy deletes a custom resource when the resource leaves the template, is
@@ -93,8 +136,9 @@ What follows depends on why the resource was being deleted.
 | Replaced delete-first, or rolled back | The resource usually fails and the record is kept. |
 | The other copy already exists | The skip only warns, and the surviving copy is no longer tracked. |
 
-The third row covers a replacement that created the new resource first, and a
-rollback that created the old resource again first. Tear the surviving copy
+The third row covers a replacement that created the new resource first, an
+update whose handler answered a new physical id, and a rollback that created
+the old resource again first. Tear the surviving copy
 down by hand.
 
 ### A resource removed from the template

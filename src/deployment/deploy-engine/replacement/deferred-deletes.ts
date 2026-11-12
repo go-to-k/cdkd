@@ -22,7 +22,12 @@ export interface DeferredReplacedDelete {
   physicalId: string;
   resourceType: string;
   provisionedBy: 'sdk' | 'cc-api' | undefined;
-  failureMessage: string;
+  /**
+   * Undefined for a delete never attempted inside the DAG: a custom
+   * resource's old physical id, which CloudFormation deletes only in the
+   * cleanup phase (go-to-k/cdkd#6117).
+   */
+  failureMessage: string | undefined;
   /** Set by `provisionResource` when the row already ended partial. */
   rowPartial?: boolean;
   retry: () => Promise<void>;
@@ -45,7 +50,15 @@ export async function retryDeferredReplacedDeletes(
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
   if (deferred === undefined || deferred.size === 0) return;
-  deps.logger.info(safeMsg`Retrying the delete of ${deferred.size} replaced resource(s)`);
+  const retried = [...deferred.values()].filter((entry) => entry.failureMessage !== undefined);
+  if (retried.length > 0) {
+    deps.logger.info(safeMsg`Retrying the delete of ${retried.length} replaced resource(s)`);
+  }
+  if (retried.length < deferred.size) {
+    deps.logger.info(
+      safeMsg`Deleting the old physical id of ${deferred.size - retried.length} replaced custom resource(s)`
+    );
+  }
   const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
     const guards: ReportedDeleteGuard[] = [];
     try {
@@ -139,7 +152,12 @@ export function warnUnretriedReplacedDeletes(
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
       deps.logger.warn(
-        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
+        entry.failureMessage === undefined
+          ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
+            // update re-creates the old resource (#6120): tracked again only
+            // when the handler answers the same id.
+            safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback re-creates the old resource, and it is tracked again only if the handler answers this id; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
+          : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
       )
     );
   }

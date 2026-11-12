@@ -68,6 +68,8 @@ import {
   printDestroySummary,
 } from './under-lock-steps.js';
 import { deleteStackResource, type DeleteResourceFrame } from './delete-resource.js';
+import { isCustomResourceType } from '../../../provisioning/custom-resource-secure-references.js';
+import type { SupersededResourceRecord } from '../../../types/state.js';
 
 /** What {@link destroyStackUnderLock} reads from `destroyStackInRegion`. */
 export interface UnderLockFrame {
@@ -501,6 +503,120 @@ export async function destroyStackUnderLock({
       secretPrincipalRegionsIncomplete,
     };
 
+    // go-to-k/cdkd#5111: the old copies a replacement left to delete. A failure
+    // or a skip keeps its entry, and with it the state, for a re-run.
+    // `early` (go-to-k/cdkd#6117): an attempt before the stack's own resources,
+    // whose failure or skip is neither counted nor dropped but answers `true`,
+    // so the entry is sent again after them, as before #6117.
+    const deleteSupersededRow = async (
+      entry: SupersededResourceRecord,
+      early = false
+    ): Promise<boolean> => {
+      const { logicalId } = entry;
+      const { physicalId, resourceType } = entry.state;
+      const drop = (): void => {
+        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
+      };
+      // Every line names the id under the row's printing bag: the id can
+      // spell a secret-derived name (go-to-k/cdkd#3869).
+      // The OLD record's own needles too, judged as an orphan's are, beside
+      // the row's current one (a rotated secret's name).
+      const bag = unionOfSecretBags([
+        printingBagOf(logicalId),
+        orphanRecordsPrintingBag([entry], noEchoValues),
+      ]);
+      // A record names its id (a rollback took it back): deleted above, as
+      // that record's resource, or kept with it -- never deleted here.
+      const holder = supersededHolderOf(entry, state.resources);
+      if (holder !== undefined) {
+        drop();
+        if (holder.resourceType !== resourceType) {
+          withPrintingSecrets(bag, () =>
+            logger.warn(
+              safeMsg`  ⚠ ${supersededHeldByOtherTypeWarning(entry, holder.resourceType)}`
+            )
+          );
+        }
+        return false;
+      }
+      return withPrintingSecrets(bag, async (): Promise<boolean> => {
+        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
+        let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
+        try {
+          outcome = await withStackRecords(
+            {
+              live: () => Object.entries(remainingResources),
+              survivors: () => Object.entries(remainingResources),
+            },
+            () =>
+              deleteSupersededEntry(entry, {
+                provider: destroyProviderRegistry.getProviderFor({
+                  resourceType,
+                  ...(entry.state.provisionedBy !== undefined && {
+                    provisionedBy: entry.state.provisionedBy,
+                  }),
+                }).provider,
+                region: state.region ?? regionForState,
+                ...(ctx.removeProtection === true && { removeProtection: true }),
+                ...(ctx.stackDestroy === true && { stackDestroy: true }),
+                maskSecrets: createUnionSecretMasker([bag]),
+                stop: () => lock.interrupted,
+              })
+          );
+        } catch (error) {
+          outcome = { kind: 'failed', error };
+        }
+        if (outcome.kind === 'deleted') {
+          result.deletedCount++;
+          drop();
+          logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
+          return false;
+        }
+        if (early) {
+          // A not-yet-updated resource of a failed deploy may still use the
+          // old id; nothing printed carries the failure's text.
+          logger.info(
+            safeMsg`  ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted yet; retrying after the stack's own resources`
+          );
+          return true;
+        }
+        const why =
+          outcome.kind === 'notDeleted'
+            ? outcome.reason
+            : maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
+        if (outcome.kind === 'notDeleted') {
+          // As the deploy treats it: a provider that will not address it
+          // would refuse every re-run, so the record goes, with this line.
+          drop();
+          result.skippedCount++;
+          result.journaledOrphanSkips++;
+          logger.warn(
+            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+              'Delete it manually — it is no longer tracked in state.'
+          );
+          return false;
+        }
+        result.errorCount++;
+        logger.warn(
+          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+            'State preserved: it stays recorded, and a re-run of the destroy retries it.'
+        );
+        return false;
+      });
+    };
+
+    // go-to-k/cdkd#6117: a custom resource's old physical id is deleted
+    // BEFORE the stack's own resources: its Delete runs through the handler
+    // (the ServiceToken function, a provider framework), which those take
+    // down. After a failed deploy a resource not yet updated may still name
+    // the old id, so one that is not deleted here is sent again after them.
+    const retryLate = new Set<SupersededResourceRecord>();
+    for (const entry of supersededResourcesOf(state)) {
+      if (lock.interrupted) break;
+      if (!isCustomResourceType(entry.state.resourceType)) continue;
+      if (await deleteSupersededRow(entry, true)) retryLate.add(entry);
+    }
+
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
       // Graceful SIGINT (issue #816): once draining, do not start a new
@@ -535,93 +651,13 @@ export async function destroyStackUnderLock({
       await Promise.all(deletePromises);
     }
 
-    // go-to-k/cdkd#5111: the old copies a replacement left to delete, AFTER the
-    // stack's own resources, any of which may still have used one. A failure
-    // or a skip keeps its entry, and with it the state, for a re-run.
+    // AFTER the stack's own resources, any of which may still have used one.
+    // A custom resource's old physical id went BEFORE them (above), unless
+    // that attempt did not delete it.
     for (const entry of supersededResourcesOf(state)) {
       if (lock.interrupted) break;
-      const { logicalId } = entry;
-      const { physicalId, resourceType } = entry.state;
-      const drop = (): void => {
-        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
-      };
-      // Every line names the id under the row's printing bag: the id can
-      // spell a secret-derived name (go-to-k/cdkd#3869).
-      // The OLD record's own needles too, judged as an orphan's are, beside
-      // the row's current one (a rotated secret's name).
-      const bag = unionOfSecretBags([
-        printingBagOf(logicalId),
-        orphanRecordsPrintingBag([entry], noEchoValues),
-      ]);
-      // A record names its id (a rollback took it back): deleted above, as
-      // that record's resource, or kept with it -- never deleted here.
-      const holder = supersededHolderOf(entry, state.resources);
-      if (holder !== undefined) {
-        drop();
-        if (holder.resourceType !== resourceType) {
-          withPrintingSecrets(bag, () =>
-            logger.warn(
-              safeMsg`  ⚠ ${supersededHeldByOtherTypeWarning(entry, holder.resourceType)}`
-            )
-          );
-        }
-        continue;
-      }
-      await withPrintingSecrets(bag, async () => {
-        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
-        let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
-        try {
-          outcome = await withStackRecords(
-            {
-              live: () => Object.entries(remainingResources),
-              survivors: () => Object.entries(remainingResources),
-            },
-            () =>
-              deleteSupersededEntry(entry, {
-                provider: destroyProviderRegistry.getProviderFor({
-                  resourceType,
-                  ...(entry.state.provisionedBy !== undefined && {
-                    provisionedBy: entry.state.provisionedBy,
-                  }),
-                }).provider,
-                region: state.region ?? regionForState,
-                ...(ctx.removeProtection === true && { removeProtection: true }),
-                ...(ctx.stackDestroy === true && { stackDestroy: true }),
-                maskSecrets: createUnionSecretMasker([bag]),
-                stop: () => lock.interrupted,
-              })
-          );
-        } catch (error) {
-          outcome = { kind: 'failed', error };
-        }
-        if (outcome.kind === 'deleted') {
-          result.deletedCount++;
-          drop();
-          logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
-          return;
-        }
-        const why =
-          outcome.kind === 'notDeleted'
-            ? outcome.reason
-            : maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
-        if (outcome.kind === 'notDeleted') {
-          // As the deploy treats it: a provider that will not address it
-          // would refuse every re-run, so the record goes, with this line.
-          drop();
-          result.skippedCount++;
-          result.journaledOrphanSkips++;
-          logger.warn(
-            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
-              'Delete it manually — it is no longer tracked in state.'
-          );
-          return;
-        }
-        result.errorCount++;
-        logger.warn(
-          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
-            'State preserved: it stays recorded, and a re-run of the destroy retries it.'
-        );
-      });
+      if (isCustomResourceType(entry.state.resourceType) && !retryLate.has(entry)) continue;
+      await deleteSupersededRow(entry);
     }
 
     // A superseded row cdkd cannot read is carried, never acted on, and may

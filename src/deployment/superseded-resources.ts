@@ -1,7 +1,9 @@
 /**
  * The superseded resources a stack still has to delete (go-to-k/cdkd#5111):
  * the old copy of a replaced resource whose delete was refused inside the
- * deploy (an in-use target group a listener still points at). The deploy
+ * deploy (an in-use target group a listener still points at), or a custom
+ * resource's old physical id, whose delete waits for the deploy to succeed
+ * (go-to-k/cdkd#6117). The deploy
  * records each one in `StackState.supersededResources` the moment it defers
  * the delete, so a deploy killed before its cleanup leaves the resource
  * tracked, not lost. Plain helpers over the field; the deploy's retry lives
