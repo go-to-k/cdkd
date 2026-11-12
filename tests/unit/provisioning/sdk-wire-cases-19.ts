@@ -1182,12 +1182,12 @@ const INSTANCE_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         [`update-add:${key}`]: {
-          why: `an instance is restored from a snapshot only when it is created, and CloudFormation fails an added snapshot as "Resource is immutable", so update() refuses it before any call (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640)`,
+          why: `an instance is restored from a snapshot only when it is created, and CloudFormation fails an added snapshot as "Resource is immutable", so update() refuses it before any call (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640)`,
           says: new RegExp(`${key} cannot be added or changed on an existing DB instance`),
         },
       },
       expectedSilent: {
-        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added snapshot (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
+        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added snapshot (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
         [`update-remove:${key}`]: `no ModifyDBInstance member: a removed snapshot changes nothing, as CloudFormation's handler treats it as mutable and sends nothing (ImmutabilityHelper.is${key}Mutable, read from the handler source, not measured; ${SRC})`,
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         ...INSTANCE_ENGINE_SILENT,

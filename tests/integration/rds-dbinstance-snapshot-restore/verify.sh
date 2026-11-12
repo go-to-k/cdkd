@@ -387,13 +387,18 @@ wait_snapshot_available "cluster snapshot ${CLUSTER_SNAPSHOT_ID}" DBClusterSnaps
 export CDKD_TEST_SNAPSHOT_ID="${SNAPSHOT_ID}"
 export CDKD_TEST_CLUSTER_SNAPSHOT_ID="${CLUSTER_SNAPSHOT_ID}"
 export CDKD_TEST_PITR=true
+# Only phase 5's refused deploy adds a RestoreTime.
+unset CDKD_TEST_PITR_RESTORE_TIME
 
 # --- Phase 3: both restores ----------------------------------------------------
 echo "==> Phase 3: restore SnapInstance (${SNAPSHOT_ID}), ClusterSnapInstance (${CLUSTER_SNAPSHOT_ID}) and PitrInstance (${SOURCE_ID}, latest restorable time)"
 DEPLOY_LOG="$(mktemp)"
 set +e
+# A restore copies its source first: 60 minutes per instance instead of the
+# create's 30 (the restore waits to the resource deadline).
 env -u CDKD_TEST_UPDATE \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-timeout 'AWS::RDS::DBInstance=60m' \
   >"${DEPLOY_LOG}" 2>&1
 DEPLOY_RC=$?
 set -e

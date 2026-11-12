@@ -53,10 +53,8 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
-import {
-  automatedBackupsArnNames,
-  refuseRestoreFromItself,
-} from '../../../src/provisioning/restore-source-guard.js';
+import { refuseRestoreFromItself } from '../../../src/provisioning/restore-source-guard.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { declaresPointInTimeRestore } from '../../../src/provisioning/providers/rds/instance-pitr.js';
 
@@ -72,8 +70,12 @@ interface Live {
   sourceEngine?: string | null;
   /** What DescribeDBInstances throws for the source instead of answering. */
   sourceError?: Error;
-  /** The automated backup's engine; `null` lists none. */
-  backupEngine?: string | null;
+  /** The automated backup's engine; `null` lists none, `undefined` names none. */
+  backupEngine?: string | null | undefined;
+  /** The backup lists no engine at all. */
+  backupEngineMissing?: boolean;
+  /** The instance the backup belongs to (`DbiResourceId`). */
+  backupOwner?: string;
   backupError?: Error;
   /** What the follow-up ModifyDBInstance throws. */
   modifyError?: Error;
@@ -116,7 +118,16 @@ function arm(live: Live = {}): void {
           if (live.backupError !== undefined) return Promise.reject(live.backupError);
           return Promise.resolve({
             DBInstanceAutomatedBackups:
-              live.backupEngine === null ? [] : [{ Engine: live.backupEngine ?? 'mysql' }],
+              live.backupEngine === null
+                ? []
+                : [
+                    {
+                      ...(live.backupEngineMissing !== true && {
+                        Engine: live.backupEngine ?? 'mysql',
+                      }),
+                      ...(live.backupOwner !== undefined && { DbiResourceId: live.backupOwner }),
+                    },
+                  ],
           });
         case 'RestoreDBInstanceToPointInTimeCommand':
           if (live.restoreError !== undefined) return Promise.reject(live.restoreError);
@@ -301,8 +312,8 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
     it.each([
       ['false', false],
       ["'false'", 'false'],
-      ['an empty RestoreTime', undefined],
-    ])('makes a read replica for UseLatestRestorableTime %s with no other key', async (_n, latest) => {
+      ['undeclared', undefined],
+    ])('makes a read replica for UseLatestRestorableTime %s with no other key (empty ones)', async (_n, latest) => {
       await provider.create('L', INSTANCE, {
         ...FROM_LATEST,
         UseLatestRestorableTime: latest,
@@ -311,6 +322,20 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       });
       expect(sent('RestoreDBInstanceToPointInTimeCommand')).toEqual([]);
       expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(1);
+    });
+
+    it('restores to a point in time, with no time, for a blank RestoreTime, as the handler does', async () => {
+      // `hasValue` makes it a point-in-time restore; `isNotBlank` keeps the
+      // time off the call and out of the timestamp validation.
+      await provider.create('L', INSTANCE, {
+        ...FROM_LATEST,
+        UseLatestRestorableTime: undefined,
+        RestoreTime: '  ',
+      });
+      const [restore] = sent('RestoreDBInstanceToPointInTimeCommand');
+      expect(restore).toMatchObject({ SourceDBInstanceIdentifier: SOURCE });
+      expect(restore).not.toHaveProperty('RestoreTime');
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toEqual([]);
     });
 
     it('makes a plain instance for UseLatestRestorableTime: false and no source', async () => {
@@ -423,7 +448,7 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
         'a resource id',
         { sourceEngine: null },
         { SourceDBInstanceIdentifier: undefined, SourceDbiResourceId: DBI },
-        /SourceDbiResourceId db-SOURCEID1 does not name a DB instance/,
+        /SourceDbiResourceId db-SOURCEID1 names no live DB instance this account can read, so cdkd cannot read the engine to restore; declare Engine/,
       ],
       [
         'an automated backup',
@@ -472,7 +497,7 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       const refused = await provider
         .create('L', INSTANCE, { ...rest, SourceDbiResourceId: 'secret-1' }, { maskSecrets: mask })
         .catch((e: unknown) => e);
-      expect(String(refused)).toMatch(/SourceDbiResourceId \*\*\* does not name a DB instance/);
+      expect(String(refused)).toMatch(/SourceDbiResourceId \*\*\* names no live DB instance/);
       expect(String(refused)).not.toContain('secret-1');
     });
 
@@ -493,8 +518,11 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
     });
 
     it('leaves an Oracle CDB engine to the follow-up, and SQL Server storage too', async () => {
-      await provider.create('L', INSTANCE, { ...FROM_LATEST, Engine: 'oracle-se2-cdb' });
-      expect(sent('RestoreDBInstanceToPointInTimeCommand')[0]).not.toHaveProperty('Engine');
+      for (const engine of ['oracle-se2-cdb', 'oracle-ee-cdb']) {
+        mockSend.mockClear();
+        await provider.create('L', INSTANCE, { ...FROM_LATEST, Engine: engine });
+        expect(sent('RestoreDBInstanceToPointInTimeCommand')[0], engine).not.toHaveProperty('Engine');
+      }
       mockSend.mockClear();
       arm({ sourceEngine: 'sqlserver-ex' });
       const { Engine: _e, ...noEngine } = FROM_LATEST;
@@ -504,6 +532,18 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       for (const key of ['AllocatedStorage', 'StorageType']) expect(restore).not.toHaveProperty(key);
       expect(sent('ModifyDBInstanceCommand')).toEqual([
         expect.objectContaining({ AllocatedStorage: 100, StorageType: 'gp3', ApplyImmediately: true }),
+      ]);
+    });
+
+    it('treats a source that lists no engine as SQL Server for the storage members, as the handler does', async () => {
+      arm({ backupEngineMissing: true });
+      const { Engine: _e, SourceDBInstanceIdentifier: _s, ...rest } = FROM_LATEST;
+      await provider.create('L', INSTANCE, { ...rest, SourceDBInstanceAutomatedBackupsArn: BACKUPS });
+      const [restore] = sent('RestoreDBInstanceToPointInTimeCommand');
+      expect(restore).not.toHaveProperty('Engine');
+      for (const key of ['AllocatedStorage', 'StorageType']) expect(restore).not.toHaveProperty(key);
+      expect(sent('ModifyDBInstanceCommand')).toEqual([
+        expect.objectContaining({ AllocatedStorage: 100, StorageType: 'gp3' }),
       ]);
     });
 
@@ -660,24 +700,15 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       ).not.toThrow();
     });
 
-    it('refuses its own recorded DbiResourceId and the automated backups named after it', () => {
+    it('refuses its own recorded DbiResourceId, leaving a backups ARN to the live read', () => {
       const own = { ...scope, attributes: { DbiResourceId: 'db-OWN1' } };
       expect(() =>
         refuseRestoreFromItself(INSTANCE, { SourceDbiResourceId: 'DB-own1' }, 'db-1', 'L', own)
       ).toThrow(/SourceDbiResourceId names the DB instance/);
-      expect(() =>
-        refuseRestoreFromItself(
-          INSTANCE,
-          { SourceDBInstanceAutomatedBackupsArn: 'arn:aws:rds:us-east-1:123456789012:auto-backup:ab-own1' },
-          'db-1',
-          'L',
-          own
-        )
-      ).toThrow(/SourceDBInstanceAutomatedBackupsArn names the DB instance/);
       for (const props of [
         { SourceDbiResourceId: 'db-OTHER' },
-        { SourceDBInstanceAutomatedBackupsArn: 'arn:aws:rds:us-east-1:123456789012:auto-backup:ab-other' },
-        { SourceDBInstanceAutomatedBackupsArn: 'arn:aws:rds:eu-west-1:123456789012:auto-backup:ab-own1' },
+        // The ARN's id is not the instance's resource id: only RDS can say whose it is.
+        { SourceDBInstanceAutomatedBackupsArn: 'arn:aws:rds:us-east-1:123456789012:auto-backup:ab-own1' },
       ]) {
         expect(() => refuseRestoreFromItself(INSTANCE, props, 'db-1', 'L', own), JSON.stringify(props)).not.toThrow();
       }
@@ -701,11 +732,23 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       ).not.toThrow();
     });
 
-    it('pairs an automated backup ARN with the resource id it is named after', () => {
-      expect(automatedBackupsArnNames('arn:aws:rds:r:1:auto-backup:ab-ABC', 'db-abc')).toBe(true);
-      expect(automatedBackupsArnNames('arn:aws:rds:r:1:auto-backup:ab-ABC', 'db-abcd')).toBe(false);
-      expect(automatedBackupsArnNames('arn:aws:rds:r:1:snapshot:ab-ABC', 'db-abc')).toBe(false);
-      expect(automatedBackupsArnNames('arn:aws:rds:r:1:auto-backup:ab-ABC', 'abc')).toBe(false);
+    it("answers an automated backups ARN's identity with the instance it backs up", async () => {
+      // AWS's own reference pair: the ARN's id differs from the resource id.
+      const arn = 'arn:aws:rds:us-east-1:123456789012:auto-backup:ab-jkib2gfq5rv7replzadausbrktni2bn4example';
+      arm({ backupOwner: 'db-JKIB2GFQ5RV7REPLZA4EXAMPLE' });
+      const ctx = { expectedRegion: 'us-east-1' };
+      expect(await provider.resourceIdentity(arn, INSTANCE, ctx)).toBe('db-JKIB2GFQ5RV7REPLZA4EXAMPLE');
+      expect(sent('DescribeDBInstanceAutomatedBackupsCommand')).toEqual([
+        { DBInstanceAutomatedBackupsArn: arn },
+      ]);
+      arm({ backupEngine: null });
+      expect(await provider.resourceIdentity(arn, INSTANCE, ctx)).toBe(RESOURCE_NOT_FOUND);
+      arm({ backupError: Object.assign(new Error('gone'), { name: 'DBInstanceAutomatedBackupNotFoundFault' }) });
+      expect(await provider.resourceIdentity(arn, INSTANCE, ctx)).toBe(RESOURCE_NOT_FOUND);
+      arm({});
+      expect(await provider.resourceIdentity(arn, INSTANCE, ctx)).toBeUndefined();
+      arm({ backupError: Object.assign(new Error('denied'), { name: 'AccessDenied' }) });
+      await expect(provider.resourceIdentity(arn, INSTANCE, ctx)).rejects.toThrow('denied');
     });
   });
 
@@ -768,6 +811,16 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       }
       // Not a read replica: nothing to promote.
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
+    });
+
+    it("does not treat a restored instance's source as a replica's on a rollback replay", async () => {
+      await update(
+        { ...FROM_LATEST, SourceDBInstanceIdentifier: 'older-db', BackupRetentionPeriod: '5' },
+        FROM_LATEST,
+        { replayingState: true }
+      );
+      expect(warned()).not.toMatch(/read replica/);
+      expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
     });
 
     it.each(['{{resolve:ssm:/cdkd/src}}', '***'])(

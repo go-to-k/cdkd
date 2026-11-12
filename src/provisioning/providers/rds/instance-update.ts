@@ -172,7 +172,11 @@ export async function updateDBInstance(
 
   // go-to-k/cdkd#5640: the read replica's source (`./read-replica.ts`).
   refuseMalformedReplicaSource(properties, resourceType, logicalId, physicalId);
-  const sourceChange = replicaSourceChange(properties, previousProperties);
+  // A point-in-time restore's source is no replica's: the restore-key refusal
+  // below owns a change, and a removal has nothing to promote.
+  const sourceChange = declaresPointInTimeRestore(previousProperties)
+    ? 'unchanged'
+    : replicaSourceChange(properties, previousProperties);
   // go-to-k/cdkd#5640: an added or changed restore snapshot or point-in-time
   // key is refused before any change, as CloudFormation fails the update
   // ("Resource is immutable"); a removed one changes nothing, and none is ever

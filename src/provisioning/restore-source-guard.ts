@@ -66,22 +66,11 @@ export function declaresInstancePointInTime(properties: Record<string, unknown>)
 }
 
 /**
- * The automated backup ARN's `ab-<id>` against a `DbiResourceId` `db-<id>`:
- * RDS names an instance's automated backups after its resource id (the
- * `DescribeDBInstanceAutomatedBackups` reference shows the pair; not measured).
- */
-export function automatedBackupsArnNames(arn: string, dbiResourceId: string): boolean {
-  const id = /:auto-backup:ab-([^:]+)$/i.exec(arn)?.[1];
-  const own = /^db-(.+)$/i.exec(dbiResourceId)?.[1];
-  return id !== undefined && own !== undefined && id.toLowerCase() === own.toLowerCase();
-}
-
-/**
  * A DB instance's point-in-time source that is the instance `physicalId`
  * names: by `SourceDBInstanceIdentifier`, or, where the record holds its
- * `DbiResourceId` (`scope.attributes`), by `SourceDbiResourceId` or the
- * automated backups ARN named after it. `deployment/restore-source-identity.ts`
- * reads the live id for a record without one.
+ * `DbiResourceId` (`scope.attributes`), by `SourceDbiResourceId`.
+ * `deployment/restore-source-identity.ts` reads the live id for a record
+ * without one, and the instance an automated backups ARN backs up.
  */
 function refuseInstancePointInTimeFromItself(
   resourceType: string,
@@ -114,14 +103,6 @@ function refuseInstancePointInTimeFromItself(
   const resourceId = properties['SourceDbiResourceId'];
   if (typeof resourceId === 'string' && resourceId.toLowerCase() === own.toLowerCase()) {
     refuse('SourceDbiResourceId');
-  }
-  const backups = properties['SourceDBInstanceAutomatedBackupsArn'];
-  if (
-    typeof backups === 'string' &&
-    automatedBackupsArnNames(backups, own) &&
-    !elsewhere(backups, scope)
-  ) {
-    refuse('SourceDBInstanceAutomatedBackupsArn');
   }
 }
 

@@ -75,6 +75,7 @@ import {
   waitForInstanceDeleted,
 } from './rds/waits.js';
 import { desiredAssociatedRoles, applyAssociatedRoles } from './rds/associated-roles.js';
+import { automatedBackupResourceId, isAutomatedBackupsArn } from './rds/instance-pitr.js';
 import {
   getDriftUnorderedPaths,
   getDriftUnknownPaths,
@@ -121,11 +122,8 @@ export class RDSProvider implements ResourceProvider {
   readonly protectionFlips = new ProtectionFlipRegistry();
 
   /**
-   * Issue #1160: empty for RDS. CloudFormation A/Bs (issue #5004, #1160
-   * comment 6401151077) showed CFn KEEPS most removed DBCluster / DBInstance
-   * values, so cdkd sends nothing for them; the resets it does make are
-   * coerced, engine-dependent or conditional, so they stay in
-   * `updateDBCluster` / `updateDBInstance`.
+   * Issue #1160: empty. CloudFormation KEEPS most removed values (A/B on #5004,
+   * #1160), so cdkd sends nothing; its few resets live in `update*`.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
@@ -960,6 +958,8 @@ export class RDSProvider implements ResourceProvider {
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<string | ResourceNotFound | undefined> {
+    // go-to-k/cdkd#5640: an automated backups ARN answers with the instance it backs up.
+    if (isAutomatedBackupsArn(physicalId)) return automatedBackupResourceId.call(this, physicalId);
     return resourceIdentity.call(this, physicalId, resourceType, context);
   }
   readDbResourceIdIfExists(

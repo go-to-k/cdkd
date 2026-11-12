@@ -446,22 +446,6 @@ export function changedCreateTimeKeys(
   });
 }
 
-/** {@link changedCreateTimeKeys} over the snapshot keys. */
-export function changedSnapshotRestoreKeys(
-  properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>,
-  changedProperties?: ReadonlySet<string>,
-  noEchoOnly?: ReadonlySet<string>
-): string[] {
-  return changedCreateTimeKeys(
-    SNAPSHOT_RESTORE_KEYS,
-    properties,
-    previousProperties,
-    changedProperties,
-    noEchoOnly
-  );
-}
-
 /**
  * The create-time keys {@link changedCreateTimeKeys} leaves alone only
  * because the change set names them for an unconfirmed `NoEcho` value: they

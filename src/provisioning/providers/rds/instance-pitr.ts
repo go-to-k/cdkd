@@ -1,6 +1,7 @@
 import {
   DescribeDBInstanceAutomatedBackupsCommand,
   DescribeDBInstancesCommand,
+  type DBInstanceAutomatedBackup,
   type ProcessorFeature,
   type RestoreDBInstanceToPointInTimeCommandInput,
   type Tag,
@@ -10,6 +11,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
 import { declaresInstancePointInTime } from '../../restore-source-guard.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../types/resource.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { parseZonedTimestamp } from './cluster-restore.js';
 import { engineLifecycleSupportOf } from './instance-members.js';
@@ -100,6 +102,9 @@ export function readInstancePointInTimeRestore(
   };
   const declaredTime = properties['RestoreTime'];
   let restoreTime: Date | undefined;
+  // A blank one passes `validateTimestamp` (`isNotBlank`) and goes out as no
+  // time (the Translator's `isNotBlank`), yet still makes the create a
+  // point-in-time restore (`hasValue`), as below.
   if (declaredTime != null && !(typeof declaredTime === 'string' && declaredTime.trim() === '')) {
     restoreTime = typeof declaredTime === 'string' ? parseZonedTimestamp(declaredTime) : undefined;
     if (restoreTime === undefined) {
@@ -123,14 +128,9 @@ export function readInstancePointInTimeRestore(
   };
   const sourceDBInstanceAutomatedBackupsArn = stringKey('SourceDBInstanceAutomatedBackupsArn');
   const sourceDbiResourceId = stringKey('SourceDbiResourceId');
-  if (
-    useLatestRestorableTime !== true &&
-    restoreTime === undefined &&
-    sourceDBInstanceAutomatedBackupsArn === undefined &&
-    sourceDbiResourceId === undefined
-  ) {
-    return undefined;
-  }
+  // The handler's predicate (`hasValue`: a blank `RestoreTime` counts), shared
+  // with the update, drift and replacement paths.
+  if (!declaresInstancePointInTime(properties)) return undefined;
   // `refuseMalformedReplicaSource` already refused a non-string.
   const source = properties['SourceDBInstanceIdentifier'];
   return {
@@ -174,11 +174,13 @@ export async function pointInTimeRestoreEngine(
           error instanceof Error ? error : undefined
         )
     );
-  const refuseNotFound = (key: string, value: string, noun: string): never => {
+  const refuseNotFound = (key: string, value: string, noun: string, why?: string): never => {
     throw markNonRetryable(
       new ProvisioningError(
         masked(
-          safeMsg`${resourceType} ${logicalId}: ${key} ${value} does not name ${noun} this account can read, so there is nothing to restore; nothing was changed.`
+          why === undefined
+            ? safeMsg`${resourceType} ${logicalId}: ${key} ${value} does not name ${noun} this account can read, so there is nothing to restore; nothing was changed.`
+            : safeMsg`${resourceType} ${logicalId}: ${key} ${value} ${why}; nothing was changed.`
         ),
         resourceType,
         logicalId
@@ -218,7 +220,14 @@ export async function pointInTimeRestoreEngine(
       return response.DBInstances?.[0];
     });
     if (instance === undefined) {
-      return refuseNotFound('SourceDbiResourceId', resourceId, 'a DB instance');
+      // A deleted instance's retained backups are a valid source, but the
+      // handler's `fetchEngine` reads only a live instance and fails here too.
+      return refuseNotFound(
+        'SourceDbiResourceId',
+        resourceId,
+        'a DB instance',
+        "names no live DB instance this account can read, so cdkd cannot read the engine to restore; declare Engine (a deleted instance's retained automated backups restore with it declared), as CloudFormation requires"
+      );
     }
     return instance.Engine;
   }
@@ -380,4 +389,39 @@ export function unusedPointInTimeRestoreKeys(properties: Record<string, unknown>
     if (value == null || value === '') return false;
     return !(Array.isArray(value) && value.length === 0);
   });
+}
+
+/**
+ * The `DbiResourceId` of the instance an automated backups ARN backs up
+ * (`DescribeDBInstanceAutomatedBackups`), for the replacement guard
+ * (`deployment/restore-source-identity.ts`, through the provider's
+ * `resourceIdentity`): `RESOURCE_NOT_FOUND` when RDS lists no such backup,
+ * `undefined` when the answer names no id or the ARN is not an automated
+ * backup's; any other failure throws.
+ */
+export async function automatedBackupResourceId(
+  this: RDSProvider,
+  arn: string
+): Promise<string | ResourceNotFound | undefined> {
+  if (!isAutomatedBackupsArn(arn)) return undefined;
+  let backups: DBInstanceAutomatedBackup[] | undefined;
+  try {
+    const response = await this.getClient().send(
+      new DescribeDBInstanceAutomatedBackupsCommand({ DBInstanceAutomatedBackupsArn: arn })
+    );
+    backups = response.DBInstanceAutomatedBackups;
+  } catch (error) {
+    if (this.isNotFoundError(error, 'DBInstanceAutomatedBackupNotFoundFault')) {
+      return RESOURCE_NOT_FOUND;
+    }
+    throw error;
+  }
+  if (backups === undefined || backups.length === 0) return RESOURCE_NOT_FOUND;
+  const id = backups[0]?.DbiResourceId;
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
+
+/** An RDS automated backups ARN (`arn:<partition>:rds:<region>:<account>:auto-backup:<id>`). */
+export function isAutomatedBackupsArn(value: string): boolean {
+  return /^arn:[^:]+:rds:[^:]*:[^:]*:auto-backup:.+$/.test(value);
 }

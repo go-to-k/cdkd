@@ -1,7 +1,6 @@
 import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../types/resource.js';
-import { automatedBackupsArnNames } from '../provisioning/restore-source-guard.js';
 import { markNonRetryable } from './retryable-errors.js';
 
 /** What {@link verifyRestoreSourceIdentity} needs about the cluster a replacement deletes first. */
@@ -94,14 +93,16 @@ export async function verifyRestoreSourceIdentity(
 /**
  * go-to-k/cdkd#5640: the DB instance's twin. A point-in-time restore naming
  * its source by `SourceDbiResourceId` or `SourceDBInstanceAutomatedBackupsArn`
- * (either key makes the create one) may name the instance the replacement deletes first, which takes its
- * automated backups with it (`DeleteAutomatedBackups` defaults to true). Its
- * record holds no `DbiResourceId`, so the live one is read through the
- * provider's read-only `resourceIdentity` (`DescribeDBInstances` by name) and
- * compared; a read that fails, finds no instance or answers no id refuses
- * too, since the delete cannot be undone. A template naming neither key, or
- * a record holding the id (`refuseRestoreFromItself` compares that), costs no
- * call.
+ * (either key makes the create one) may name the instance the replacement
+ * deletes first, which takes its automated backups with it
+ * (`DeleteAutomatedBackups` defaults to true). Through the provider's
+ * read-only `resourceIdentity`: the replaced instance's `DbiResourceId` (the
+ * record holds none, so it is read live by name unless recorded), and, for a
+ * backups ARN in this region, the `DbiResourceId` of the instance that backup
+ * belongs to (`DescribeDBInstanceAutomatedBackups`; a backup RDS does not list
+ * is none of this instance's). A read that fails or answers no id refuses, as
+ * does a replaced instance that is not found, since the delete cannot be
+ * undone. A template naming neither key costs no call.
  */
 async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput): Promise<void> {
   const nonEmpty = (key: string): string | undefined => {
@@ -109,12 +110,19 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
     return typeof value === 'string' && value !== '' ? value : undefined;
   };
   const resourceId = nonEmpty('SourceDbiResourceId');
-  const backups = nonEmpty('SourceDBInstanceAutomatedBackupsArn');
+  // An ARN of another region holds another region's backups: not this instance's.
+  const declaredBackups = nonEmpty('SourceDBInstanceAutomatedBackupsArn');
+  const backupsRegion = declaredBackups?.split(':')[3];
+  const backups =
+    declaredBackups !== undefined &&
+    (backupsRegion === undefined || backupsRegion === '' || backupsRegion === input.region)
+      ? declaredBackups
+      : undefined;
   if (resourceId === undefined && backups === undefined) return;
   const recorded = input.attributes?.['DbiResourceId'];
-  if (typeof recorded === 'string' && recorded !== '') return;
-  const key =
-    resourceId !== undefined ? 'SourceDbiResourceId' : 'SourceDBInstanceAutomatedBackupsArn';
+  // `refuseRestoreFromItself` compared a recorded id with `SourceDbiResourceId`.
+  if (backups === undefined && typeof recorded === 'string' && recorded !== '') return;
+  const key = backups !== undefined ? 'SourceDBInstanceAutomatedBackupsArn' : 'SourceDbiResourceId';
   const refuse = (reason: string): never => {
     throw markNonRetryable(
       new ProvisioningError(
@@ -125,34 +133,41 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
       )
     );
   };
-  let liveId: unknown;
-  let failure = '';
-  try {
-    const provider = input.provider();
-    if (provider?.resourceIdentity === undefined) {
-      failure = 'no provider can read it';
-    } else {
-      const answer = await provider.resourceIdentity(input.physicalId, input.resourceType, {
-        expectedRegion: input.region,
-      });
-      if (answer === RESOURCE_NOT_FOUND) failure = 'it was not found';
-      else liveId = answer;
-    }
-  } catch (error) {
-    // The error class only: AWS's text can name the account and role.
-    failure = `the read failed (${(error as { name?: string } | undefined)?.name ?? 'Error'})`;
-  }
-  if (typeof liveId !== 'string' || liveId === '') {
-    return refuse(
-      `${key} may name the DB instance this replacement deletes first, and its identity could not be verified (${failure || 'no resource id was read'}). Name the source with SourceDBInstanceIdentifier instead, or retry`
+  const unverified = (failure: string): never =>
+    refuse(
+      `${key} may name the DB instance this replacement deletes first, and its identity could not be verified (${failure}). Name the source with SourceDBInstanceIdentifier instead, or retry`
     );
+  const provider = input.provider();
+  if (provider?.resourceIdentity === undefined) return unverified('no provider can read it');
+  const read = provider.resourceIdentity.bind(provider);
+  const identity = async (id: string): Promise<string | typeof RESOURCE_NOT_FOUND> => {
+    let answer: string | typeof RESOURCE_NOT_FOUND | undefined;
+    try {
+      answer = await read(id, input.resourceType, { expectedRegion: input.region });
+    } catch (error) {
+      // The error class only: AWS's text can name the account and role.
+      return unverified(
+        `the read failed (${(error as { name?: string } | undefined)?.name ?? 'Error'})`
+      );
+    }
+    if (answer === undefined || answer === '') return unverified('no resource id was read');
+    return answer;
+  };
+  let own = typeof recorded === 'string' && recorded !== '' ? recorded : undefined;
+  if (own === undefined) {
+    const live = await identity(input.physicalId);
+    if (live === RESOURCE_NOT_FOUND) return unverified('it was not found');
+    own = live;
   }
-  if (resourceId !== undefined && resourceId.toLowerCase() === liveId.toLowerCase()) {
+  if (resourceId !== undefined && resourceId.toLowerCase() === own.toLowerCase()) {
     refuse("SourceDbiResourceId must be another DB instance's than the one this replaces");
   }
-  if (backups !== undefined && automatedBackupsArnNames(backups, liveId)) {
-    refuse(
-      "SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups than the one this replaces"
-    );
+  if (backups !== undefined) {
+    const owner = await identity(backups);
+    if (owner !== RESOURCE_NOT_FOUND && owner.toLowerCase() === own.toLowerCase()) {
+      refuse(
+        "SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups than the one this replaces"
+      );
+    }
   }
 }

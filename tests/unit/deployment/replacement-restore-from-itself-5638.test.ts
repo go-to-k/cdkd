@@ -435,8 +435,15 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
   // automated backups, which its delete removes; each delete-first path refuses it.
   describe('a DB instance restoring to a point in time from itself (go-to-k/cdkd#5640)', () => {
     const INSTANCE = 'AWS::RDS::DBInstance';
-    const OWN_ID = 'db-OWNID123';
-    const OWN_BACKUPS = `arn:aws:rds:us-east-1:${ACCOUNT}:auto-backup:ab-ownid123`;
+    // AWS's reference pair: the backups ARN's id is not the resource id, so only
+    // RDS can say whose backups they are.
+    const OWN_ID = 'db-JKIB2GFQ5RV7REPLZA4EXAMPLE';
+    const OWN_BACKUPS = `arn:aws:rds:us-east-1:${ACCOUNT}:auto-backup:ab-jkib2gfq5rv7replzadausbrktni2bn4example`;
+    /** The live ids: the replaced instance's, and the instance each backup ARN backs up. */
+    const live = (instance: unknown, backupOwner: unknown = OWN_ID) =>
+      provider.resourceIdentity.mockImplementation((id: string) =>
+        id === PHYSICAL ? Promise.resolve(instance) : Promise.resolve(backupOwner)
+      );
     const pitr = (source: Record<string, unknown>, attributes: Record<string, unknown> = {}): Case => ({
       type: INSTANCE,
       attributes,
@@ -472,9 +479,9 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     });
 
     it.each(paths)('%s refuses when the live instance holds the source id, before any delete', async (_p, run) => {
-      provider.resourceIdentity.mockResolvedValue(OWN_ID);
+      live(OWN_ID);
       for (const [key, value, refusal] of [
-        ['SourceDbiResourceId', 'DB-ownid123', /SourceDbiResourceId must be another DB instance's/],
+        ['SourceDbiResourceId', 'db-jkib2gfq5rv7replza4example', /SourceDbiResourceId must be another DB instance's/],
         [
           'SourceDBInstanceAutomatedBackupsArn',
           OWN_BACKUPS,
@@ -488,17 +495,46 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
         expect(provider.resourceIdentity, key).toHaveBeenCalledWith(PHYSICAL, INSTANCE, {
           expectedRegion: 'us-east-1',
         });
+        if (key === 'SourceDBInstanceAutomatedBackupsArn') {
+          expect(provider.resourceIdentity, key).toHaveBeenCalledWith(OWN_BACKUPS, INSTANCE, {
+            expectedRegion: 'us-east-1',
+          });
+        }
         expect(provider.delete, key).not.toHaveBeenCalled();
         expect(provider.create, key).not.toHaveBeenCalled();
       }
     });
 
-    it.each(paths)('%s proceeds when the live instance holds another id', async (_p, run) => {
-      provider.resourceIdentity.mockResolvedValue('db-OTHER');
-      for (const source of [{ SourceDbiResourceId: OWN_ID }, { SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }]) {
+    it.each(paths)('%s proceeds for another instance, or backups RDS does not list', async (_p, run) => {
+      for (const [source, instance, owner] of [
+        [{ SourceDbiResourceId: OWN_ID }, 'db-OTHER', 'db-OTHER'],
+        [{ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, OWN_ID, 'db-OTHER'],
+        [{ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, OWN_ID, RESOURCE_NOT_FOUND],
+      ] as const) {
+        live(instance, owner);
         provider.delete.mockClear();
         expect(await run(pitr(source)), JSON.stringify(source)).toBeUndefined();
         expect(provider.delete, JSON.stringify(source)).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it.each(paths)('%s reads no backup in another region', async (_p, run) => {
+      live(OWN_ID);
+      const elsewhere = OWN_BACKUPS.replace('us-east-1', 'eu-west-1');
+      expect(await run(pitr({ SourceDBInstanceAutomatedBackupsArn: elsewhere }))).toBeUndefined();
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(paths)('%s refuses when the backup read fails or names no instance, before any delete', async (_p, run) => {
+      for (const owner of [undefined, Promise.reject(Object.assign(new Error('x'), { name: 'Throttling' }))]) {
+        provider.resourceIdentity.mockImplementation((id: string) =>
+          id === PHYSICAL ? Promise.resolve(OWN_ID) : owner instanceof Promise ? owner : Promise.resolve(owner)
+        );
+        provider.delete.mockClear();
+        const failure = await run(pitr({ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }));
+        expect(chain(failure)).toMatch(/SourceDBInstanceAutomatedBackupsArn may name the DB instance this replacement deletes first/);
+        expect(provider.delete).not.toHaveBeenCalled();
       }
     });
 
@@ -548,6 +584,15 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       } finally {
         (provider as { resourceIdentity?: unknown }).resourceIdentity = read;
       }
+    });
+
+    it.each(paths)('%s reads only the backup for a record holding its id', async (_p, run) => {
+      live('db-NEVER-READ', OWN_ID);
+      const failure = await run(pitr({ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, { DbiResourceId: OWN_ID }));
+      expect(chain(failure)).toMatch(/SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups/);
+      expect(provider.resourceIdentity).toHaveBeenCalledTimes(1);
+      expect(provider.resourceIdentity).toHaveBeenCalledWith(OWN_BACKUPS, INSTANCE, { expectedRegion: 'us-east-1' });
+      expect(provider.delete).not.toHaveBeenCalled();
     });
 
     it.each(paths)('%s compares a recorded DbiResourceId without a live read', async (_p, run) => {
