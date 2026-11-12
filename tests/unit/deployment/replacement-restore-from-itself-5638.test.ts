@@ -398,6 +398,34 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       expect(provider.import).not.toHaveBeenCalled();
     });
   });
+
+  // go-to-k/cdkd#5640: a DB instance restoring from one of its own automated
+  // snapshots, which its delete removes; each delete-first path refuses it.
+  describe('a DB instance restoring from its own automated snapshot (go-to-k/cdkd#5640)', () => {
+    const INSTANCE: Case = { type: 'AWS::RDS::DBInstance' };
+    const fromSnapshot = (snapshot: string): Case => ({
+      ...INSTANCE,
+      desired: { DBSnapshotIdentifier: snapshot },
+    });
+    const paths: Array<[string, (c: Case) => Promise<unknown>]> = [
+      ['--recreate via the SDK provider', (c) => recreateWith('viaSdkProvider', '', c)],
+      ['--recreate via Cloud Control', (c) => recreateWith('viaCcApi', '', c)],
+      ['the update-failure fallback', (c) => fallbackWith('', c)],
+      ['the --replace delete-first fallback', (c) => replaceWith('', c)],
+    ];
+
+    it.each(paths)('%s refuses it before any delete', async (_path, run) => {
+      const failure = await run(fromSnapshot(`rds:${PHYSICAL}-2026-11-01-03-04`));
+      expect(chain(failure)).toMatch(/automated snapshot of the DB instance/);
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s lets a manual snapshot through', async (_path, run) => {
+      expect(await run(fromSnapshot('manual-snap-1'))).toBeUndefined();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('refuseRestoreFromItself', () => {
