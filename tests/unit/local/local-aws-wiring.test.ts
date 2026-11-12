@@ -57,6 +57,7 @@ import {
   activateLocalAwsWiring,
   applyLocalAwsWiring,
   getActiveWorkloadAwsWiring,
+  prepareLocalLoopbackForwarder,
   profileCredentialsForWorkload,
 } from '../../../src/local/local-aws-wiring.js';
 import { resolveWorkloadAwsWiring } from 'cdk-local/internal';
@@ -325,6 +326,18 @@ describe('forward mode tolerates a forwarder image pull failure', () => {
     await expect(
       runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 9000 })
     ).resolves.toBe('container-id');
+  });
+});
+
+describe('prepareLocalLoopbackForwarder honours --no-pull (go-to-k/cdkd#6142)', () => {
+  it('passes the wiring skipPull to the image check, so --no-pull pulls nothing', async () => {
+    await prepareLocalLoopbackForwarder({ ...forwardWiring(), skipPull: true });
+    expect(mocks.ensureImage).toHaveBeenCalledWith(true);
+  });
+
+  it('checks / pulls the image without --no-pull', async () => {
+    await prepareLocalLoopbackForwarder(forwardWiring());
+    expect(mocks.ensureImage).toHaveBeenCalledWith(false);
   });
 });
 
