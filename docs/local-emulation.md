@@ -267,12 +267,11 @@ container. cdkd starts a small forwarder container in the workload's network
 namespace that carries the connection to your machine, so the certificate
 still matches and S3 keeps path-style addressing. If it cannot reach the
 endpoint, cdkd prints a warning once and the workload starts anyway. A Lambda
-invoke waits for the forwarder, which stops with the workload. A `run-task`
-container starts inside a forwarder that is already up, so its first AWS call
-goes through, and cdkd removes that forwarder with the task (see
-[local-run-task.md](local-run-task.md#aws-credentials-in-containers)). A `start-service` or
-`start-alb` container gets its forwarder just after it starts, so an app
-there that calls AWS in its first moment may need a retry.
+invoke waits for the forwarder, which stops with the workload. A `run-task`,
+`start-service` or `start-alb` container starts inside a forwarder that is
+already up, so its first AWS call goes through, and cdkd removes that
+forwarder with the task (see
+[local-run-task.md](local-run-task.md#aws-credentials-in-containers)).
 
 The mounted bundle holds the certificates of your file plus the public root
 CAs, so calls to other HTTPS hosts keep working. A private key in the file is
