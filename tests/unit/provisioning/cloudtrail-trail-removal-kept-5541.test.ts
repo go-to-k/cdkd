@@ -208,15 +208,18 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
     });
   });
 
-  it('the audit covers every writable schema Trail property: the shared caller line never fires', () => {
+  it('the audit covers every writable schema Trail property the provider wires: the shared caller line names only the SDK-unwired ones', () => {
     const provider = new CloudTrailProvider();
     const schema = loadSchemaFixture(TYPE)!;
     const readOnly = new Set(schema.readOnlyProperties);
-    const handled = schema.properties.filter((key) => !readOnly.has(key));
-    const previous = Object.fromEntries(handled.map((key) => [key, 'x']));
+    const writable = schema.properties.filter((key) => !readOnly.has(key));
+    const previous = Object.fromEntries(writable.map((key) => [key, 'x']));
     const prep = prepareRemovalForUpdate(provider, TYPE, {}, previous);
 
-    expect(handled.length).toBeGreaterThan(10);
-    expect(prep.unhandled).toEqual([]);
+    expect(writable.length).toBeGreaterThan(10);
+    // RecursiveLogging (2026-11-12 schema refresh) is SDK-unwired: update()
+    // never writes it, so the shared line naming its removal is the truth.
+    // Wiring it means adding it to removalHandledInUpdate and dropping it here.
+    expect(prep.unhandled).toEqual(['RecursiveLogging']);
   });
 });
