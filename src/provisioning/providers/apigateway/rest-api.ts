@@ -730,7 +730,7 @@ export async function updateRestApi(
       if (named.length > 0 && named.every((key) => noEchoOnlyChanged.has(key))) {
         bodyChanged = false;
         log.warn(
-          safeMsg`${logicalId} (${resourceType}): its Body embeds a NoEcho parameter value, which cdkd records only as *** and cannot compare, so the OpenAPI definition is not put again. A change to that value alone is NOT applied. To apply one, change a part of the Body that is not masked, or replace the REST API (cdkd deploy --recreate-via-sdk-provider ${logicalId}).`
+          safeMsg`${logicalId} (${resourceType}): its Body embeds a NoEcho parameter value, which cdkd records only as *** and cannot compare, so the OpenAPI definition is not put again. A change to that value alone is NOT applied. To apply one, change a part of the Body that is not masked (its description or a version field, for example) in the same deploy.`
         );
       }
     }

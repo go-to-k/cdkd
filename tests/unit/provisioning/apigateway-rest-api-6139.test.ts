@@ -648,7 +648,12 @@ describe('ApiGatewayProvider: AWS::ApiGateway::RestApi (#6139)', () => {
       expect(names()).toEqual(['UpdateRestApiCommand']);
       const warned = warnSpy.mock.calls.map((c) => String(c[0]));
       expect(warned.some((w) => /NoEcho parameter value.* is NOT applied/.test(w))).toBe(true);
-      expect(warned.some((w) => w.includes('--recreate-via-sdk-provider Api'))).toBe(true);
+      // The remedy is one a deploy of an SDK-managed record can take: no
+      // recreate flag (`--recreate-via-sdk-provider` refuses an SDK record).
+      expect(
+        warned.some((w) => w.includes('change a part of the Body that is not masked') && w.includes('in the same deploy'))
+      ).toBe(true);
+      expect(warned.join('\n')).not.toContain('--recreate');
       expect(warned.join('\n')).not.toContain('s3cr3t-value');
     });
 

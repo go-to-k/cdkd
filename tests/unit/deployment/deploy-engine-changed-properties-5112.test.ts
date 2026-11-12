@@ -369,6 +369,8 @@ describe('UpdateContext.changedProperties (go-to-k/cdkd#5112)', () => {
     it.each([
       ['a dynamic reference', REF, '***'],
       ['a dynamic reference behind the same literal prefix', `Bearer ${REF}`, 'Bearer ***'],
+      // The remedy the RestApi provider's warning advises: edit a non-masked part.
+      ['the same NoEcho value behind an edited literal', { 'Fn::Join': ['', ['v2-', { Ref: 'Token' }]] }, 'v1-***'],
     ])(
       'swapped for %s is not NoEcho-only: the key moved as written (go-to-k/cdkd#6140)',
       async (_label, desired, recorded) => {
