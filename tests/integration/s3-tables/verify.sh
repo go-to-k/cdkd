@@ -99,6 +99,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 TABLE_ARN=""
 TABLE_BUCKET_ARN=""
+LOG_BUCKET=""
 
 # The log bucket's `autoDeleteObjects` (issue #6167) runs CDK's S3 auto-delete
 # custom resource, whose Lambda log group no stack resource owns, so destroy
@@ -129,6 +130,14 @@ cleanup() {
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/iceberg-table-ref" >/dev/null 2>&1 || true
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/table-ref" >/dev/null 2>&1 || true
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
+  # The log bucket (issue #6167) has a CDK-generated name that only the state
+  # output carries, and the state is dropped above: a destroy that failed on
+  # BucketNotEmpty (a late log delivery) would otherwise leave it untraceable.
+  case "${LOG_BUCKET:-}" in
+    s3tablesstack-?*) aws s3 rb "s3://${LOG_BUCKET}" --force --region "${REGION}" >/dev/null 2>&1 || true ;;
+    "") ;;
+    *) echo "WARN: teardown sweep refused for log bucket '${LOG_BUCKET}' (outside this stack's prefix)" >&2 ;;
+  esac
   set -eu
 }
 
@@ -415,13 +424,26 @@ bucket_logging() { # usage: bucket_logging -> "<target bucket> <prefix> <date so
       .then((r) => {
         const l = r.tableBucketLoggingStatus?.loggingEnabled;
         console.log(l === undefined ? "off"
-          : `${l.targetBucket} ${l.targetPrefix} ${l.targetObjectKeyFormat?.partitionedPrefix?.partitionDateSource}`);
+          : `${l.targetBucket} ${l.targetPrefix} ${l.targetObjectKeyFormat?.partitionedPrefix?.partitionDateSource ?? "<no date source>"}`);
       })
       .catch((e) => {
         console.error(`FAIL: GetTableBucketLogging ${process.env.TABLE_BUCKET_ARN}: ${e.name}: ${e.message}`);
         process.exit(1);
       });
   ' || return 1
+}
+# The drift check after a logging Put reads GetTableBucketLogging too, and its
+# read-after-write consistency is unmeasured: wait (bounded) for the readback
+# to show the expected value before drift runs, so a lagging read cannot fail
+# the drift assertion. Prints the last value read; the caller compares it.
+await_bucket_logging() { # usage: await_bucket_logging "<expected>"
+  local seen="" i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    seen="$(bucket_logging)" || return 1
+    [ "${seen}" = "$1" ] && break
+    sleep 5
+  done
+  printf '%s\n' "${seen}"
 }
 BUCKET_LOGGING="$(bucket_logging)"
 if [ "${BUCKET_LOGGING}" != "${LOG_BUCKET} cdkd-logs-v1/ EventTime" ]; then
@@ -573,7 +595,7 @@ if [ "${POST_MAINTENANCE}" != "enabled 256 enabled 2 200" ]; then
   exit 1
 fi
 echo "    OK: UnreferencedFileRemoval and Compaction updated in place (issue #2762)"
-POST_LOGGING="$(bucket_logging)"
+POST_LOGGING="$(await_bucket_logging "${LOG_BUCKET} cdkd-logs-v2/ DeliveryTime")"
 if [ "${POST_LOGGING}" != "${LOG_BUCKET} cdkd-logs-v2/ DeliveryTime" ]; then
   echo "FAIL: TableBucket logging is '${POST_LOGGING}' after Phase 1b, expected '${LOG_BUCKET} cdkd-logs-v2/ DeliveryTime' (issue #6167: the update did not reach PutTableBucketLogging)" >&2
   exit 1
@@ -640,7 +662,7 @@ if [ "${RENAMED_BUCKET_ID}" != "${PRE_BUCKET_ID}" ]; then
   echo "FAIL: Phase 1c replaced the TableBucket (${PRE_BUCKET_ID} -> ${RENAMED_BUCKET_ID}); removing LoggingConfiguration must update in place (issue #6167)" >&2
   exit 1
 fi
-REMOVED_LOGGING="$(bucket_logging)"
+REMOVED_LOGGING="$(await_bucket_logging off)"
 if [ "${REMOVED_LOGGING}" != "off" ]; then
   echo "FAIL: TableBucket logging is '${REMOVED_LOGGING}' after Phase 1c removed LoggingConfiguration, expected 'off' (issue #6167)" >&2
   exit 1
