@@ -262,10 +262,10 @@ local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep
 local-invoke-python	2026-11-12T09:17:14Z	PASS	23	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-ruby	2026-11-05T06:47:04Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
 local-invoke-stage	2026-11-05T07:06:46Z	PASS	24	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-run-task	2026-11-12T09:17:14Z	PASS	23	verify.sh	rc ok, orph clean (PR 6136)
+local-run-task	2026-11-12T11:56:08Z	PASS	120	verify.sh	rc ok, docker sweep clean (PR 6148)
 local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-cdkd-assets	2026-11-04T12:59:43Z	PASS	15	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
-local-run-task-from-state	2026-11-12T09:20:33Z	PASS	329	verify.sh	rc ok, orph clean (PR 6136)
+local-run-task-from-state	2026-11-12T11:56:08Z	PASS	200	verify.sh	rc ok, orph clean (PR 6148)
 local-run-task-multi-container	2026-11-04T12:59:43Z	PASS	11	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-alb	2026-11-06T09:11:57Z	PASS	26	verify.sh	rc=0; docker sweep clean; after cdk-local 0.160.0 bump (#5856)
@@ -278,7 +278,7 @@ local-start-cloudfront	2026-11-06T09:12:11Z	PASS	10	verify.sh	rc=0; docker sweep
 local-start-cloudfront-from-state	2026-11-05T07:01:01Z	PASS	220	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-microvm	2026-11-10T16:19:06Z	PASS	25	verify.sh	rc ok, docker clean, orph clean
 local-start-microvm-from-state	2026-11-10T16:18:27Z	PASS	315	verify.sh	rc ok, docker clean, orph clean
-local-start-service	2026-11-12T09:23:01Z	PASS	129	verify.sh	rc ok, orph clean (PR 6136)
+local-start-service	2026-11-12T11:56:08Z	PASS	130	verify.sh	rc ok, orph clean (PR 6148)
 local-start-service-watch-fast	2026-11-05T06:42:48Z	PASS	45	verify.sh	rc ok, docker sweep clean
 local-start-web-function	2026-11-10T16:12:55Z	PASS	20	verify.sh	rc ok, docker clean, orph clean
 local-start-web-function-from-state	2026-11-10T16:12:16Z	PASS	100	verify.sh	rc ok, docker clean, orph clean
