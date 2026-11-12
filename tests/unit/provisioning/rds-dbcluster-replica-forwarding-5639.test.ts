@@ -234,7 +234,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
     it.each([
       ['a read replica', { ReplicationSourceIdentifier: SOURCE_ARN }, 7_200_000 - 30_000],
       ['a plain create', {}, 1_800_000],
-    ])('%s waits for available up to %s', async (_, props, cap) => {
+    ])('%s waits for available up to its budget', async (_, props, cap) => {
       arm();
       deadline.remainingMs = 7_200_000;
       const wait = vi.spyOn(provider, 'waitForClusterAvailable');
