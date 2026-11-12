@@ -366,10 +366,10 @@ services' calls.
 
 > [!NOTE]
 > cdkd creates a REST API (`AWS::ApiGateway::RestApi`, e.g. `LambdaRestApi`)
-> through its SDK provider, which works on AWS Emulator. A REST API that an
-> older cdkd created through Cloud Control is still recorded on that route,
-> where the emulator returns an identifier that is not the API id, so its
-> resources and methods fail. Destroy and redeploy that stack once.
+> through its SDK provider, which works on AWS Emulator. A REST API created
+> through Cloud Control in the emulator (by a release before v0.343.0) is
+> recorded under the identifier the emulator returned, which is not the API
+> id, so its resources and methods fail. Destroy and redeploy that stack once.
 
 `CDKD_AWS_EMULATOR` applies to every command, so a shell that exports it for
 `cdkd local` also deploys into the emulator.

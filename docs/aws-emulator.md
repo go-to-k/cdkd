@@ -106,10 +106,10 @@ it.
 | --- | --- | --- |
 | Runtime | Embedded in the emulator binary, not the declared language version | The official AWS Lambda image for the declared runtime |
 | Native dependencies and layers | Not the Lambda environment | As in Lambda |
-| Container-image functions, ECS, ALB, CloudFront, AgentCore | No container runtime | Run locally |
+| Container-image functions, ECS, ALB, CloudFront, AgentCore | Not run: the emulator has no container runtime | Run locally |
 | A code edit | Needs a redeploy | Picked up on the next run, or on save with `--watch` |
-| Debugger | — | `--debug-port` on `local invoke` (Node.js) |
-| Logs | In the emulator's log | In your terminal |
+| Debugger | — | `--debug-port` on `local invoke`, `--debug-port-base` on `start-api` |
+| Function logs | — | In your terminal |
 
 The two do not compete: both talk to the same emulated DynamoDB, S3, SQS and
 the rest. Use the emulator's own execution for a quick end-to-end request, and
@@ -179,8 +179,8 @@ chosen services from a `cdkd local` container to the emulator and leaves the
 rest on real AWS. You name the services in the `--env-vars` file by setting
 `AWS_ENDPOINT_URL_<SERVICE>` to `"aws-emulator"`.
 
-Mixed mode is the one case where a container holds your real credentials,
-because the services you did not list call your real account. List every
+Unlike `--aws-emulator`, mixed mode calls your real account for every service
+you do not list, so the container runs with your real credentials. List every
 service whose writes must stay local.
 
 ## Run the emulator
@@ -188,11 +188,12 @@ service whose writes must stay local.
 ### macOS and Windows: Docker
 
 AWS Emulator is published as a Linux package, so on macOS and Windows you run
-it in a container you build from the
-[emulator's Dockerfile](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-docker.html).
-Its entry point binds `0.0.0.0` inside the container. Publish the port on
-`127.0.0.1` only, and mount the run directory, so cdkd finds the keys and
-certificate at the usual path:
+it in a container. There is no prebuilt image: build one from the Dockerfile
+in the emulator's
+[Getting started with Docker](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-docker.html)
+guide. Its entry point binds `0.0.0.0` inside the container. Publish the port
+on `127.0.0.1` only, and mount the run directory, so cdkd finds the keys and
+certificate at the usual path. On macOS:
 
 ```bash
 PORT=9297
@@ -203,7 +204,8 @@ docker run --rm --memory=2g --memory-swap=2g -p 127.0.0.1:$PORT:$PORT \
 ```
 
 Use `-p 127.0.0.1:9297:9297`, not `-p 9297:9297`: the short form opens the
-emulator to your whole network.
+emulator to your whole network. On Windows, use the PowerShell command from
+the same guide, which mounts `$env:USERPROFILE\.aws\emulator`.
 
 ### Linux
 
@@ -212,7 +214,8 @@ calls. A `cdkd local` container reaches the emulator through a forwarder that
 connects to the host from the Docker network, and a process listens on one
 address only, so it cannot serve both your machine and the containers.
 
-To use `cdkd local` on Linux, run the emulator's Docker image instead, and
+To use `cdkd local` on Linux, run the emulator in Docker instead (the image
+built above), and
 publish the port on `127.0.0.1` and on the Docker bridge gateway:
 
 ```bash
@@ -235,7 +238,7 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | S3 addressing | Keep the URL on `127.0.0.1`. cdkd rewrites `localhost` to it, and inside containers the URL stays loopback, so S3 stays path-style. |
 | `--auth off` | When the emulator runs without authentication, there is no `emulator_credentials` file. cdkd notices, and containers get fixed placeholder keys. |
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
-| Region | `--region` or `AWS_REGION` when set, else the region in the run's `config` (`us-east-1`). Each emulator serves one region. |
+| Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set, else the region in the run's `config` (`us-east-1`). Each emulator serves one region. |
 | Docker image assets | Refused before anything is built. The emulator's ECR returns repository URIs on the real `amazonaws.com` registry, so a push would leave your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
 
@@ -272,10 +275,14 @@ Docker bridge gateway as well. On Docker Desktop, publish it on the host's
 ### A REST API's resources fail to deploy
 
 cdkd creates `AWS::ApiGateway::RestApi` through its own SDK provider, which
-works on AWS Emulator. A REST API that an older cdkd created through Cloud
-Control stays recorded on that route, where the emulator returns an
-identifier that is not the API id, so its resources and methods fail.
-Destroy that stack and deploy it again once.
+works on AWS Emulator. A REST API whose record was created through Cloud
+Control in the emulator holds the identifier the emulator's Cloud Control
+returned, which is not the API id, so its resources and methods fail. Destroy
+that stack and deploy it again once.
+
+Changed in v0.343.0: cdkd creates REST APIs through the SDK provider. A REST
+API deployed into the emulator by an earlier release went through Cloud
+Control.
 
 ### A Docker image asset is refused
 
