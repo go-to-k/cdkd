@@ -136,7 +136,10 @@ what they accept; MEASURE a CDK CLI premise by running the inputs through its
 parser from `node_modules`, never by reading its source (#2221). Before
 ranking an SDK-routed backfill row, grep its member in the installed SDK
 request type (`dist-types/models`; the serializer drops a missing one, #5825)
-and the provider's `unhandledByDesign` map.
+and the provider's `unhandledByDesign` map; MEASURE that the issue's named
+engine / class can host it (`describe-orderable-*`), and when no CFn handler
+source covers it (archived repo predating it), put `verify.md` §8-b's
+create→update→delete probe stack into triage's ONE `AskUserQuestion` (#5640).
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a

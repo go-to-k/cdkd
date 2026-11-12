@@ -2744,6 +2744,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::RDS::DBInstance',
     {
       handled: new Set<string>([
+        'AdditionalStorageVolumes',
         'AllocatedStorage',
         'AllowMajorVersionUpgrade',
         'AssociatedRoles',
@@ -2806,7 +2807,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VPCSecurityGroups',
       ]),
       sdkUnwired: new Map<string, string>([
-        ['AdditionalStorageVolumes', 'not yet implemented by cdkd'],
         [
           'ApplyImmediately',
           'cdkd always applies modifications immediately (rds:ModifyDBInstance.ApplyImmediately=true is hardcoded); users wanting maintenance-window deferral should run aws rds modify-db-instance directly',

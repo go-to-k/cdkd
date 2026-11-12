@@ -320,12 +320,12 @@ export class RDSProvider implements ResourceProvider {
         'MasterUserAuthenticationType',
         // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica; SourceRegion is validated only, never sent
-        // (`./rds/read-replica.ts`).
+        // go-to-k/cdkd#5640: a read replica (`./rds/read-replica.ts`); SourceRegion is never sent.
         'SourceDBInstanceIdentifier',
         'SourceRegion',
-        // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`.
+        // go-to-k/cdkd#5640: `instanceProcessorFeatureMembers`, `./rds/additional-storage-volumes.ts`.
         'ProcessorFeatures',
+        'AdditionalStorageVolumes',
         'UseDefaultProcessorFeatures',
         // go-to-k/cdkd#5640: `backupReplicationPlan`, `applyBackupReplication` (`./rds/calls.ts`).
         'AutomaticBackupReplicationRegion',

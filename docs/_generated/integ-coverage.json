@@ -1521,6 +1521,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -1712,6 +1713,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -1823,6 +1827,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2003,6 +2008,9 @@
           "l2"
         ],
         "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
+        "rds-dbinstance-additional-storage-volumes": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -2144,6 +2152,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2336,6 +2345,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -2446,6 +2458,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2637,6 +2650,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -2728,6 +2744,7 @@
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -2859,6 +2876,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-additional-storage-volumes": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -3019,6 +3039,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3241,6 +3262,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -3368,6 +3392,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3551,6 +3576,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -3668,6 +3696,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -3907,6 +3936,9 @@
         "rds-dbcluster-pitr-restore": [
           "l2"
         ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
+        ],
         "rds-dbinstance-backfill": [
           "l2"
         ],
@@ -4034,6 +4066,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -4224,6 +4257,9 @@
           "l2"
         ],
         "rds-dbcluster-pitr-restore": [
+          "l2"
+        ],
+        "rds-dbinstance-additional-storage-volumes": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
@@ -7358,6 +7394,7 @@
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
         "rds-aurora",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -7369,6 +7406,10 @@
         "rds-aurora": [
           "l1",
           "l2"
+        ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l1",
+          "literal"
         ],
         "rds-dbinstance-backfill": [
           "l1"
@@ -7412,6 +7453,7 @@
         "list-parameters",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
+        "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
@@ -7436,6 +7478,9 @@
         ],
         "rds-dbcluster-pitr-restore": [
           "l1"
+        ],
+        "rds-dbinstance-additional-storage-volumes": [
+          "l2"
         ],
         "rds-dbinstance-backfill": [
           "l2"
