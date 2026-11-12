@@ -34,8 +34,9 @@ const pkgPath = join(repoRoot, 'package.json');
  * one layer out.
  *
  * Deliberately NOT keyed on a bare `CI`: `CI` is set in every job, but only
- * `check-build-test` builds, so keying on it reddened `once-leak-detect` and
- * `runtime-compat`, which legitimately have no `dist/`.
+ * the jobs that run `vp run build` have a `dist/`, so keying on it reddened
+ * `once-leak-detect` and `runtime-compat`, which legitimately have none. The
+ * suite now runs in `unit-tests`, which builds first and sets the flag.
  */
 const distMissing = !existsSync(cliPath);
 const skipUnbuilt = distMissing && !process.env['CDKD_EXPECT_DIST'];

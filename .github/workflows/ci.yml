@@ -75,10 +75,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim:
-      # suites that compare this branch against `origin/main` cannot resolve
-      # that ref at the default depth 1, and a case that returns before
-      # asserting is the same green as one that passed.
+      # `fetch-depth: 0` is kept from when this job also ran the unit suite
+      # (which needs `origin/main`; see unit-tests). Whether the generators and
+      # audits below need full history was not re-measured when the suite
+      # moved out, so the depth stays rather than being trimmed on a guess.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
@@ -264,21 +264,6 @@ jobs:
       # self-probes expecting `masked`, so closing the bound fails loudly.
       - run: vp run audit:provider-secret-mask:check
 
-  # Issue #1618 — run the unit suite a second time with the runtime
-  # `*Once`-leak detector armed, so a test that primes more mock responses than
-  # its code path consumes fails HERE instead of silently shifting every later
-  # test in its file by one response.
-  #
-  # A separate job rather than a step in check-build-test: it is a full second
-  # suite run, as long as the unit-test step there (both 15-25 min), so it runs
-  # in parallel instead of doubling that job. It is also why the detector is
-  # env-gated OFF by default — the normal `vp run test` is byte-for-byte
-  # unaffected by the `vi.fn` patch, so a detector that breaks (e.g. on an
-  # `@vitest/spy` upgrade) fails HERE and is never mistaken for a test failure.
-  #
-  # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
-  # and dropping it from the list is the intended ratchet direction; adding a
-  # new entry is not, and a new test file that leaks fails this job.
   # The unit suite, split across a matrix by `vitest --shard`. Unsharded it
   # took ~19 min on a 4-vCPU runner (and `once-leak-detect` ~29), which set
   # CI's wall clock; a 3-way split measured each part at ~10 min (go-to-k/
@@ -303,8 +288,10 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      # Same reason as check-build-test: suites that compare this branch
-      # against `origin/main` cannot resolve that ref at the default depth 1.
+      # `fetch-depth: 0` is load-bearing: suites that compare this branch
+      # against `origin/main` cannot resolve that ref at the default depth 1,
+      # and a case that returns before asserting is the same green as one that
+      # passed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
@@ -343,9 +330,11 @@ jobs:
       # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
       # builds before running the suite. `tests/unit/cli/version.test.ts` skips
       # itself when `dist/` is absent -- correct for a contributor who has not
-      # built, and correct for the `once-leak-detect` job, which does not build. Keying the loud assertion on a bare `CI` reddened those two
-      # jobs; keying it on the build is what actually says "dist was produced,
-      # so a skip here means the step order regressed".
+      # built, and correct for `once-leak-detect`, which does not build either.
+      # Keying the loud assertion on a bare `CI` reddened that job (and
+      # `runtime-compat` when it ran the suite); keying it on the build is what
+      # actually says "dist was produced, so a skip here means the step order
+      # regressed".
       # Assert the suite actually RAN, not merely that the step exited 0.
       # `vp run test` goes through the Vite+ task runner, and a task-runner
       # failure that never reaches vitest exits 0 while printing no `Test Files`
@@ -373,6 +362,35 @@ jobs:
         env:
           CDKD_EXPECT_DIST: "1"
 
+      # A test that writes into the repo and does not clean up must red CI.
+      # Before the suite was sharded out of check-build-test this was caught
+      # by accident: the generated-matrix step there ran AFTER the suite and
+      # reds on any tracked change or untracked file. That step now runs on a
+      # tree no test has touched, so the guard lives here, after each shard.
+      - name: the suite left the working tree clean
+        run: |
+          dirty=$(git status --porcelain --untracked-files=all)
+          if [ -n "${dirty}" ]; then
+            echo "::error::unit tests modified or created files in the repository:"
+            echo "${dirty}"
+            exit 1
+          fi
+
+  # Issue #1618 — run the unit suite a second time with the runtime
+  # `*Once`-leak detector armed, so a test that primes more mock responses than
+  # its code path consumes fails HERE instead of silently shifting every later
+  # test in its file by one response.
+  #
+  # A separate job rather than a step in unit-tests: it is a full second
+  # suite run, as long as the unit suite itself, so it runs in parallel
+  # instead of doubling every shard. It is also why the detector is
+  # env-gated OFF by default — the normal `vp run test` is byte-for-byte
+  # unaffected by the `vi.fn` patch, so a detector that breaks (e.g. on an
+  # `@vitest/spy` upgrade) fails HERE and is never mistaken for a test failure.
+  #
+  # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
+  # and dropping it from the list is the intended ratchet direction; adding a
+  # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
     # observed at least 1538 s unsharded. Same cap as unit-tests: it runs the
@@ -388,7 +406,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      # Same reason as check-build-test: this job runs the unit suite too, so it
+      # Same reason as unit-tests: this job runs the unit suite too, so it
       # reaches the same `origin/main` projection and would fail closed without
       # the full history.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
