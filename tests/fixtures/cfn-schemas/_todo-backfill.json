@@ -23,6 +23,9 @@
     "regenerations of the `types` block."
   ],
   "types": {
+    "AWS::CloudTrail::Trail": [
+      "RecursiveLogging"
+    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ],
@@ -53,6 +56,9 @@
       "TdeCredentialArn",
       "TdeCredentialPassword",
       "UseLatestRestorableTime"
+    ],
+    "AWS::S3Tables::TableBucket": [
+      "LoggingConfiguration"
     ]
   },
   "bogusTolerated": {

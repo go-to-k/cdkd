@@ -1418,6 +1418,9 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::S3Tables::TableBucket',
     new Map<string, readonly string[]>([
+      ['LoggingConfiguration', ['TargetBucket', 'TargetObjectKeyFormat', 'TargetPrefix']],
+      ['LoggingConfiguration.TargetObjectKeyFormat', ['PartitionedPrefix']],
+      ['LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix', ['PartitionDateSource']],
       ['ReplicationConfiguration', ['Role', 'Rules']],
       ['ReplicationConfiguration.Rules', ['Destinations']],
       ['ReplicationConfiguration.Rules.Destinations', ['DestinationTableBucketARN']],
