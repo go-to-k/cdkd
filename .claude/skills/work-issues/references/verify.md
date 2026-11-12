@@ -237,7 +237,7 @@ paths", #5161; a state machine adds the table to walk: path × previous side ×
 desired side, #5611; a refusal or forward-only guard in `update()` adds "does
 it fire on the rollback replay, whose diff runs BACKWARD?" —
 `provider-replay-and-refusals.md`, missed by both lanes' reviewers in one run,
-#5730, #5731; a HAND replacement rule on a newly wired schema-mutable property
+#5730, #5731; so does the parent's FIX-ROUND brief that ADDS one, #5640; a HAND replacement rule on a newly wired schema-mutable property
 adds "does a record LACKING the key replace?" — #5572's guard covers schema
 create-only drops only, #5730), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
