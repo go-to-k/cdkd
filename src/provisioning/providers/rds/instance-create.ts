@@ -95,7 +95,7 @@ export async function createDBInstance(
   const snapshotRestore = replicaSource === undefined ? declaredRestore : undefined;
   if (declaredRestore !== undefined && replicaSource !== undefined) {
     this.logger.warn(
-      `DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
+      safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
     );
   }
 

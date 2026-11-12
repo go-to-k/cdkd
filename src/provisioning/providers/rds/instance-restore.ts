@@ -138,14 +138,15 @@ export async function readSnapshotRestoreSource(
           error instanceof Error ? error : undefined
         )
     );
-  const notFound = (key: string, value: string, noun: string): ProvisioningError =>
-    markNonRetryable(
+  const refuseNotFound = (key: string, value: string, noun: string): never => {
+    throw markNonRetryable(
       new ProvisioningError(
         safeMsg`${resourceType} ${logicalId}: ${key} ${value} does not name a ${noun} this account can read, so there is nothing to restore; nothing was changed.`,
         resourceType,
         logicalId
       )
     );
+  };
   const snapshot = restore.dbSnapshotIdentifier;
   if (snapshot !== undefined && (engine === undefined || multiAZ !== true)) {
     let snapshotEngine: string | undefined;
@@ -162,7 +163,7 @@ export async function readSnapshotRestoreSource(
         throw wrapReadError('restore snapshot', error);
       }
     }
-    if (!found) throw notFound('DBSnapshotIdentifier', snapshot, 'DB snapshot');
+    if (!found) refuseNotFound('DBSnapshotIdentifier', snapshot, 'DB snapshot');
     engine ??= snapshotEngine;
     if (declaredMultiAZ == null) {
       multiAZ =
@@ -186,7 +187,7 @@ export async function readSnapshotRestoreSource(
       }
     }
     if (!found) {
-      throw notFound(
+      refuseNotFound(
         'DBClusterSnapshotIdentifier',
         clusterSnapshot,
         'Multi-AZ DB cluster snapshot'
