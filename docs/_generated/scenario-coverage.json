@@ -638,6 +638,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-rest-api",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-write-only-create-only",
       "annotated": false,
       "scenarios": []
@@ -3711,6 +3716,7 @@
     "cc-to-sdk-reroute-ecs-service",
     "cc-to-sdk-reroute-hosted-zone",
     "cc-to-sdk-reroute-mount-target",
+    "cc-to-sdk-reroute-rest-api",
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",

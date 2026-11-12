@@ -449,6 +449,21 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       normalizeCcPhysicalId: ecsServiceSdkPhysicalId,
     },
   ],
+  [
+    'AWS::ApiGateway::RestApi',
+    {
+      // Pinned to cc-api: every REST API deployed before ApiGatewayProvider
+      // took the type (go-to-k/cdkd#6139). Cloud Control manages it correctly;
+      // this is admitted for the SDK path's speed (no polled update).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare REST API id: the schema primaryIdentifier is ' +
+        'RestApiId and ApiGatewayProvider.create records the CreateRestApi id ' +
+        '(observed equal on a live API by the fixture)',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6141',
+      integFixture: 'cc-to-sdk-reroute-rest-api',
+    },
+  ],
 ]);
 
 /**

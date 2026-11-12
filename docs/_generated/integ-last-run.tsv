@@ -51,6 +51,7 @@ cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 475
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, orph clean, 4750ae2de
+cc-to-sdk-reroute-rest-api	2026-11-12T12:51:48Z	PASS	296	verify.sh	rc ok, orph clean, destroy 0 errors
 cc-write-only-create-only	2026-11-06T16:34:39Z	PASS	160	verify.sh	#5878 cloud-control split head; rc ok, orph clean
 cdk-cross-account-lookup-role	2026-11-05T11:58:48Z	PASS	175	verify.sh	sweep n7 rc ok, orph clean; shared bucket (lookup role reads the default bucket)
 ci-cd	2026-11-04T18:07:14Z	PASS	55	verify.sh	rc 0 in us-east-1, destroy clean, orph clean

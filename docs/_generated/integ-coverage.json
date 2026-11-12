@@ -242,7 +242,8 @@
         "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
-        "apigw-vpclink-integration-target"
+        "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-rest-api"
       ],
       "signals": {
         "api-cognito": [
@@ -271,6 +272,9 @@
         "apigw-vpclink-integration-target": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-rest-api": [
+          "l1"
         ]
       }
     },
@@ -280,7 +284,8 @@
         "api-cognito",
         "apigateway",
         "apigw-restapi-spec",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "cc-to-sdk-reroute-rest-api"
       ],
       "signals": {
         "api-cognito": [
@@ -295,6 +300,9 @@
         ],
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "cc-to-sdk-reroute-rest-api": [
+          "l1"
         ]
       }
     },
@@ -307,6 +315,7 @@
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-rest-api",
         "destroy-nested-cross-region",
         "wafv2"
       ],
@@ -330,6 +339,10 @@
         ],
         "apigw-vpclink-integration-target": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-rest-api": [
+          "l1",
+          "literal"
         ],
         "destroy-nested-cross-region": [
           "l1",
