@@ -479,7 +479,8 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
     });
 
     it.each(paths)('%s refuses when the live instance holds the source id, before any delete', async (_p, run) => {
-      live(OWN_ID);
+      // The backup's owner in another case spelling is the same instance.
+      live(OWN_ID, OWN_ID.toLowerCase());
       for (const [key, value, refusal] of [
         ['SourceDbiResourceId', 'db-jkib2gfq5rv7replza4example', /SourceDbiResourceId must be another DB instance's/],
         [

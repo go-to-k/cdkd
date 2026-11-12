@@ -749,6 +749,23 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       expect(await provider.resourceIdentity(arn, INSTANCE, ctx)).toBeUndefined();
       arm({ backupError: Object.assign(new Error('denied'), { name: 'AccessDenied' }) });
       await expect(provider.resourceIdentity(arn, INSTANCE, ctx)).rejects.toThrow('denied');
+      // A not-found-sounding message under another name is no not-found.
+      arm({
+        backupError: Object.assign(new Error('it does not exist or you are not authorized'), {
+          name: 'AccessDenied',
+        }),
+      });
+      await expect(provider.resourceIdentity(arn, INSTANCE, ctx)).rejects.toThrow('not authorized');
+      // Another region, by the ARN or by the client: no read, no answer.
+      arm({ backupOwner: 'db-JKIB2GFQ5RV7REPLZA4EXAMPLE' });
+      mockSend.mockClear();
+      expect(
+        await provider.resourceIdentity(arn.replace('us-east-1', 'eu-west-1'), INSTANCE, ctx)
+      ).toBeUndefined();
+      expect(
+        await provider.resourceIdentity(arn, INSTANCE, { expectedRegion: 'eu-west-1' })
+      ).toBeUndefined();
+      expect(sent('DescribeDBInstanceAutomatedBackupsCommand')).toEqual([]);
     });
   });
 

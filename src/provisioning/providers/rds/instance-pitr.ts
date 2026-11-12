@@ -395,15 +395,22 @@ export function unusedPointInTimeRestoreKeys(properties: Record<string, unknown>
  * The `DbiResourceId` of the instance an automated backups ARN backs up
  * (`DescribeDBInstanceAutomatedBackups`), for the replacement guard
  * (`deployment/restore-source-identity.ts`, through the provider's
- * `resourceIdentity`): `RESOURCE_NOT_FOUND` when RDS lists no such backup,
- * `undefined` when the answer names no id or the ARN is not an automated
- * backup's; any other failure throws.
+ * `resourceIdentity`): `RESOURCE_NOT_FOUND` only on the not-found fault's
+ * NAME or an empty list; `undefined` when the answer names no id, the ARN is
+ * not an automated backup's, or the ARN or the client is in another region
+ * than `expectedRegion` (as `resourceIdentity` answers); any other failure
+ * throws. "Could not read" never reads as "gone": the caller lets the delete
+ * through on `RESOURCE_NOT_FOUND`.
  */
 export async function automatedBackupResourceId(
   this: RDSProvider,
-  arn: string
+  arn: string,
+  expectedRegion: string
 ): Promise<string | ResourceNotFound | undefined> {
   if (!isAutomatedBackupsArn(arn)) return undefined;
+  const arnRegion = arn.split(':')[3];
+  if (arnRegion !== '' && arnRegion !== expectedRegion) return undefined;
+  if ((await this.getClient().config.region()) !== expectedRegion) return undefined;
   let backups: DBInstanceAutomatedBackup[] | undefined;
   try {
     const response = await this.getClient().send(
@@ -411,7 +418,7 @@ export async function automatedBackupResourceId(
     );
     backups = response.DBInstanceAutomatedBackups;
   } catch (error) {
-    if (this.isNotFoundError(error, 'DBInstanceAutomatedBackupNotFoundFault')) {
+    if ((error as { name?: unknown } | null)?.name === 'DBInstanceAutomatedBackupNotFoundFault') {
       return RESOURCE_NOT_FOUND;
     }
     throw error;

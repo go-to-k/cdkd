@@ -959,7 +959,9 @@ export class RDSProvider implements ResourceProvider {
     context: { expectedRegion: string }
   ): Promise<string | ResourceNotFound | undefined> {
     // go-to-k/cdkd#5640: an automated backups ARN answers with the instance it backs up.
-    if (isAutomatedBackupsArn(physicalId)) return automatedBackupResourceId.call(this, physicalId);
+    if (isAutomatedBackupsArn(physicalId)) {
+      return automatedBackupResourceId.call(this, physicalId, context.expectedRegion);
+    }
     return resourceIdentity.call(this, physicalId, resourceType, context);
   }
   readDbResourceIdIfExists(
