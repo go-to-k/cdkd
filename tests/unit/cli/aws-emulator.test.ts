@@ -168,8 +168,9 @@ describe('under the flag (a non-local command)', () => {
         'AWS_PROFILE',
         'AWS_ACCESS_KEY_ID',
         'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
         'AWS_ENDPOINT_URL_S3',
-  'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS',
+        'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS',
         'CDKD_ROLE_ARN',
       ]) {
         expect(process.env[k], k).toBeUndefined();
@@ -234,11 +235,9 @@ describe('under the flag (a non-local command)', () => {
     expect(pasteableRunFlags().awsEmulator).toBeUndefined();
   });
 
-  it('normalises localhost to 127.0.0.1 and keeps a shell-named AWS_DEFAULT_REGION', async () => {
-    process.env['AWS_DEFAULT_REGION'] = 'eu-central-1';
+  it('normalises localhost to 127.0.0.1', async () => {
     await parse(['deploy'], ['--aws-emulator=https://localhost:1']);
     expect(process.env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:1');
-    expect(process.env['AWS_REGION']).toBeUndefined();
   });
 
   it('an unreachable emulator is rendered and exits 1, never a Fatal stack', async () => {
@@ -288,10 +287,14 @@ describe('under the flag (a non-local command)', () => {
     expect(process.env['AWS_CONFIG_FILE']).toBe(join(run, 'config'));
     expect(process.env['AWS_SHARED_CREDENTIALS_FILE']).toBe(join(run, 'emulator_credentials'));
     expect(process.env['AWS_REGION']).toBe('eu-west-1');
-    // A region the shell names wins.
+    // A region the shell names wins, in either variable.
     process.env['AWS_REGION'] = 'ap-northeast-1';
     await parse(['deploy'], [`--aws-emulator=${EMULATOR_URL}`]);
     expect(process.env['AWS_REGION']).toBe('ap-northeast-1');
+    delete process.env['AWS_REGION'];
+    process.env['AWS_DEFAULT_REGION'] = 'eu-central-1';
+    await parse(['deploy'], [`--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_REGION']).toBeUndefined();
   });
 
   it('defaultProfileRegion reads the [default] section only', () => {

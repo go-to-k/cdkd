@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vite-plus/test';
 
 import {
   pasteableAwsProfileFlag,
+  setPasteableAwsCaBundle,
   setPasteableAwsProfile,
   withPasteableAwsProfile,
 } from '../../../src/utils/pasteable-aws-profile.js';
@@ -19,6 +20,7 @@ import {
 afterEach(() => {
   setAwsEndpointOverrideSource(undefined);
   setPasteableAwsProfile(undefined);
+  setPasteableAwsCaBundle(undefined);
   resetAwsClientDefaults();
 });
 
@@ -29,6 +31,18 @@ describe('pasteable aws commands under --aws-emulator', () => {
     setAssumedRoleCredentials({ accessKeyId: 'A', secretAccessKey: 'B', sessionToken: 'C' });
     expect(withPasteableAwsProfile('aws scheduler delete-schedule --name X')).toBe(
       'aws --endpoint-url https://127.0.0.1:9331 scheduler delete-schedule --name X'
+    );
+  });
+
+  it("add the run's CA bundle when known, so the paste trusts the emulator", () => {
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9331' }));
+    setPasteableAwsCaBundle('/home/u/.aws/emulator/9331/ca.pem');
+    expect(withPasteableAwsProfile('aws s3 ls')).toBe(
+      'aws --endpoint-url https://127.0.0.1:9331 --ca-bundle /home/u/.aws/emulator/9331/ca.pem s3 ls'
+    );
+    setPasteableAwsCaBundle('/home/my user/ca.pem');
+    expect(pasteableAwsProfileFlag()).toBe(
+      "--endpoint-url https://127.0.0.1:9331 --ca-bundle '<ca-bundle>'"
     );
   });
 

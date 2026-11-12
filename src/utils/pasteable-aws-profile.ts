@@ -28,6 +28,16 @@ import { displaySafe } from './display-safe.js';
 import { commandHole, isInertUnquoted, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
+let emulatorCaBundle: string | undefined;
+
+/**
+ * The `--aws-emulator` run's `ca.pem`, so a pasted `aws` command trusts the
+ * emulator's certificate (go-to-k/cdkd#6138). Set by `src/cli/aws-emulator.ts`;
+ * `undefined` clears it.
+ */
+export function setPasteableAwsCaBundle(path: string | undefined): void {
+  emulatorCaBundle = path;
+}
 
 /**
  * Record the run's explicit `--profile` (`undefined` clears it). Called once
@@ -71,7 +81,11 @@ export function pasteableAwsProfileFlag(): string {
   // remedy can never act on a same-named resource in a real account.
   const emulator = awsEndpointOverrideUrl();
   if (emulator !== undefined) {
-    return `--endpoint-url ${isInertUnquoted(emulator) ? emulator : commandHole('endpoint-url')}`;
+    const endpoint = `--endpoint-url ${isInertUnquoted(emulator) ? emulator : commandHole('endpoint-url')}`;
+    const ca = emulatorCaBundle;
+    if (ca === undefined) return endpoint;
+    // cdkd-profile-display: a local file path the operator's own run wrote.
+    return `${endpoint} --ca-bundle ${isInertUnquoted(ca) ? ca : commandHole('ca-bundle')}`;
   }
   // Checked BEFORE the no-profile arm: a role run without `--profile` must not
   // print a bare command, which would run as the ambient identity.

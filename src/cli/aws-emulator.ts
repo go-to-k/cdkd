@@ -46,6 +46,7 @@ import {
   reserveStdoutForPayload,
 } from '../utils/logger.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { setPasteableAwsCaBundle } from '../utils/pasteable-aws-profile.js';
 
 /** The command whose subtree registers `--aws-emulator` through cdk-local. */
 const LOCAL_COMMAND = 'local';
@@ -220,6 +221,8 @@ function pointEnvironmentAtEmulator(url: string, port: number): void {
   }
   process.env['AWS_SHARED_CREDENTIALS_FILE'] = runFile('emulator_credentials');
   process.env['AWS_EC2_METADATA_DISABLED'] = 'true';
+  const ca = runFile('ca.pem');
+  setPasteableAwsCaBundle(url.startsWith('https:') && ca !== devNull ? ca : undefined);
 }
 
 /** The `region` of the `[default]` section of an AWS config file, if any. */
