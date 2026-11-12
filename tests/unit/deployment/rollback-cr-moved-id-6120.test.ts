@@ -488,6 +488,24 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(printed.warn.some((l) => l.includes('the rollback was interrupted'))).toBe(true);
   });
 
+  it('a completed-op replay with no ops still runs a queue it is handed', async () => {
+    answer = 'name-9';
+    const failed = {
+      logicalId: 'Res',
+      changeType: 'UPDATE',
+      resourceType: CR,
+      provisionedBy: 'sdk',
+      physicalId: 'name-1',
+      previousState: record('name-1', OLD_PROPS),
+    } as FailedOperation;
+    const state: Record<string, ResourceState> = { Res: record('name-1', NEW_PROPS) };
+    const queue = newMovedIdCleanupQueue({});
+    await replayFailedOperations([failed], state, 'S', ctx, { movedIdCleanups: queue });
+    expect(provider.delete).not.toHaveBeenCalled();
+    await replayRollback([], state, 'S', ctx, { movedIdCleanups: queue });
+    expect(calls).toEqual(['update Res name-1', 'delete Res name-1']);
+  });
+
   it("a segment's shared queue deletes only after its completed ops", async () => {
     answer = 'name-9';
     const failed = {
