@@ -14,7 +14,7 @@ import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { canRecordSuperseded, supersededHolderOf, SUPERSEDED_KEPT_REMEDY } from '../superseded-resources.js';
+import { canRecordSuperseded, SUPERSEDED_KEPT_REMEDY } from '../superseded-resources.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { withReplayDeletePrinting } from './replay-scope.js';
 import { safe, shownLogicalId, throwIfDeleteSkipped } from './messages.js';
@@ -184,14 +184,11 @@ export async function runMovedIdCleanups(
       ([, record]) =>
         typeof record === 'object' && record !== null && record.physicalId === sent.physicalId
     )?.[0];
-    if (
-      holder !== undefined ||
-      (superseded !== undefined && supersededHolderOf(superseded, stateResources) !== undefined)
-    ) {
+    if (holder !== undefined) {
       logger.warn(
         mask(
           `  Rollback: the physical id ${safe(logicalId)} moved off (${shown}) is not sent a ` +
-            `Delete: ${safe(holder ?? logicalId)} records the same physical id, and cdkd never ` +
+            `Delete: ${safe(holder)} records the same physical id, and cdkd never ` +
             `deletes an id a record names`
         )
       );
