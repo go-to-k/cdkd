@@ -293,10 +293,11 @@ without the flag. For the whole workflow, from deploy to local runs, see
 [Develop Locally with AWS Emulator](aws-emulator.md).
 
 The URL is optional, so a word right after the flag is taken as the URL:
-`--aws-emulator MyStack/Handler` swallows the target. Put the flag after the
-target, or write `--aws-emulator=https://127.0.0.1:9297`. A value that is not
-an `http(s)` URL, or that carries a user name, password, query or fragment, is
-refused without being printed.
+`--aws-emulator MyStack/Handler` is refused, because the target is not an
+`http(s)` URL, with the advice to put the flag after the target or to write
+`--aws-emulator=<url>`, such as `--aws-emulator=https://127.0.0.1:9297`. A
+value that is not an `http(s)` URL, or that carries a user name, password,
+query or fragment, is refused without being printed.
 
 ```bash
 cdkd local invoke MyStack/Handler --from-state --aws-emulator

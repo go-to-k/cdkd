@@ -73,7 +73,8 @@ practical details of running the two together. The flag reference is in
 
 Put `--aws-emulator` after the command's target. The URL is optional, so a
 word right after the flag is read as the URL: `--aws-emulator MyStack/Handler`
-swallows the target.
+is refused, because `MyStack/Handler` is not an `http(s)` URL. The error says
+to put the flag after the target, or to write `--aws-emulator=<url>`.
 
 ### `CDKD_AWS_EMULATOR`
 
