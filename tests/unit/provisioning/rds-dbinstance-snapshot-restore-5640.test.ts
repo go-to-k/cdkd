@@ -734,6 +734,10 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       const [modify] = sent('ModifyDBInstanceCommand');
       expect(modify).not.toHaveProperty('DBSnapshotIdentifier');
       expect(modify).toMatchObject({ BackupRetentionPeriod: 5 });
+      expect(warned()).toMatch(
+        /DBInstance L: DBSnapshotIdentifier may have changed \(a NoEcho value cdkd cannot compare with its record\); not applied/
+      );
+      expect(warned()).not.toContain(SNAPSHOT);
     });
 
     it('never refuses a value equal to the record, even when a forced update names every key', async () => {

@@ -383,3 +383,21 @@ export function changedSnapshotRestoreKeys(
     return true;
   });
 }
+
+/**
+ * The snapshot keys {@link changedSnapshotRestoreKeys} leaves alone only
+ * because the change set names them for an unconfirmed `NoEcho` value: they
+ * may have changed, which an update cannot apply, so the caller warns.
+ */
+export function unconfirmedSnapshotRestoreKeys(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  noEchoOnly: ReadonlySet<string> | undefined
+): string[] {
+  if (noEchoOnly === undefined) return [];
+  return SNAPSHOT_RESTORE_KEYS.filter((key) => {
+    const desired = properties[key];
+    if (desired == null || desired === '') return false;
+    return desired !== previousProperties[key] && noEchoOnly.has(key);
+  });
+}

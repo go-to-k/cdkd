@@ -57,7 +57,7 @@ import {
   replicaSourceOf,
   withPreviousReplicaSource,
 } from './read-replica.js';
-import { changedSnapshotRestoreKeys } from './instance-restore.js';
+import { changedSnapshotRestoreKeys, unconfirmedSnapshotRestoreKeys } from './instance-restore.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -179,6 +179,16 @@ export async function updateDBInstance(
     context?.changedProperties,
     context?.noEchoOnlyChangedProperties
   );
+  const unconfirmedSnapshots = unconfirmedSnapshotRestoreKeys(
+    properties,
+    previousProperties,
+    context?.noEchoOnlyChangedProperties
+  );
+  if (unconfirmedSnapshots.length > 0) {
+    this.logger.warn(
+      safeMsg`DBInstance ${logicalId}: ${unconfirmedSnapshots.join(', ')} may have changed (a NoEcho value cdkd cannot compare with its record); not applied: an instance is restored from a snapshot only when it is created.`
+    );
+  }
   if (
     changedSnapshots.length > 0 &&
     context?.replayingState !== true &&
