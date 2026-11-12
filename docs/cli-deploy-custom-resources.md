@@ -97,10 +97,17 @@ the parameter's value as the template binds it today. When that value has
 changed since the old id was created, the `Delete` carries the new value,
 where CloudFormation sends the old one.
 
-- **The deploy fails.** No `Delete` is sent. The rollback records the old id
-  again by sending the handler a `Create` with the old properties, then
-  deletes the new id. CloudFormation sends an `Update` instead, so a handler
-  whose `Create` refuses a resource that already exists fails that rollback.
+- **The deploy fails.** No `Delete` is sent. The rollback sends the NEW id an
+  `Update` with the old properties as `ResourceProperties` (and the new ones
+  as `OldResourceProperties`), as CloudFormation does; the handler never gets
+  a `Create` for the old id, which it still holds. Whatever id the handler
+  answers is recorded, and once the rollback has completed the id it moved
+  off gets a `Delete`, with the properties it was made with. The same holds
+  for any rollback `Update` whose handler answers a new id, including
+  `cdkd rollback --revert-failed`. That `Delete` follows the rules below: it
+  is not sent under `UpdateReplacePolicy: Retain` or `Snapshot`, nor for an id
+  another record names; until it is sent the id stays in state, and one that
+  fails warns and is retried by the next `cdkd deploy`.
 - **The `Delete` does not complete** (the handler answers `FAILED`, or the
   invoke fails). cdkd warns, naming the old id, and the deploy still
   completes, with exit code `2` unless `--allow-unaddressed`. This is the skip
@@ -137,8 +144,8 @@ What follows depends on why the resource was being deleted.
 | The other copy already exists | The skip only warns, and the surviving copy is no longer tracked. |
 
 The third row covers a replacement that created the new resource first, an
-update whose handler answered a new physical id, and a rollback that created
-the old resource again first. Tear the surviving copy
+update whose handler answered a new physical id (on a deploy or a rollback),
+and a rollback that created the old resource again first. Tear the surviving copy
 down by hand.
 
 ### A resource removed from the template

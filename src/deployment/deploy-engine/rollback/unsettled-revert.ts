@@ -3,6 +3,7 @@
  * Split out of `deploy-engine/rollback.ts` (go-to-k/cdkd#5835), which
  * re-exports what it exported.
  */
+import type { segmentCleanupOptions } from '../../rollback-executor/replay-moved-id-cleanup.js';
 import type { ResourceProvider } from '../../../types/resource.js';
 import type { ResourceState } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -91,6 +92,13 @@ export async function revertUnsettledFailedUpdates(
     emitEnvelope: boolean;
     inlinePolicyWriters: RollbackInlinePolicyWriters;
     hooks: UnsettledRevertHooks | undefined;
+    /**
+     * go-to-k/cdkd#6120: the rollback's superseded writers and the queue it
+     * shares with its completed-op replay, which deletes an id this revert's
+     * `update()` moved off (an abandoned custom-resource Update that answered
+     * a new id) only after that replay's last op.
+     */
+    cleanup?: Partial<ReturnType<typeof segmentCleanupOptions>>;
   }
 ): Promise<{ handled: number[]; warnings: number; interrupted: boolean }> {
   const out = { handled: [] as number[], warnings: 0, interrupted: false };
@@ -243,6 +251,7 @@ export async function revertUnsettledFailedUpdates(
         inlinePolicyWriters: options.inlinePolicyWriters,
         isInterrupted,
         previousFromRecord: own,
+        ...options.cleanup,
       })
   );
   // The arm's own lines already said why an op failed or was skipped.

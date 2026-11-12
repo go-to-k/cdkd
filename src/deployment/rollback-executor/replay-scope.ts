@@ -9,6 +9,7 @@ import type { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import type { OpMasker } from './names.js';
+import type { MovedIdCleanupQueue } from './replay-moved-id-cleanup.js';
 import type { ReplayResolvers } from './replay-secrets.js';
 import type {
   CompletedOperation,
@@ -52,6 +53,11 @@ export interface ReplayOpScope {
   createRollbackRoute: 'sdk' | 'cc-api' | undefined;
   /** go-to-k/cdkd#5064: set when the replay runs this op ahead of its slot. */
   readonly deferral: ReplayDeferral | undefined;
+  /**
+   * go-to-k/cdkd#6120: where a rollback UPDATE arm queues the delete of an id
+   * its `update()` moved off; the replay runs the queue after its last op.
+   */
+  readonly movedIdCleanups?: MovedIdCleanupQueue | undefined;
 }
 
 /**

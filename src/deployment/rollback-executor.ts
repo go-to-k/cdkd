@@ -49,6 +49,10 @@
 import { replayProducerRegionEvidence } from './rollback-executor/replay-secrets.js';
 import { replayRollbackUnbound } from './rollback-executor/replay-completed.js';
 import { replayFailedOperationsUnbound } from './rollback-executor/replay-failed.js';
+import {
+  newMovedIdCleanupQueue,
+  runMovedIdCleanups,
+} from './rollback-executor/replay-moved-id-cleanup.js';
 import { withProducerRegions } from './producer-regions-scope.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
@@ -143,8 +147,45 @@ export async function replayFailedOperations(
     // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
     // resource another record still holds leaves it in place.
     () =>
-      withStackRecords(replayStackRecordsView(args[1]), () =>
-        replayFailedOperationsUnbound(...args)
-      )
+      withStackRecords(replayStackRecordsView(args[1]), async () => {
+        // go-to-k/cdkd#6120: the ids a `--revert-failed` update moved off are
+        // deleted after the last op: by the caller's own replay when it hands
+        // a queue in (`cdkd rollback` runs it after the segment's completed
+        // ops), else here, inside this replay's event envelope.
+        const [ops, stateResources, stackName, ctx, options = {}] = args;
+        if (options.movedIdCleanups !== undefined) {
+          const result = await replayFailedOperationsUnbound(...args);
+          // Interrupted, the caller's next replay never runs: nothing is sent.
+          if (result.interrupted) {
+            await runMovedIdCleanups(options.movedIdCleanups, {
+              stateResources,
+              stackName,
+              ctx,
+              result,
+              afterOp: options.afterOp,
+              interrupted: true,
+            });
+          }
+          return result;
+        }
+        const movedIdCleanups = newMovedIdCleanupQueue(options);
+        const envelope = options.emitEnvelope === true && ops.length > 0;
+        if (envelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
+        const result = await replayFailedOperationsUnbound(ops, stateResources, stackName, ctx, {
+          ...options,
+          emitEnvelope: false,
+          movedIdCleanups,
+        });
+        await runMovedIdCleanups(movedIdCleanups, {
+          stateResources,
+          stackName,
+          ctx,
+          result,
+          afterOp: options.afterOp,
+          interrupted: result.interrupted || options.isInterrupted?.() === true,
+        });
+        if (envelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
+        return result;
+      })
   );
 }

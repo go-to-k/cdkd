@@ -52,11 +52,8 @@ import type {
   StackState,
   SupersededResourceRecord,
 } from '../types/state.js';
-import {
-  addSuperseded,
-  removeSuperseded,
-  supersededAfterRollback,
-} from './superseded-resources.js';
+import { supersededAfterRollback } from './superseded-resources.js';
+import { segmentCleanupOptions } from './rollback-executor/replay-moved-id-cleanup.js';
 import {
   isMarkFor,
   journalOpPhysicalId,
@@ -842,8 +839,8 @@ export async function revertNestedChildFromJournal(args: {
                       onRolledBackCreate: (create) => rolledBackCreates.push(create),
                       inlinePolicyWriters,
                       failedOperations: segment.failedOperations,
-                      onSuperseded: (entry) => addSuperseded(supersededHost, entry),
-                      onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+                      // go-to-k/cdkd#6120: a settled id leaves the loaded base too.
+                      ...segmentCleanupOptions(false, supersededHost, base),
                     })
                 );
                 for (const [id, below] of inner.settled) settledBelow.set(id, below);

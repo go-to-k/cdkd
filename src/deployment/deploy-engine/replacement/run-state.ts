@@ -121,6 +121,14 @@ export class ReplacementRunState {
   updateWasReplaced = new Map<string, boolean>();
 
   /**
+   * go-to-k/cdkd#6120: logical ids whose provider `update()` moved them to a
+   * new physical id and left the old one live for the cleanup phase
+   * (`oldPhysicalIdLeftForCleanup`), journaled on the completed op so its
+   * rollback sends an Update rather than a re-Create. Cleared per `deploy()`.
+   */
+  oldIdLeftForCleanup = new Set<string>();
+
+  /**
    * State schema v12 (go-to-k/cdkd#4847 / #4852): per record UPDATED IN PLACE
    * that holds a token, its type's create-only paths (`'all'` when not known),
    * for the persist writer's union rule. Cleared per `deploy()`.

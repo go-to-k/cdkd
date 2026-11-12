@@ -178,8 +178,26 @@ export function supersededAfterRollback(
 ): Pick<StackState, 'supersededResources'> {
   const added = Array.isArray(pending.supersededResources) ? pending.supersededResources : [];
   if (added.length === 0) return {};
+  return { supersededResources: [...ownNotPending(base, added), ...added] };
+}
+
+/**
+ * `base`'s entries, minus one naming the same resource as a pending entry
+ * (go-to-k/cdkd#6120): a save must not carry the same id twice.
+ */
+function ownNotPending(
+  base: Pick<StackState, 'supersededResources'>,
+  added: readonly SupersededResourceRecord[]
+): SupersededResourceRecord[] {
   const own = Array.isArray(base.supersededResources) ? base.supersededResources : [];
-  return { supersededResources: [...own, ...added] };
+  return own.filter(
+    (entry) =>
+      !added.some(
+        (a) =>
+          a.state.physicalId === entry.state.physicalId &&
+          a.state.resourceType === entry.state.resourceType
+      )
+  );
 }
 
 /** The remedy a kept entry's warning names. */

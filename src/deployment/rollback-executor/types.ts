@@ -125,6 +125,17 @@ export interface CompletedOperation {
    */
   wasReplaced?: boolean | undefined;
   /**
+   * go-to-k/cdkd#6120: the provider's `oldPhysicalIdLeftForCleanup` answer for
+   * an UPDATE whose `update()` moved the resource to a new physical id and
+   * left the old one live for the deploy's cleanup phase (a custom resource
+   * whose handler answered a new `PhysicalResourceId`, #6117). The old id is
+   * then still live when a rollback runs, so the reversal sends `update()` to
+   * the NEW id with the old properties, as CloudFormation does, instead of
+   * re-creating the old resource. ADDITIVE, no `journalVersion` bump: absent
+   * (an older binary's journal) keeps the reverse-replacement arm.
+   */
+  oldPhysicalIdLeftForCleanup?: true | undefined;
+  /**
    * go-to-k/cdkd#4690: the deploy deleted the OLD resource BEFORE it created
    * the new one (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`, the
    * UPDATE-unsupported fallback, `--replace`'s delete-first fallback, or a

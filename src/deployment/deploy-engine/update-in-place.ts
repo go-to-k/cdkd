@@ -733,6 +733,8 @@ export async function updateInPlace(
       result.oldPhysicalIdLeftForCleanup === true &&
       result.physicalId !== currentResource.physicalId
     ) {
+      // go-to-k/cdkd#6120: journaled, so a rollback reverts it with an Update.
+      engine.replacementRun.oldIdLeftForCleanup.add(logicalId);
       await deleteOldIdAfterDeploy(engine.replacementRun, engine.replacementDeps(), {
         logicalId,
         oldResource: currentResource,

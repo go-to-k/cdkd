@@ -94,6 +94,8 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
   let deleteMode: 'ok' | 'throw' | 'skip';
   /** Whether the update reports the old id is left for cleanup (the CR provider does). */
   let leavesOld: boolean;
+  /** What the handler answers to the rollback Update (default: the Name it is sent). */
+  let rollbackAnswer: string | undefined;
   let saved: StackState[];
 
   beforeEach(() => {
@@ -104,6 +106,7 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     topicFails = false;
     deleteMode = 'ok';
     leavesOld = true;
+    rollbackAnswer = undefined;
     saved = [];
     provider = {
       create: vi.fn(async (logicalId: string, _type: string, props: Record<string, unknown>) => {
@@ -116,7 +119,10 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
           if (topicFails) throw new Error('InvalidParameter: topic update rejected');
           return { physicalId, wasReplaced: false };
         }
-        const next = String(props['Name']);
+        const next =
+          rollbackAnswer !== undefined && physicalId === 'name-2' && props['Name'] === 'name-1'
+            ? rollbackAnswer
+            : String(props['Name']);
         return {
           physicalId: next,
           wasReplaced: next !== physicalId,
@@ -358,17 +364,43 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     ]);
   });
 
-  it('leaves the rollback of a failed deploy as it was: the old id is never deleted', async () => {
+  it('rolls a failed deploy back with an Update to the new id; the old id is never deleted', async () => {
     topicFails = true;
     await expect(deploy({ noRollback: false })).rejects.toThrow(/Failed to update resource Topic/);
     expect(oldIdDeletes()).toEqual([]);
-    // The reverse replacement, unchanged by #6117: it re-creates name-1 and
-    // deletes name-2 (CloudFormation sends an Update instead: #6120).
-    expect(calls.slice(2)).toEqual(['create Res name-1', 'delete Res name-2']);
+    // go-to-k/cdkd#6120: as CloudFormation, the rollback sends name-2 an
+    // Update with the old properties (never a Create of name-1, which the
+    // handler still holds), and deletes name-2 once the rollback completes.
+    expect(calls.slice(2)).toEqual(['update Res name-2', 'delete Res name-2']);
+    expect(vi.mocked(provider.update).mock.calls.at(-1)?.slice(0, 5)).toEqual([
+      'Res',
+      'name-2',
+      CR,
+      OLD_PROPS,
+      NEW_PROPS,
+    ]);
     // The record holds name-1 again, so the entry recorded for it is gone.
     const last = saved.at(-1);
     expect(last?.resources['Res']?.physicalId).toBe('name-1');
     expect(last?.supersededResources).toBeUndefined();
+  });
+
+  it('journals no mark for a provider that does not leave the old id, so the rollback re-creates (#6120)', async () => {
+    topicFails = true;
+    leavesOld = false;
+    await expect(deploy({ noRollback: false })).rejects.toThrow(/Failed to update resource Topic/);
+    expect(calls.slice(2)).toEqual(['create Res name-1', 'delete Res name-2']);
+  });
+
+  it('keeps the old id in state when the rollback Update answers a third id (#6120)', async () => {
+    topicFails = true;
+    rollbackAnswer = 'name-3';
+    await expect(deploy({ noRollback: false })).rejects.toThrow(/Failed to update resource Topic/);
+    expect(calls.slice(2)).toEqual(['update Res name-2', 'delete Res name-2']);
+    const last = saved.at(-1);
+    expect(last?.resources['Res']?.physicalId).toBe('name-3');
+    // name-1 is no record's id: the next deploy sends it the Delete.
+    expect(last?.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-1']);
   });
 
   it('says to delete it manually when a failed deploy leaves an old id it could not record', async () => {

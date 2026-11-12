@@ -54,6 +54,7 @@ import {
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
+import { queueMovedIdCleanup } from './replay-moved-id-cleanup.js';
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { deleteLeftInPlace } from '../delete-outcome.js';
@@ -604,19 +605,10 @@ export async function replayFailedOperationsUnbound(
         case 'revert-failed-update': {
           const current = stateResources[op.logicalId]!;
           const prev = op.previousState!;
-          // Issue #3203, as on the `revert` arm, and the sibling of
-          // `skip-failed-absent` above: that one has no previous state at all,
-          // this one has a record with no `properties` bag. `break` rather
-          // than `return` -- this switch sits inside the failed-op loop, so
-          // one unrestorable op must not end the pass.
-          //
-          // ABOVE the `force-reverting ...` line below, for the reason round 3
-          // moved the `revert` arm's guard above its `Restoring ...` line:
-          // announcing a restore and then refusing it reads as a failure
-          // mid-flight. It is worse on THIS arm, whose announcement also
-          // asserts the remote state is unknown -- three reviewers read the
-          // guard's own "as on the `revert` arm" as a parity claim the old
-          // placement contradicted on the one dimension round 3 changed.
+          // Issue #3203, as on the `revert` arm (a record with no `properties`
+          // bag; `break`, not `return`: one op must not end the pass), and
+          // ABOVE the `force-reverting ...` line: announcing a restore and then
+          // refusing it reads as a failure mid-flight.
           if (
             !requireRestorableBaseline(prev.properties, logger, {
               logicalId: op.logicalId,
@@ -916,6 +908,12 @@ export async function replayFailedOperationsUnbound(
           } else {
             logger.info(`  Rollback: ${safe(op.logicalId)} reverted successfully`);
           }
+          // go-to-k/cdkd#6120: the `revert` arm's twin; the bound entry runs the queue.
+          queueMovedIdCleanup(options.movedIdCleanups, skipScope, op, current, revertFailedResult, {
+            provider,
+            provisionedBy: revertVia,
+            secrets,
+          });
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',

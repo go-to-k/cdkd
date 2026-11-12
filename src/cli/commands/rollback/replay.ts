@@ -1,7 +1,5 @@
 import {
-  addSuperseded,
   holdsSupersededResources,
-  removeSuperseded,
   supersededAfterRollback,
 } from '../../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from '../registry-release.js';
@@ -58,6 +56,7 @@ import {
   makeForeignHolderScan,
 } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
+import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   type ResourceState,
@@ -643,6 +642,8 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
         // import replaced under the id) is a warning: nothing reverts it.
         const completedSplit = splitImportedOps(segment.operations, segment, orphanLogicalIds);
         const completedOps = completedSplit.replay;
+        // go-to-k/cdkd#6120: one cleanup queue for the segment's two replays.
+        const cleanup = segmentCleanupOptions(completedOps.length > 0, supersededHost, baseState);
         // A displaced FAILED op counts whether or not `--revert-failed` is
         // passed: the plan lists it either way, and nothing ever reverts it,
         // so a run that then pops the segment must still say so (exit 2).
@@ -737,6 +738,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                           // and it then emits no envelope (cosmetic ordering
                           // only, unpinned on purpose).
                           emitEnvelope: completedOps.length === 0,
+                          ...cleanup,
                           // Same reason as the sibling replay below: `afterOp`
                           // saves per op, so a record appended only after this
                           // returns is absent from every intermediate save
@@ -840,8 +842,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                       onRolledBackCreate: (create) => rolledBackCreates.push(create),
                       inlinePolicyWriters,
                       failedOperations: failedForGuard,
-                      onSuperseded: (entry) => addSuperseded(supersededHost, entry),
-                      onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+                      ...cleanup,
                     })
                 );
                 return {
