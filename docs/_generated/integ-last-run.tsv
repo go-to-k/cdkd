@@ -56,7 +56,7 @@ cc-write-only-create-only	2026-11-06T16:34:39Z	PASS	160	verify.sh	#5878 cloud-co
 cdk-cross-account-lookup-role	2026-11-05T11:58:48Z	PASS	175	verify.sh	sweep n7 rc ok, orph clean; shared bucket (lookup role reads the default bucket)
 ci-cd	2026-11-04T18:07:14Z	PASS	55	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cloudfront-function-url	2026-11-05T11:24:43Z	PASS	226	verify.sh	rc ok, orph clean
-cloudtrail-trail	2026-11-06T21:56:11Z	PASS	320	verify.sh	#5921 cloudtrail split head; rc ok, orph clean
+cloudtrail-trail	2026-11-12T19:48:12Z	PASS	321	verify.sh	#6166 RecursiveLogging SDK route; rc ok, orph clean
 cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-11-10T16:09:51Z	PASS	70	verify.sh	rc ok, orph clean
 codebuild-project	2026-11-06T22:05:30Z	PASS	130	verify.sh	#5924 codebuild split head; rc ok, orph clean
