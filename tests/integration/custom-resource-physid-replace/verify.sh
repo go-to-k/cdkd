@@ -342,6 +342,10 @@ echo "    OK: PREMISE — the forward Update answered ${NAME_4}, then Gate faile
 
 # The #6120 assertion: the rollback sent the NEW id an Update with the old
 # Name (pre-fix: a Create of ${NAME_2}, which the handler refused).
+if ! param_present "updated/${NAME_2}"; then
+  echo "FAIL: PREMISE not met — updated/${NAME_2} (written by Phase 2's Update) is missing" >&2
+  exit 1
+fi
 UPDATED_FROM=$(param_value "updated/${NAME_2}")
 if [ "${UPDATED_FROM}" != "${NAME_4}" ]; then
   echo "FAIL (#6120): the rollback did not send ${NAME_4} an Update back to ${NAME_2} (updated/${NAME_2} names '${UPDATED_FROM}', expected ${NAME_4})" >&2
