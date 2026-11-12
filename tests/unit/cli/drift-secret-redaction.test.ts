@@ -1771,11 +1771,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     const saved = mockSaveState.mock.calls[0]![2];
-    // go-to-k/cdkd#6125: the accepted bag is the seeded baseline, never
-    // `properties`, which keep the template's reference as they were.
+    // go-to-k/cdkd#6125: the accepted bag is a baseline captured from the
+    // readback, never `properties`, which keep the reference as they were. A
+    // write-only key the readback cannot return is absent from that capture,
+    // as from every observed capture.
     const observed = saved.resources['Db']!.observedProperties!;
-    expect(observed['MasterUserPassword']).toBe(SECRET_EXPR);
-    expect(observed['DBInstanceClass']).toBe('db.t3.small');
+    expect(observed).toEqual({ DBInstanceClass: 'db.t3.small' });
     expect(saved.resources['Db']!.properties).toEqual({
       DBInstanceClass: 'db.t3.micro',
       MasterUserPassword: SECRET_EXPR,
@@ -4466,7 +4467,7 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
   // baseline (`observedProperties`), where an uncertifiable position must be
   // masked rather than left holding a stored plaintext. Since go-to-k/cdkd#6125
   // every accept writes `observedProperties` — a record with no baseline gets
-  // one seeded from `properties` — so the fail-closed constant applies to both
+  // one captured from the readback — so the fail-closed constant applies to both
   // record shapes. One case per shape.
 
   it('#2939: on the observedProperties arm, a stored plaintext at an UNPAIRABLE position is MASKED', async () => {
@@ -4510,7 +4511,7 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
   it('#2939 / #6125: a record with NO observed baseline gets one, masked at an uncertifiable position', async () => {
     // A PUBLIC ssm reference in `properties` (the `cdkd import` warn path)
     // whose live value came back as a container lands at a position the walk
-    // cannot pair. The accepted bag is a baseline seeded from `properties`, so
+    // cannot pair. The accepted bag is a baseline captured from the readback, so
     // the fail-closed constant masks it — and the user is told the value was
     // not recorded. `properties` keep the reference: a mask there would block
     // `cdkd export` and the rollback replay, and the readback there would be

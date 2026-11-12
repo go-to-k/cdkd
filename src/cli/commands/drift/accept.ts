@@ -93,6 +93,22 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
   defineOwnKey(cursor, segments[segments.length - 1]!, value);
 }
 
+/**
+ * {@link setAtPath}, or REMOVE the leaf when `value` is `undefined` (the
+ * source bag holds nothing there), OWN keys only.
+ */
+function restoreAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
+  if (value !== undefined) {
+    setAtPath(target, path, value);
+    return;
+  }
+  const segments = path.split('.');
+  const parent = segments.length === 1 ? target : getAtPath(target, segments.slice(0, -1).join('.'));
+  if (parent === null || typeof parent !== 'object' || Array.isArray(parent)) return;
+  const leaf = segments[segments.length - 1]!;
+  if (hasOwnKey(parent, leaf)) delete (parent as Record<string, unknown>)[leaf];
+}
+
 // `hasOwnKey` / `ownValue` / `defineOwnKey` / `hasPlainPrototype` were
 // file-local here until issue #3121 moved them to `src/utils/own-keys.ts`, so
 // the analyzer-side canonicalizers rebuild by the same rule.
@@ -209,9 +225,9 @@ export async function runAccept(
       // `--accept` writes `observedProperties` to match AWS-current and
       // leaves `properties` (= the user's last-deployed template intent)
       // untouched — on EVERY record (go-to-k/cdkd#6125). A record with no
-      // `observedProperties` yet (an older binary's state) gets one, seeded
-      // from its `properties` — the baseline its drift was just compared
-      // against. It used to have the readback written INTO `properties`,
+      // `observedProperties` yet (an older binary's state) gets one, captured
+      // from the live readback. It used to have the readback written INTO
+      // `properties`,
       // the previous side of the next deploy's diff: an accepted list entry
       // that exists only in AWS became recorded, the template's shorter list
       // then read as its REMOVAL, and a provider deriving deletes from the
@@ -244,8 +260,8 @@ export async function runAccept(
         // refresh-observed`, and this is the same defect one command over.
         //
         // A marked record USUALLY has no `observedProperties`, and then the
-        // write below seeds a baseline from `existing.properties` and positions
-        // the redaction against them -- which after an import refusal can hold
+        // write below captures a baseline from the readback and positions the
+        // redaction against `existing.properties` -- which after an import refusal can hold
         // the WRONG-BRANCH LITERAL the refusal distrusted. A literal source leaf
         // against a string readback PAIRS as an ordinary drifted literal, so
         // nothing refuses and the DECRYPTED value lands in the record. (Before
@@ -273,7 +289,7 @@ export async function runAccept(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
               `NOT accepted — a 'cdkd import' run refused to capture this resource's ` +
               `observed-properties baseline, because its recorded properties can no longer ` +
-              `position the secret redaction. Accepting would write a baseline seeded from ` +
+              `position the secret redaction. Accepting would write a baseline positioned against ` +
               `those properties, which can persist a resolved secret into state.json in ` +
               `plaintext. ` +
               safeMsg`${
@@ -283,10 +299,20 @@ export async function runAccept(
           );
           continue;
         }
-        // go-to-k/cdkd#6125: seeded from `properties` when the record has no
-        // baseline, and written to `observedProperties` either way.
-        const baselineSource = existing.observedProperties ?? existing.properties ?? {};
-        const newBaseline = JSON.parse(JSON.stringify(baselineSource)) as Record<string, unknown>;
+        // go-to-k/cdkd#6125: written to `observedProperties` either way. A
+        // record with no baseline gets one SEEDED from the live readback, as
+        // `cdkd state refresh-observed` captures it, never from `properties`:
+        // every reader of a present baseline takes it for a full readback (the
+        // drift walk descends the union of its keys and AWS's, `--revert`
+        // overlays without preserving untemplated paths, the deploy-start
+        // auto-refresh skips it), so a template-shaped one would surface every
+        // AWS-defaulted sub-key as drift and let `--revert` strip it. A
+        // refused path is put back to what drift compared it against below.
+        const seeded = existing.observedProperties === undefined;
+        const compared = existing.observedProperties ?? existing.properties ?? {};
+        const newBaseline = seeded
+          ? structuredClone(outcome.awsProperties)
+          : (JSON.parse(JSON.stringify(compared)) as Record<string, unknown>);
         const accepted: PropertyDrift[] = [];
         for (const change of outcome.changes) {
           // Issue #1914: anything the report had to MASK is not a value — it
@@ -316,6 +342,9 @@ export async function runAccept(
                     `re-deploy if the reference changed.` +
                     `\nRevert with: ${revert}`)
             );
+            // The seed carries the readback here; what is not accepted stays
+            // what the record held.
+            if (seeded) restoreAtPath(newBaseline, change.path, getAtPath(compared, change.path));
             continue;
           }
           setAtPath(newBaseline, change.path, change.awsValue);
@@ -423,15 +452,10 @@ export async function runAccept(
         // go-to-k/cdkd#4043 Phase C: AFTER the recorded check, which compares
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.
-        // A baseline SEEDED from `properties` (go-to-k/cdkd#6125) is in the
-        // record's order, not a readback's, so it takes the by-index arm: the
-        // readback arm pairs a list by its identity field and masks a list of
-        // plain strings whole.
-        const written = maskMarkedNoEchoBaseline(
-          redactedBaseline,
-          existing,
-          existing.observedProperties !== undefined
-        );
+        // Readback-shaped on both record shapes since go-to-k/cdkd#6125 (a
+        // seeded baseline IS the readback), so the readback arm: lists paired
+        // by their identity field, as the deploy-start refresh masks them.
+        const written = maskMarkedNoEchoBaseline(redactedBaseline, existing, true);
         // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
         // a failed deploy left unsettled on this resource is settled, except a
         // key AWS is still changing (the readback is not where it will end).

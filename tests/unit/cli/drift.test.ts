@@ -2347,8 +2347,8 @@ describe('cdkd drift', () => {
       expect(stackName).toBe('TestStack');
       expect(region).toBe('us-east-1');
       expect(opts?.expectedEtag).toBe('"etag-1"');
-      // go-to-k/cdkd#6125: a record with no baseline gets one, seeded from its
-      // `properties`; the `properties` themselves (the next deploy's previous
+      // go-to-k/cdkd#6125: a record with no baseline gets one, captured from
+      // the readback; the `properties` themselves (the next deploy's previous
       // side) stay as the template left them.
       expect(savedState.resources['Bucket1']!.observedProperties).toEqual({
         BucketName: 'b',
@@ -2406,6 +2406,66 @@ describe('cdkd drift', () => {
         Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: templated } },
       });
       expect(changes.get('Db')?.changeType).toBe('NO_CHANGE');
+    });
+
+    it('the baseline an accept captures for a record with none is a full readback: the next drift is clean and --revert keeps untemplated keys (go-to-k/cdkd#6125)', async () => {
+      // A present baseline switches drift to the union walk (baseline keys
+      // plus AWS keys in every nested object) and `--revert` off its
+      // untemplated-path preservation. A TEMPLATE-shaped baseline would make
+      // the AWS-defaulted `LoggingConfig.LogGroup` drift on the next run, and
+      // let a revert strip it.
+      const logging = { LogFormat: 'Text', LogGroup: '/aws/lambda/fn' };
+      let liveDescription = 'edited';
+      const update = vi.fn(async () => ({ physicalId: 'fn', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          FunctionName: 'fn',
+          Description: liveDescription,
+          LoggingConfig: logging,
+        }),
+        update,
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Fn: makeResource({
+            physicalId: 'fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              FunctionName: 'fn',
+              Description: 'deployed',
+              LoggingConfig: { LogFormat: 'Text' },
+            },
+          }),
+        })
+      );
+
+      expect((await runDrift(['TestStack', '--accept', '--yes'])).error).toBeUndefined();
+      const accepted = mockSaveState.mock.calls[0]![2] as StackState;
+      expect(accepted.resources['Fn']!.observedProperties).toEqual({
+        FunctionName: 'fn',
+        Description: 'edited',
+        LoggingConfig: logging,
+      });
+
+      mockGetState.mockResolvedValueOnce({ state: accepted, etag: '"etag-2"' });
+      const { output } = await runDrift(['TestStack', '--json']);
+      const payload = JSON.parse(output) as Array<{
+        drifted: Array<{ logicalId: string }>;
+        clean: Array<{ logicalId: string }>;
+      }>;
+      expect(payload[0]!.drifted).toEqual([]);
+      expect(payload[0]!.clean.map((c) => c.logicalId)).toEqual(['Fn']);
+
+      liveDescription = 'edited again';
+      mockGetState.mockResolvedValueOnce({ state: accepted, etag: '"etag-3"' });
+      await runDrift(['TestStack', '--revert', '--yes']);
+      expect(update).toHaveBeenCalledTimes(1);
+      const sent = (update.mock.calls[0] as unknown[]).find(
+        (arg): arg is Record<string, unknown> =>
+          typeof arg === 'object' && arg !== null && 'Description' in arg
+      );
+      expect(sent).toMatchObject({ Description: 'edited', LoggingConfig: logging });
     });
 
     it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
@@ -2527,8 +2587,8 @@ describe('cdkd drift', () => {
     });
 
     it('leaves an import-REFUSED record ENTIRELY untouched, while accepting its sibling (issue #2944)', async () => {
-      // A marked record has NO `observedProperties`, so `--accept` would seed
-      // a baseline from `properties` and position the redaction against them,
+      // A marked record has NO `observedProperties`, so `--accept` would
+      // capture a baseline and position its redaction against `properties`,
       // which after an import refusal hold the wrong-branch literal; a literal
       // source leaf against a string readback pairs as ordinary drift, so
       // nothing refuses and the decrypted value lands in `state.json`.

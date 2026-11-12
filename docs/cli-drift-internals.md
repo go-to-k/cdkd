@@ -235,9 +235,9 @@ exits `2` for.
 
 **The import refusal is the one that also stops `--accept`**, and it is
 per-resource rather than per-property. Such a resource has no baseline, so
-`--accept` would seed one from its recorded *properties* and position the
-secret redaction against them — properties the import already found
-untrustworthy, which can persist a resolved secret in plaintext. `--revert` has the mirror problem:
+`--accept` would capture one from the AWS readback and position the secret
+redaction against its recorded *properties* — properties the import already
+found untrustworthy, which can persist a resolved secret in plaintext. `--revert` has the mirror problem:
 it would push those properties to AWS, overwriting whatever the resource really
 holds. Both decline, name the resource, and point at the remedy
 [below](cli-drift-not-compared.md#clearing-a-baseline-refusal). Such a resource is **not reported as drifted either**: detection declines to
@@ -478,8 +478,8 @@ remedy is the same `cdkd deploy`, which resolves the template and records a
 resolvable baseline.
 
 `cdkd drift --accept` writes this mask too, because it always writes the
-baseline. A resource that has no baseline yet gets one, seeded from its
-template properties (see [`--accept`](cli-drift-accept-revert.md#accept-state-aws)).
+baseline. A resource that has no baseline yet gets one, captured from the AWS
+readback (see [`--accept`](cli-drift-accept-revert.md#accept-state-aws)).
 The template properties are never rewritten, so no mask lands where it would
 block [`cdkd export`](cli-export.md) or the rollback replay.
 

@@ -545,8 +545,8 @@ export function redactDriftChanges(
  * a changed parent path, or a provider's echo of what the revert sent, can put
  * the plaintext at a marked leaf. An `observedProperties` baseline is a
  * readback, so a list is paired by its identity field and masked whole where
- * nothing pairs; a baseline in the record's order (`properties`, or one
- * `--accept` seeds from them) is masked by index, as the deploy writes it.
+ * nothing pairs; a `properties` baseline is masked by index, as the deploy
+ * writes it.
  */
 /** @internal Exported for its unit tests. */
 export function maskMarkedNoEchoBaseline(
@@ -595,9 +595,8 @@ export function maskMarkedNoEchoBaseline(
   );
   if (replaced.length === 0) return byIndex;
   // No `noEchoLeaves` widening for a list masked WHOLE here: the one writer
-  // that replaces a list on this arm is `--accept` seeding a baseline from
-  // `properties`, which it writes to `observedProperties` since
-  // go-to-k/cdkd#6125 — where a whole-masked list is what the readback arm
-  // above writes too. `--revert` only DROPS keys from `properties`.
+  // that replaced a list on this arm was `--accept` writing `properties`,
+  // which it no longer does (go-to-k/cdkd#6125); `--revert` only DROPS keys
+  // from `properties`.
   return maskReadbackAtCoordinates(byIndex, recorded, replaced);
 }

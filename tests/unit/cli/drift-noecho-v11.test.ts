@@ -427,7 +427,7 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     });
   });
 
-  it('--accept into a record with NO observed baseline masks the baseline it seeds at the marked coordinate', async () => {
+  it('--accept into a record with NO observed baseline masks the baseline it captures at the marked coordinate', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         Token: {
@@ -444,13 +444,13 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
 
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
-    // go-to-k/cdkd#6125: the baseline is seeded from `properties` and written
-    // to `observedProperties`; `properties` is not rewritten.
+    // go-to-k/cdkd#6125: the baseline is captured from the readback and
+    // written to `observedProperties`; `properties` is not rewritten.
     expect(saved.observedProperties).toEqual({ Name: '/app/token', Value: SECRET_MASK, Description: 'edited' });
     expect(saved.properties).toEqual({ Name: '/app/token', Value: 'q7z', Description: 'a' });
   });
 
-  it('--accept of another path masks an unchanged plain-string list in the seeded baseline by index, not whole', async () => {
+  it('--accept of another path masks a marked plain-string list in the captured baseline WHOLE, as a readback capture does', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         Token: {
@@ -466,7 +466,11 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     await runDrift(['TestStack', '--accept', '--yes']);
 
     const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
-    expect(saved.observedProperties!['L']).toEqual(['a', SECRET_MASK]);
+    // go-to-k/cdkd#6125: the baseline is the readback, so the readback arm
+    // pairs a list by its identity field; plain strings have none, so the
+    // whole list is masked (over-masking, the fail-closed direction).
+    expect(saved.observedProperties!['L']).toEqual([SECRET_MASK, SECRET_MASK]);
+    expect(saved.properties['L']).toEqual(['a', 'q7z']);
   });
 
   // Review B1 (#4763): a v11 list holding `***` at a marked element is never
