@@ -46,6 +46,7 @@ STACK="CdkdCcToSdkRerouteRestApiExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOGICAL_ID=""
+SPEC_ID=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # The state record for the resource under test. A guessed key would make every
@@ -61,12 +62,22 @@ record() { # usage: record <jq-expression-over-the-resource-object>
   printf '%s' "${json}" | jq -r --arg k "${LOGICAL_ID}" ".resources[\$k] | $1"
 }
 
+record_spec() { # usage: record_spec <jq-expression>: record() on the definition-bodied API
+  ( LOGICAL_ID="${SPEC_ID}"; record "$1" )
+}
+
 output() { # usage: output <OutputKey>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg k "$1" '.outputs[$k]'
 }
 
 live_comment() { # usage: live_comment <rest-api-id>
   aws apigateway get-rest-api --rest-api-id "$1" --region "${REGION}" --query 'description' --output text
+}
+live_path_id() { # usage: live_path_id <rest-api-id> <path>
+  aws apigateway get-resources --rest-api-id "$1" --region "${REGION}" --query "items[?path=='$2'].id | [0]" --output text
+}
+live_name() { # usage: live_name <rest-api-id>
+  aws apigateway get-rest-api --rest-api-id "$1" --region "${REGION}" --query 'name' --output text
 }
 live_root() { # usage: live_root <rest-api-id>
   aws apigateway get-resources --rest-api-id "$1" --region "${REGION}" --query "items[?path=='/'].id | [0]" --output text
@@ -92,7 +103,7 @@ cleanup() {
   # Sweep any REST API a failed run left behind, matched by the fixture's exact name.
   local rid
   for rid in $(aws apigateway get-rest-apis --region "${REGION}" \
-    --query "items[?name=='cdkd-reroute-rest-api'].id" --output text 2>/dev/null); do
+    --query "items[?name=='cdkd-reroute-rest-api' || name=='cdkd-reroute-spec-api'].id" --output text 2>/dev/null); do
     aws apigateway delete-rest-api --rest-api-id "${rid}" --region "${REGION}" >/dev/null 2>&1
   done
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
@@ -117,9 +128,13 @@ echo "==> Pre-run cleanup"; cleanup
 node "${LOCAL_DIST}" synth --region "${REGION}" >/dev/null 2>&1
 TEMPLATE="cdk.out/${STACK}.template.json"
 [ -f "${TEMPLATE}" ] || { echo "FAIL: no synth template at ${TEMPLATE}" >&2; exit 1; }
-LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::ApiGateway::RestApi") | .key' "${TEMPLATE}" | head -1)
-[ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::ApiGateway::RestApi in ${TEMPLATE}" >&2; exit 1; }
-echo "==> Resource under test: ${LOGICAL_ID}"
+# Each API is selected by what only it declares (a Name / an inline Body), never by position.
+LOGICAL_ID=$(jq -r '[.Resources | to_entries[] | select(.value.Type == "AWS::ApiGateway::RestApi" and .value.Properties.Name != null and .value.Properties.Body == null) | .key] | if length == 1 then .[0] else empty end' "${TEMPLATE}")
+[ -n "${LOGICAL_ID}" ] || { echo "FAIL: not exactly one named AWS::ApiGateway::RestApi in ${TEMPLATE}" >&2; exit 1; }
+SPEC_ID=$(jq -r '[.Resources | to_entries[] | select(.value.Type == "AWS::ApiGateway::RestApi" and .value.Properties.Body != null and .value.Properties.Name == null) | .key] | if length == 1 then .[0] else empty end' "${TEMPLATE}")
+[ -n "${SPEC_ID}" ] || { echo "FAIL: not exactly one definition-bodied, unnamed AWS::ApiGateway::RestApi in ${TEMPLATE}" >&2; exit 1; }
+echo "==> Resources under test: ${LOGICAL_ID} (named), ${SPEC_ID} (inline definition)"
+SPEC_TITLE="cdkd-reroute-spec-api"
 
 echo "==> Phase 1: Deploy (SDK route by default -- RestApi has no SDK-unwired properties)"
 env CDKD_TEST_PHASE=base \
@@ -127,12 +142,14 @@ env CDKD_TEST_PHASE=base \
 P0=$(record '.physicalId')
 LAYER0=$(record '.provisionedBy')
 [ "${LAYER0}" = "sdk" ] || { echo "FAIL: fresh deploy recorded provisionedBy=${LAYER0}, expected sdk" >&2; exit 1; }
-echo "    OK: created on the SDK route (${P0})"
+S0=$(record_spec '.physicalId')
+[ "$(record_spec '.provisionedBy')" = "sdk" ] || { echo "FAIL: fresh deploy recorded the definition-bodied API off the SDK route" >&2; exit 1; }
+echo "    OK: created on the SDK route (${P0}, ${S0})"
 
 echo "==> Phase 2: force the API onto Cloud Control (--recreate-via-cc-api)"
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --recreate-via-cc-api "${LOGICAL_ID}" --yes
+    --recreate-via-cc-api "${LOGICAL_ID}" --recreate-via-cc-api "${SPEC_ID}" --yes
 P1=$(record '.physicalId')
 LAYER1=$(record '.provisionedBy')
 [ "${LAYER1}" = "cc-api" ] || { echo "FAIL: after --recreate-via-cc-api the record says provisionedBy=${LAYER1}, expected cc-api. Every assertion below would be vacuous." >&2; exit 1; }
@@ -147,10 +164,24 @@ ROOT1=$(live_root "${P1}")
 [ -n "${ROOT1}" ] && [ "${ROOT1}" != "None" ] || { echo "FAIL: no root resource on ${P1}" >&2; exit 1; }
 RES1=$(output ResourceRef)
 assert_serves "phase 2 (CC recreate)" "${P1}" "${RES1}"
+S1=$(record_spec '.physicalId')
+[ "$(record_spec '.provisionedBy')" = "cc-api" ] || { echo "FAIL: the definition-bodied API is not on cc-api after the recreate" >&2; exit 1; }
+[ "${S1}" != "${S0}" ] || { echo "FAIL: the recreate kept the definition-bodied API id (${S0})" >&2; exit 1; }
+SROOT1=$(live_root "${S1}")
+FROM1=$(live_path_id "${S1}" "/from-spec")
+EXTRA1=$(live_path_id "${S1}" "/extra")
+[ -n "${SROOT1}" ] && [ "${SROOT1}" != "None" ] || { echo "FAIL: no root resource on ${S1}" >&2; exit 1; }
+[ -n "${FROM1}" ] && [ "${FROM1}" != "None" ] || { echo "FAIL: /from-spec missing on ${S1}" >&2; exit 1; }
+[ -n "${EXTRA1}" ] && [ "${EXTRA1}" != "None" ] || { echo "FAIL: /extra missing on ${S1}" >&2; exit 1; }
+assert_serves "phase 2 (/from-spec)" "${S1}" "${FROM1}"
+assert_serves "phase 2 (/extra)" "${S1}" "${EXTRA1}"
+[ "$(live_name "${S1}")" = "${SPEC_TITLE}" ] || { echo "FAIL: the definition-bodied API is named $(live_name "${S1}"), expected the definition title ${SPEC_TITLE}" >&2; exit 1; }
 [ "$(live_comment "${P1}")" = "seeded-on-cc" ] || { echo "FAIL: the CC recreate did not reach AWS" >&2; exit 1; }
 # Two APIs can share a name, so the new one does not imply the old one left.
 assert_gone "REST API ${P0} survived the recreate" \
   aws apigateway get-rest-api --rest-api-id "${P0}" --region "${REGION}"
+assert_gone "REST API ${S0} survived the recreate" \
+  aws apigateway get-rest-api --rest-api-id "${S0}" --region "${REGION}"
 echo "    OK: pinned to Cloud Control, freshly minted id ${P1}"
 
 echo "==> Phase 3: the plan ANNOUNCES the return"
@@ -170,12 +201,15 @@ echo "    OK: plan says 'returning to SDK provider'"
 echo "==> Phase 4: --pin-cc-api DECLINES the flip"
 env CDKD_TEST_PHASE=pinned \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --pin-cc-api "${LOGICAL_ID}" --yes
+    --pin-cc-api "${LOGICAL_ID}" --pin-cc-api "${SPEC_ID}" --yes
 LAYER_PINNED=$(record '.provisionedBy')
 [ "${LAYER_PINNED}" = "cc-api" ] || { echo "FAIL: --pin-cc-api did not hold the API on Cloud Control (provisionedBy=${LAYER_PINNED})" >&2; exit 1; }
 [ "$(record '.physicalId')" = "${P1}" ] || { echo "FAIL: the pinned deploy changed the API id" >&2; exit 1; }
 # Without this, "still cc-api" is equally explained by a NO_CHANGE deploy.
 [ "$(live_comment "${P1}")" = "pinned-on-cc" ] || { echo "FAIL: the pinned deploy did not reach AWS" >&2; exit 1; }
+[ "$(record_spec '.provisionedBy')" = "cc-api" ] || { echo "FAIL: --pin-cc-api did not hold the definition-bodied API on Cloud Control" >&2; exit 1; }
+[ "$(record_spec '.physicalId')" = "${S1}" ] || { echo "FAIL: the pinned deploy changed the definition-bodied API id" >&2; exit 1; }
+[ "$(live_comment "${S1}")" = "pinned-on-cc" ] || { echo "FAIL: the pinned deploy did not reach the definition-bodied API" >&2; exit 1; }
 echo "    OK: still on Cloud Control, update applied via CC"
 
 echo "==> Phase 5: THE ARM -- redeploy unpinned; the flip must be churn-free"
@@ -194,7 +228,19 @@ LAYER2=$(record '.provisionedBy')
 [ "$(output ApiRootResourceId)" = "${ROOT1}" ] || { echo "FAIL: GetAtt RootResourceId resolved to $(output ApiRootResourceId) after the flip, expected ${ROOT1}" >&2; exit 1; }
 [ "$(output ResourceRef)" = "${RES1}" ] || { echo "FAIL: the child resource id moved across the flip" >&2; exit 1; }
 assert_serves "phase 5 (SDK update)" "${P2}" "${RES1}"
-echo "    OK: same id ${P2}, record flipped to sdk, update applied in place, Ref / GetAtt intact"
+# THE RISKY PATH: the definition-bodied API goes through the SDK provider's
+# overwrite import. It must keep its id, its root, the out-of-definition child
+# and its definition title, with the Description-only change applied.
+S2=$(record_spec '.physicalId')
+[ "$(record_spec '.provisionedBy')" = "sdk" ] || { echo "FAIL: the definition-bodied API did not flip back to sdk" >&2; exit 1; }
+[ "${S2}" = "${S1}" ] || { echo "FAIL: PHYSICAL ID CHURN on the definition-bodied API: ${S1} -> ${S2}" >&2; exit 1; }
+[ "$(live_comment "${S2}")" = "after-reroute" ] || { echo "FAIL: the update did not reach the definition-bodied API" >&2; exit 1; }
+[ "$(live_root "${S2}")" = "${SROOT1}" ] || { echo "FAIL: the definition-bodied API's root resource moved across the flip" >&2; exit 1; }
+[ "$(record_spec '.attributes.RootResourceId')" = "${SROOT1}" ] || { echo "FAIL: the flipped record's RootResourceId for the definition-bodied API changed" >&2; exit 1; }
+assert_serves "phase 5 (/from-spec)" "${S2}" "$(live_path_id "${S2}" "/from-spec")"
+assert_serves "phase 5 (/extra, not in the definition)" "${S2}" "$(live_path_id "${S2}" "/extra")"
+[ "$(live_name "${S2}")" = "${SPEC_TITLE}" ] || { echo "FAIL: the definition-bodied API is named $(live_name "${S2}") after the flip, expected ${SPEC_TITLE}" >&2; exit 1; }
+echo "    OK: same id ${P2}, record flipped to sdk, update applied in place, Ref / GetAtt intact; definition-bodied ${S2} kept id, root, /extra and its title"
 
 echo "==> Phase 6: no drift on the flipped record"
 # Both: rc 0 alone would also pass a read that missed the resource, so the
@@ -209,7 +255,11 @@ DRIFT_BUCKET=$(jq -r --arg id "${LOGICAL_ID}" '[.. | objects | to_entries[]
   | select((.value | type) == "array") | .key as $bucket
   | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' \
   "${DRIFT_JSON}" 2>/dev/null || true)
-if [ "${DRIFT_RC}" -ne 0 ] || [ "${DRIFT_BUCKET}" != "clean" ]; then
+SPEC_BUCKET=$(jq -r --arg id "${SPEC_ID}" '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' \
+  "${DRIFT_JSON}" 2>/dev/null || true)
+if [ "${DRIFT_RC}" -ne 0 ] || [ "${DRIFT_BUCKET}" != "clean" ] || [ "${SPEC_BUCKET}" != "clean" ]; then
   echo "FAIL: cdkd drift did not report ${LOGICAL_ID} clean after the flip (bucket '${DRIFT_BUCKET}', rc=${DRIFT_RC}):" >&2
   cat "${DRIFT_JSON}" >&2
   rm -f "${DRIFT_JSON}"
@@ -222,6 +272,8 @@ echo "==> Phase 7: Destroy on the flipped record + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_gone "REST API ${P2} survived destroy" \
   aws apigateway get-rest-api --rest-api-id "${P2}" --region "${REGION}"
+assert_gone "REST API ${S2} survived destroy" \
+  aws apigateway get-rest-api --rest-api-id "${S2}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: destroyed clean"

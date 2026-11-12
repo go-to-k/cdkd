@@ -53,6 +53,46 @@ export class CcToSdkRerouteRestApiStack extends cdk.Stack {
       methodResponses: [{ statusCode: '200' }],
     });
 
+    // The risky path: an API whose shape comes from an inline OpenAPI definition
+    // (no Name; the title names it), plus a child that is NOT in the definition.
+    // A flip that re-applied the definition with an overwrite would wipe `/extra`
+    // or rename the API.
+    const specApi = new apigw.CfnRestApi(this, 'RerouteSpecApi', {
+      description: DESCRIPTION_BY_PHASE[phase] ?? 'before-reroute',
+      body: {
+        openapi: '3.0.1',
+        info: { title: 'cdkd-reroute-spec-api', version: '1' },
+        paths: {
+          '/from-spec': {
+            get: {
+              responses: { '200': { description: 'ok' } },
+              'x-amazon-apigateway-integration': {
+                type: 'mock',
+                requestTemplates: { 'application/json': '{"statusCode": 200}' },
+                responses: { default: { statusCode: '200' } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const extra = new apigw.CfnResource(this, 'RerouteExtra', {
+      restApiId: specApi.ref,
+      parentId: specApi.attrRootResourceId,
+      pathPart: 'extra',
+    });
+    new apigw.CfnMethod(this, 'RerouteExtraMethod', {
+      restApiId: specApi.ref,
+      resourceId: extra.ref,
+      httpMethod: 'GET',
+      authorizationType: 'NONE',
+      integration: {
+        type: 'MOCK',
+        requestTemplates: { 'application/json': '{"statusCode": 200}' },
+      },
+      methodResponses: [{ statusCode: '200' }],
+    });
+
     new cdk.CfnOutput(this, 'ApiRef', { value: api.ref });
     new cdk.CfnOutput(this, 'ApiRootResourceId', { value: api.attrRootResourceId });
     new cdk.CfnOutput(this, 'ResourceRef', { value: resource.ref });
