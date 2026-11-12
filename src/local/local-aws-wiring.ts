@@ -202,7 +202,7 @@ export function loopbackPortsFor(
  */
 export async function prepareLocalLoopbackForwarder(wiring: WorkloadAwsWiring): Promise<void> {
   try {
-    await ensureForwarderImage();
+    await ensureForwarderImage(wiring.skipPull === true);
   } catch (err) {
     if (wiring.mode === 'emulator') {
       throw new CdkdError(

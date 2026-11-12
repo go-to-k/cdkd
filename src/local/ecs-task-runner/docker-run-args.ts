@@ -4,6 +4,7 @@ import {
   containsDynamicReference,
   effectiveLoopbackPorts,
   getActiveWorkloadAwsWiring,
+  type LoopbackForwarderNamespace,
 } from 'cdk-local/internal';
 import { partitionSensitiveEnv } from '../../utils/docker-cmd.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
@@ -149,14 +150,47 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   collisions: string[];
   /** Loopback ports the final env still points at (the forwarder serves them). */
   loopbackPorts: number[];
+  /**
+   * Set when {@link loopbackPorts} is non-empty: the loopback forwarder that
+   * OWNS this container's network namespace (go-to-k/cdkd#6142). The runner
+   * starts it first and, on READY, runs {@link forwarder.args} — the same
+   * container joined to the forwarder with `--network container:<name>` — in
+   * place of {@link args}, so the app's first AWS call cannot race it.
+   */
+  forwarder?: {
+    /** The forwarder container's name (`<dockerName>-awsfwd`). */
+    name: string;
+    /** {@link dockerName}: the container that joins it. */
+    container: string;
+    /** What Docker refuses on a `--network container:` joiner, carried by the forwarder. */
+    namespace: LoopbackForwarderNamespace;
+    /** This container's `docker run` argv joined to the forwarder's namespace. */
+    args: string[];
+  };
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
+  // `args` is the container on its own network endpoint. `joinArgs` is the
+  // same container in the loopback forwarder's namespace: every flag Docker
+  // refuses with `--network container:<id>` (`--network-alias`, `-p`,
+  // `--add-host`, `--link`; verified live) goes to `namespace` instead, which
+  // the forwarder carries. A flag pushed through `both` reaches both argvs.
   const args: string[] = ['run', '-d'];
+  const joinArgs: string[] = ['run', '-d'];
+  const both = (...xs: string[]): void => {
+    args.push(...xs);
+    joinArgs.push(...xs);
+  };
 
   // Stable name so siblings can reach this container via DNS.
   const dockerName = `cdkd-local-${task.family}-${container.name}-${randHex(3)}`;
-  args.push('--name', dockerName);
+  const forwarderName = `${dockerName}-awsfwd`;
+  const ownerAliases: string[] = [container.name];
+  const ownerPublish: string[] = [];
+  const ownerAddHosts: string[] = [];
+  const ownerLinks: string[] = [];
+  both('--name', dockerName);
   args.push('--network', network);
+  joinArgs.push('--network', `container:${forwarderName}`);
   args.push('--network-alias', container.name);
 
   // Issue #460 / design § 5 Option A — extra `--network-alias` for
@@ -170,6 +204,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     for (const a of opts.networkAliases) {
       if (!seen.has(a)) {
         args.push('--network-alias', a);
+        ownerAliases.push(a);
         seen.add(a);
       }
     }
@@ -183,12 +218,16 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // the deferred DNS-sidecar option (§6 of the design).
   if (opts.addHostFlags && opts.addHostFlags.length > 0) {
     for (const f of opts.addHostFlags) args.push(f);
+    // Verbatim `['--add-host', 'name:ip', ...]` pairs: the values go to the owner.
+    for (let i = 0; i + 1 < opts.addHostFlags.length; i++) {
+      if (opts.addHostFlags[i] === '--add-host') ownerAddHosts.push(opts.addHostFlags[++i]!);
+    }
   }
 
   if (opts.platformOverride) {
-    args.push('--platform', opts.platformOverride);
+    both('--platform', opts.platformOverride);
   } else if (task.runtimePlatform) {
-    args.push(
+    both(
       '--platform',
       task.runtimePlatform.cpuArchitecture === 'ARM64' ? 'linux/arm64' : 'linux/amd64'
     );
@@ -203,7 +242,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   if (!opts.skipHostPortPublish) {
     for (const pm of container.portMappings) {
       const hostPort = pm.hostPort ?? pm.containerPort;
-      args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+      const publish = `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`;
+      args.push('-p', publish);
+      ownerPublish.push(publish);
     }
   }
 
@@ -223,14 +264,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   const profileCredentialsFile =
     wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
   if (profileCredentialsFile) {
-    args.push(
-      '-v',
-      `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`
-    );
+    both('-v', `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`);
   }
   for (const m of wiring?.mounts ?? []) {
     if (!container.mountPoints.some((mp) => mp.containerPath === m.containerPath)) {
-      args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
+      both('-v', `${m.hostPath}:${m.containerPath}:ro`);
     }
   }
 
@@ -242,15 +280,15 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     if (v.kind === 'host') {
       if (v.hostPath) {
         const ro = mp.readOnly ? ':ro' : '';
-        args.push('-v', `${v.hostPath}:${mp.containerPath}${ro}`);
+        both('-v', `${v.hostPath}:${mp.containerPath}${ro}`);
       } else {
         // Anonymous: only the container path, docker manages the volume.
-        args.push('-v', mp.containerPath);
+        both('-v', mp.containerPath);
       }
     } else {
       const name = v.dockerVolumeName ?? v.name;
       const ro = mp.readOnly ? ':ro' : '';
-      args.push('-v', `${name}:${mp.containerPath}${ro}`);
+      both('-v', `${name}:${mp.containerPath}${ro}`);
     }
   }
 
@@ -341,30 +379,33 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys, {
     subject: `Container '${container.name}'`,
   });
-  args.push(...flags);
+  both(...flags);
 
-  if (container.user) args.push('--user', container.user);
-  if (container.privileged) args.push('--privileged');
-  if (container.readonlyRootFilesystem) args.push('--read-only');
-  if (container.workingDirectory) args.push('--workdir', container.workingDirectory);
+  if (container.user) both('--user', container.user);
+  if (container.privileged) both('--privileged');
+  if (container.readonlyRootFilesystem) both('--read-only');
+  if (container.workingDirectory) both('--workdir', container.workingDirectory);
   for (const u of container.ulimits) {
-    args.push('--ulimit', `${u.name}=${u.softLimit}:${u.hardLimit}`);
+    both('--ulimit', `${u.name}=${u.softLimit}:${u.hardLimit}`);
   }
-  for (const link of container.links) args.push('--link', link);
+  for (const link of container.links) {
+    args.push('--link', link);
+    ownerLinks.push(link);
+  }
 
   if (container.healthCheck) {
-    args.push('--health-cmd', shellJoin(container.healthCheck.command));
+    both('--health-cmd', shellJoin(container.healthCheck.command));
     if (container.healthCheck.interval !== undefined) {
-      args.push('--health-interval', `${container.healthCheck.interval}s`);
+      both('--health-interval', `${container.healthCheck.interval}s`);
     }
     if (container.healthCheck.timeout !== undefined) {
-      args.push('--health-timeout', `${container.healthCheck.timeout}s`);
+      both('--health-timeout', `${container.healthCheck.timeout}s`);
     }
     if (container.healthCheck.retries !== undefined) {
-      args.push('--health-retries', String(container.healthCheck.retries));
+      both('--health-retries', String(container.healthCheck.retries));
     }
     if (container.healthCheck.startPeriod !== undefined) {
-      args.push('--health-start-period', `${container.healthCheck.startPeriod}s`);
+      both('--health-start-period', `${container.healthCheck.startPeriod}s`);
     }
   }
 
@@ -372,13 +413,33 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // the rest become positional args before CMD.
   let entryPointTail: string[] = [];
   if (container.entryPoint && container.entryPoint.length > 0) {
-    args.push('--entrypoint', container.entryPoint[0]!);
+    both('--entrypoint', container.entryPoint[0]!);
     entryPointTail = container.entryPoint.slice(1);
   }
 
-  args.push(image, ...entryPointTail, ...(container.command ?? []));
+  both(image, ...entryPointTail, ...(container.command ?? []));
   const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
-  return { args, dockerName, sensitiveEnv, collisions, loopbackPorts };
+  return {
+    args,
+    dockerName,
+    sensitiveEnv,
+    collisions,
+    loopbackPorts,
+    ...(loopbackPorts.length > 0 && {
+      forwarder: {
+        name: forwarderName,
+        container: dockerName,
+        namespace: {
+          network,
+          networkAliases: ownerAliases,
+          publish: ownerPublish,
+          addHosts: ownerAddHosts,
+          links: ownerLinks,
+        },
+        args: joinArgs,
+      },
+    }),
+  };
 }
 
 function applyOverrideMap(

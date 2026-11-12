@@ -229,7 +229,7 @@ beforeEach(() => {
         mountedBytes = readFileSync(hostPath, 'utf8');
       }
       return Promise.resolve({
-        state: { network: { networkName: 'cdkd-unit-net' } },
+        state: { network: { networkName: 'cdkd-unit-net' }, forwarders: [] },
         exitCode: 0,
         essentialContainerName: undefined,
       });
