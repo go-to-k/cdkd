@@ -664,8 +664,8 @@ conditional the escape is:
   waits one deploy. `AWS::SNS::Topic`,
   `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`,
   `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::NetworkConnector`,
-  `AWS::EFS::MountTarget`, `AWS::Route53::HostedZone` and `AWS::ECS::Service`
-  are the members today.
+  `AWS::EFS::MountTarget`, `AWS::Route53::HostedZone`, `AWS::ECS::Service`
+  and `AWS::ApiGateway::RestApi` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

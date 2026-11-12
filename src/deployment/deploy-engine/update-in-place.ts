@@ -300,6 +300,10 @@ export async function updateInPlace(
   // Still nothing: an update the engine forces with no change as written (a
   // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
   // Every key counts, so no provider skips the write the update exists for.
+  // Unreachable for AWS::ApiGateway::RestApi today; naming its `Body` here
+  // would send an `overwrite` put that deletes every resource the stack added
+  // outside the definition (go-to-k/cdkd#6141), so a forced update of that
+  // type must leave the body keys out.
   if (changedForProvider.size === 0) {
     noEchoOnlyForProvider.clear();
     for (const key of new Set([...Object.keys(updateProps), ...Object.keys(previousForUpdate)])) {
