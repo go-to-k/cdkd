@@ -323,7 +323,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-12T14:32:31Z	PASS	4549	verify.sh	rc ok, orph clean (#5639 write forwarding + replica cluster, PR #6155)
+rds-aurora	2026-11-12T15:51:04Z	PASS	4579	verify.sh	rc ok, orph clean (#5639 write forwarding + replica cluster, PR #6155 final head)
 rds-dbcluster-pitr-restore	2026-11-11T14:15:04Z	PASS	434	verify.sh	rc ok, orph clean
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
