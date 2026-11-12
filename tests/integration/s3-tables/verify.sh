@@ -134,7 +134,7 @@ cleanup() {
   # output carries, and the state is dropped above: a destroy that failed on
   # BucketNotEmpty (a late log delivery) would otherwise leave it untraceable.
   case "${LOG_BUCKET:-}" in
-    s3tablesstack-?*) aws s3 rb "s3://${LOG_BUCKET}" --force --region "${REGION}" >/dev/null 2>&1 || true ;;
+    s3tablesstack-logbucket?*) aws s3 rb "s3://${LOG_BUCKET}" --force --region "${REGION}" >/dev/null 2>&1 || true ;;
     "") ;;
     *) echo "WARN: teardown sweep refused for log bucket '${LOG_BUCKET}' (outside this stack's prefix)" >&2 ;;
   esac
