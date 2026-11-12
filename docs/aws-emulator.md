@@ -108,7 +108,7 @@ it.
 | Native dependencies and layers | Not the Lambda environment | As in Lambda |
 | Container-image functions, ECS, ALB, CloudFront, AgentCore | Not run: the emulator has no container runtime | Run locally |
 | A code edit | Needs a redeploy | Picked up on the next run, or on save with `--watch` |
-| Debugger | — | `--debug-port` on `local invoke`, `--debug-port-base` on `start-api` |
+| Debugger | — | `--debug-port` on `local invoke`, `--debug-port-base` on `start-api` (Node.js) |
 | Function logs | — | In your terminal |
 
 The two do not compete: both talk to the same emulated DynamoDB, S3, SQS and
@@ -179,7 +179,7 @@ chosen services from a `cdkd local` container to the emulator and leaves the
 rest on real AWS. You name the services in the `--env-vars` file by setting
 `AWS_ENDPOINT_URL_<SERVICE>` to `"aws-emulator"`.
 
-Unlike `--aws-emulator`, mixed mode calls your real account for every service
+Unlike the rest of `--aws-emulator`, mixed mode calls your real account for every service
 you do not list, so the container runs with your real credentials. List every
 service whose writes must stay local.
 
@@ -215,7 +215,7 @@ connects to the host from the Docker network, and a process listens on one
 address only, so it cannot serve both your machine and the containers.
 
 To use `cdkd local` on Linux, run the emulator in Docker instead (the image
-built above), and
+built in [macOS and Windows: Docker](#macos-and-windows-docker)), and
 publish the port on `127.0.0.1` and on the Docker bridge gateway:
 
 ```bash
