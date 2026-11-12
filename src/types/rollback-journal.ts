@@ -432,6 +432,11 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
     fail('wasReplaced', o['wasReplaced'], 'a boolean when present');
   }
+  // go-to-k/cdkd#6120: COMPUTED from the provider's answer; it picks the
+  // in-place revert arm over the reverse-replacement one.
+  if (o['oldPhysicalIdLeftForCleanup'] !== undefined && o['oldPhysicalIdLeftForCleanup'] !== true) {
+    fail('oldPhysicalIdLeftForCleanup', o['oldPhysicalIdLeftForCleanup'], 'true when present');
+  }
   // go-to-k/cdkd#5064 phase 2: COMPUTED by the engine on a replacement; a
   // rollback raises the restored record's high-water mark to it, so anything
   // but a non-negative integer would be written into state.

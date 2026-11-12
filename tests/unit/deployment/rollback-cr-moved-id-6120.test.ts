@@ -1,0 +1,331 @@
+/**
+ * go-to-k/cdkd#6120: the rollback of a custom resource whose `Update` handler
+ * answered a new `PhysicalResourceId`. The forward deploy left the old id live
+ * (its Delete waits for the cleanup phase a failed deploy never reaches,
+ * #6117), so CloudFormation reverts it with an `Update` to the NEW id carrying
+ * the old properties, never a `Create` of the old id, and deletes whichever id
+ * the stack no longer records once the rollback completes. A rollback
+ * `Update` that moves any resource's id off the one it was sent to leaves that
+ * id with the handler too, so it gets the same Delete.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import {
+  replayRollback,
+  replayFailedOperations,
+  classifyRollbackOp,
+  type CompletedOperation,
+  type FailedOperation,
+  type RollbackExecutorContext,
+} from '../../../src/deployment/rollback-executor.js';
+import type { ResourceState, SupersededResourceRecord } from '../../../src/types/state.js';
+import type { ResourceUpdateResult } from '../../../src/types/resource.js';
+
+vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
+  return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+});
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({}),
+  setAwsClients: vi.fn(),
+  AwsClients: vi.fn(),
+}));
+
+const CR = 'Custom::Thing';
+const TOPIC = 'AWS::SNS::Topic';
+const TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:handler';
+const OLD_PROPS = { ServiceToken: TOKEN, Name: 'name-1' };
+const NEW_PROPS = { ServiceToken: TOKEN, Name: 'name-2' };
+
+const printed = { info: [] as string[], warn: [] as string[] };
+const logger = {
+  debug: vi.fn(),
+  info: vi.fn((m: unknown) => printed.info.push(String(m))),
+  warn: vi.fn((m: unknown) => printed.warn.push(String(m))),
+  error: vi.fn(),
+  setLevel: vi.fn(),
+  child: () => logger,
+} as unknown as RollbackExecutorContext['logger'];
+
+function record(physicalId: string, properties: Record<string, unknown>, extra: Partial<ResourceState> = {}): ResourceState {
+  return {
+    physicalId,
+    resourceType: CR,
+    properties,
+    attributes: {},
+    dependencies: [],
+    provisionedBy: 'sdk',
+    ...extra,
+  };
+}
+
+/** The journaled forward op: `Res` moved from name-1 to name-2. */
+function movedOp(overrides: Partial<CompletedOperation> = {}): CompletedOperation {
+  return {
+    logicalId: 'Res',
+    changeType: 'UPDATE',
+    resourceType: CR,
+    provisionedBy: 'sdk',
+    physicalId: 'name-2',
+    properties: NEW_PROPS,
+    previousState: record('name-1', OLD_PROPS),
+    previousResourceType: CR,
+    oldResourceRetained: false,
+    oldDeletedBeforeCreate: false,
+    wasReplaced: true,
+    oldPhysicalIdLeftForCleanup: true,
+    ...overrides,
+  };
+}
+
+/** A completed op before `Res`, so its revert runs AFTER `Res`'s. */
+const topicOp: CompletedOperation = {
+  logicalId: 'Topic',
+  changeType: 'UPDATE',
+  resourceType: TOPIC,
+  provisionedBy: 'sdk',
+  physicalId: 'topic',
+  previousState: record('topic', { DisplayName: 'v1' }, { resourceType: TOPIC }),
+  wasReplaced: false,
+};
+
+describe('rollback of a custom resource whose Update moved its id (#6120)', () => {
+  let calls: string[];
+  /** What the handler answers to the rollback Update of `Res`. */
+  let answer: string;
+  let deleteMode: 'ok' | 'throw' | 'skip';
+  let provider: {
+    create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+  };
+  let ctx: RollbackExecutorContext;
+
+  beforeEach(() => {
+    calls = [];
+    printed.info.length = 0;
+    printed.warn.length = 0;
+    answer = 'name-1';
+    deleteMode = 'ok';
+    provider = {
+      create: vi.fn(async (logicalId: string, _t: string, props: Record<string, unknown>) => {
+        calls.push(`create ${logicalId} ${String(props['Name'])}`);
+        return { physicalId: String(props['Name']), attributes: {} };
+      }),
+      update: vi.fn(
+        async (logicalId: string, physicalId: string): Promise<ResourceUpdateResult> => {
+          calls.push(`update ${logicalId} ${physicalId}`);
+          if (logicalId !== 'Res') return { physicalId, wasReplaced: false };
+          return {
+            physicalId: answer,
+            wasReplaced: answer !== physicalId,
+            ...(answer !== physicalId && { oldPhysicalIdLeftForCleanup: true as const }),
+            attributes: {},
+          };
+        }
+      ),
+      delete: vi.fn(async (logicalId: string, physicalId: string) => {
+        calls.push(`delete ${logicalId} ${physicalId}`);
+        if (deleteMode === 'throw') throw new Error('the handler Lambda timed out');
+        if (deleteMode === 'skip') {
+          return { outcome: 'skipped' as const, reason: 'the Delete handler returned FAILED' };
+        }
+        return undefined;
+      }),
+    };
+    ctx = {
+      region: 'us-east-1',
+      logger,
+      providerRegistry: {
+        getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+  });
+
+  async function replay(
+    opts: {
+      op?: CompletedOperation;
+      live?: ResourceState;
+      others?: Record<string, ResourceState>;
+      interruptAfterRes?: boolean;
+    } = {}
+  ) {
+    const state: Record<string, ResourceState> = {
+      Res: opts.live ?? record('name-2', NEW_PROPS),
+      Topic: record('topic', { DisplayName: 'v2' }, { resourceType: TOPIC }),
+      ...opts.others,
+    };
+    const superseded: SupersededResourceRecord[] = [];
+    const events: string[] = [];
+    let interrupted = false;
+    const outcome = await replayRollback([topicOp, opts.op ?? movedOp()], state, 'S', ctx, {
+      afterOp: (id) => {
+        events.push(`save ${id} ${superseded.map((e) => e.state.physicalId).join(',')}`);
+        if (opts.interruptAfterRes && id === 'Res') interrupted = true;
+      },
+      isInterrupted: () => interrupted,
+      onSuperseded: (entry) => superseded.push(entry),
+      onSupersededSettled: (entry) => superseded.splice(superseded.indexOf(entry), 1),
+    });
+    return { outcome, state, superseded, events };
+  }
+
+  it('sends the NEW id an Update with the old properties, never a Create, then deletes it', async () => {
+    const { outcome, state, superseded, events } = await replay();
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.update).toHaveBeenCalledWith(
+      'Res',
+      'name-2',
+      CR,
+      OLD_PROPS,
+      NEW_PROPS,
+      expect.objectContaining({ replayingState: true })
+    );
+    // The Delete waits until every op has been reverted.
+    expect(calls).toEqual(['update Res name-2', 'update Topic topic', 'delete Res name-2']);
+    expect(provider.delete).toHaveBeenCalledWith(
+      'Res',
+      'name-2',
+      CR,
+      NEW_PROPS,
+      expect.objectContaining({ expectedRegion: 'us-east-1' })
+    );
+    expect(state['Res']).toMatchObject({ physicalId: 'name-1', properties: OLD_PROPS });
+    // Kept in state from the revert's save until the Delete settled.
+    expect(events[0]).toBe('save Res name-2');
+    expect(superseded).toEqual([]);
+    expect(outcome.failures).toBe(0);
+    expect(outcome.warnings).toBe(0);
+  });
+
+  it('records the new id and deletes nothing when the handler keeps it', async () => {
+    answer = 'name-2';
+    const { state, superseded } = await replay();
+    expect(state['Res']).toMatchObject({ physicalId: 'name-2', properties: OLD_PROPS });
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(superseded).toEqual([]);
+  });
+
+  it('records a third id the handler answers and deletes the id it moved off', async () => {
+    answer = 'name-3';
+    const { state } = await replay();
+    expect(state['Res']?.physicalId).toBe('name-3');
+    expect(calls.at(-1)).toBe('delete Res name-2');
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('deletes the id an ordinary revert moved off (an unmarked op)', async () => {
+    answer = 'name-9';
+    const { state } = await replay({
+      op: movedOp({
+        physicalId: 'name-1',
+        properties: NEW_PROPS,
+        wasReplaced: false,
+        oldPhysicalIdLeftForCleanup: undefined,
+      }),
+      live: record('name-1', NEW_PROPS),
+    });
+    expect(state['Res']?.physicalId).toBe('name-9');
+    expect(calls).toEqual(['update Res name-1', 'update Topic topic', 'delete Res name-1']);
+  });
+
+  it('keeps UpdateReplacePolicy: Retain', async () => {
+    const { state } = await replay({ live: record('name-2', NEW_PROPS, { updateReplacePolicy: 'Retain' }) });
+    expect(state['Res']?.physicalId).toBe('name-1');
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(printed.info.some((l) => l.includes('UpdateReplacePolicy: Retain'))).toBe(true);
+  });
+
+  it('never deletes an id another record holds', async () => {
+    const { outcome, superseded } = await replay({ others: { Other: record('name-2', NEW_PROPS) } });
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(printed.warn.some((l) => l.includes('Other records the same physical id'))).toBe(true);
+    expect(superseded).toEqual([]);
+    expect(outcome.warnings).toBe(1);
+  });
+
+  it.each(['throw', 'skip'] as const)('a delete that fails (%s) warns and keeps the id in state', async (mode) => {
+    deleteMode = mode;
+    const { outcome, superseded, state } = await replay();
+    expect(state['Res']?.physicalId).toBe('name-1');
+    expect(superseded.map((e) => e.state.physicalId)).toEqual(['name-2']);
+    expect(printed.warn.some((l) => l.includes('deleting the physical id it moved off'))).toBe(true);
+    expect(outcome.warnings).toBe(1);
+    expect(outcome.failures).toBe(0);
+  });
+
+  it('keeps the id for the next deploy when the rollback is interrupted', async () => {
+    const { superseded } = await replay({ interruptAfterRes: true });
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(superseded.map((e) => e.state.physicalId)).toEqual(['name-2']);
+    expect(printed.warn.some((l) => l.includes('the rollback was interrupted'))).toBe(true);
+  });
+
+  it('never records a NoEcho-masked record, and hands its delete the leaves', async () => {
+    const leaves = [['Secret']];
+    const { superseded, events } = await replay({
+      live: record('name-2', { ...NEW_PROPS, Secret: '***' }, { noEchoLeaves: leaves } as Partial<ResourceState>),
+    });
+    expect(events[0]).toBe('save Res ');
+    expect(superseded).toEqual([]);
+    expect(provider.delete).toHaveBeenCalledWith(
+      'Res',
+      'name-2',
+      CR,
+      expect.anything(),
+      expect.objectContaining({ recordedNoEchoLeaves: leaves })
+    );
+  });
+
+  it('the --revert-failed arm deletes the id its Update moved off', async () => {
+    answer = 'name-9';
+    const failed = {
+      logicalId: 'Res',
+      changeType: 'UPDATE',
+      resourceType: CR,
+      provisionedBy: 'sdk',
+      physicalId: 'name-1',
+      previousState: record('name-1', OLD_PROPS),
+    } as FailedOperation;
+    const state: Record<string, ResourceState> = { Res: record('name-1', NEW_PROPS) };
+    const superseded: SupersededResourceRecord[] = [];
+    const outcome = await replayFailedOperations([failed], state, 'S', ctx, {
+      onSuperseded: (entry) => superseded.push(entry),
+      onSupersededSettled: (entry) => superseded.splice(superseded.indexOf(entry), 1),
+    });
+    expect(outcome.failures).toBe(0);
+    expect(state['Res']?.physicalId).toBe('name-9');
+    expect(calls).toEqual(['update Res name-1', 'delete Res name-1']);
+    expect(superseded).toEqual([]);
+  });
+});
+
+describe('classifying the moved-id op (#6120)', () => {
+  const live = (physicalId: string, properties: Record<string, unknown>) => ({
+    Res: record(physicalId, properties),
+  });
+
+  it('reverts the marked op in place', () => {
+    expect(classifyRollbackOp(movedOp(), live('name-2', NEW_PROPS), new Set())).toBe('revert');
+  });
+
+  it('keeps reverse-replacement for a journal written before the mark', () => {
+    expect(
+      classifyRollbackOp(
+        movedOp({ oldPhysicalIdLeftForCleanup: undefined }),
+        live('name-2', NEW_PROPS),
+        new Set()
+      )
+    ).toBe('reverse-replacement');
+  });
+
+  it('skips an op already reverted, and one a later attempt moved elsewhere', () => {
+    expect(classifyRollbackOp(movedOp(), live('name-1', OLD_PROPS), new Set())).toBe(
+      'skip-already-done'
+    );
+    expect(classifyRollbackOp(movedOp(), live('name-7', NEW_PROPS), new Set())).toBe(
+      'skip-mismatch'
+    );
+  });
+});

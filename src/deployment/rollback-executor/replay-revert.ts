@@ -15,7 +15,8 @@ import {
 } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import { redactRollbackRecord } from './replay-secrets.js';
-import { deepEqual } from './plan.js';
+import { deepEqual, movedIdLeftForCleanup } from './plan.js';
+import { queueMovedIdCleanup } from './replay-moved-id-cleanup.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
@@ -655,14 +656,20 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   // stack's masked outputs) must become needles BEFORE the redaction below,
   // exactly as the deploy engine registers them — or they persist in the clear.
   if (revertResult) recordNoEchoAttributeValues(revertResult, secrets, desiredProps);
+  // go-to-k/cdkd#6120: the forward moved the resource to a new id and left
+  // the old one live, so the update above went to the NEW id; an answer that
+  // keeps that id records it, rather than the old one the record restores.
+  const restoreBase = movedIdLeftForCleanup(op)
+    ? { ...previousState, physicalId: current.physicalId }
+    : previousState;
   stateResources[op.logicalId] = maskRestoredNoEchoRecord(
     redactRollbackRecord(
-      recordAfterRollbackUpdate(previousState, revertResult),
+      recordAfterRollbackUpdate(restoreBase, revertResult),
       secrets,
       previousState.properties,
       previousState.attributes
     ),
-    previousState,
+    restoreBase,
     noEcho.substituted
   );
   // go-to-k/cdkd#5487: a name either record carried unsettled is settled only
@@ -683,6 +690,23 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     },
     (message) => logger.warn(mask(message))
   );
+  // go-to-k/cdkd#6120: the provider moved the resource off the id the update
+  // was sent to and left that id live: it is deleted once the rollback
+  // completes, as CloudFormation's rollback cleanup phase deletes it.
+  if (s.movedIdCleanups !== undefined) {
+    queueMovedIdCleanup(s.movedIdCleanups, {
+      logicalId: op.logicalId,
+      sent: current,
+      recordedId: stateResources[op.logicalId]!.physicalId,
+      oldPhysicalIdLeftForCleanup: revertResult?.oldPhysicalIdLeftForCleanup === true,
+      provider,
+      provisionedBy: revertVia,
+      ctx,
+      result: s.result,
+      secrets,
+      mask,
+    });
+  }
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.
   if (updatePartialReason(revertResult) === undefined) {

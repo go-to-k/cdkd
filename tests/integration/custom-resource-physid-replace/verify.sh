@@ -17,6 +17,13 @@
 #   2. Redeploy with Name = <stack>-name-2. cdkd reports the replacement; the
 #      old id got a Delete carrying the OLD Name; res/name-1 is gone and
 #      res/name-2 exists; state records name-2 and no pending old id.
+#   2b. Redeploy with Name = <stack>-name-4 and Gate failing, WITH the
+#      automatic rollback (go-to-k/cdkd#6120): the rollback sends name-4 an
+#      Update with the old Name (never a Create of name-2, which the handler
+#      refuses since it still holds it), state records name-2 again, and
+#      name-4 gets a Delete carrying the Name it was made with once the
+#      rollback completes; res/name-4 is gone and no superseded id is left.
+#      Pre-fix the rollback re-Created name-2, which the handler refused.
 #   3. Redeploy with Name = <stack>-name-3 and Gate (updated after Res)
 #      failing its Update, under --no-rollback: the deploy fails, Res records
 #      name-3, and name-2 stays in state as a superseded old id, never sent.
@@ -78,6 +85,7 @@ ROOT="/cdkd-integ/${STACK}"
 NAME_1="${STACK}-name-1"
 NAME_2="${STACK}-name-2"
 NAME_3="${STACK}-name-3"
+NAME_4="${STACK}-name-4"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -311,6 +319,66 @@ if [ "${PENDING_2}" != "0" ]; then
 fi
 echo "    OK: state records ${NAME_2} and no pending old id"
 
+# --- Phase 2b: the automatic rollback of an id move (go-to-k/cdkd#6120) -----
+echo "==> Phase 2b: redeploy (Name = ${NAME_4}) with Gate failing — the automatic rollback reverts the id move"
+set +e
+ROLLBACK_OUT=$(CDKD_TEST_UPDATE=rollback node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1)
+ROLLBACK_RC=$?
+set -e
+printf '%s\n' "${ROLLBACK_OUT}"
+ROLLBACK_TXT=$(printf '%s' "${ROLLBACK_OUT}" | strip_ansi)
+if [ "${ROLLBACK_RC}" -eq 0 ]; then
+  echo "FAIL: PREMISE not met — the deploy with a failing Gate succeeded" >&2
+  exit 1
+fi
+if ! grep -qF "Resource ${CR_ID} was replaced: ${NAME_2} -> ${NAME_4}" <<<"${ROLLBACK_TXT}"; then
+  echo "FAIL: PREMISE not met — the forward Update did not move ${CR_ID} ${NAME_2} -> ${NAME_4}" >&2
+  exit 1
+fi
+echo "    OK: PREMISE — the forward Update answered ${NAME_4}, then Gate failed"
+
+# The #6120 assertion: the rollback sent the NEW id an Update with the old
+# Name (pre-fix: a Create of ${NAME_2}, which the handler refused).
+UPDATED_FROM=$(param_value "updated/${NAME_2}")
+if [ "${UPDATED_FROM}" != "${NAME_4}" ]; then
+  echo "FAIL (#6120): the rollback did not send ${NAME_4} an Update back to ${NAME_2} (updated/${NAME_2} names '${UPDATED_FROM}', expected ${NAME_4})" >&2
+  exit 1
+fi
+STATE_2B=$(state_json)
+RECORDED_2B=$(printf '%s' "${STATE_2B}" | jq -r --arg id "${CR_ID}" '.resources[$id].physicalId')
+PENDING_2B=$(printf '%s' "${STATE_2B}" | jq -r '(.supersededResources // []) | length')
+if [ "${RECORDED_2B}" != "${NAME_2}" ]; then
+  echo "FAIL (#6120): ${CR_ID} records '${RECORDED_2B}' after the rollback, expected ${NAME_2}" >&2
+  exit 1
+fi
+if ! param_present "deleted/${NAME_4}"; then
+  echo "FAIL (#6120): the id the rollback moved off (${NAME_4}) never got a Delete" >&2
+  exit 1
+fi
+DELETED_4_WITH=$(param_value "deleted/${NAME_4}")
+if [ "${DELETED_4_WITH}" != "${NAME_4}" ]; then
+  echo "FAIL (#6120): the Delete of ${NAME_4} carried Name '${DELETED_4_WITH}', expected ${NAME_4}" >&2
+  exit 1
+fi
+assert_gone "res/${NAME_4} survived the rollback's cleanup Delete (#6120 orphan)" \
+  aws ssm get-parameter --name "${ROOT}/res/${NAME_4}" --region "${REGION}"
+if ! param_present "res/${NAME_2}"; then
+  echo "FAIL (#6120): res/${NAME_2} is gone after the rollback restored it" >&2
+  exit 1
+fi
+if param_present "deleted/${NAME_2}"; then
+  echo "FAIL (#6120): the rollback sent the restored id ${NAME_2} a Delete" >&2
+  exit 1
+fi
+if [ "${PENDING_2B}" != "0" ]; then
+  echo "FAIL (#6120): state still lists ${PENDING_2B} superseded resource(s) after the rollback's cleanup" >&2
+  exit 1
+fi
+echo "    OK: the rollback Updated ${NAME_4} back to ${NAME_2}, then deleted ${NAME_4}; state records ${NAME_2}, nothing pending"
+
 # --- Phase 3: a failed deploy leaves the old id in state -------------------
 echo "==> Phase 3: redeploy (Name = ${NAME_3}) with Gate failing, under --no-rollback"
 set +e
@@ -387,7 +455,7 @@ if ! param_present "deleted/${NAME_3}"; then
   echo "FAIL: ${NAME_3} did not get its Delete from the destroy" >&2
   exit 1
 fi
-for name in "${NAME_1}" "${NAME_2}" "${NAME_3}"; do
+for name in "${NAME_1}" "${NAME_2}" "${NAME_3}" "${NAME_4}"; do
   assert_gone "res/${name} still exists after the clean destroy (orphan)" \
     aws ssm get-parameter --name "${ROOT}/res/${name}" --region "${REGION}"
 done
@@ -412,9 +480,13 @@ echo "    OK: every id got its Delete; functions, roles, parameters and the stat
 trap - EXIT INT TERM
 sweep_params
 sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
-for name in "${NAME_1}" "${NAME_2}" "${NAME_3}"; do
+for name in "${NAME_1}" "${NAME_2}" "${NAME_3}" "${NAME_4}"; do
   assert_gone "marker ${ROOT}/deleted/${name} survived the sweep" \
     aws ssm get-parameter --name "${ROOT}/deleted/${name}" --region "${REGION}"
+done
+for name in "${NAME_2}" "${NAME_3}" "${NAME_4}"; do
+  assert_gone "marker ${ROOT}/updated/${name} survived the sweep" \
+    aws ssm get-parameter --name "${ROOT}/updated/${name}" --region "${REGION}"
 done
 assert_gone "log group /aws/lambda/${FN_ON_EVENT} survived the sweep" \
   aws logs describe-log-streams --log-group-name "/aws/lambda/${FN_ON_EVENT}" --region "${REGION}"
@@ -427,4 +499,4 @@ if [ -n "${LEFT_GROUPS}" ]; then
 fi
 
 echo ""
-echo "[verify] PASS — custom-resource-physid-replace (#6117: the old physical id gets a Delete with the old properties after the Update; a failed deploy keeps it for destroy, which deletes it first)"
+echo "[verify] PASS — custom-resource-physid-replace (#6117: the old physical id gets a Delete with the old properties after the Update; a failed deploy keeps it for destroy, which deletes it first; #6120: the automatic rollback Updates the new id back and deletes it)"

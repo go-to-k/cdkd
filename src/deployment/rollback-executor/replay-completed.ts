@@ -7,6 +7,11 @@ import { ownRecord } from './replay-failed-checks.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { type RolledBackCreate } from '../../state/name-generation.js';
 import { type ReplayDeferral } from './replay-scope.js';
+import {
+  newMovedIdCleanupQueue,
+  runMovedIdCleanups,
+  type MovedIdCleanupQueue,
+} from './replay-moved-id-cleanup.js';
 import type {
   ResourceState,
   StackOrphanRecord,
@@ -154,6 +159,12 @@ export async function replayRollbackUnbound(
   // have, and both loops below are strictly sequential, so sharing adds no
   // concurrency exposure the failed-op sibling does not already carry.
   const resolver = new ReplayResolvers(ctx.region);
+  // go-to-k/cdkd#6120: the ids a rollback `update()` moved off, deleted once
+  // every op below has run (CloudFormation's rollback cleanup phase).
+  const movedIdCleanups = newMovedIdCleanupQueue({
+    onSuperseded: options.onSuperseded,
+    onSupersededSettled: options.onSupersededSettled,
+  });
 
   // go-to-k/cdkd#4408: until an op completes, its resource's record is the
   // failed deploy's, which the put-back at the end never reads from.
@@ -217,7 +228,8 @@ export async function replayRollbackUnbound(
       options.isInterrupted,
       createdInSegment,
       options.onRolledBackCreate,
-      deferral
+      deferral,
+      movedIdCleanups
     );
     if (result.failures > failuresBefore || result.skipped > skippedBefore) failedOps.add(op);
   };
@@ -323,10 +335,23 @@ export async function replayRollbackUnbound(
         options.afterOp,
         options.isInterrupted,
         createdInSegment,
-        options.onRolledBackCreate
+        options.onRolledBackCreate,
+        undefined,
+        movedIdCleanups
       );
     }
   }
+
+  // go-to-k/cdkd#6120: after the last op, as CloudFormation's
+  // UPDATE_ROLLBACK_COMPLETE_CLEANUP sends them.
+  await runMovedIdCleanups(movedIdCleanups, {
+    stateResources,
+    stackName,
+    ctx,
+    result,
+    afterOp: options.afterOp,
+    interrupted: result.interrupted || options.isInterrupted?.() === true,
+  });
 
   // go-to-k/cdkd#4408: an inline policy a removal above (or the segment's
   // failed-op replay before it, which shares `inlinePolicyWriters`) took off a
@@ -362,7 +387,9 @@ export async function replaySingle(
   createdInSegment: ReadonlySet<string> = new Set(),
   onRolledBackCreate?: (create: RolledBackCreate) => void,
   /** go-to-k/cdkd#5064: see {@link ReplayDeferral}. */
-  deferral?: ReplayDeferral
+  deferral?: ReplayDeferral,
+  /** go-to-k/cdkd#6120: the replay's queue of ids a rollback `update()` moved off. */
+  movedIdCleanups?: MovedIdCleanupQueue
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -420,6 +447,7 @@ export async function replaySingle(
     createdInSegment,
     createRollbackRoute: undefined,
     deferral,
+    movedIdCleanups,
   };
 
   // go-to-k/cdkd#4408: the op completed when it replaced or dropped the

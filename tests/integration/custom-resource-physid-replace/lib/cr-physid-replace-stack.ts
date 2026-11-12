@@ -20,11 +20,19 @@ import * as cr from 'aws-cdk-lib/custom-resources';
  * and with which properties. The parameters are not stack resources: verify.sh
  * sweeps them.
  *
+ * go-to-k/cdkd#6120: an Update also records `/cdkd-integ/<stack>/updated/<Name>`
+ * holding the physical id it was sent to, and a Create REFUSES a `Name` whose
+ * `res/` parameter already exists (`Overwrite: false`), as a handler owning a
+ * named resource does. A rollback that re-Creates an id the handler still
+ * holds therefore fails, where CloudFormation's rollback `Update` succeeds.
+ *
  * `CDKD_TEST_UPDATE=true` changes `Name` from `<stack>-name-1` to
- * `<stack>-name-2`. `CDKD_TEST_UPDATE=fail` changes it to `<stack>-name-3`
- * and makes `Gate` (a second resource on the same handler, updated after
- * `Res`) fail its Update, so a `--no-rollback` deploy stops with the old id
- * left in state for `cdkd destroy`.
+ * `<stack>-name-2`. `CDKD_TEST_UPDATE=rollback` changes it to
+ * `<stack>-name-4` and makes `Gate` (a second resource on the same handler,
+ * updated after `Res`) fail its Update, so the automatic rollback reverts the
+ * id move. `CDKD_TEST_UPDATE=fail` changes it to `<stack>-name-3` with the
+ * same failing `Gate`, so a `--no-rollback` deploy stops with the old id left
+ * in state for `cdkd destroy`.
  */
 export class CrPhysidReplaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -62,9 +70,17 @@ exports.handler = async (event) => {
     }));
     return { PhysicalResourceId: id };
   }
+  // A Create refuses a name it already holds (Overwrite: false).
   await ssm.send(new PutParameterCommand({
-    Name: process.env.ROOT + '/res/' + name, Value: name, Type: 'String', Overwrite: true,
+    Name: process.env.ROOT + '/res/' + name, Value: name, Type: 'String',
+    Overwrite: event.RequestType === 'Update',
   }));
+  if (event.RequestType === 'Update') {
+    await ssm.send(new PutParameterCommand({
+      Name: process.env.ROOT + '/updated/' + name, Value: event.PhysicalResourceId,
+      Type: 'String', Overwrite: true,
+    }));
+  }
   return { PhysicalResourceId: name, Data: { Name: name } };
 };
 `),
@@ -78,7 +94,7 @@ exports.handler = async (event) => {
 
     const provider = new cr.Provider(this, 'Provider', { onEventHandler: onEvent });
     const mode = process.env.CDKD_TEST_UPDATE;
-    const version = mode === 'true' ? 2 : mode === 'fail' ? 3 : 1;
+    const version = mode === 'true' ? 2 : mode === 'fail' ? 3 : mode === 'rollback' ? 4 : 1;
     const res = new cdk.CustomResource(this, 'Res', {
       serviceToken: provider.serviceToken,
       resourceType: 'Custom::CdkdPhysidReplace',
@@ -87,7 +103,7 @@ exports.handler = async (event) => {
     const gate = new cdk.CustomResource(this, 'Gate', {
       serviceToken: provider.serviceToken,
       resourceType: 'Custom::CdkdPhysidGate',
-      properties: { Role: 'gate', Fail: mode === 'fail' ? 'yes' : 'no' },
+      properties: { Role: 'gate', Fail: mode === 'fail' || mode === 'rollback' ? 'yes' : 'no' },
     });
     gate.node.addDependency(res);
   }

@@ -144,6 +144,9 @@ export function isTypeChangeOp(op: OldTypeSources): boolean {
  * labels these explicitly.
  */
 export function isReplacementOp(op: CompletedOperation): boolean {
+  // go-to-k/cdkd#6120: the old id is still live, so the op is reverted in
+  // place, against the new id.
+  if (movedIdLeftForCleanup(op)) return false;
   return (
     op.changeType === 'UPDATE' &&
     op.previousState?.physicalId !== undefined &&
@@ -167,6 +170,30 @@ export function isReplacementOp(op: CompletedOperation): boolean {
         oldProperties: op.previousState.properties,
         newProperties: op.properties,
       }))
+  );
+}
+
+/**
+ * go-to-k/cdkd#6120: an UPDATE whose provider `update()` moved the resource
+ * to a new physical id and said it left the old one live for the cleanup
+ * phase (`oldPhysicalIdLeftForCleanup`: a custom resource whose handler
+ * answered a new `PhysicalResourceId`, #6117). CloudFormation reverts such an
+ * update with an `Update` to the NEW id carrying the old properties, and
+ * deletes whichever id the stack no longer records once the rollback
+ * completes; re-creating the old id would send the handler a `Create` for
+ * something it still holds. Only the journal mark says so: a journal written
+ * before it keeps the reverse-replacement arm.
+ */
+export function movedIdLeftForCleanup(op: CompletedOperation): boolean {
+  return (
+    op.changeType === 'UPDATE' &&
+    op.oldPhysicalIdLeftForCleanup === true &&
+    op.wasReplaced === true &&
+    op.oldDeletedBeforeCreate !== true &&
+    typeof op.physicalId === 'string' &&
+    typeof op.previousState?.physicalId === 'string' &&
+    op.previousState.physicalId !== op.physicalId &&
+    !isTypeChangeOp(op)
   );
 }
 
@@ -462,6 +489,9 @@ export function classifyRollbackOp(
     // Already reverted (idempotent re-run).
     return 'skip-already-done';
   }
+  // go-to-k/cdkd#6120: the in-place revert of a moved id is sent to the id
+  // the op moved to; a record naming another one is a later attempt's.
+  if (movedIdLeftForCleanup(op) && current.physicalId !== op.physicalId) return 'skip-mismatch';
   return 'revert';
 }
 

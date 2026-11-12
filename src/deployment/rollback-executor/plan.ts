@@ -10,6 +10,7 @@ export {
   unroutableReplacementError,
   isTypeChangeOp,
   isReplacementOp,
+  movedIdLeftForCleanup,
   sameIdRecreated,
   sameIdReversalUndecidable,
   deepEqual,

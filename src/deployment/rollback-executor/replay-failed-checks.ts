@@ -4,7 +4,11 @@
  */
 
 import { type RolledBackCreate } from '../../state/name-generation.js';
-import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  SupersededResourceRecord,
+} from '../../types/state.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { type RollbackExecutorContext, type FailedOperation } from './types.js';
 import {
@@ -159,6 +163,12 @@ export interface ReplayFailedOperationsOptions {
   emitEnvelope?: boolean;
   /** go-to-k/cdkd#4225: as on `replayRollback`. */
   inlinePolicyWriters?: RollbackInlinePolicyWriters;
+  /**
+   * go-to-k/cdkd#6120: the driver's `supersededResources` writers, as on
+   * `replayRollback`, for an id a `--revert-failed` update moved off.
+   */
+  onSuperseded?: (entry: SupersededResourceRecord) => void;
+  onSupersededSettled?: (entry: SupersededResourceRecord) => void;
   /**
    * A `cdkd destroy` replays these ops before it deletes the stack: a line
    * says what happens next in that run, not in a later deploy.

@@ -372,6 +372,12 @@ export async function provisionCreateUpdateNode(
       engine.replacementRun.updateWasReplaced.has(logicalId) && {
         wasReplaced: engine.replacementRun.updateWasReplaced.get(logicalId),
       }),
+    // go-to-k/cdkd#6120: the old id is still live, so the rollback sends the
+    // new one an Update with the old properties instead of re-creating it.
+    ...(change.changeType === 'UPDATE' &&
+      engine.replacementRun.oldIdLeftForCleanup.has(logicalId) && {
+        oldPhysicalIdLeftForCleanup: true as const,
+      }),
     // Issue #2668: `resourceType` above is the TEMPLATE's type, so
     // on a Type change the journal would otherwise name only the
     // NEW one and the rollback would re-create the OLD resource

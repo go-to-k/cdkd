@@ -658,6 +658,19 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     ).toMatchObject({ wasReplaced: false });
   });
 
+  // go-to-k/cdkd#6120: it picks the in-place revert arm over the re-create.
+  it('refuses an oldPhysicalIdLeftForCleanup other than true', () => {
+    expect(
+      messageOf(journalWith([{ ...op, changeType: 'UPDATE', oldPhysicalIdLeftForCleanup: false }]))
+    ).toContain('oldPhysicalIdLeftForCleanup must be true when present (got boolean).');
+    expect(
+      parseRollbackJournal(
+        journalWith([{ ...op, changeType: 'UPDATE', oldPhysicalIdLeftForCleanup: true }]),
+        'S'
+      ).segments[0]!.operations[0]
+    ).toMatchObject({ oldPhysicalIdLeftForCleanup: true });
+  });
+
   // go-to-k/cdkd#4690: a truthy non-boolean would delete the live new resource
   // before the re-create.
   it('refuses a non-boolean oldDeletedBeforeCreate', () => {
