@@ -130,7 +130,12 @@ journal (reduced to that entry where it can), warns, and exits `2`
 
 A replacement is undone by reversing it: the old resource is re-CREATEd from its
 journaled pre-deploy state, and the new resource is deleted unless its own
-`UpdateReplacePolicy: Retain` says otherwise (see below). The default order is
+`UpdateReplacePolicy: Retain` says otherwise (see below). A custom resource whose
+`Update` handler answered a new physical id is the exception: its old id was
+never deleted, so the rollback sends the new id an `Update` with the old
+properties instead, as CloudFormation does, and deletes whichever id the stack
+no longer records once the rollback has completed. A journal written by an
+older cdkd lacks the mark that says so and keeps the re-create. The default order is
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 

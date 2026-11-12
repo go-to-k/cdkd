@@ -932,8 +932,7 @@ export async function replayFailedOperationsUnbound(
             logicalId: op.logicalId,
             sent: current,
             recordedId: stateResources[op.logicalId]!.physicalId,
-            oldPhysicalIdLeftForCleanup:
-              revertFailedResult?.oldPhysicalIdLeftForCleanup === true,
+            oldPhysicalIdLeftForCleanup: revertFailedResult?.oldPhysicalIdLeftForCleanup === true,
             provider,
             provisionedBy: revertVia,
             ctx,

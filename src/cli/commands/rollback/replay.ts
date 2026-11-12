@@ -740,8 +740,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                           // go-to-k/cdkd#6120: an id a `--revert-failed`
                           // update moved off is kept in state until deleted.
                           onSuperseded: (entry) => addSuperseded(supersededHost, entry),
-                          onSupersededSettled: (entry) =>
-                            removeSuperseded(supersededHost, entry),
+                          onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
                           // Same reason as the sibling replay below: `afterOp`
                           // saves per op, so a record appended only after this
                           // returns is absent from every intermediate save
