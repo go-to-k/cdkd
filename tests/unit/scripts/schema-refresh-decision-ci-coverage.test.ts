@@ -10,8 +10,8 @@
  * (2026-09-11T10:01Z) the repository had none that a red fixture check reached.
  * go-to-k/cdkd#2999 landed the `ci-ok` aggregate less than two hours later and
  * made it the required check, which closes MOST of the hole by a different
- * mechanism: FIVE of `countDecisions`'s SEVEN terms also red `check-build-test`,
- * and `ci-ok` waits on that job. So a decision-carrying refresh PR is
+ * mechanism: FIVE of `countDecisions`'s SEVEN terms also red `check-build-test`
+ * or `unit-tests`, and `ci-ok` waits on both jobs. So a decision-carrying refresh PR is
  * unmergeable in BOTH of the states it is ever in — held at `action_required`,
  * where a required check that has not reported blocks the merge button, and
  * approved and run, where it reports red — and the decision-count job would be
@@ -59,8 +59,9 @@
  *      the term names come out of the shipped function itself;
  *   2. a new `run_check` in the refresh that `ci.yml` does not run — the check
  *      names come out of the refresh workflow's own shell;
- *   3. a check dropped from `check-build-test`, or `check-build-test` dropped
- *      from `ci-ok`'s `needs:` — both read out of `ci.yml`.
+ *   3. a check dropped from the job its `CI_COVERAGE` entry names, that job
+ *      dropped from `ci-ok`'s `needs:`, or the unit suite's shard matrix no
+ *      longer covering every shard — all read out of `ci.yml`.
  *
  * It does NOT claim the two gradings are numerically equal. `ci.yml` is allowed
  * to be red where the refresh counts zero (it runs far more checks); the
@@ -103,8 +104,16 @@ const refresh: any = parseYaml(refreshText);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ci: any = parseYaml(ciText);
 
-/** The `ci.yml` job every fixture-driven check runs in. */
+/** The `ci.yml` job the audit critics run in. */
 const CI_CHECK_JOB = 'check-build-test';
+/**
+ * The `ci.yml` job the whole unit suite runs in, sharded across a matrix — so
+ * "the suite ran" is a claim about the UNION of its shards, which the
+ * `runs the unit suite as the WHOLE suite` case below pins.
+ */
+const CI_UNIT_JOB = 'unit-tests';
+/** The one accepted spelling of the unit-suite invocation, redirections dropped. */
+const SHARDED_UNIT_SUITE = 'vp run test --shard=${{ matrix.shard }}/${{ strategy.job-total }}';
 /** The aggregate job that IS the required status check on `main`. */
 const CI_GATE_JOB = 'ci-ok';
 /** The refresh step that runs the nested-key critic and renders the count. */
@@ -253,8 +262,12 @@ const gradedChecks = (): string[] => {
  * from the shipped function below, and every term must appear here at least
  * once.
  */
-const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: string }> = {
+const CI_COVERAGE: Record<
+  string,
+  { job: string; command: string; covers: string[]; why: string }
+> = {
   'property-coverage': {
+    job: CI_UNIT_JOB,
     command: 'vp run test',
     covers: ['removed', 'failedChecks'],
     why:
@@ -273,16 +286,19 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'diagnose-schema-refresh.test.ts is what pins the two readers to one definition.',
   },
   'audit:sdk-attr-coverage:check': {
+    job: CI_CHECK_JOB,
     command: 'vp run audit:sdk-attr-coverage:check',
     covers: ['failedChecks'],
     why: 'Same task, run as its own step.',
   },
   'audit:enrichment-coverage:check': {
+    job: CI_CHECK_JOB,
     command: 'vp run audit:enrichment-coverage:check',
     covers: ['failedChecks'],
     why: 'Same task, run as its own step.',
   },
   'fixture-consumer-tests': {
+    job: CI_UNIT_JOB,
     command: 'vp run test',
     covers: ['failedChecks'],
     why:
@@ -291,6 +307,7 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'fences the refresh-side list against the sdkUnwired family.',
   },
   'sdk-wire-coverage': {
+    job: CI_UNIT_JOB,
     command: 'vp run test',
     covers: ['failedChecks'],
     why:
@@ -298,6 +315,7 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'reaches every one of them through the unfiltered unit suite (go-to-k/cdkd#3723).',
   },
   'audit:nested-key-coverage:check': {
+    job: CI_CHECK_JOB,
     command: 'vp run audit:nested-key-coverage:check',
     covers: ['divergences', 'nestedKeyUnparsed', 'pendingSdkBump'],
     why:
@@ -563,7 +581,7 @@ const enablesPipefail = (line: string): boolean => {
  * `set -euo pipefail`, `set -eu -o pipefail` and `set -o errexit -o pipefail`
  * all enable it (verified against bash) and none matched. The cost is a false
  * RED on a correctly armed step — HYPOTHETICAL, not observed: the only tailed
- * line in `check-build-test` sits under the one spelling the first pattern did
+ * line in `unit-tests` sits under the one spelling the first pattern did
  * read, and inside that job the ratio is 1 to 0, not the 2-to-1 a file-wide
  * count gives. A past-tense claim that this "was" a false red would be wrong.
  *
@@ -627,7 +645,7 @@ const neutralised = (line: string, command: string, stepBody: string): boolean =
   //
   // A PIPE is the arm that was missing, and it is not theoretical: under
   // `bash -e` a pipeline reports its LAST stage, so `vp run <check> | tee x`
-  // exits 0 on failure. The one real pipeline in check-build-test is armed
+  // exits 0 on failure. The one real pipeline in unit-tests is armed
   // by `set -o pipefail`, which the ordering case below asserts — for THAT
   // step. A piped check in any other step would pass here and redden
   // nothing, so the pipe is rejected unless the same step sets pipefail.
@@ -658,6 +676,7 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(refreshText.length).toBeGreaterThan(5000);
     expect(ciText.length).toBeGreaterThan(5000);
     expect(Object.keys(ci.jobs ?? {})).toContain(CI_CHECK_JOB);
+    expect(Object.keys(ci.jobs ?? {})).toContain(CI_UNIT_JOB);
     expect(Object.keys(ci.jobs ?? {})).toContain(CI_GATE_JOB);
     expect(Object.keys(refresh.jobs ?? {})).toContain('refresh');
   });
@@ -788,19 +807,19 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(new Set(Object.keys(CI_COVERAGE))).toEqual(new Set(gradedChecks()));
   });
 
-  it('runs every mapped command inside check-build-test', () => {
-    const lines = ciCommandsWithStep(CI_CHECK_JOB);
-    for (const [check, { command }] of Object.entries(CI_COVERAGE)) {
+  it('runs every mapped command inside the job its entry names', () => {
+    for (const [check, { job, command }] of Object.entries(CI_COVERAGE)) {
+      const lines = ciCommandsWithStep(job);
       const matches = lines.filter((e) => e.line === command || e.line.startsWith(`${command} `));
       expect(
         matches.length,
-        `${CI_CHECK_JOB} no longer runs ${JSON.stringify(command)}, so the refresh's ` +
+        `${job} no longer runs ${JSON.stringify(command)}, so the refresh's ` +
           `${JSON.stringify(check)} grading has nothing behind it in CI — a decision of that class ` +
           'would leave ci-ok green and the merge button live'
       ).toBeGreaterThan(0);
       expect(
         matches.some((e) => !neutralised(e.line, command, e.body)),
-        `every ${JSON.stringify(command)} invocation in ${CI_CHECK_JOB} has a tail that swallows ` +
+        `every ${JSON.stringify(command)} invocation in ${job} has a tail that swallows ` +
           `its failure (${JSON.stringify(matches.map((e) => e.line))}), so the refresh's ` +
           `${JSON.stringify(check)} grading is present but cannot redden the job`
       ).toBe(true);
@@ -809,7 +828,7 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
 
   it('reads a neutralising tail in both directions — the guard itself', () => {
     // `neutralised`'s own cases, because ci.yml drives only part of it. The one
-    // tailed line in check-build-test IS a piped check
+    // tailed line in unit-tests IS a piped check
     // (`vp run test 2>&1 | tee …`, which two CI_COVERAGE entries ride), so the
     // pipe arm's REJECTING side and the `||` and backgrounding arms had no line
     // to fire on. An earlier version of this comment said "no piped check",
@@ -927,7 +946,9 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       'decisionTerms no longer follows the shipped countDecisions'
     ).toEqual(extractTerms(countDecisions.toString()).names);
 
-    const lines = ciCommandsWithStep(CI_CHECK_JOB);
+    const lines = [...new Set(Object.values(CI_COVERAGE).map((c) => c.job))].flatMap(
+      ciCommandsWithStep
+    );
     // One predicate for both the selection and the attribution — an earlier
     // revision selected on `command + ' '` and attributed with a bare
     // `startsWith`, so a line could be credited to a different, prefix-matching
@@ -939,7 +960,7 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     const tailed = lines.filter((e) => commandOf(e.line) !== undefined);
     expect(
       tailed.length,
-      'no mapped command in check-build-test carries a tail any more, so the coverage case ' +
+      'no mapped command in its job carries a tail any more, so the coverage case ' +
         'below exercises none of `neutralised` against the real workflow'
     ).toBeGreaterThan(0);
     for (const e of tailed) {
@@ -976,11 +997,15 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     }
   });
 
-  it('runs the unit suite UNFILTERED, which is what reaches the unnamed suites', () => {
-    // Two entries lean on `vp run test` covering suites CI never names. That is
-    // only true while the invocation carries no filter: `vp run test <name>`
-    // would still match a bare `startsWith` and cover nothing.
-    const invocations = ciCommandLines(CI_CHECK_JOB)
+  it('runs the unit suite as the WHOLE suite — unfiltered, over every shard', () => {
+    // Three entries lean on `vp run test` covering suites CI never names. That
+    // is only true while the invocation carries no filter: `vp run test <name>`
+    // would still match a bare `startsWith` and cover nothing. The one argument
+    // allowed is the shard selector, and only in the exact form that reads both
+    // halves from the matrix — a literal `--shard=1/4`, or a hard-coded total
+    // that disagrees with the matrix, runs a FRACTION of the suite in every
+    // shard while each shard still prints a green summary.
+    const invocations = ciCommandLines(CI_UNIT_JOB)
       // `(\s|$)`, not `\b`: a word boundary fires before `:`, so a legitimate
       // `vp run test:coverage` step would be selected and then red as "a
       // filtered run", which is both wrong and misleading about why.
@@ -1008,14 +1033,50 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       });
     expect(
       invocations,
-      'check-build-test has no `vp run test` invocation, so the suites CI never names by ' +
+      `${CI_UNIT_JOB} has no \`vp run test\` invocation, so the suites CI never names by ` +
         'filename are not run at all'
     ).not.toHaveLength(0);
     expect(
       invocations,
-      `every \`vp run test\` in ${CI_CHECK_JOB} must be the whole suite; a filtered one covers ` +
-        'only what it names'
-    ).toEqual(invocations.map(() => 'vp run test'));
+      `every \`vp run test\` in ${CI_UNIT_JOB} must be the whole suite, sharded by the matrix; ` +
+        'a filtered one covers only what it names'
+    ).toEqual(invocations.map(() => SHARDED_UNIT_SUITE));
+
+    // ...and the matrix must enumerate EVERY shard. `--shard=<i>/<n>` runs only
+    // part <i>, so the union is the suite only when the list is exactly 1..n:
+    // a dropped `3` leaves a quarter of the files unrun with every job green.
+    // `strategy.job-total` counts matrix COMBINATIONS, so a second axis, an
+    // `include` or an `exclude` would make it disagree with the shard list —
+    // refused rather than modelled.
+    const strategy = ci.jobs[CI_UNIT_JOB].strategy;
+    expect(
+      Object.keys(strategy?.matrix ?? {}),
+      `${CI_UNIT_JOB}'s matrix must have exactly one axis, \`shard\``
+    ).toEqual(['shard']);
+    const shards: unknown = strategy.matrix.shard;
+    expect(Array.isArray(shards) && shards.length, `${CI_UNIT_JOB} declares no shards`).toBeTruthy();
+    expect(
+      shards,
+      `${CI_UNIT_JOB}'s shard list is not exactly 1..n, so some files run in no shard`
+    ).toEqual(Array.from({ length: (shards as unknown[]).length }, (_, i) => i + 1));
+    // `fail-fast` left at its default (true) CANCELS the sibling shards on the
+    // first red one. That still reds ci-ok, so it is not a hole, but the
+    // cancelled shards report nothing and their own failures go unseen until
+    // the next push — asserted because the matrix comment promises it.
+    expect(strategy['fail-fast'], `${CI_UNIT_JOB} must set fail-fast: false`).toBe(false);
+  });
+
+  it('applies the same complete shard matrix to the once-leak run', () => {
+    // The detector sees only the files its shard runs, so a gap in this
+    // matrix is a gap in leak detection — the same 1..n claim as above, for
+    // the second job that runs the suite.
+    const strategy = ci.jobs['once-leak-detect']?.strategy;
+    expect(strategy?.matrix, 'once-leak-detect must shard exactly like unit-tests').toEqual(
+      ci.jobs[CI_UNIT_JOB].strategy.matrix
+    );
+    expect(ciCommandLines('once-leak-detect')).toContain(
+      'vp run test:once-leak --shard=${{ matrix.shard }}/${{ strategy.job-total }}'
+    );
   });
 
   it('arms pipefail BEFORE the piped unit-suite run, which is what makes it red', () => {
@@ -1030,8 +1091,8 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // nothing. The sibling refresh-workflow suite asserts the same shape for
     // its own tee'd step; the ci.yml side had presence asserted elsewhere and
     // ordering nowhere.
-    const step = stepsOf(ci, CI_CHECK_JOB).find((s) => /^\s*vp run test(\s|$)/m.test(s.run ?? ''));
-    expect(step, `no step in ${CI_CHECK_JOB} runs the unit suite`).toBeDefined();
+    const step = stepsOf(ci, CI_UNIT_JOB).find((s) => /^\s*vp run test(\s|$)/m.test(s.run ?? ''));
+    expect(step, `no step in ${CI_UNIT_JOB} runs the unit suite`).toBeDefined();
     // Comment-stripped: a line such as `# we do not set -o pipefail here`
     // satisfies both assertions below while arming nothing.
     const body = stripComments(step!.run!);
@@ -1114,14 +1175,16 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     }
   });
 
-  it('keeps check-build-test in ci-ok’s needs, which is the link to the merge button', () => {
-    // The last link in the chain, and the cheapest to break: a red
-    // check-build-test only blocks a merge because ci-ok waits on it and ci-ok
-    // is the required status check on `main`. `ci-ok-gate.test.ts` asserts the
-    // needs list covers every job; this asserts the one membership THIS
-    // invariant rests on, so the relation is stated where it is relied upon.
+  it('keeps every covering job in ci-ok’s needs, which is the link to the merge button', () => {
+    // The last link in the chain, and the cheapest to break: a red covering
+    // job only blocks a merge because ci-ok waits on it and ci-ok is the
+    // required status check on `main`. `ci-ok-gate.test.ts` asserts the needs
+    // list covers every job; this asserts the memberships THIS invariant rests
+    // on, so the relation is stated where it is relied upon.
     const needs: string[] = ci.jobs[CI_GATE_JOB].needs;
     expect(Array.isArray(needs), `${CI_GATE_JOB} declares no needs list`).toBe(true);
-    expect(needs).toContain(CI_CHECK_JOB);
+    for (const job of new Set(Object.values(CI_COVERAGE).map((c) => c.job))) {
+      expect(needs).toContain(job);
+    }
   });
 });
