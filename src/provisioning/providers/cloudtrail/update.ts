@@ -22,6 +22,7 @@ import {
 } from '../../../types/resource.js';
 import {
   emptyToUndefined,
+  trailBoolean,
   resolveCloudWatchLogsPair,
   readListBlock,
   listOf,
@@ -142,7 +143,9 @@ export async function update(
     emptyToUndefined(previousProperties['S3KeyPrefix']),
     ''
   );
-  const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
+  // Booleans go through trailBoolean, so a `'false'` string is the boolean
+  // CloudFormation reads (#6166 review).
+  const isMultiRegionTrail = trailBoolean(properties['IsMultiRegionTrail']);
   // AWS rejects a multi-region trail that excludes global service events
   // ("Multi-Region trail must include global service events"), so the
   // reset is skipped while the trail stays multi-region. In the A/B both
@@ -161,14 +164,14 @@ export async function update(
   // update's warning (removalsLeftInPlace).
   const globalEventsResetSkipped = isMultiRegionTrail !== false;
   const includeGlobalServiceEvents = globalEventsResetSkipped
-    ? (properties['IncludeGlobalServiceEvents'] as boolean | undefined)
+    ? trailBoolean(properties['IncludeGlobalServiceEvents'])
     : clearOnUpdateRemoval(
-        properties['IncludeGlobalServiceEvents'] as boolean | undefined,
-        previousProperties['IncludeGlobalServiceEvents'] as boolean | undefined,
+        trailBoolean(properties['IncludeGlobalServiceEvents']),
+        trailBoolean(previousProperties['IncludeGlobalServiceEvents']),
         false
       );
-  const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
-  const isLogging = properties['IsLogging'] as boolean | undefined;
+  const enableLogFileValidation = trailBoolean(properties['EnableLogFileValidation']);
+  const isLogging = trailBoolean(properties['IsLogging']);
   // The CloudWatch Logs pair keys on PRESENCE, not emptiness (issue #1565).
   // `emptyToUndefined` conflates two different desired sides:
   //
@@ -208,10 +211,10 @@ export async function update(
     emptyToUndefined(previousProperties['SnsTopicName']),
     ''
   );
-  const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+  const isOrganizationTrail = trailBoolean(properties['IsOrganizationTrail']);
   // Like IsOrganizationTrail, a removal is not reset: CFn behaviour is
   // unmeasured, so it is kept and named in removalsLeftInPlace's warning.
-  const recursiveLogging = properties['RecursiveLogging'] as boolean | undefined;
+  const recursiveLogging = trailBoolean(properties['RecursiveLogging']);
   // What a later failure leaves applied (issue #2762): the selector and
   // aggregation writes are separate calls, so the thrown message names the
   // one that already landed.
@@ -472,7 +475,7 @@ export async function update(
     // a desired `undefined` against a previous `false` compared as a change
     // and took the `else` arm, so the replay silently STARTED logging on a
     // trail the record says was stopped.
-    const oldIsLogging = previousProperties['IsLogging'] as boolean | undefined;
+    const oldIsLogging = trailBoolean(previousProperties['IsLogging']);
     if (isLogging !== undefined && isLogging !== oldIsLogging) {
       if (isLogging === false) {
         this.logger.debug(`Stopping logging for CloudTrail Trail ${logicalId}`);
