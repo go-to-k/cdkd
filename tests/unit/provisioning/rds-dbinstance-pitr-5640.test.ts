@@ -765,6 +765,12 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       expect(
         await provider.resourceIdentity(arn, INSTANCE, { expectedRegion: 'eu-west-1' })
       ).toBeUndefined();
+      // An ARN naming no region, read by a client in another region.
+      expect(
+        await provider.resourceIdentity(arn.replace('us-east-1', ''), INSTANCE, {
+          expectedRegion: 'eu-west-1',
+        })
+      ).toBeUndefined();
       expect(sent('DescribeDBInstanceAutomatedBackupsCommand')).toEqual([]);
     });
   });
