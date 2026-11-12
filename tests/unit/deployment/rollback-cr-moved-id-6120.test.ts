@@ -420,6 +420,11 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     const state: Record<string, ResourceState> = { Res: record('name-1', NEW_PROPS) };
     const superseded: SupersededResourceRecord[] = [];
     const saves: string[] = [];
+    provider.delete.mockImplementationOnce(async (logicalId: string, physicalId: string) => {
+      calls.push(`delete ${logicalId} ${physicalId}`);
+      recorded.push({ eventType: 'DELETE SENT' });
+      return undefined;
+    });
     const outcome = await replayFailedOperations([failed], state, 'S', ctx, {
       emitEnvelope: true,
       afterOp: () => {
@@ -435,7 +440,11 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(saves[0]).toBe('name-1');
     expect(superseded).toEqual([]);
     // The Delete runs inside this replay's event envelope.
-    expect(recorded.map((e) => e['eventType']).at(-1)).toBe('ROLLBACK_FINISHED');
+    expect(recorded.map((e) => e['eventType']).slice(-2)).toEqual([
+      'DELETE SENT',
+      'ROLLBACK_FINISHED',
+    ]);
+    expect(recorded[0]?.['eventType']).toBe('ROLLBACK_STARTED');
   });
 
   it("a segment's shared queue deletes only after its completed ops", async () => {
