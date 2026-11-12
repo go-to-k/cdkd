@@ -23,11 +23,21 @@
  * It imports only from `src/utils/**`, so `src/cli/**`, `src/provisioning/**`
  * and `src/utils/**` can all import it.
  */
-import { getAssumedRoleCredentials } from './aws-client-defaults.js';
+import { awsEndpointOverrideUrl, getAssumedRoleCredentials } from './aws-client-defaults.js';
 import { displaySafe } from './display-safe.js';
-import { commandHole, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
+import { commandHole, isInertUnquoted, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
+let emulatorCaBundle: string | undefined;
+
+/**
+ * The `--aws-emulator` run's `ca.pem`, so a pasted `aws` command trusts the
+ * emulator's certificate (go-to-k/cdkd#6138). Set by `src/cli/aws-emulator.ts`;
+ * `undefined` clears it.
+ */
+export function setPasteableAwsCaBundle(path: string | undefined): void {
+  emulatorCaBundle = path;
+}
 
 /**
  * Record the run's explicit `--profile` (`undefined` clears it). Called once
@@ -65,6 +75,18 @@ export function setPasteableAwsProfile(profile: string | undefined): void {
  *   the AWS CLI refuse the profile before any call.
  */
 export function pasteableAwsProfileFlag(): string {
+  // FIRST: under `--aws-emulator` (go-to-k/cdkd#6138) cdkd ran against the
+  // emulator, while the shell the operator pastes into still holds their real
+  // credentials. Point the `aws` command at the same endpoint, so a pasted
+  // remedy can never act on a same-named resource in a real account.
+  const emulator = awsEndpointOverrideUrl();
+  if (emulator !== undefined) {
+    const endpoint = `--endpoint-url ${isInertUnquoted(emulator) ? emulator : commandHole('endpoint-url')}`;
+    const ca = emulatorCaBundle;
+    if (ca === undefined) return endpoint;
+    // cdkd-profile-display: a local file path the operator's own run wrote.
+    return `${endpoint} --ca-bundle ${isInertUnquoted(ca) ? ca : commandHole('ca-bundle')}`;
+  }
   // Checked BEFORE the no-profile arm: a role run without `--profile` must not
   // print a bare command, which would run as the ambient identity.
   if (getAssumedRoleCredentials() !== undefined) {

@@ -67,7 +67,8 @@ export async function waitForOperation(
 ): Promise<ProgressEvent> {
   const startTime = Date.now();
   let attempts = 0;
-  let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
+  const schedule = this.pollSchedule();
+  let pollInterval = schedule.initialMs;
   let lastSleepMs = 0;
   // Hoisted out of the loop body deliberately: the identifier is re-bound per
   // pass, so without this the one fact worth reporting about an abandoned
@@ -190,7 +191,7 @@ export async function waitForOperation(
           `the operation may still be running in AWS; re-polling the same request token in ${pollInterval}ms`
       );
       await this.sleep(pollInterval);
-      pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
+      pollInterval = schedule.next(pollInterval);
       continue;
     }
 
@@ -279,10 +280,12 @@ export async function waitForOperation(
       // A cancel on its way to CANCEL_COMPLETE (go-to-k/cdkd#3252's re-poll
       // can meet one): waited on without the unknown-status warning.
       case 'CANCEL_IN_PROGRESS':
-        // Exponential backoff with 1.5x multiplier for flatter curve:
-        // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
-        // Most CC API operations complete in 1-5s, so slower ramp-up
-        // polls more frequently during the common case.
+        // `pollSchedule()`: against real AWS an exponential backoff with a
+        // 1.5x multiplier for a flatter curve,
+        // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped) — most CC API
+        // operations complete in 1-5s, so the slower ramp-up polls more
+        // frequently during the common case. Under `--aws-emulator`, a short
+        // fixed interval (go-to-k/cdkd#6138).
         if (progressEvent.RetryAfter instanceof Date) {
           recordPhase(
             'cloud control polls',
@@ -293,7 +296,7 @@ export async function waitForOperation(
         }
         lastSleepMs = pollInterval;
         await this.sleep(pollInterval);
-        pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
+        pollInterval = schedule.next(pollInterval);
         break;
 
       default:
@@ -301,7 +304,7 @@ export async function waitForOperation(
           `Unknown operation status for ${logicalId}: ${progressEvent.OperationStatus}`
         );
         await this.sleep(pollInterval);
-        pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
+        pollInterval = schedule.next(pollInterval);
     }
   }
 

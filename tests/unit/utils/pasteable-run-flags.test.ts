@@ -104,6 +104,21 @@ describe('rendering', () => {
     );
   });
 
+  it('carries a typed --aws-emulator, so a pasted hint talks to the same emulator (#6138)', () => {
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9331' });
+    expect(pasteableCommand('cdkd state orphan', stack).command).toBe(
+      'cdkd state orphan MyStack --aws-emulator=https://127.0.0.1:9331'
+    );
+    setPasteableRunFlags({ awsEmulator: true });
+    expect(pasteableCommand('cdkd state orphan', stack).command).toBe(
+      'cdkd state orphan MyStack --aws-emulator'
+    );
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9331;rm' });
+    expect(pasteableCommand('cdkd state orphan', stack).command).toBe(
+      "cdkd state orphan MyStack --aws-emulator='<url>'"
+    );
+  });
+
   it('prints the refusing role-arn hole, never the ARN', () => {
     setPasteableRunFlags({ roleArn: true });
     expect(pasteableCommand('cdkd state orphan', stack).command).toBe(
