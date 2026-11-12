@@ -4,6 +4,7 @@ import {
   GetTableBucketCommand,
   GetTableCommand,
   GetTableBucketEncryptionCommand,
+  GetTableBucketLoggingCommand,
   GetTableBucketMaintenanceConfigurationCommand,
   GetTableBucketMetricsConfigurationCommand,
   GetTableBucketReplicationCommand,
@@ -104,11 +105,11 @@ export async function readTableBucketCurrentState(
  * The TableBucket's configuration properties in CFn shape
  * (go-to-k/cdkd#2762), each by its own Get. Every one is emitted, at its
  * AWS default when unset, so a console-side change is compared — except
- * `ReplicationConfiguration`, which is emitted only while replication is
- * configured: its `Role` and `Rules` are required, so there is no "off"
- * value to emit, and a removal deletes it. A console-side enable is still
- * compared: {@link getDriftAbsentMeansDefaultKeys} names the key while the
- * template leaves replication off. A read that fails for any other
+ * `ReplicationConfiguration` and `LoggingConfiguration`, each emitted only
+ * while configured: their members are required, so there is no "off" value
+ * to emit, and a removal deletes (turns off) it. A console-side enable is
+ * still compared: {@link getDriftAbsentMeansDefaultKeys} names the key while
+ * the template leaves it off. A read that fails for any other
  * reason than `NotFoundException` leaves its key out, at `debug`, as the
  * tag read does.
  */
@@ -183,6 +184,30 @@ export async function readTableBucketConfigs(
             DestinationTableBucketARN: d.destinationTableBucketARN,
           })),
         })),
+      });
+    },
+    'absent',
+    strict
+  );
+  // go-to-k/cdkd#6167: emitted only while logging is on, as replication is:
+  // every member is required, so there is no "off" value to emit.
+  await this.readConfig(
+    out,
+    'LoggingConfiguration',
+    async () => {
+      const resp = await client.send(new GetTableBucketLoggingCommand({ tableBucketARN }));
+      const l = resp.tableBucketLoggingStatus?.loggingEnabled;
+      if (l === undefined) return undefined;
+      const partitioned = l.targetObjectKeyFormat?.partitionedPrefix;
+      return defined({
+        TargetBucket: l.targetBucket,
+        TargetPrefix: l.targetPrefix,
+        TargetObjectKeyFormat:
+          l.targetObjectKeyFormat &&
+          defined({
+            PartitionedPrefix:
+              partitioned && defined({ PartitionDateSource: partitioned.partitionDateSource }),
+          }),
       });
     },
     'absent',

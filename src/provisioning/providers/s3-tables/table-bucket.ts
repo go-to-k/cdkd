@@ -10,6 +10,7 @@ import {
   DeleteTableBucketMetricsConfigurationCommand,
   DeleteTableBucketReplicationCommand,
   PutTableBucketEncryptionCommand,
+  PutTableBucketLoggingCommand,
   PutTableBucketMaintenanceConfigurationCommand,
   PutTableBucketMetricsConfigurationCommand,
   PutTableBucketReplicationCommand,
@@ -36,6 +37,7 @@ import {
   sdkEncryption,
   sdkStorageClass,
   sdkReplication,
+  sdkLogging,
   sdkUnreferencedFileRemoval,
   metricsEnabled,
   type TableMaintenanceWrite,
@@ -92,6 +94,7 @@ export async function createTableBucket(
     resourceType,
     logicalId
   );
+  const logging = desiredObject(properties, 'LoggingConfiguration', resourceType, logicalId);
   // Converted before any call: a non-integer day count is refused here.
   const unreferencedValue =
     unreferenced &&
@@ -145,6 +148,16 @@ export async function createTableBucket(
         })
       );
     }
+    // Logging is off on a new bucket, so only a declared one is sent
+    // (go-to-k/cdkd#6167).
+    if (logging !== undefined) {
+      await this.getClient().send(
+        new PutTableBucketLoggingCommand({
+          tableBucketARN,
+          tableBucketLoggingStatus: sdkLogging(logging),
+        })
+      );
+    }
 
     this.logger.debug(`Successfully created S3 Table Bucket ${logicalId}: ${tableBucketARN}`);
 
@@ -182,7 +195,8 @@ export async function createTableBucket(
  * A removal is reset only where the template has no other way to say "off":
  * `MetricsConfiguration` (whose schema default is `Disabled`) and
  * `ReplicationConfiguration` (whose `Rules` are required, so no declared
- * value turns replication off) are deleted. `EncryptionConfiguration`,
+ * value turns replication off) are deleted, and `LoggingConfiguration` (every
+ * member required, likewise) is turned off. `EncryptionConfiguration`,
  * `StorageClassConfiguration` and `UnreferencedFileRemoval` each have a
  * declarable value for their default, and what CloudFormation sets on their
  * removal is unmeasured, so a removal leaves the AWS value in place and says
@@ -290,6 +304,20 @@ export async function applyTableBucketConfigUpdate(
         new DeleteTableBucketReplicationCommand({ tableBucketARN })
       );
     }
+  }
+
+  // go-to-k/cdkd#6167: a removal sends the empty status, which turns logging
+  // off (the SDK model's documented "disable"): every member of a declared
+  // LoggingConfiguration is required, so no declared value says "off".
+  const [logging, loggingChanged] = changed('LoggingConfiguration');
+  if (loggingChanged) {
+    markUnsettled('LoggingConfiguration');
+    await client.send(
+      new PutTableBucketLoggingCommand({
+        tableBucketARN,
+        tableBucketLoggingStatus: logging !== undefined ? sdkLogging(logging) : {},
+      })
+    );
   }
 }
 

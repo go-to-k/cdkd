@@ -35,6 +35,10 @@
 #      `cdkd deploy` refuses the replacement (CREATE_ONLY_DROP_NEEDS_REPLACEMENT)
 #      instead of calling the unchanged template NO_CHANGE; the refusal's
 #      `cdkd import --force` remedy then clears the evidence.
+#   8. (issue #6167) The TableBucket's LoggingConfiguration, SDK-unwired (so
+#      Cloud Control routing) before #6167, is sent by PutTableBucketLogging:
+#      Phase 1 reads it back from AWS, Phase 1b changes it in place, Phase 1c
+#      removes it and asserts logging is off.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -96,6 +100,11 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 TABLE_ARN=""
 TABLE_BUCKET_ARN=""
 
+# The log bucket's `autoDeleteObjects` (issue #6167) runs CDK's S3 auto-delete
+# custom resource, whose Lambda log group no stack resource owns, so destroy
+# leaves it behind (#3885).
+. ../cr-log-groups.sh
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # Pass --state-bucket explicitly (PR #735 / #738 retrospective: the
@@ -119,6 +128,7 @@ cleanup() {
   # partial-failure that left it behind is swept here directly.
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/iceberg-table-ref" >/dev/null 2>&1 || true
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/table-ref" >/dev/null 2>&1 || true
+  sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
 }
 
@@ -287,7 +297,8 @@ echo "    OK: bucket-team tag == '${EXPECTED_BUCKET_TEAM_TAG}' on AWS"
 # Confirm TableBucket routed via SDK provider too (same routing-flip guard
 # as the Table assertion above).
 # Before issue #2762 the bucket's StorageClass / Metrics / UnreferencedFileRemoval
-# routed it to Cloud Control, so this is where a pre-fix run goes RED first.
+# routed it to Cloud Control, and before issue #6167 its LoggingConfiguration
+# did, so this is where a pre-fix run goes RED first.
 BUCKET_PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.TableBucket.provisionedBy // "MISSING"')
 if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: AWS::S3Tables::TableBucket routed via '${BUCKET_PROVISIONED_BY}', expected 'sdk' (SDK-unwired routing flip)" >&2
@@ -386,6 +397,38 @@ if [ "${BUCKET_UFR}" != "enabled 5 7" ]; then
   exit 1
 fi
 echo "    OK: TableBucket storage class, metrics and unreferenced file removal on AWS (issue #2762)"
+
+# Issue #6167: the TableBucket's LoggingConfiguration, sent by
+# PutTableBucketLogging after the create. The installed aws CLI has no
+# `s3tables get-table-bucket-logging` verb, so the SDK cdkd itself ships reads
+# it, resolved from the repo root.
+REPO_ROOT="$(cd "${PWD}/../../.." && pwd)"
+LOG_BUCKET="$(echo "${STATE}" | jq -r '.outputs.LogBucketName // ""')"
+case "${LOG_BUCKET}" in
+  ""|null) echo "FAIL: LogBucketName output is empty (issue #6167)" >&2; exit 1 ;;
+esac
+bucket_logging() { # usage: bucket_logging -> "<target bucket> <prefix> <date source>" | "off"
+  TABLE_BUCKET_ARN="${TABLE_BUCKET_ARN}" REGION="${REGION}" REPO_ROOT="${REPO_ROOT}" node -e '
+    const sdk = require(require.resolve("@aws-sdk/client-s3tables", { paths: [process.env.REPO_ROOT] }));
+    new sdk.S3TablesClient({ region: process.env.REGION })
+      .send(new sdk.GetTableBucketLoggingCommand({ tableBucketARN: process.env.TABLE_BUCKET_ARN }))
+      .then((r) => {
+        const l = r.tableBucketLoggingStatus?.loggingEnabled;
+        console.log(l === undefined ? "off"
+          : `${l.targetBucket} ${l.targetPrefix} ${l.targetObjectKeyFormat?.partitionedPrefix?.partitionDateSource}`);
+      })
+      .catch((e) => {
+        console.error(`FAIL: GetTableBucketLogging ${process.env.TABLE_BUCKET_ARN}: ${e.name}: ${e.message}`);
+        process.exit(1);
+      });
+  ' || return 1
+}
+BUCKET_LOGGING="$(bucket_logging)"
+if [ "${BUCKET_LOGGING}" != "${LOG_BUCKET} cdkd-logs-v1/ EventTime" ]; then
+  echo "FAIL: TableBucket logging is '${BUCKET_LOGGING}', expected '${LOG_BUCKET} cdkd-logs-v1/ EventTime' (issue #6167: LoggingConfiguration did not reach PutTableBucketLogging)" >&2
+  exit 1
+fi
+echo "    OK: TableBucket logging to ${LOG_BUCKET} on AWS (issue #6167)"
 
 TABLE_STORAGE_CLASS="$(aws s3tables get-table-storage-class --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" --query 'storageClassConfiguration.storageClass' --output text)"
 if [ "${TABLE_STORAGE_CLASS}" != "INTELLIGENT_TIERING" ]; then
@@ -530,6 +573,12 @@ if [ "${POST_MAINTENANCE}" != "enabled 256 enabled 2 200" ]; then
   exit 1
 fi
 echo "    OK: UnreferencedFileRemoval and Compaction updated in place (issue #2762)"
+POST_LOGGING="$(bucket_logging)"
+if [ "${POST_LOGGING}" != "${LOG_BUCKET} cdkd-logs-v2/ DeliveryTime" ]; then
+  echo "FAIL: TableBucket logging is '${POST_LOGGING}' after Phase 1b, expected '${LOG_BUCKET} cdkd-logs-v2/ DeliveryTime' (issue #6167: the update did not reach PutTableBucketLogging)" >&2
+  exit 1
+fi
+echo "    OK: LoggingConfiguration updated in place (issue #6167)"
 # Phase 1b also drops MetricsConfiguration: the removal deletes the bucket's
 # metrics configuration, whose Get then answers NotFound (the premise the
 # readback's "NotFound = Disabled" rests on).
@@ -582,6 +631,22 @@ assert_gone "a table still answers to the old name cdkd_integ_ns.cdkd_integ_tbl 
   aws s3tables get-table --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" \
   --namespace cdkd_integ_ns --name cdkd_integ_tbl
 echo "    OK: state records ${EXPECTED_RENAMED_ID}; TableArn and tags unchanged; old name gone (issue #5313)"
+
+# Issue #6167: Phase 1c also drops LoggingConfiguration, whose removal sends
+# the empty logging status and turns logging off; the readback then emits no
+# key, so the stack reads back clean. The TableBucket is updated in place.
+RENAMED_BUCKET_ID="$(state_physical_id TableBucket)"
+if [ "${RENAMED_BUCKET_ID}" != "${PRE_BUCKET_ID}" ]; then
+  echo "FAIL: Phase 1c replaced the TableBucket (${PRE_BUCKET_ID} -> ${RENAMED_BUCKET_ID}); removing LoggingConfiguration must update in place (issue #6167)" >&2
+  exit 1
+fi
+REMOVED_LOGGING="$(bucket_logging)"
+if [ "${REMOVED_LOGGING}" != "off" ]; then
+  echo "FAIL: TableBucket logging is '${REMOVED_LOGGING}' after Phase 1c removed LoggingConfiguration, expected 'off' (issue #6167)" >&2
+  exit 1
+fi
+echo "    OK: removing LoggingConfiguration turned the bucket's logging off (issue #6167)"
+assert_no_drift "Phase 1c"
 
 # The Table's `Ref` is its TableARN, which the rename keeps (issue #5316), so
 # the Ref output and its reader still hold the ARN.
@@ -812,6 +877,9 @@ if [ -n "${TABLE_BUCKET_ARN}" ]; then
   assert_gone "TableBucket ${TABLE_BUCKET_ARN} still exists after destroy" aws s3tables get-table-bucket --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}"
   echo "    OK: TableBucket cascade complete"
 fi
+# Issue #6167: the logging target, emptied by its auto-delete opt-in.
+assert_gone "log bucket ${LOG_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${LOG_BUCKET}"
+echo "    OK: log bucket gone"
 
 echo ""
 echo "=== PASS: S3Tables::Table #609 Tags backfill integ ==="

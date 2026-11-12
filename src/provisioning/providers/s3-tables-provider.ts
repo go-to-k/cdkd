@@ -105,6 +105,9 @@ export class S3TablesProvider implements ResourceProvider {
         'MetricsConfiguration',
         'UnreferencedFileRemoval',
         'ReplicationConfiguration',
+        // go-to-k/cdkd#6167: by PutTableBucketLogging, after the create and
+        // on an update.
+        'LoggingConfiguration',
       ]),
     ],
     ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
@@ -151,21 +154,21 @@ export class S3TablesProvider implements ResourceProvider {
   }
 
   /**
-   * `ReplicationConfiguration` is read back only while configured (see
-   * `readTableBucketConfigs`), so a baseline captured with replication off
-   * has no key and a console-side enable would be compared nowhere. Named
-   * while the template leaves it off: drift compares it, and `drift --revert`
-   * sends it absent, which update() deletes (docs/provider-rules.md,
-   * "getDriftAbsentMeansDefaultKeys()").
+   * `ReplicationConfiguration` and `LoggingConfiguration` are read back only
+   * while configured (see `readTableBucketConfigs`), so a baseline captured
+   * with one off has no key and a console-side enable would be compared
+   * nowhere. Each is named while the template leaves it off: drift compares
+   * it, and `drift --revert` sends it absent, which update() deletes or turns
+   * off (docs/provider-rules.md, "getDriftAbsentMeansDefaultKeys()").
    */
   getDriftAbsentMeansDefaultKeys(
     resourceType: string,
     properties: Record<string, unknown>
   ): readonly string[] {
-    return resourceType === 'AWS::S3Tables::TableBucket' &&
-      properties['ReplicationConfiguration'] === undefined
-      ? ['ReplicationConfiguration']
-      : [];
+    if (resourceType !== 'AWS::S3Tables::TableBucket') return [];
+    return ['ReplicationConfiguration', 'LoggingConfiguration'].filter(
+      (key) => properties[key] === undefined
+    );
   }
 
   getClient(): S3TablesClient {

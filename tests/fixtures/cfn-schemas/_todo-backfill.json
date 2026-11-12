@@ -50,9 +50,6 @@
       "TdeCredentialArn",
       "TdeCredentialPassword",
       "UseLatestRestorableTime"
-    ],
-    "AWS::S3Tables::TableBucket": [
-      "LoggingConfiguration"
     ]
   },
   "bogusTolerated": {

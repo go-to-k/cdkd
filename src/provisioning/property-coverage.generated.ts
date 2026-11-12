@@ -3129,6 +3129,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'EncryptionConfiguration',
+        'LoggingConfiguration',
         'MetricsConfiguration',
         'ReplicationConfiguration',
         'StorageClassConfiguration',
@@ -3136,9 +3137,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'UnreferencedFileRemoval',
       ]),
-      sdkUnwired: new Map<string, string>([
-        ['LoggingConfiguration', 'not yet implemented by cdkd'],
-      ]),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TableBucketARN']),
       ccRouteUnavailable: false,

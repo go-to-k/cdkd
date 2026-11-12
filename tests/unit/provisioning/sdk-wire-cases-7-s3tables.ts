@@ -98,6 +98,11 @@ export const S3TABLES_CASES: TypeCase[] = [
             Role: `arn:aws:iam::${ACCOUNT}:role/r`,
             Rules: [{ Destinations: [{ DestinationTableBucketARN: DEST_BUCKET_ARN }] }],
           },
+          LoggingConfiguration: {
+            TargetBucket: 'log-bucket',
+            TargetPrefix: 'logs/',
+            TargetObjectKeyFormat: { PartitionedPrefix: { PartitionDateSource: 'EventTime' } },
+          },
         },
         variants: { 'MetricsConfiguration.Status': 'Disabled' },
         expectedSilent: {
