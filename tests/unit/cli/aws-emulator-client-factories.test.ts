@@ -68,6 +68,8 @@ const REVIEWED_OVERRIDES: Record<string, string> = {
     "the presign client reuses the custom-resource response client's credentials (built with awsClientDefaults)",
   'src/utils/expected-bucket-owner.ts#credentials':
     "the owner probe's STS call reuses the credentials a state-bucket client resolved, and that client is built with awsClientDefaults",
+  'src/utils/ambient-client-defaults.ts#credentials':
+    "clientDefaultsFor: the ACTIVE AwsClients' explicit credentials, or a caller's credential config — each resolved through a client built with awsClientDefaults (or an emulator-issued AssumeRole)",
   'src/local/ecr-puller.ts#credentials':
     '`cdkd local` --ecr-role-arn: credentials from an sts:AssumeRole sent through a client built with awsClientDefaults, i.e. issued by the emulator',
   'src/provisioning/providers/custom-resource-response-endpoint.ts#endpoint':
@@ -126,9 +128,40 @@ function resolveNamedBag(
 
 function propertyName(p: ts.ObjectLiteralElementLike): string | undefined {
   if ((ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && p.name) {
-    return ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : undefined;
+    if (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) return p.name.text;
+    // `['credentials']: ...`
+    if (ts.isComputedPropertyName(p.name) && ts.isStringLiteralLike(p.name.expression)) {
+      return p.name.expression.text;
+    }
   }
   return undefined;
+}
+
+/** The helpers a config bag opens with (`scripts/check-aws-client-defaults.ts`). */
+const DEFAULTS_CALLS = new Set(['awsClientDefaults', 'ambientClientDefaults', 'clientDefaultsFor']);
+
+function spreadsDefaults(l: ts.ObjectLiteralExpression): boolean {
+  return l.properties.some(
+    (p) =>
+      ts.isSpreadAssignment(p) &&
+      ts.isCallExpression(p.expression) &&
+      ts.isIdentifier(p.expression.expression) &&
+      DEFAULTS_CALLS.has(p.expression.expression.text)
+  );
+}
+
+/** Every key a literal sets, through conditional spreads and named bags. */
+function keysOf(l: ts.ObjectLiteralExpression, source: ts.SourceFile, depth = 0): string[] {
+  if (depth > 4) return [];
+  return l.properties.flatMap((q) => {
+    if (!ts.isSpreadAssignment(q)) {
+      return [propertyName(q)].filter((n): n is string => n !== undefined);
+    }
+    const bag = resolveNamedBag(q.expression, source);
+    return [...literalsIn(q.expression), ...(bag ? [bag] : [])].flatMap((x) =>
+      keysOf(x, source, depth + 1)
+    );
+  });
 }
 
 interface Override {
@@ -137,13 +170,31 @@ interface Override {
 }
 
 /**
- * Every `credentials` / `endpoint` an SDK client config sets beside the
- * defaults: inline, inside a conditional spread, or inside a named bag spread
- * in (the `awsClientDefaults(...)` call itself is a call, so it is not opened).
+ * Every `credentials` / `endpoint` set beside the defaults, in two passes over
+ * every `src/**` file:
+ *
+ * - each `new XClient(<config>)`, the config an inline literal or a named bag
+ *   (`new STSClient(cfg)`), its keys read through conditional spreads and named
+ *   bags (`...auth`, `...this.clientOptions`);
+ * - each object literal that spreads one of the defaults helpers — the shape of
+ *   a bag-returning helper such as `clientDefaultsFor`, whose keys reach every
+ *   client that spreads its call.
+ *
+ * The `awsClientDefaults(...)` call itself is a call, so it is not opened.
  */
 function scanOverrides(): { sites: number; overrides: Override[] } {
   let sites = 0;
+  const seen = new Set<string>();
   const overrides: Override[] = [];
+  const record = (rel: string, line: number, keys: string[]): void => {
+    for (const key of keys) {
+      if (!OVERRIDING_KEYS.has(key)) continue;
+      const site = `${rel}:${line}`;
+      if (seen.has(`${site}#${key}`)) continue;
+      seen.add(`${site}#${key}`);
+      overrides.push({ key: `${rel}#${key}`, site });
+    }
+  };
   for (const file of walk(srcDir)) {
     const rel = relative(repoRoot, file);
     if (rel === 'src/utils/aws-client-defaults.ts') continue;
@@ -155,7 +206,8 @@ function scanOverrides(): { sites: number; overrides: Override[] } {
     );
     const clients = sdkClientIdentifiers(source);
     const namespaces = sdkClientNamespaces(source);
-    if (clients.size === 0 && namespaces.size === 0) continue;
+    const lineOf = (n: ts.Node): number =>
+      source.getLineAndCharacterOfPosition(n.getStart(source)).line + 1;
     const visit = (node: ts.Node): void => {
       if (ts.isNewExpression(node)) {
         const e = node.expression;
@@ -168,28 +220,17 @@ function scanOverrides(): { sites: number; overrides: Override[] } {
         const arg = node.arguments?.[0];
         if (isClient) {
           sites++;
-          if (arg !== undefined && ts.isObjectLiteralExpression(arg)) {
-            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-            arg.properties.forEach((p) => {
-              const namesOf = (l: ts.ObjectLiteralExpression): string[] =>
-                l.properties.flatMap((q) =>
-                  ts.isSpreadAssignment(q)
-                    ? literalsIn(q.expression).flatMap(namesOf)
-                    : [propertyName(q)].filter((n): n is string => n !== undefined)
-                );
-              let names: string[];
-              if (ts.isSpreadAssignment(p)) {
-                const bag = resolveNamedBag(p.expression, source);
-                names = [...literalsIn(p.expression), ...(bag ? [bag] : [])].flatMap(namesOf);
-              } else {
-                names = [propertyName(p)].filter((n): n is string => n !== undefined);
-              }
-              for (const key of names) {
-                if (OVERRIDING_KEYS.has(key)) overrides.push({ key: `${rel}#${key}`, site: `${rel}:${line}` });
-              }
-            });
-          }
+          const config =
+            arg === undefined
+              ? undefined
+              : ts.isObjectLiteralExpression(arg)
+                ? arg
+                : resolveNamedBag(arg, source);
+          if (config !== undefined) record(rel, lineOf(node), keysOf(config, source));
         }
+      }
+      if (ts.isObjectLiteralExpression(node) && spreadsDefaults(node)) {
+        record(rel, lineOf(node), keysOf(node, source));
       }
       ts.forEachChild(node, visit);
     };

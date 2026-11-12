@@ -23,9 +23,9 @@
  * It imports only from `src/utils/**`, so `src/cli/**`, `src/provisioning/**`
  * and `src/utils/**` can all import it.
  */
-import { getAssumedRoleCredentials } from './aws-client-defaults.js';
+import { awsEndpointOverrideUrl, getAssumedRoleCredentials } from './aws-client-defaults.js';
 import { displaySafe } from './display-safe.js';
-import { commandHole, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
+import { commandHole, isInertUnquoted, SHELL_ACTIVE, shellQuote } from './pasteable-command.js';
 
 let explicitProfile: string | undefined;
 
@@ -65,6 +65,14 @@ export function setPasteableAwsProfile(profile: string | undefined): void {
  *   the AWS CLI refuse the profile before any call.
  */
 export function pasteableAwsProfileFlag(): string {
+  // FIRST: under `--aws-emulator` (go-to-k/cdkd#6138) cdkd ran against the
+  // emulator, while the shell the operator pastes into still holds their real
+  // credentials. Point the `aws` command at the same endpoint, so a pasted
+  // remedy can never act on a same-named resource in a real account.
+  const emulator = awsEndpointOverrideUrl();
+  if (emulator !== undefined) {
+    return `--endpoint-url ${isInertUnquoted(emulator) ? emulator : commandHole('endpoint-url')}`;
+  }
   // Checked BEFORE the no-profile arm: a role run without `--profile` must not
   // print a bare command, which would run as the ambient identity.
   if (getAssumedRoleCredentials() !== undefined) {

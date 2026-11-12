@@ -1,10 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { isCfnTemplateAssetPath, parseAssetManifestBody } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
-import {
-  DockerAssetPublisher,
-  refuseDockerAssetUnderAwsEmulator,
-} from './docker-asset-publisher.js';
+import { DockerAssetPublisher } from './docker-asset-publisher.js';
+import { refuseDockerAssetUnderAwsEmulator } from './docker-asset-emulator-refusal.js';
 import {
   flattenAssetPlaceholders,
   isDefaultBootstrapBucketName,

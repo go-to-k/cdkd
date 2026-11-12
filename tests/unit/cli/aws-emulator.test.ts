@@ -17,9 +17,14 @@ import {
   prepareAwsEmulatorForCommand,
 } from '../../../src/cli/aws-emulator.js';
 import { activateLocalAwsWiring } from '../../../src/local/local-aws-wiring.js';
-import { getLogger } from '../../../src/utils/logger.js';
+import { getLogger, isStdoutReservedForPayload } from '../../../src/utils/logger.js';
 import { pasteableRunFlags } from '../../../src/utils/pasteable-run-context.js';
-import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
+import { setAwsEndpointOverride } from 'cdk-local/internal';
+import {
+  awsEndpointOverrideActive,
+  setAwsEndpointOverrideSource,
+} from '../../../src/utils/aws-client-defaults.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 
 /**
  * go-to-k/cdkd#6138: `--aws-emulator [url]` / `CDKD_AWS_EMULATOR` on every
@@ -36,6 +41,7 @@ const ENV_KEYS = [
   'AWS_SESSION_TOKEN',
   'AWS_ENDPOINT_URL',
   'AWS_ENDPOINT_URL_S3',
+  'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS',
   'AWS_CONFIG_FILE',
   'AWS_SHARED_CREDENTIALS_FILE',
   'AWS_EC2_METADATA_DISABLED',
@@ -120,7 +126,8 @@ async function parse(path: string[], argv: string[]): Promise<Record<string, unk
   });
   const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
   try {
-    await program.parseAsync([...path, ...argv], { from: 'user' });
+    // argv-shaped (default `from: 'node'`): the path is spread in.
+    await program.parseAsync(['node', 'cdkd', ...path, ...argv], { from: 'node' });
   } finally {
     info.mockRestore();
   }
@@ -132,7 +139,9 @@ describe('under the flag (a non-local command)', () => {
     process.env['AWS_PROFILE'] = 'prod';
     process.env['AWS_ACCESS_KEY_ID'] = 'HOSTKEYID00000000000';
     process.env['AWS_SECRET_ACCESS_KEY'] = 'real-secret';
+    process.env['AWS_SESSION_TOKEN'] = 'real-token';
     process.env['AWS_ENDPOINT_URL_S3'] = 'https://elsewhere.example';
+    process.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] = 'true';
     process.env['CDKD_ROLE_ARN'] = 'arn:aws:iam::123456789012:role/Deploy';
     const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
     const program = buildProgram();
@@ -160,6 +169,7 @@ describe('under the flag (a non-local command)', () => {
         'AWS_ACCESS_KEY_ID',
         'AWS_SECRET_ACCESS_KEY',
         'AWS_ENDPOINT_URL_S3',
+  'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS',
         'CDKD_ROLE_ARN',
       ]) {
         expect(process.env[k], k).toBeUndefined();
@@ -169,6 +179,13 @@ describe('under the flag (a non-local command)', () => {
       expect(process.env['AWS_SHARED_CREDENTIALS_FILE']).toBe(devNull);
       expect(process.env['AWS_EC2_METADATA_DISABLED']).toBe('true');
       expect(activateLocalAwsWiring).toHaveBeenCalledWith({ awsEmulator: EMULATOR_URL });
+      // cdkd's clients follow cdk-local's override once it is activated.
+      setAwsEndpointOverride({ endpoint: EMULATOR_URL });
+      try {
+        expect(awsEndpointOverrideActive()).toBe(true);
+      } finally {
+        setAwsEndpointOverride(undefined);
+      }
       // One notice naming what was ignored, never a value.
       const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => /ignoring/.test(l));
       expect(lines).toHaveLength(1);
@@ -176,11 +193,34 @@ describe('under the flag (a non-local command)', () => {
       expect(lines[0]).toContain('--role-arn');
       expect(lines[0]).toContain('AWS_ACCESS_KEY_ID');
       expect(lines[0]).not.toContain('HOSTKEYID');
+      expect(lines[0]).toContain('AWS_ENDPOINT_URL_S3');
       expect(lines[0]).not.toContain('real-secret');
+      expect(lines[0]).not.toContain('real-token');
       expect(lines[0]).not.toContain('prod');
     } finally {
       info.mockRestore();
     }
+  });
+
+  it('prints its notices off stdout, which a payload command reserves only later', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    vi.mocked(activateLocalAwsWiring).mockImplementationOnce(async () => {
+      getLogger().info('activation line');
+    });
+    const reservedAt: boolean[] = [];
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {
+      reservedAt.push(isStdoutReservedForPayload());
+    });
+    const program = buildProgram();
+    find(program, ['synth']).action(() => {});
+    try {
+      await program.parseAsync(['synth', '--aws-emulator=https://127.0.0.1:1'], { from: 'user' });
+    } finally {
+      info.mockRestore();
+    }
+    expect(reservedAt).toEqual([true, true]);
+    // ...and hands stdout back for a command that keeps human output.
+    expect(isStdoutReservedForPayload()).toBe(false);
   });
 
   it('CDKD_AWS_EMULATOR turns it on without the flag', async () => {
@@ -190,6 +230,42 @@ describe('under the flag (a non-local command)', () => {
     expect(opts['profile']).toBeUndefined();
     expect(process.env['AWS_PROFILE']).toBeUndefined();
     expect(activateLocalAwsWiring).toHaveBeenCalledTimes(1);
+    // Only a TYPED flag rides pasteable hints; the env reaches them from the shell.
+    expect(pasteableRunFlags().awsEmulator).toBeUndefined();
+  });
+
+  it('normalises localhost to 127.0.0.1 and keeps a shell-named AWS_DEFAULT_REGION', async () => {
+    process.env['AWS_DEFAULT_REGION'] = 'eu-central-1';
+    await parse(['deploy'], ['--aws-emulator=https://localhost:1']);
+    expect(process.env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:1');
+    expect(process.env['AWS_REGION']).toBeUndefined();
+  });
+
+  it('an unreachable emulator is rendered and exits 1, never a Fatal stack', async () => {
+    vi.mocked(activateLocalAwsWiring).mockRejectedValueOnce(
+      new CdkdError('--aws-emulator https://127.0.0.1:1: no AWS Emulator answers', 'LOCAL_AWS_WIRING_FAILED')
+    );
+    const program = buildProgram();
+    const action = vi.fn();
+    find(program, ['deploy']).action(action);
+    const errorSpy = vi.spyOn(getLogger(), 'error').mockImplementation(() => {});
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit ${code}`);
+    }) as never);
+    try {
+      await expect(
+        program.parseAsync(['deploy', '--aws-emulator=https://127.0.0.1:1'], { from: 'user' })
+      ).rejects.toThrow('exit 1');
+      expect(action).not.toHaveBeenCalled();
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+        /no AWS Emulator answers/
+      );
+    } finally {
+      errorSpy.mockRestore();
+      info.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 
   it('a pasted hint carries the typed emulator and not the dropped --profile', async () => {

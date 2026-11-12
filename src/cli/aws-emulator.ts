@@ -39,7 +39,13 @@ import {
 import { activateLocalAwsWiring, assertAwsEmulatorValue } from '../local/local-aws-wiring.js';
 import { awsEmulatorOption } from './options/aws-emulator.js';
 import { setAwsEndpointOverrideSource } from '../utils/aws-client-defaults.js';
-import { getLogger } from '../utils/logger.js';
+import {
+  getLogger,
+  isStdoutReservedForPayload,
+  releaseStdoutForPayload,
+  reserveStdoutForPayload,
+} from '../utils/logger.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /** The command whose subtree registers `--aws-emulator` through cdk-local. */
 const LOCAL_COMMAND = 'local';
@@ -137,12 +143,16 @@ export function prepareAwsEmulatorForCommand(
   }
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('AWS_ENDPOINT_URL') || key === 'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS') {
+      if (process.env[key] !== '') ignored.push(key);
       delete process.env[key];
     }
   }
   if (ignored.length > 0) {
-    getLogger().info(
-      `--aws-emulator: ignoring ${ignored.join(', ')}; every AWS call uses the emulator's keys.`
+    const names = ignored.join(', ');
+    onStderr(() =>
+      getLogger().info(
+        safeMsg`--aws-emulator: ignoring ${names}; every AWS call uses the emulator's keys.`
+      )
     );
   }
 
@@ -158,7 +168,31 @@ export function prepareAwsEmulatorForCommand(
   pointEnvironmentAtEmulator(url, endpoint.port);
   if (local) return undefined;
   setAwsEndpointOverrideSource(getAwsEndpointOverride);
-  return () => activateLocalAwsWiring({ awsEmulator: flag });
+  return () => onStderr(() => activateLocalAwsWiring({ awsEmulator: flag }));
+}
+
+/**
+ * Run `fn` with cdkd's logger off stdout. These lines print BEFORE the action
+ * that reserves stdout for a payload (`synth`, `list`, `state list --json`,
+ * `local invoke`, ...), so on stdout they would land inside it; on stderr they
+ * are notices for every command alike. cdk-local's activation line goes
+ * through cdkd's logger too (the embed config).
+ */
+function onStderr<T>(fn: () => T): T {
+  if (isStdoutReservedForPayload()) return fn();
+  reserveStdoutForPayload();
+  let result: T;
+  try {
+    result = fn();
+  } catch (err) {
+    releaseStdoutForPayload();
+    throw err;
+  }
+  if (result instanceof Promise) {
+    return result.finally(releaseStdoutForPayload) as T;
+  }
+  releaseStdoutForPayload();
+  return result;
 }
 
 /**

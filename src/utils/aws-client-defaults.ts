@@ -440,6 +440,11 @@ export function awsEndpointOverrideActive(): boolean {
   return endpointOverrideSource?.() !== undefined;
 }
 
+/** The active endpoint override's URL, or `undefined` (pasteable `aws` hints). */
+export function awsEndpointOverrideUrl(): string | undefined {
+  return endpointOverrideSource?.()?.endpoint;
+}
+
 /**
  * The client config under an endpoint override: the endpoint, a handler whose
  * agent trusts the endpoint's CA, and the endpoint's credentials.
