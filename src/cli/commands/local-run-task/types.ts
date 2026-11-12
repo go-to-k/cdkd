@@ -9,6 +9,10 @@ export interface LocalRunTaskOptions {
   verbose: boolean;
   region?: string;
   profile?: string;
+  /** `--aws-emulator [url]`: `true` for the bare flag (go-to-k/cdkd#6132). */
+  awsEmulator?: string | boolean;
+  /** `--ca-bundle <file>`: mounted into every workload container (go-to-k/cdkd#6131). */
+  caBundle?: string;
   roleArn?: string;
   context?: string[];
   cluster: string;

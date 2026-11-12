@@ -32,11 +32,12 @@ const commandFamily = (file: string): string[] => {
 
 /**
  * The call that issues a command's first AWS request. The `cdkd local *`
- * handlers publish `--role-arn` through `applyRoleArnForLocal` instead
- * (`.claude/rules/local-engine-role-leak.md`).
+ * handlers enter through `activateLocalAwsAndRoleArn` instead: the
+ * `--aws-emulator` wiring, then `applyRoleArnForLocal`
+ * (`.claude/rules/local-engine-role-leak.md`, go-to-k/cdkd#6132).
  */
 const firstAwsCall = (file: string): string =>
-  file.startsWith('local-') ? 'await applyRoleArnForLocal(' : 'await applyRoleArnIfSet(';
+  file.startsWith('local-') ? 'await activateLocalAwsAndRoleArn(' : 'await applyRoleArnIfSet(';
 
 /** A command's source: its {@link commandFamily}, joined in that order. */
 const commandSource = (file: string): string =>

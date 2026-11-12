@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { addAwsEndpointOptions } from 'cdk-local/internal';
 import {
   appOptions,
   commonOptions,
@@ -250,5 +251,8 @@ export function createLocalInvokeAgentCoreCommand(): Command {
     cmd.addOption(opt)
   );
   cmd.addOption(deprecatedRegionOption);
+  // `--aws-emulator [url]` / `--ca-bundle <file>` (go-to-k/cdkd#6131, #6132),
+  // the same spelling the cdk-local engine commands register.
+  addAwsEndpointOptions(cmd);
   return cmd;
 }

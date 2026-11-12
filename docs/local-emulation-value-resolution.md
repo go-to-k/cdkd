@@ -179,7 +179,9 @@ cdkd resolves three kinds: `{{resolve:secretsmanager:...}}`,
 ### Whose credentials and which region
 
 The lookup is made with your own credentials, honouring `--profile`. It never
-uses the `--role-arn` role, because the value ends up in the container.
+uses the `--role-arn` role, because the value ends up in the container. Under
+[`--aws-emulator`](local-emulation.md#aws-emulator) it goes to the emulator,
+signed with the emulator's keys.
 
 A reference written as an ARN uses the region in the ARN. Any other reference
 uses the region of the stack that owns it. cdkd takes that region from the

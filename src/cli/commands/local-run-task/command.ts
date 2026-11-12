@@ -2,7 +2,7 @@ import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-ref
 import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { applyRoleArnForLocal } from '../../../local/local-role-arn.js';
+import { activateLocalAwsAndRoleArn } from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn } from '../../../utils/role-arn.js';
 import {
   Synthesizer,
@@ -186,7 +186,10 @@ export async function localRunTaskCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
+    // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
+    // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
+    // follow the emulator (`local-aws-wiring.ts`).
+    await activateLocalAwsAndRoleArn(options);
     await ensureDockerAvailable();
 
     const appCmd = resolveApp(options.app);

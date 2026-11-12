@@ -5,7 +5,10 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { foldRegionOption } from '../../region-options.js';
-import { applyRoleArnForLocal } from '../../../local/local-role-arn.js';
+import {
+  activateLocalAwsAndRoleArn,
+  profileCredentialsForWorkload,
+} from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn, explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
@@ -317,12 +320,18 @@ export async function localInvokeAgentCoreCommand(
         (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
       );
     }
-    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
+    // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
+    // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
+    // follow the emulator (`local-aws-wiring.ts`).
+    await activateLocalAwsAndRoleArn(options);
     await ensureDockerAvailable();
 
-    const profileCredentials = options.profile
-      ? await resolveProfileCredentials(options.profile)
-      : undefined;
+    // Under `--aws-emulator` the container gets the emulator's keys only, so
+    // the real `--profile` is neither resolved nor written to a file.
+    const profileCredentials = await profileCredentialsForWorkload(
+      options.profile,
+      resolveProfileCredentials
+    );
     // cdkd-local-env-identity: `--profile`, resolved by
     // `resolveProfileCredentials` through
     // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,

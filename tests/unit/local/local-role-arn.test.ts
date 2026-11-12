@@ -104,7 +104,7 @@ describe('applyRoleArnForLocal', () => {
   });
 });
 
-describe('the four cdkd-owned local commands publish through applyRoleArnForLocal', () => {
+describe('the four cdkd-owned local commands publish through applyRoleArnForLocal (via activateLocalAwsAndRoleArn)', () => {
   // The handlers are not reachable from a unit test past their first await, so
   // the wiring is pinned at the source: a command calling cdkd's bare
   // `applyRoleArnIfSet` assumes the role without telling cdk-local.
@@ -131,7 +131,10 @@ describe('the four cdkd-owned local commands publish through applyRoleArnForLoca
               ? readLocalInvokeAgentCoreSource()
           : readFileSync(join(__dirname, '../../../src/cli/commands', file), 'utf8');
     const lines = strip(source);
-    expect(lines.filter((l) => l.includes('await applyRoleArnForLocal('))).toHaveLength(1);
+    // Through `activateLocalAwsAndRoleArn` (`src/local/local-aws-wiring.ts`),
+    // which calls `applyRoleArnForLocal` after the `--aws-emulator` wiring
+    // (go-to-k/cdkd#6132); its own test pins that call.
+    expect(lines.filter((l) => l.includes('await activateLocalAwsAndRoleArn('))).toHaveLength(1);
     expect(lines.filter((l) => /\bapplyRoleArnIfSet\b/.test(l))).toEqual([]);
   });
 });

@@ -373,3 +373,38 @@ describe('local start-api: the IMAGE branch and the state bundle (#2056)', () =>
     expect(bundles.get('ApiStack')?.region).toBe('eu-west-1');
   });
 });
+
+describe('local start-api buildContainerSpec: the container region (go-to-k/cdkd#6132 live run)', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    restoreProcessEnv(saved);
+  });
+
+  it('hands the container stsRegion (--region first) when the host sets no AWS_REGION', async () => {
+    delete process.env['AWS_REGION'];
+    delete process.env['AWS_DEFAULT_REGION'];
+    const s = await spec({ GREETING: 'hi' }, { stsRegion: 'ap-northeast-1' });
+    expect(s.env['AWS_REGION']).toBe('ap-northeast-1');
+  });
+
+  it('stsRegion (--region first) wins over the host region in BOTH variables (host us-east-1, --region us-west-2)', async () => {
+    process.env['AWS_REGION'] = 'us-east-1';
+    process.env['AWS_DEFAULT_REGION'] = 'us-east-1';
+    const s = await spec({ GREETING: 'hi' }, { stsRegion: 'us-west-2' });
+    expect(s.env['AWS_REGION']).toBe('us-west-2');
+    expect(s.env['AWS_DEFAULT_REGION']).toBe('us-west-2');
+  });
+
+  it("falls back to the stack's own region when nothing names one", async () => {
+    delete process.env['AWS_REGION'];
+    delete process.env['AWS_DEFAULT_REGION'];
+    const s = await spec({ GREETING: 'hi' });
+    expect(s.env['AWS_REGION']).toBe('us-east-1');
+  });
+});
+
+/** Restore the environment IN PLACE: replacing `process.env` unlinks it from the real one. */
+function restoreProcessEnv(snapshot: Record<string, string | undefined>): void {
+  for (const k of Object.keys(process.env)) if (!(k in snapshot)) delete process.env[k];
+  for (const [k, v] of Object.entries(snapshot)) if (v !== undefined) process.env[k] = v;
+}

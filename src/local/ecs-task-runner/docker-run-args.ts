@@ -1,5 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { containsDynamicReference } from 'cdk-local/internal';
+import {
+  applyWorkloadAwsWiringToEnv,
+  containsDynamicReference,
+  effectiveLoopbackPorts,
+  getActiveWorkloadAwsWiring,
+} from 'cdk-local/internal';
 import { partitionSensitiveEnv } from '../../utils/docker-cmd.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { SENSITIVE_ENV_KEYS } from '../docker-runner.js';
@@ -142,6 +147,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   sensitiveEnv: Record<string, string>;
   /** Secret names dropped because they name a docker-client var (issue #2183). */
   collisions: string[];
+  /** Loopback ports the final env still points at (the forwarder serves them). */
+  loopbackPorts: number[];
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
@@ -209,11 +216,22 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // that targets `/cdkd-aws/credentials` doesn't shadow the creds
   // file — docker honors mount-order by container path uniqueness;
   // a later mount at the same target would fail or shadow.
-  if (opts.profileCredentialsFile) {
+  // The process-wide AWS wiring (`local-aws-wiring.ts`): under
+  // `--aws-emulator` no host credentials file reaches the container, and the
+  // CA bundle is mounted read-only unless a MountPoint already owns its path.
+  const wiring = getActiveWorkloadAwsWiring();
+  const profileCredentialsFile =
+    wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
+  if (profileCredentialsFile) {
     args.push(
       '-v',
-      `${opts.profileCredentialsFile.hostPath}:${opts.profileCredentialsFile.containerPath}:ro`
+      `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`
     );
+  }
+  for (const m of wiring?.mounts ?? []) {
+    if (!container.mountPoints.some((mp) => mp.containerPath === m.containerPath)) {
+      args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
+    }
   }
 
   // Mounts: walk the container's `MountPoints` and look up the matching
@@ -241,9 +259,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   //   2. global `Parameters` `--env-vars` entry
   //   3. resolved secrets
   //   4. template literal env
-  //   5. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
-  //   6. metadata sidecar env (sidecar URL / role URL)
-  const finalEnv: Record<string, string> = {};
+  //   5. forwarded AWS endpoint / CA entries (`local-aws-wiring.ts`, `forward` mode)
+  //   6. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
+  //   7. metadata sidecar env (sidecar URL / role URL)
+  // `--aws-emulator` is applied after all of them and wins over every layer.
+  let finalEnv: Record<string, string> = {};
   const metaEnv = buildMetadataEnv({
     containerName: container.name,
     ...(roleArn !== undefined && { roleArn }),
@@ -258,9 +278,14 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // template / secret / --env-vars overrides so a user template that
   // sets its own `AWS_PROFILE` (e.g. for a different in-container
   // chain) still wins.
-  if (opts.profileCredentialsFile) {
-    finalEnv['AWS_SHARED_CREDENTIALS_FILE'] = opts.profileCredentialsFile.containerPath;
-    finalEnv['AWS_PROFILE'] = opts.profileCredentialsFile.profileName;
+  if (profileCredentialsFile) {
+    finalEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredentialsFile.containerPath;
+    finalEnv['AWS_PROFILE'] = profileCredentialsFile.profileName;
+  }
+  // Forwarded endpoint / CA entries sit BELOW the template and `--env-vars`,
+  // so a value the task declares wins.
+  if (wiring?.mode === 'forward') {
+    for (const [k, v] of Object.entries(wiring.env)) defineOwnKey(finalEnv, k, v);
   }
   // Own-key defines, not `Object.assign` / `finalEnv[k] = v` (issue #3515):
   // these keys come from the template, and a `[[Set]]` of an own `__proto__`
@@ -275,6 +300,20 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   if (overrides) {
     applyOverrideMap(finalEnv, overrides['Parameters']);
     applyOverrideMap(finalEnv, overrides[container.name]);
+  }
+  // `--aws-emulator` is forced last: the endpoint, its credentials only, and
+  // the scrub of every variable that could reach real credentials. Under
+  // `forward` the entries were applied above; only the region mirror
+  // (AWS_DEFAULT_REGION next to AWS_REGION) is left to do here. The task's
+  // credentials come from the metadata sidecar, so no default-chain fill here.
+  if (wiring) {
+    // cdkd-local-env-identity: under `--aws-emulator` the triple is REPLACED by
+    // the emulator's own keys (never the caller's or the role's); under
+    // `forward` no credential is written.
+    finalEnv = applyWorkloadAwsWiringToEnv(
+      finalEnv,
+      wiring.mode === 'emulator' ? wiring : { ...wiring, env: {} }
+    );
   }
 
   // Split the resolved env into `-e` flags plus the values that must travel
@@ -338,7 +377,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, dockerName, sensitiveEnv, collisions };
+  const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
+  return { args, dockerName, sensitiveEnv, collisions, loopbackPorts };
 }
 
 function applyOverrideMap(

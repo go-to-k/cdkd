@@ -82,6 +82,8 @@
 
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { Agent as HttpsAgent } from 'node:https';
+import { rootCertificates } from 'node:tls';
 // The `.ts` spelling below is REQUIRED, not a slip.
 //
 // `scripts/audit-provider-coverage.ts` imports `src/utils/aws-clients.ts`
@@ -198,6 +200,8 @@ export interface AwsClientDefaults {
    */
   region?: string;
   requestHandler?: NodeHttpHandler;
+  /** Present only under an endpoint override ({@link setAwsEndpointOverrideSource}). */
+  endpoint?: string;
   credentials?: ReturnType<typeof defaultProvider> | AssumedRoleCredentials | CallerEnvCredentials;
   /** The SDK call log's counting logger, present only under `CDKD_SDK_CALL_LOG`. */
   logger?: NonNullable<ReturnType<typeof sdkCallLogConfig>>['logger'];
@@ -398,6 +402,73 @@ let assumedRoleCredentials: AssumedRoleCredentials | undefined;
  * the state of the environment at a single process-wide decision point.
  */
 let preAssumeEnvCredentials: CallerEnvCredentials | undefined;
+
+/**
+ * A process-wide local AWS endpoint for every client built through
+ * {@link awsClientDefaults} — `cdkd local --aws-emulator`
+ * (go-to-k/cdkd#6132). One endpoint serves every service; `caPem` is trusted
+ * on top of the public roots, and `credentials` are the endpoint's own keys.
+ *
+ * Structurally cdk-local's `AwsEndpointOverride`: the `cdkd local` commands
+ * register cdk-local's getter with {@link setAwsEndpointOverrideSource}, so the
+ * one activation (`activateWorkloadAwsWiring`) points cdk-local's clients and
+ * cdkd's at the same endpoint. Kept as a SOURCE rather than a copied value
+ * because `src/utils` must not import `cdk-local/internal`, and the engine
+ * commands activate the wiring inside cdk-local's own handler.
+ */
+export interface AwsEndpointOverrideDefaults {
+  endpoint: string;
+  caPem?: string;
+  credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+}
+
+let endpointOverrideSource: (() => AwsEndpointOverrideDefaults | undefined) | undefined;
+
+/**
+ * Install (or clear, with `undefined`) the function {@link awsClientDefaults}
+ * asks for the active {@link AwsEndpointOverrideDefaults}. Asked per client, so
+ * an override activated after the source was registered is honoured.
+ */
+export function setAwsEndpointOverrideSource(
+  source: (() => AwsEndpointOverrideDefaults | undefined) | undefined
+): void {
+  endpointOverrideSource = source;
+}
+
+/** True while an endpoint override is active (S3 then forces path-style). */
+export function awsEndpointOverrideActive(): boolean {
+  return endpointOverrideSource?.() !== undefined;
+}
+
+/**
+ * The client config under an endpoint override: the endpoint, a handler whose
+ * agent trusts the endpoint's CA, and the endpoint's credentials.
+ *
+ * It outranks the proxy (a local endpoint is never proxied) AND a published
+ * `--role-arn` role or the caller opt-out: under `--aws-emulator` the
+ * endpoint's keys are the only identity, so no real credential is ever signed
+ * into a request to it. When the endpoint has no keys of its own, the
+ * credentials key is absent and the client's own chain answers.
+ */
+function endpointOverrideDefaults(o: AwsEndpointOverrideDefaults): AwsClientDefaults {
+  // A FRESH agent per call, for the reason the proxied arm gives below.
+  const httpsAgent = new HttpsAgent({
+    keepAlive: true,
+    ...(o.caPem !== undefined && { ca: [...rootCertificates, o.caPem] }),
+  });
+  const creds = o.credentials;
+  return {
+    endpoint: o.endpoint,
+    requestHandler: new NodeHttpHandler({ httpsAgent }),
+    ...(creds && {
+      credentials: {
+        accessKeyId: creds.accessKeyId,
+        secretAccessKey: creds.secretAccessKey,
+        ...(creds.sessionToken !== undefined && { sessionToken: creds.sessionToken }),
+      },
+    }),
+  };
+}
 
 /**
  * Static AWS credentials read out of (or destined for) the process environment.
@@ -643,7 +714,11 @@ export function awsClientDefaults(options: AwsClientDefaultsOptions = {}): AwsCl
   // go-to-k/cdkd#1981). Spread FIRST so the credential / handler keys below are
   // never shadowed and a site's own explicit `region` still overrides it.
   const scopeRegion = currentStackAwsScope()?.region;
-  const defaults = credentialAndHandlerDefaults(options);
+  const override = endpointOverrideSource?.();
+  const defaults =
+    override !== undefined
+      ? endpointOverrideDefaults(override)
+      : credentialAndHandlerDefaults(options);
   // The SDK call log (`sdk-call-log.ts`): absent unless `CDKD_SDK_CALL_LOG`
   // is set, so every other run's config is byte-for-byte what it was.
   const callLog = sdkCallLogConfig();

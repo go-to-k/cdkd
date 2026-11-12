@@ -14,8 +14,10 @@
 #   B. start-service under --role-arn: the ECS secret (an SSM parameter the
 #      role is denied) must reach the container, i.e. it was read as the caller.
 #   C. start-alb with AWS_PROFILE exported, no static credential triple and no
-#      --profile: the role's key must NOT reach the workload (it is stripped,
-#      with a warning naming --profile).
+#      --profile: the role's key must NOT reach the workload. The role triple is
+#      stripped (with a warning naming --profile) and the workload gets the
+#      caller's chain read WITHOUT its env link, i.e. that profile's key
+#      (go-to-k/cdkd#6129), or none when the profile resolves nothing.
 #
 # Two stacks in one app, synthesized one half at a time with `-c part=role|app`
 # (cdk-local's Lambda Function URL origin boot cannot resolve its function when
@@ -346,7 +348,7 @@ fi
 echo "[verify]   the container received the parameter value"
 stop_engine
 
-echo "[verify] arm C: start-alb with only an exported AWS_PROFILE strips the role's key"
+echo "[verify] arm C: start-alb with only an exported AWS_PROFILE never hands the workload the role's key"
 if [ -n "${WORKLOAD_PROFILE:-}" ]; then
   :
 elif [ -n "${AWS_PROFILE:-}" ]; then
@@ -364,13 +366,30 @@ ROLE_ACCOUNT="$(printf '%s' "${ROLE_ARN}" | cut -d: -f5)"
 [ "${WORKLOAD_ACCOUNT}" = "${ROLE_ACCOUNT}" ] \
   || fail "arm C premise: profile '${WORKLOAD_PROFILE}' is in account ${WORKLOAD_ACCOUNT}, but ${ROLE_ARN} is in ${ROLE_ACCOUNT}; set WORKLOAD_PROFILE to a profile in the role's account"
 echo "[verify]   using profile '${WORKLOAD_PROFILE}' (exported as AWS_PROFILE; no static triple, no --profile)"
+# The key that profile resolves to (SSO included), which the workload must get
+# under go-to-k/cdkd#6129; empty when the profile resolves nothing.
+PROFILE_AKID="$(aws configure export-credentials --profile "${WORKLOAD_PROFILE}" --format env 2>/dev/null \
+  | awk -F= '$1=="export AWS_ACCESS_KEY_ID"{print substr($0,length($1)+2)}')" || PROFILE_AKID=""
+[ "${PROFILE_AKID}" != "${ROLE_AKID}" ] \
+  || fail "arm C premise: profile '${WORKLOAD_PROFILE}' resolves to the role session's own key"
+echo "[verify]   profile key: ${PROFILE_AKID:-<none>}"
 PORT="$(free_port)"
 boot as_profile_only start-alb "${APP_STACK}:Alb" --lb-port "80=${PORT}" --container-host 127.0.0.1 --no-pull --role-arn "${ROLE_ARN}"
 wait_for_line 'Service\(s\) running:' 240
 BODY="$(fetch_akid_body "http://127.0.0.1:${PORT}/")"
 echo "[verify]   workload said: ${BODY}"
-grep -qF '"akid":null' <<<"${BODY}" \
-  || fail "#3240: the role's access key reached the workload with only AWS_PROFILE exported (expected \"akid\":null, got: ${BODY})"
+# The #3240 invariant: the --role-arn role's key never reaches the workload.
+if grep -qF "\"akid\":\"${ROLE_AKID}\"" <<<"${BODY}"; then
+  fail "#3240: the --role-arn role's access key reached the workload with only AWS_PROFILE exported (got: ${BODY})"
+fi
+# go-to-k/cdkd#6129: what it gets instead is the caller's env-less chain.
+if [ -n "${PROFILE_AKID}" ]; then
+  grep -qF "\"akid\":\"${PROFILE_AKID}\"" <<<"${BODY}" \
+    || fail "#6129: the workload did not get profile '${WORKLOAD_PROFILE}' (expected \"akid\":\"${PROFILE_AKID}\", got: ${BODY})"
+else
+  grep -qF '"akid":null' <<<"${BODY}" \
+    || fail "#6129: profile '${WORKLOAD_PROFILE}' resolves nothing, yet the workload got a key (expected \"akid\":null, got: ${BODY})"
+fi
 grep -qF 'is not handed to the emulated workload' "${OUT_FILE}" \
   || fail "cdk-local's stripped-credentials warning ('is not handed to the emulated workload') was not printed"
 if grep -qF 'with your own profile' "${OUT_FILE}"; then

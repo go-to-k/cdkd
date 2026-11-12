@@ -1,3 +1,5 @@
+import { firstUsableRegion } from 'cdk-local/internal';
+import { setContainerRegion } from '../../../local/local-aws-wiring.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
@@ -38,6 +40,8 @@ export async function applyLambdaCredentialEnv(
   args: {
     assumeRoleArn?: string;
     region?: string;
+    /** The stack's own region: the container's region when nothing names one. */
+    stackRegion?: string;
     profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     profileCredsFile?: { containerPath: string; profileName: string };
   }
@@ -69,7 +73,7 @@ export async function applyLambdaCredentialEnv(
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+      setContainerRegion(dockerEnv, stsRegion);
       assumeSucceeded = true;
     } catch (err) {
       logger.warn(
@@ -95,6 +99,19 @@ export async function applyLambdaCredentialEnv(
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
     }
+    // A Lambda always runs with `AWS_REGION` set. The same chain the
+    // `--assume-role` arm and `${AWS::Region}` use (`--region`, then the host
+    // variables), then the stack's own region, as deployed Lambda would get;
+    // without it a handler's first SDK call failed with `Region is missing`
+    // (go-to-k/cdkd#6132's live run). `--region` wins over a host
+    // `AWS_REGION` here exactly as it does on the `--assume-role` arm.
+    const containerRegion = firstUsableRegion(
+      args.region,
+      process.env['AWS_REGION'],
+      process.env['AWS_DEFAULT_REGION'],
+      args.stackRegion
+    );
+    setContainerRegion(dockerEnv, containerRegion);
   }
 }
 

@@ -166,7 +166,18 @@ the rules for dynamic references.
 ## Credentials inside the container
 
 By default the container gets your own AWS credentials, so the AWS calls your
-code makes reach real AWS as you. Your credentials usually allow more than the
+code makes reach real AWS as you. They come from, in order:
+
+| Source | Used when |
+| --- | --- |
+| `--assume-role` (or the command's equivalent below) | The flag is given and the role can be assumed. |
+| `--profile <name>` | The flag is given. |
+| Your default credential chain | Neither flag is given: `AWS_ACCESS_KEY_ID` and its pair, `AWS_PROFILE`, the shared credentials and config files, IAM Identity Center. |
+
+Under [`--aws-emulator`](#aws-emulator) the container gets the emulator's
+credentials and nothing else.
+
+ Your credentials usually allow more than the
 deployed role does, which means a missing IAM permission goes unnoticed. To see
 IAM errors locally, run the code under the deployed role:
 
@@ -189,8 +200,8 @@ AWS calls.
 > resolves for it (container credentials, task secrets, `{{resolve:...}}`,
 > `--from-cfn-stack`, `--assume-role` hops), uses your own identity, not the
 > role. No startup warning applies. When your own credentials are not a static
-> access key, the container receives none, and `start-alb`, `start-cloudfront`
-> and `start-agentcore` warn once. See
+> access key, the container gets what your credential chain resolves without
+> the environment variables, which hold the role. See
 > [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Common flags
@@ -211,6 +222,8 @@ only the flags of its own.
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role cdkd assumes for its own AWS calls. |
+| `--aws-emulator [url]` | `CDKD_AWS_EMULATOR`; bare flag: `https://127.0.0.1:9297` | Run against a local AWS Emulator. See [AWS Emulator](#aws-emulator). |
+| `--ca-bundle <file>` | the host `AWS_CA_BUNDLE`, then the profile's `ca_bundle` | PEM CA bundle every workload container trusts. See [Local AWS endpoints](#local-aws-endpoints). |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
@@ -234,21 +247,96 @@ then the synthesized stack's own `env.region`. An upper-cased region such as
 A deprecated `--region` flag still overrides all three and prints a removal
 warning. `--help` does not list it.
 
+A Lambda container gets that region as `AWS_REGION`, and `AWS_DEFAULT_REGION`
+beside it.
+
+## Local AWS endpoints
+
+When your shell points the AWS SDK at a local endpoint, such as an AWS API
+emulator, the containers follow it too:
+
+| Host setting | What every workload container gets |
+| --- | --- |
+| `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_<SERVICE>`, or the profile's `endpoint_url` | The same variables. A value from the template or `--env-vars` wins. |
+| `--ca-bundle <file>` | The bundle mounted read-only, with `AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` pointed at it. |
+| `AWS_CA_BUNDLE`, else the profile's `ca_bundle` (no `--ca-bundle`) | The bundle mounted read-only, with `AWS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` pointed at it. `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` replace a runtime's whole trust store, so only `--ca-bundle` and `--aws-emulator` set them. |
+| `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`, or the profile's `ignore_configured_endpoint_urls = true` | No endpoint variables. |
+
+An endpoint on `127.0.0.1`, `localhost` or `::1` keeps its URL inside the
+container. cdkd starts a small forwarder container in the workload's network
+namespace that carries the connection to your machine, so the certificate
+still matches and S3 keeps path-style addressing. The forwarder stops with
+the workload. If it cannot reach the endpoint, cdkd prints a warning once and
+the workload starts anyway. A Lambda invoke waits for the forwarder; an ECS
+task container (`run-task`, `start-service`, `start-alb`) gets it just after it
+starts, so an app that calls AWS in its first moment may need a retry.
+
+The mounted bundle holds the certificates of your file plus the public root
+CAs, so calls to other HTTPS hosts keep working. A private key in the file is
+not copied. Certificate verification is never switched off.
+
+```bash
+# endpoint, credentials and CA from the shell reach the Lambda container
+export AWS_ENDPOINT_URL=https://127.0.0.1:4566
+cdkd local invoke MyStack/Handler --ca-bundle ./local-ca.pem
+```
+
+### AWS Emulator
+
+`--aws-emulator [url]` wires a command to a local
+[AWS Emulator](https://github.com/aws/aws-emulator) in one flag. The URL
+defaults to `https://127.0.0.1:9297`, and its port selects the run directory
+`~/.aws/emulator/<port>/`. `CDKD_AWS_EMULATOR=1` (or a URL) turns it on
+without the flag.
+
+The URL is optional, so a word right after the flag is taken as the URL:
+`--aws-emulator MyStack/Handler` swallows the target. Put the flag after the
+target, or write `--aws-emulator=https://127.0.0.1:9297`. A value that is not
+an `http(s)` URL, or that carries a user name, password, query or fragment, is
+refused without being printed.
+
+```bash
+cdkd local invoke MyStack/Handler --from-state --aws-emulator
+cdkd local start-api --from-cfn-stack --aws-emulator https://127.0.0.1:9297
+```
+
+| What | Under `--aws-emulator` |
+| --- | --- |
+| Pre-flight | cdkd checks `/__admin/health`, trusting the run's `ca.pem`, and stops with the fix when nothing answers. |
+| cdkd's own AWS calls | `--from-state`, `--from-cfn-stack`, `{{resolve:...}}`, STS and the `--role-arn` hop go to the emulator, signed with its keys. |
+| Container credentials | The keys in the run's `emulator_credentials` only. Your own are removed, as are `AWS_PROFILE`, the shared-file variables and the `--profile` credentials file. `--profile` is not resolved. |
+| Container trust | The run's `ca.pem`, with the four trust variables above. |
+| Other container variables | `AWS_ENDPOINT_URL`, `AWS_EC2_METADATA_DISABLED=true`, `AWS_DISABLE_HOST_PREFIX_INJECTION=true`. |
+| Reachability | For a loopback URL, the forwarder checks the emulator from inside the container network (its health endpoint when a CA is known, else a TCP connect); a failure stops the command. |
+
+When `emulator_credentials` is missing but the emulator answers, it runs with
+`--auth off`, and containers get fixed placeholder keys. `deploy`, `destroy`
+and `bootstrap` do not take the flag; point them at the emulator with
+`AWS_ENDPOINT_URL` and its credentials.
+
+A handler that misses the endpoint fails with a credential error rather than
+reaching real AWS, because the container holds no real credentials.
+
 ## Reaching a server on the host
 
-Inside a container, `localhost` is the container itself. To reach a server on
-your machine, such as a local DynamoDB or a tunnel to a VPC resource, use the
-hostname `host.docker.internal`:
+Inside a container, `localhost` is the container itself. An AWS endpoint
+override is forwarded for you ([Local AWS endpoints](#local-aws-endpoints)).
+To reach another server on your machine, such as a tunnel to a VPC resource,
+use the hostname `host.docker.internal`:
 
 ```json
 {
   "Parameters": {
-    "AWS_ENDPOINT_URL_DYNAMODB": "http://host.docker.internal:8000"
+    "DATABASE_HOST": "host.docker.internal"
   }
 }
 ```
 
 Save that as `overrides.json` and pass it with `--env-vars overrides.json`.
+
+Do not point an S3 endpoint at a host name such as `host.docker.internal`: the
+SDK then switches to virtual-hosted addressing (`<bucket>.host.docker.internal`),
+which does not resolve. Keep the loopback URL and let cdkd forward it.
 
 Docker Desktop resolves the name natively. On Linux, cdkd adds the
 `host.docker.internal:host-gateway` mapping itself, which needs Docker 20.10

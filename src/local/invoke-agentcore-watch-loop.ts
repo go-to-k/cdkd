@@ -25,6 +25,7 @@
  *     no-op WARN).
  */
 
+import { attachLocalLoopbackForwarder } from './local-aws-wiring.js';
 import { basename, dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile as execFileCb } from 'node:child_process';
@@ -380,6 +381,9 @@ export async function softReloadAgentContainer(
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_RESTART_FAILED'
     );
   }
+  // The restart ended the loopback forwarder (it shares the container's pid
+  // namespace; `local-aws-wiring.ts`): start a fresh one on the same ports.
+  await attachLocalLoopbackForwarder(containerId);
 }
 
 /**

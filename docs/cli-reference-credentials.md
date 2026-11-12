@@ -144,12 +144,15 @@ login for the role's account in your Docker config.
   cross-account deploy may need your access to those.
 - **Credentials that are not an access key.** When your credentials come from
   IAM Identity Center, an EC2 instance role or an ECS container role, cdkd has
-  no access key to capture, so the container receives no credentials, and
-  `local start-alb`, `local start-cloudfront` and `local start-agentcore` warn
-  once at startup. The handler's first AWS call then fails with
-  `Could not load credentials from any providers`. Pass `--profile <name>` to
-  give the function an identity, or `--assume-role <arn>` to run it as its
-  deployed execution role.
+  no access key to capture. The container then gets what your credential chain
+  resolves without the `AWS_*` variables, which hold the role: your profile
+  (`AWS_PROFILE`, else `default`), then the instance or container role. When
+  that finds nothing, the handler's first AWS call fails with
+  `Could not load credentials from any providers`. `local start-alb`,
+  `local start-cloudfront` and `local start-agentcore` print a startup warning
+  saying the container gets what that chain resolves, or none.
+  Pass `--profile <name>` to choose the identity, or `--assume-role <arn>` to
+  run the function as its deployed execution role.
 
 ## Related
 

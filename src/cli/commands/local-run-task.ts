@@ -13,7 +13,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
-import { addImageOverrideOptions } from 'cdk-local/internal';
+import { addAwsEndpointOptions, addImageOverrideOptions } from 'cdk-local/internal';
 import { localRunTaskCommand } from './local-run-task/command.js';
 
 export { resolvePlaceholderAccount, assumeTaskRole } from './local-run-task/stack-account.js';
@@ -138,5 +138,8 @@ export function createLocalRunTaskCommand(): Command {
     cmd.addOption(opt)
   );
   cmd.addOption(deprecatedRegionOption);
+  // `--aws-emulator [url]` / `--ca-bundle <file>` (go-to-k/cdkd#6131, #6132),
+  // the same spelling the cdk-local engine commands register.
+  addAwsEndpointOptions(cmd);
   return cmd;
 }

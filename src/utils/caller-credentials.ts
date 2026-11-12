@@ -37,11 +37,12 @@
  * On an SSO / IMDS / container-role chain the triple was ABSENT before the
  * assume. Fabricating a replacement is not available and inheriting the role is
  * the defect, so the three keys are STRIPPED from the forwarded environment and
- * the container falls back to its own credential resolution — which, with no
- * mounted credentials file, usually means the handler's first AWS call fails
- * with `Could not load credentials from any providers`. That is the documented
- * outcome (`docs/cli-reference.md`), and it is the correct one: a loud missing
- * credential beats a silent privileged one.
+ * the docker-run layer (`src/local/local-aws-wiring.ts`, go-to-k/cdkd#6129)
+ * fills the env from the caller's default chain read WITHOUT its env link —
+ * the profile, SSO, the instance role — never the role. When that finds
+ * nothing either, the handler's first AWS call fails with `Could not load
+ * credentials from any providers` (`docs/cli-reference-credentials.md`): a
+ * loud missing credential beats a silent privileged one.
  */
 
 import {

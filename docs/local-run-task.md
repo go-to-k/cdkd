@@ -217,6 +217,14 @@ cdkd local run-task MyStack/Worker --profile dev
 
 When you pass both, `--assume-task-role` wins over `--profile`.
 
+Under [`--aws-emulator`](local-emulation.md#aws-emulator) the sidecar serves
+the emulator's keys whatever the flags say, no credentials file is mounted, and
+`--profile` adds nothing.
+
+With a loopback AWS endpoint (`--aws-emulator`, or a forwarded
+`AWS_ENDPOINT_URL` on `127.0.0.1`), the forwarder attaches just after each task
+container starts, so an app that calls AWS in its first moment may need a retry.
+
 ### Credential edge cases
 
 **A `TaskRoleArn` cdkd cannot resolve.** The bare `--assume-task-role` needs

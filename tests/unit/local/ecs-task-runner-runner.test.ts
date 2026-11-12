@@ -294,6 +294,22 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   },
 }));
 
+// go-to-k/cdkd#6132: the loopback forwarder the start loop attaches.
+const wiringStubs = vi.hoisted(() => ({
+  attach: vi.fn(async () => {}),
+  prepare: vi.fn(async () => {}),
+}));
+vi.mock('../../../src/local/local-aws-wiring.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/local/local-aws-wiring.js')>(
+    '../../../src/local/local-aws-wiring.js'
+  );
+  return {
+    ...actual,
+    attachLocalLoopbackForwarder: wiringStubs.attach,
+    prepareLocalLoopbackForwarder: wiringStubs.prepare,
+  };
+});
+
 import {
   IN_FLIGHT_STEP_TIMEOUT_MS,
   cleanupEcsRun,
@@ -2352,5 +2368,50 @@ describe('cleanupEcsRun while a docker step is in flight (issue #4495)', () => {
     expect(state.inFlight).toBeUndefined();
     await cleanupEcsRun(state, { keepRunning: false });
     expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith('c1');
+  });
+});
+
+describe('runEcsTask — loopback forwarder (go-to-k/cdkd#6132)', () => {
+  afterEach(async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring(undefined);
+    wiringStubs.attach.mockClear();
+    wiringStubs.prepare.mockClear();
+  });
+
+  it('pre-pulls the forwarder and attaches it to each started container on its loopback ports', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+      env: { AWS_ENDPOINT_URL: 'https://127.0.0.1:9297' },
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297],
+      probeHealth: true,
+      emulatorCredentials: { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 's' },
+      dispose: () => {},
+    });
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'c1\n' };
+      if (args[0] === 'wait') return { stdout: '0\n' };
+      return { stdout: '' };
+    };
+    const c = makeContainer({ image: { kind: 'public', uri: 'busybox:latest' } });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(wiringStubs.prepare).toHaveBeenCalledTimes(1);
+    expect(wiringStubs.attach).toHaveBeenCalledWith('c1', [9297]);
+  });
+
+  it('attaches nothing with no wiring active', async () => {
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'c1\n' };
+      if (args[0] === 'wait') return { stdout: '0\n' };
+      return { stdout: '' };
+    };
+    const c = makeContainer({ image: { kind: 'public', uri: 'busybox:latest' } });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    expect(wiringStubs.prepare).not.toHaveBeenCalled();
+    expect(wiringStubs.attach).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,13 @@ import {
 } from '../utils/docker-cmd.js';
 import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { getLogger, isStdoutReservedForPayload } from '../utils/logger.js';
+import {
+  applyLocalAwsWiring,
+  attachLocalLoopbackForwarder,
+  getActiveWorkloadAwsWiring,
+  loopbackPortsFor,
+  prepareLocalLoopbackForwarder,
+} from './local-aws-wiring.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -240,6 +247,31 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
  *     is cleaned up on any error path including SIGINT.
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
+  // The process-wide AWS wiring (endpoint forwarding, CA bundle, default-chain
+  // credentials, `--aws-emulator`; `local-aws-wiring.ts`) applies to every
+  // workload container started here. No wiring is active outside the
+  // `cdkd local` commands, so their callers' argv is unchanged.
+  const wiring = getActiveWorkloadAwsWiring();
+  if (!wiring) return runDetachedContainer(opts);
+  const wired = await applyLocalAwsWiring(
+    wiring,
+    opts.env,
+    opts.extraMounts ?? [],
+    opts.mounts.map((m) => m.containerPath)
+  );
+  const wiredOpts: DockerRunOptions = { ...opts, env: wired.env, extraMounts: wired.extraMounts };
+  const ports = loopbackPortsFor(wiring, wired.env, opts.network);
+  // Pull the forwarder image BEFORE the workload starts, so the forwarder is
+  // up within moments of the workload's own start.
+  if (ports.length > 0) await prepareLocalLoopbackForwarder(wiring);
+  const id = await runDetachedContainer(wiredOpts);
+  // Returns once the forwarder is READY, so a Lambda invoke issued after this
+  // reaches the endpoint on its first call.
+  await attachLocalLoopbackForwarder(id, ports);
+  return id;
+}
+
+async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
   const args: string[] = ['run', '-d', '--rm'];
 
   if (opts.name) {
