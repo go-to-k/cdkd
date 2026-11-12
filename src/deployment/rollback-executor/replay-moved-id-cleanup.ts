@@ -56,9 +56,9 @@ export interface MovedIdCleanupQueue {
  * The hooks are optional because a driver whose save does not carry
  * `supersededResources` has none to give; without them the id is kept in
  * memory only, so a run killed between the revert and the delete leaves it
- * untracked (a failed delete is named on a line and an event). Every driver
- * that saves state (the automatic rollback, `cdkd rollback`, a nested
- * child's revert) passes them.
+ * untracked (a failed delete is named on a line and an event). The rollback
+ * drivers (the automatic rollback, `cdkd rollback`, a nested child's revert)
+ * pass them; the journaled-orphan replay does not.
  */
 export function newMovedIdCleanupQueue(hooks: {
   onSuperseded?: ((entry: SupersededResourceRecord) => void) | undefined;
