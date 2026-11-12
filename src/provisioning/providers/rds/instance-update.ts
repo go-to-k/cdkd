@@ -176,7 +176,8 @@ export async function updateDBInstance(
   const changedSnapshots = changedSnapshotRestoreKeys(
     properties,
     previousProperties,
-    context?.changedProperties
+    context?.changedProperties,
+    context?.noEchoOnlyChangedProperties
   );
   if (
     changedSnapshots.length > 0 &&

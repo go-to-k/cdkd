@@ -644,6 +644,18 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       ).not.toThrow();
     });
 
+    it('lets a Multi-AZ DB cluster read replica name its own automated snapshot', () => {
+      expect(() =>
+        refuseRestoreFromItself(
+          INSTANCE,
+          { DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04', SourceDBClusterIdentifier: 'maz-1' },
+          'db-1',
+          'L',
+          {}
+        )
+      ).not.toThrow();
+    });
+
     it('reads no cluster key for a DB instance', () => {
       expect(() =>
         refuseRestoreFromItself(
@@ -709,6 +721,27 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
         expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
       }
     );
+
+    it('lets a key named only for an unconfirmed NoEcho value through, sending nothing for it', async () => {
+      await update(
+        { ...FROM_SNAPSHOT, BackupRetentionPeriod: '5' },
+        { ...FROM_SNAPSHOT, DBSnapshotIdentifier: '***' },
+        {
+          changedProperties: new Set(['DBSnapshotIdentifier', 'BackupRetentionPeriod']),
+          noEchoOnlyChangedProperties: new Set(['DBSnapshotIdentifier']),
+        }
+      );
+      const [modify] = sent('ModifyDBInstanceCommand');
+      expect(modify).not.toHaveProperty('DBSnapshotIdentifier');
+      expect(modify).toMatchObject({ BackupRetentionPeriod: 5 });
+    });
+
+    it('never refuses a value equal to the record, even when a forced update names every key', async () => {
+      await update({ ...FROM_SNAPSHOT, BackupRetentionPeriod: '5' }, FROM_SNAPSHOT, {
+        changedProperties: new Set(Object.keys(FROM_SNAPSHOT)),
+      });
+      expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
+    });
 
     it('refuses a snapshot the change set names', async () => {
       const error = await update(FROM_SNAPSHOT, { ...FROM_SNAPSHOT, DBSnapshotIdentifier: 'snap-0' }, {

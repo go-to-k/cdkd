@@ -363,14 +363,23 @@ export function changedSnapshotRestoreKeys(
    * The deploy's own answer (`UpdateContext.changedProperties`): the record
    * keeps a secret-derived value as its `{{resolve:...}}` token and a `NoEcho`
    * one as `***`, which never equals the resolved desired value. Absent (a
-   * direct call), the two bags are compared.
+   * direct call), the two bags are compared. A value equal to the record is
+   * never a change (an update the engine forces names every key).
    */
-  changedProperties?: ReadonlySet<string>
+  changedProperties?: ReadonlySet<string>,
+  /**
+   * `UpdateContext.noEchoOnlyChangedProperties`: named only for a fresh
+   * `NoEcho` value cdkd cannot compare with the recorded mask. Not refused:
+   * nothing is sent for the key either way.
+   */
+  noEchoOnly?: ReadonlySet<string>
 ): string[] {
   return SNAPSHOT_RESTORE_KEYS.filter((key) => {
     const desired = properties[key];
     if (desired == null || desired === '') return false;
+    if (desired === previousProperties[key]) return false;
+    if (noEchoOnly?.has(key) === true) return false;
     if (changedProperties !== undefined) return changedProperties.has(key);
-    return desired !== previousProperties[key];
+    return true;
   });
 }
