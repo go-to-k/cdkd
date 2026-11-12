@@ -163,6 +163,14 @@ export async function cleanupEcsRun(
       }
     }
     await runAfterContainersStopped(options.afterContainersStopped, logger);
+    // A forwarder whose container never started (a ^C during its readiness
+    // wait) owns a namespace nothing joins: it would only hold the
+    // container's published ports.
+    await removeForwarders(
+      state.forwarders.filter((f) => !f.joined),
+      logger
+    );
+    state.forwarders = state.forwarders.filter((f) => f.joined);
   } else {
     // Both callees swallow their own errors today, so these handlers are
     // defensive. They still pass the REAL argv rather than a plausible-looking
@@ -199,6 +207,11 @@ export async function cleanupEcsRun(
       }
     }
     state.startedContainers = [];
+    // After the containers: each joined its forwarder's network namespace, so
+    // removing a forwarder first would cut the container's network while it
+    // stops. `rm -f`, not `stop`: node as PID 1 ignores SIGTERM.
+    await removeForwarders(state.forwarders, logger);
+    state.forwarders = [];
   }
 
   // Sidecar + network teardown runs unconditionally for runner-owned
@@ -222,6 +235,21 @@ export async function cleanupEcsRun(
     }
   }
   state.dockerVolumeNames = [];
+}
+
+async function removeForwarders(
+  forwarders: EcsRunState['forwarders'],
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  for (const f of forwarders) {
+    try {
+      await removeContainer(f.id);
+    } catch (err) {
+      logger.debug(
+        safeMsg`docker rm -f ${f.id} failed: ${describeDockerFailure(err, ['rm', '-f', f.id])}`
+      );
+    }
+  }
 }
 
 /** Seconds `cleanupEcsRun` gives a container to stop before `docker rm -f`. */

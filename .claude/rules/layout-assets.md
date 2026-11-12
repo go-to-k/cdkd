@@ -7,7 +7,8 @@ paths:
 # Assets layer
 
 - **file-asset-publisher.ts** / **docker-asset-publisher.ts** — S3 ZIP upload;
-  ECR image build and push.
+  ECR build and push, refused under `--aws-emulator`
+  (`docker-asset-emulator-refusal.ts`).
 - **Three manifest-supplied paths are containment-checked
   ([#3489](https://github.com/go-to-k/cdkd/issues/3489)); the passthroughs
   listed below are WARNED about, never refused (#3497).** Checked:
@@ -50,9 +51,8 @@ paths:
   primitives the resolvers call, with ~20 call sites between them, so
   converting them is its own change rather than a rider on a resolver's. Do
   not restate the invariant as whole-program until they are done.
-  The surviving `??` fallbacks IN THIS LAYER — two in `buildDockerImage`, one
-  in `AssetPublisher` — all NARROW onto the manifest directory and never open
-  past it. `src/local/` holds two more that feed the same resolvers
+  The surviving `??` fallbacks here (two in `buildDockerImage`, one in
+  `AssetPublisher`) all NARROW onto the manifest directory. `src/local/` holds two more that feed the same resolvers
   (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too, so
   THAT claim holds whole-program and only its COUNT is limited to the files
   this page governs — the opposite direction from the invariant above, whose
@@ -74,7 +74,7 @@ paths:
   `docs/cli-deploy-safety-assembly-checks.md`, changelog — says so. The nested-stack
   `aws:asset:path` walk keeps REFUSING an absolute value: a different question,
   since CDK always writes a nested template into the outdir.
-  A value NAMING THE OUTDIR ITSELF, by any spelling, is accepted with its own
+  A value NAMING THE OUTDIR ITSELF is accepted with its own
   warning rather than silently — the whole assembly becomes the asset, and the
   local twin's silence does not carry over because this layer's sink is an
   upload. Both resolvers ask `namesTheSameDirectory`, never `===`
@@ -127,9 +127,8 @@ paths:
   snapshot to `buildStackState`, so state records the CDK-bootstrap values AWS
   holds, so the next deploy emits the corrective UPDATE.
 - **docker-build.ts** — the shared `docker build`, reused by the ECR publish and
-  `src/local/ecs-task-runner.ts`. It streams
-  rather than buffering, sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1`, and keeps
-  build-arg order stable, which is load-bearing for the layer cache. EVERY argv
+  `src/local/ecs-task-runner.ts`. It streams, sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1`, and keeps
+  build-arg order stable (the layer cache). EVERY argv
   it renders goes through
   [docker-argv-redaction.md](docker-argv-redaction.md), since `--build-arg`
   carries user `buildArgs`; the neither-mode error prints FIELD NAMES, not

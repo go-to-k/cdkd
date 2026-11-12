@@ -641,6 +641,18 @@ function runFlagWords(
   if (run.roleArn === true && accepted.has('--role-arn') && !present.has('--role-arn')) {
     out.push(`--role-arn ${commandHole('role-arn')}`);
   }
+  // The `=` form: the URL is OPTIONAL, so a separate word could be read as a
+  // following positional's value or vice versa.
+  if (run.awsEmulator !== undefined && accepted.has('--aws-emulator')) {
+    if (!present.has('--aws-emulator')) {
+      const url = run.awsEmulator;
+      out.push(
+        url === true
+          ? '--aws-emulator'
+          : `--aws-emulator=${isInertUnquoted(url) ? url : commandHole('url')}`
+      );
+    }
+  }
   return out;
 }
 
