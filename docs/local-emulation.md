@@ -322,7 +322,11 @@ reaching real AWS, because the container holds no real credentials.
 Every cdkd command that talks to AWS takes `--aws-emulator [url]` (and
 `CDKD_AWS_EMULATOR`): `bootstrap`, `deploy`, `diff`, `destroy`, `rollback`,
 `gc`, the `state` commands and the rest. So the whole loop needs no shell
-setup:
+setup. AWS Emulator itself runs the deployed functions and REST APIs on its
+embedded runtimes; `cdkd local ... --aws-emulator` runs the same functions
+under the official Lambda runtimes and container images (native dependencies,
+layers, ECS, ALB, CloudFront and AgentCore targets), picks up code edits
+without a redeploy, and offers `--debug-port` and logs in your terminal:
 
 ```bash
 cdkd bootstrap --aws-emulator                                   # state bucket + asset storage in the emulator
