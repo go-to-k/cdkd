@@ -12,6 +12,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { engineLifecycleSupportOf } from './instance-members.js';
+import { declared, positive } from './read-replica.js';
 
 /**
  * go-to-k/cdkd#5640: `DBSnapshotIdentifier` and `DBClusterSnapshotIdentifier`
@@ -347,7 +348,15 @@ export function followUpOnlyKeys(
       : []),
   ].filter((key) => {
     const value = properties[key];
-    return value != null && value !== '' && value !== false && value !== 'false';
+    // As the follow-up trigger reads them (`./read-replica.ts`): a number only
+    // when positive, the secret only for the KmsKeyId it carries.
+    if (key === 'MaxAllocatedStorage' || key === 'PerformanceInsightsRetentionPeriod') {
+      return positive(value);
+    }
+    if (key === 'MasterUserSecret') {
+      return declared((value as { KmsKeyId?: unknown } | null | undefined)?.KmsKeyId);
+    }
+    return declared(value) && value !== false && value !== 'false';
   });
 }
 

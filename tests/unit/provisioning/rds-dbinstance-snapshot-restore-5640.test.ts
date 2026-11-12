@@ -616,6 +616,24 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       );
     });
 
+    it.each([
+      ['a zero MaxAllocatedStorage', { MaxAllocatedStorage: 0 }],
+      ["a '0' MaxAllocatedStorage", { MaxAllocatedStorage: '0' }],
+      ['a zero PerformanceInsightsRetentionPeriod', { PerformanceInsightsRetentionPeriod: 0 }],
+      ['a MasterUserSecret with no KmsKeyId', { MasterUserSecret: {} }],
+    ])('does not name %s, which the follow-up would not set either', async (_name, extra) => {
+      await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT, ...extra });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('names a MasterUserSecret carrying a KmsKeyId', async () => {
+      await provider.create('L', INSTANCE, {
+        ...FROM_SNAPSHOT,
+        MasterUserSecret: { KmsKeyId: 'alias/k' },
+      });
+      expect(warned()).toMatch(/DBInstance L: MasterUserSecret not applied/);
+    });
+
     it('sends them on the follow-up, with no warning, when another member calls for it', async () => {
       await provider.create('L', INSTANCE, {
         ...FROM_SNAPSHOT,
