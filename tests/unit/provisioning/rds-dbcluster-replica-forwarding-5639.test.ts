@@ -52,6 +52,7 @@ import {
   AWS_CN_CROSS_REGION_REPLICA_RATIONALE,
   findActionableSdkUnwired,
   findHandledUnwrittenCreateOnly,
+  HANDLED_NEVER_SENT_CREATE_ONLY,
   findSdkUnwiredProperties,
 } from '../../../src/provisioning/property-coverage.js';
 
@@ -446,6 +447,43 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       const body = await wireBody(`arn:aws-cn:rds:cn-northwest-1:${ACCOUNT}:cluster:source-1`, 'cn-north-1');
       expect(body).toMatch(/PreSignedUrl=https:\/\/rds\.cn-northwest-1\.amazonaws\.com\/\?/);
       expect(body).not.toContain('amazonaws.com.cn');
+    });
+  });
+
+  // Fence: a key in HANDLED_NEVER_SENT_CREATE_ONLY must really never reach a
+  // create request, or a resource built without it would be read as complete.
+  // Wiring such a key forces its removal from the set. Each key needs a sample.
+  describe('HANDLED_NEVER_SENT_CREATE_ONLY stays never sent', () => {
+    const SAMPLES: Record<string, unknown> = { SourceRegion: 'us-east-1' };
+    const BASES: Record<string, Input> = {
+      'AWS::RDS::DBCluster': { DBClusterIdentifier: 'c-1', Engine: 'aurora-mysql' },
+      'AWS::RDS::DBInstance': {
+        DBInstanceIdentifier: 'db-1',
+        Engine: 'mysql',
+        DBInstanceClass: 'db.t3.micro',
+        AllocatedStorage: '20',
+      },
+    };
+    const cases = [...HANDLED_NEVER_SENT_CREATE_ONLY].flatMap(([type, keys]) =>
+      [...keys].map((key) => [type, key] as const)
+    );
+
+    it('covers both RDS types', () => {
+      expect(cases.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it.each(cases)('%s.%s is on no create request', async (type, key) => {
+      expect(BASES[type], `no base bag for ${type}`).toBeDefined();
+      expect(Object.hasOwn(SAMPLES, key), `no sample value for ${key}`).toBe(true);
+      arm();
+      await provider
+        .create('L', type, { ...BASES[type], [key]: SAMPLES[key] })
+        .catch(() => undefined);
+      const creates = mockSend.mock.calls
+        .map(([c]) => c as { constructor: { name: string }; input: Input })
+        .filter((c) => /^(Create|Restore)DB/.test(c.constructor.name));
+      expect(creates.length, 'no create request was sent').toBeGreaterThan(0);
+      for (const c of creates) expect(c.input).not.toHaveProperty(key);
     });
   });
 

@@ -616,7 +616,7 @@ function askedUnchanged(
  * RDS types (go-to-k/cdkd#5640, #5639) only picks the presigned URL's region,
  * which the AWS SDK for JavaScript derives from the source ARN instead.
  */
-const HANDLED_NEVER_SENT_CREATE_ONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+export const HANDLED_NEVER_SENT_CREATE_ONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['AWS::RDS::DBInstance', new Set(['SourceRegion'])],
   ['AWS::RDS::DBCluster', new Set(['SourceRegion'])],
 ]);
