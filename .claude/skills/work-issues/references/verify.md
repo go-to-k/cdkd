@@ -236,8 +236,8 @@ SDK error after the try — created-before-failure cleanup, orphan notes, retire
 paths", #5161; a state machine adds the table to walk: path × previous side ×
 desired side, #5611; a refusal or forward-only guard in `update()` adds "does
 it fire on the rollback replay, whose diff runs BACKWARD?" —
-`provider-replay-and-refusals.md`, #5730; a PR-body "cannot be reached" line
-(an unfiled deferral, an untested case) goes to it as a claim to break, #6133; so does the parent's FIX-ROUND brief that ADDS one, #5640; a HAND replacement rule on a newly wired schema-mutable property
+`provider-replay-and-refusals.md`, #5730; so does the parent's FIX-ROUND brief that ADDS one, #5640; a PR-body "cannot be reached" line
+(an unfiled deferral, an untested case) goes to the reviewer as a claim to break, #6133; a HAND replacement rule on a newly wired schema-mutable property
 adds "does a record LACKING the key replace?" — #5572's guard covers schema
 create-only drops only, #5730), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
