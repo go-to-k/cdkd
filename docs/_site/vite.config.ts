@@ -120,6 +120,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'Hand a Stack to CloudFormation', path: '/export' },
       { title: 'Run Beside CloudFormation', path: '/mixed-estates' },
       { title: 'Create Per-PR Environments in CI', path: '/ci-per-pr' },
+      { title: 'Develop Locally with AWS Emulator', path: '/aws-emulator' },
     ],
   },
   {

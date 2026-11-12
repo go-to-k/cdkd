@@ -289,7 +289,8 @@ cdkd local invoke MyStack/Handler --ca-bundle ./local-ca.pem
 [AWS Emulator](https://github.com/aws/aws-emulator) in one flag. The URL
 defaults to `https://127.0.0.1:9297`, and its port selects the run directory
 `~/.aws/emulator/<port>/`. `CDKD_AWS_EMULATOR=1` (or a URL) turns it on
-without the flag.
+without the flag. For the whole workflow, from deploy to local runs, see
+[Develop Locally with AWS Emulator](aws-emulator.md).
 
 The URL is optional, so a word right after the flag is taken as the URL:
 `--aws-emulator MyStack/Handler` swallows the target. Put the flag after the
