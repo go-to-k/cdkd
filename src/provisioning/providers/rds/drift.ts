@@ -65,6 +65,9 @@ export function getDriftUnknownPaths(
       'UseDefaultProcessorFeatures',
       // go-to-k/cdkd#5640: write-only in the registry schema.
       'AutomaticBackupReplicationKmsKeyId',
+      // go-to-k/cdkd#5640: RestoreDBInstanceFromDBSnapshot inputs, never read back.
+      'DBSnapshotIdentifier',
+      'DBClusterSnapshotIdentifier',
     ];
     // go-to-k/cdkd#5640: an undeclared replication retention reads as the
     // instance's own BackupRetentionPeriod, which RDS applies by default, so

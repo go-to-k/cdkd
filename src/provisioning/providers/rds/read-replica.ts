@@ -195,8 +195,10 @@ function isOracleCdbEngine(engine: string | undefined): boolean {
 }
 
 const isTrue = (value: unknown): boolean => String(value) === 'true';
-const positive = (value: unknown): boolean => value != null && Number(value) > 0;
-const declared = (value: unknown): boolean => value != null && value !== '';
+/** The handler's follow-up trigger reads a number as set only when positive. */
+export const positive = (value: unknown): boolean => value != null && Number(value) > 0;
+/** ...and a string as set when non-empty (`StringUtils.hasValue`). */
+export const declared = (value: unknown): boolean => value != null && value !== '';
 
 /** The handler's `isStorageParametersModified`. */
 function storageDeclared(properties: Record<string, unknown>): boolean {

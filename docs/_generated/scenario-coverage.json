@@ -2253,6 +2253,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-dbinstance-snapshot-restore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-express-cluster",
       "annotated": false,
       "scenarios": []
@@ -3851,6 +3856,7 @@
     "rds-dbinstance-backup-replication",
     "rds-dbinstance-charset-timezone",
     "rds-dbinstance-processor-features",
+    "rds-dbinstance-snapshot-restore",
     "rds-express-cluster",
     "rds-fix-forward-orphan",
     "rds-multiaz-cluster",

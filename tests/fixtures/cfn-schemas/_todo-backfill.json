@@ -33,8 +33,6 @@
     "AWS::RDS::DBInstance": [
       "BackupTarget",
       "CustomIAMInstanceProfile",
-      "DBClusterSnapshotIdentifier",
-      "DBSnapshotIdentifier",
       "DBSystemId",
       "Domain",
       "DomainAuthSecretArn",

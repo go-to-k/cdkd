@@ -815,6 +815,9 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
       replicaSource = undefined;
       return {};
     },
+    // go-to-k/cdkd#5640: the snapshot a restore reads first lists one.
+    DescribeDBSnapshotsCommand: () => ({ DBSnapshots: [{ Engine: 'postgres' }] }),
+    DescribeDBClusterSnapshotsCommand: () => ({ DBClusterSnapshots: [{ Engine: 'postgres' }] }),
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
@@ -1157,6 +1160,42 @@ const INSTANCE_CASE: TypeCase = {
         ),
       },
     },
+    ...(
+      [
+        ['DBSnapshotIdentifier', 'manual-snap-1'],
+        ['DBClusterSnapshotIdentifier', 'maz-cluster-snap-1'],
+      ] as const
+    ).map(([key, value]) => ({
+      name: `a restore from ${key} (go-to-k/cdkd#5640)`,
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.micro',
+        Engine: 'postgres',
+        [key]: value,
+        AllocatedStorage: '100',
+        StorageType: 'gp3',
+        BackupRetentionPeriod: 3,
+      },
+      expectedRemovalThrows: {
+        [`update-add:${key}`]: {
+          why: `an instance is restored from a snapshot only when it is created, and CloudFormation fails an added snapshot as "Resource is immutable", so update() refuses it before any call (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640)`,
+          says: new RegExp(`${key} cannot be added or changed on an existing DB instance`),
+        },
+      },
+      expectedSilent: {
+        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added snapshot (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
+        [`update-remove:${key}`]: `no ModifyDBInstance member: a removed snapshot changes nothing, as CloudFormation's handler treats it as mutable and sends nothing (ImmutabilityHelper.is${key}Mutable, read from the handler source, not measured; ${SRC})`,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        ...INSTANCE_ENGINE_SILENT,
+        'create:Engine': `an undeclared engine is the snapshot's, which the arm lists as the declared one, so the restore sends the same Engine (readSnapshotRestoreSource in ${SRC}, as the handler's fetchEngine; go-to-k/cdkd#5640)`,
+        ...Object.fromEntries(
+          ['AllocatedStorage', 'StorageType', 'BackupRetentionPeriod'].map((k) => [
+            `update-remove:${k}`,
+            CFN_DIFF_KEPT(k),
+          ])
+        ),
+      },
+    })),
     {
       name: 'automated backup replication (go-to-k/cdkd#5640)',
       bag: {

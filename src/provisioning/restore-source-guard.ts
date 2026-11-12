@@ -17,7 +17,7 @@ export interface RestoreSourceScope {
   attributes?: Record<string, unknown> | undefined;
 }
 
-/** A cluster's name in any spelling AWS takes: an ARN ends in it, and case does not count. */
+/** A cluster's (or DB instance's) name in any spelling AWS takes: an ARN ends in it, and case does not count. */
 function clusterName(identifier: string): string {
   return (identifier.split(':').pop() ?? identifier).toLowerCase();
 }
@@ -40,10 +40,12 @@ function elsewhere(identifier: string, scope: RestoreSourceScope): boolean {
  * (`rds:<cluster>-YYYY-MM-DD-HH-MM`, or its ARN): AWS deletes those with the
  * cluster, where a manual snapshot survives it (go-to-k/cdkd#5628).
  */
-function automatedSnapshotOf(snapshot: string, name: string): boolean {
-  const id = snapshot.startsWith('arn:')
-    ? (snapshot.split(':cluster-snapshot:')[1] ?? '')
-    : snapshot;
+function automatedSnapshotOf(
+  snapshot: string,
+  name: string,
+  arnSegment = ':cluster-snapshot:'
+): boolean {
+  const id = snapshot.startsWith('arn:') ? (snapshot.split(arnSegment)[1] ?? '') : snapshot;
   const match = /^rds:(.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$/i.exec(id);
   return match !== null && match[1]!.toLowerCase() === name;
 }
@@ -66,6 +68,33 @@ export function refuseRestoreFromItself(
   logicalId: string,
   scope: RestoreSourceScope
 ): void {
+  // go-to-k/cdkd#5640: a DB instance restores from a DB snapshot, and its
+  // delete removes its automated ones (`DeleteAutomatedBackups` defaults to
+  // true) as a cluster's does.
+  if (resourceType === 'AWS::RDS::DBInstance') {
+    const instanceSnapshot = properties['DBSnapshotIdentifier'];
+    // A declared source (an instance's or a Multi-AZ DB cluster's) makes a
+    // read replica, which reads no snapshot.
+    const replica = ['SourceDBInstanceIdentifier', 'SourceDBClusterIdentifier'].some(
+      (key) => typeof properties[key] === 'string' && properties[key] !== ''
+    );
+    if (
+      !replica &&
+      typeof instanceSnapshot === 'string' &&
+      automatedSnapshotOf(instanceSnapshot, clusterName(physicalId), ':snapshot:') &&
+      !elsewhere(instanceSnapshot, scope)
+    ) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${resourceType} ${logicalId}: DBSnapshotIdentifier names an automated snapshot of the DB instance this creates or replaces, which its delete removes; restore from a manual snapshot instead. Nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return;
+  }
   if (!RESTORING_TYPES.has(resourceType)) return;
   const snapshot = properties['SnapshotIdentifier'];
   if (
