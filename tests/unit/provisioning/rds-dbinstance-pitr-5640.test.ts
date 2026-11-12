@@ -591,6 +591,55 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
       }
     );
 
+    it.each([
+      ['a point-in-time restore', FROM_LATEST, 'RestoreDBInstanceToPointInTimeCommand'],
+      [
+        'a snapshot restore',
+        {
+          ...FROM_LATEST,
+          SourceDBInstanceIdentifier: undefined,
+          UseLatestRestorableTime: undefined,
+          DBSnapshotIdentifier: 'snap-1',
+          MultiAZ: true,
+        },
+        'RestoreDBInstanceFromDBSnapshotCommand',
+      ],
+    ] as const)(
+      'waits for %s to be available under --no-wait with no follow-up, before a replacement can delete its source',
+      async (_n, props, call) => {
+        process.env['CDKD_NO_WAIT'] = 'true';
+        const wait = vi.spyOn(provider, 'waitForInstanceAvailable');
+        await provider.create('L', INSTANCE, { ...props });
+        expect(sent(call)).toHaveLength(1);
+        expect(sent('ModifyDBInstanceCommand')).toEqual([]);
+        expect(wait).toHaveBeenCalledWith('L', 'db-1', 1_800_000, 'being restored');
+      }
+    );
+
+    it('does not wait for a plain create under --no-wait', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      const wait = vi.spyOn(provider, 'waitForInstanceAvailable');
+      const { SourceDBInstanceIdentifier: _s, UseLatestRestorableTime: _u, ...plain } = FROM_LATEST;
+      await provider.create('L', INSTANCE, plain);
+      expect(wait).not.toHaveBeenCalled();
+    });
+
+    it('does not name an empty KmsKeyId or AdditionalStorageVolumes as source-decided', async () => {
+      await provider.create('L', INSTANCE, {
+        ...FROM_LATEST,
+        KmsKeyId: '',
+        AdditionalStorageVolumes: [],
+      });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('sends no SourceDbiResourceId for an empty one', async () => {
+      await provider.create('L', INSTANCE, { ...FROM_LATEST, SourceDbiResourceId: '' });
+      expect(sent('RestoreDBInstanceToPointInTimeCommand')[0]).not.toHaveProperty(
+        'SourceDbiResourceId'
+      );
+    });
+
     it('names the follow-up-only members it does not apply, MaxAllocatedStorage aside', async () => {
       await provider.create('L', INSTANCE, {
         ...FROM_LATEST,
@@ -724,7 +773,11 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
           INSTANCE,
           // No source key: the snapshot check would otherwise read it (a
           // declared source skips it as a read replica's).
-          { RestoreTime: '2026-11-01T00:00:00Z', DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04' },
+          {
+            Engine: 'postgres',
+            RestoreTime: '2026-11-01T00:00:00Z',
+            DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04',
+          },
           'db-1',
           'L',
           scope
@@ -833,6 +886,22 @@ describe('RDS DBInstance point-in-time restore (go-to-k/cdkd#5640)', () => {
         expect(modify).not.toHaveProperty(key);
       }
       // Not a read replica: nothing to promote.
+      expect(sent('PromoteReadReplicaCommand')).toEqual([]);
+    });
+
+    it('rolls back a deploy that dropped the point-in-time keys and the source, keeping the record whole', async () => {
+      const t1 = { ...FROM_LATEST, BackupRetentionPeriod: '5' };
+      const t2 = { ...PLAIN, BackupRetentionPeriod: '6' };
+      // Forward: removing every key is mutable and changes nothing for them.
+      await update(t2, t1);
+      // The rollback replays T1 over the T2 record: no source refusal, no
+      // replica warning, and T1 (with its source) is what gets recorded.
+      const replay = await update(t1, t2, { replayingState: true });
+      expect(replay.effectiveProperties).toBeUndefined();
+      expect(warned()).not.toMatch(/SourceDBInstanceIdentifier/);
+      // The next deploy of T1 over that record is no change to refuse.
+      const redeploy = await update(t1, t1).catch((e: unknown) => e);
+      expect(redeploy).not.toBeInstanceOf(Error);
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
     });
 

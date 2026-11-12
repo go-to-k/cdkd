@@ -100,9 +100,10 @@ export async function verifyRestoreSourceIdentity(
  * record holds none, so it is read live by name unless recorded), and, for a
  * backups ARN in this region, the `DbiResourceId` of the instance that backup
  * belongs to (`DescribeDBInstanceAutomatedBackups`; a backup RDS does not list
- * is none of this instance's). A read that fails or answers no id refuses, as
- * does a replaced instance that is not found, since the delete cannot be
- * undone. A template naming neither key costs no call.
+ * is refused too, since the restore after the delete would fail). A read that
+ * fails or answers no id refuses, as does a replaced instance that is not
+ * found, since the delete cannot be undone. A template naming neither key
+ * costs no call.
  */
 async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput): Promise<void> {
   const nonEmpty = (key: string): string | undefined => {
@@ -164,6 +165,13 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
   }
   if (backups !== undefined) {
     const owner = await identity(backups);
+    // A backup RDS does not list cannot be restored from: the create after the
+    // delete would fail, with the old instance already gone.
+    if (owner === RESOURCE_NOT_FOUND) {
+      refuse(
+        'SourceDBInstanceAutomatedBackupsArn names no automated backup this account can read, so the restore after the delete would fail'
+      );
+    }
     if (owner !== RESOURCE_NOT_FOUND && owner.toLowerCase() === own.toLowerCase()) {
       refuse(
         "SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups than the one this replaces"

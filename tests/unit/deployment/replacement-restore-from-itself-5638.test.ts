@@ -506,11 +506,37 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       }
     });
 
-    it.each(paths)('%s proceeds for another instance, or backups RDS does not list', async (_p, run) => {
+    it.each([
+      ['an unparseable RestoreTime', { RestoreTime: 'yesterday', SourceDBInstanceIdentifier: 'another-db' }, /RestoreTime must be an ISO 8601 timestamp/],
+      ['a UseLatestRestorableTime that is no boolean', { UseLatestRestorableTime: 'yes', SourceDBInstanceIdentifier: 'another-db' }, /UseLatestRestorableTime must be true or false/],
+      ['a SourceDbiResourceId that is no string', { RestoreTime: '2026-11-01T00:00:00Z', SourceDbiResourceId: ['db-1'] }, /SourceDbiResourceId must be a string/],
+      ['a SourceDBInstanceAutomatedBackupsArn that is no string', { RestoreTime: '2026-11-01T00:00:00Z', SourceDBInstanceAutomatedBackupsArn: 7 }, /SourceDBInstanceAutomatedBackupsArn must be a string/],
+      ['no Engine and no source', { UseLatestRestorableTime: true }, /cannot read its engine; declare Engine or a source/],
+    ] as const)('refuses %s on every path before any delete or read', async (_n, desired, message) => {
+      for (const [path, run] of paths) {
+        provider.delete.mockClear();
+        provider.create.mockClear();
+        const failure = await run({ type: INSTANCE, attributes: {}, desired });
+        expect(chain(failure), path).toMatch(message);
+        expect(provider.delete, path).not.toHaveBeenCalled();
+        expect(provider.create, path).not.toHaveBeenCalled();
+      }
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s refuses backups RDS does not list, before any delete', async (_p, run) => {
+      live(OWN_ID, RESOURCE_NOT_FOUND);
+      const failure = await run(pitr({ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }));
+      expect(chain(failure)).toMatch(
+        /SourceDBInstanceAutomatedBackupsArn names no automated backup this account can read/
+      );
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s proceeds for another instance', async (_p, run) => {
       for (const [source, instance, owner] of [
         [{ SourceDbiResourceId: OWN_ID }, 'db-OTHER', 'db-OTHER'],
         [{ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, OWN_ID, 'db-OTHER'],
-        [{ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, OWN_ID, RESOURCE_NOT_FOUND],
       ] as const) {
         live(instance, owner);
         provider.delete.mockClear();
@@ -558,6 +584,11 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       [
         'the read answers no id',
         () => provider.resourceIdentity.mockResolvedValue(undefined),
+        '(no resource id was read)',
+      ],
+      [
+        'the read answers an empty id',
+        () => provider.resourceIdentity.mockResolvedValue(''),
         '(no resource id was read)',
       ],
     ] as const)('refuses when %s, before any delete', async (_n, arrange, why) => {
@@ -612,7 +643,11 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       const failure = await run({
         type: INSTANCE,
         attributes: {},
-        desired: { RestoreTime: '2026-11-01T00:00:00Z', DBSnapshotIdentifier: `rds:${PHYSICAL}-2026-11-01-03-04` },
+        desired: {
+          Engine: 'postgres',
+          RestoreTime: '2026-11-01T00:00:00Z',
+          DBSnapshotIdentifier: `rds:${PHYSICAL}-2026-11-01-03-04`,
+        },
       });
       expect(failure).toBeUndefined();
       expect(provider.delete).toHaveBeenCalledTimes(1);

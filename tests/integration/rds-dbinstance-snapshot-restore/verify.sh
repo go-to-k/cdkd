@@ -114,9 +114,10 @@ PITR_REFUSAL_LINE="RestoreTime cannot be added or changed on an existing DB inst
 # Best-effort delete of one DB instance, until it is gone. The delete is
 # re-sent each round: an instance still `creating`, `backing-up` or
 # `modifying` (a run interrupted mid-restore or mid-follow-up) refuses it.
-sweep_instance() { ( # usage: sweep_instance <instance id>
+sweep_instance() { ( # usage: sweep_instance <instance id> [rounds of 10s, default 120]
   set +eu
-  for _ in $(seq 1 120); do
+  # A restore may still be `creating` for up to its 60-minute phase-3 budget.
+  for _ in $(seq 1 "${2:-120}"); do
     out="$(aws rds describe-db-instances --db-instance-identifier "$1" \
       --region "${REGION}" 2>&1)"
     case "${out}" in *DBInstanceNotFound*) exit 0 ;; esac
@@ -176,7 +177,7 @@ sweep_snapshots() { (
 # without --delete-automated-backups, or a run interrupted mid-delete).
 sweep_automated_backups() { (
   set +eu
-  for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}"; do
+  for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}"; do
     for arn in $(aws rds describe-db-instance-automated-backups --db-instance-identifier "${id}" \
       --region "${REGION}" --query 'DBInstanceAutomatedBackups[?Status==`retained`].DBInstanceAutomatedBackupsArn' \
       --output text 2>/dev/null); do
@@ -193,9 +194,9 @@ sweep_automated_backups() { (
 sweep() { (
   set +eu
   # The two restored instances together (each wait can take minutes), then the sources.
-  sweep_instance "${SNAP_INSTANCE_ID}" &
-  sweep_instance "${CLUSTER_SNAP_INSTANCE_ID}" &
-  sweep_instance "${PITR_INSTANCE_ID}" &
+  sweep_instance "${SNAP_INSTANCE_ID}" 360 &
+  sweep_instance "${CLUSTER_SNAP_INSTANCE_ID}" 360 &
+  sweep_instance "${PITR_INSTANCE_ID}" 360 &
   wait
   sweep_instance "${SOURCE_ID}" &
   sweep_cluster "${CLUSTER_ID}" &
@@ -591,7 +592,7 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-
 # The instances' automated backups go with them (DeleteAutomatedBackups
 # defaults to true); a retained one would keep billing. A listing by an
 # identifier with none answers empty or not-found: a strict capture otherwise.
-for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}"; do
+for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}"; do
   BACKUPS_LEFT=""
   for _ in $(seq 1 30); do
     if ! BACKUPS_LEFT="$(aws rds describe-db-instance-automated-backups --db-instance-identifier "${id}" \

@@ -172,6 +172,7 @@ describe('reversing a delete-first replacement whose old record restores from th
     [
       'a time, beside its own automated snapshot',
       {
+        Engine: 'postgres',
         RestoreTime: '2026-11-01T00:00:00Z',
         DBSnapshotIdentifier: '{{resolve:ssm:/cdkd/snap}}',
       },

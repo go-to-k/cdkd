@@ -474,7 +474,11 @@ export async function createDBInstance(
     // Wait for instance to become available (skip with --no-wait)
     // A restore copies its source's data first, so it waits to the resource
     // deadline when `--resource-timeout` allows more than a create's 30 minutes.
-    if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate) {
+    // It waits under --no-wait too: a create-first replacement deletes the old
+    // instance as soon as this returns, and that instance (or its automated
+    // backups and snapshots, which its delete removes) may be what the
+    // restore is still reading.
+    if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate || restored) {
       await this.waitForInstanceAvailable(
         logicalId,
         dbInstanceIdentifier,

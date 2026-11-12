@@ -1,6 +1,7 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { parseZonedTimestamp } from './providers/rds/zoned-timestamp.js';
 
 /** The types whose create restores from `SourceDBClusterIdentifier`. */
 const RESTORING_TYPES: ReadonlySet<string> = new Set([
@@ -63,6 +64,58 @@ export function declaresInstancePointInTime(properties: Record<string, unknown>)
   return ['RestoreTime', 'SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId'].some(
     (key) => properties[key] != null && properties[key] !== ''
   );
+}
+
+/** Why a point-in-time create names no engine source (the handler's "Cannot fetch the engine"). */
+export const POINT_IN_TIME_NO_SOURCE_REASON =
+  'the template names no source to restore to a point in time from (SourceDBInstanceIdentifier, SourceDbiResourceId or SourceDBInstanceAutomatedBackupsArn), so cdkd cannot read its engine; declare Engine or a source, as CloudFormation requires ("Cannot fetch the engine")';
+
+/**
+ * The template-only reason a DB instance create with these properties fails
+ * before any call, `undefined` when there is none: a `RestoreTime` that
+ * `java.time.ZonedDateTime` cannot parse (on any create, as the handler's
+ * `validateRequest`; a blank one passes), a `UseLatestRestorableTime` that is
+ * no boolean, a source key that is no string, or, for a point-in-time
+ * restore, no `Engine` and no source to read it from. The provider's create
+ * reads it (`providers/rds/instance-pitr.ts`), and {@link refuseRestoreFromItself}
+ * reads it BEFORE a replacement's delete, which would otherwise take the old
+ * instance and its backups for a create bound to fail.
+ */
+export function pointInTimeTemplateRefusal(
+  properties: Record<string, unknown>
+): string | undefined {
+  const time = properties['RestoreTime'];
+  if (time != null && !(typeof time === 'string' && time.trim() === '')) {
+    if (typeof time !== 'string' || parseZonedTimestamp(time) === undefined) {
+      return 'RestoreTime must be an ISO 8601 timestamp with a time zone, such as 2026-01-01T00:00:00Z';
+    }
+  }
+  const latest = properties['UseLatestRestorableTime'];
+  if (
+    latest != null &&
+    typeof latest !== 'boolean' &&
+    !(typeof latest === 'string' && ['true', 'false'].includes(latest.toLowerCase()))
+  ) {
+    return 'UseLatestRestorableTime must be true or false';
+  }
+  for (const key of ['SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId']) {
+    const value = properties[key];
+    if (value != null && typeof value !== 'string') return `${key} must be a string`;
+  }
+  if (!declaresInstancePointInTime(properties)) return undefined;
+  const engine = properties['Engine'];
+  const named = [
+    'SourceDBInstanceIdentifier',
+    'SourceDbiResourceId',
+    'SourceDBInstanceAutomatedBackupsArn',
+  ];
+  if (
+    !(typeof engine === 'string' && engine !== '') &&
+    !named.some((key) => typeof properties[key] === 'string' && properties[key] !== '')
+  ) {
+    return POINT_IN_TIME_NO_SOURCE_REASON;
+  }
+  return undefined;
 }
 
 /**
@@ -128,6 +181,19 @@ export function refuseRestoreFromItself(
   // delete removes its automated ones (`DeleteAutomatedBackups` defaults to
   // true) as a cluster's does.
   if (resourceType === 'AWS::RDS::DBInstance') {
+    // go-to-k/cdkd#5640: a create bound to fail on its template alone fails
+    // before a replacement's delete, which cannot be undone.
+    const refusal = pointInTimeTemplateRefusal(properties);
+    if (refusal !== undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${resourceType} ${logicalId}: ${refusal}; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
     // go-to-k/cdkd#5640: a point-in-time key makes a restore from the
     // source's automated backups, tested before the replica and the snapshot
     // (which it then does not read), and the delete removes those backups.

@@ -10,10 +10,14 @@ import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
-import { declaresInstancePointInTime } from '../../restore-source-guard.js';
+import {
+  POINT_IN_TIME_NO_SOURCE_REASON,
+  declaresInstancePointInTime,
+  pointInTimeTemplateRefusal,
+} from '../../restore-source-guard.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../types/resource.js';
 import type { RDSProvider } from '../rds-provider.js';
-import { parseZonedTimestamp } from './cluster-restore.js';
+import { parseZonedTimestamp } from './zoned-timestamp.js';
 import { engineLifecycleSupportOf } from './instance-members.js';
 import { describeReplicaSource } from './read-replica.js';
 
@@ -100,31 +104,27 @@ export function readInstancePointInTimeRestore(
       )
     );
   };
+  // The template-only checks the replacement guard also runs before a delete
+  // (`pointInTimeTemplateRefusal`); a missing engine source is the engine
+  // read's to refuse.
+  const reason = pointInTimeTemplateRefusal(properties);
+  if (reason !== undefined && reason !== POINT_IN_TIME_NO_SOURCE_REASON) return refuse(reason);
   const declaredTime = properties['RestoreTime'];
-  let restoreTime: Date | undefined;
   // A blank one passes `validateTimestamp` (`isNotBlank`) and goes out as no
   // time (the Translator's `isNotBlank`), yet still makes the create a
   // point-in-time restore (`hasValue`), as below.
-  if (declaredTime != null && !(typeof declaredTime === 'string' && declaredTime.trim() === '')) {
-    restoreTime = typeof declaredTime === 'string' ? parseZonedTimestamp(declaredTime) : undefined;
-    if (restoreTime === undefined) {
-      return refuse(
-        'RestoreTime must be an ISO 8601 timestamp with a time zone, such as 2026-01-01T00:00:00Z'
-      );
-    }
-  }
-  const declaredLatest = properties['UseLatestRestorableTime'];
+  const restoreTime =
+    typeof declaredTime === 'string' && declaredTime.trim() !== ''
+      ? parseZonedTimestamp(declaredTime)
+      : undefined;
   const useLatestRestorableTime =
-    declaredLatest == null ? undefined : coerceCfnBoolean(declaredLatest);
-  if (declaredLatest != null && useLatestRestorableTime === undefined) {
-    return refuse('UseLatestRestorableTime must be true or false');
-  }
+    properties['UseLatestRestorableTime'] == null
+      ? undefined
+      : coerceCfnBoolean(properties['UseLatestRestorableTime']);
   // A string key as the handler's `StringUtils.hasValue` reads it: empty is unset.
   const stringKey = (key: string): string | undefined => {
     const value = properties[key];
-    if (value == null) return undefined;
-    if (typeof value !== 'string') return refuse(`${key} must be a string`);
-    return value === '' ? undefined : value;
+    return typeof value === 'string' && value !== '' ? value : undefined;
   };
   const sourceDBInstanceAutomatedBackupsArn = stringKey('SourceDBInstanceAutomatedBackupsArn');
   const sourceDbiResourceId = stringKey('SourceDbiResourceId');
@@ -250,7 +250,7 @@ export async function pointInTimeRestoreEngine(
   }
   throw markNonRetryable(
     new ProvisioningError(
-      safeMsg`${resourceType} ${logicalId}: the template names no source to restore to a point in time from (SourceDBInstanceIdentifier, SourceDbiResourceId or SourceDBInstanceAutomatedBackupsArn), so cdkd cannot read its engine; declare Engine or a source, as CloudFormation requires ("Cannot fetch the engine"). Nothing was changed.`,
+      safeMsg`${resourceType} ${logicalId}: ${POINT_IN_TIME_NO_SOURCE_REASON}. Nothing was changed.`,
       resourceType,
       logicalId
     )
