@@ -279,7 +279,8 @@ jobs:
   # clock but take more of the account's concurrent-job allowance per run.
   unit-tests:
     runs-on: ubuntu-latest
-    # Same cap as check-build-test: a runaway cap, not a latency target.
+    # observed at least 567 s per shard at 4 shards (go-to-k/cdkd#6145). Same
+    # cap as check-build-test: a runaway cap, not a latency target.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -393,8 +394,9 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
-    # observed at least 1538 s unsharded. Same cap as unit-tests: it runs the
-    # same suite, sharded the same way, so the two grow together.
+    # observed at least 459 s per shard at 4 shards (go-to-k/cdkd#6145; 1538 s
+    # unsharded). Same cap as unit-tests: it runs the same suite, sharded the
+    # same way, so the two grow together.
     timeout-minutes: 45
     permissions:
       contents: read
