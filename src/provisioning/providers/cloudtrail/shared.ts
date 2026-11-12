@@ -1,7 +1,7 @@
 import type { AdvancedEventSelector, EventSelector } from '@aws-sdk/client-cloudtrail';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { requireConfigArray } from '../../config-shape.js';
+import { coerceCfnBoolean, requireConfigArray } from '../../config-shape.js';
 import type { UpdateContext } from '../../../types/resource.js';
 
 /**
@@ -300,6 +300,16 @@ export function withoutTrailIdentifiers(text: string, physicalId: string): strin
 }
 
 /**
+ * A Trail boolean as CloudFormation reads it: the strings `'true'` / `'false'`
+ * (a String parameter `Ref`, say) are booleans there, so they are sent as
+ * booleans here (#6166 review). Anything else passes through unchanged, so AWS
+ * still refuses an unreadable value rather than cdkd guessing one.
+ */
+export function trailBoolean(value: unknown): boolean | undefined {
+  return (coerceCfnBoolean(value) ?? value) as boolean | undefined;
+}
+
+/**
  * The Trail properties a template removal leaves at their live value while
  * CloudFormation's own behaviour is UNMEASURED, so `update()` names them in
  * its own warning rather than the shared caller's line, which would claim a
@@ -310,6 +320,10 @@ export function withoutTrailIdentifiers(text: string, physicalId: string): strin
  *   delegated-administrator account, and the integ account is in no
  *   organization. A removed `false` is not named: either answer leaves it
  *   false.
+ * - `RecursiveLogging` (#6166): likewise kept, CFn behaviour unmeasured. A
+ *   removed `true` is not named: it is AWS's default, so either answer leaves
+ *   it true. Like every name here this reads the RECORDED value, so a
+ *   console-side flip since the last deploy is not seen.
  * - `IncludeGlobalServiceEvents`, only when its reset is skipped because the
  *   trail is, or may be, multi-region (see `update()`); the measured reset
  *   covered a single-region trail only.
@@ -331,14 +345,17 @@ export function removalsLeftInPlace(
   // trail without global events), and CloudFormation's measured reset is
   // `false` too, so the live value already equals it.
   const globalEvents = previousProperties['IncludeGlobalServiceEvents'];
+  const recursive = previousProperties['RecursiveLogging'];
   return [
-    ...(wasRemoved('IsOrganizationTrail') && org !== false && org !== 'false'
+    ...(wasRemoved('IsOrganizationTrail') && trailBoolean(org) !== false
       ? ['IsOrganizationTrail']
+      : []),
+    ...(wasRemoved('RecursiveLogging') && trailBoolean(recursive) !== true
+      ? ['RecursiveLogging']
       : []),
     ...(globalEventsResetSkipped &&
     wasRemoved('IncludeGlobalServiceEvents') &&
-    globalEvents !== false &&
-    globalEvents !== 'false'
+    trailBoolean(globalEvents) !== false
       ? ['IncludeGlobalServiceEvents']
       : []),
   ];

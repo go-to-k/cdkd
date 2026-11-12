@@ -65,6 +65,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
           IncludeGlobalServiceEvents: true,
           LogFileValidationEnabled: true,
           KmsKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+          // Issue #6166: the non-default value, so the read is not the fallback.
+          RecursiveLogging: false,
           TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
         },
       })
@@ -98,6 +100,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
       SnsTopicName: '',
       IsOrganizationTrail: false,
+      RecursiveLogging: false,
       // Always-emitted since issue #1565; this trail has no CW Logs wiring.
       CloudWatchLogsLogGroupArn: '',
       CloudWatchLogsRoleArn: '',
@@ -163,6 +166,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: '',
       SnsTopicName: '',
       IsOrganizationTrail: false,
+      // Issue #6166: absent from GetTrail reads as AWS's documented default.
+      RecursiveLogging: true,
       // Always-emitted since issue #1565, and unaffected by a secondary-call
       // failure: the pair comes from GetTrail, which succeeded here.
       CloudWatchLogsLogGroupArn: '',

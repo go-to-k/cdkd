@@ -28,7 +28,12 @@ import {
 } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
 import { generatedNameFor } from '../../resource-name.js';
-import { emptyToUndefined, retainPreviousLists, eventSelectorRequest } from './shared.js';
+import {
+  emptyToUndefined,
+  retainPreviousLists,
+  eventSelectorRequest,
+  trailBoolean,
+} from './shared.js';
 
 /**
  * The failure wrap the create / update / delete catches build.
@@ -87,12 +92,12 @@ export async function create(
 
   const trailName = properties['TrailName'] as string | undefined;
   const s3KeyPrefix = emptyToUndefined(properties['S3KeyPrefix']);
-  const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
-  const includeGlobalServiceEvents = properties['IncludeGlobalServiceEvents'] as
-    | boolean
-    | undefined;
-  const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
-  const isLogging = properties['IsLogging'] as boolean | undefined;
+  // Booleans go through trailBoolean: a `'false'` string would otherwise
+  // reach `isLogging !== false` below and START logging.
+  const isMultiRegionTrail = trailBoolean(properties['IsMultiRegionTrail']);
+  const includeGlobalServiceEvents = trailBoolean(properties['IncludeGlobalServiceEvents']);
+  const enableLogFileValidation = trailBoolean(properties['EnableLogFileValidation']);
+  const isLogging = trailBoolean(properties['IsLogging']);
   // `emptyToUndefined` on the create path too (issue #1565): a state replay
   // can feed an always-emit `''` placeholder in here, and `CreateTrail` with
   // an empty ARN is an unprobed shape. On create `''` and absent both mean
@@ -108,7 +113,8 @@ export async function create(
   const cloudWatchLogsRoleArn = emptyToUndefined(properties['CloudWatchLogsRoleArn']);
   const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
   const snsTopicName = emptyToUndefined(properties['SnsTopicName']);
-  const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+  const isOrganizationTrail = trailBoolean(properties['IsOrganizationTrail']);
+  const recursiveLogging = trailBoolean(properties['RecursiveLogging']);
   const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
   const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
   // Issue #2762: a present-but-non-array value is refused before any call
@@ -165,6 +171,7 @@ export async function create(
         KmsKeyId: kmsKeyId,
         SnsTopicName: snsTopicName,
         IsOrganizationTrail: isOrganizationTrail,
+        RecursiveLogging: recursiveLogging,
       })
     );
 
