@@ -97,6 +97,8 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
   let deleteMode: 'ok' | 'throw' | 'skip';
   /** Whether a moved answer says the id moved off is left live (the CR provider does). */
   let leavesOld: boolean;
+  /** A provider flagging the id it kept (never the CR provider): nothing may be deleted. */
+  let flagSameId: boolean;
   let provider: {
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
@@ -111,6 +113,7 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     answer = 'name-1';
     deleteMode = 'ok';
     leavesOld = true;
+    flagSameId = false;
     provider = {
       create: vi.fn(async (logicalId: string, _t: string, props: Record<string, unknown>) => {
         calls.push(`create ${logicalId} ${String(props['Name'])}`);
@@ -123,7 +126,8 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
           return {
             physicalId: answer,
             wasReplaced: answer !== physicalId,
-            ...(leavesOld && answer !== physicalId && { oldPhysicalIdLeftForCleanup: true as const }),
+            ...(leavesOld &&
+              (answer !== physicalId || flagSameId) && { oldPhysicalIdLeftForCleanup: true as const }),
             attributes: {},
           };
         }
@@ -208,6 +212,14 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(state['Res']).toMatchObject({ physicalId: 'name-2', properties: OLD_PROPS });
     expect(provider.delete).not.toHaveBeenCalled();
     expect(superseded).toEqual([]);
+  });
+
+  it('never deletes the id the record holds, whatever the answer says', async () => {
+    answer = 'name-2';
+    flagSameId = true;
+    const { state } = await replay();
+    expect(state['Res']?.physicalId).toBe('name-2');
+    expect(provider.delete).not.toHaveBeenCalled();
   });
 
   it('records a third id the handler answers and deletes the id it moved off', async () => {
