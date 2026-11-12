@@ -23,7 +23,7 @@ import {
   markDeleteFirstBlocked,
   deleteFirstBlocker,
 } from '../../../src/deployment/rollback-executor/plan/delete-first.js';
-import { supersededAfterAutoRollback } from '../../../src/deployment/superseded-resources.js';
+import { supersededAfterRollback } from '../../../src/deployment/superseded-resources.js';
 import type { ResourceState, SupersededResourceRecord } from '../../../src/types/state.js';
 import type { ResourceUpdateResult } from '../../../src/types/resource.js';
 
@@ -525,27 +525,18 @@ describe('classifying the moved-id op (#6120)', () => {
   });
 });
 
-describe('the automatic rollback save keeps superseded ids (#6120)', () => {
+describe('a rollback save carries each superseded id once (#6120)', () => {
   const entry = (physicalId: string): SupersededResourceRecord => ({
     logicalId: 'Res',
     supersededAt: 1,
     state: record(physicalId, OLD_PROPS),
   });
 
-  it('keeps an entry no record holds, drops one held again, and adds the pending ones once', () => {
-    const base = { supersededResources: [entry('name-1'), entry('name-2'), entry('name-4')] };
-    const pending = { supersededResources: [entry('name-4')] };
-    const out = supersededAfterAutoRollback(base, pending, { Res: record('name-1', OLD_PROPS) });
-    expect(out.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-2', 'name-4']);
-  });
-
-  it('writes no field when nothing is left', () => {
-    expect(
-      supersededAfterAutoRollback(
-        { supersededResources: [entry('name-1')] },
-        {},
-        { Res: record('name-1', OLD_PROPS) }
-      )
-    ).toEqual({});
+  it("drops the state's entry for an id the rollback's pending entries name", () => {
+    const out = supersededAfterRollback(
+      { supersededResources: [entry('name-1'), entry('name-4')] },
+      { supersededResources: [entry('name-4')] }
+    );
+    expect(out.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-1', 'name-4']);
   });
 });

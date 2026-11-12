@@ -9,7 +9,7 @@ import { secretNameBagFor } from '../masking.js';
 import { withPrintingSecrets } from '../../resource-secrets-scope.js';
 import { unionOfSecretBags } from '../../secret-redaction.js';
 import { orphanRecordsPrintingBag } from '../../secret-name-needles.js';
-import { supersededAfterAutoRollback } from '../../superseded-resources.js';
+import { supersededAfterRollback } from '../../superseded-resources.js';
 import { InterruptedError, crossStackReadsForPartialSave } from '../../deploy-engine.js';
 import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
 import {
@@ -274,11 +274,7 @@ export async function rollbackFailedDeploy(
       ...orphansAfterRollback(currentState, rollbackOrphans),
       ...stackInstanceIdCarriedFrom(currentState),
       // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
-      ...supersededAfterAutoRollback(
-        currentState,
-        { supersededResources: rollbackSuperseded },
-        newResources
-      ),
+      ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
       // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
       // and a CREATE it took back is named anew by the next create.
       ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
@@ -342,11 +338,7 @@ export async function rollbackFailedDeploy(
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
         ...stackInstanceIdCarriedFrom(currentState),
-        ...supersededAfterAutoRollback(
-          currentState,
-          { supersededResources: rollbackSuperseded },
-          newResources
-        ),
+        ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
         ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
