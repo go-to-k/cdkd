@@ -4548,6 +4548,33 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     expect(warned).toContain("'Environment.Variables.CFG' was NOT recorded");
   });
 
+  it('#6125: a baseline captured from the readback keeps an UNDRIFTED secret as its expression', async () => {
+    // The seed is the live readback, which carries the RESOLVED secret at a
+    // position that did not drift. Only the redaction against `properties`
+    // turns it back into the expression; skipping it for a record with no
+    // baseline would persist the plaintext with nothing in the report to show.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const resource = lambdaResource();
+    delete resource.observedProperties;
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: resource }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ PLAIN: 'x' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
+    const record = saved.resources['Consumer']!;
+    const observed = record.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(observed.Environment.Variables['SECRET_PASSWORD']).toBe(SECRET_EXPR);
+    expect(observed.Environment.Variables['PLAIN']).toBe('x');
+    expect(record.properties).toEqual(lambdaResource().properties);
+  });
+
   it('#2939 sibling: the --revert narrowing write masks an UNPAIRABLE echo on the observed arm', async () => {
     // The `--revert` narrowing write (#1644) is the other `drift.ts` writer
     // that passed the non-failing constant. A VALUE from its delta is persisted
