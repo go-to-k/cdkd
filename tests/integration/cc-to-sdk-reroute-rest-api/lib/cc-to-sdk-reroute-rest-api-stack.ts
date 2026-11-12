@@ -57,8 +57,11 @@ export class CcToSdkRerouteRestApiStack extends cdk.Stack {
     // (no Name; the title names it), plus a child that is NOT in the definition.
     // A flip that re-applied the definition with an overwrite would wipe `/extra`
     // or rename the API.
+    // Unchanged in the pinned phase, so it reaches the flip still on Cloud
+    // Control: Cloud Control re-puts the Body on every update, which deletes
+    // the out-of-definition /extra below before the flip could be observed.
     const specApi = new apigw.CfnRestApi(this, 'RerouteSpecApi', {
-      description: DESCRIPTION_BY_PHASE[phase] ?? 'before-reroute',
+      description: DESCRIPTION_BY_PHASE[phase === 'pinned' ? 'seed' : phase] ?? 'before-reroute',
       body: {
         openapi: '3.0.1',
         info: { title: 'cdkd-reroute-spec-api', version: '1' },
