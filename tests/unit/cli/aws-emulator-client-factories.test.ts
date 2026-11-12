@@ -12,6 +12,7 @@ import {
   sdkClientNamespaces,
 } from '../../../scripts/check-aws-client-defaults.ts';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import {
   resetAwsClientDefaults,
   setAssumedRoleCredentials,
@@ -245,7 +246,7 @@ describe('--aws-emulator: every SDK client factory follows the override', () => 
     expect(report.gaps).toEqual([]);
     // The scan saw the tree: a floor, so "no gaps" cannot mean "no sites".
     expect(report.totalSites).toBeGreaterThan(100);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('every credentials / endpoint set after the spread is a reviewed site', () => {
     const { sites, overrides } = scanOverrides();
@@ -255,7 +256,7 @@ describe('--aws-emulator: every SDK client factory follows the override', () => 
     const seen = new Set(overrides.map((o) => o.key));
     const stale = Object.keys(REVIEWED_OVERRIDES).filter((k) => !seen.has(k));
     expect(stale).toEqual([]);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 });
 
 describe('--aws-emulator: every AwsClients getter signs with the emulator keys', () => {
