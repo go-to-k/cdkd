@@ -144,8 +144,9 @@ export interface SecretMaskingContext {
  * readback reading this paragraph is about.
  *
  * **One bounded caveat on "a TEMPLATE recorded earlier"** (found in review):
- * `cdkd drift --accept` writes the AWS readback into `properties` for a
- * resource that has no `observedProperties` baseline (`drift.ts`), so a later
+ * a binary before go-to-k/cdkd#6125 had `cdkd drift --accept` write the AWS
+ * readback into `properties` for a resource with no `observedProperties`
+ * baseline, and a record it accepted still carries that bag, so a later
  * rollback revert of that resource DOES hand `update()` a readback-derived bag
  * with no flag, and the provider takes the SKIP arm. The direction is the safe
  * one — the live configuration is left alone, nothing is destroyed — and it
