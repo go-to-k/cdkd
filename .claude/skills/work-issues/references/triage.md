@@ -135,8 +135,9 @@ reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
 what they accept; MEASURE a CDK CLI premise by running the inputs through its
 parser from `node_modules`, never by reading its source (#2221). Before
 ranking an SDK-routed backfill row, grep its member in the installed SDK
-request type (`dist-types/models`; the serializer drops a missing one, #5825)
-and the provider's `unhandledByDesign` map; MEASURE that the issue's named
+request type (`dist-types/models`; the serializer drops a missing one, #5825),
+then in the client's npm `latest` when absent (`npm pack` into an empty dir —
+a newer release is a bump in the lane, never a blocker, #6167), and the provider's `unhandledByDesign` map; MEASURE that the issue's named
 engine / class can host it (`describe-orderable-*`), and when no CFn handler
 source covers it (archived repo predating it), put `verify.md` §8-b's
 create→update→delete probe stack into triage's ONE `AskUserQuestion` (#5640).
