@@ -848,7 +848,7 @@ echo "    OK: phase 1: EngineCluster backtracks 3600 s, forwards writes, scalabi
 # fails; the global cluster's member list proves the join reached AWS.
 GLOBAL_MEMBER_RECORD=$(echo "${STATE}" | jq -r '.resources.GlobalMemberCluster | "\(.provisionedBy // "sdk") \(.properties.GlobalClusterIdentifier // "absent")"')
 if [ "${GLOBAL_MEMBER_RECORD}" != "sdk ${GLOBAL_CLUSTER_NAME}" ]; then
-  echo "FAIL: #5639: phase 1: GlobalMemberCluster record [provisionedBy, GlobalClusterIdentifier] is '${GLOBAL_MEMBER_RECORD}', want 'sdk ${GLOBAL_CLUSTER_NAME}' (GlobalClusterIdentifier is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  echo "FAIL: #5639: phase 1: GlobalMemberCluster record [provisionedBy, GlobalClusterIdentifier] is '${GLOBAL_MEMBER_RECORD}', want 'sdk ${GLOBAL_CLUSTER_NAME}' (a property it declares, GlobalClusterIdentifier or EnableGlobalWriteForwarding, is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
   exit 1
 fi
 GLOBAL_MEMBER_ID=$(echo "${STATE}" | jq -r '.resources.GlobalMemberCluster.physicalId // ""')
