@@ -316,6 +316,7 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
       arm();
       await update({ ReplicationSourceIdentifier: SOURCE_ARN }, { ReplicationSourceIdentifier: SOURCE_ARN });
       await update({ ReplicationSourceIdentifier: ['arn-1'] }, { ReplicationSourceIdentifier: SOURCE_ARN });
+      await update({ ReplicationSourceIdentifier: SOURCE_ARN }, { ReplicationSourceIdentifier: ['arn-1'] });
       await update({}, { ReplicationSourceIdentifier: SOURCE_ARN }, { replayingState: true });
       await update({}, { ReplicationSourceIdentifier: SOURCE_ARN }, { desiredFromAwsReadback: true });
       expect(warn.mock.calls.flat().join('\n')).not.toContain('ReplicationSourceIdentifier');
@@ -332,6 +333,8 @@ describe('RDSProvider AWS::RDS::DBCluster replica and global write forwarding (g
   describe('globalWriteForwardingApplied', () => {
     it.each([
       [{}, true],
+      // No request reported: settled whatever the status, as CloudFormation decides.
+      [{ GlobalWriteForwardingStatus: 'enabling' }, true],
       [{ GlobalWriteForwardingRequested: false }, true],
       [{ GlobalWriteForwardingRequested: false, GlobalWriteForwardingStatus: 'disabling' }, true],
       [{ GlobalWriteForwardingRequested: true, GlobalWriteForwardingStatus: 'enabling' }, false],
