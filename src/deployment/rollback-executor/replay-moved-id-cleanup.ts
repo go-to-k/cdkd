@@ -52,6 +52,14 @@ export interface MovedIdCleanupQueue {
   readonly onSupersededSettled: ((entry: SupersededResourceRecord) => void) | undefined;
 }
 
+/**
+ * The hooks are optional because a driver whose save does not carry
+ * `supersededResources` has none to give; without them the id is kept in
+ * memory only, so a run killed between the revert and the delete leaves it
+ * untracked (a failed delete is named on a line and an event). Every driver
+ * that saves state (the automatic rollback, `cdkd rollback`, a nested
+ * child's revert) passes them.
+ */
 export function newMovedIdCleanupQueue(hooks: {
   onSuperseded?: ((entry: SupersededResourceRecord) => void) | undefined;
   onSupersededSettled?: ((entry: SupersededResourceRecord) => void) | undefined;
@@ -64,7 +72,7 @@ export function newMovedIdCleanupQueue(hooks: {
 }
 
 /**
- * `cdkd rollback`'s options for a segment's two replays (spread into both):
+ * A rollback driver's options for a segment's replays (spread into each):
  * the driver's superseded writers, plus ONE shared queue when the segment has
  * completed ops, so an id a `--revert-failed` update moved off is deleted
  * only after those are reverted too (the rollback's cleanup phase). The
@@ -74,11 +82,12 @@ export function segmentCleanupOptions(
   shared: boolean,
   host: Pick<StackState, 'supersededResources'>,
   /**
-   * The state the run loaded. A settled id an earlier deploy already
-   * recorded there (stacked segments) leaves it too, or the save would carry
-   * it and the next deploy would send a deleted id its Delete again.
+   * The state the run loaded, when the save carries its entries. A settled
+   * id an earlier deploy already recorded there (stacked segments) leaves it
+   * too, or the save would carry it and the next deploy would send a deleted
+   * id its Delete again.
    */
-  base: Pick<StackState, 'supersededResources'>
+  base?: Pick<StackState, 'supersededResources'>
 ): {
   onSuperseded: (entry: SupersededResourceRecord) => void;
   onSupersededSettled: (entry: SupersededResourceRecord) => void;
@@ -88,6 +97,7 @@ export function segmentCleanupOptions(
     onSuperseded: (entry: SupersededResourceRecord) => addSuperseded(host, entry),
     onSupersededSettled: (entry: SupersededResourceRecord) => {
       removeSuperseded(host, entry);
+      if (base === undefined) return;
       for (const own of supersededResourcesOf(base)) {
         if (
           own.state.physicalId === entry.state.physicalId &&
@@ -226,8 +236,8 @@ export async function runMovedIdCleanups(
         ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
         physicalId: sent.physicalId,
         reason: mask(
-          `The rollback moved ${logicalId} off ${sent.physicalId}, which ${why}; it is no ` +
-            `longer tracked by cdkd.`
+          `The rollback moved ${logicalId} off ${shown}, which ${why}; it is no longer ` +
+            `tracked by cdkd.`
         ),
       });
     };

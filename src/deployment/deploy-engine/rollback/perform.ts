@@ -23,7 +23,7 @@ import {
   replayRollback,
 } from '../../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../inline-policy-claims.js';
-import { addSuperseded, removeSuperseded } from '../../superseded-resources.js';
+import { segmentCleanupOptions } from '../../rollback-executor/replay-moved-id-cleanup.js';
 import { withPrintingSecrets } from '../../resource-secrets-scope.js';
 import { completedReplayEntries } from '../../secret-name-needles.js';
 import type { ForeignHolding } from '../../rollback-executor/journaled-orphans.js';
@@ -161,6 +161,9 @@ export async function performRollback(
   // go-to-k/cdkd#5064: a renamed reversal's new copy still to delete; the one
   // save on this path is the caller's, which records what is left here.
   const supersededHost: Pick<StackState, 'supersededResources'> = {};
+  // go-to-k/cdkd#6120: one cleanup queue for the unsettled revert and the
+  // completed-op replay, so an id a revert moved off is deleted after both.
+  const cleanup = segmentCleanupOptions(true, supersededHost);
   // Issue #3754: a nested-stack row reverted here replays its child's
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
@@ -204,6 +207,7 @@ export async function performRollback(
         emitEnvelope: completedOperations.length === 0 && orphanOps.length === 0,
         inlinePolicyWriters,
         hooks: unsettledRevert,
+        cleanup,
       }
     );
     return {
@@ -222,8 +226,7 @@ export async function performRollback(
             // that started this rollback holds the engine's other flag. It
             // also ends a name-release wait or a re-create retry here.
             isInterrupted: () => deps.userInterrupted(),
-            onSuperseded: (entry) => addSuperseded(supersededHost, entry),
-            onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
+            ...cleanup,
           })
       ),
       run: scope,

@@ -50,7 +50,8 @@ import {
   rollbackExecutorContext,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
-import type { FailedOperation } from '../../../src/deployment/rollback-executor.js';
+import { replayRollback, type FailedOperation } from '../../../src/deployment/rollback-executor.js';
+import { segmentCleanupOptions } from '../../../src/deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
   RESOURCE_NOT_FOUND,
   type CloudFormationTemplate,
@@ -889,5 +890,67 @@ describe('revertUnsettledFailedUpdates, called directly (go-to-k/cdkd#5505 revie
     expect(out.warnings).toBeGreaterThanOrEqual(1);
     expect(warned('could not revert what the failed update left unsettled')).toBe(true);
     expect(hooks.onReverted).not.toHaveBeenCalled();
+  });
+
+  it('an abandoned custom-resource Update that moved its id: the revert keeps the id moved off in state and deletes it with the completed replay (#6120)', async () => {
+    const CR = 'Custom::Thing';
+    const calls: string[] = [];
+    const provider = {
+      update: vi.fn(async (logicalId: string, physicalId: string) => {
+        calls.push(`update ${logicalId} ${physicalId}`);
+        return { physicalId: 'name-9', wasReplaced: true, oldPhysicalIdLeftForCleanup: true };
+      }),
+      delete: vi.fn(async (logicalId: string, physicalId: string) => {
+        calls.push(`delete ${logicalId} ${physicalId}`);
+      }),
+    };
+    const { deps, ctx } = harness(() => ({ provider, provisionedBy: 'sdk' }));
+    const crRecord = (properties: Record<string, unknown>) =>
+      ({
+        physicalId: 'name-1',
+        resourceType: CR,
+        properties,
+        attributes: {},
+        dependencies: [],
+      }) as ResourceState;
+    const state: Record<string, ResourceState> = { Res: crRecord({ Name: 'new' }) };
+    const host: Pick<StackState, 'supersededResources'> = {};
+    const cleanup = segmentCleanupOptions(true, host);
+    const out = await revertUnsettledFailedUpdates(
+      deps,
+      ctx,
+      's',
+      state,
+      [
+        {
+          changeType: 'UPDATE',
+          logicalId: 'Res',
+          resourceType: CR,
+          physicalId: 'name-1',
+          previousState: crRecord({ Name: 'old' }),
+        } as FailedOperation,
+      ],
+      new Set(),
+      {
+        emitEnvelope: false,
+        inlinePolicyWriters: new RollbackInlinePolicyWriters(),
+        // No unsettled mark: the deadline-abandoned call is what selects it.
+        hooks: {
+          runMarks: () => ({ names: new Set<string>(), items: new Map() }),
+          stillRunning: () => Promise.resolve(true),
+          recordMarks: vi.fn(),
+          onReverted: vi.fn(),
+        },
+        cleanup,
+      }
+    );
+    expect(out.handled).toEqual([0]);
+    expect(state['Res']?.physicalId).toBe('name-9');
+    // Recorded, not yet deleted: the completed-op replay runs the queue.
+    expect(calls).toEqual(['update Res name-1']);
+    expect(host.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-1']);
+    await replayRollback([], state, 's', ctx, cleanup);
+    expect(calls).toEqual(['update Res name-1', 'delete Res name-1']);
+    expect(host.supersededResources ?? []).toEqual([]);
   });
 });

@@ -385,6 +385,13 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
     expect(last?.supersededResources).toBeUndefined();
   });
 
+  it('journals no mark for a provider that does not leave the old id, so the rollback re-creates (#6120)', async () => {
+    topicFails = true;
+    leavesOld = false;
+    await expect(deploy({ noRollback: false })).rejects.toThrow(/Failed to update resource Topic/);
+    expect(calls.slice(2)).toEqual(['create Res name-1', 'delete Res name-2']);
+  });
+
   it('keeps the old id in state when the rollback Update answers a third id (#6120)', async () => {
     topicFails = true;
     rollbackAnswer = 'name-3';

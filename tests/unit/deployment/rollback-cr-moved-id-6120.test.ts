@@ -272,11 +272,23 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(superseded).toEqual([]);
   });
 
+  it('keeps the re-create for a journal written before the mark', async () => {
+    const { state } = await replay({ op: movedOp({ oldPhysicalIdLeftForCleanup: undefined }) });
+    expect(calls.filter((c) => c.includes(' Res '))).toEqual([
+      'create Res name-1',
+      'delete Res name-2',
+    ]);
+    expect(provider.update).not.toHaveBeenCalledWith('Res', expect.anything(), CR, expect.anything(), expect.anything(), expect.anything());
+    expect(state['Res']?.physicalId).toBe('name-1');
+  });
+
   it('keeps UpdateReplacePolicy: Retain', async () => {
-    const { state } = await replay({ live: record('name-2', NEW_PROPS, { updateReplacePolicy: 'Retain' }) });
+    const { state, superseded, outcome } = await replay({ live: record('name-2', NEW_PROPS, { updateReplacePolicy: 'Retain' }) });
     expect(state['Res']?.physicalId).toBe('name-1');
     expect(provider.delete).not.toHaveBeenCalled();
     expect(printed.info.some((l) => l.includes('UpdateReplacePolicy: Retain'))).toBe(true);
+    expect(superseded).toEqual([]);
+    expect(outcome.warnings).toBe(0);
   });
 
   it('never deletes an id another record holds', async () => {
@@ -597,5 +609,17 @@ describe('a rollback save carries each superseded id once (#6120)', () => {
       { supersededResources: [entry('name-4')] }
     );
     expect(out.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-1', 'name-4']);
+  });
+
+  it('keeps an entry of another type under the same id', () => {
+    const other = { ...entry('name-4'), state: { ...entry('name-4').state, resourceType: 'Custom::Other' } };
+    const out = supersededAfterRollback(
+      { supersededResources: [other] },
+      { supersededResources: [entry('name-4')] }
+    );
+    expect(out.supersededResources?.map((e) => e.state.resourceType)).toEqual([
+      'Custom::Other',
+      CR,
+    ]);
   });
 });
