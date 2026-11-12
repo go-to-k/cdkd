@@ -217,9 +217,12 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
   it('never deletes the id the record holds, whatever the answer says', async () => {
     answer = 'name-2';
     flagSameId = true;
-    const { state } = await replay();
+    const { state, outcome } = await replay();
     expect(state['Res']?.physicalId).toBe('name-2');
     expect(provider.delete).not.toHaveBeenCalled();
+    // Nothing is queued at all, so no holder warning either.
+    expect(printed.warn).toEqual([]);
+    expect(outcome.warnings).toBe(0);
   });
 
   it('records a third id the handler answers and deletes the id it moved off', async () => {
