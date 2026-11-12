@@ -73,7 +73,10 @@ export function refuseRestoreFromItself(
   // true) as a cluster's does.
   if (resourceType === 'AWS::RDS::DBInstance') {
     const instanceSnapshot = properties['DBSnapshotIdentifier'];
+    // A declared source makes a read replica, which reads no snapshot.
+    const replicaSource = properties['SourceDBInstanceIdentifier'];
     if (
+      !(typeof replicaSource === 'string' && replicaSource !== '') &&
       typeof instanceSnapshot === 'string' &&
       automatedSnapshotOf(instanceSnapshot, clusterName(physicalId), ':snapshot:') &&
       !elsewhere(instanceSnapshot, scope)

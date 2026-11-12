@@ -173,7 +173,11 @@ export async function updateDBInstance(
   // a removed one changes nothing, and neither is ever sent. A rollback replay
   // or a `drift --revert` restores the record the instance was created from,
   // so it sends nothing and records it as it is.
-  const changedSnapshots = changedSnapshotRestoreKeys(properties, previousProperties);
+  const changedSnapshots = changedSnapshotRestoreKeys(
+    properties,
+    previousProperties,
+    context?.changedProperties
+  );
   if (
     changedSnapshots.length > 0 &&
     context?.replayingState !== true &&

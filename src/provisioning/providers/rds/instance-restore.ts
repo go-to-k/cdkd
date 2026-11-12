@@ -358,11 +358,19 @@ export function snapshotRestoredDifferences(
  */
 export function changedSnapshotRestoreKeys(
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  /**
+   * The deploy's own answer (`UpdateContext.changedProperties`): the record
+   * keeps a secret-derived value as its `{{resolve:...}}` token and a `NoEcho`
+   * one as `***`, which never equals the resolved desired value. Absent (a
+   * direct call), the two bags are compared.
+   */
+  changedProperties?: ReadonlySet<string>
 ): string[] {
   return SNAPSHOT_RESTORE_KEYS.filter((key) => {
     const desired = properties[key];
     if (desired == null || desired === '') return false;
+    if (changedProperties !== undefined) return changedProperties.has(key);
     return desired !== previousProperties[key];
   });
 }

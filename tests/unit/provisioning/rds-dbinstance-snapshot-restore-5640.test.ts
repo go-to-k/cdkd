@@ -59,6 +59,10 @@ interface Live {
   clusterSnapshotEngine?: string | null;
   /** What DescribeDBSnapshots throws instead of answering. */
   snapshotError?: Error;
+  /** What DescribeDBClusterSnapshots throws instead of answering. */
+  clusterSnapshotError?: Error;
+  /** The DB snapshot lists no engine. */
+  snapshotEngineMissing?: boolean;
   /** The restored instance, as the restore call answers it. */
   restored?: Input;
 }
@@ -72,9 +76,19 @@ function arm(live: Live = {}): void {
           DBSnapshots:
             live.snapshotEngine === null
               ? []
-              : [{ DBSnapshotIdentifier: SNAPSHOT, Engine: live.snapshotEngine ?? 'postgres' }],
+              : [
+                  {
+                    DBSnapshotIdentifier: SNAPSHOT,
+                    ...(live.snapshotEngineMissing !== true && {
+                      Engine: live.snapshotEngine ?? 'postgres',
+                    }),
+                  },
+                ],
         });
       case 'DescribeDBClusterSnapshotsCommand':
+        if (live.clusterSnapshotError !== undefined) {
+          return Promise.reject(live.clusterSnapshotError);
+        }
         return Promise.resolve({
           DBClusterSnapshots:
             live.clusterSnapshotEngine === null
@@ -101,7 +115,7 @@ function arm(live: Live = {}): void {
         return Promise.resolve({
           DBInstance: {
             DBInstanceIdentifier: 'db-1',
-            Engine: live.snapshotEngine ?? 'postgres',
+            Engine: live.snapshotEngine ?? live.clusterSnapshotEngine ?? 'postgres',
             MasterUsername: 'postgres',
             StorageEncrypted: false,
             ...live.restored,
@@ -438,6 +452,148 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
       expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toHaveLength(1);
     });
 
+    it('carries every declared member CloudFormation sends on the restore call, and the rest on the follow-up', async () => {
+      await provider.create('L', INSTANCE, {
+        ...FROM_SNAPSHOT,
+        StorageType: 'io1',
+        Iops: 3000,
+        StorageThroughput: 125,
+        AutoMinorVersionUpgrade: false,
+        AvailabilityZone: 'us-east-1a',
+        DBName: 'ORCL',
+        DBParameterGroupName: 'params-1',
+        DedicatedLogVolume: false,
+        EnableCloudwatchLogsExports: ['postgresql'],
+        EnableIAMDatabaseAuthentication: true,
+        LicenseModel: 'postgresql-license',
+        NetworkType: 'IPV4',
+        OptionGroupName: 'options-1',
+        ProcessorFeatures: [{ Name: 'coreCount', Value: '2' }],
+        UseDefaultProcessorFeatures: false,
+        EngineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+        DeletionProtection: false,
+        MultiAZ: false,
+      });
+      expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toEqual([
+        {
+          DBInstanceIdentifier: 'db-1',
+          DBSnapshotIdentifier: SNAPSHOT,
+          AutoMinorVersionUpgrade: false,
+          AvailabilityZone: 'us-east-1a',
+          CopyTagsToSnapshot: true,
+          DBInstanceClass: 'db.t3.micro',
+          DBName: 'ORCL',
+          DBParameterGroupName: 'params-1',
+          DBSubnetGroupName: 'subnets-1',
+          DeletionProtection: false,
+          DedicatedLogVolume: false,
+          EnableCloudwatchLogsExports: ['postgresql'],
+          EnableIAMDatabaseAuthentication: true,
+          Engine: 'postgres',
+          LicenseModel: 'postgresql-license',
+          MultiAZ: false,
+          NetworkType: 'IPV4',
+          OptionGroupName: 'options-1',
+          Port: 5433,
+          ProcessorFeatures: [{ Name: 'coreCount', Value: '2' }],
+          UseDefaultProcessorFeatures: false,
+          PubliclyAccessible: false,
+          VpcSecurityGroupIds: ['sg-1'],
+          EngineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+          AllocatedStorage: 100,
+          Iops: 3000,
+          StorageThroughput: 125,
+          StorageType: 'io1',
+          Tags: [{ Key: 'team', Value: 'db' }],
+        },
+      ]);
+      // The declared parameter group rides the follow-up too, as the handler sends it.
+      expect(sent('ModifyDBInstanceCommand')).toEqual([
+        expect.objectContaining({ DBParameterGroupName: 'params-1', ApplyImmediately: true }),
+      ]);
+    });
+
+    it('treats a snapshot that lists no engine as SQL Server for the storage members, as the handler does', async () => {
+      arm({ snapshotEngineMissing: true });
+      const { Engine: _engine, ...noEngine } = FROM_SNAPSHOT;
+      await provider.create('L', INSTANCE, noEngine);
+      const [restore] = sent('RestoreDBInstanceFromDBSnapshotCommand');
+      expect(restore).not.toHaveProperty('Engine');
+      expect(restore).not.toHaveProperty('AllocatedStorage');
+      expect(restore).not.toHaveProperty('StorageType');
+    });
+
+    it('refuses a cluster snapshot RDS reports not found', async () => {
+      arm({
+        clusterSnapshotError: Object.assign(new Error('not found'), {
+          name: 'DBClusterSnapshotNotFoundFault',
+        }),
+      });
+      const { Engine: _e, DBSnapshotIdentifier: _s, ...rest } = FROM_SNAPSHOT;
+      const error = await provider
+        .create('L', INSTANCE, { ...rest, DBClusterSnapshotIdentifier: CLUSTER_SNAPSHOT })
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/does not name a Multi-AZ DB cluster snapshot/);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toEqual([]);
+    });
+
+    it('fails the create, retryably, on any other cluster snapshot read failure', async () => {
+      arm({
+        clusterSnapshotError: Object.assign(new Error('not authorized'), { name: 'AccessDenied' }),
+      });
+      const { Engine: _e, DBSnapshotIdentifier: _s, ...rest } = FROM_SNAPSHOT;
+      const error = await provider
+        .create('L', INSTANCE, { ...rest, DBClusterSnapshotIdentifier: CLUSTER_SNAPSHOT })
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/reading the restore cluster snapshot failed/);
+      expect(isMarkedNonRetryable(error)).toBe(false);
+      expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toEqual([]);
+    });
+
+    it("masks a secret in AWS's text when a snapshot read fails", async () => {
+      arm({
+        snapshotError: Object.assign(new Error('denied for secret-name-1'), {
+          name: 'AccessDenied',
+        }),
+      });
+      const error = await provider
+        .create(
+          'L',
+          INSTANCE,
+          { ...FROM_SNAPSHOT },
+          { maskSecrets: (t: string) => t.replaceAll('secret-name-1', '***') }
+        )
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/reading the restore snapshot failed/);
+      expect(String(error)).not.toContain('secret-name-1');
+    });
+
+    it('does not warn about a master user the restore answer does not name', async () => {
+      arm({ restored: { MasterUsername: undefined } });
+      await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT, MasterUsername: 'admin' });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not warn about an empty AdditionalStorageVolumes list', async () => {
+      await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT, AdditionalStorageVolumes: [] });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('makes a read replica over its own automated snapshot or a malformed key, only warning', async () => {
+      for (const snapshot of ['rds:db-1-2026-11-01-03-04', { Ref: 'Snap' }]) {
+        mockSend.mockClear();
+        warn.mockReset();
+        await provider.create('L', INSTANCE, {
+          ...FROM_SNAPSHOT,
+          DBSnapshotIdentifier: snapshot,
+          SourceDBInstanceIdentifier: 'source-1',
+        });
+        expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(1);
+        expect(warned()).toMatch(/DBSnapshotIdentifier not applied/);
+      }
+    });
+
     it('restores the same way on a rollback replay', async () => {
       await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT }, { replayingState: true });
       expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toHaveLength(1);
@@ -473,6 +629,18 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
           region: 'us-east-1',
           account: '123456789012',
         })
+      ).not.toThrow();
+    });
+
+    it('lets a read replica name its own automated snapshot, which it never reads', () => {
+      expect(() =>
+        refuseRestoreFromItself(
+          INSTANCE,
+          { DBSnapshotIdentifier: 'rds:db-1-2026-11-01-03-04', SourceDBInstanceIdentifier: 'src-1' },
+          'db-1',
+          'L',
+          {}
+        )
       ).not.toThrow();
     });
 
@@ -527,6 +695,46 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
         expect(modify).not.toHaveProperty('DBClusterSnapshotIdentifier');
       }
       expect(sent('RestoreDBInstanceFromDBSnapshotCommand')).toEqual([]);
+    });
+
+    it.each(["{{resolve:ssm-secure:snap}}", '***'])(
+      "takes the deploy's own change set over a recorded stand-in (%s)",
+      async (recorded) => {
+        const changedProperties = new Set(['BackupRetentionPeriod']);
+        await update(
+          { ...FROM_SNAPSHOT, BackupRetentionPeriod: '5' },
+          { ...FROM_SNAPSHOT, DBSnapshotIdentifier: recorded },
+          { changedProperties }
+        );
+        expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
+      }
+    );
+
+    it('refuses a snapshot the change set names', async () => {
+      const error = await update(FROM_SNAPSHOT, { ...FROM_SNAPSHOT, DBSnapshotIdentifier: 'snap-0' }, {
+        changedProperties: new Set(['DBSnapshotIdentifier']),
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    });
+
+    it('masks the physical id in the refusal', async () => {
+      const error = await update(
+        FROM_SNAPSHOT,
+        { ...FROM_SNAPSHOT, DBSnapshotIdentifier: 'snap-0' },
+        { maskSecrets: (t: string) => t.replaceAll('db-1', '***') }
+      ).catch((e: unknown) => e);
+      const message = String((error as Error).message);
+      expect(message).toMatch(/Nothing was applied to DB instance \*\*\*/);
+      expect(message).not.toContain('db-1');
+    });
+
+    it('names the deletion-protection step for a protected instance', async () => {
+      const error = await update(FROM_SNAPSHOT, {
+        ...FROM_SNAPSHOT,
+        DBSnapshotIdentifier: 'snap-0',
+        DeletionProtection: true,
+      }).catch((e: unknown) => e);
+      expect(String((error as Error).message)).toMatch(/--no-deletion-protection/);
     });
 
     it('updates in place under an unchanged snapshot', async () => {

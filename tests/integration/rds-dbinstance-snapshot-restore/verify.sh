@@ -105,13 +105,14 @@ sweep_instance() { ( # usage: sweep_instance <instance id>
   for _ in $(seq 1 120); do
     out="$(aws rds describe-db-instances --db-instance-identifier "$1" \
       --region "${REGION}" 2>&1)"
-    case "${out}" in *DBInstanceNotFound*) break ;; esac
+    case "${out}" in *DBInstanceNotFound*) exit 0 ;; esac
     aws rds modify-db-instance --db-instance-identifier "$1" --no-deletion-protection \
       --apply-immediately --region "${REGION}" >/dev/null 2>&1
     aws rds delete-db-instance --db-instance-identifier "$1" --skip-final-snapshot \
       --delete-automated-backups --region "${REGION}" >/dev/null 2>&1
     sleep 10
   done
+  echo "    WARN: RDS instance $1 still present after the sweep" >&2
 ) }
 
 # The same for the Multi-AZ DB cluster (its delete takes its instances).
@@ -120,13 +121,14 @@ sweep_cluster() { ( # usage: sweep_cluster <cluster id>
   for _ in $(seq 1 120); do
     out="$(aws rds describe-db-clusters --db-cluster-identifier "$1" \
       --region "${REGION}" 2>&1)"
-    case "${out}" in *DBClusterNotFound*) break ;; esac
+    case "${out}" in *DBClusterNotFound*) exit 0 ;; esac
     aws rds modify-db-cluster --db-cluster-identifier "$1" --no-deletion-protection \
       --apply-immediately --region "${REGION}" >/dev/null 2>&1
     aws rds delete-db-cluster --db-cluster-identifier "$1" \
       --skip-final-snapshot --region "${REGION}" >/dev/null 2>&1
     sleep 10
   done
+  echo "    WARN: RDS cluster $1 still present after the sweep" >&2
 ) }
 
 # Not cdkd's: verify.sh made them, so verify.sh deletes them, re-sending the
@@ -134,22 +136,26 @@ sweep_cluster() { ( # usage: sweep_cluster <cluster id>
 # run's create of the same name does not meet it.
 sweep_snapshots() { (
   set +eu
+  gone=""
   for _ in $(seq 1 60); do
     out="$(aws rds describe-db-snapshots --db-snapshot-identifier "${SNAPSHOT_ID}" \
       --region "${REGION}" 2>&1)"
-    case "${out}" in *DBSnapshotNotFound*) break ;; esac
+    case "${out}" in *DBSnapshotNotFound*) gone=1; break ;; esac
     aws rds delete-db-snapshot --db-snapshot-identifier "${SNAPSHOT_ID}" \
       --region "${REGION}" >/dev/null 2>&1
     sleep 10
   done
+  [ -n "${gone}" ] || echo "    WARN: manual snapshot ${SNAPSHOT_ID} could not be deleted" >&2
+  gone=""
   for _ in $(seq 1 60); do
     out="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${CLUSTER_SNAPSHOT_ID}" \
       --region "${REGION}" 2>&1)"
-    case "${out}" in *DBClusterSnapshotNotFound*) break ;; esac
+    case "${out}" in *DBClusterSnapshotNotFound*) gone=1; break ;; esac
     aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "${CLUSTER_SNAPSHOT_ID}" \
       --region "${REGION}" >/dev/null 2>&1
     sleep 10
   done
+  [ -n "${gone}" ] || echo "    WARN: manual cluster snapshot ${CLUSTER_SNAPSHOT_ID} could not be deleted" >&2
 ) }
 
 # Best-effort teardown of a partial destroy, by fixed name and by the CDK Name
@@ -157,10 +163,13 @@ sweep_snapshots() { (
 # snapshots, the subnet group, then the VPC leaf-first.
 sweep() { (
   set +eu
-  sweep_instance "${SNAP_INSTANCE_ID}"
-  sweep_instance "${CLUSTER_SNAP_INSTANCE_ID}"
-  sweep_instance "${SOURCE_ID}"
-  sweep_cluster "${CLUSTER_ID}"
+  # The two restored instances together (each wait can take minutes), then the sources.
+  sweep_instance "${SNAP_INSTANCE_ID}" &
+  sweep_instance "${CLUSTER_SNAP_INSTANCE_ID}" &
+  wait
+  sweep_instance "${SOURCE_ID}" &
+  sweep_cluster "${CLUSTER_ID}" &
+  wait
   sweep_snapshots
   aws rds delete-db-subnet-group --db-subnet-group-name "${SUBNET_GROUP}" \
     --region "${REGION}" >/dev/null 2>&1
@@ -234,7 +243,10 @@ instance_field() { # usage: instance_field <instance id> <query>
 
 assert_instance() { # usage: assert_instance <phase> <instance id> <query> <want>
   local got
-  got="$(instance_field "$2" "$3")" || return 1
+  if ! got="$(instance_field "$2" "$3" 2>&1)"; then
+    echo "FAIL: ${1}: reading ${2} ${3} failed: ${got}" >&2
+    exit 1
+  fi
   if [ "${got}" != "$4" ]; then
     echo "FAIL: ${1}: ${2} ${3}='${got}', want '${4}'" >&2
     exit 1
@@ -341,15 +353,18 @@ fi
 rm -f "${DEPLOY_LOG}"
 for id in "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}"; do
   assert_instance "Phase 3" "${id}" DBInstanceStatus available
-  # Neither template declares an engine: the snapshot's, read by cdkd.
+  # Neither template declares an engine. RDS would take the snapshot's either
+  # way, so this pins the outcome only; that cdkd reads and sends it is unit-tested.
   assert_instance "Phase 3" "${id}" Engine postgres
 done
 # SnapInstance: the snapshot's user and database, not the template's (none
-# declared for the database): the instance was restored, not created.
+# declared for the database): the instance was restored, not created (RDS's
+# result; with provisionedBy=sdk above, the SDK route's restore made it).
 assert_instance "Phase 3" "${SNAP_INSTANCE_ID}" MasterUsername cdkdadmin
 assert_instance "Phase 3" "${SNAP_INSTANCE_ID}" DBName appdb
-# On the restore call: the port, the flag, and MultiAZ false (sent because
-# none is declared, as CloudFormation's handler defaults it).
+# On the restore call: the port and the flag (a restore without them keeps
+# 5432 and false). MultiAZ false is RDS's result for this single-AZ source
+# either way; that cdkd sends false for an undeclared MultiAZ is unit-tested.
 assert_instance "Phase 3" "${SNAP_INSTANCE_ID}" Endpoint.Port 5434
 assert_instance "Phase 3" "${SNAP_INSTANCE_ID}" CopyTagsToSnapshot True
 assert_instance "Phase 3" "${SNAP_INSTANCE_ID}" MultiAZ False

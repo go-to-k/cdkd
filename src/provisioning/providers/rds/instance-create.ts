@@ -91,9 +91,11 @@ export async function createDBInstance(
   // go-to-k/cdkd#5640: a declared snapshot makes the create a restore
   // (`./instance-restore.ts`), unless a source makes it a read replica, which
   // CloudFormation's handler tests first and which reads neither key.
-  const declaredRestore = readInstanceSnapshotRestore(properties, resourceType, logicalId);
-  const snapshotRestore = replicaSource === undefined ? declaredRestore : undefined;
-  if (declaredRestore !== undefined && replicaSource !== undefined) {
+  const snapshotRestore =
+    replicaSource === undefined
+      ? readInstanceSnapshotRestore(properties, resourceType, logicalId)
+      : undefined;
+  if (replicaSource !== undefined && declaredSnapshotKeys(properties).length > 0) {
     this.logger.warn(
       safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
     );
