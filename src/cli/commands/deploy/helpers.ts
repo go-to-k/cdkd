@@ -1,10 +1,13 @@
 import { getLogger } from '../../../utils/logger.js';
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
-import { safeMsg } from '../../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { awsEndpointOverrideActive } from '../../../utils/aws-client-defaults.js';
 import type { DeployResult } from '../../../deployment/deploy-engine.js';
 import { promptYesNo } from '../confirm-prompt.js';
-import { abortInFlightMultipartUploads } from '../../../assets/file-asset-publisher.js';
+import {
+  abortInFlightMultipartUploads,
+  type InFlightAbort,
+} from '../../../assets/file-asset-publisher.js';
 
 /**
  * The `Release with:` command deploy's force-quit prints: both values are
@@ -82,29 +85,47 @@ export async function confirmAutoAssetStorageCreate(args: {
 export const FORCE_QUIT_ABORT_BUDGET_MS = 5000;
 
 /**
- * Deploy's second Ctrl-C: abort the multipart uploads in flight, THEN exit
- * (go-to-k/cdkd#6162). `process.exit` first would leave their parts billed in
- * the bucket. Bounded: an abort that hangs (a dead network is a likely reason
- * for the user to hit Ctrl-C twice) still exits after `budgetMs`. Exported for
- * its test.
+ * Deploy's second Ctrl-C: abort the multipart uploads in flight, say so, THEN
+ * exit (go-to-k/cdkd#6162). `process.exit` first would leave their parts billed
+ * in the bucket; and the line is written HERE, because the exit races the
+ * uploads' own rejections up to the work graph. Bounded: an abort that hangs
+ * (a dead network is a likely reason to hit Ctrl-C twice) still exits after
+ * `budgetMs`. Exported for its test.
  */
 export function exitAfterAbortingUploads(
   exit: (code: number) => void,
-  abort: () => Promise<void> = abortInFlightMultipartUploads,
+  write: (text: string) => void,
+  abort: () => InFlightAbort = abortInFlightMultipartUploads,
   budgetMs: number = FORCE_QUIT_ABORT_BUDGET_MS
 ): Promise<void> {
+  let started: InFlightAbort;
+  try {
+    started = abort();
+  } catch {
+    started = { destinations: [], done: Promise.resolve() };
+  }
+  const { destinations } = started;
   let exited = false;
-  const finish = (): void => {
+  const finish = (confirmed: boolean): void => {
     if (exited) return;
     exited = true;
+    if (destinations.length > 0) {
+      const list = destinations.map((d) => displaySafe(d)).join(', ');
+      write(
+        confirmed
+          ? `Interrupted: aborted the in-flight asset upload(s) ${list}.\n`
+          : `Interrupted: exiting before the abort of the in-flight asset upload(s) ${list} ` +
+              `was confirmed; the asset bucket's lifecycle rule removes what is left.\n`
+      );
+    }
     exit(130);
   };
-  const timer = setTimeout(finish, budgetMs);
-  return abort()
+  const timer = setTimeout(() => finish(false), budgetMs);
+  return started.done
     .catch(() => undefined)
     .then(() => {
       clearTimeout(timer);
-      finish();
+      finish(true);
     });
 }
 
@@ -114,7 +135,7 @@ export interface DeploySigintHandlerOptions {
   /** Test seams; default to the process. */
   write?: (text: string) => void;
   exit?: (code: number) => void;
-  abort?: () => Promise<void>;
+  abort?: () => InFlightAbort;
   budgetMs?: number;
 }
 
@@ -161,6 +182,6 @@ export function createDeploySigintHandler(options: DeploySigintHandlerOptions): 
         // `--profile` / `--state-bucket` / `--state-prefix` (go-to-k/cdkd#4177).
         `\nRelease with: ${forceQuitReleaseCommand()}\n`
     );
-    void exitAfterAbortingUploads(exit, options.abort, options.budgetMs);
+    void exitAfterAbortingUploads(exit, write, options.abort, options.budgetMs);
   };
 }

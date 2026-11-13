@@ -9,6 +9,7 @@ import {
 import { displayIdent } from '../utils/display-safe.js';
 import { redactDockerArgvValues } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { verboseAwareText } from '../utils/aws-failure-text.js';
 
 /**
  * The warnings for everything in an asset manifest that cdkd forwards to
@@ -388,7 +389,10 @@ export function warnManifestExecutable(executable: readonly string[]): void {
   logger.warn(
     `Docker asset source.executable runs a command this asset manifest chose, on ` +
       `this machine: ${displayAssemblyPath(cmd ?? '')}` +
-      (rest.length > 0 ? ` (with ${rest.length} argument(s); --verbose shows them)` : '') +
+      (rest.length > 0
+        ? ` (with ${rest.length} argument(s); ` +
+          verboseAwareText('--verbose shows them)', 'listed in the debug line above)')
+        : '') +
       `. cdkd runs it, matching the CDK CLI — a pre-synthesized assembly is trusted ` +
       `input. Note that this means deploying from a pre-synthesized assembly DOES ` +
       `execute code from it, which the CloudFormation template does not show.`

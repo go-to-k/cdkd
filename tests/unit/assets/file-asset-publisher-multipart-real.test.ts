@@ -274,8 +274,10 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
       pending.catch(() => undefined);
       await until('UploadPart');
       const aborting = abortInFlightMultipartUploads();
+      // Named at once, for deploy's interruption line.
+      expect(aborting.destinations).toEqual(['s3://cdkd-assets/hash.zip']);
       open();
-      await aborting;
+      await aborting.done;
       // Resolved only after the abort reached S3: deploy exits right after.
       expect(recorded.map(operation)).toContain('AbortMultipartUpload');
       const error = await pending.then(
@@ -302,7 +304,7 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
       const aborting = abortInFlightMultipartUploads();
       // S3 answers the create only now, after the abort fired.
       open();
-      await aborting;
+      await aborting.done;
       const abort = recorded.find((r) => operation(r) === 'AbortMultipartUpload');
       expect(abort?.query['uploadId']).toBe('upload-1');
       await expect(pending).rejects.toBeInstanceOf(AssetUploadInterruptedError);

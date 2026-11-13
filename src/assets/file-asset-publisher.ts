@@ -28,20 +28,32 @@ export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
  * The multipart uploads in flight, each as the function that interrupts it.
  * See {@link abortInFlightMultipartUploads}.
  */
-const inFlightUploads = new Set<() => Promise<void>>();
+const inFlightUploads = new Map<() => Promise<void>, string>();
 let trackerSeq = 0;
 
+/** What {@link abortInFlightMultipartUploads} started. */
+export interface InFlightAbort {
+  /** `s3://bucket/key` of each upload being aborted, known at once. */
+  readonly destinations: readonly string[];
+  /** Settles once each abort reached S3 (or failed). Never rejects. */
+  readonly done: Promise<void>;
+}
+
 /**
- * Abort every multipart upload in flight, and resolve once each is aborted on
- * S3 too (go-to-k/cdkd#6162).
+ * Abort every multipart upload in flight (go-to-k/cdkd#6162).
  *
- * For `deploy`'s SECOND Ctrl-C, which force-exits: it awaits this (bounded)
- * before `process.exit`, so a killed deploy does not leave billed parts. The
- * FIRST Ctrl-C does not call it: deploy promises to wait for operations in
- * progress, and an upload is one. Never rejects.
+ * For `deploy`'s SECOND Ctrl-C, which force-exits: it awaits `done` (bounded)
+ * before `process.exit`, so a killed deploy does not leave billed parts, and
+ * prints the interruption itself from `destinations`, since the exit races
+ * the uploads' own rejections. The FIRST Ctrl-C does not call this: deploy
+ * promises to wait for operations in progress, and an upload is one.
  */
-export async function abortInFlightMultipartUploads(): Promise<void> {
-  await Promise.allSettled([...inFlightUploads].map((interrupt) => interrupt()));
+export function abortInFlightMultipartUploads(): InFlightAbort {
+  const entries = [...inFlightUploads];
+  return {
+    destinations: entries.map(([, destination]) => destination),
+    done: Promise.allSettled(entries.map(([interrupt]) => interrupt())).then(() => undefined),
+  };
 }
 
 /**
@@ -308,7 +320,7 @@ export class FileAssetPublisher {
       abortController.abort();
       await settled;
     };
-    inFlightUploads.add(interrupt);
+    inFlightUploads.set(interrupt, `s3://${bucket}/${key}`);
     try {
       await upload.done();
     } catch (error) {

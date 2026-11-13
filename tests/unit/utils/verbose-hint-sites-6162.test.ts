@@ -4,6 +4,7 @@ import { abandonedScanStackNote } from '../../../src/cli/commands/scrub/abandone
 import { refuseDivergentRecordRegionForRollback } from '../../../src/cli/commands/rollback/guards.js';
 import { divergentRecordRegionRefusalMessage } from '../../../src/state/malformed-resources-bag/divergent-region.js';
 import type { StackState } from '../../../src/types/state.js';
+import { relayedEncryptionChangeLimit } from '../../../src/provisioning/providers/dynamodb-globaltable/capacity.js';
 
 /**
  * go-to-k/cdkd#6162: hints worded around `--verbose` say where the detail
@@ -70,6 +71,22 @@ describe('destroy divergent-region refusal', () => {
     verbose(true);
     const text = divergentRecordRegionRefusalMessage('S', 'us-east-1', 'eu-west-1', 1);
     expect(text).toContain("The debug output shows what the record's region field holds. Either destroy");
+    expect(text).not.toContain('--verbose');
+  });
+});
+
+describe('DynamoDB encryption-change limit relay', () => {
+  const AWS_TEXT = 'Encryption mode changes are limited in the 24h window';
+  it('asks for --verbose on an ordinary run', () => {
+    verbose(false);
+    expect(relayedEncryptionChangeLimit(AWS_TEXT)).toContain(
+      'retry the change later (--verbose shows when AWS allows the next one).'
+    );
+  });
+  it('points at the debug output on a --verbose run', () => {
+    verbose(true);
+    const text = relayedEncryptionChangeLimit(AWS_TEXT);
+    expect(text).toContain('retry the change later (the debug output shows when AWS allows the next one).');
     expect(text).not.toContain('--verbose');
   });
 });

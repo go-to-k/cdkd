@@ -179,67 +179,95 @@ describe('every user-facing pointer goes through the verbose-aware helpers', () 
   });
 
   /**
-   * The src-wide scan: every code line worded around `--verbose` ("re-run ...
-   * --verbose", "--verbose for", "--verbose to see") must carry, or follow
-   * within two lines, a verboseAwareText / verbosePointerSentence /
-   * verbosePointerTail call. A newly hard-coded hint fails it.
+   * The src-wide scan: every code line that names `--verbose` (any wording:
+   * "re-run with --verbose", "--verbose for", "--verbose to see", "--verbose
+   * shows", ...) must be GATED, in one of three exact shapes:
+   *
+   *  - the same line holds `verboseAwareText(` or `verbosePointerSentence() ?`
+   *    BEFORE the hint (the hint is that call's argument / that ternary's arm);
+   *  - the previous line ENDS in `verboseAwareText(` (the hint opens its
+   *    argument list);
+   *  - the previous line ends in `verbosePointerSentence()` and this one opens
+   *    the ternary arm with `?`.
+   *
+   * So an unrelated gate call nearby cannot excuse a hint. The option's own
+   * definition (`'--verbose'` as a whole string) is not a hint.
    */
-  const HINT = /re-?run[^`'"]*--verbose|--verbose (for|to see)/i;
-  const AWARE = /verboseAwareText\(|verbosePointer(Sentence|Tail)\(\)/;
+  const HINT = /--verbose\b/;
+  const OPTION_TOKEN = /['"`](?:-v, )?--verbose['"`]/;
+  const SAME_LINE_GATE = /verboseAwareText\(|verbosePointerSentence\(\) \?/;
+  function gated(lines: string[], i: number): boolean {
+    const line = lines[i]!;
+    const gate = SAME_LINE_GATE.exec(line);
+    if (gate !== null && gate.index < line.search(HINT)) return true;
+    const prev = (lines[i - 1] ?? '').trimEnd();
+    if (/verboseAwareText\($/.test(prev)) return true;
+    return /verbosePointerSentence\(\)$/.test(prev) && /^\s*\?/.test(line);
+  }
+  function isHintLine(line: string): boolean {
+    return !/^\s*(\/\/|\*|\/\*)/.test(line) && HINT.test(line) && !OPTION_TOKEN.test(line);
+  }
   function ungatedHints(file: string, text: string): string[] {
     const lines = text.split('\n');
     const out: string[] = [];
     lines.forEach((line, i) => {
-      if (/^\s*(\/\/|\*|\/\*)/.test(line) || !HINT.test(line)) return;
-      if (!AWARE.test(lines.slice(Math.max(0, i - 2), i + 1).join('\n'))) out.push(`${file}:${i + 1}`);
+      if (isHintLine(line) && !gated(lines, i)) out.push(`${file}: ${line.trim()}`);
     });
     return out;
   }
-  // Exactly two exemptions, neither a re-run of THIS command (plus the
-  // module that defines the pointer and the helpers).
-  const EXEMPT = new Set([
-    'src/deployment/recreate-targets/probe.ts', // another command's flag: `cdkd state show` with --verbose
-    'src/utils/error-handler/base-errors.ts', // a flag list: "--resource-timeout ..., or --verbose to see the"
-    'src/utils/aws-failure-text.ts', // defines VERBOSE_POINTER and the helpers
+  // Exempt by EXACT line text, never by file: a new hint in the same file is
+  // still caught. None of these asks to re-run THIS command with --verbose.
+  const EXEMPT_LINES = new Set([
+    // Another command's flag (`cdkd state show` with --verbose).
+    'src/deployment/recreate-targets/probe.ts: `--verbose to see what the record claims, and repair it. Re-run with ` +',
+    // A flag list in the resource-timeout remedy.
+    "src/utils/error-handler/base-errors.ts: 'to bump the budget for this resource type only, or --verbose to see the\\n'",
+    "src/utils/error-handler/base-errors.ts: 'or --verbose to see the\\n';",
+    // PR #6160's file; a debug line, so it only ever prints under --verbose.
+    'src/local/docker-runner.ts: logger.debug(`Pulling ${image} (silent — pass --verbose to stream progress)`);',
+    // The pointer's own definition.
+    `src/utils/aws-failure-text.ts: export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";`,
   ]);
 
-  it('the scan flags a hard-coded hint and passes a gated one (self-test)', () => {
+  it('the scan flags a hard-coded hint and passes only a real gate (self-test)', () => {
+    const scan = (text: string) => ungatedHints('x.ts', text);
+    expect(scan("  logger.warn(`boom. Re-run with --verbose for AWS's own message.`);")).toHaveLength(1);
+    expect(scan('  `retry later (--verbose shows when)`,')).toHaveLength(1);
+    // An unrelated gate on a nearby line excuses nothing.
+    expect(scan('  const a = verboseAwareText(x, y);\n  `retry later (--verbose shows when)`,')).toHaveLength(1);
+    // A gate AFTER the hint on the same line excuses nothing.
+    expect(scan('  `--verbose shows it` + verboseAwareText(x, y),')).toHaveLength(1);
+    // The three gated shapes.
+    expect(scan("  verboseAwareText(\n    'Re-run with --verbose for the cause.',")).toEqual([]);
+    expect(scan('  safeMsg`it${verboseAwareText(\', re-run with --verbose\', \'\')}`')).toEqual([]);
     expect(
-      ungatedHints('x.ts', "  logger.warn(`boom. Re-run with --verbose for AWS's own message.`);")
-    ).toEqual(['x.ts:1']);
-    expect(ungatedHints('x.ts', '  `boom; re-run with --verbose for the details`,')).toEqual([
-      'x.ts:1',
-    ]);
-    expect(
-      ungatedHints(
-        'x.ts',
-        "  return verbosePointerSentence()\n    ? `x; re-run with --verbose for the AWS error text`\n    : `y`;"
-      )
+      scan("  return verbosePointerSentence()\n    ? `x; re-run with --verbose for the AWS error text`")
     ).toEqual([]);
-    expect(ungatedHints('x.ts', '  // Re-run with --verbose for the details.')).toEqual([]);
+    expect(scan("  new Option('--verbose', 'Enable verbose logging')")).toEqual([]);
+    expect(scan('  // Re-run with --verbose for the details.')).toEqual([]);
   });
 
-  it('no src file hard-codes a --verbose hint outside the helpers', async () => {
+  it('no src line hard-codes a --verbose hint outside the gates', async () => {
     const { execFileSync } = await import('node:child_process');
     const { readFileSync } = await import('node:fs');
     const files = execFileSync('git', ['ls-files', 'src/**/*.ts', 'src/*.ts'], { encoding: 'utf8' })
       .split('\n')
-      .filter((f) => f !== '' && !EXEMPT.has(f));
-    let hits = 0;
+      .filter((f) => f !== '');
+    let hints = 0;
     const offenders: string[] = [];
+    const exemptSeen = new Set<string>();
     for (const file of files) {
       const text = readFileSync(file, 'utf8');
-      hits += text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l) && HINT.test(l)).length;
-      offenders.push(...ungatedHints(file, text));
+      hints += text.split('\n').filter(isHintLine).length;
+      for (const hit of ungatedHints(file, text)) {
+        if (EXEMPT_LINES.has(hit)) exemptSeen.add(hit);
+        else offenders.push(hit);
+      }
     }
     expect(offenders).toEqual([]);
-    // Non-vacuity: the gated sites (getatt-refusals, dynamodb-index-busy-delete,
-    // drift, scrub, rollback, divergent-region, legacy, state-record, ...) are
-    // really in the scanned population.
-    expect(hits).toBeGreaterThanOrEqual(9);
-    // Each exemption still holds a hint; drop it from EXEMPT once it does not.
-    for (const file of [...EXEMPT].filter((f) => !f.endsWith('aws-failure-text.ts'))) {
-      expect(readFileSync(file, 'utf8')).toMatch(HINT);
-    }
+    // Every exemption still matches a line; drop it once it does not.
+    expect([...exemptSeen].sort()).toEqual([...EXEMPT_LINES].sort());
+    // Non-vacuity: the gated sites are really in the scanned population.
+    expect(hints).toBeGreaterThanOrEqual(15);
   });
 });
