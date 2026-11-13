@@ -11,7 +11,10 @@
 # Phase 1 templates every removed attribute at its NON-default value, so phase
 # 2 can tell "reset" from "never set". The standard topic's DisplayName is the
 # retained sibling. Phase 3 is the no-op redeploy (phantom-drift guard), plus a
-# `cdkd drift` that must report nothing.
+# `cdkd drift` that must report nothing. Phase 4 turns tracing on out of band on
+# a topic that never declared it (drift baseline `''`): `cdkd drift --revert`
+# must send `PassThrough` (SNS refuses `''`), and the next `cdkd drift` must
+# read `''` and `PassThrough` as the same value.
 #
 # Run via: /run-integ sns-topic-attr-removal
 #         or: bash tests/integration/sns-topic-attr-removal/verify.sh
@@ -115,13 +118,15 @@ ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}
 STATE_BODY=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 STANDARD_ARN=$(topic_arn_by_logical_id "${STATE_BODY}" "StandardTopic")
 FIFO_ARN=$(topic_arn_by_logical_id "${STATE_BODY}" "FifoTopic")
-if [[ -z "${STANDARD_ARN}" || -z "${FIFO_ARN}" ]]; then
-  echo "FAIL: could not resolve both topic ARNs from cdkd state"
-  echo "    StandardTopic='${STANDARD_ARN}' FifoTopic='${FIFO_ARN}'"
+UNSET_ARN=$(topic_arn_by_logical_id "${STATE_BODY}" "UnsetTopic")
+if [[ -z "${STANDARD_ARN}" || -z "${FIFO_ARN}" || -z "${UNSET_ARN}" ]]; then
+  echo "FAIL: could not resolve all three topic ARNs from cdkd state"
+  echo "    StandardTopic='${STANDARD_ARN}' FifoTopic='${FIFO_ARN}' UnsetTopic='${UNSET_ARN}'"
   exit 1
 fi
 echo "    standard topic: ${STANDARD_ARN}"
 echo "    FIFO topic:     ${FIFO_ARN}"
+echo "    unset topic:    ${UNSET_ARN}"
 
 echo ""
 echo "==> Assert phase-1 baseline reached AWS"
@@ -137,7 +142,9 @@ echo "    ArchivePolicy=${ARCHIVE_P1} (✓)"
 
 echo ""
 echo "==> Phase 2: re-deploy with CDKD_TEST_REMOVAL=true (the three attributes removed)"
-CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+PHASE2_LOG="$(mktemp -t sns-topic-attr-removal-phase2)"
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1 \
+  | tee "${PHASE2_LOG}"
 
 echo ""
 echo "==> Assert each removed attribute was RESET the way CloudFormation resets it"
@@ -158,6 +165,19 @@ CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-
 # the run summary, which says "created" / "updated" / "deleted" on a no-op too.
 PHASE3_CHANGES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE3_LOG}" \
   | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|deleted)' || true)
+# Sentinel: the same per-resource pattern MUST match phase 2's two updates, so a
+# reworded status line fails here instead of letting phase 3 pass on no match.
+PHASE2_UPDATES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE2_LOG}" \
+  | grep -cE '\(AWS::SNS::Topic\)[[:space:]]+updated' || true)
+rm -f "${PHASE2_LOG}"
+if [[ "${PHASE2_UPDATES}" -ne 2 ]]; then
+  echo "FAIL: the per-resource status pattern matched ${PHASE2_UPDATES} line(s) in the removal"
+  echo "    deploy's output, expected 2 — cdkd's status wording drifted, so the no-op"
+  echo "    check below can no longer see a change. Update both patterns."
+  rm -f "${PHASE3_LOG}"
+  exit 1
+fi
+rm -f "${PHASE3_LOG}"
 if [[ -n "${PHASE3_CHANGES}" ]]; then
   echo "FAIL: the unchanged re-deploy reported resource changes. Offending lines:"
   printf '%s\n' "${PHASE3_CHANGES}" | head -10
@@ -177,6 +197,29 @@ fi
 echo "    drift exit 0 (✓)"
 
 echo ""
+echo "==> Phase 4: out-of-band TracingConfig=Active on the unset topic, then drift --revert"
+expect_attr "${UNSET_ARN}" TracingConfig None "before the out-of-band change"
+aws sns set-topic-attributes --topic-arn "${UNSET_ARN}" --region "${AWS_REGION}" \
+  --attribute-name TracingConfig --attribute-value Active
+DRIFT_RC=0
+${CDKD} drift ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" || DRIFT_RC=$?
+if [[ "${DRIFT_RC}" -ne 1 ]]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after the out-of-band change, expected 1"
+  exit 1
+fi
+echo "    out-of-band change detected (exit 1) (✓)"
+${CDKD} drift ${STACK} --revert --yes --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+expect_attr "${UNSET_ARN}" TracingConfig PassThrough "after drift --revert"
+DRIFT_RC=0
+${CDKD} drift ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" || DRIFT_RC=$?
+if [[ "${DRIFT_RC}" -ne 0 ]]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after the revert, expected 0"
+  echo "    (the unset baseline '' and the reverted PassThrough must compare equal)"
+  exit 1
+fi
+echo "    drift exit 0 after the revert (✓)"
+
+echo ""
 echo "==> Destroy"
 ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 
@@ -186,10 +229,12 @@ assert_gone "standard topic ${STANDARD_ARN} still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${STANDARD_ARN}" --region "${AWS_REGION}"
 assert_gone "FIFO topic ${FIFO_ARN} still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${FIFO_ARN}" --region "${AWS_REGION}"
+assert_gone "unset topic ${UNSET_ARN} still exists after destroy" \
+  aws sns get-topic-attributes --topic-arn "${UNSET_ARN}" --region "${AWS_REGION}"
 assert_gone "state ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    both topics gone, state removed (✓)"
+echo "    all three topics gone, state removed (✓)"
 
 trap - EXIT INT TERM
 echo ""
-echo "PASS: sns-topic-attr-removal (#6226 removal resets: PassThrough / false / no archive policy)"
+echo "PASS: sns-topic-attr-removal (#6226 removal resets: PassThrough / false / no archive policy; drift --revert)"

@@ -2450,6 +2450,7 @@
         "sns-sqs-event",
         "sns-subscription-filter",
         "sns-subscription-update",
+        "sns-topic-attr-removal",
         "sqs-esm-max-concurrency",
         "sqs-fifo-unnamed",
         "ssm-secure-dynamic-ref",

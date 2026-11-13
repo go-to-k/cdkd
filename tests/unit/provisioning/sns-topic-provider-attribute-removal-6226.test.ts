@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
@@ -134,5 +135,29 @@ describe('SNSTopicProvider enum / boolean attribute removal (issue #6226)', () =
       { AttributeName: 'ContentBasedDeduplication', AttributeValue: 'true' },
       { AttributeName: 'TracingConfig', AttributeValue: 'Active' },
     ]);
+  });
+
+  // A topic that never set TracingConfig reads back as '' (readCurrentState),
+  // while a removal or a `drift --revert` leaves it at PassThrough. The drift
+  // fold must make the two equal in BOTH orders, and keep a real change.
+  const tracingDrift = (baseline: string, live: string) =>
+    calculateResourceDrift(
+      provider.canonicalizeDriftProperties('AWS::SNS::Topic', { TracingConfig: baseline }),
+      provider.canonicalizeDriftProperties('AWS::SNS::Topic', { TracingConfig: live })
+    );
+
+  it('drift: an unset baseline against a PassThrough reset is NOT drift, in either order', () => {
+    expect(tracingDrift('', 'PassThrough')).toEqual([]);
+    expect(tracingDrift('PassThrough', '')).toEqual([]);
+  });
+
+  it('drift: Active against an unset or PassThrough side IS drift', () => {
+    expect(tracingDrift('', 'Active')).not.toEqual([]);
+    expect(tracingDrift('PassThrough', 'Active')).not.toEqual([]);
+  });
+
+  it('drift fold returns the bag by identity when TracingConfig is not PassThrough', () => {
+    const bag = { TracingConfig: 'Active', DisplayName: 'd' };
+    expect(provider.canonicalizeDriftProperties('AWS::SNS::Topic', bag)).toBe(bag);
   });
 });

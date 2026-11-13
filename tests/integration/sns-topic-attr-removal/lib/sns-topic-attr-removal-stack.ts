@@ -13,6 +13,10 @@ import type { Construct } from 'constructs';
  * standard topic's `DisplayName` is the RETAINED sibling: it rides in the
  * same update and must survive.
  *
+ * `UnsetTopic` never declares `TracingConfig`, so its drift baseline reads
+ * `''`: `verify.sh` turns tracing on out of band and `cdkd drift --revert`
+ * must reset it to `PassThrough` and then report no drift.
+ *
  * `CDKD_TEST_REMOVAL=true` drops the three attributes.
  */
 export class SnsTopicAttrRemovalStack extends cdk.Stack {
@@ -30,6 +34,8 @@ export class SnsTopicAttrRemovalStack extends cdk.Stack {
       fifo: true,
       ...(removal ? {} : { contentBasedDeduplication: true, messageRetentionPeriodInDays: 7 }),
     });
+
+    new sns.Topic(this, 'UnsetTopic');
 
     new cdk.CfnOutput(this, 'StandardTopicArn', { value: standard.topicArn });
     new cdk.CfnOutput(this, 'FifoTopicArn', { value: fifo.topicArn });

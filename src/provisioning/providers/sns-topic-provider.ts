@@ -282,6 +282,21 @@ export class SNSTopicProvider implements ResourceProvider {
     return [];
   }
 
+  /**
+   * Fold `TracingConfig: 'PassThrough'` onto `''` (issue #6226). A topic that
+   * never set the attribute reads back as `''`, while a removal or a
+   * `drift --revert` resets it to `PassThrough`, SNS's default — the same
+   * live fact. Without the fold an unset baseline drifts against the reset
+   * forever. Both sides fold, so a declared `PassThrough` compares equal too.
+   */
+  canonicalizeDriftProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (properties['TracingConfig'] !== 'PassThrough') return properties;
+    return { ...properties, TracingConfig: '' };
+  }
+
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
   generatedCreateName(
     _resourceType: string,
