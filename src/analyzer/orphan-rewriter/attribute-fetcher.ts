@@ -108,12 +108,12 @@ export class AttributeFetcher {
     }
     // go-to-k/cdkd#6243: the same for a GraphQL API / vector bucket imported
     // before cdkd recorded its ARN; its physical id is the bare id / name.
-    const missingArn = lacksRecordedRefArn(o);
-    if (missingArn !== undefined) {
+    const healedAttribute = lacksRecordedRefArn(o);
+    if (healedAttribute !== undefined) {
       return {
         ok: false,
         reason:
-          `state records no usable '${missingArn}' for this resource, the value CloudFormation's ` +
+          `state records no usable '${healedAttribute}' for this resource, the value CloudFormation's ` +
           'Ref returns, and the physical id is NOT that value',
       };
     }

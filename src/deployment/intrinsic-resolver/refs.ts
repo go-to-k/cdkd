@@ -203,19 +203,20 @@ export async function resolveRef(
     // attribute, which a record imported before `cdkd import` recorded it
     // lacks; its physical id is the bare id / name. Healed and refused as the
     // table above: `Fn::GetAtt` of the ARN re-reads the record from AWS.
-    const missingArn = lacksRecordedRefArn(resource);
-    if (missingArn !== undefined) {
+    const healedAttribute = lacksRecordedRefArn(resource);
+    if (healedAttribute !== undefined) {
       // An unhealed miss is refused inside: an `*Arn` name never takes the
       // physical-id fallback when that id is not ARN-shaped.
-      const arn = await resolveGetAtt(resolver, [logicalId, missingArn], context);
+      const arn = await resolveGetAtt(resolver, [logicalId, healedAttribute], context);
       if (typeof arn === 'string' && arn.startsWith('arn:') && !isPlaceholderArn(arn)) {
         return arn;
       }
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: CloudFormation's Ref ` +
-            `of this resource is its ${missingArn}, which its physical id is not, and the value ` +
-            `read for it is not a usable ARN. Re-import the resource with 'cdkd import'.`
+          `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: the Ref value ` +
+            `CloudFormation returns for this resource is its ${healedAttribute}, which its physical ` +
+            `id is not, and the value read for it is not a usable ARN. Re-import the resource ` +
+            `with 'cdkd import'.`
         )
       );
     }
