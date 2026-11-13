@@ -474,6 +474,21 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
           displaySafe(stackInfo.stackName),
           { absentStackIsNoSource: true }
         );
+  // go-to-k/cdkd#6170: an import creating the record over a first deploy
+  // that wrote ahead and was cut short adopts what that deploy made, whose
+  // names took `AWS::StackId`'s tail from the sibling's flag; resolve with it.
+  // The id itself is taken below, from the same sibling.
+  // Optional for the test doubles, as the deploy's prefetch is.
+  if (existingState === null && typeof stateBackend.peekStackInstanceSibling === 'function') {
+    const sibling = await stateBackend.peekStackInstanceSibling(stackInfo.stackName, targetRegion);
+    if (sibling?.stackIdFromInstance === true) {
+      stackState = {
+        ...stackState,
+        stackInstanceId: sibling.stackInstanceId,
+        stackIdFromInstance: true,
+      };
+    }
+  }
   const unsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
     resolveImportedProperties(
       stackState,

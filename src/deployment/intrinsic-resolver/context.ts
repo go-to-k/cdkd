@@ -111,6 +111,14 @@ export interface ResolverContext {
   /** Current stack name (for Fn::ImportValue to avoid self-reference) */
   stackName?: string;
   /**
+   * The last segment of this stack's `AWS::StackId` (go-to-k/cdkd#6170):
+   * `stackIdTailOf` over the stack's record, asked only when a template reads
+   * `AWS::StackId`. Absent, or answering `undefined`, means the legacy
+   * `cdkd` tail. A function so the deploy's contexts read the record the
+   * first write marks, and so a refusal fails only the resource reading it.
+   */
+  stackIdTail?: () => string | undefined;
+  /**
    * Persistent exports index for fast `Fn::ImportValue` resolution. When
    * supplied, the resolver tries an O(1) index lookup before falling back
    * to the per-stack state.json scan. Optional for backwards compat; the

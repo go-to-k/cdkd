@@ -282,6 +282,7 @@ export function stackInstanceIdCarriedFrom(
     | Pick<
         StackState,
         | 'stackInstanceId'
+        | 'stackIdFromInstance'
         | 'retiredNameGenerations'
         | 'supersededResources'
         | 'pendingMovesOut'
@@ -292,6 +293,7 @@ export function stackInstanceIdCarriedFrom(
 ): Pick<
   StackState,
   | 'stackInstanceId'
+  | 'stackIdFromInstance'
   | 'retiredNameGenerations'
   | 'supersededResources'
   | 'pendingMovesOut'
@@ -304,6 +306,14 @@ export function stackInstanceIdCarriedFrom(
   // writer that dropped them would leave live resources with no record.
   return {
     ...(previous?.stackInstanceId !== undefined && { stackInstanceId: previous.stackInstanceId }),
+    // go-to-k/cdkd#6170: so does the marker choosing its `AWS::StackId` tail
+    // -- a writer that dropped it would flip the stack back to `.../cdkd` and
+    // replace every resource named from it. VERBATIM, as the id is: a
+    // malformed marker is `stackIdTailOf`'s to refuse, and dropping it would
+    // turn that refusal into the silent `.../cdkd` fallback.
+    ...(previous?.stackIdFromInstance !== undefined && {
+      stackIdFromInstance: previous.stackIdFromInstance,
+    }),
     ...(previous?.retiredNameGenerations !== undefined && {
       retiredNameGenerations: previous.retiredNameGenerations,
     }),

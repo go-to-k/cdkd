@@ -10,7 +10,8 @@ import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { parseCreateTokenLedger, type CreateTokenLedgerDoc } from '../create-token-ledger.js';
 import {
   STACK_INSTANCE_SIBLING_FILE,
-  parseStackInstanceSibling,
+  parseStackInstanceSiblingIdentity,
+  type StackInstanceIdentity,
   stackInstanceSiblingBody,
 } from '../stack-instance-id.js';
 import { isNotImplemented } from '../cross-prefix-stack-scan.js';
@@ -165,15 +166,25 @@ export async function stackInstanceIdForFirstWrite(
   this: S3StateBackend,
   stackName: string,
   region: string,
-  options: { writeAhead: boolean }
+  options: {
+    writeAhead: boolean;
+    /**
+     * The identity to write ahead when no sibling exists (go-to-k/cdkd#6170):
+     * the id the deploy already resolved `AWS::StackId` with, and the flag the
+     * sibling records for a re-run. Absent: a fresh id, version 1 body.
+     */
+    candidate?: StackInstanceIdentity;
+  }
 ): Promise<string> {
   const key = this.getStackInstanceKey(stackName, region);
-  const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
+  const read = async (): Promise<string | null> =>
+    (await this.readSiblingIdentity(key, stackName, region))?.stackInstanceId ?? null;
   // The first read only: a lost race below reads the winner back afresh.
   const prefetched = this.siblingPrefetches.get(key);
   this.siblingPrefetches.delete(key);
   try {
-    const existing = await (prefetched ?? read());
+    const existing = await (prefetched?.then((identity) => identity?.stackInstanceId ?? null) ??
+      read());
     if (existing !== null) {
       this.pendingStackInstanceSiblings.set(key, existing);
       this.logger.debug(
@@ -181,10 +192,10 @@ export async function stackInstanceIdForFirstWrite(
       );
       return existing;
     }
-    const minted = randomUUID();
+    const minted = options.candidate?.stackInstanceId ?? randomUUID();
     if (!options.writeAhead) return minted;
     await this.ensureClientForBucket();
-    const body = stackInstanceSiblingBody(minted);
+    const body = stackInstanceSiblingBody(minted, options.candidate?.stackIdFromInstance === true);
     const put = async (): Promise<{ VersionId?: string | undefined }> =>
       this.s3Client.send(
         new PutObjectCommand({
@@ -277,9 +288,32 @@ export function prefetchStackInstanceSibling(
 ): void {
   const key = this.getStackInstanceKey(stackName, region);
   if (this.siblingPrefetches.has(key)) return;
-  const read = this.readSiblingId(key, stackName, region);
+  const read = this.readSiblingIdentity(key, stackName, region);
   read.catch(() => undefined);
   this.siblingPrefetches.set(key, read);
+}
+
+/**
+ * What a first deploy's sibling records, READ ONLY, `null` when absent
+ * (go-to-k/cdkd#6170): the deploy resolves `AWS::StackId` from it before its
+ * conditions and diff. Shares {@link prefetchStackInstanceSibling}'s read,
+ * starting it when none is in flight, and leaves it for
+ * {@link stackInstanceIdForFirstWrite}, so the deploy pays one read. Throws a
+ * `StateError` naming the stack (never the id), as the write would.
+ */
+export async function peekStackInstanceSibling(
+  this: S3StateBackend,
+  stackName: string,
+  region: string
+): Promise<StackInstanceIdentity | null> {
+  this.prefetchStackInstanceSibling(stackName, region);
+  const read = this.siblingPrefetches.get(this.getStackInstanceKey(stackName, region));
+  try {
+    return (await read) ?? null;
+  } catch (error) {
+    if (error instanceof StateError) throw error;
+    throw this.stackInstanceSiblingError(stackName, region, error, 'read');
+  }
 }
 
 /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
@@ -289,9 +323,19 @@ export async function readSiblingId(
   stackName: string,
   region: string
 ): Promise<string | null> {
+  return (await this.readSiblingIdentity(key, stackName, region))?.stackInstanceId ?? null;
+}
+
+/** {@link readSiblingId} with the `AWS::StackId` flag (go-to-k/cdkd#6170). */
+export async function readSiblingIdentity(
+  this: S3StateBackend,
+  key: string,
+  stackName: string,
+  region: string
+): Promise<StackInstanceIdentity | null> {
   const body = await this.getRawObject(key);
   if (body === null) return null;
-  const id = parseStackInstanceSibling(body);
+  const id = parseStackInstanceSiblingIdentity(body);
   if (id === null) {
     throw new StateError(
       `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +

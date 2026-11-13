@@ -71,6 +71,7 @@ import { previewOrphanSplice } from './orphan-splice.js';
 import { outputChangesAfterResolutionFailure } from './outputs-failure.js';
 import { trustedResourceNames } from './trust.js';
 import { healerUnderRecordPrintingBag } from './child-parameters.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -356,6 +357,8 @@ export async function computeStackDiff(
         resources: currentState.resources,
         stateBackend,
         stackName,
+        // go-to-k/cdkd#6170: the tail the deploy resolves `AWS::StackId` with.
+        stackIdTail: () => stackIdTailOf(currentState, stackName),
         // Diff resolution is best-effort (the calculator catches failures and
         // keeps the raw intrinsic): a Ref to a to-be-created resource is the
         // expected case here, so the resolver logs it at debug, not warn
@@ -441,6 +444,7 @@ export async function computeStackDiff(
             resources: resourcesForInputs,
             stateBackend,
             stackName,
+            stackIdTail: () => stackIdTailOf(currentState, stackName),
             bestEffort: true,
             ...(Object.keys(classified.bound).length > 0 && { parameters: classified.bound }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),

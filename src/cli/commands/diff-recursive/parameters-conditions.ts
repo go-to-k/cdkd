@@ -26,6 +26,7 @@ import {
 } from '../../../deployment/condition-verdicts.js';
 import { logger } from './logger.js';
 import { STABLE_PSEUDO_PARAMETERS } from './trust.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 
 /** Every `Ref` target reachable from a value, collected in one walk. */
 export function collectRefTargets(value: unknown, refs: Set<string>): void {
@@ -479,6 +480,7 @@ export async function bindParametersAndConditions({
       resources: currentState.resources,
       stateBackend,
       stackName,
+      stackIdTail: () => stackIdTailOf(currentState, stackName),
       bestEffort: true,
       ...(mergedParameters && { parameters: mergedParameters }),
       // Its `Evaluated condition` / `Resolved` debug lines print a condition

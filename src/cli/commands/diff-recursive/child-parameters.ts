@@ -24,6 +24,7 @@ import type { SecretTokensByParameter, NodeTrust } from './types.js';
 import { standInTokensOf } from './printing.js';
 import { collectRefTargets, isScalarList } from './parameters-conditions.js';
 import { rowValueTrusted } from './trust.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 
 /**
  * go-to-k/cdkd#4043 (review round 9): the keys of a nested-stack row's
@@ -189,6 +190,8 @@ export async function resolveChildStackParameters(
         secretNameSink: derivedNameSink ?? new Map(),
         stateBackend,
         stackName: parentStackName,
+        // go-to-k/cdkd#6170: the tail the deploy resolves the parent's row with.
+        stackIdTail: () => stackIdTailOf(parentState, parentStackName),
         // Best-effort like computeStackDiff's resolver: an unresolvable
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,

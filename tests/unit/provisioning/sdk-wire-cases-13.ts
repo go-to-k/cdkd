@@ -1696,7 +1696,13 @@ const nestedStateBackend = new Proxy(
       const state = nestedStates.get(stackName);
       return state ? { state: structuredClone(state), etag: 'e' } : null;
     },
-    // A first write mints the child's instance id; a fixed one keeps it deterministic.
+    // A first write mints the child's instance id; a fixed one keeps it
+    // deterministic. The deploy settles it from the sibling first
+    // (go-to-k/cdkd#6170), so the sibling answers the same id.
+    peekStackInstanceSibling: async () => ({
+      stackInstanceId: NESTED_STACK_INSTANCE_ID,
+      stackIdFromInstance: true,
+    }),
     stackInstanceIdForFirstWrite: async () => NESTED_STACK_INSTANCE_ID,
     saveState: async (stackName: string, _region: string, state: StackState) => {
       nestedStates.set(stackName, structuredClone(state));
