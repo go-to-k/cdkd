@@ -82,18 +82,24 @@ export async function refuseCustomResourcesWithoutApp(
   for (const target of targets) {
     const record = await deps.getState(target.stackName, target.region);
     if (record === null) continue;
+    // A nested child named directly (`cdkd state destroy Parent~Child`) is
+    // named by its top-level stack, the one `cdkd destroy` addresses.
+    const root = target.stackName.split('~')[0] || target.stackName;
     const customResources: string[] = [];
     await collect(
       target.stackName,
       target.region,
       record.state,
-      undefined,
+      root === target.stackName ? undefined : target.stackName,
       0,
       account,
       deps,
       customResources
     );
-    if (customResources.length > 0) found.push({ stackName: target.stackName, customResources });
+    if (customResources.length === 0) continue;
+    const existing = found.find((f) => f.stackName === root);
+    if (existing === undefined) found.push({ stackName: root, customResources });
+    else existing.customResources.push(...customResources);
   }
   if (found.length === 0) return;
   throw new CdkdError(customResourcesWithoutAppMessage(found), 'EMULATOR_CR_NO_APP');

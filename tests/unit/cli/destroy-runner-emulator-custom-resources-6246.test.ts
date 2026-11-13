@@ -120,6 +120,15 @@ describe('refuseCustomResourcesWithoutApp (#6246)', () => {
     expect(getState).toHaveBeenCalledWith('Parent~Nested', 'us-east-1');
   });
 
+  it('a nested child named directly is named by its top-level stack, which cdkd destroy addresses', async () => {
+    records.set('Parent~Child', stateWith('Parent~Child', { Cr: row('Custom::X', LAMBDA) }));
+    const message = await refusal(['Parent~Child']);
+    expect(message).toContain('stack Parent (Cr in nested stack Parent~Child)');
+    expect(message.trimEnd().split('\n').at(-1)).toBe(
+      "Run from the app's directory: cdkd destroy Parent"
+    );
+  });
+
   it('every target is checked: the refusal names each stack holding custom resources', async () => {
     records.set('Other', stateWith('Other', { Cr: row('Custom::X', LAMBDA) }));
     const message = await refusal(['Plain', 'MineStack', 'Other']);
