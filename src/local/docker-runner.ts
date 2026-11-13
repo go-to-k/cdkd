@@ -162,6 +162,19 @@ export interface DockerRunOptions {
    */
   tmpfs?: { target: string; sizeMb: number };
   /**
+   * Variables set AFTER the active `--aws-emulator` wiring, which would
+   * otherwise scrub or replace them. The custom-resource runtime's local
+   * Lambda / Step Functions endpoint (`AWS_ENDPOINT_URL_LAMBDA` /
+   * `AWS_ENDPOINT_URL_SFN`, go-to-k/cdkd#6213) is the one user.
+   */
+  envAfterWiring?: Record<string, string>;
+  /**
+   * Host loopback ports the container's loopback forwarder serves in
+   * addition to the wiring's own, for an `envAfterWiring` endpoint on
+   * `127.0.0.1:<port>`. Ignored without an active wiring.
+   */
+  extraLoopbackPorts?: readonly number[];
+  /**
    * Extra `--add-host <host>:<ip>` mappings written into the
    * container's `/etc/hosts`. Used by `cdkd local start-api`'s
    * WebSocket support (#462) to add
@@ -253,7 +266,13 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   // workload container started here. No wiring is active outside the
   // `cdkd local` commands, so their callers' argv is unchanged.
   const wiring = getActiveWorkloadAwsWiring();
-  if (!wiring) return runDetachedContainer(opts);
+  if (!wiring) {
+    return runDetachedContainer(
+      opts.envAfterWiring === undefined
+        ? opts
+        : { ...opts, env: { ...opts.env, ...opts.envAfterWiring } }
+    );
+  }
   const wired = await applyLocalAwsWiring(
     wiring,
     opts.env,
@@ -270,8 +289,20 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   ) {
     delete wired.env['AWS_ENDPOINT_URL_SQS'];
   }
-  const wiredOpts: DockerRunOptions = { ...opts, env: wired.env, extraMounts: wired.extraMounts };
-  const ports = loopbackPortsFor(wiring, wired.env, opts.network);
+  const wiredOpts: DockerRunOptions = {
+    ...opts,
+    env: { ...wired.env, ...opts.envAfterWiring },
+    extraMounts: wired.extraMounts,
+  };
+  // The extra ports go LAST: under `--aws-emulator` the forwarder's health
+  // probe goes to the first port, which must be the emulator's.
+  const ports = [
+    ...new Set([
+      ...loopbackPortsFor(wiring, wired.env, opts.network),
+      // On the host network `127.0.0.1` is the host's: nothing to forward.
+      ...(opts.network === 'host' ? [] : (opts.extraLoopbackPorts ?? [])),
+    ]),
+  ];
   // Pull the forwarder image BEFORE the workload starts, so the forwarder is
   // up within moments of the workload's own start.
   if (ports.length > 0) await prepareLocalLoopbackForwarder(wiring);
@@ -726,6 +757,33 @@ export async function startNamespacePortForwarder(
       );
     }
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 200));
+  }
+}
+
+/**
+ * The default bridge network's gateway (`172.17.0.1` by default): where a
+ * container's `host.docker.internal` (`host-gateway`) lands on Linux. Only an
+ * IPv4 address is returned; anything else is `undefined`.
+ */
+export async function dockerBridgeGateway(): Promise<string | undefined> {
+  const args = [
+    'network',
+    'inspect',
+    'bridge',
+    '--format',
+    '{{range .IPAM.Config}}{{.Gateway}} {{end}}',
+  ];
+  try {
+    const { stdout } = await execFileAsync(getDockerCmd(), args);
+    return stdout
+      .trim()
+      .split(/\s+/)
+      .find((a) => /^(\d{1,3}\.){3}\d{1,3}$/.test(a));
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(`docker network inspect failed: ${describeDockerFailure(error, args)}`);
+    return undefined;
   }
 }
 

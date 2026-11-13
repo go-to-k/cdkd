@@ -36,6 +36,7 @@ const dr = vi.hoisted(() => ({
   killAndDrainContainerLogs: vi.fn(),
   followContainerLogs: vi.fn(),
   pickFreePort: vi.fn(),
+  dockerBridgeGateway: vi.fn(),
 }));
 vi.mock('../../../src/local/docker-runner.js', () => dr);
 vi.mock('../../../src/local/docker-version.js', () => ({
@@ -55,7 +56,7 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
 
 const { invokeCustomResourceFunctionLocally, resetLocalCustomResourceRuntimeForTest } =
   await import('../../../src/local/custom-resource-runtime.js');
-const { setLocalCustomResourceRuntimeEnabled } =
+const { setLocalCustomResourceRuntimeEnabled, withCustomResourceStack } =
   await import('../../../src/local/custom-resource-runtime-gate.js');
 
 const TOKEN = 'arn:aws:lambda:eu-west-1:000000000000:function:Handler-abc';
@@ -332,5 +333,61 @@ describe('teardown', () => {
     await invoke();
     process.emit('exit', 0);
     expect(dr.removeContainersSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cr.Provider second hop (go-to-k/cdkd#6213)', () => {
+  const CREDS = { accessKeyId: 'EMULATORKEY', secretAccessKey: 'emusecret' };
+  beforeEach(() => {
+    wiring.value = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true },
+      emulatorCredentials: CREDS,
+    };
+  });
+
+  it('wires the container to the local Lambda / Step Functions endpoint, after the wiring', async () => {
+    await invoke();
+    const opts = dr.runDetached.mock.calls[0]![0] as {
+      env: Record<string, string>;
+      envAfterWiring?: Record<string, string>;
+      extraLoopbackPorts?: number[];
+      sensitiveEnvKeys: Set<string>;
+    };
+    const url = opts.envAfterWiring?.['AWS_ENDPOINT_URL_LAMBDA'];
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:(\d+)\/[0-9a-f]{64}$/);
+    expect(opts.envAfterWiring?.['AWS_ENDPOINT_URL_SFN']).toBe(url);
+    expect(opts.extraLoopbackPorts).toEqual([Number(/:(\d+)\//.exec(url!)![1])]);
+    // The docker client reads AWS_ENDPOINT_URL_* itself: never in its environment.
+    expect(opts.sensitiveEnvKeys.has('AWS_ENDPOINT_URL_LAMBDA')).toBe(false);
+    expect(opts.env['AWS_ENDPOINT_URL_LAMBDA']).toBeUndefined();
+  });
+
+  it('does not wire it without the emulator credentials a forwarded call is signed with', async () => {
+    wiring.value = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true },
+    };
+    await invoke();
+    const opts = dr.runDetached.mock.calls[0]![0] as { envAfterWiring?: unknown };
+    expect(opts.envAfterWiring).toBeUndefined();
+  });
+});
+
+describe('a destroy resolves the function in the stack it destroys', () => {
+  function twin(name: string, env: Record<string, unknown>): StackInfo {
+    const s = appStack(name);
+    (s.template.Resources!['Fn']!.Properties as Record<string, unknown>)['Environment'] = {
+      Variables: env,
+    };
+    return s;
+  }
+
+  it('picks the bound stack among stacks with the same logical ids and code', async () => {
+    assembly.stacks = [twin('Other', { A: 'other' }), twin('Mine', { A: 'mine' })];
+    plan.resolveZipImagePlan.mockClear();
+    await withCustomResourceStack('Mine', () => invoke());
+    const lambda = plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo };
+    expect(lambda.stack.stackName).toBe('Mine');
   });
 });

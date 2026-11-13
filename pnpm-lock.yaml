@@ -361,6 +361,9 @@ importers:
       '@smithy/shared-ini-file-loader':
         specifier: ^4.4.9
         version: 4.7.2
+      '@smithy/signature-v4':
+        specifier: ^5.7.5
+        version: 5.7.5
       adm-zip:
         specifier: ^0.6.0
         version: 0.6.1
