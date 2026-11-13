@@ -66,6 +66,7 @@ describe('docker spawns under --aws-emulator', () => {
     setAwsEndpointOverride(EMU);
     await runDockerStreaming(['pull', `${ECR}/a:1`], { streamLive: false });
     await runDockerForeground(['pull', `${ECR}/a:1`]);
+    expect(seen()).toHaveLength(2);
     for (const dir of seen()) {
       expect(dir).not.toBe(hostDir);
       expect(JSON.stringify(configOf(dir))).not.toContain('ecr');

@@ -1790,6 +1790,28 @@ describe('pullEcrImage in AWS Emulator mixed mode: per workload (go-to-k/cdkd#61
     expect(endpointOf(stsConstructorMock)).toBeUndefined();
   });
 
+  it('an excepting workload logs in and pulls with the host docker config (#6187)', async () => {
+    const saved = process.env['DOCKER_CONFIG'];
+    process.env['DOCKER_CONFIG'] = '/host-docker-config';
+    try {
+      await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA' } });
+    } finally {
+      if (saved === undefined) delete process.env['DOCKER_CONFIG'];
+      else process.env['DOCKER_CONFIG'] = saved;
+    }
+    const login = runDockerMock.mock.calls.find((c) => (c[0] as string[])[0] === 'login')!;
+    expect((login[1] as { env: Record<string, string> }).env['DOCKER_CONFIG']).toBe('/host-docker-config');
+    const pull = spawnForegroundMock.mock.calls.find((c) => (c[1] as string[])[0] === 'pull')!;
+    expect((pull[2] as { env: Record<string, string> }).env['DOCKER_CONFIG']).toBe('/host-docker-config');
+  });
+
+  it('--no-pull is checked before the refusal: an unmarked workload verifies the cache (#6187)', async () => {
+    await expect(
+      pullEcrImage(URI, { skipPull: true, workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' } })
+    ).resolves.toBe(URI);
+    expect(runDockerMock.mock.calls.map((c) => (c[0] as string[]).slice(0, 2))).toEqual([['image', 'inspect']]);
+  });
+
   it('an unmarked workload is refused before any AWS call or docker spawn (#6187)', async () => {
     const err = await pullEcrImage(URI, {
       skipPull: false,
