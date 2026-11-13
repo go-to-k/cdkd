@@ -110,11 +110,11 @@ describe('EC2Provider createVpc partial-create cleanup (Issue #376)', () => {
 });
 
 // Issue #3077: the VPC create's attribute map records `DefaultSecurityGroup`
-// only when the post-create read-back returned the group, and never records
-// a `DefaultNetworkAcl` placeholder (nothing reads it back; a permanent `''`
-// was the issue's shape). The fence in attribute-map.test.ts sees the
-// SPELLING; these two cases pin the BEHAVIOUR, so a `?? 'sg-unknown'` or a
-// `String(defaultSgId)` that the fence cannot see still fails.
+// and (go-to-k/cdkd#6232) `DefaultNetworkAcl` only when the post-create
+// read-back returned them, never a placeholder (a permanent `''` was the
+// issue's shape). The fence in attribute-map.test.ts sees the SPELLING; these
+// cases pin the BEHAVIOUR, so a `?? 'sg-unknown'` or a `String(defaultSgId)`
+// that the fence cannot see still fails.
 describe('EC2Provider createVpc attribute map (issue #3077)', () => {
   let provider: EC2Provider;
 
@@ -124,33 +124,58 @@ describe('EC2Provider createVpc attribute map (issue #3077)', () => {
     provider = new EC2Provider();
   });
 
-  it('records DefaultSecurityGroup from the read-back and no DefaultNetworkAcl placeholder', async () => {
+  it('records DefaultSecurityGroup and DefaultNetworkAcl from the read-backs', async () => {
     mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
     mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand (availability probe)
     mockSend.mockResolvedValueOnce({ SecurityGroups: [{ GroupId: 'sg-default1' }] }); // DescribeSecurityGroupsCommand
+    mockSend.mockResolvedValueOnce({ NetworkAcls: [{ NetworkAclId: 'acl-default1' }] }); // DescribeNetworkAclsCommand
 
     const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
 
-    // Exactly the three primed calls, in primer order: a template with no DNS
+    // Exactly the four primed calls, in primer order: a template with no DNS
     // settings and no Tags issues no ModifyVpcAttribute / CreateTags, so a
-    // fourth call would shift the queue and pin the wrong response.
-    expect(mockSend).toHaveBeenCalledTimes(3);
+    // fifth call would shift the queue and pin the wrong response.
+    expect(mockSend).toHaveBeenCalledTimes(4);
+    const aclInput = mockSend.mock.calls[3]![0].input;
+    expect(aclInput).toStrictEqual({
+      Filters: [
+        { Name: 'vpc-id', Values: ['vpc-aaa'] },
+        { Name: 'default', Values: ['true'] },
+      ],
+    });
+    expect(result.attributes).toStrictEqual({
+      VpcId: 'vpc-aaa',
+      CidrBlock: '10.0.0.0/16',
+      DefaultSecurityGroup: 'sg-default1',
+      DefaultNetworkAcl: 'acl-default1',
+    });
+  });
+
+  it('omits DefaultSecurityGroup and DefaultNetworkAcl when the read-backs fail, rather than recording an empty string', async () => {
+    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
+    mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand
+    mockSend.mockRejectedValueOnce(new Error('Rate exceeded')); // DescribeSecurityGroupsCommand
+    mockSend.mockRejectedValueOnce(new Error('Rate exceeded')); // DescribeNetworkAclsCommand
+
+    const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
+
+    expect(mockSend).toHaveBeenCalledTimes(4);
+    expect(result.attributes).toStrictEqual({ VpcId: 'vpc-aaa', CidrBlock: '10.0.0.0/16' });
+  });
+
+  it('omits DefaultNetworkAcl when the read-back finds no default ACL', async () => {
+    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
+    mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand
+    mockSend.mockResolvedValueOnce({ SecurityGroups: [{ GroupId: 'sg-default1' }] }); // DescribeSecurityGroupsCommand
+    mockSend.mockResolvedValueOnce({ NetworkAcls: [] }); // DescribeNetworkAclsCommand
+
+    const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
+
     expect(result.attributes).toStrictEqual({
       VpcId: 'vpc-aaa',
       CidrBlock: '10.0.0.0/16',
       DefaultSecurityGroup: 'sg-default1',
     });
-  });
-
-  it('omits DefaultSecurityGroup when the read-back fails, rather than recording an empty string', async () => {
-    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
-    mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand
-    mockSend.mockRejectedValueOnce(new Error('Rate exceeded')); // DescribeSecurityGroupsCommand
-
-    const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
-
-    expect(mockSend).toHaveBeenCalledTimes(3);
-    expect(result.attributes).toStrictEqual({ VpcId: 'vpc-aaa', CidrBlock: '10.0.0.0/16' });
   });
 });
 

@@ -14,6 +14,7 @@ import {
   AttachUserPolicyCommand,
   DetachUserPolicyCommand,
   NoSuchEntityException,
+  type Policy,
 } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -48,6 +49,7 @@ import { create } from './iam-managed-policy/create.js';
 import { update } from './iam-managed-policy/update.js';
 import { deleteImpl } from './iam-managed-policy/delete.js';
 import { readCurrentState, importImpl } from './iam-managed-policy/read-state.js';
+import { managedPolicyAttributes } from './iam-managed-policy/shared.js';
 import { policyIdentityToken } from './iam-managed-policy/shared.js';
 
 const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
@@ -205,9 +207,13 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // CFn exposes only `PolicyArn` for `AWS::IAM::ManagedPolicy` (Ref also
-    // returns the ARN). Other attribute names would be a template bug.
+    // `Ref` also returns the ARN. The PolicyId / DefaultVersionId this
+    // type's create records (go-to-k/cdkd#6232) need a GetPolicy.
     if (attributeName === 'PolicyArn') return physicalId;
+    if (attributeName === 'PolicyId' || attributeName === 'DefaultVersionId') {
+      const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
+      return managedPolicyAttributes(physicalId, resp.Policy)[attributeName];
+    }
     return undefined;
   }
 
@@ -599,14 +605,14 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
   }
 
-  async findPolicyArnByName(policyName: string): Promise<string | undefined> {
+  async findPolicyByName(policyName: string): Promise<(Policy & { Arn: string }) | undefined> {
     let marker: string | undefined;
     do {
       const resp = await this.iamClient.send(
         new ListPoliciesCommand({ Scope: 'Local', ...(marker ? { Marker: marker } : {}) })
       );
       for (const p of resp.Policies ?? []) {
-        if (p.PolicyName === policyName && p.Arn) return p.Arn;
+        if (p.PolicyName === policyName && p.Arn) return { ...p, Arn: p.Arn };
       }
       marker = resp.IsTruncated ? resp.Marker : undefined;
     } while (marker);

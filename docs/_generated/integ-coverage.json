@@ -1589,6 +1589,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1751,6 +1752,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-vpc-managed-policy": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -1899,6 +1903,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2055,6 +2060,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-vpc-managed-policy": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2174,10 +2182,15 @@
     {
       "resourceType": "AWS::EC2::NetworkAclEntry",
       "integs": [
-        "ec2-vpc"
+        "ec2-vpc",
+        "getatt-vpc-managed-policy"
       ],
       "signals": {
         "ec2-vpc": [
+          "literal"
+        ],
+        "getatt-vpc-managed-policy": [
+          "l1",
           "literal"
         ]
       }
@@ -2228,6 +2241,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2393,6 +2407,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-vpc-managed-policy": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2538,6 +2555,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2700,6 +2718,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-vpc-managed-policy": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -3118,6 +3139,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -3300,6 +3322,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-vpc-managed-policy": [
+          "l2"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -3480,6 +3505,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -3636,6 +3662,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-vpc-managed-policy": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -3783,6 +3812,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "generated-name-security-group",
+        "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -3982,6 +4012,10 @@
           "l1",
           "literal"
         ],
+        "getatt-vpc-managed-policy": [
+          "l2",
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -4162,6 +4196,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -4325,6 +4360,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-vpc-managed-policy": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -5485,6 +5523,7 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "generated-name-lifecycle",
+        "getatt-vpc-managed-policy",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -5496,6 +5535,9 @@
       ],
       "signals": {
         "generated-name-lifecycle": [
+          "literal"
+        ],
+        "getatt-vpc-managed-policy": [
           "literal"
         ],
         "iam-managed-policy": [

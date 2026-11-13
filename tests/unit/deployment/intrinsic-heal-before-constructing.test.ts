@@ -61,6 +61,21 @@ const CASES: ReadonlyArray<{
     healed: 'AROAEXAMPLE',
     fallback: REFUSED,
   },
+  // go-to-k/cdkd#6232: these fell back to the policy ARN with a warning.
+  {
+    type: 'AWS::IAM::ManagedPolicy',
+    physicalId: 'arn:aws:iam::123456789012:policy/app-policy',
+    attribute: 'PolicyId',
+    healed: 'ANPAEXAMPLE',
+    fallback: REFUSED,
+  },
+  {
+    type: 'AWS::IAM::ManagedPolicy',
+    physicalId: 'arn:aws:iam::123456789012:policy/app-policy',
+    attribute: 'DefaultVersionId',
+    healed: 'v2',
+    fallback: REFUSED,
+  },
   {
     type: 'AWS::IAM::Role',
     physicalId: 'app-role',

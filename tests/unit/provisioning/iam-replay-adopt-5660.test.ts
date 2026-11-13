@@ -200,7 +200,7 @@ const TYPES: TypeCase[] = [
     readCommand: GetPolicyCommand,
     readInput: { PolicyArn: CUSTOMER_ARN },
     live: (PolicyId) => ({ Policy: { Arn: CUSTOMER_ARN, PolicyId } }),
-    attributes: { PolicyArn: CUSTOMER_ARN },
+    attributes: { PolicyArn: CUSTOMER_ARN, PolicyId: MINE },
     destructive: [DeletePolicyCommand, CreatePolicyVersionCommand],
   },
 ];

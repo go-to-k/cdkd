@@ -12,7 +12,11 @@ import {
 } from '../../utils/s3-endpoints.js';
 import { type ResolverContext, cachedVpcDefaultSecurityGroups, quotedRender } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
-import { DescribeSecurityGroupsCommand, DescribeVpcsCommand } from '@aws-sdk/client-ec2';
+import {
+  DescribeNetworkAclsCommand,
+  DescribeSecurityGroupsCommand,
+  DescribeVpcsCommand,
+} from '@aws-sdk/client-ec2';
 import {
   describeFailureObserved,
   guardedPhysicalIdFallback,
@@ -294,6 +298,145 @@ export async function constructAttributeForCoreTypes(
           remedy: 'Check the VPC in the console, or reference the attribute from a later deploy.',
         });
       }
+      case 'DefaultNetworkAcl': {
+        // go-to-k/cdkd#6232: the `DefaultSecurityGroup` arm's twin. Reached
+        // only when the record omits the key (`EC2Provider.createVpc` records
+        // it from the same filtered read, absent when that read failed, and a
+        // record written before #6232 lacks it). It used to fall back to the
+        // VPC id with a warning. The id goes into an EC2 filter, hence the
+        // same wildcard guard as above.
+        if (!/^vpc-[0-9a-f]+$/.test(physicalId)) {
+          throw markNonRetryable(
+            new IntrinsicResolutionRefusalError(
+              `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultNetworkAcl] for AWS::EC2::VPC: the ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+                `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
+                `record (cdkd import, or re-create the VPC) and deploy again.`
+            )
+          );
+        }
+        let aclId: string | undefined;
+        try {
+          const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
+          const resp = await ec2.send(
+            new DescribeNetworkAclsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [physicalId] },
+                { Name: 'default', Values: ['true'] },
+              ],
+            })
+          );
+          aclId = resp.NetworkAcls?.[0]?.NetworkAclId;
+        } catch (err) {
+          refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: describeFailureObserved(resolver, 'DescribeNetworkAcls', err, context),
+            remedy:
+              'Fix the read (the vpc-id / default filtered DescribeNetworkAcls permission, or the region) and deploy again.',
+          });
+        }
+        if (aclId) return aclId;
+        refuseUnservedAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          physicalId,
+          context,
+          observed: 'DescribeNetworkAcls found no default network ACL in the VPC',
+          remedy: 'Check the VPC in the console, or reference the attribute from a later deploy.',
+        });
+      }
+      case 'CidrBlockAssociations': {
+        // go-to-k/cdkd#6232: a LIST of association ids, which a
+        // `VPCCidrBlock` sibling grows after the VPC is created, so it is read
+        // live like `Ipv6CidrBlocks` (`isAlwaysLiveAttribute` skips a recorded
+        // copy). The physical-id fallback handed `Fn::Select` the VPC id as a
+        // string. A disassociated or failed association is left out, as the
+        // `Ipv6CidrBlocks` arm leaves out an unassociated block.
+        let associationIds: string[] | undefined;
+        let vpcFound = false;
+        try {
+          const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
+          const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+          const vpc = resp.Vpcs?.[0];
+          if (vpc) {
+            vpcFound = true;
+            associationIds = (vpc.CidrBlockAssociationSet ?? [])
+              .filter((a) => {
+                const state = a.CidrBlockState?.State;
+                return state === 'associated' || state === 'associating';
+              })
+              .map((a) => a.AssociationId)
+              .filter((id): id is string => typeof id === 'string' && id !== '');
+          }
+        } catch (err) {
+          refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: describeFailureObserved(resolver, 'DescribeVpcs', err, context),
+            remedy: 'Fix the read (the DescribeVpcs permission, or the region) and deploy again.',
+          });
+        }
+        if (associationIds && associationIds.length > 0) return associationIds;
+        if (!vpcFound) {
+          refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: 'DescribeVpcs found no VPC with this id',
+            remedy: 'Check the VPC in the console, or reference the attribute from a later deploy.',
+          });
+        }
+        refuseUnservedAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          physicalId,
+          context,
+          observed: 'DescribeVpcs returned no associated CIDR block for the VPC',
+          remedy: 'Check the VPC in the console, or reference the attribute from a later deploy.',
+        });
+      }
+      default:
+        return guardedPhysicalIdFallback(
+          resolver,
+          logicalId,
+          attributeName,
+          resourceType,
+          physicalId,
+          context
+        );
+    }
+  }
+
+  // IAM ManagedPolicy
+  if (resourceType === 'AWS::IAM::ManagedPolicy') {
+    switch (attributeName) {
+      case 'PolicyArn':
+        return physicalId;
+      case 'PolicyId':
+      case 'DefaultVersionId':
+        // go-to-k/cdkd#6232: the provider records both from IAM's response;
+        // a record written before that lacks them, so heal first. Neither
+        // can be built from the ARN, so the physical-id fallback (the ARN,
+        // with a warning) it used to take is refused.
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: 'cdkd cannot build it from the policy ARN',
+        });
       default:
         return guardedPhysicalIdFallback(
           resolver,

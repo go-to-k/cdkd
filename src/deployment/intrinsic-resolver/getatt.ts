@@ -57,7 +57,9 @@ export { referencesMatchPhysicalId, reresolveRecordedReferences } from './getatt
 /**
  * An attribute `resolveGetAtt` never serves from the state record, because it
  * changes on the live resource after the create and nothing re-records it:
- * the VPC's `Ipv6CidrBlocks` (a later `VPCCidrBlock` association) and the
+ * the VPC's `Ipv6CidrBlocks` and `CidrBlockAssociations` (a later
+ * `VPCCidrBlock` association; a Cloud Control record holds the list as it
+ * was at create, go-to-k/cdkd#6232) and the
  * Subnet's `Ipv6CidrBlocks`, `NetworkAclAssociationId` and
  * `BlockPublicAccessStates` (an in-place `Ipv6CidrBlock` update, a
  * `SubnetNetworkAclAssociation`, a VPC block-public-access exclusion;
@@ -65,7 +67,8 @@ export { referencesMatchPhysicalId, reresolveRecordedReferences } from './getatt
  * recorded value can mirror it.
  */
 export function isAlwaysLiveAttribute(resourceType: string, attributeName: string): boolean {
-  if (resourceType === 'AWS::EC2::VPC') return attributeName === 'Ipv6CidrBlocks';
+  if (resourceType === 'AWS::EC2::VPC')
+    return attributeName === 'Ipv6CidrBlocks' || attributeName === 'CidrBlockAssociations';
   if (resourceType !== 'AWS::EC2::Subnet') return false;
   return (
     attributeName === 'Ipv6CidrBlocks' ||

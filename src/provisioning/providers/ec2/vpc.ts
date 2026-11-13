@@ -255,6 +255,7 @@ export async function createVpc(
     // `undefined` until the default security group is read back: the
     // attribute is OMITTED rather than recorded as `''` (issue #3077).
     let defaultSgId: string | undefined;
+    let defaultNetworkAclId: string | undefined;
     try {
       // Apply DNS settings
       if (
@@ -299,6 +300,21 @@ export async function createVpc(
       } catch {
         this.logger.debug(`Failed to get default SG for VPC ${vpcId}`);
       }
+
+      // Fetch the default network ACL for the VPC (go-to-k/cdkd#6232)
+      try {
+        const aclResponse = await this.ec2Client.send(
+          new DescribeNetworkAclsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'default', Values: ['true'] },
+            ],
+          })
+        );
+        defaultNetworkAclId = aclResponse.NetworkAcls?.[0]?.NetworkAclId;
+      } catch {
+        this.logger.debug(safeMsg`Failed to get default network ACL for VPC ${vpcId}`);
+      }
     } catch (innerError) {
       try {
         await this.ec2Client.send(new DeleteVpcCommand({ VpcId: vpcId }));
@@ -322,19 +338,17 @@ export async function createVpc(
 
     return {
       physicalId: vpcId,
-      // `DefaultNetworkAcl` is deliberately not recorded: nothing reads it
-      // back, and a permanent `''` placeholder was the issue #3077 shape --
-      // absent, a reference falls to the resolver's `guardedPhysicalIdFallback`
-      // (the VPC id, with a warning) instead of resolving to the empty
-      // string. `DefaultSecurityGroup` is absent only when the read-back
-      // above failed; the resolver's own arm for it then repeats this same
-      // filtered `DescribeSecurityGroups` live, and REFUSES (never the VPC
-      // id) when that read fails or finds nothing (issue #3096).
+      // `DefaultSecurityGroup` / `DefaultNetworkAcl` are absent only when
+      // their read-back above failed, never a `''` placeholder (the issue
+      // #3077 shape): the resolver's own arm for each then repeats the same
+      // filtered `Describe*` live, and REFUSES (never the VPC id) when that
+      // read fails or finds nothing (issues #3096, #6232).
       // An IPAM-allocated CIDR is known only from the CreateVpc response.
       attributes: definedAttributes({
         VpcId: vpcId,
         CidrBlock: cidrBlock || response.Vpc?.CidrBlock,
         DefaultSecurityGroup: defaultSgId,
+        DefaultNetworkAcl: defaultNetworkAclId,
       }),
     };
   } catch (error) {

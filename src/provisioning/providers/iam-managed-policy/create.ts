@@ -15,7 +15,7 @@ import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { iamEntityLeftByThisCreate } from '../iam-replay-adopt.js';
-import { principalsOf, policyIdentityToken } from './shared.js';
+import { managedPolicyAttributes, principalsOf, policyIdentityToken } from './shared.js';
 
 export async function create(
   this: IAMManagedPolicyProvider,
@@ -199,9 +199,7 @@ export async function create(
 
     return {
       physicalId: policyArn,
-      attributes: {
-        PolicyArn: policyArn,
-      },
+      attributes: managedPolicyAttributes(policyArn, policy),
     };
   } catch (error) {
     // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
