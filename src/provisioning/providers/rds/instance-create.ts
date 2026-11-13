@@ -25,14 +25,16 @@ import {
   engineLifecycleSupportOf,
 } from './instance-members.js';
 import {
-  describeReplicaSource,
+  declaredReplicaSource,
+  refuseBothReplicaSources,
   refuseMalformedReplicaSource,
   refuseUnknownSourceRegion,
   replicaCreateInput,
   replicaEngine,
   replicaModifyAfterCreateInput,
   replicaNeedsModifyAfterCreate,
-  replicaSourceOf,
+  replicaSourceStatus,
+  type ReplicaSource,
 } from './read-replica.js';
 import { desiredAdditionalStorageVolumes } from './additional-storage-volumes.js';
 import {
@@ -100,7 +102,10 @@ export async function createDBInstance(
   // RestoreDBInstanceToPointInTime (`./instance-pitr.ts`), which CloudFormation's
   // handler tests first: a declared SourceDBInstanceIdentifier is then its source.
   const pointInTime = readInstancePointInTimeRestore(properties, resourceType, logicalId);
-  const replicaSource = pointInTime === undefined ? replicaSourceOf(properties) : undefined;
+  // go-to-k/cdkd#5640: either source key makes a read replica (the instance's,
+  // or a Multi-AZ DB cluster's); both at once is refused, as RDS refuses it.
+  if (pointInTime === undefined) refuseBothReplicaSources(properties, resourceType, logicalId);
+  const replicaSource = pointInTime === undefined ? declaredReplicaSource(properties) : undefined;
   // go-to-k/cdkd#5640: a declared snapshot makes the create a restore
   // (`./instance-restore.ts`), unless a source makes it a read replica, which
   // CloudFormation's handler tests first and which reads neither key.
@@ -112,7 +117,7 @@ export async function createDBInstance(
     this.logger.warn(
       pointInTime !== undefined
         ? safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: a point-in-time key makes the create a restore to a point in time, which reads no snapshot, as in CloudFormation.`
-        : safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: SourceDBInstanceIdentifier makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
+        : safeMsg`DBInstance ${logicalId}: ${declaredSnapshotKeys(properties).join(', ')} not applied: ${replicaSource?.key ?? 'SourceDBInstanceIdentifier'} makes the instance a read replica, which restores no snapshot, as in CloudFormation.`
     );
   }
 
@@ -620,12 +625,14 @@ export async function modifyReplicaAfterCreate(
  * `storage-optimization` / `storage-initialization` counts as proceed
  * (`isProceedDbStatus`), so should RDS keep refusing replicas there the
  * create is resent about every 10 seconds until the budget ends (bounded;
- * not verified on AWS).
+ * not verified on AWS). A Multi-AZ DB cluster source is read by its `Status`
+ * the same way; how RDS refuses a replica of a busy cluster is not measured,
+ * so only the shapes the classifier already knows are resent.
  */
 export async function createReadReplicaWhenSourceAvailable(
   this: RDSProvider,
   logicalId: string,
-  source: string,
+  source: ReplicaSource,
   command: CreateDBInstanceReadReplicaCommand
 ): Promise<{ DBInstance?: DBInstance | undefined }> {
   let response: { DBInstance?: DBInstance | undefined } = {};
@@ -633,14 +640,14 @@ export async function createReadReplicaWhenSourceAvailable(
     send: async () => {
       response = await this.getCreateClient().send(command);
     },
-    readStatus: async () => (await describeReplicaSource.call(this, source))?.DBInstanceStatus,
+    readStatus: () => replicaSourceStatus.call(this, source),
     sleep: (ms) => this.sleep(ms),
     logger: this.logger,
     label: 'RDS DBInstance',
     logicalId,
     remainingMs: enclosingDeadlineRemainingMs(),
     action: 'create of the read replica',
-    nounText: 'source instance',
+    nounText: source.key === 'SourceDBClusterIdentifier' ? 'source DB cluster' : 'source instance',
   });
   return response;
 }

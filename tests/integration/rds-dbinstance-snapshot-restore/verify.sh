@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd RDS DB instance restores from a DB snapshot, from a
-# Multi-AZ DB cluster snapshot and to a point in time (go-to-k/cdkd#5640).
+# Multi-AZ DB cluster snapshot and to a point in time, and a DB instance read
+# replica of a Multi-AZ DB cluster (go-to-k/cdkd#5640).
 #
 # `AWS::RDS::DBInstance` `DBSnapshotIdentifier`, `DBClusterSnapshotIdentifier`
-# and `UseLatestRestorableTime` on the SDK route. Before they were wired, cdkd
+# `UseLatestRestorableTime` and `SourceDBClusterIdentifier` on the SDK route.
+# Before they were wired, cdkd
 # routed such a template to Cloud Control (the keys were SDK-unwired), so
 # phase 3's provisionedBy=sdk assertions are red on a binary without them.
 #
@@ -16,7 +18,9 @@
 # master user name or the database name: the snapshot's are kept. A
 # point-in-time key makes the create a RestoreDBInstanceToPointInTime instead,
 # tested BEFORE a read replica: `SourceDBInstanceIdentifier` is then the
-# restore's source, and the instance is no replica.
+# restore's source, and the instance is no replica. `SourceDBClusterIdentifier`
+# makes a CreateDBInstanceReadReplica of the Multi-AZ DB cluster
+# (`isDBClusterReadReplica`); removing it promotes the replica.
 #
 # Phases:
 #   1. Deploy `Source` (a db.t3.micro, database `appdb`, user `cdkdadmin`,
@@ -40,8 +44,15 @@
 #      name) and MultiAZ false, and the deploy warned that its declared
 #      MasterUsername was not applied. `ClusterSnapInstance` holds the
 #      cluster's io1 storage.
+#      + CDKD_TEST_CLUSTER_REPLICA=true: `ClusterReplicaInstance` (a read
+#      replica of SourceCluster, no engine declared): provisionedBy=sdk, RDS
+#      reports it replicating the cluster, the cluster's engine, the declared
+#      maintenance window (follow-up only), and `cdkd drift` lists it clean
+#      (its source read back).
 #   4. + CDKD_TEST_UPDATE=true: `SnapInstance` BackupRetentionPeriod 3 -> 4
 #      and `PitrInstance` 2 -> 3: the same instances (DbiResourceId).
+#      `ClusterReplicaInstance` drops its source: promoted to a standalone
+#      instance, the same instance.
 #   5. A changed DBSnapshotIdentifier, then an added RestoreTime, is refused
 #      before any call ("Resource is immutable" under CloudFormation): each
 #      deploy fails naming the key, and the instance and its record are
@@ -98,6 +109,7 @@ CLUSTER_ID="cdkd-integ-rds-maz-src-5640"
 SNAP_INSTANCE_ID="cdkd-integ-rds-inst-restored-5640"
 CLUSTER_SNAP_INSTANCE_ID="cdkd-integ-rds-inst-from-maz-5640"
 PITR_INSTANCE_ID="cdkd-integ-rds-inst-pitr-5640"
+REPLICA_INSTANCE_ID="cdkd-integ-rds-inst-maz-rr-5640"
 # The manual snapshots verify.sh takes (fixed: the sweep finds them).
 SNAPSHOT_ID="cdkd-integ-rds-inst-manual-5640"
 CLUSTER_SNAPSHOT_ID="cdkd-integ-rds-maz-manual-5640"
@@ -177,7 +189,7 @@ sweep_snapshots() { (
 # without --delete-automated-backups, or a run interrupted mid-delete).
 sweep_automated_backups() { (
   set +eu
-  for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}"; do
+  for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}" "${REPLICA_INSTANCE_ID}"; do
     for arn in $(aws rds describe-db-instance-automated-backups --db-instance-identifier "${id}" \
       --region "${REGION}" --query 'DBInstanceAutomatedBackups[?Status==`retained`].DBInstanceAutomatedBackupsArn' \
       --output text 2>/dev/null); do
@@ -189,7 +201,8 @@ sweep_automated_backups() { (
 ) }
 
 # Best-effort teardown of a partial destroy, by fixed name and by the CDK Name
-# tag: the restored instances BEFORE their sources, the sources, the
+# tag: the restored instances and the replica BEFORE their sources (a deleted
+# cluster would promote its replica, not delete it), the sources, the
 # snapshots, the subnet group, then the VPC leaf-first.
 sweep() { (
   set +eu
@@ -197,6 +210,7 @@ sweep() { (
   sweep_instance "${SNAP_INSTANCE_ID}" 360 &
   sweep_instance "${CLUSTER_SNAP_INSTANCE_ID}" 360 &
   sweep_instance "${PITR_INSTANCE_ID}" 360 &
+  sweep_instance "${REPLICA_INSTANCE_ID}" 360 &
   wait
   sweep_instance "${SOURCE_ID}" &
   sweep_cluster "${CLUSTER_ID}" &
@@ -233,7 +247,7 @@ cleanup() {
   rm -f "${DEPLOY_LOG:-}"
   if [ -f "${LOCAL_DIST}" ]; then
     CDKD_TEST_SNAPSHOT_ID="${SNAPSHOT_ID}" CDKD_TEST_CLUSTER_SNAPSHOT_ID="${CLUSTER_SNAPSHOT_ID}" \
-      CDKD_TEST_PITR=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      CDKD_TEST_PITR=true CDKD_TEST_CLUSTER_REPLICA=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
@@ -307,7 +321,7 @@ assert_record() { # usage: assert_record <phase> <logical id> <field> <want>
 # --- Phase 1: deploy the sources ---------------------------------------------
 echo "==> Phase 1: deploy the source instance and the Multi-AZ DB cluster"
 env -u CDKD_TEST_SNAPSHOT_ID -u CDKD_TEST_CLUSTER_SNAPSHOT_ID -u CDKD_TEST_UPDATE \
-  -u CDKD_TEST_PITR -u CDKD_TEST_PITR_RESTORE_TIME \
+  -u CDKD_TEST_PITR -u CDKD_TEST_PITR_RESTORE_TIME -u CDKD_TEST_CLUSTER_REPLICA \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_record "Phase 1" Source provisionedBy sdk
 assert_record "Phase 1" SourceCluster provisionedBy sdk
@@ -383,16 +397,32 @@ wait_snapshot_available "snapshot ${SNAPSHOT_ID}" DBSnapshotNotFound \
 wait_snapshot_available "cluster snapshot ${CLUSTER_SNAPSHOT_ID}" DBClusterSnapshotNotFound \
   aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${CLUSTER_SNAPSHOT_ID}" \
   --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text
+# A replica needs its source cluster `available`, which its snapshot may have
+# left (not measured): wait for it again.
+for _ in $(seq 1 90); do
+  if ! CLUSTER_STATUS="$(aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0].Status' --output text 2>&1)"; then
+    echo "FAIL: Phase 2: reading cluster ${CLUSTER_ID} failed: ${CLUSTER_STATUS}" >&2
+    exit 1
+  fi
+  [ "${CLUSTER_STATUS}" = "available" ] && break
+  sleep 10
+done
+if [ "${CLUSTER_STATUS}" != "available" ]; then
+  echo "FAIL: Phase 2: cluster ${CLUSTER_ID} is '${CLUSTER_STATUS}' after its snapshot, want available" >&2
+  exit 1
+fi
 # What the restored instances restore from, in every later step (a mode-gated
 # resource leaves the template in any step without it).
 export CDKD_TEST_SNAPSHOT_ID="${SNAPSHOT_ID}"
 export CDKD_TEST_CLUSTER_SNAPSHOT_ID="${CLUSTER_SNAPSHOT_ID}"
 export CDKD_TEST_PITR=true
+export CDKD_TEST_CLUSTER_REPLICA=true
 # Only phase 5's refused deploy adds a RestoreTime.
 unset CDKD_TEST_PITR_RESTORE_TIME
 
 # --- Phase 3: both restores ----------------------------------------------------
-echo "==> Phase 3: restore SnapInstance (${SNAPSHOT_ID}), ClusterSnapInstance (${CLUSTER_SNAPSHOT_ID}) and PitrInstance (${SOURCE_ID}, latest restorable time)"
+echo "==> Phase 3: restore SnapInstance (${SNAPSHOT_ID}), ClusterSnapInstance (${CLUSTER_SNAPSHOT_ID}) and PitrInstance (${SOURCE_ID}, latest restorable time); create ClusterReplicaInstance (a replica of ${CLUSTER_ID})"
 DEPLOY_LOG="$(mktemp)"
 set +e
 # A restore copies its source first: 60 minutes per instance instead of the
@@ -408,7 +438,7 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   tail -n 60 "${DEPLOY_LOG}" >&2
   exit 1
 fi
-for logical in SnapInstance ClusterSnapInstance PitrInstance; do
+for logical in SnapInstance ClusterSnapInstance PitrInstance ClusterReplicaInstance; do
   # The discriminator: a pre-fix binary routes these to Cloud Control.
   assert_record "Phase 3" "${logical}" provisionedBy sdk
 done
@@ -490,6 +520,35 @@ if [ "${PITR_DRIFT}" != "clean" ]; then
   exit 1
 fi
 echo "    PitrInstance restored to a point in time (no replica; source user, database, engine; declared port, MaxAllocatedStorage; follow-up retention and window), drift clean"
+# ClusterReplicaInstance: a read replica of the Multi-AZ DB cluster (RDS
+# reports the cluster as its source, by identifier or ARN), its engine (none
+# declared), and the follow-up's maintenance window. Drift reads its source
+# back and compares it with the recorded identifier: clean.
+assert_instance "Phase 3" "${REPLICA_INSTANCE_ID}" DBInstanceStatus available
+REPLICA_SOURCE="$(instance_field "${REPLICA_INSTANCE_ID}" ReadReplicaSourceDBClusterIdentifier)"
+case "${REPLICA_SOURCE}" in
+  "${CLUSTER_ID}" | *":cluster:${CLUSTER_ID}") ;;
+  *) echo "FAIL: Phase 3: ${REPLICA_INSTANCE_ID} ReadReplicaSourceDBClusterIdentifier='${REPLICA_SOURCE}', want ${CLUSTER_ID}" >&2; exit 1 ;;
+esac
+assert_instance "Phase 3" "${REPLICA_INSTANCE_ID}" Engine postgres
+assert_instance "Phase 3" "${REPLICA_INSTANCE_ID}" PreferredMaintenanceWindow sun:11:00-sun:11:30
+REPLICA_RESOURCE_ID="$(instance_field "${REPLICA_INSTANCE_ID}" DbiResourceId)"
+DRIFT_OUT="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_OUT}"
+DRIFT_RC=$?
+set -e
+if ! REPLICA_DRIFT="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const s=(Array.isArray(r)?r:[r])[0]||{};const in_=(k)=>(s[k]||[]).some(e=>e.logicalId==="ClusterReplicaInstance");process.stdout.write(in_("clean")?"clean":in_("drifted")?"drifted: "+JSON.stringify((s.drifted||[]).find(e=>e.logicalId==="ClusterReplicaInstance").changes):"absent")' "${DRIFT_OUT}" 2>&1)"; then
+  echo "FAIL: Phase 3: cdkd drift --json (rc ${DRIFT_RC}) printed no readable report: ${REPLICA_DRIFT}" >&2
+  head -c 2000 "${DRIFT_OUT}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_OUT}"
+if [ "${REPLICA_DRIFT}" != "clean" ]; then
+  echo "FAIL: Phase 3: cdkd drift lists ClusterReplicaInstance as '${REPLICA_DRIFT}', want clean" >&2
+  exit 1
+fi
+echo "    ClusterReplicaInstance replicates ${CLUSTER_ID} (cluster engine; follow-up maintenance window), drift clean"
 
 # --- Phase 4: an in-place update of a restored instance ----------------------
 echo "==> Phase 4: SnapInstance BackupRetentionPeriod 3 -> 4, PitrInstance 2 -> 3"
@@ -502,6 +561,13 @@ assert_record "Phase 4" SnapInstance provisionedBy sdk
 assert_instance "Phase 4" "${PITR_INSTANCE_ID}" DbiResourceId "${PITR_RESOURCE_ID}"
 assert_instance "Phase 4" "${PITR_INSTANCE_ID}" BackupRetentionPeriod 3
 echo "    SnapInstance and PitrInstance updated in place (same DbiResourceId, retention 4 and 3)"
+# The removed SourceDBClusterIdentifier promoted the replica (the deploy waits
+# for the promotion): the same instance, no longer replicating the cluster.
+assert_instance "Phase 4" "${REPLICA_INSTANCE_ID}" DbiResourceId "${REPLICA_RESOURCE_ID}"
+assert_instance "Phase 4" "${REPLICA_INSTANCE_ID}" ReadReplicaSourceDBClusterIdentifier None
+assert_instance "Phase 4" "${REPLICA_INSTANCE_ID}" DBInstanceStatus available
+assert_record "Phase 4" ClusterReplicaInstance properties.SourceDBClusterIdentifier ""
+echo "    ClusterReplicaInstance promoted to a standalone instance (same DbiResourceId)"
 
 # --- Phase 5: a changed snapshot is refused ----------------------------------
 # No snapshot of this name needs to exist: the refusal comes before any call.
@@ -566,7 +632,7 @@ echo "==> Phase 6: destroy"
 CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-for id in "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}" "${PITR_INSTANCE_ID}" "${SOURCE_ID}"; do
+for id in "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}" "${PITR_INSTANCE_ID}" "${REPLICA_INSTANCE_ID}" "${SOURCE_ID}"; do
   # cdkd's destroy returns once AWS took the delete; wait out `deleting`.
   for _ in $(seq 1 90); do
     gone_probe aws rds describe-db-instances --db-instance-identifier "${id}" --region "${REGION}" && break
@@ -592,7 +658,7 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-
 # The instances' automated backups go with them (DeleteAutomatedBackups
 # defaults to true); a retained one would keep billing. A listing by an
 # identifier with none answers empty or not-found: a strict capture otherwise.
-for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}"; do
+for id in "${SOURCE_ID}" "${PITR_INSTANCE_ID}" "${SNAP_INSTANCE_ID}" "${CLUSTER_SNAP_INSTANCE_ID}" "${REPLICA_INSTANCE_ID}"; do
   BACKUPS_LEFT=""
   for _ in $(seq 1 30); do
     if ! BACKUPS_LEFT="$(aws rds describe-db-instance-automated-backups --db-instance-identifier "${id}" \
@@ -628,4 +694,4 @@ assert_gone "manual cluster snapshot ${CLUSTER_SNAPSHOT_ID} still exists after i
 echo "    manual snapshots deleted"
 
 trap - EXIT INT TERM
-echo "[verify] PASS — RDS DB instance restores from a DB snapshot, a Multi-AZ DB cluster snapshot and to a point in time on the SDK route with CloudFormation's follow-up ModifyDBInstance, updated in place, a changed snapshot and an added RestoreTime refused, destroyed clean"
+echo "[verify] PASS — RDS DB instance restores from a DB snapshot, a Multi-AZ DB cluster snapshot and to a point in time, and a read replica of a Multi-AZ DB cluster, on the SDK route with CloudFormation's follow-up ModifyDBInstance, updated in place (the replica promoted), a changed snapshot and an added RestoreTime refused, destroyed clean"

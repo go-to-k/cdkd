@@ -1,7 +1,9 @@
 import {
+  DescribeDBClustersCommand,
   DescribeDBInstancesCommand,
   RDSClient,
   type CreateDBInstanceReadReplicaCommandInput,
+  type DBCluster,
   type DBInstance,
   type ModifyDBInstanceCommandInput,
   type Tag,
@@ -48,18 +50,60 @@ import type { RDSProvider } from '../rds-provider.js';
  *   cross-region replica keeps the Cloud Control route
  *   (`findValueRoutedProperties` in `property-coverage.ts`).
  *
- * `ReplicaMode` and `SourceDBClusterIdentifier` stay SDK-unwired, so a template
- * declaring one keeps its Cloud Control route. A point-in-time key beside a
- * source makes the create a point-in-time restore instead (`./instance-pitr.ts`).
+ * - `SourceDBClusterIdentifier` (go-to-k/cdkd#5640): a replica of a Multi-AZ
+ *   DB cluster (`ResourceModelHelper.isDBClusterReadReplica`; `isReadReplica`
+ *   covers both keys). The same create, follow-up, promotion and immutability
+ *   (`isSourceDBClusterIdentifierMutable`), the cluster's engine read with
+ *   `DescribeDBClusters`. RDS takes no cross-region cluster source and none
+ *   in GovCloud or China, and the middleware presigns nothing for this key,
+ *   so it needs no routing. The handler sends both keys when both are
+ *   declared, which RDS refuses ("Can't be specified if ... is also
+ *   specified"); cdkd refuses that before any call.
+ *
+ * `ReplicaMode` stays SDK-unwired, so a template declaring it keeps its Cloud
+ * Control route. A point-in-time key beside a source makes the create a
+ * point-in-time restore instead (`./instance-pitr.ts`).
  */
 
-/** The declared source: `undefined` when absent or empty, as the handler's `hasValue`. */
+/** The two keys that make a replica, in the order the handler's `fetchEngine` tests them. */
+export const REPLICA_SOURCE_KEYS = [
+  'SourceDBInstanceIdentifier',
+  'SourceDBClusterIdentifier',
+] as const;
+export type ReplicaSourceKey = (typeof REPLICA_SOURCE_KEYS)[number];
+
+/** A declared replica source: which key, and its value. */
+export interface ReplicaSource {
+  readonly key: ReplicaSourceKey;
+  readonly value: string;
+}
+
+/** The value of one source key: `undefined` when absent or empty, as the handler's `hasValue`. */
+function sourceValue(
+  properties: Record<string, unknown> | undefined,
+  key: ReplicaSourceKey
+): string | undefined {
+  const value = properties?.[key];
+  if (value == null || value === '') return undefined;
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** The declared instance source: `undefined` when absent or empty, as the handler's `hasValue`. */
 export function replicaSourceOf(
   properties: Record<string, unknown> | undefined
 ): string | undefined {
-  const value = properties?.['SourceDBInstanceIdentifier'];
-  if (value == null || value === '') return undefined;
-  return typeof value === 'string' ? value : undefined;
+  return sourceValue(properties, 'SourceDBInstanceIdentifier');
+}
+
+/** The declared replica source of either kind, the instance's first; `undefined` for none. */
+export function declaredReplicaSource(
+  properties: Record<string, unknown> | undefined
+): ReplicaSource | undefined {
+  for (const key of REPLICA_SOURCE_KEYS) {
+    const value = sourceValue(properties, key);
+    if (value !== undefined) return { key, value };
+  }
+  return undefined;
 }
 
 /**
@@ -72,14 +116,40 @@ export function refuseMalformedReplicaSource(
   logicalId: string,
   physicalId?: string
 ): void {
-  const value = properties['SourceDBInstanceIdentifier'];
-  if (value == null || value === '' || typeof value === 'string') return;
+  for (const key of REPLICA_SOURCE_KEYS) {
+    const value = properties[key];
+    if (value == null || value === '' || typeof value === 'string') continue;
+    throw markNonRetryable(
+      new ProvisioningError(
+        key === 'SourceDBInstanceIdentifier'
+          ? `${resourceType} ${logicalId}: SourceDBInstanceIdentifier must be a string (the source DB instance's identifier or ARN)`
+          : `${resourceType} ${logicalId}: SourceDBClusterIdentifier must be a string (the source Multi-AZ DB cluster's identifier or ARN)`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+}
+
+/**
+ * Refuses a replica create declaring both source keys, before any call:
+ * CloudFormation's handler sends both and RDS refuses the pair
+ * (`CreateDBInstanceReadReplica`: each "Can't be specified if" the other "is
+ * also specified"), so nothing is made either way. It holds on a state replay
+ * too: no deploy that succeeded recorded such a bag.
+ */
+export function refuseBothReplicaSources(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string
+): void {
+  if (REPLICA_SOURCE_KEYS.some((key) => sourceValue(properties, key) === undefined)) return;
   throw markNonRetryable(
     new ProvisioningError(
-      `${resourceType} ${logicalId}: SourceDBInstanceIdentifier must be a string (the source DB instance's identifier or ARN)`,
+      `${resourceType} ${logicalId}: set either SourceDBInstanceIdentifier or SourceDBClusterIdentifier, not both (RDS refuses a read replica naming both sources); nothing was created`,
       resourceType,
-      logicalId,
-      physicalId
+      logicalId
     )
   );
 }
@@ -251,22 +321,69 @@ export async function describeDBInstanceInRegion(
 }
 
 /**
+ * The source Multi-AZ DB cluster, read as the handler's `fetchEngine` reads
+ * it: by its identifier (an ARN's last segment), from the ARN's region when it
+ * names another. `undefined` when DescribeDBClusters lists none; an AWS
+ * failure (a `DBClusterNotFoundFault` among them) propagates.
+ */
+export async function describeReplicaSourceCluster(
+  this: RDSProvider,
+  source: string
+): Promise<DBCluster | undefined> {
+  const sourceRegion = replicaSourceRegion(source);
+  const ownRegion = await this.getClient().config.region();
+  const identifier = replicaSourceName(source);
+  if (sourceRegion === undefined || sourceRegion === ownRegion) {
+    return this.describeDBCluster(identifier);
+  }
+  const client = new RDSClient({ ...ambientClientDefaults(), region: sourceRegion });
+  try {
+    const response = await client.send(
+      new DescribeDBClustersCommand({ DBClusterIdentifier: identifier })
+    );
+    return response.DBClusters?.[0];
+  } finally {
+    client.destroy();
+  }
+}
+
+/** The source's status (`DBInstanceStatus`, or a cluster's `Status`); `undefined` when unlisted. */
+export async function replicaSourceStatus(
+  this: RDSProvider,
+  source: ReplicaSource
+): Promise<string | undefined> {
+  return source.key === 'SourceDBClusterIdentifier'
+    ? (await describeReplicaSourceCluster.call(this, source.value))?.Status
+    : (await describeReplicaSource.call(this, source.value))?.DBInstanceStatus;
+}
+
+/**
  * The replica's engine: the declared one, else the source's, which the
  * handler reads before the create (`CreateHandler.fetchEngine`) from the
- * source's own region. It decides which storage members the create carries.
+ * source's own region: the instance's, or the Multi-AZ DB cluster's. It
+ * decides which storage members the create carries.
  */
 export async function replicaEngine(
   this: RDSProvider,
   properties: Record<string, unknown>,
-  source: string
+  source: ReplicaSource
 ): Promise<string | undefined> {
   const declaredEngine = properties['Engine'];
   if (typeof declaredEngine === 'string' && declaredEngine !== '') return declaredEngine;
-  const instance = await describeReplicaSource.call(this, source);
   // As the handler's `fetchEngine` fails the create before it starts.
+  if (source.key === 'SourceDBClusterIdentifier') {
+    const cluster = await describeReplicaSourceCluster.call(this, source.value);
+    if (cluster === undefined) {
+      throw new Error(
+        `DescribeDBClusters reported no source DB cluster ${source.value} for the read replica`
+      );
+    }
+    return cluster.Engine;
+  }
+  const instance = await describeReplicaSource.call(this, source.value);
   if (instance === undefined) {
     throw new Error(
-      `DescribeDBInstances reported no source DB instance ${source} for the read replica`
+      `DescribeDBInstances reported no source DB instance ${source.value} for the read replica`
     );
   }
   return instance.Engine;
@@ -275,7 +392,7 @@ export async function replicaEngine(
 /** What {@link replicaCreateInput} needs beyond the declared bag. */
 export interface ReplicaCreateParts {
   readonly identifier: string;
-  readonly source: string;
+  readonly source: ReplicaSource;
   readonly engine: string | undefined;
   readonly currentRegion: string | undefined;
   readonly tags: Tag[];
@@ -287,19 +404,26 @@ export interface ReplicaCreateParts {
  * builds it from the declared members (an undeclared one is left out). The
  * storage members go out unless the engine is SQL Server (they then ride the
  * after-create ModifyDBInstance), and `DBParameterGroupName` only for a
- * cross-region MySQL replica.
+ * cross-region MySQL replica of an instance
+ * (`isCrossRegionDBInstanceReadReplica`, which reads the instance key only).
+ * The source goes out under the key it was declared with.
  */
 export function replicaCreateInput(
   properties: Record<string, unknown>,
   parts: ReplicaCreateParts
 ): CreateDBInstanceReadReplicaCommandInput {
   const p = properties;
-  const sourceRegion = replicaSourceRegion(parts.source);
-  const crossRegion = sourceRegion !== undefined && sourceRegion !== parts.currentRegion;
+  const sourceRegion = replicaSourceRegion(parts.source.value);
+  const crossRegion =
+    parts.source.key === 'SourceDBInstanceIdentifier' &&
+    sourceRegion !== undefined &&
+    sourceRegion !== parts.currentRegion;
   const vpcSecurityGroups = p['VPCSecurityGroups'];
   return {
     DBInstanceIdentifier: parts.identifier,
-    SourceDBInstanceIdentifier: parts.source,
+    ...(parts.source.key === 'SourceDBClusterIdentifier'
+      ? { SourceDBClusterIdentifier: parts.source.value }
+      : { SourceDBInstanceIdentifier: parts.source.value }),
     ...(p['AutoMinorVersionUpgrade'] != null && {
       AutoMinorVersionUpgrade: p['AutoMinorVersionUpgrade'] as boolean,
     }),
@@ -488,39 +612,73 @@ export function replicaModifyAfterCreateInput(
   };
 }
 
+/** What an update does with the replica source, and the keys that decide it. */
+export interface ReplicaSourceChange {
+  readonly kind: 'unchanged' | 'promote' | 'immutable';
+  /** `'promote'`: the keys removed. `'immutable'`: the keys added or changed. */
+  readonly keys: readonly ReplicaSourceKey[];
+}
+
 /**
- * What an update does with the source:
+ * What an update does with the source, per key as the handler's
+ * `isSourceDBInstanceIdentifierMutable` / `isSourceDBClusterIdentifierMutable`
+ * read it (each passes when equal or a promotion):
  *
- * - `'unchanged'`: the two sides spell the same source, or neither names one.
- * - `'promote'`: the template removed it; the handler promotes the replica
- *   (`ResourceModelHelper.isDBInstanceReadReplicaPromotion`).
- * - `'immutable'`: added or changed as written, which the handler fails as
- *   "Resource is immutable". `updateDBInstance` still reads the live instance:
- *   one already replicating the declared source ({@link sameReplicaSource}) is
- *   no change (a record lacking it, the same source re-spelled, a
- *   `drift --revert` readback).
+ * - `'unchanged'`: each key spells the same source on both sides, or neither
+ *   names one.
+ * - `'promote'`: every key that changed was removed; the handler promotes the
+ *   replica (`ResourceModelHelper.isReadReplicaPromotion`).
+ * - `'immutable'`: a key was added or changed as written (a switch from one
+ *   key to the other included), which the handler fails as "Resource is
+ *   immutable". `updateDBInstance` still reads the live instance: one already
+ *   replicating the declared source ({@link sameReplicaSource}) is no change
+ *   (a record lacking it, the same source re-spelled, a `drift --revert`
+ *   readback).
  */
 export function replicaSourceChange(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>
-): 'unchanged' | 'promote' | 'immutable' {
-  const desired = replicaSourceOf(properties);
-  const previous = replicaSourceOf(previousProperties);
-  if (desired === previous) return 'unchanged';
-  return desired === undefined ? 'promote' : 'immutable';
+): ReplicaSourceChange {
+  const changed = REPLICA_SOURCE_KEYS.filter(
+    (key) => sourceValue(properties, key) !== sourceValue(previousProperties, key)
+  );
+  if (changed.length === 0) return { kind: 'unchanged', keys: [] };
+  const added = changed.filter((key) => sourceValue(properties, key) !== undefined);
+  return added.length === 0
+    ? { kind: 'promote', keys: changed }
+    : { kind: 'immutable', keys: added };
+}
+
+/** The live source an instance replicates under `key` (`ReadReplicaSource...`). */
+export function liveReplicaSource(
+  instance: DBInstance | undefined,
+  key: ReplicaSourceKey
+): string | undefined {
+  const value =
+    key === 'SourceDBClusterIdentifier'
+      ? instance?.ReadReplicaSourceDBClusterIdentifier
+      : instance?.ReadReplicaSourceDBInstanceIdentifier;
+  return value === undefined || value === '' ? undefined : value;
 }
 
 /**
- * The desired bag with the source the instance KEPT: the previous side's, or
- * no key when that side declared none. A copy.
+ * The desired bag with the sources the instance KEPT: each key the previous
+ * side's, or no key where that side declared none. A copy.
  */
 export function withPreviousReplicaSource(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>
 ): Record<string, unknown> {
-  const { SourceDBInstanceIdentifier: _desired, ...rest } = properties;
-  const previous = previousProperties['SourceDBInstanceIdentifier'];
-  return previous === undefined ? rest : { ...rest, SourceDBInstanceIdentifier: previous };
+  const {
+    SourceDBInstanceIdentifier: _instance,
+    SourceDBClusterIdentifier: _cluster,
+    ...rest
+  } = properties;
+  const kept: Record<string, unknown> = { ...rest };
+  for (const key of REPLICA_SOURCE_KEYS) {
+    if (previousProperties[key] !== undefined) kept[key] = previousProperties[key];
+  }
+  return kept;
 }
 
 /** Whether a described instance is a read replica (of an instance or a cluster). */

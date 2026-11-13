@@ -41,7 +41,6 @@
       "DomainIAMRoleName",
       "DomainOu",
       "ReplicaMode",
-      "SourceDBClusterIdentifier",
       "TdeCredentialArn",
       "TdeCredentialPassword"
     ]

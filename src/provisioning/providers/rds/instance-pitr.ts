@@ -384,6 +384,9 @@ export function unusedPointInTimeRestoreKeys(properties: Record<string, unknown>
     'DBClusterIdentifier',
     'PromotionTier',
     'MasterUserAuthenticationType',
+    // The restore's source is an instance's: a Multi-AZ DB cluster source
+    // (`isDBClusterReadReplica`) is on no RestoreDBInstanceToPointInTime member.
+    'SourceDBClusterIdentifier',
   ].filter((key) => {
     const value = properties[key];
     if (value == null || value === '') return false;
