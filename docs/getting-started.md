@@ -151,6 +151,7 @@ the [benchmarks](benchmarks.md) come from this flag.
 | Upload assets without deploying | `cdkd publish-assets` | [`cdkd publish-assets`](cli-publish-assets.md) |
 | Delete assets no stack references | `cdkd gc --dry-run`, then `cdkd gc` | [`cdkd gc`](cli-gc.md) |
 | Run a function or API on your machine | `cdkd local invoke`, `cdkd local start-api` | [Local Execution](local-emulation.md) |
+| Develop against AWS Emulator, without real credentials | `cdkd deploy MyStack --aws-emulator` | [Develop Locally with AWS Emulator](aws-emulator.md) |
 | Keep resolved secrets out of state | `cdkd scrub MyStack --dry-run`, then `cdkd scrub MyStack` | [`cdkd scrub`](cli-scrub.md) |
 | Inspect or repair state without the CDK app | `cdkd state list`, `cdkd state show MyStack` | [`cdkd state`](cli-state.md) |
 | Deploy through a dedicated IAM role | `cdkd deploy --role-arn <arn>` | [Credentials and --role-arn](cli-reference-credentials.md) |

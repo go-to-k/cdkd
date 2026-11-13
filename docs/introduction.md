@@ -102,7 +102,8 @@ Deploy on open, destroy on close. [Create Per-PR Environments in CI](ci-per-pr.m
 
 ::: card Run your app locally
 Functions, APIs and tasks on your machine.
-[Local Execution](local-emulation.md)
+[Local Execution](local-emulation.md),
+[Develop Locally with AWS Emulator](aws-emulator.md)
 :::
 
 ::: card Work with an AI coding agent

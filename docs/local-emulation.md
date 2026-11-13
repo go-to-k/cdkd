@@ -289,13 +289,15 @@ cdkd local invoke MyStack/Handler --ca-bundle ./local-ca.pem
 [AWS Emulator](https://github.com/aws/aws-emulator) in one flag. The URL
 defaults to `https://127.0.0.1:9297`, and its port selects the run directory
 `~/.aws/emulator/<port>/`. `CDKD_AWS_EMULATOR=1` (or a URL) turns it on
-without the flag.
+without the flag. For the whole workflow, from deploy to local runs, see
+[Develop Locally with AWS Emulator](aws-emulator.md).
 
 The URL is optional, so a word right after the flag is taken as the URL:
-`--aws-emulator MyStack/Handler` swallows the target. Put the flag after the
-target, or write `--aws-emulator=https://127.0.0.1:9297`. A value that is not
-an `http(s)` URL, or that carries a user name, password, query or fragment, is
-refused without being printed.
+`--aws-emulator MyStack/Handler` is refused, because the target is not an
+`http(s)` URL, with the advice to put the flag after the target or to write
+`--aws-emulator=<url>`, such as `--aws-emulator=https://127.0.0.1:9297`. A
+value that is not an `http(s)` URL, or that carries a user name, password,
+query or fragment, is refused without being printed.
 
 ```bash
 cdkd local invoke MyStack/Handler --from-state --aws-emulator
@@ -318,6 +320,20 @@ the emulator in the first place takes the same flag on `bootstrap` and
 
 A handler that misses the endpoint fails with a credential error rather than
 reaching real AWS, because the container holds no real credentials.
+
+AWS Emulator answers SQS calls with real-shaped queue URLs
+(`https://sqs.<region>.amazonaws.com/<account>/<queue>`), and the AWS SDK for
+JavaScript v3 sends each SQS request to its queue URL's host, which would
+leave the emulator. A sidecar in each workload rewrites the queue URLs in the
+emulator's answers to its own loopback address, so the next call stays local.
+It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
+[mixed mode](#aws-emulator-mixed-mode); a container's own
+`AWS_ENDPOINT_URL_SQS` wins.
+
+| Case | What to do |
+| --- | --- |
+| The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+| A queue URL from an environment variable (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Not rewritten; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
 
 To keep some services on real AWS while the rest goes to the emulator, see
 [AWS Emulator mixed mode](#aws-emulator-mixed-mode).
@@ -365,10 +381,10 @@ services' calls.
 
 > [!NOTE]
 > cdkd creates a REST API (`AWS::ApiGateway::RestApi`, e.g. `LambdaRestApi`)
-> through its SDK provider, which works on AWS Emulator. A REST API that an
-> older cdkd created through Cloud Control is still recorded on that route,
-> where the emulator returns an identifier that is not the API id, so its
-> resources and methods fail. Destroy and redeploy that stack once.
+> through its SDK provider, which works on AWS Emulator. A REST API created
+> through Cloud Control in the emulator (by a release before v0.343.0) is
+> recorded under the identifier the emulator returned, which is not the API
+> id, so its resources and methods fail. Destroy and redeploy that stack once.
 
 `CDKD_AWS_EMULATOR` applies to every command, so a shell that exports it for
 `cdkd local` also deploys into the emulator.
