@@ -2776,6 +2776,11 @@
       "scenarios": []
     },
     {
+      "name": "sns-topic-attr-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sqs-cloudwatch",
       "annotated": true,
       "scenarios": []
@@ -3937,6 +3942,7 @@
     "sns-inline-subscription",
     "sns-subscription-filter",
     "sns-subscription-update",
+    "sns-topic-attr-removal",
     "sqs-esm-max-concurrency",
     "sqs-fifo-unnamed",
     "stack-id-uuid",

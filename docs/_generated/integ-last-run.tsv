@@ -421,6 +421,7 @@ sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic 
 sns-sqs-event	2026-11-04T22:19:15Z	PASS	255	verify.sh	own state bucket, rc ok, orph clean
 sns-subscription-filter	2026-11-05T10:17:57Z	PASS	291	verify.sh	rc ok, orph clean
 sns-subscription-update	2026-11-07T12:39:00Z	PASS	120	verify.sh	#6007 deploy split head; rc ok, orph clean
+sns-topic-attr-removal	2026-11-13T15:36:43Z	PASS	80	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
 sqs-fifo-unnamed	2026-11-11T08:49:53Z	PASS	70	verify.sh	rc ok, orph clean; pre-fix probe red at phase-1 InvalidParameterValue (#6100)
