@@ -89,6 +89,7 @@ Nothing is deployed. The code comes from the asset staged in `cdk.out`.
 | `--env-vars <file>` | — | JSON environment overrides, keyed by the image's logical ID or construct path. |
 | `--timeout <ms>` | `60000` | Deadline of a hook with no `TimeoutInSeconds` of its own. |
 | `--assume-role <arn>` | off | Run the containers under this role. |
+| `--emulate-role-via <arn>` | — | Role to emulate the role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--from-state` | off | Resolve the image's environment from cdkd's S3 state. |
 | `--from-cfn-stack [name]` | off | Resolve it from a deployed CloudFormation stack. |
 

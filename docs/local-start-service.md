@@ -95,6 +95,7 @@ requirements.
 | `--no-logs` | off | Do not stream container output. |
 | `--cluster <name>` | `cdkd-local` | Cluster name the replicas report, and the prefix of Docker names. |
 | `--assume-role [arn]` | off | Give the containers the task role's credentials, or those of the ARN you pass. |
+| `--emulate-role-via <arn>` | — | Role to emulate the task role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--platform <platform>` | from the task definition | Force `linux/amd64` or `linux/arm64`. |
 
 `--shadow-ready-timeout` can also be set with the

@@ -113,6 +113,7 @@ mean what they mean on that command, and that page explains them:
 | `--no-logs` | off | Do not stream container output. |
 | `--cluster <name>` | `cdkd-local` | Cluster name the replicas report, and the Docker network prefix. |
 | `--assume-role [arn]` | off | Give the containers the task role's credentials. |
+| `--emulate-role-via <arn>` | — | Role to emulate the task role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--platform <platform>` | from the task definition | Force `linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every image. |
 | `--no-build` | off | Reuse the image built last time for a CDK asset. |
