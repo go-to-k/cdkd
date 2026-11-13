@@ -53,6 +53,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import type { UpdateContext } from '../../../src/types/resource.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import {
   findActionableSdkUnwired,
@@ -197,7 +198,7 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
     delete process.env['CDKD_NO_WAIT'];
   });
 
-  const update = (next: Input, prev: Input, context?: Parameters<RDSProvider['update']>[6]) =>
+  const update = (next: Input, prev: Input, context?: UpdateContext) =>
     provider.update('L', 'db-1', INSTANCE, { ...next }, { ...prev }, context);
 
   describe('create', () => {
