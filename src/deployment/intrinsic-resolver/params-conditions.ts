@@ -18,6 +18,7 @@ import {
 } from './parameter-secrets.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
 import { abandonedUnit } from './masking.js';
+import { isSelectOutOfBounds } from './string-functions.js';
 import {
   type AbandonedResolution,
   type ResolverContext,
@@ -473,6 +474,11 @@ export async function evaluateConditions(
       // `run` there would have cost `#conditions x` the cap on top.
       await withSharedDrainBudget(() => evaluateByName(name));
     } catch (error) {
+      // go-to-k/cdkd#6181: CloudFormation refuses a template whose condition
+      // selects past the end of a list, so this one is not assumed false --
+      // that would prune, and so delete, a resource CloudFormation never
+      // evaluates. The refusal names only the (masked) index and a length.
+      if (isSelectOutOfBounds(error)) throw error;
       // MASKED (issue #2748). This catch renders a resolver error verbatim
       // at WARN level, so it is reached on an ordinary `cdkd deploy` with no
       // `--verbose`. `evaluateByName` reaches `resolveDynamicReferences`

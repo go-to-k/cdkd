@@ -298,7 +298,7 @@ export function resolveDiscardsNonInertSubtree(
     if (!Array.isArray(args) || args.length !== 2) return true;
     // A static index over a LITERAL list must also be IN BOUNDS (parent
     // review round 2): index 999 on a two-element list makes
-    // `resolveSelect` answer with its OutOfBounds placeholder, and the whole
+    // `resolveSelect` refuse (go-to-k/cdkd#6181), and the whole
     // eagerly-decrypted list is discarded. Only a literal array's length is
     // checkable statically;
     // an intrinsic list argument keeps the index-only test.

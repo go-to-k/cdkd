@@ -942,8 +942,8 @@ const ROWS: readonly Row[] = [
     refused: true,
     why:
       'the other half of the out-of-bounds class the negative-index row opened: ' +
-      'index 999 is past the end, resolveSelect answers its OutOfBounds ' +
-      'placeholder, and the whole eagerly-decrypted list is discarded — a ' +
+      'index 999 is past the end, resolveSelect refuses it (#6181), and the ' +
+      'whole eagerly-decrypted list is discarded — a ' +
       "literal list's length is statically checkable, so vouch only in bounds",
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
   },
