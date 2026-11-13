@@ -50,6 +50,7 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
 const { rollbackCommand } = await import('../../../src/cli/commands/rollback.js');
 const {
   noteCustomResourceFailure,
+  noteSentToEmulatorRuntime,
   resetCustomResourceFailuresForTest,
   setLocalCustomResourceRuntimeEnabled,
 } = await import('../../../src/local/custom-resource-runtime-gate.js');
@@ -146,6 +147,7 @@ beforeEach(() => {
   // The real provider records the failure in its catch (pinned in
   // custom-resource-failure-without-app-6247.test.ts); this one does the same.
   provider.update.mockReset().mockImplementation(async (logicalId: string) => {
+    noteSentToEmulatorRuntime(logicalId);
     noteCustomResourceFailure(logicalId);
     throw new Error(`Failed to update custom resource ${logicalId}: Cannot find module 'zlib'`);
   });
@@ -163,6 +165,27 @@ describe('cdkd rollback after a custom resource failed in the emulator runtime (
     expect(message).not.toContain('re-run the rollback to retry');
     expect(message).not.toContain('Re-run with:');
     expect(message.trimEnd().split('\n').at(-1)).toBe('Deploy forward with: cdkd deploy S');
+  });
+
+  it('the deploy-forward line stays LAST, after the drop commands', async () => {
+    const { failedRollbackTail } = await import('../../../src/cli/commands/rollback/render.js');
+    noteSentToEmulatorRuntime('PutParam');
+    noteCustomResourceFailure('PutParam');
+    const tail = failedRollbackTail('S', 'us-east-1', ['Stuck']);
+    const lines = tail.trimEnd().split('\n');
+    expect(lines.some((l) => l.startsWith('Drop with: cdkd rollback S'))).toBe(true);
+    expect(lines.at(-1)).toBe('Deploy forward with: cdkd deploy S');
+    expect(tail.indexOf('Custom resource(s) PutParam')).toBeLessThan(tail.indexOf('Drop with:'));
+  });
+
+  it('a failure the emulator runtime did not run (an SNS-backed one) still advises the re-run', async () => {
+    provider.update.mockReset().mockImplementation(async (logicalId: string) => {
+      noteCustomResourceFailure(logicalId);
+      throw new Error(`Failed to update custom resource ${logicalId}: SNS publish failed`);
+    });
+    install();
+    const message = (await failedRollback())!.message;
+    expect(message).toContain('re-run the rollback to retry');
   });
 
   it('a failure off the emulator still advises the re-run', async () => {

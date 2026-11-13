@@ -61,15 +61,28 @@ export function customResourcesRunWithoutApp(): boolean {
   return localCustomResourceRuntimeActive() && synthesizedStacks().length === 0;
 }
 
+const sentToEmulatorRuntime = new Set<string>();
 const failedWithoutApp = new Set<string>();
 
 /**
- * Record that custom resource `logicalId`'s handler failed while
- * {@link customResourcesRunWithoutApp} held, so `cdkd rollback` does not
- * advise re-running itself (go-to-k/cdkd#6247). A no-op otherwise.
+ * Record that custom resource `logicalId`'s event went to AWS Emulator's own
+ * Lambda runtime (`lambda:Invoke` on the emulator) while
+ * {@link customResourcesRunWithoutApp} held. Called from the Lambda invoke
+ * path only, so an SNS-backed custom resource is never recorded. A no-op
+ * otherwise.
+ */
+export function noteSentToEmulatorRuntime(logicalId: string): void {
+  if (customResourcesRunWithoutApp()) sentToEmulatorRuntime.add(logicalId);
+}
+
+/**
+ * Record that custom resource `logicalId`'s handler failed after its event
+ * went to AWS Emulator's own runtime for lack of the app
+ * ({@link noteSentToEmulatorRuntime}), so `cdkd rollback` does not advise
+ * re-running itself (go-to-k/cdkd#6247). A no-op otherwise.
  */
 export function noteCustomResourceFailure(logicalId: string): void {
-  if (customResourcesRunWithoutApp()) failedWithoutApp.add(logicalId);
+  if (sentToEmulatorRuntime.has(logicalId)) failedWithoutApp.add(logicalId);
 }
 
 /** The custom resources {@link noteCustomResourceFailure} recorded, in order. */
@@ -79,6 +92,7 @@ export function customResourcesFailedWithoutApp(): readonly string[] {
 
 /** Test seam: forget {@link noteCustomResourceFailure}'s records. */
 export function resetCustomResourceFailuresForTest(): void {
+  sentToEmulatorRuntime.clear();
   failedWithoutApp.clear();
 }
 

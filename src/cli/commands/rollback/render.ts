@@ -62,9 +62,12 @@ export function failedRollbackTail(
 ): string {
   const emulatorFailures = customResourcesFailedWithoutApp();
   const drop = dropFailedHint(stackName, region, failedOrphanIds);
-  return emulatorFailures.length > 0
-    ? '.' + deployForwardForEmulatorCustomResources(stackName, emulatorFailures) + drop
-    : ' — re-run the rollback to retry.' + drop + rerunRollback(stackName);
+  if (emulatorFailures.length === 0) {
+    return ' — re-run the rollback to retry.' + drop + rerunRollback(stackName);
+  }
+  // The labelled line LAST, after the drop commands, as the re-run's is.
+  const forward = deployForwardForEmulatorCustomResources(stackName, emulatorFailures);
+  return '.' + forward.prose + drop + forward.line;
 }
 
 /**
@@ -79,19 +82,18 @@ export function failedRollbackTail(
 export function deployForwardForEmulatorCustomResources(
   stackName: string,
   logicalIds: readonly string[]
-): string {
+): { prose: string; line: string } {
   const deploy = pasteableCommand('cdkd deploy', [
     { value: stackName, hole: 'stack', opts: { plainIdent: true } },
   ]);
   const named = logicalIds.map((id) => plainOrDescribed(id, 'logical id')).join(', ');
-  return (
+  const prose =
     ` Custom resource(s) ${named} failed in AWS Emulator's own Lambda runtime, which cdkd ` +
     `rollback uses because it never reads the CDK app, so a re-run fails the same way. Deploy ` +
     `forward instead, from the app's directory with the version you want to keep (Docker ` +
     `running), which runs the handlers locally.` +
-    withheldTargetClause(deploy, 'stack', 'cdkd deploy', "This stack's name") +
-    `\nDeploy forward with: ${deploy.command}`
-  );
+    withheldTargetClause(deploy, 'stack', 'cdkd deploy', "This stack's name");
+  return { prose, line: `\nDeploy forward with: ${deploy.command}` };
 }
 
 /**

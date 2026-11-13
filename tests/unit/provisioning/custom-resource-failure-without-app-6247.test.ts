@@ -13,7 +13,7 @@ const mockS3Send = vi.fn();
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     lambda: { send: mockLambdaSend },
-    sns: { send: vi.fn() },
+    sns: { send: vi.fn(async () => Promise.reject(new Error('SNS publish failed'))) },
     s3: { send: mockS3Send },
     sts: { send: vi.fn(() => Promise.resolve({ Account: '123456789012' })) },
   }),
@@ -100,6 +100,15 @@ describe('custom resource failures in the emulator runtime without an app (#6247
       /Failed to create custom resource MyRes/
     );
     expect(customResourcesFailedWithoutApp()).toEqual(['MyRes']);
+  });
+
+  it('not for an SNS-backed custom resource (never in the emulator Lambda runtime)', async () => {
+    await expect(
+      provider().create('Topic', TYPE, {
+        ServiceToken: 'arn:aws:sns:us-east-1:000000000000:topic',
+      })
+    ).rejects.toThrow(/Failed to create custom resource Topic/);
+    expect(customResourcesFailedWithoutApp()).toEqual([]);
   });
 
   it('not with an app (the handler ran locally or its own fallback warned)', async () => {

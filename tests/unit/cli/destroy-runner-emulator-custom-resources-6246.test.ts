@@ -1,46 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
-import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
-import type { LockManager } from '../../../src/state/lock-manager.js';
-import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
 // go-to-k/cdkd#6246: under `--aws-emulator`, a destroy that read no CDK app
 // would run its custom resources' Delete handlers in AWS Emulator's own
 // runtime (which fails CDK's providers) and then delete the handler functions,
-// so the advised `cdkd destroy` from the app could no longer run them. It is
-// refused before the prompt and before anything is deleted.
+// so the advised `cdkd destroy` from the app could no longer run them. Every
+// target, nested stacks included, is checked before the first one is touched.
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const leaf = {
-    setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: () => leaf,
-  };
-  return { getLogger: () => leaf };
-});
-vi.mock('../../../src/provisioning/register-providers.js', () => ({
-  loadProviderClasses: vi.fn(async () => ({})),
-  registerAllProviders: vi.fn(),
-}));
-vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn(),
-  setAwsClients: vi.fn(),
-  getAwsClients: vi.fn(),
-}));
-vi.mock('../../../src/utils/live-renderer.js', () => ({
-  getLiveRenderer: () => ({
-    start: vi.fn(),
-    stop: vi.fn(),
-    addTask: vi.fn(),
-    removeTask: vi.fn(),
-    updateTaskLabel: vi.fn(),
-    printAbove: (write: () => void) => write(),
-  }),
-}));
 const wiring = vi.hoisted(() => ({ value: undefined as unknown }));
 vi.mock('cdk-local/internal', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -51,25 +17,27 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
   synthesizedStacks: () => assembly.stacks,
 }));
 
-const { runDestroyForStack } = await import('../../../src/cli/commands/destroy-runner.js');
 const { setLocalCustomResourceRuntimeEnabled } =
   await import('../../../src/local/custom-resource-runtime-gate.js');
-const { customResourcesWithoutAppMessage } =
+const { refuseCustomResourcesWithoutApp, customResourcesWithoutAppMessage, runsInLocalRuntime } =
   await import('../../../src/cli/commands/destroy-runner/emulator-custom-resources.js');
 const { CdkdError } = await import('../../../src/utils/error-handler.js');
 
-const row = (resourceType: string) => ({
+const ACCOUNT = '000000000000';
+const LAMBDA = `arn:aws:lambda:us-east-1:${ACCOUNT}:function:Handler`;
+
+const row = (resourceType: string, serviceToken?: string) => ({
   physicalId: 'phys',
   resourceType,
-  properties: { ServiceToken: 'arn:aws:lambda:us-east-1:000000000000:function:h' },
+  properties: serviceToken === undefined ? {} : { ServiceToken: serviceToken },
   attributes: {},
   dependencies: [],
 });
 
-function stateWith(resources: Record<string, ReturnType<typeof row>>): StackState {
+function stateWith(stackName: string, resources: Record<string, ReturnType<typeof row>>): StackState {
   return {
     version: 15,
-    stackName: 'MineStack',
+    stackName,
     region: 'us-east-1',
     resources,
     outputs: {},
@@ -77,108 +45,144 @@ function stateWith(resources: Record<string, ReturnType<typeof row>>): StackStat
   } as StackState;
 }
 
-const deleted: string[] = [];
+const records = new Map<string, StackState>();
+const getState = vi.fn(async (stackName: string, _region: string) => {
+  const state = records.get(stackName);
+  return state === undefined ? null : { state };
+});
 
-function run(state: StackState) {
-  return runDestroyForStack('MineStack', state, {
-    stateBackend: {
-      saveState: vi.fn().mockResolvedValue('"etag"'),
-      deleteState: vi.fn().mockResolvedValue(undefined),
-      getState: vi.fn(async () => ({ state, etag: 'e' })),
-      listStacks: vi.fn().mockResolvedValue([]),
-    } as unknown as S3StateBackend,
-    lockManager: {
-      acquireLock: vi.fn().mockResolvedValue(true),
-      releaseLock: vi.fn(),
-    } as unknown as LockManager,
-    providerRegistry: {
-      getProviderFor: () => ({
-        provider: {
-          delete: vi.fn(async (logicalId: string) => {
-            deleted.push(logicalId);
-            return undefined;
-          }),
-        },
-      }),
-    } as unknown as ProviderRegistry,
-    baseAwsClients: {} as AwsClients,
-    baseRegion: 'us-east-1',
-    stateBucket: 'test-bucket',
-    // `--yes`: the refusal does not depend on the prompt.
-    skipConfirmation: true,
-  } as never);
+function check(stackNames: string[], account: string | undefined = ACCOUNT) {
+  return refuseCustomResourcesWithoutApp(
+    stackNames.map((stackName) => ({ stackName, region: 'us-east-1' })),
+    { getState, callerAccount: async () => account }
+  );
 }
 
-const withCr = () =>
-  stateWith({
-    PutParam: row('Custom::AWS'),
-    MyRes: row('AWS::CloudFormation::CustomResource'),
-    Handler: row('AWS::Lambda::Function'),
-  });
+async function refusal(stackNames: string[]): Promise<string> {
+  const err = await check(stackNames).then(
+    () => undefined,
+    (e: unknown) => e
+  );
+  expect(err).toBeInstanceOf(CdkdError);
+  return (err as Error).message;
+}
 
 beforeEach(() => {
-  deleted.length = 0;
+  records.clear();
+  getState.mockClear();
   wiring.value = { mode: 'emulator' };
   assembly.stacks = [];
   setLocalCustomResourceRuntimeEnabled(true, 'state destroy');
+  records.set(
+    'MineStack',
+    stateWith('MineStack', {
+      PutParam: row('Custom::AWS', LAMBDA),
+      MyRes: row('AWS::CloudFormation::CustomResource', LAMBDA),
+      Handler: row('AWS::Lambda::Function'),
+    })
+  );
+  records.set('Plain', stateWith('Plain', { Handler: row('AWS::Lambda::Function') }));
 });
 
-describe('destroy under --aws-emulator without the app refuses custom resources up front (#6246)', () => {
-  it.each(['state destroy', 'destroy'])('%s: refused before anything is deleted', async (command) => {
+describe('refuseCustomResourcesWithoutApp (#6246)', () => {
+  it.each(['state destroy', 'destroy'])('%s: refused, naming the stack and its custom resources', async (command) => {
     setLocalCustomResourceRuntimeEnabled(true, command);
-    const err = await run(withCr()).then(
-      () => undefined,
-      (e: unknown) => e
-    );
-    expect(err).toBeInstanceOf(CdkdError);
-    const message = (err as Error).message;
-    expect(message).toContain('custom resources (PutParam, MyRes)');
+    const message = await refusal(['MineStack']);
+    expect(message).toContain('stack MineStack (PutParam, MyRes)');
     expect(message).toContain('Nothing was deleted.');
     expect(message).toContain('--no-local-custom-resources');
     expect(message.trimEnd().split('\n').at(-1)).toBe(
       "Run from the app's directory: cdkd destroy MineStack"
     );
-    expect(deleted).toEqual([]);
   });
 
-  it('proceeds with --no-local-custom-resources (the emulator runtime accepted)', async () => {
-    setLocalCustomResourceRuntimeEnabled(false, 'state destroy');
-    const result = await run(withCr());
-    expect(result.deletedCount).toBe(3);
+  it("a nested child's custom resources refuse the TOP-LEVEL stack, by its name", async () => {
+    records.set(
+      'Parent',
+      stateWith('Parent', {
+        Nested: row('AWS::CloudFormation::Stack'),
+        Bucket: row('AWS::S3::Bucket'),
+      })
+    );
+    records.set(
+      'Parent~Nested',
+      stateWith('Parent~Nested', {
+        Deeper: row('AWS::CloudFormation::Stack'),
+        PutParam: row('Custom::AWS', LAMBDA),
+      })
+    );
+    records.set('Parent~Nested~Deeper', stateWith('Parent~Nested~Deeper', { Cr: row('Custom::X', LAMBDA) }));
+    const message = await refusal(['Parent']);
+    expect(message).toContain(
+      'stack Parent (Cr in nested stack Parent~Nested~Deeper, PutParam in nested stack Parent~Nested)'
+    );
+    expect(message.trimEnd().split('\n').at(-1)).toBe("Run from the app's directory: cdkd destroy Parent");
+    expect(getState).toHaveBeenCalledWith('Parent~Nested', 'us-east-1');
   });
 
-  it('proceeds when the app was synthesized (the handlers run locally)', async () => {
-    assembly.stacks = [{ stackName: 'MineStack' }];
-    const result = await run(withCr());
-    expect(result.deletedCount).toBe(3);
+  it('every target is checked: the refusal names each stack holding custom resources', async () => {
+    records.set('Other', stateWith('Other', { Cr: row('Custom::X', LAMBDA) }));
+    const message = await refusal(['Plain', 'MineStack', 'Other']);
+    expect(message).toContain('stacks MineStack (PutParam, MyRes); Other (Cr)');
+    expect(message).not.toContain('Plain');
+    expect(message.trimEnd().split('\n').at(-1)).toBe(
+      "Run from the app's directory: cdkd destroy MineStack Other"
+    );
   });
 
-  it('proceeds off the emulator', async () => {
-    wiring.value = undefined;
-    const result = await run(withCr());
-    expect(result.deletedCount).toBe(3);
+  it('an SNS-backed or another account\'s custom resource is not refused', async () => {
+    records.set(
+      'MineStack',
+      stateWith('MineStack', {
+        Sns: row('Custom::X', `arn:aws:sns:us-east-1:${ACCOUNT}:topic`),
+        Foreign: row('Custom::X', 'arn:aws:lambda:us-east-1:111111111111:function:Imported'),
+        NoToken: row('Custom::X'),
+      })
+    );
+    await expect(check(['MineStack'])).resolves.toBeUndefined();
   });
 
-  it('proceeds with no custom resources in the record', async () => {
-    const result = await run(stateWith({ Handler: row('AWS::Lambda::Function') }));
-    expect(result.deletedCount).toBe(1);
+  it.each<[string, () => void]>([
+    ['with --no-local-custom-resources', () => setLocalCustomResourceRuntimeEnabled(false, 'state destroy')],
+    ['when the app was synthesized', () => (assembly.stacks = [{ stackName: 'MineStack' }])],
+    ['off the emulator', () => (wiring.value = undefined)],
+    ['under rollback', () => setLocalCustomResourceRuntimeEnabled(true, 'rollback')],
+  ])('not refused %s, and no record is read', async (_label, arrange) => {
+    arrange();
+    await expect(check(['MineStack'])).resolves.toBeUndefined();
+    expect(getState).not.toHaveBeenCalled();
   });
 
-  it("not under rollback (a nested child's removal there has its own remedy)", async () => {
-    setLocalCustomResourceRuntimeEnabled(true, 'rollback');
-    const result = await run(withCr());
-    expect(result.deletedCount).toBe(3);
+  it('not refused with no custom resources, or no record', async () => {
+    await expect(check(['Plain', 'Missing'])).resolves.toBeUndefined();
+  });
+});
+
+describe('runsInLocalRuntime', () => {
+  it.each<[unknown, string | undefined, boolean]>([
+    [LAMBDA, ACCOUNT, true],
+    [`${LAMBDA}:live`, ACCOUNT, true],
+    [LAMBDA, undefined, true],
+    ['arn:aws:lambda:us-east-1:111111111111:function:H', ACCOUNT, false],
+    [`arn:aws:sns:us-east-1:${ACCOUNT}:t`, ACCOUNT, false],
+    [{ 'Fn::GetAtt': ['H', 'Arn'] }, ACCOUNT, false],
+  ])('%o in %s -> %s', (token, account, expected) => {
+    expect(runsInLocalRuntime(token, account)).toBe(expected);
   });
 });
 
 describe('customResourcesWithoutAppMessage', () => {
   it('names five custom resources and counts the rest', () => {
-    const message = customResourcesWithoutAppMessage('S', ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    const message = customResourcesWithoutAppMessage([
+      { stackName: 'S', customResources: ['A', 'B', 'C', 'D', 'E', 'F', 'G'] },
+    ]);
     expect(message).toContain('(A, B, C, D, E and 2 more)');
   });
 
   it('a stack name that is not a plain identifier is a hole, explained', () => {
-    const message = customResourcesWithoutAppMessage('$(rm -rf x)', ['A']);
+    const message = customResourcesWithoutAppMessage([
+      { stackName: '$(rm -rf x)', customResources: ['A'] },
+    ]);
     expect(message).not.toContain('$(rm');
     expect(message).toContain('a stack name that is not a plain identifier');
     expect(message.trimEnd().split('\n').at(-1)).toBe(

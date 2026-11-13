@@ -40,7 +40,6 @@ import {
   announceOrphansAndConfirm,
 } from './preflight.js';
 import { destroyStackUnderLock } from './under-lock.js';
-import { refuseCustomResourcesWithoutApp } from './emulator-custom-resources.js';
 import { withCustomResourceStack } from '../../../local/custom-resource-runtime-gate.js';
 
 /**
@@ -289,10 +288,6 @@ async function destroyStackInRegion(
       throw new StackHasActiveImportsError(stackName, regionForState, consumers);
     }
   }
-  // go-to-k/cdkd#6246: under `--aws-emulator` without the app, refused
-  // before the prompt, while the custom resources' handlers still exist for
-  // the remedy it names.
-  refuseCustomResourcesWithoutApp(stackName, state);
 
   logger.info(`\nResources to be deleted (${resourceCount}):`);
   for (const [logicalId, resource] of Object.entries(state.resources)) {

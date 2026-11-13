@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -144,6 +148,23 @@ beforeEach(() => {
 
 const invoke = () => invokeCustomResourceFunctionLocally(clients, TOKEN, request);
 
+/** Run `fn` with the typed `--aws-emulator` a pasteable hint carries (go-to-k/cdkd#6138). */
+async function withPasteFlags<T>(fn: () => Promise<T>): Promise<T> {
+  setPasteableVerbFlags(
+    new Map([
+      ['cdkd destroy', new Set(['--aws-emulator'])],
+      ['cdkd deploy', new Set(['--aws-emulator'])],
+    ])
+  );
+  setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9495' });
+  try {
+    return await fn();
+  } finally {
+    setPasteableRunFlags({});
+    setPasteableVerbFlags(undefined);
+  }
+}
+
 describe('declines, so the event goes to the emulator', () => {
   it('without Docker: undefined and ONE warning across events', async () => {
     dr.ensureDockerAvailable.mockRejectedValue(new Error('no daemon'));
@@ -165,9 +186,13 @@ describe('declines, so the event goes to the emulator', () => {
     async (command) => {
       setLocalCustomResourceRuntimeEnabled(true, command);
       assembly.stacks = [];
-      expect(await invoke()).toBeUndefined();
-      expect(String(log.warn.mock.calls[0]![0])).toMatch(
-        /did not synthesize the CDK app.*cdkd destroy --aws-emulator/
+      // go-to-k/cdkd#6246: a pasteable command, the stack and the typed
+      // `--aws-emulator` URL included, on its own labelled line.
+      expect(await withPasteFlags(() => withCustomResourceStack('MineStack', invoke))).toBeUndefined();
+      const warning = String(log.warn.mock.calls[0]![0]);
+      expect(warning).toContain('did not synthesize the CDK app');
+      expect(warning.split('\n').at(-1)).toBe(
+        "Run from the app's directory: cdkd destroy MineStack --aws-emulator=https://127.0.0.1:9495"
       );
     }
   );
@@ -175,7 +200,10 @@ describe('declines, so the event goes to the emulator', () => {
   it('under rollback with no assembly: never suggests a destroy (it would delete the stack)', async () => {
     setLocalCustomResourceRuntimeEnabled(true, 'rollback');
     assembly.stacks = [];
-    expect(await invoke()).toBeUndefined();
+    // A nested child's event names the TOP-LEVEL stack, the one the app has.
+    expect(
+      await withPasteFlags(() => withCustomResourceStack('Parent~Nested', invoke))
+    ).toBeUndefined();
     const warning = String(log.warn.mock.calls[0]![0]);
     expect(warning).toContain('did not synthesize the CDK app');
     expect(warning).not.toContain('destroy');
@@ -183,8 +211,10 @@ describe('declines, so the event goes to the emulator', () => {
     // silence flag only sends the event to the same runtime: the remedy is a
     // deploy forward from the app.
     expect(warning).toContain('fails the same way on every re-run');
-    expect(warning).toContain('`cdkd deploy --aws-emulator`');
     expect(warning).not.toContain('--no-local-custom-resources');
+    expect(warning.split('\n').at(-1)).toBe(
+      'Deploy forward with: cdkd deploy Parent --aws-emulator=https://127.0.0.1:9495'
+    );
   });
 
   it('under another command with no assembly: the silence flag', async () => {
