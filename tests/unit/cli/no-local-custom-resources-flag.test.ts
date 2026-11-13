@@ -31,10 +31,9 @@ function find(program: Command, path: string[]): Command {
   return cmd;
 }
 
-async function run(path: string[], argv: string[]): Promise<void> {
-  const program = buildProgram();
-  find(program, path).action(() => {});
-  await program.parseAsync([...path, ...argv], { from: 'user' });
+/** Make `path`'s action a no-op on `built`, so a parse only runs the `preAction` hook. */
+function quiet(built: Command, path: string[]): void {
+  find(built, path).action(() => {});
 }
 
 beforeEach(() => {
@@ -51,27 +50,51 @@ describe('--no-local-custom-resources', () => {
   );
 
   it('turns the gate off on deploy', async () => {
-    await run(['deploy'], ['--no-local-custom-resources']);
+    const program = buildProgram();
+    quiet(program, ['deploy']);
+    await program.parseAsync(['deploy', '--no-local-custom-resources'], {
+      from: 'user',
+    });
     expect(localCustomResourceRuntimeActive()).toBe(false);
   });
 
   it('leaves the gate on without the flag', async () => {
     setLocalCustomResourceRuntimeEnabled(false);
-    await run(['deploy'], []);
+    const program = buildProgram();
+    quiet(program, ['deploy']);
+    await program.parseAsync(['deploy'], { from: 'user' });
     expect(localCustomResourceRuntimeActive()).toBe(true);
   });
 
-  it.each([
-    [['rollback'], 'rollback'],
-    [['state', 'destroy'], 'state destroy'],
-    [['destroy'], 'destroy'],
-  ])('records %j as the command a fallback warning speaks for', async (path, expected) => {
-    await run(path, ['MyStack']);
-    expect(localCustomResourceCommand()).toBe(expected);
+  it('turns the gate off on destroy', async () => {
+    const program = buildProgram();
+    quiet(program, ['destroy']);
+    await program.parseAsync(['destroy', '--no-local-custom-resources'], {
+      from: 'user',
+    });
+    expect(localCustomResourceRuntimeActive()).toBe(false);
   });
 
-  it('turns the gate off on destroy', async () => {
-    await run(['destroy'], ['--no-local-custom-resources']);
-    expect(localCustomResourceRuntimeActive()).toBe(false);
+  it('records the command a fallback warning speaks for: rollback', async () => {
+    const program = buildProgram();
+    quiet(program, ['rollback']);
+    await program.parseAsync(['rollback', 'MyStack'], { from: 'user' });
+    expect(localCustomResourceCommand()).toBe('rollback');
+  });
+
+  it('records the command a fallback warning speaks for: state destroy', async () => {
+    const program = buildProgram();
+    quiet(program, ['state', 'destroy']);
+    await program.parseAsync(['state', 'destroy', 'MyStack'], {
+      from: 'user',
+    });
+    expect(localCustomResourceCommand()).toBe('state destroy');
+  });
+
+  it('records the command a fallback warning speaks for: destroy', async () => {
+    const program = buildProgram();
+    quiet(program, ['destroy']);
+    await program.parseAsync(['destroy', 'MyStack'], { from: 'user' });
+    expect(localCustomResourceCommand()).toBe('destroy');
   });
 });
