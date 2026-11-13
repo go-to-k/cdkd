@@ -19,9 +19,11 @@ vi.mock('@aws-sdk/lib-storage', () => ({
   Upload: vi.fn().mockImplementation(() => ({ done: mockUploadDone })),
 }));
 
-// Mock node:fs
+// Mock node:fs. The stream is one shared object so a test can assert both
+// that it is the uploaded Body and that a failed upload releases it.
+const mockStream = vi.hoisted(() => ({ destroy: vi.fn() }));
 vi.mock('node:fs', () => ({
-  createReadStream: vi.fn().mockReturnValue('mock-stream'),
+  createReadStream: vi.fn().mockReturnValue(mockStream),
   statSync: vi.fn().mockReturnValue({ size: 1024, isDirectory: () => false }),
 }));
 
@@ -158,7 +160,7 @@ describe('FileAssetPublisher', () => {
       expect.objectContaining({
         Bucket: 'cdk-assets-123456789012-us-east-1',
         Key: 'assets/abc123.js',
-        Body: 'mock-stream',
+        Body: mockStream,
         ContentLength: 1024,
       })
     );
@@ -204,7 +206,7 @@ describe('FileAssetPublisher', () => {
       await publishFile();
 
       expect(PutObjectCommand).toHaveBeenCalledWith(
-        expect.objectContaining({ Body: 'mock-stream', ContentLength: MULTIPART_UPLOAD_THRESHOLD })
+        expect.objectContaining({ Body: mockStream, ContentLength: MULTIPART_UPLOAD_THRESHOLD })
       );
       expect(Upload).not.toHaveBeenCalled();
     });
@@ -228,7 +230,7 @@ describe('FileAssetPublisher', () => {
       expect(opts.params).toEqual({
         Bucket: 'cdk-assets-123456789012-us-east-1',
         Key: 'assets/abc123.js',
-        Body: 'mock-stream',
+        Body: mockStream,
         ContentLength: size,
       });
       expect(opts.partSize).toBe(MULTIPART_UPLOAD_THRESHOLD);
@@ -247,6 +249,8 @@ describe('FileAssetPublisher', () => {
 
       await expect(publishFile()).rejects.toThrow('part 3 failed');
       expect(mockS3Destroy).toHaveBeenCalled();
+      // The file descriptor is released, not left to the GC.
+      expect(mockStream.destroy).toHaveBeenCalledTimes(1);
     });
 
     it('uploads a zip archive over the threshold as a multipart upload', async () => {

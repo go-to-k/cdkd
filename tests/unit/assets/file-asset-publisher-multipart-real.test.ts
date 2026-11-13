@@ -29,6 +29,8 @@ interface Recorded {
   bodyBytes: number;
 }
 const recorded: Recorded[] = [];
+/** When set, this UploadPart number answers 500 InternalError. */
+let failPartNumber: string | undefined;
 
 async function bodyLength(body: unknown): Promise<number> {
   if (body === undefined || body === null) return 0;
@@ -79,6 +81,18 @@ const recordingHandler = {
         )
       );
     }
+    if (request.method === 'DELETE' && 'uploadId' in query) {
+      return { response: { statusCode: 204, headers: {}, body: Readable.from([]) } };
+    }
+    if (failPartNumber !== undefined && query['partNumber'] === failPartNumber) {
+      return {
+        response: {
+          statusCode: 500,
+          headers: {},
+          body: xml('<Error><Code>InternalError</Code><Message>part refused</Message></Error>'),
+        },
+      };
+    }
     return ok({ etag: `"part-${recorded.length}"` });
   },
   updateHttpClientConfig() {},
@@ -97,6 +111,8 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
         region: 'us-east-1',
         credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
         requestHandler: recordingHandler,
+        // A refused part fails at once instead of after the SDK's backoff.
+        maxAttempts: 1,
       });
     }
   }
@@ -113,6 +129,7 @@ function operation(r: Recorded): string {
   if (r.method === 'POST' && 'uploadId' in r.query) return 'CompleteMultipartUpload';
   if (r.method === 'PUT' && 'partNumber' in r.query) return 'UploadPart';
   if (r.method === 'PUT') return 'PutObject';
+  if (r.method === 'DELETE' && 'uploadId' in r.query) return 'AbortMultipartUpload';
   return `${r.method}?${Object.keys(r.query).join('&')}`;
 }
 
@@ -121,6 +138,7 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
 
   beforeEach(() => {
     recorded.length = 0;
+    failPartNumber = undefined;
     dir = mkdtempSync(join(tmpdir(), 'cdkd-multipart-real-'));
   });
 
@@ -170,5 +188,16 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
     expect(parts.reduce((n, p) => n + p.bodyBytes, 0)).toBe(size);
     // The defect: no single request may carry the whole object.
     expect(Math.max(...recorded.map((r) => r.bodyBytes))).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it('aborts the multipart upload when a part fails, and completes nothing', async () => {
+    failPartNumber = '2';
+
+    await expect(publishFileOfSize(22_004_168)).rejects.toThrow();
+
+    const ops = recorded.map(operation);
+    // `leavePartsOnError` stays false: no billed parts are left in the bucket.
+    expect(ops).toContain('AbortMultipartUpload');
+    expect(ops).not.toContain('CompleteMultipartUpload');
   });
 });

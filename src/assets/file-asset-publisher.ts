@@ -177,7 +177,15 @@ export class FileAssetPublisher {
     key: string
   ): Promise<void> {
     const stat = statSync(filePath);
-    await this.putObject(client, bucket, key, createReadStream(filePath), stat.size);
+    const stream = createReadStream(filePath);
+    try {
+      await this.putObject(client, bucket, key, stream, stat.size);
+    } catch (error) {
+      // A request that failed before (or while) reading the body leaves the
+      // file open; release the descriptor. A no-op on a consumed stream.
+      stream.destroy();
+      throw error;
+    }
   }
 
   /**
