@@ -1,13 +1,5 @@
 import { Command, Option } from 'commander';
-import {
-  S3Client,
-  CreateBucketCommand,
-  HeadBucketCommand,
-  PutBucketPolicyCommand,
-  PutBucketVersioningCommand,
-  PutBucketEncryptionCommand,
-  type BucketLocationConstraint,
-} from '@aws-sdk/client-s3';
+import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { ECRClient } from '@aws-sdk/client-ecr';
 import { commonOptions } from '../options.js';
@@ -34,15 +26,7 @@ import {
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
-import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
-import {
-  applyCustomResourceResponseExpiration,
-  customResourceResponseExpirationWarning,
-  CUSTOM_RESOURCE_RESPONSE_EXPIRATION_DAYS,
-  CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID,
-} from '../../state/state-bucket-lifecycle.js';
-import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { configureStateBucket, createStateBucket } from './bootstrap-state-bucket.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
@@ -222,6 +206,15 @@ async function bootstrapCommand(options: {
   });
   const stateBucketS3 = rebuiltStateBucketClient ?? s3Client;
 
+  // The state-bucket create / configure calls, shared with the
+  // `--aws-emulator` auto-bootstrap (go-to-k/cdkd#6186).
+  const stateBucketSetup = {
+    s3: stateBucketS3,
+    bucketName,
+    accountId,
+    report: (message: string) => logger.info(message),
+  };
+
   try {
     // Check if bucket already exists.
     //
@@ -268,121 +261,11 @@ async function bootstrapCommand(options: {
         logger.info('--force specified, continuing with existing bucket');
       }
     } else {
-      // Create bucket
-      logger.info(`Creating S3 bucket: ${bucketName} in region ${region}`);
-
-      const createBucketParams: {
-        Bucket: string;
-        CreateBucketConfiguration?: {
-          LocationConstraint: BucketLocationConstraint;
-        };
-      } = {
-        Bucket: bucketName,
-      };
-
-      // For regions other than us-east-1, LocationConstraint is required
-      if (region !== 'us-east-1') {
-        createBucketParams.CreateBucketConfiguration = {
-          LocationConstraint: region as BucketLocationConstraint,
-        };
-      }
-
-      await stateBucketS3.send(new CreateBucketCommand(createBucketParams));
-      logger.info(`✓ Created S3 bucket: ${bucketName}`);
+      await createStateBucket({ ...stateBucketSetup, region });
     }
 
     if (!skipStateBucketConfig) {
-      // Enable versioning
-      logger.debug('Enabling bucket versioning...');
-      await stateBucketS3.send(
-        new PutBucketVersioningCommand({
-          Bucket: bucketName,
-          ExpectedBucketOwner: accountId,
-          VersioningConfiguration: {
-            Status: 'Enabled',
-          },
-        })
-      );
-      logger.info('✓ Enabled bucket versioning');
-
-      // Enable server-side encryption (AES-256)
-      logger.debug('Enabling bucket encryption...');
-      await stateBucketS3.send(
-        new PutBucketEncryptionCommand({
-          Bucket: bucketName,
-          ExpectedBucketOwner: accountId,
-          ServerSideEncryptionConfiguration: {
-            Rules: [
-              {
-                ApplyServerSideEncryptionByDefault: {
-                  SSEAlgorithm: 'AES256',
-                },
-                BucketKeyEnabled: true,
-              },
-            ],
-          },
-        })
-      );
-      logger.info('✓ Enabled bucket encryption (AES-256)');
-
-      // Set bucket policy to deny external access.
-      //
-      // The partition comes from the CLIENT that writes the policy, never from
-      // the `region` variable above. `region` falls back to a HARDCODED
-      // `us-east-1` (see its declaration), while `AwsClients` omits `region`
-      // entirely when `--region` is absent and lets the SDK chain resolve it —
-      // which reads `~/.aws/config`'s profile region and `AWS_DEFAULT_REGION`,
-      // neither of which that fallback consults. So a GovCloud / China user
-      // with `region = us-gov-west-1` in their profile and no `AWS_REGION`
-      // running a plain `cdkd bootstrap` gets `region === 'us-east-1'` ->
-      // partition `aws` -> an inert deny on an `aws-us-gov` bucket: issue
-      // #1794's exact failure mode, reproduced on the fix's own path. Caught by
-      // the PR review, and the reason the earlier
-      // "credentials are partition-scoped so both agree" argument was wrong —
-      // it is sound about credentials vs bucket, but `region` is not derived
-      // from the credentials. `stateBucketS3` is authoritative either way: on
-      // the existing-bucket path it is the client region-corrected FOR this
-      // bucket, and on the first-time path (`rebuildClientForBucketRegion`
-      // returns null, so it is the plain shared client) it is the client that
-      // CREATED the bucket a few lines above — so the bucket is in its
-      // partition by construction.
-      logger.debug('Setting bucket policy...');
-      const bucketPolicy = buildDenyExternalAccessPolicy(
-        bucketName,
-        accountId,
-        await stateBucketS3.config.region()
-      );
-
-      await stateBucketS3.send(
-        new PutBucketPolicyCommand({
-          Bucket: bucketName,
-          ExpectedBucketOwner: accountId,
-          Policy: JSON.stringify(bucketPolicy),
-        })
-      );
-      logger.info('✓ Set bucket policy (deny external access)');
-
-      // Issue #2353: expire custom-resource response objects after one day.
-      // A read-merge-write that keeps every existing lifecycle rule, and a
-      // warning rather than a failure when it cannot run: a bootstrap that
-      // used to succeed without the lifecycle permissions still succeeds.
-      // Buckets bootstrapped before this get the rule from their first
-      // custom-resource deploy instead (`CustomResourceProvider`).
-      logger.debug('Setting custom-resource response lifecycle rule...');
-      const lifecycle = await applyCustomResourceResponseExpiration(stateBucketS3, bucketName, {
-        expectedBucketOwner: accountId,
-      });
-      if (lifecycle.status === 'failed' || lifecycle.status === 'refused') {
-        logger.warn(customResourceResponseExpirationWarning(bucketName, lifecycle));
-      } else if (lifecycle.status === 'added') {
-        logger.info(
-          safeMsg`✓ Set lifecycle rule (expire ${CUSTOM_RESOURCE_RESPONSE_PREFIX}/ responses after ${CUSTOM_RESOURCE_RESPONSE_EXPIRATION_DAYS} day)`
-        );
-      } else {
-        logger.info(
-          safeMsg`✓ Lifecycle rule ${CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID} already present (left unchanged)`
-        );
-      }
+      await configureStateBucket({ ...stateBucketSetup, region });
     }
 
     // cdkd-owned asset storage (issue #1002): asset bucket + container-asset

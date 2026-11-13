@@ -1,7 +1,9 @@
 import { getLogger } from '../../../utils/logger.js';
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { awsEndpointOverrideActive } from '../../../utils/aws-client-defaults.js';
 import type { DeployResult } from '../../../deployment/deploy-engine.js';
+import { promptYesNo } from '../confirm-prompt.js';
 
 /**
  * The `Release with:` command deploy's force-quit prints: both values are
@@ -38,4 +40,39 @@ export function splitUpdatePartial(
     );
   }
   return { ownUpdatePartial: result.updatePartial - nestedUpdatePartial, nestedUpdatePartial };
+}
+
+/**
+ * The per-region asset-storage auto-create's confirmation (issue #1007):
+ * interactive runs are prompted once per region; `--yes` / non-TTY runs
+ * create with an info line. Under `--aws-emulator` it never prompts
+ * (go-to-k/cdkd#6186): AWS Emulator is a throwaway local sandbox whose
+ * storage is gone on every restart. Exported for its test.
+ */
+export async function confirmAutoAssetStorageCreate(args: {
+  assetRegion: string;
+  accountId: string;
+  yes: boolean;
+}): Promise<boolean> {
+  const { assetRegion, accountId } = args;
+  const logger = getLogger();
+  if (awsEndpointOverrideActive()) {
+    logger.info(
+      safeMsg`Creating cdkd asset storage for region '${assetRegion}' in AWS Emulator ` +
+        `(no prompt under --aws-emulator; opt out with --no-auto-asset-storage).`
+    );
+    return true;
+  }
+  if (args.yes || !process.stdin.isTTY) {
+    logger.info(
+      `Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
+        `region; opt out with --no-auto-asset-storage).`
+    );
+    return true;
+  }
+  return promptYesNo(
+    `Region '${assetRegion}' has no cdkd asset storage yet. Create it now ` +
+      `(S3 bucket cdkd-assets-${accountId}-${assetRegion} + container-asset ECR repo, ` +
+      `out of 'cdk gc' reach)?`
+  );
 }

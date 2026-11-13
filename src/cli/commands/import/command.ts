@@ -22,7 +22,8 @@ import {
   loadProviderClasses,
   registerAllProviders,
 } from '../../../provisioning/register-providers.js';
-import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, getAwsClients } from '../../../utils/aws-clients.js';
+import { ensureAwsEmulatorStateBucket } from '../emulator-auto-bootstrap.js';
 import { TemplateParser } from '../../../analyzer/template-parser.js';
 import {
   resolveApp,
@@ -91,6 +92,14 @@ export async function importCommand(
   exportInferredRegionForSdk(effectiveRegion);
   const region = effectiveRegion.region;
 
+  // go-to-k/cdkd#6186: under `--aws-emulator` only, create the state bucket
+  // when the emulator has none (a no-op on real AWS).
+  await ensureAwsEmulatorStateBucket({
+    cliBucket: options.stateBucket,
+    region,
+    s3: getAwsClients().s3,
+    sts: getAwsClients().sts,
+  });
   const stateBucket = await resolveStateBucketWithDefault(
     options.stateBucket,
     region,

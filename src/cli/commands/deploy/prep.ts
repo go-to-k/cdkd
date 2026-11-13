@@ -12,6 +12,7 @@ import {
   resolveStateBucketWithDefaultAndSource,
   stateBucketExistenceConfirmed,
 } from '../../config-loader.js';
+import { ensureAwsEmulatorStateBucket } from '../emulator-auto-bootstrap.js';
 import type { DeployCommandOptions } from './types.js';
 import type { ConsoleLogger } from '../../../utils/logger.js';
 
@@ -32,6 +33,14 @@ export async function prepareStateInfra(args: {
   exportIndexStore: ExportIndexStore;
 }> {
   const { options, region, effectiveRegion, awsClients, logger } = args;
+  // go-to-k/cdkd#6186: under `--aws-emulator` only, create the state bucket
+  // when the emulator has none (a no-op on real AWS).
+  await ensureAwsEmulatorStateBucket({
+    cliBucket: options.stateBucket,
+    region,
+    s3: awsClients.s3,
+    sts: awsClients.sts,
+  });
   // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
   // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback).
   const resolvedStateBucket = await resolveStateBucketWithDefaultAndSource(
