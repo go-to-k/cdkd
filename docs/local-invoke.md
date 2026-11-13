@@ -341,9 +341,16 @@ When you omit the flag and pass `--from-state`, cdkd logs the deployed role's
 ARN once, so that you can run again with the flag. `--no-assume-role` keeps
 your credentials and suppresses that log line.
 
+The role's trust policy must allow you to assume it. The execution role CDK
+creates by default trusts only `lambda.amazonaws.com`, so add a trust
+statement for yourself first.
+[Trusting yourself in the role](local-emulation.md#trusting-yourself-in-the-role)
+shows how.
+
 The flag is a development aid and does not enforce anything. If the role
 cannot be assumed, or the ARN read from state is not a well-formed role ARN,
-cdkd warns and runs the handler with your credentials.
+cdkd warns and runs the handler with your credentials. The handler then runs
+with your own permissions, not the role's.
 
 ## Lambda layers
 

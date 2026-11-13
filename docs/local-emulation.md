@@ -177,7 +177,7 @@ code makes reach real AWS as you. They come from, in order:
 Under [`--aws-emulator`](#aws-emulator) the container gets the emulator's
 credentials and nothing else.
 
- Your credentials usually allow more than the
+Your credentials usually allow more than the
 deployed role does, which means a missing IAM permission goes unnoticed. To see
 IAM errors locally, run the code under the deployed role:
 
@@ -191,6 +191,34 @@ IAM errors locally, run the code under the deployed role:
 | `local invoke-agentcore`, `local start-agentcore` | `--assume-role [arn]` |
 | `local start-web-function` | `--assume-role [arn]`, the revision's `ExecutionRoleArn` |
 | `local start-microvm` | `--assume-role <arn>`; the role is not in the template, so the ARN is required |
+
+### Trusting yourself in the role
+
+cdkd assumes the role with your own credentials, so the role's trust policy
+must allow `sts:AssumeRole` from you. A role CDK creates by default trusts only
+the service that runs the code, such as `lambda.amazonaws.com` for a Lambda
+function or `ecs-tasks.amazonaws.com` for an ECS task. Without a change, the
+assume is refused with AccessDenied. Add a statement to the role's trust policy
+in the stack you develop against:
+
+```ts
+(fn.role as iam.Role).assumeRolePolicy?.addStatements(
+  new iam.PolicyStatement({
+    actions: ['sts:AssumeRole'],
+    // Trust the account. The caller also needs an IAM policy that allows
+    // sts:AssumeRole on this role. To trust one principal only, use
+    // new iam.ArnPrincipal('arn:aws:iam::123456789012:role/DeveloperRole').
+    principals: [new iam.AccountPrincipal(this.account)],
+  }),
+);
+```
+
+`role.grantAssumeRole(principal)` does not do this. It refuses an account
+principal at synth time, and for an ARN principal it changes nothing in the
+trust policy.
+
+Keep this change out of production stacks, because it lets that principal act
+as the function.
 
 `--role-arn` is a different flag. It names the role cdkd assumes for its own
 AWS calls.
