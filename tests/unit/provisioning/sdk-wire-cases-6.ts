@@ -436,6 +436,26 @@ const BLOCK_DEFAULT: Bag = {
   },
 };
 
+/**
+ * The connected-account settlement, the alternative to ACL_FULL's
+ * `CryptoConfig` wallets (a config carries one or the other).
+ */
+const CONNECTED_ACCOUNT: Bag = {
+  ...BLOCK_DEFAULT,
+  MonetizationConfig: {
+    ConnectedAccountConfigs: [
+      {
+        ConnectedAccountArn: `arn:aws:payments::${ACCOUNT}:connected-account/ca1`,
+        PaymentNetworks: [
+          { Chain: 'BASE', Prices: [{ Amount: '0.001', Currency: 'USDC' }] },
+          { Chain: 'SOLANA', Prices: [{ Amount: '0.002', Currency: 'USDC' }] },
+        ],
+      },
+    ],
+    CurrencyMode: 'REAL',
+  },
+};
+
 // Not a gap: `Rules` reaches the SDK as one document. `toSdkRules` /
 // `toSdkStatement` (in wafv2/shared.ts) spread each rule and statement
 // and rewrite only `ByteMatchStatement.SearchStringBase64`, the three
@@ -525,6 +545,7 @@ const WAFV2_CASES: TypeCase[] = [
         expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
       },
       { name: 'a Block default', bag: BLOCK_DEFAULT },
+      { name: 'a connected-account monetization config', bag: CONNECTED_ACCOUNT },
     ],
   },
 ];

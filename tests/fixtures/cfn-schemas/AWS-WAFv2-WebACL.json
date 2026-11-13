@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::WAFv2::WebACL",
-  "generatedAt": "2026-11-06",
+  "generatedAt": "2026-11-13",
   "properties": [
     "ApplicationConfig",
     "Arn",
@@ -68,6 +68,8 @@
     "MonetizationConfig": [
       "Amount",
       "Chain",
+      "ConnectedAccountArn",
+      "ConnectedAccountConfigs",
       "CryptoConfig",
       "Currency",
       "CurrencyMode",
@@ -279,6 +281,13 @@
       "DataProtections.Field.FieldType"
     ],
     "MonetizationConfig": [
+      "ConnectedAccountConfigs",
+      "ConnectedAccountConfigs.ConnectedAccountArn",
+      "ConnectedAccountConfigs.PaymentNetworks",
+      "ConnectedAccountConfigs.PaymentNetworks.Chain",
+      "ConnectedAccountConfigs.PaymentNetworks.Prices",
+      "ConnectedAccountConfigs.PaymentNetworks.Prices.Amount",
+      "ConnectedAccountConfigs.PaymentNetworks.Prices.Currency",
       "CryptoConfig",
       "CryptoConfig.PaymentNetworks",
       "CryptoConfig.PaymentNetworks.Chain",
@@ -906,6 +915,10 @@
       "CaptchaConfig": "object",
       "Tags": "array"
     },
+    "ConnectedAccountPrice": {
+      "Amount": "scalar",
+      "Currency": "scalar"
+    },
     "DataProtect": {
       "Field": "object",
       "Action": "scalar",
@@ -1055,6 +1068,10 @@
     },
     "ClientSideActionConfig": {
       "Challenge": "object"
+    },
+    "ConnectedAccountChainConfig": {
+      "Chain": "scalar",
+      "Prices": "array"
     },
     "Statement": {
       "SizeConstraintStatement": "object",
@@ -1274,6 +1291,10 @@
     "HeaderOrder": {
       "OversizeHandling": "scalar"
     },
+    "ConnectedAccountConfig": {
+      "PaymentNetworks": "array",
+      "ConnectedAccountArn": "scalar"
+    },
     "ImmunityTimeProperty": {
       "ImmunityTime": "scalar"
     },
@@ -1327,6 +1348,7 @@
       "TextTransformations": "array"
     },
     "MonetizationConfig": {
+      "ConnectedAccountConfigs": "array",
       "CurrencyMode": "scalar",
       "CryptoConfig": "object"
     },
@@ -1357,6 +1379,10 @@
       "DefaultAction",
       "Scope",
       "VisibilityConfig"
+    ],
+    "ConnectedAccountPrice": [
+      "Amount",
+      "Currency"
     ],
     "DataProtect": [
       "Action",
@@ -1457,6 +1483,10 @@
     "ClientSideActionConfig": [
       "Challenge"
     ],
+    "ConnectedAccountChainConfig": [
+      "Chain",
+      "Prices"
+    ],
     "RateBasedStatement": [
       "AggregateKeyType",
       "Limit"
@@ -1547,6 +1577,10 @@
     ],
     "HeaderOrder": [
       "OversizeHandling"
+    ],
+    "ConnectedAccountConfig": [
+      "ConnectedAccountArn",
+      "PaymentNetworks"
     ],
     "ImmunityTimeProperty": [
       "ImmunityTime"
@@ -1641,6 +1675,18 @@
     "DefaultAction.Block.CustomResponse.ResponseHeaders": [
       "Name",
       "Value"
+    ],
+    "MonetizationConfig.ConnectedAccountConfigs": [
+      "ConnectedAccountArn",
+      "PaymentNetworks"
+    ],
+    "MonetizationConfig.ConnectedAccountConfigs.PaymentNetworks": [
+      "Chain",
+      "Prices"
+    ],
+    "MonetizationConfig.ConnectedAccountConfigs.PaymentNetworks.Prices": [
+      "Amount",
+      "Currency"
     ],
     "MonetizationConfig.CryptoConfig": [
       "PaymentNetworks"
@@ -2263,6 +2309,12 @@
     "DefaultAction.Block.CustomResponse.ResponseHeaders": "array",
     "DefaultAction.Block.CustomResponse.ResponseHeaders[]": "object",
     "MonetizationConfig": "object",
+    "MonetizationConfig.ConnectedAccountConfigs": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[]": "object",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[]": "object",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices[]": "object",
     "MonetizationConfig.CryptoConfig": "object",
     "MonetizationConfig.CryptoConfig.PaymentNetworks": "array",
     "MonetizationConfig.CryptoConfig.PaymentNetworks[]": "object",
@@ -2686,6 +2738,16 @@
     "Id": "string",
     "LabelNamespace": "string",
     "MonetizationConfig": "object",
+    "MonetizationConfig.ConnectedAccountConfigs": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[]": "object",
+    "MonetizationConfig.ConnectedAccountConfigs[].ConnectedAccountArn": "string",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[]": "object",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Chain": "string",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices": "array",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices[]": "object",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices[].Amount": "string",
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices[].Currency": "string",
     "MonetizationConfig.CryptoConfig": "object",
     "MonetizationConfig.CryptoConfig.PaymentNetworks": "array",
     "MonetizationConfig.CryptoConfig.PaymentNetworks[]": "object",
@@ -3364,6 +3426,13 @@
       "SINGLE_COOKIE",
       "SINGLE_HEADER",
       "SINGLE_QUERY_ARGUMENT"
+    ],
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Chain": [
+      "BASE",
+      "SOLANA"
+    ],
+    "MonetizationConfig.ConnectedAccountConfigs[].PaymentNetworks[].Prices[].Currency": [
+      "USDC"
     ],
     "MonetizationConfig.CryptoConfig.PaymentNetworks[].Chain": [
       "BASE",
