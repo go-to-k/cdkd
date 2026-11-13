@@ -201,8 +201,9 @@ sweep_automated_backups() { (
 ) }
 
 # Best-effort teardown of a partial destroy, by fixed name and by the CDK Name
-# tag: the restored instances and the replica BEFORE their sources (a deleted
-# cluster would promote its replica, not delete it), the sources, the
+# tag: the restored instances and the replica BEFORE their sources (RDS
+# documents that deleting a cluster promotes its replicas; not measured here),
+# the sources, the
 # snapshots, the subnet group, then the VPC leaf-first.
 sweep() { (
   set +eu

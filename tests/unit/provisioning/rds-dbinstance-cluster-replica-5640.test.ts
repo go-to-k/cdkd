@@ -367,9 +367,12 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
     });
 
     it('names the source DB cluster when it reads a status that does not end on its own', async () => {
+      // Bounded: should the status be read from anywhere but the cluster (which
+      // reads `failed`), the fourth create succeeds and the message assertion fails.
+      let creates = 0;
       const inner = mockSend.getMockImplementation()!;
       mockSend.mockImplementation((command: { constructor: { name: string } }, region: unknown) => {
-        if (command.constructor.name === 'CreateDBInstanceReadReplicaCommand') {
+        if (command.constructor.name === 'CreateDBInstanceReadReplicaCommand' && ++creates <= 3) {
           return Promise.reject(
             Object.assign(new Error('DB instance is not in the available state'), {
               name: 'InvalidDBInstanceStateFault',
@@ -389,6 +392,23 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       expect((error as Error).message).toMatch(
         /refused the create of the read replica because the source DB cluster is not in the 'available' state, and it reads status 'failed'/
       );
+      expect(creates).toBe(1);
+    });
+
+    it('fails before the create when the cluster read fails, propagating AWS\'s fault', async () => {
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }, region: unknown) =>
+        command.constructor.name === 'DescribeDBClustersCommand'
+          ? Promise.reject(
+              Object.assign(new Error('DBCluster maz-1 not found.'), { name: 'DBClusterNotFoundFault' })
+            )
+          : inner(command, region)
+      );
+      const error = await provider.create('L', INSTANCE, { ...REPLICA }).catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(/DBCluster maz-1 not found/);
+      expect(sent('DescribeDBClustersCommand')).toEqual([{ DBClusterIdentifier: 'maz-1' }]);
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toEqual([]);
+      expect(hasCreatedBeforeFailure(error)).toBe(false);
     });
 
     it.each([false, true])(
@@ -482,6 +502,9 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
     it('leaves an unchanged cluster source alone, reading nothing for it', async () => {
       await update({ ...REPLICA, DBInstanceClass: 'db.t3.small' }, REPLICA);
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
+      // Neither the cluster nor a source instance is read.
+      expect(sent('DescribeDBClustersCommand')).toEqual([]);
+      expect(sent('DescribeDBInstancesCommand')).not.toContainEqual({ DBInstanceIdentifier: 'maz-1' });
       expect(sent('ModifyDBInstanceCommand')[0]).toMatchObject({ DBInstanceClass: 'db.t3.small' });
     });
 
@@ -490,7 +513,8 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       ['changed', { ...REPLICA, SourceDBClusterIdentifier: 'maz-0' }, 'maz-0'],
       ['switched from an instance source', { ...withoutSource(REPLICA), SourceDBInstanceIdentifier: SOURCE_ARN }, undefined],
     ])('refuses a cluster source %s on an existing instance before any change', async (_, prev, live) => {
-      pinLiveSource(live);
+      // Set once, not pinned: a wrong PromoteReadReplica clears it and completes.
+      liveClusterSource = live;
       const error = await update(REPLICA, prev).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
       expect((error as Error).message).toMatch(
@@ -506,7 +530,8 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
     });
 
     it('refuses an instance source replacing a cluster source, naming both keys', async () => {
-      pinLiveSource('maz-1');
+      // The live instance replicates `maz-1` until a PromoteReadReplica (`arm`),
+      // so a wrong promotion completes and fails the assertion below.
       const next = { ...withoutSource(REPLICA), SourceDBInstanceIdentifier: SOURCE_ARN };
       const error = await update(next, REPLICA).catch((e: unknown) => e);
       expect((error as Error).message).toMatch(
