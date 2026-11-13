@@ -2856,7 +2856,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ],
         [
           'BackupTarget',
-          'where automated backups go (the Region or an AWS Outposts / Dedicated Local Zone); verifying it needs RDS on Outposts or a Dedicated Local Zone, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+          'where automated backups and manual snapshots are stored (the Region, an AWS Outposts rack, or a Dedicated Local Zone); verifying it needs RDS on Outposts or a Dedicated Local Zone, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
         ],
         [
           'CustomIAMInstanceProfile',
