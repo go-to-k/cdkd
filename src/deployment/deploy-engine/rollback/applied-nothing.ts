@@ -1,4 +1,6 @@
 import type { FailedOperation } from '../../rollback-executor.js';
+import { failedCreateRecordedNoPhysicalId } from '../../rollback-executor/plan/failed-ops.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 /**
  * go-to-k/cdkd#6118: an UPDATE that deleted and created nothing (a refused one, or one failing before its first write). Its
@@ -20,5 +22,29 @@ export function appliedNothing(op: FailedOperation): boolean {
     op.physicalIdRecoveredFromError !== true &&
     op.pendingCloudControlRequest === undefined &&
     op.nameGeneration === undefined
+  );
+}
+
+/**
+ * go-to-k/cdkd#6204: a failed CREATE that `cdkd rollback --revert-failed` can
+ * only skip — it recorded no physical id (the revert's `skip-failed-unknown`,
+ * the same predicate) and no abandoned Cloud Control request, which the
+ * revert re-polls first and may turn into a deletable orphan. It may have
+ * left something behind, so its manual check is named instead of the command.
+ */
+export function revertSkipsFailedCreate(op: FailedOperation): boolean {
+  return failedCreateRecordedNoPhysicalId(op) && op.pendingCloudControlRequest === undefined;
+}
+
+/** Whether `cdkd rollback --revert-failed` has nothing to act on for `op`. */
+export function revertFailedHasNothingToDo(op: FailedOperation): boolean {
+  return appliedNothing(op) || revertSkipsFailedCreate(op);
+}
+
+/** What the revert itself warns for a {@link revertSkipsFailedCreate} op. */
+export function unaddressableFailedCreateMessage(op: FailedOperation): string {
+  return (
+    safeMsg`${op.logicalId} (${op.resourceType}): the failed CREATE recorded no physical id, ` +
+    `so 'cdkd rollback --revert-failed' cannot address it — if it was partially created in AWS, delete it manually.`
   );
 }

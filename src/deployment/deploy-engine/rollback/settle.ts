@@ -29,7 +29,11 @@ import {
 } from '../../rollback-executor/journaled-orphans.js';
 import { hasReadableOrphans } from '../../../state/malformed-resources-bag.js';
 import type { RollbackDeps } from './deps.js';
-import { appliedNothing } from './applied-nothing.js';
+import {
+  revertFailedHasNothingToDo,
+  revertSkipsFailedCreate,
+  unaddressableFailedCreateMessage,
+} from './applied-nothing.js';
 import { rollbackExecutorContext } from './context.js';
 import { writeRollbackJournalSegment } from './journal-write.js';
 import {
@@ -341,9 +345,15 @@ export async function settleJournalAfterCleanRollback(
   );
   // The write warns on its own failure; claiming a kept record would contradict it.
   if (!kept) return true;
-  if (revertable.every(appliedNothing)) {
+  // go-to-k/cdkd#6118 / #6204: a refused UPDATE, or a failed CREATE with no
+  // physical id, is nothing `--revert-failed` can act on; the CREATE's manual
+  // check is named instead.
+  if (revertable.every(revertFailedHasNothingToDo)) {
+    for (const op of revertable.filter(revertSkipsFailedCreate)) {
+      deps.logger.warn(unaddressableFailedCreateMessage(op));
+    }
     deps.logger.debug(
-      'Every failed operation applied nothing (a refused UPDATE); no --revert-failed remedy printed.'
+      'Every failed operation leaves --revert-failed nothing to act on; no --revert-failed remedy printed.'
     );
     return true;
   }

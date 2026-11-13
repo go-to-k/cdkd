@@ -14,6 +14,15 @@ import type { ResourceIdentityVerdict } from '../../../types/resource.js';
 import { isTypeChangeOp } from './classify.js';
 
 /**
+ * A failed CREATE that recorded no physical id: `classifyFailedOp` plans it
+ * as `skip-failed-unknown` whatever state holds — the revert cannot address
+ * it. Shared with the deploy's `--revert-failed` remedy (go-to-k/cdkd#6204).
+ */
+export function failedCreateRecordedNoPhysicalId(op: FailedOperation): boolean {
+  return op.changeType === 'CREATE' && !op.physicalId;
+}
+
+/**
  * Classify what reverting a FAILED in-flight op (issue #1198) will do
  * against the current state, without touching AWS. Pure — used by both the
  * command's `--revert-failed` plan preview and `replayFailedOperations`.
@@ -38,7 +47,8 @@ export function classifyFailedOp(
     // from `''`. Matches `replaySingle`'s `!op.physicalId` guard on the
     // completed-CREATE path, which is what lets both share
     // `prepareCreateRollbackFinalSnapshot`.
-    if (!op.physicalId) return 'skip-failed-unknown';
+    // `!op.physicalId` repeats the predicate only to narrow the type below.
+    if (failedCreateRecordedNoPhysicalId(op) || !op.physicalId) return 'skip-failed-unknown';
     // go-to-k/cdkd#1710: a CREATE whose provider proved it made the resource
     // before failing. No state record EVER held it, so any record now holding
     // its logical id or its physical id belongs to a LATER operation (a

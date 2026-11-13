@@ -673,13 +673,23 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     const notes: Array<[string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
       logs.info.length = 0;
-      const { engine } = build({
+      // A failed UPDATE: a failed CREATE with no physical id prints no
+      // command (go-to-k/cdkd#6204).
+      const updateB = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: TYPE,
+        currentProperties: { p: 'old' },
+        desiredProperties: { p: 'new' },
+        propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: false }],
+      } as unknown as ResourceChange;
+      const { engine, provider } = build({
         nested: false,
-        changes: new Map([['B', createChange('B')]]),
-        resources: {},
-        failCreateOf: 'B',
+        changes: new Map([['B', updateB]]),
+        resources: { B: { ...record('B'), properties: { p: 'old' } } },
         stackName: value,
       });
+      provider['update']!.mockRejectedValue(new Error('boom B'));
       await expect(engine.deploy(value, templateOf(['B']))).rejects.toThrow();
       const note = logs.info.find((l) => l.includes('restored the pre-deploy state'));
       expect(note, label).toBeDefined();
