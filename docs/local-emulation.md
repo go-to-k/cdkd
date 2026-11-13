@@ -449,15 +449,15 @@ It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
 | --- | --- |
 | The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
 | A container env value that is exactly a real queue URL (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Rewritten to the same queue on the container's SQS endpoint, so the call lands in the emulator. |
-| Any other real queue URL (read at run time from SSM Parameter Store, Secrets Manager or the event, or inside a larger value) | Fails closed: the container's `/etc/hosts` maps the real SQS host names (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com`, `queue.amazonaws.com`) to `127.0.0.1`, so the connection is refused before a signed request leaves the machine. The Regions blocked are a pinned list (every Region of the `aws`, `aws-cn` and `aws-us-gov` partitions cdk-local knows), plus the container's `AWS_REGION` / `AWS_DEFAULT_REGION` and any Region a queue URL in its env names. |
+| Any other real queue URL (read at run time from SSM Parameter Store, Secrets Manager or the event, or inside a larger value) | Fails closed: the container's `/etc/hosts` maps the real SQS host names (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com`, `queue.amazonaws.com`) to `127.0.0.1`, so the connection is refused before a signed request leaves the machine. The hosts of every Region of the `aws`, `aws-cn` and `aws-us-gov` partitions are blocked, plus the container's `AWS_REGION` / `AWS_DEFAULT_REGION` and any Region a queue URL in its env names. |
 
 A container whose SQS is excepted to real AWS (mixed mode, `"real-aws"`) gets
 neither: its queue URLs reach real SQS. Not covered: the FIPS and dual-stack
 SQS hosts, which AWS does not return as queue URLs, a client given an explicit
 real `endpoint` in code, a literal real `AWS_ENDPOINT_URL_SQS` in the
-container's env, and a queue in a Region outside that set (one newer than the
-pinned list, neither the container's own nor named by a queue URL in its env)
-whose URL the handler reads only at run time: its host is not blocked.
+container's env, and a queue in a Region AWS opens after the cdk-local release
+in use (neither the container's own nor named by a queue URL in its env) whose
+URL the handler reads only at run time: its host is not blocked.
 
 To keep some services on real AWS while the rest goes to the emulator, see
 [AWS Emulator mixed mode](#aws-emulator-mixed-mode).
