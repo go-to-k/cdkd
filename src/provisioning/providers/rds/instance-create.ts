@@ -14,7 +14,7 @@ import { reportCreatedResource } from '../../created-resource-sink.js';
 import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
-import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
+import { dbInstanceAttributes } from './instance-attributes.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { applyBackupReplication } from './calls.js';
@@ -529,11 +529,7 @@ export async function createDBInstance(
 
     return {
       physicalId: dbInstanceIdentifier,
-      attributes: definedAttributes({
-        'Endpoint.Address': described?.Endpoint?.Address,
-        'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-        Arn: described?.DBInstanceArn,
-      }),
+      attributes: dbInstanceAttributes(described),
       // A replayed create that attached no role records none.
       ...(roles === 'skipped' && {
         effectiveProperties: Object.fromEntries(

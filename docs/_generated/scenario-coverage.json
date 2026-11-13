@@ -2263,6 +2263,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-dbinstance-getatt-attributes",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-dbinstance-processor-features",
       "annotated": false,
       "scenarios": []
@@ -3904,6 +3909,7 @@
     "rds-dbinstance-backfill",
     "rds-dbinstance-backup-replication",
     "rds-dbinstance-charset-timezone",
+    "rds-dbinstance-getatt-attributes",
     "rds-dbinstance-processor-features",
     "rds-dbinstance-snapshot-restore",
     "rds-express-cluster",

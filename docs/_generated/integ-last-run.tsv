@@ -332,6 +332,7 @@ rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
+rds-dbinstance-getatt-attributes	2026-11-13T19:22:40Z	PASS	476	verify.sh	rc ok, orph clean; pre-fix build reproduced identifier fallback (#6242)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
 rds-dbinstance-snapshot-restore	2026-11-13T06:47:48Z	PASS	3933	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176 merged head)
 rds-express-cluster	2026-11-11T14:15:04Z	PASS	1405	verify.sh	rc ok, orph clean

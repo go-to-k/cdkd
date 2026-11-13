@@ -390,9 +390,8 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       }
     });
 
-    it('reads nothing live for a record holding its id, another type, or no SourceDbClusterResourceId', async () => {
+    it('reads nothing live for another type or no SourceDbClusterResourceId', async () => {
       for (const c of [
-        { type: RDS, attributes: OWN, desired: byId('cluster-OTHER') },
         { type: 'AWS::DocDB::DBCluster', attributes: {}, desired: byId('cluster-OWNID123') },
         { type: 'AWS::Neptune::DBCluster', attributes: {}, desired: byId('cluster-OWNID123') },
         { type: RDS, attributes: {}, desired: { UseLatestRestorableTime: true } },
@@ -400,6 +399,25 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
         for (const [, run] of paths) await run(c);
       }
       expect(provider.import).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#6242: a recorded id can be stale (a cluster re-created
+    // outside cdkd under the same identifier), so the live one is read too.
+    it.each(paths)('%s refuses a source naming the LIVE id behind a stale record', async (_path, run) => {
+      live('cluster-OWNID123');
+      const failure = await run({
+        type: RDS,
+        attributes: { DBClusterResourceId: 'cluster-STALE' },
+        desired: byId('cluster-OWNID123'),
+      });
+      expect(chain(failure)).toMatch(/SourceDbClusterResourceId must be another cluster's/);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s keeps the recorded verdict when the live read fails', async (_path, run) => {
+      provider.import.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+      expect(await run({ type: RDS, attributes: OWN, desired: byId('cluster-OTHER') })).toBeUndefined();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -618,23 +636,57 @@ describe('a replacement restoring from the cluster it deletes (go-to-k/cdkd#5638
       }
     });
 
-    it.each(paths)('%s reads only the backup for a record holding its id', async (_p, run) => {
-      live('db-NEVER-READ', OWN_ID);
+    it('keeps the recorded verdict when no provider can read the instance (go-to-k/cdkd#6242)', async () => {
+      const read = provider.resourceIdentity;
+      (provider as { resourceIdentity?: unknown }).resourceIdentity = undefined;
+      try {
+        for (const [path, run] of paths) {
+          provider.delete.mockClear();
+          expect(await run(pitr({ SourceDbiResourceId: 'db-OTHER' }, { DbiResourceId: OWN_ID })), path).toBeUndefined();
+          expect(provider.delete, path).toHaveBeenCalledTimes(1);
+          provider.delete.mockClear();
+          const failure = await run(pitr({ SourceDbiResourceId: OWN_ID }, { DbiResourceId: OWN_ID }));
+          expect(chain(failure), path).toMatch(/SourceDbiResourceId (must be another DB instance's|names the DB instance this creates or replaces)/);
+          expect(provider.delete, path).not.toHaveBeenCalled();
+        }
+      } finally {
+        (provider as { resourceIdentity?: unknown }).resourceIdentity = read;
+      }
+    });
+
+    it.each(paths)('%s reads the instance and the backup for a record holding its id', async (_p, run) => {
+      // go-to-k/cdkd#6242: the live id is read even with one recorded.
+      live('db-RECREATED', OWN_ID);
       const failure = await run(pitr({ SourceDBInstanceAutomatedBackupsArn: OWN_BACKUPS }, { DbiResourceId: OWN_ID }));
       expect(chain(failure)).toMatch(/SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups/);
-      expect(provider.resourceIdentity).toHaveBeenCalledTimes(1);
+      expect(provider.resourceIdentity).toHaveBeenCalledTimes(2);
+      expect(provider.resourceIdentity).toHaveBeenCalledWith(PHYSICAL, INSTANCE, { expectedRegion: 'us-east-1' });
       expect(provider.resourceIdentity).toHaveBeenCalledWith(OWN_BACKUPS, INSTANCE, { expectedRegion: 'us-east-1' });
       expect(provider.delete).not.toHaveBeenCalled();
     });
 
-    it.each(paths)('%s compares a recorded DbiResourceId without a live read', async (_p, run) => {
+    it.each(paths)('%s compares a recorded DbiResourceId, keeping its verdict when the live read answers nothing', async (_p, run) => {
       const failure = await run(pitr({ SourceDbiResourceId: OWN_ID }, { DbiResourceId: OWN_ID }));
       expect(chain(failure)).toMatch(/SourceDbiResourceId names the DB instance this creates or replaces/);
       expect(provider.delete).not.toHaveBeenCalled();
       provider.delete.mockClear();
       expect(await run(pitr({ SourceDbiResourceId: 'db-OTHER' }, { DbiResourceId: OWN_ID }))).toBeUndefined();
       expect(provider.delete).toHaveBeenCalledTimes(1);
-      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#6242: the provider now records DbiResourceId, which can be
+    // stale (an instance re-created outside cdkd under the same identifier).
+    it.each(paths)('%s refuses a source naming the LIVE id behind a stale record', async (_p, run) => {
+      live(OWN_ID);
+      const failure = await run(pitr({ SourceDbiResourceId: OWN_ID }, { DbiResourceId: 'db-STALE' }));
+      expect(chain(failure)).toMatch(/SourceDbiResourceId must be another DB instance's/);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)('%s keeps the recorded verdict when the live read fails', async (_p, run) => {
+      provider.resourceIdentity.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+      expect(await run(pitr({ SourceDbiResourceId: 'db-OTHER' }, { DbiResourceId: OWN_ID }))).toBeUndefined();
+      expect(provider.delete).toHaveBeenCalledTimes(1);
     });
 
     it.each(paths)('%s skips the own-snapshot check under a point-in-time key', async (_p, run) => {

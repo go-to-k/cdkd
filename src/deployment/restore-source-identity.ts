@@ -46,8 +46,9 @@ export async function verifyRestoreSourceIdentity(
   if (input.resourceType !== 'AWS::RDS::DBCluster') return;
   const source = input.properties['SourceDbClusterResourceId'];
   if (typeof source !== 'string' || source === '') return;
-  const recorded = input.attributes?.['DBClusterResourceId'];
-  if (typeof recorded === 'string' && recorded !== '') return;
+  const recordedValue = input.attributes?.['DBClusterResourceId'];
+  const recorded =
+    typeof recordedValue === 'string' && recordedValue !== '' ? recordedValue : undefined;
   const refuse = (reason: string): never => {
     throw markNonRetryable(
       new ProvisioningError(
@@ -80,13 +81,17 @@ export async function verifyRestoreSourceIdentity(
     // The error class only: AWS's text can name the account and role.
     failure = `the read failed (${(error as { name?: string } | undefined)?.name ?? 'Error'})`;
   }
-  if (typeof liveId !== 'string' || liveId === '') {
-    return refuse(
+  const own = [recorded, typeof liveId === 'string' && liveId !== '' ? liveId : undefined];
+  if (own.some((id) => id !== undefined && id.toLowerCase() === source.toLowerCase())) {
+    refuse("SourceDbClusterResourceId must be another cluster's than the one this replaces");
+  }
+  // go-to-k/cdkd#6242: a recorded id is compared too, but it can be stale (a
+  // cluster re-created outside cdkd under the same identifier), so the live
+  // read runs either way; only its FAILURE falls back to the recorded verdict.
+  if (own[1] === undefined && recorded === undefined) {
+    refuse(
       `SourceDbClusterResourceId may name the cluster this replacement deletes first, and its identity could not be verified (${failure || 'no resource id was read'}). Name the source with SourceDBClusterIdentifier instead, or retry`
     );
-  }
-  if (liveId.toLowerCase() === source.toLowerCase()) {
-    refuse("SourceDbClusterResourceId must be another cluster's than the one this replaces");
   }
 }
 
@@ -96,8 +101,8 @@ export async function verifyRestoreSourceIdentity(
  * (either key makes the create one) may name the instance the replacement
  * deletes first, which takes its automated backups with it
  * (`DeleteAutomatedBackups` defaults to true). Through the provider's
- * read-only `resourceIdentity`: the replaced instance's `DbiResourceId` (the
- * record holds none, so it is read live by name unless recorded), and, for a
+ * read-only `resourceIdentity`: the replaced instance's `DbiResourceId` (read
+ * live by name, and compared with the recorded one too, #6242), and, for a
  * backups ARN in this region, the `DbiResourceId` of the instance that backup
  * belongs to (`DescribeDBInstanceAutomatedBackups`; a backup RDS does not list
  * is refused too, since the restore after the delete would fail). A read that
@@ -120,9 +125,9 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
       ? declaredBackups
       : undefined;
   if (resourceId === undefined && backups === undefined) return;
-  const recorded = input.attributes?.['DbiResourceId'];
-  // `refuseRestoreFromItself` compared a recorded id with `SourceDbiResourceId`.
-  if (backups === undefined && typeof recorded === 'string' && recorded !== '') return;
+  const recordedValue = input.attributes?.['DbiResourceId'];
+  const recorded =
+    typeof recordedValue === 'string' && recordedValue !== '' ? recordedValue : undefined;
   const key = backups !== undefined ? 'SourceDBInstanceAutomatedBackupsArn' : 'SourceDbiResourceId';
   const refuse = (reason: string): never => {
     throw markNonRetryable(
@@ -139,7 +144,17 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
       `${key} may name the DB instance this replacement deletes first, and its identity could not be verified (${failure}). Name the source with SourceDBInstanceIdentifier instead, or retry`
     );
   const provider = input.provider();
-  if (provider?.resourceIdentity === undefined) return unverified('no provider can read it');
+  if (provider?.resourceIdentity === undefined) {
+    // With an id recorded and no backups ARN to resolve, the recorded verdict
+    // stands, as for a live read that fails below.
+    if (recorded !== undefined && backups === undefined) {
+      if (resourceId !== undefined && resourceId.toLowerCase() === recorded.toLowerCase()) {
+        refuse("SourceDbiResourceId must be another DB instance's than the one this replaces");
+      }
+      return;
+    }
+    return unverified('no provider can read it');
+  }
   const read = provider.resourceIdentity.bind(provider);
   const identity = async (id: string): Promise<string | typeof RESOURCE_NOT_FOUND> => {
     let answer: string | typeof RESOURCE_NOT_FOUND | undefined;
@@ -154,13 +169,29 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
     if (answer === undefined || answer === '') return unverified('no resource id was read');
     return answer;
   };
-  let own = typeof recorded === 'string' && recorded !== '' ? recorded : undefined;
-  if (own === undefined) {
-    const live = await identity(input.physicalId);
+  // go-to-k/cdkd#6242: the provider now records `DbiResourceId`, but a
+  // recorded id can be stale (an instance re-created outside cdkd under the
+  // same identifier), so the live id is read either way and both are
+  // compared. With an id recorded, a failed or empty live read keeps the
+  // recorded verdict instead of refusing.
+  let live: string | typeof RESOURCE_NOT_FOUND | undefined;
+  if (recorded === undefined) {
+    live = await identity(input.physicalId);
     if (live === RESOURCE_NOT_FOUND) return unverified('it was not found');
-    own = live;
+  } else {
+    try {
+      const answer = await read(input.physicalId, input.resourceType, {
+        expectedRegion: input.region,
+      });
+      live = answer === '' ? undefined : answer;
+    } catch {
+      live = undefined;
+    }
   }
-  if (resourceId !== undefined && resourceId.toLowerCase() === own.toLowerCase()) {
+  const own = [recorded, live === RESOURCE_NOT_FOUND ? undefined : live].filter(
+    (id): id is string => id !== undefined
+  );
+  if (resourceId !== undefined && own.some((id) => id.toLowerCase() === resourceId.toLowerCase())) {
     refuse("SourceDbiResourceId must be another DB instance's than the one this replaces");
   }
   if (backups !== undefined) {
@@ -172,7 +203,10 @@ async function verifyInstancePointInTimeSource(input: RestoreSourceIdentityInput
         'SourceDBInstanceAutomatedBackupsArn names no automated backup this account can read, so the restore after the delete would fail'
       );
     }
-    if (owner !== RESOURCE_NOT_FOUND && owner.toLowerCase() === own.toLowerCase()) {
+    if (
+      owner !== RESOURCE_NOT_FOUND &&
+      own.some((id) => id.toLowerCase() === owner.toLowerCase())
+    ) {
       refuse(
         "SourceDBInstanceAutomatedBackupsArn must name another DB instance's automated backups than the one this replaces"
       );

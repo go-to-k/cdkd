@@ -644,7 +644,12 @@ const FLOORS = {
 // (11 dropped on that tree), and following them again restores those chains,
 // plus `elbv2/shared.ts`'s `lbArn.split('/')` (the receiver and argument of a
 // `LoadBalancerFullName` value inside `definedAttributes`, neither a fallback).
-const DEPTH_DROPPED_CAP = 32;
+// Raised to 35 by go-to-k/cdkd#6242: `rds/instance-attributes.ts` renders
+// `CertificateDetails.ValidTill` through `javaInstantText`, whose
+// `toISOString().replace('.000Z', 'Z')` receiver and two arguments sit past the
+// cap (measured: removing that one value drops the count back to 32); a
+// formatting chain, not a fallback.
+const DEPTH_DROPPED_CAP = 35;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and

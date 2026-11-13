@@ -8,6 +8,7 @@ import type {
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
+import { dbInstanceAttributes } from './instance-attributes.js';
 import { associatedRolesNamed, associatedRolesReadback } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { replicatedBackupRetention } from './calls.js';
@@ -633,11 +634,7 @@ export async function importDBInstance(
       const described = resp.DBInstances?.[0];
       return {
         physicalId: explicit,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint?.Address,
-          'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-          Arn: described?.DBInstanceArn,
-        }),
+        attributes: dbInstanceAttributes(described),
       };
     } catch (err) {
       if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;

@@ -1,4 +1,5 @@
 import type { CloudControlProvider } from '../cloud-control-provider.js';
+import { dbInstanceAttributes } from '../providers/rds/instance-attributes.js';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
   DescribeDBClustersCommand,
@@ -143,14 +144,9 @@ export async function enrichResourceAttributes(
         );
         const inst = describeResponse.DBInstances?.[0];
         if (inst) {
-          if (inst.Endpoint?.Address) enriched['Endpoint.Address'] = inst.Endpoint.Address;
-          if (inst.Endpoint?.Port !== undefined) {
-            enriched['Endpoint.Port'] = String(inst.Endpoint.Port);
-          }
-          if (inst.Endpoint?.HostedZoneId) {
-            enriched['Endpoint.HostedZoneId'] = inst.Endpoint.HostedZoneId;
-          }
-          if (inst.DBInstanceArn) enriched['Arn'] = inst.DBInstanceArn;
+          // The SDK provider's map (go-to-k/cdkd#6242), so both routes record
+          // the same keys.
+          Object.assign(enriched, dbInstanceAttributes(inst));
           log.debug(
             `Enriched RDS DBInstance ${physicalId} with Endpoint/Port/Arn from DescribeDBInstances`
           );

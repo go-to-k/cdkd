@@ -14,7 +14,7 @@ import {
 } from '../../../utils/error-handler.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
-import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
+import { dbInstanceAttributes } from './instance-attributes.js';
 import { protectedReplacementAdvice } from '../../replacement-protection-advice.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import { associatedRoleList } from '../db-associated-roles.js';
@@ -811,11 +811,7 @@ export async function updateDBInstance(
     return {
       physicalId,
       wasReplaced: false,
-      attributes: definedAttributes({
-        'Endpoint.Address': described?.Endpoint?.Address,
-        'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
-        Arn: described?.DBInstanceArn,
-      }),
+      attributes: dbInstanceAttributes(described),
       ...(effectiveProperties !== undefined && { effectiveProperties }),
     };
   } catch (error) {
