@@ -54,7 +54,7 @@ import {
   replicaSourceChange,
   ownScopeOf,
   sameReplicaSource,
-  replicaSourceOf,
+  liveReplicaSource,
   withPreviousReplicaSource,
 } from './read-replica.js';
 import {
@@ -178,20 +178,24 @@ export async function updateDBInstance(
   // template dropped the keys hands the record over as `properties`.
   const sourceChange =
     declaresPointInTimeRestore(previousProperties) || declaresPointInTimeRestore(properties)
-      ? 'unchanged'
+      ? ({ kind: 'unchanged', keys: [], removed: [] } as const)
       : replicaSourceChange(properties, previousProperties);
   // go-to-k/cdkd#5640: an added or changed restore snapshot or point-in-time
   // key is refused before any change, as CloudFormation fails the update
   // ("Resource is immutable"); a removed one changes nothing, and none is ever
   // sent. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
   // names the restore's source, so a changed one is refused the same way
-  // (`isSourceDBInstanceIdentifierMutable`). A rollback replay or a
+  // (`isSourceDBInstanceIdentifierMutable`), and so is an added or changed
+  // `SourceDBClusterIdentifier`, which the restore never read
+  // (`isSourceDBClusterIdentifierMutable`). A rollback replay or a
   // `drift --revert` restores the record the instance was created from, so it
   // sends nothing and records it as it is.
   const restoreKeys = [
     ...SNAPSHOT_RESTORE_KEYS,
     ...POINT_IN_TIME_KEYS,
-    ...(declaresPointInTimeRestore(previousProperties) ? ['SourceDBInstanceIdentifier'] : []),
+    ...(declaresPointInTimeRestore(previousProperties)
+      ? ['SourceDBInstanceIdentifier', 'SourceDBClusterIdentifier']
+      : []),
   ];
   const changedRestoreKeys = changedCreateTimeKeys(
     restoreKeys,
@@ -291,7 +295,7 @@ export async function updateDBInstance(
       createMaskedLogSinks(this.logger, context?.maskSecrets),
       [[previousProperties['DBInstanceIdentifier'], physicalId]]
     );
-    let sourceKept = sourceChange !== 'immutable';
+    let sourceKept = sourceChange.kind !== 'immutable';
     let liveSourceRead = 'read' as 'read' | 'not-found' | 'unreadable';
     if (!sourceKept) {
       const live = await this.describeDBInstance(physicalId).then(
@@ -312,24 +316,33 @@ export async function updateDBInstance(
           return undefined;
         }
       );
-      const liveSource = live?.ReadReplicaSourceDBInstanceIdentifier;
-      const desiredSource = replicaSourceOf(properties);
-      sourceKept =
-        liveSource !== undefined &&
-        liveSource !== '' &&
-        desiredSource !== undefined &&
-        sameReplicaSource(liveSource, desiredSource, ownScopeOf(live?.DBInstanceArn));
+      // Every key added or changed must name what the instance replicates.
+      sourceKept = sourceChange.keys.every((key) => {
+        const liveSource = liveReplicaSource(live, key);
+        const desiredSource = properties[key];
+        return (
+          liveSource !== undefined &&
+          typeof desiredSource === 'string' &&
+          desiredSource !== '' &&
+          sameReplicaSource(liveSource, desiredSource, ownScopeOf(live?.DBInstanceArn))
+        );
+      });
     }
+    const sourceKeys = sourceChange.keys.join(' and ');
     const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
     if (!sourceKept && !stateBorne) {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
         sourceMask(
-          `SourceDBInstanceIdentifier cannot be added or changed on an existing DB instance — ` +
+          `${sourceKeys} cannot be added or changed on an existing DB instance — ` +
             `an instance becomes a read replica only when it is created, and CloudFormation ` +
             `refuses the same update ("Resource is immutable"). Removing it promotes the ` +
-            `replica instead. Nothing was applied to DB instance ${physicalId}. ` +
+            `replica instead` +
+            (sourceChange.removed.length > 0
+              ? ` (here it replaces ${sourceChange.removed.join(' and ')}, so nothing is promoted)`
+              : '') +
+            `. Nothing was applied to DB instance ${physicalId}. ` +
             (liveSourceRead === 'not-found'
               ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +
                 `record no longer matches AWS. `
@@ -361,7 +374,7 @@ export async function updateDBInstance(
     if (!sourceKept) {
       this.logger.warn(
         sourceMask(
-          safeMsg`DBInstance ${logicalId} (${physicalId}): SourceDBInstanceIdentifier cannot be ` +
+          safeMsg`DBInstance ${logicalId} (${physicalId}): ${sourceKeys} cannot be ` +
             safeMsg`added or changed in place (an instance becomes a read replica only when it is ` +
             safeMsg`created), so the instance keeps its current replication and cdkd records that.`
         )
@@ -484,7 +497,7 @@ export async function updateDBInstance(
     // instance already replicated, so the instance was a replica before that
     // deploy too; it warns and records the source the instance keeps.
     let promotionSkipped = false;
-    if (sourceChange === 'promote') {
+    if (sourceChange.kind === 'promote') {
       const live = await this.describeDBInstance(physicalId);
       if (isLiveReadReplica(live) && context?.replayingState === true) {
         promotionSkipped = true;
@@ -495,7 +508,7 @@ export async function updateDBInstance(
         );
       } else if (isLiveReadReplica(live)) {
         this.logger.info(
-          safeMsg`Promoting DBInstance ${logicalId} to a standalone instance (SourceDBInstanceIdentifier was removed), as CloudFormation does`
+          safeMsg`Promoting DBInstance ${logicalId} to a standalone instance (${sourceKeys} was removed), as CloudFormation does`
         );
         await this.getClient().send(
           new PromoteReadReplicaCommand({

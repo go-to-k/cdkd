@@ -309,9 +309,9 @@ export class RDSProvider implements ResourceProvider {
         'MasterUserAuthenticationType',
         // go-to-k/cdkd#5640: attached / detached once `available` (`applyAssociatedRoles`).
         'AssociatedRoles',
-        // go-to-k/cdkd#5640: a read replica, snapshot or point-in-time restore
-        // (`./rds/{read-replica,instance-restore,instance-pitr}.ts`); SourceRegion is never sent.
+        // go-to-k/cdkd#5640: `./rds/{read-replica,instance-restore,instance-pitr}.ts`.
         'SourceDBInstanceIdentifier',
+        'SourceDBClusterIdentifier',
         'SourceRegion',
         'DBSnapshotIdentifier',
         'DBClusterSnapshotIdentifier',

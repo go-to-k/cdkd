@@ -1,6 +1,6 @@
 import { canonicalAssociatedRoles } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
-import { sameReplicaSource } from './read-replica.js';
+import { REPLICA_SOURCE_KEYS, sameReplicaSource } from './read-replica.js';
 import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
 import {
   canonicalAdditionalStorageVolumes,
@@ -71,9 +71,11 @@ export function getDriftUnknownPaths(
       'DBClusterSnapshotIdentifier',
       // go-to-k/cdkd#5640: RestoreDBInstanceToPointInTime inputs, never read back.
       ...POINT_IN_TIME_KEYS,
-      // ...and a point-in-time restore's source, which RDS keeps no record of
-      // (`ReadReplicaSourceDBInstanceIdentifier` names a replica's only).
-      ...(declaresPointInTimeRestore(properties) ? ['SourceDBInstanceIdentifier'] : []),
+      // ...and a point-in-time restore's source keys, which RDS keeps no record
+      // of (`ReadReplicaSource*` names a replica's only).
+      ...(declaresPointInTimeRestore(properties)
+        ? ['SourceDBInstanceIdentifier', 'SourceDBClusterIdentifier']
+        : []),
     ];
     // go-to-k/cdkd#5640: an undeclared replication retention reads as the
     // instance's own BackupRetentionPeriod, which RDS applies by default, so
@@ -198,11 +200,12 @@ export function canonicalizeDriftProperties(
 }
 
 /**
- * go-to-k/cdkd#5640: a read replica's source. The readback is an ARN; a
+ * go-to-k/cdkd#5640: a read replica's source, per key (an instance's, or a
+ * Multi-AZ DB cluster's). The readback is an ARN; a
  * record may hold a bare identifier or an ARN in another case. The two compare
- * as one source only when they name the same instance by (region, account,
- * name) (`sameReplicaSource`): the AWS side then takes the baseline's
- * spelling. A same-named instance in
+ * as one source only when they name the same instance or cluster by (region,
+ * account, name) (`sameReplicaSource`): the AWS side then takes the baseline's
+ * spelling. A same-named source in
  * another region or account stays a difference. Both bags by identity
  * otherwise.
  */
@@ -215,24 +218,20 @@ export async function canonicalizeDriftPair(
   if (resourceType === 'AWS::RDS::DBInstance') {
     aws = withDeclaredVolumeMembers(baseline, withDeclaredProcessorFeatures(baseline, aws));
   }
-  const recorded = baseline['SourceDBInstanceIdentifier'];
-  const live = aws['SourceDBInstanceIdentifier'];
-  if (
-    resourceType !== 'AWS::RDS::DBInstance' ||
-    typeof recorded !== 'string' ||
-    typeof live !== 'string' ||
-    recorded === live
-  ) {
-    return { baseline, aws };
+  if (resourceType !== 'AWS::RDS::DBInstance') return { baseline, aws };
+  let region: string | undefined;
+  for (const key of REPLICA_SOURCE_KEYS) {
+    const recorded = baseline[key];
+    const live = aws[key];
+    if (typeof recorded !== 'string' || typeof live !== 'string' || recorded === live) continue;
+    // A bare spelling resolves to this client's region. The account needs no
+    // own scope: the readback is an ARN that carries it (`readCurrentState`
+    // builds a same-region source from the replica's own ARN), so a record ARN
+    // naming another account differs from it there.
+    region ??= await this.getClient().config.region();
+    if (sameReplicaSource(recorded, live, { region })) aws = { ...aws, [key]: recorded };
   }
-  // A bare spelling resolves to this client's region. The account needs no
-  // own scope: the readback is an ARN that carries it (`readCurrentState`
-  // builds a same-region source from the replica's own ARN), so a record ARN
-  // naming another account differs from it there.
-  const region = await this.getClient().config.region();
-  return sameReplicaSource(recorded, live, { region })
-    ? { baseline, aws: { ...aws, SourceDBInstanceIdentifier: recorded } }
-    : { baseline, aws };
+  return { baseline, aws };
 }
 
 /**
