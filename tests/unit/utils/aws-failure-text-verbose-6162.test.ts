@@ -194,18 +194,23 @@ describe('every user-facing pointer goes through the verbose-aware helpers', () 
    * definition (`'--verbose'` as a whole string) is not a hint.
    */
   const HINT = /--verbose\b/;
-  const OPTION_TOKEN = /['"`](?:-v, )?--verbose['"`]/;
-  const SAME_LINE_GATE = /verboseAwareText\(|verbosePointerSentence\(\) \?/;
+  // The option's own definition: blanked out (same length, so indexes hold)
+  // rather than exempting its line, so a hint on that line is still scanned.
+  const OPTION_TOKEN = /['"`](?:-v, )?--verbose['"`]/g;
+  const masked = (line: string): string => line.replace(OPTION_TOKEN, (t) => ' '.repeat(t.length));
+  // `(?<![!\w.])`: the inverted `!verbosePointerSentence() ? hint` prints the
+  // hint exactly when the run IS verbose, so it is no gate.
+  const SAME_LINE_GATE = /verboseAwareText\(|(?<![!\w.])verbosePointerSentence\(\) \?/;
   function gated(lines: string[], i: number): boolean {
-    const line = lines[i]!;
+    const line = masked(lines[i]!);
     const gate = SAME_LINE_GATE.exec(line);
     if (gate !== null && gate.index < line.search(HINT)) return true;
     const prev = (lines[i - 1] ?? '').trimEnd();
     if (/verboseAwareText\($/.test(prev)) return true;
-    return /verbosePointerSentence\(\)$/.test(prev) && /^\s*\?/.test(line);
+    return /(?<![!\w.])verbosePointerSentence\(\)$/.test(prev) && /^\s*\?/.test(line);
   }
   function isHintLine(line: string): boolean {
-    return !/^\s*(\/\/|\*|\/\*)/.test(line) && HINT.test(line) && !OPTION_TOKEN.test(line);
+    return !/^\s*(\/\/|\*|\/\*)/.test(line) && HINT.test(masked(line));
   }
   function ungatedHints(file: string, text: string): string[] {
     const lines = text.split('\n');
@@ -244,6 +249,16 @@ describe('every user-facing pointer goes through the verbose-aware helpers', () 
       scan("  return verbosePointerSentence()\n    ? `x; re-run with --verbose for the AWS error text`")
     ).toEqual([]);
     expect(scan("  new Option('--verbose', 'Enable verbose logging')")).toEqual([]);
+    // The inverted gate prints the hint exactly when the run IS verbose.
+    expect(scan('  `${!verbosePointerSentence() ? " (re-run with --verbose)" : \'\'}`')).toHaveLength(1);
+    expect(
+      scan("  return !verbosePointerSentence()\n    ? `x; re-run with --verbose for the AWS error text`")
+    ).toHaveLength(1);
+    // The option token on a line does not hide a hint beside it.
+    expect(
+      scan("  new Option('--verbose', 'Enable verbose logging; re-run with --verbose for more')")
+    ).toHaveLength(1);
+    expect(scan("  new Option('-v, --verbose', 'Enable verbose logging')")).toEqual([]);
     expect(scan('  // Re-run with --verbose for the details.')).toEqual([]);
   });
 
