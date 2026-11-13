@@ -1,7 +1,7 @@
 import { withReplayDeletePrinting } from '../replay-scope.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { withNameGenerationReached } from '../../../state/name-generation.js';
-import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { equalIdNamesSameResource } from '../../type-change-guard.js';
 import { acceptedCreateOnlyDropsEvidence } from '../../../provisioning/property-coverage.js';
@@ -149,7 +149,7 @@ export async function finishReverseReplacement(
         `user-supplied name. Skipping the delete-new step (it would delete that very ` +
         `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
         `state now records the pre-replacement properties, so inspect the drift and ` +
-        safeMsg`run '${cdkdRemedy('cdkd deploy')}' to reconcile, or rename the resource to make the replacement ` +
+        safeMsg`run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to reconcile, or rename the resource to make the replacement ` +
         `reversible.${describedPhysicalIdPointer(liveShown)}` +
         // `--stack-region` for the same reason the destroy hints carry
         // it: without it `cdkd drift` resolves every region holding this
@@ -426,7 +426,7 @@ export async function finishReverseReplacement(
           `The re-create returned the live new resource instead of re-creating the old one ` +
             `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
             `the old resource's original properties may not have been re-applied. Inspect it ` +
-            `with \`${cdkdRemedy('cdkd drift')}\` and run \`${cdkdRemedy('cdkd deploy')}\` to reconcile.`
+            `with ${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to reconcile.`
         ),
       }),
     });

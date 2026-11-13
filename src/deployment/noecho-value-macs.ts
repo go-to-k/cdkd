@@ -21,7 +21,7 @@
  *   (the property is re-sent). A failure logs only the error `name`; neither a
  *   value nor a MAC ever reaches a log line or an error message.
  */
-import { cdkdRemedy } from '../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { timingSafeEqual } from 'node:crypto';
 import { GenerateMacCommand, KMSClient } from '@aws-sdk/client-kms';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
@@ -352,7 +352,7 @@ export class NoEchoValueMacs {
         );
       } else if (name === 'NotFoundException') {
         logger.debug(
-          safeMsg`NoEcho value MACs: no KMS key ${NOECHO_MAC_KEY_ALIAS} in ${region} (run '${cdkdRemedy('cdkd bootstrap')}' to create it); a write-only property a NoEcho parameter feeds is re-sent on every deploy`
+          safeMsg`NoEcho value MACs: no KMS key ${NOECHO_MAC_KEY_ALIAS} in ${region} (run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} to create it); a write-only property a NoEcho parameter feeds is re-sent on every deploy`
         );
       } else {
         logger.info(

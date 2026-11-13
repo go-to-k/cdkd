@@ -12,7 +12,7 @@
  */
 import { CdkdError } from '../../utils/error-handler.js';
 import { displayAwsMessage, safeMsg } from '../../utils/display-safe.js';
-import { cdkdRemedy, pasteableCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 const stackArg = (value: string) => ({ value, hole: 'stack', opts: { patternMatched: true } });
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -452,8 +452,8 @@ export async function applyMoveGroup(input: {
       if ((await stateBackend.loadRollbackJournal(plan.stackName, plan.region)) !== null) {
         throw new CdkdError(
           safeMsg`cdkd refactor refused stack ${plan.stackName} (${plan.region}): an earlier ` +
-            safeMsg`deploy left a rollback journal, so nothing was written. Run '${pasteableCommand('cdkd rollback', [stackArg(plan.stackName)]).command}' ` +
-            safeMsg`or a successful '${cdkdRemedy('cdkd deploy')}' first.`,
+            safeMsg`deploy left a rollback journal, so nothing was written. Run ${proseQuoted(pasteableCommand('cdkd rollback', [stackArg(plan.stackName)]).command)} ` +
+            safeMsg`or a successful ${proseQuoted(cdkdRemedy('cdkd deploy'))} first.`,
           'REFACTOR_REFUSED'
         );
       }
@@ -484,7 +484,7 @@ export async function applyMoveGroup(input: {
             : '') +
           safeMsg`Any move that started is recorded in its source stack (${sources.join(', ')}), ` +
           "whose 'cdkd deploy' and 'cdkd destroy' refuse until it is finished. Re-run " +
-          safeMsg`'${pasteableCommand('cdkd refactor', sources.map(stackArg)).command}' to finish it.`,
+          safeMsg`${proseQuoted(pasteableCommand('cdkd refactor', sources.map(stackArg)).command)} to finish it.`,
         'REFACTOR_PARTIAL'
       );
     };

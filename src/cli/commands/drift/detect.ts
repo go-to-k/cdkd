@@ -26,7 +26,7 @@ import { stripCcApiAwsManagedFields } from '../../../analyzer/cc-api-strip.js';
 import { CloudControlProvider } from '../../../provisioning/cloud-control-provider.js';
 import { withStackScope } from '../../../provisioning/resource-name.js';
 import { displayStackName, safeMsg } from '../../../utils/display-safe.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { stackInstanceIdOf } from '../../../state/stack-instance-id.js';
 import {
   type RecordedSecretValues,
@@ -88,7 +88,7 @@ export async function runDriftForStack(
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
     throw new Error(
-      `No state found for stack '${stackName}' (${region}). Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+      `No state found for stack '${stackName}' (${region}). Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
 

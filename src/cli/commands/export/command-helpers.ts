@@ -4,6 +4,7 @@ import {
   commandHole,
   pasteableCommand,
   type CommandArg,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../../utils/logger.js';
@@ -76,7 +77,7 @@ export async function pickStackRegion(
     if (flag) return flag;
     if (synthRegion) return synthRegion;
     throw new Error(
-      `No state found for stack ${quotedOrNotShown(stackName)}. Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+      `No state found for stack ${quotedOrNotShown(stackName)}. Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   if (flag) {

@@ -598,6 +598,22 @@ export function cdkdRemedy(verb: string, ...literals: readonly string[]): string
 }
 
 /**
+ * A BUILT command for a sentence that spells it inside prose quotes
+ * (`Re-run '<command>' for this region`) or markdown backticks: wrapped in
+ * `quote` only when the FINAL string holds no quote character, otherwise
+ * printed unwrapped (shape 1 of this module's header). The decision is on the
+ * final string because the run flags appended to it can hold quoted holes
+ * (`--role-arn '<role-arn>'`, `--profile '<profile>'`, `--aws-emulator='<url>'`)
+ * and a named value can be shell-quoted, and either would close the wrapper:
+ * `'cdkd bootstrap --role-arn '<role-arn>''` pastes `<role-arn>` as two
+ * redirections (go-to-k/cdkd#6262). A command with no quote character keeps
+ * the wrapper, so a run that typed no flag prints the sentence as before.
+ */
+export function proseQuoted(command: string, quote: "'" | '`' | '"' = "'"): string {
+  return /['"`]/.test(command) ? command : `${quote}${command}${quote}`;
+}
+
+/**
  * The replacement remedy: `cdkd deploy --replace`, plus
  * `--force-stateful-recreation` for a type in `STATEFUL_TYPES`, with the run's
  * flags ({@link cdkdRemedy}).
@@ -830,7 +846,7 @@ export function withheldTargetClause(
   }
   return (
     ` ${subject} ${why} — so it is not named in the command below; ` +
-    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}' and act on the one whose key ` +
+    `list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))} and act on the one whose key ` +
     `matches.`
   );
 }

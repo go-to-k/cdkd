@@ -1,4 +1,4 @@
-import { cdkdRemedy } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
 import { displayLeaf, displayMasked, displayMaskedIdent } from './masking-display.js';
@@ -579,7 +579,7 @@ export async function resolveGetStackOutput(
           `'Object.hasOwn' answers TRUE for '0' on a string and for an index on a list, so ` +
           `continuing would resolve ONE CHARACTER or element of the record as this ` +
           `reference's value and this deploy would send it to AWS. Inspect the producer's ` +
-          `record with '${cdkdRemedy('cdkd state show', '--json')}', repair or remove it, then re-run.`
+          `record with ${proseQuoted(cdkdRemedy('cdkd state show', '--json'))}, repair or remove it, then re-run.`
       )
     );
   }

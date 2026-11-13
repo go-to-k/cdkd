@@ -4,6 +4,7 @@ import {
   type CommandArg,
   type PasteableCommand,
   SHELL_ACTIVE_WHY,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
@@ -415,12 +416,12 @@ export function reportDriftBaselineGaps(
         (unreadableCount > 0
           ? `Repair the ${unreadableCount} unreadable record(s) named above first — ` +
             `'cdkd state refresh-observed' refuses a record that holds one. Then capture a ` +
-            `baseline and run '${cdkdRemedy('cdkd drift')}' to verify the stack matches AWS.`
+            `baseline and run ${proseQuoted(cdkdRemedy('cdkd drift'))} to verify the stack matches AWS.`
           : refreshCommand !== undefined
-            ? `${refreshNote}Capture a baseline before export, then run '${cdkdRemedy('cdkd drift')}' to verify the stack ` +
+            ? `${refreshNote}Capture a baseline before export, then run ${proseQuoted(cdkdRemedy('cdkd drift'))} to verify the stack ` +
               `matches AWS, with: ${refreshCommand}`
             : `Capture a baseline before export with ${refreshWithheld} Then run ` +
-              `'${cdkdRemedy('cdkd drift')}' to verify the stack matches AWS.`)
+              `${proseQuoted(cdkdRemedy('cdkd drift'))} to verify the stack matches AWS.`)
     );
     for (const [logicalId] of refreshable.slice(0, NAMED_BASELINE_IDS)) {
       // Sanitized like the unreadable-entry list above, and for the same

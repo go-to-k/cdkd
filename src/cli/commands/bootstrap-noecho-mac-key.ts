@@ -6,7 +6,7 @@ import {
   type KMSClient,
 } from '@aws-sdk/client-kms';
 import { awsEndpointOverrideActive } from '../../utils/aws-client-defaults.js';
-import { cdkdRemedy } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { NOECHO_MAC_KEY_ALIAS } from '../../deployment/noecho-value-macs.js';
 
 /** What {@link ensureNoEchoMacKey} reports, for the bootstrap summary. */
@@ -108,7 +108,7 @@ export async function ensureNoEchoMacKey(args: {
     warn(
       `Could not set up the NoEcho value MAC key ${NOECHO_MAC_KEY_ALIAS} in ${region} ` +
         `(${errorName(error)} from ${step}). Deploys keep working: a write-only property a ` +
-        `NoEcho parameter feeds is re-sent on every deploy. Re-run '${cdkdRemedy('cdkd bootstrap')}' with ` +
+        `NoEcho parameter feeds is re-sent on every deploy. Re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} with ` +
         'kms:CreateKey, kms:PutKeyPolicy, kms:CreateAlias and kms:DescribeKey to create it.'
     );
     return 'failed';
@@ -128,7 +128,7 @@ export async function ensureNoEchoMacKey(args: {
       `${NOECHO_MAC_KEY_ALIAS} in ${region} does not name an enabled HMAC_256 key ` +
         `(${meta?.KeySpec ?? 'unknown spec'}, ${meta?.KeyState ?? 'unknown state'}), so deploys ` +
         'make no NoEcho value MACs. Point the alias at an enabled HMAC_256 key, or delete it ' +
-        `and re-run '${cdkdRemedy('cdkd bootstrap')}'.`
+        `and re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))}.`
     );
     return 'failed';
   } catch (error) {
@@ -183,7 +183,7 @@ export async function ensureNoEchoMacKey(args: {
     }
     warn(
       `${NOECHO_MAC_KEY_ALIAS} in ${region} does not name an enabled HMAC_256 key, so deploys ` +
-        `make no NoEcho value MACs. Point the alias at an enabled HMAC_256 key, or delete it and re-run '${cdkdRemedy('cdkd bootstrap')}'.`
+        `make no NoEcho value MACs. Point the alias at an enabled HMAC_256 key, or delete it and re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))}.`
     );
     return 'failed';
   }

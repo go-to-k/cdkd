@@ -37,7 +37,7 @@ import {
   type ResourceState,
   type StackState,
 } from '../../../types/state.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { stackShown } from './overrides.js';
 import type { ImportRow } from './types.js';
 
@@ -66,7 +66,7 @@ export async function claimRegistryMarkerAfterImport(
       logger.warn(
         safeMsg`The state bucket also records ${displayStackName(stackName)} (${regionShown}) under another state prefix ` +
           safeMsg`(${answer.prefixes.map((p) => displayIdent(p)).join(', ')}). One stack name per ` +
-          safeMsg`account and region is supported: drop one of the records with '${cdkdRemedy('cdkd state orphan')}' ` +
+          safeMsg`account and region is supported: drop one of the records with ${proseQuoted(cdkdRemedy('cdkd state orphan'))} ` +
           `before deploying or destroying either.`
       );
       return;

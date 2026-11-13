@@ -3,7 +3,7 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { CdkdError } from '../../../utils/error-handler.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { PropertyDrift } from '../../../analyzer/drift-calculator.js';
 import type { ProducerRegionEvidence } from '../../../deployment/producer-regions-scope.js';
 import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
@@ -924,7 +924,7 @@ export function incompleteRemediationMessage(
     `Comparison INCOMPLETE — nothing to ${mode}, and that is NOT a clean bill of health: ` +
       `${uncompared} of ${total} resource(s) could not be compared.`,
     ...groups,
-    `Re-run '${cdkdRemedy('cdkd drift')}' without --${mode} to see which resources and why — a detection-only ` +
+    `Re-run ${proseQuoted(cdkdRemedy('cdkd drift'))} without --${mode} to see which resources and why — a detection-only ` +
       `run exits 2 while a comparison is incomplete.`,
   ];
 }

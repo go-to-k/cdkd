@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return */
-import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   type Bucket,
   GetBucketLocationCommand,
@@ -142,7 +142,7 @@ export function refuseAmbiguousCreateAdopt(
         `with ${deletion} (S3 refuses with BucketNotEmpty if anything is left in it) and ` +
         `re-run the deploy. ` +
         (explicitName
-          ? `If it is a bucket you mean this stack to own, adopt it with \`${cdkdRemedy('cdkd import')}\` and ` +
+          ? `If it is a bucket you mean this stack to own, adopt it with ${proseQuoted(cdkdRemedy('cdkd import'), '`')} and ` +
             `re-run: its BucketName is set explicitly, so a re-run alone refuses it.`
           : `If it is a bucket you mean this stack to own, re-run the deploy to adopt it.`),
       resourceType,
@@ -209,7 +209,7 @@ export function refuseExplicitNameHeld(
         `CloudFormation fails the same create. Nothing was applied to it. Choose a bucket ` +
         `name no other bucket holds. If no record of this stack holds that bucket and it is ` +
         `yours (left by an interrupted deploy, or kept by DeletionPolicy: Retain), delete ` +
-        `it, or adopt it with \`${cdkdRemedy('cdkd import')}\`, and re-run; confirm it is yours first, since ` +
+        `it, or adopt it with ${proseQuoted(cdkdRemedy('cdkd import'), '`')}, and re-run; confirm it is yours first, since ` +
         `adopting a bucket hands it to this stack's \`cdkd destroy\`.`,
       resourceType,
       logicalId,

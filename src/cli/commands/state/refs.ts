@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { type StackStateRef } from '../../../state/s3-state-backend.js';
 import {
@@ -67,10 +68,10 @@ export interface StackDetail {
  * `StateError`, so any finer reason would be a guess about the class.
  */
 function stateReadFailedReason(): string {
-  return `state record could not be read; run \`${stateShowCommand()}\` for the error`;
+  return `state record could not be read; run ${proseQuoted(stateShowCommand(), '`')} for the error`;
 }
 export function lockReadFailedReason(): string {
-  return `lock could not be read; run \`${stateShowCommand()}\` for the error`;
+  return `lock could not be read; run ${proseQuoted(stateShowCommand(), '`')} for the error`;
 }
 function stateShowCommand(): string {
   return cdkdRemedy('cdkd state show');
@@ -92,7 +93,7 @@ export const LEGACY_LOCK_READ_FAILED_REASON = 'lock could not be read';
  * the row (issue #3069).
  */
 function resourcesMalformedReason(): string {
-  return `resources is not a JSON object; run \`${cdkdRemedy('cdkd state show', '--json')}\` to see the record`;
+  return `resources is not a JSON object; run ${proseQuoted(cdkdRemedy('cdkd state show', '--json'), '`')} to see the record`;
 }
 
 /**
@@ -297,7 +298,7 @@ export function describedStackRef(ref: StackStateRef): string {
 export function legacyRecordSubject(stackName: string): string {
   return isPasteableIdent(stackName)
     ? `Stack ${stackName}`
-    : `A stack whose name is not a plain identifier (see '${cdkdRemedy('cdkd state list', '--long')}')`;
+    : `A stack whose name is not a plain identifier (see ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))})`;
 }
 
 /**
@@ -327,7 +328,7 @@ export function legacyRecordRefusal(stackName: string): Error {
  * records as stored.
  */
 export function stateListPointer(): string {
-  return `'${cdkdRemedy('cdkd state list', '--long')}' shows the records as stored.`;
+  return `${proseQuoted(cdkdRemedy('cdkd state list', '--long'))} shows the records as stored.`;
 }
 
 /** Whether `describedStackRef` describes either half of `ref`. */

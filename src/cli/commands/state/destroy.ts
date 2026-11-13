@@ -3,6 +3,7 @@ import {
   commandHole,
   pasteableCommand,
   plainOrDescribed,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import { Command, Option } from 'commander';
@@ -247,7 +248,7 @@ async function stateDestroyCommand(
       // cannot read as two entries of this list (go-to-k/cdkd#3179).
       throw new Error(
         `No state found for stack(s): ${missing.map(listedStackName).join(', ')}.\n` +
-          `Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
       );
     }
     const stackNames = stackArgs;
@@ -604,7 +605,7 @@ async function stateDestroyCommand(
       // from "command crashed" via PartialFailureError → exit code 2.
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-          `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run '${cdkdRemedy('cdkd state destroy')}' to retry. ` +
+          `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to retry. ` +
           `If the same resource keeps failing, ${pasteableCommand('cdkd state orphan', [{ hole: 'stack' }, { flag: '--stack-region', hole: 'region' }]).command} removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
@@ -617,7 +618,7 @@ async function stateDestroyCommand(
       // tail of a run that destroyed every target must not report unfinished
       // work there is none of.
       throw new PartialFailureError(
-        `Destroy interrupted by Ctrl-C. State preserved — re-run '${cdkdRemedy('cdkd state destroy')}' to finish.`
+        `Destroy interrupted by Ctrl-C. State preserved — re-run ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to finish.`
       );
     }
     if (totalSkipped > 0) {

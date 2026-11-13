@@ -11,6 +11,7 @@ import {
   cdkdRemedy,
   plainOrDescribed,
   quotedOrDescribed,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { resolvePendingCloudControlRequests } from '../../../deployment/cc-pending-requests.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
@@ -238,7 +239,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
         // `cdkd deploy` / `cdkd destroy` remedy (go-to-k/cdkd#3950's S1 rule).
         `Nothing to roll back for ${plainOrDescribed(stackName, 'stack name')} ` +
           `(${plainOrDescribed(region, 'region')}). ` +
-          `Run '${cdkdRemedy('cdkd deploy')}' to (re)deploy, or '${cdkdRemedy('cdkd destroy')}' to clean up.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to (re)deploy, or ${proseQuoted(cdkdRemedy('cdkd destroy'))} to clean up.`
       );
     }
     applyCrossPrefixScan(

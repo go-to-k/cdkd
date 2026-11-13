@@ -3,6 +3,7 @@ import {
   cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
@@ -62,7 +63,7 @@ export async function rollbackCommand(
       if (scoped.length === 0) {
         logger.info(
           'Nothing to roll back — no stack has a rollback journal. ' +
-            safeMsg`Run '${cdkdRemedy('cdkd deploy')}' to (re)deploy, or '${cdkdRemedy('cdkd destroy')}' to clean up.`
+            safeMsg`Run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to (re)deploy, or ${proseQuoted(cdkdRemedy('cdkd destroy'))} to clean up.`
         );
         return;
       }
@@ -85,7 +86,7 @@ export async function rollbackCommand(
           (c) => !isPasteableIdent(c.stackName) || !isPasteableIdent(c.region ?? '')
         )
           ? `A row whose stack name or region is not a plain identifier is described, not named; ` +
-            `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.\n`
+            `list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))}.\n`
           : '';
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +

@@ -3,6 +3,7 @@ import {
   commandHole,
   pasteableCommand,
   type CommandArg,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
@@ -348,7 +349,7 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
   // the key JSON-escaped, byte-for-byte.
   const subject = isPasteableIdent(logicalId)
     ? logicalId
-    : `this resource (its logical id is not a plain identifier; read it with '${cdkdRemedy('cdkd state show')}')`;
+    : `this resource (its logical id is not a plain identifier; read it with ${proseQuoted(cdkdRemedy('cdkd state show'))})`;
   return (
     `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +

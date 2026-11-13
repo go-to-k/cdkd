@@ -10,7 +10,7 @@
  * first state read, so it adds no wait) and refuses any stack a listed move
  * involves. Ids only, never a value.
  */
-import { cdkdRemedy, pasteableCommand } from '../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../utils/pasteable-command.js';
 import { CdkdError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -165,12 +165,12 @@ export function refactorMarkerRefusalMessage(
     safeMsg`${involved.map((m) => `${m.fromStack}.${m.from} -> ${m.toStack}.${m.to}`).join(', ')} ` +
     'did not finish, and acting on this stack now could delete a resource another stack ' +
     'owns or create it a second time. Run ' +
-    safeMsg`'${
+    safeMsg`${proseQuoted(
       pasteableCommand(
         'cdkd refactor',
         sources.map((source) => ({ value: source, hole: 'stack', opts: { patternMatched: true } }))
       ).command
-    }' to finish the move, then re-run.`
+    )} to finish the move, then re-run.`
   );
 }
 

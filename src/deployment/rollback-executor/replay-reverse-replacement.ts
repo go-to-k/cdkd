@@ -1,5 +1,5 @@
 import { nameGenerationOf } from '../../state/name-generation.js';
-import { cdkdRemedy, deployReplaceCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, deployReplaceCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
@@ -210,7 +210,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     !requireRestorableBaseline(prev.properties, logger, {
       logicalId: op.logicalId,
       consequence: 'create a default-configured resource and then delete the live one',
-      remedy: `Re-run \`${cdkdRemedy('cdkd deploy')}\` to re-converge it.`,
+      remedy: `Re-run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to re-converge it.`,
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {

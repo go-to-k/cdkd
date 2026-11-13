@@ -4,7 +4,7 @@ import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { CdkdError } from '../../../utils/error-handler.js';
-import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../../utils/role-arn.js';
 import {
@@ -254,7 +254,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
           `(a deploy in flight may have published assets whose state write has not ` +
           `landed yet):\n${listing}\n` +
           `Wait for the operation(s) to finish — or clear a stale lock with ` +
-          `${pasteableCommand('cdkd force-unlock', [{ hole: 'stack' }]).command} — then re-run '${cdkdRemedy('cdkd gc')}'.`,
+          `${pasteableCommand('cdkd force-unlock', [{ hole: 'stack' }]).command} — then re-run ${proseQuoted(cdkdRemedy('cdkd gc'))}.`,
         'GC_LOCKED'
       );
     }

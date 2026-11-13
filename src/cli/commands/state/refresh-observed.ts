@@ -2,6 +2,7 @@ import {
   cdkdRemedy,
   pasteableCommand,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { Command } from 'commander';
 import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
@@ -400,7 +401,7 @@ async function stateRefreshObservedCommand(
       const parts: string[] = [];
       if (totalFailed > 0) {
         parts.push(
-          `${totalFailed} per-resource readback failure(s); re-run '${cdkdRemedy('cdkd state refresh-observed')}' to retry them.`
+          `${totalFailed} per-resource readback failure(s); re-run ${proseQuoted(cdkdRemedy('cdkd state refresh-observed'))} to retry them.`
         );
       }
       if (totalNotFound > 0) {

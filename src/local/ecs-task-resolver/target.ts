@@ -1,4 +1,4 @@
-import { cdkdRemedy } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../cli/cdk-path.js';
 import {
@@ -91,7 +91,7 @@ export function resolveEcsTaskTarget(
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is a Lambda function, not an ECS task definition. ` +
-        `Use \`${cdkdRemedy('cdkd local invoke')}\` for Lambda; \`cdkd local run-task\` is ECS only.`
+        `Use ${proseQuoted(cdkdRemedy('cdkd local invoke'), '`')} for Lambda; \`cdkd local run-task\` is ECS only.`
     );
   }
   if (resource.Type !== 'AWS::ECS::TaskDefinition') {

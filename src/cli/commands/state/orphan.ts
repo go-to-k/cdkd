@@ -3,6 +3,7 @@ import {
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { Command, InvalidArgumentError } from 'commander';
 import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
@@ -113,7 +114,7 @@ async function clearRetainedQuietly(
     logger.warn(
       safeMsg`Could not empty the kept-resource record of ${displayStackName(stackName)} ` +
         safeMsg`(${describeAwsFailure(error).summary}): a later deploy here may still take a kept ` +
-        safeMsg`resource back. Re-run '${cdkdRemedy('cdkd state orphan')}' once it can write.`
+        safeMsg`resource back. Re-run ${proseQuoted(cdkdRemedy('cdkd state orphan'))} once it can write.`
     );
     return false;
   }
@@ -186,7 +187,7 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
     if (stackArgs.length !== 1) {
       throw new Error(
         `--resource names resources of ONE stack, but ${stackArgs.length} stacks were given. ` +
-          `Run '${cdkdRemedy('cdkd state orphan')}' once per stack.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd state orphan'))} once per stack.`
       );
     }
     await stateOrphanResources(stackArgs[0]!, options.resource, options);
@@ -524,7 +525,7 @@ async function stateOrphanResources(
       if (!stateData) {
         throw new Error(
           `No state found for ${describedStackRef(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
-            `Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+            `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
         );
       }
       const { state, etag, migrationPending } = stateData;
@@ -595,7 +596,7 @@ async function stateOrphanResources(
             withheldTargetClause(childCommand, 'stack', 'cdkd state orphan') +
             (otherRegions > 0
               ? ` The child also has records in ${otherRegions} other region(s); ` +
-                `'${cdkdRemedy('cdkd state list')}' shows them, and each needs the same drop.`
+                `${proseQuoted(cdkdRemedy('cdkd state list'))} shows them, and each needs the same drop.`
               : '') +
             (accountClause === '' ? '' : ` ${accountClause}`) +
             `\nDrop the child with: ${childCommand.command}`

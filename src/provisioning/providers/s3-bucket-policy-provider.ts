@@ -36,7 +36,7 @@ import {
   remedyLogicalId,
   VALUE_NOT_SHOWN,
 } from '../import-helpers.js';
-import { cdkdRemedy, commandHole } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, commandHole, proseQuoted } from '../../utils/pasteable-command.js';
 
 /**
  * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
@@ -528,7 +528,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
           // `cdkd refactor` works on a top-level stack only, like `cdkd import`.
           (getCurrentStackName()?.includes('~') === true
             ? 'Deploy'
-            : `Move the record with '${cdkdRemedy('cdkd refactor')}', or deploy`) +
+            : `Move the record with ${proseQuoted(cdkdRemedy('cdkd refactor'))}, or deploy`) +
           ` the removal of ${holder} first. Do not delete or import the existing policy: the ` +
           `removal of ${holder} would then delete it, leaving the bucket with no policy.`
       );
@@ -574,14 +574,12 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const bucketArg =
       bucketShown === bucketName && isS3BucketName(bucketName) ? bucketName : '<bucketName>';
     const stackName = getCurrentStackName();
-    const importCmd = importRemedyCommand(stackName, `${remedyLogicalId(logicalId)}=${bucketArg}`);
     // A nested-stack child (`<parent>~<child>`) is no `cdkd import` target.
     const importArm =
       stackName !== undefined && stackName.includes('~')
         ? ''
         : `, or merge its statements into this resource's PolicyDocument and adopt it into the ` +
-          // Prose quotes only around a command with no quoted hole, which they would invert.
-          `stack with ${importCmd.includes("'") ? importCmd : `'${importCmd}'`}`;
+          `stack with ${proseQuoted(importRemedyCommand(stackName, `${remedyLogicalId(logicalId)}=${bucketArg}`))}`;
     refuse(
       `cdkd does not overwrite it: PutBucketPolicy replaces the whole policy, so the ` +
         `statements its owner attached (a log-delivery service's grant, for example) would be ` +

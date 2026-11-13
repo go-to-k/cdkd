@@ -1,5 +1,5 @@
 import { awsEndpointOverrideActive } from './aws-client-defaults.js';
-import { cdkdRemedy } from './pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from './pasteable-command.js';
 
 /**
  * The remedy sentence for a missing cdkd state bucket (go-to-k/cdkd#6245).
@@ -20,7 +20,7 @@ import { cdkdRemedy } from './pasteable-command.js';
  */
 export function missingStateBucketRemedy(what: string): string {
   if (!awsEndpointOverrideActive())
-    return `Run '${cdkdRemedy('cdkd bootstrap')}' to create ${what}.`;
+    return `Run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} to create ${what}.`;
   return (
     'AWS Emulator keeps nothing across restarts, so a new or restarted emulator has no cdkd ' +
     'bootstrap yet. A cdkd deploy without --dry-run creates the state bucket on its own; or ' +

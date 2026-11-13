@@ -1,4 +1,4 @@
-import { cdkdRemedy } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { withReplayDeletePrinting } from './replay-scope.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
@@ -146,11 +146,11 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
     const repair =
       target === undefined
         ? `Repair the record's 'physicalId' to the id of the replacement's NEW resource ` +
-          `(inspect it with \`${cdkdRemedy('cdkd state show')}\`): the journal does not record that id, and ` +
+          `(inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'), '`')}): the journal does not record that id, and ` +
           `the re-run DELETES the resource the repaired record names as the new copy, so ` +
           `name the right one. Then re-run ${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.`
         : `Repair the record's 'physicalId' to ${target}, the replacement's new resource the ` +
-          `journal records (inspect it with \`${cdkdRemedy('cdkd state show')}\`); the re-run deletes it and ` +
+          `journal records (inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'), '`')}); the re-run deletes it and ` +
           `re-adopts the old one. Any other id stops the revert and drops the journal's only ` +
           `record of the ${oldKind} old resource (${oldShown}). Then re-run ` +
           `${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.` +
@@ -429,7 +429,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       logicalId: op.logicalId,
       consequence:
         'be applied as a complete desired state: a patch provider removes every property, and an SDK provider may reset a subset or replace the resource',
-      remedy: `Re-run \`${cdkdRemedy('cdkd deploy')}\` to re-converge it.`,
+      remedy: `Re-run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to re-converge it.`,
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {

@@ -5,7 +5,7 @@ import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -457,7 +457,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
           safeMsg`${toApply.map((p) => `${p.stackName} (${p.region})`).join(', ')}.`
       );
       logger.info(
-        safeMsg`\nAWS resources were not touched. Run '${cdkdRemedy('cdkd diff')}' to confirm the refactored resources ` +
+        safeMsg`\nAWS resources were not touched. Run ${proseQuoted(cdkdRemedy('cdkd diff'))} to confirm the refactored resources ` +
           'show no change, and deploy the destination stacks before the stacks that import from them.'
       );
       return;
@@ -496,7 +496,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
       );
     }
     logger.info(
-      safeMsg`\nAWS resources were not touched. Run '${cdkdRemedy('cdkd diff')}' to confirm the renamed resources show no change.`
+      safeMsg`\nAWS resources were not touched. Run ${proseQuoted(cdkdRemedy('cdkd diff'))} to confirm the renamed resources show no change.`
     );
   } finally {
     awsClients.destroy();

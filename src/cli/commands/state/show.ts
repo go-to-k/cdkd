@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { refusedBaselineRemedy } from '../refused-baseline-remedy.js';
 import { withErrorHandling } from '../../../utils/error-handler.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -120,7 +120,7 @@ export async function printStackShow(
   if (!stateResult) {
     throw new Error(
       `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
-        `Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
 

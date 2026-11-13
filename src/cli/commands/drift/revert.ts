@@ -7,6 +7,7 @@ import {
   cdkdRemedy,
   deployReplaceCommand,
   pasteableCommand,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
@@ -423,7 +424,7 @@ export async function runRevert(
                 (recordedCount > 0
                   ? ` The next 'cdkd drift' will report the same difference — ` +
                     (revertAgain === undefined
-                      ? `re-run '${cdkdRemedy('cdkd drift', '--revert')}' for this stack once the state write can succeed.`
+                      ? `re-run ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))} for this stack once the state write can succeed.`
                       : `re-run the command below once the state write can succeed.` +
                         `\nRevert with: ${revertAgain}`)
                   : '')

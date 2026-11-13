@@ -9,6 +9,7 @@ import {
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { displaySafe, displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import { bold, green, red, yellow } from '../../../utils/colors.js';
@@ -233,7 +234,7 @@ export function makeSummaryHints(
     )
       ? ''
       : ` A target that is not a plain identifier is printed as a quoted '<stack>' or ` +
-        `'<region>' placeholder; list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.`) +
+        `'<region>' placeholder; list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))}.`) +
     (targets.length === 0
       ? ''
       : ((clause) => (clause === '' ? '' : ` ${clause}`))(
@@ -564,7 +565,7 @@ export function printDestroySummary({
   } else if (result.interrupted && result.errorCount === 0) {
     logger.warn(
       `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
-        `State preserved — re-run '${cdkdRemedy('cdkd destroy')}' / '${cdkdRemedy('cdkd state destroy')}' to finish.`
+        `State preserved — re-run ${proseQuoted(cdkdRemedy('cdkd destroy'))} / ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to finish.`
     );
   } else if (result.errorCount === 0) {
     // Skips only. Nothing FAILED, so "partially destroyed" with an error
@@ -638,7 +639,7 @@ export function printDestroySummary({
       [...new Set(lines.split('\n').filter((l) => l !== ''))].map((l) => `\n${l}`).join('');
     logger.warn(
       `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
-        `State preserved — re-run '${cdkdRemedy('cdkd destroy')}' / '${cdkdRemedy('cdkd state destroy')}' to clean up. ` +
+        `State preserved — re-run ${proseQuoted(cdkdRemedy('cdkd destroy'))} / ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to clean up. ` +
         (journaledOrphanFailures > 0
           ? `${journaledOrphanFailures} of the failures are resources a failed deploy created that ` +
             `only the rollback journal records: re-run the destroy to retry them. Do not drop ` +

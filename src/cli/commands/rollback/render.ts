@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { getLogger } from '../../../utils/logger.js';
 import { refusesFinalSnapshot } from '../../../provisioning/final-snapshot.js';
@@ -138,7 +139,7 @@ export function stackRegionIsPlain(stackName: string, region: string): boolean {
 export function nestedNameDescribedNote(): string {
   return (
     "(The nested stack's name is not a plain identifier, so it is described, not named; " +
-    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.)`
+    `list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))}.)`
   );
 }
 
@@ -146,7 +147,7 @@ export function nestedNameDescribedNote(): string {
 export function stackRegionDescribedNote(): string {
   return (
     '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
-    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.)`
+    `list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))}.)`
   );
 }
 

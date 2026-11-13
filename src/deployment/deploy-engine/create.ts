@@ -37,7 +37,7 @@ import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import { pasteableCommand, quotedOrDescribed, proseQuoted } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
@@ -553,7 +553,7 @@ async function refuseUnlicensedGeneratedName(
       const top = input.stackName.split('~')[0]!;
       const importLine = nested
         ? `adopt it through the top-level stack ${quotedOrDescribed(top, 'stack name')} with \`cdkd import\``
-        : `adopt it with \`${
+        : `adopt it with ${proseQuoted(
             pasteableCommand(
               'cdkd import',
               [
@@ -565,8 +565,9 @@ async function refuseUnlicensedGeneratedName(
                 },
               ],
               recoveryCommandFlags(engine.options.refusalRecovery).flags
-            ).command
-          }\``;
+            ).command,
+            '`'
+          )}`;
       if (verdict.ownIntent !== undefined) {
         // Review D1 (the maintainer's decision): this stack's ledger names the
         // name, but cannot prove this holder is what its create made.

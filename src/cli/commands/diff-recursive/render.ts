@@ -1,6 +1,6 @@
 import { movedToHint, type MovedTo } from '../../../analyzer/refactor-hints.js';
 import { stripForDisplay } from '../../../utils/regexp.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { ResourceChange } from '../../../types/state.js';
 import { INTRINSIC_KEYS } from '../../../analyzer/diff-calculator.js';
 import type { OutputChange } from '../../../analyzer/outputs-diff.js';
@@ -307,7 +307,7 @@ export function renderChangeLines(
  * outcome there.
  */
 const redactedLegacyPlaintext = (): string =>
-  `<redacted: may be legacy plaintext in state — run \`${cdkdRemedy('cdkd scrub')}\`>`;
+  `<redacted: may be legacy plaintext in state — run ${proseQuoted(cdkdRemedy('cdkd scrub'), '`')}>`;
 
 /**
  * The guard for an already-JSON-SERIALIZED value: C1 and the bidi marks

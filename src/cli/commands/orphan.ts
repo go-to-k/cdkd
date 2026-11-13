@@ -61,7 +61,12 @@ import {
   displayStackName,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { cdkdRemedy, pasteableCommand, plainOrDescribed } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  plainOrDescribed,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import type { StackState } from '../../types/state.js';
 import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
 import { secretNamedRecordNeedles } from '../../deployment/secret-name-needles.js';
@@ -668,7 +673,7 @@ function resolveConstructPaths(
       throw new Error(
         `All construct paths must reference the same stack. ` +
           `Got ${displayStackName(stack.stackName)} and ${displayStackName(candidate.stackName)}. ` +
-          `Run '${cdkdRemedy('cdkd orphan')}' once per stack.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd orphan'))} once per stack.`
       );
     }
 
@@ -739,7 +744,7 @@ async function pickStackRegion(
     if (synthRegion) return { region: synthRegion, recordRegion: synthRegion };
     throw new Error(
       `No state found for stack ${displayStackName(stackName)}. ` +
-        `Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   if (flag) {

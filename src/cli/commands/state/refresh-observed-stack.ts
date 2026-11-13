@@ -1,5 +1,5 @@
 import { getLogger } from '../../../utils/logger.js';
-import { cdkdRemedy } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { parseFailureDebugDetail } from '../../../utils/json-parse-failure.js';
 import { refusedBaselineRemedy } from '../refused-baseline-remedy.js';
@@ -97,7 +97,7 @@ export async function refreshObservedForStack(
   if (!result) {
     throw new Error(
       safeMsg`No state found for stack ${ref}. ` +
-        `Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   const { state, etag, migrationPending } = result;
