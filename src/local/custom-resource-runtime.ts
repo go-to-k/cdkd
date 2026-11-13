@@ -525,9 +525,13 @@ async function runInContainer(
   } finally {
     await killAndDrainContainerLogs(containerId, logStream).catch(() => undefined);
     if (forwarderId !== undefined) await removeContainer(forwarderId).catch(() => undefined);
-    if (containerId !== undefined) {
-      await removeContainer(containerId).catch((err: unknown) => {
-        logger.debug(safeMsg`removeContainer(${containerId}) failed: ${String(err)}`);
+    // By id once known; else by the pre-assigned name, which a `docker run`
+    // that CREATED the container and then failed to start it leaves behind
+    // (`removeContainer` swallows a not-found).
+    const toRemove = containerId ?? (starting.includes(containerName) ? containerName : undefined);
+    if (toRemove !== undefined) {
+      await removeContainer(toRemove).catch((err: unknown) => {
+        logger.debug(safeMsg`removeContainer(${toRemove}) failed: ${String(err)}`);
       });
     }
     for (const dir of tmpDirs()) rmSync(dir, { recursive: true, force: true });

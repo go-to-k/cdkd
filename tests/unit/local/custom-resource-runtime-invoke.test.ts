@@ -320,6 +320,14 @@ describe('teardown', () => {
     await pending;
   });
 
+  it('removes the container by its name when docker run created it but failed to start it', async () => {
+    dr.runDetached.mockRejectedValue(new Error('docker run failed: cannot start container'));
+    await expect(invoke()).rejects.toThrow('cannot start container');
+    const container = (dr.runDetached.mock.calls[0]![0] as { name: string }).name;
+    expect(dr.removeContainer).toHaveBeenCalledWith(container);
+    expect(existsSync(layersTmpDir)).toBe(false);
+  });
+
   it('drops its exit cleanup once the event finished', async () => {
     await invoke();
     process.emit('exit', 0);
