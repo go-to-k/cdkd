@@ -128,6 +128,19 @@ describe('bare --assume-task-role in AWS Emulator mixed mode (go-to-k/cdkd#6189)
     expect(task.taskRoleUnresolved).toBeUndefined();
   });
 
+  it('IAM on the emulator: no state is loaded for the role alone', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring(['STS']));
+    const roleOnly = structuredClone(STACK);
+    const td = roleOnly.template.Resources!['TaskDef']!.Properties as Record<string, unknown>;
+    td['ContainerDefinitions'] = [{ Name: 'app', Image: 'public.ecr.aws/nginx/nginx:alpine' }];
+    const p = provider();
+    await buildEcsImageResolutionContext(roleOnly, p as never, { assumeTaskRole: true } as never);
+    expect(p.load).not.toHaveBeenCalled();
+    setActiveWorkloadAwsWiring(mixedWiring(['STS', 'IAM']));
+    await buildEcsImageResolutionContext(roleOnly, p as never, { assumeTaskRole: true } as never);
+    expect(p.load).toHaveBeenCalledTimes(1);
+  });
+
   it('outside mixed mode the record is always the right side', () => {
     expect(taskRoleRecordIsEmulatorSide()).toBe(false);
   });

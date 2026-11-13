@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 /**
@@ -209,6 +213,54 @@ describe('local run-task bare --assume-task-role reads the deployed role (go-to-
       'arn:aws-cn:iam::111111111111:role/Cdkd6189Stack-TaskRole30FC0FBB-25c3bf832d6a',
     ]);
     expect(warnings.join('\n')).not.toContain('assumes a role named');
+  });
+
+  it('mixed mode with IAM on the emulator: reads no role from the record and says why', async () => {
+    stateSourceGiven.current = true;
+    const { setActiveWorkloadAwsWiring, setAwsEmulatorServiceRouting } = await import(
+      'cdk-local/internal'
+    );
+    const dir = mkdtempSync(nodePath.join(tmpdir(), 'cdkd-6189-'));
+    const envFile = nodePath.join(dir, 'env.json');
+    writeFileSync(envFile, JSON.stringify({ Parameters: { AWS_ENDPOINT_URL_STS: 'real-aws' } }));
+    setAwsEmulatorServiceRouting({
+      realServices: ['STS'],
+      override: { endpoint: 'https://127.0.0.1:9297' },
+    } as never);
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: { AWS_ENDPOINT_URL: 'https://127.0.0.1:47297' },
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297, 47297],
+      probeHealth: true,
+      mixed: {
+        realServices: ['STS'],
+        emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+        resignPort: 47297,
+        resignEndpoint: 'https://127.0.0.1:47297',
+        emulatorCredentials: { accessKeyId: 'emulator-key', secretAccessKey: 'emulator-secret' },
+        region: 'us-east-1',
+        resignConfigHostPath: '/tmp/cdkd-unit-resign/resign.json',
+        emulatorClientOverride: {
+          endpoint: 'https://127.0.0.1:9297',
+          credentials: { accessKeyId: 'emulator-key', secretAccessKey: 'emulator-secret' },
+        },
+      },
+      dispose: () => {},
+    } as never);
+    try {
+      await runTask(['--from-state', '--assume-task-role', '--env-vars', envFile]);
+      expect(stateLoadMock).not.toHaveBeenCalled();
+      expect(assumedRoleArns()).toEqual(['arn:aws:iam::000000000000:role/TaskRole30FC0FBB']);
+      expect(warnings).toContain(
+        taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'mixed-mode-emulator-iam')
+      );
+    } finally {
+      setActiveWorkloadAwsWiring(undefined);
+      setAwsEmulatorServiceRouting(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('an explicit ARN reads no state and warns nothing about the role name', async () => {
