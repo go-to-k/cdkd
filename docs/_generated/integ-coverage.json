@@ -8163,6 +8163,7 @@
         "sns-sqs-event",
         "sns-subscription-filter",
         "sns-subscription-update",
+        "sns-topic-attr-removal",
         "sqs-fifo-unnamed",
         "stack-id-uuid",
         "tags-propagation",
@@ -8339,6 +8340,10 @@
           "literal"
         ],
         "sns-subscription-update": [
+          "l2",
+          "literal"
+        ],
+        "sns-topic-attr-removal": [
           "l2",
           "literal"
         ],

@@ -101,6 +101,17 @@ export async function applyUpdate(
   // between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18), so a
   // removal has to send the service default explicitly — the same shape
   // `SQS_ATTRIBUTE_REMOVAL_RESET` carries for the queue's numeric members.
+  // The enum / boolean / archive members refuse it too (issue #6226, measured
+  // us-east-1 2026-11-13: `Invalid tracing config value:` /
+  // `ContentBasedDeduplication: Invalid value []` / `ArchivePolicy: JSON is
+  // missing required fields`); CloudFormation resets them to `PassThrough` /
+  // `false` / no archive policy, which SNS takes as `{}`.
+  // `SignatureVersion` and `FifoThroughputScope` refuse `''` as well, but
+  // CloudFormation's own removal fails the same way, so they keep the default
+  // arm.
+  //
+  // A DESIRED `''` takes the reset too: `drift --revert` replays a readback
+  // baseline, and `readCurrentState` reports an unset `TracingConfig` as `''`.
   const mutableAttributes: Array<{
     name: string;
     prop: string;
@@ -109,11 +120,15 @@ export async function applyUpdate(
   }> = [
     { name: 'DisplayName', prop: 'DisplayName' },
     { name: 'KmsMasterKeyId', prop: 'KmsMasterKeyId' },
-    { name: 'ContentBasedDeduplication', prop: 'ContentBasedDeduplication' },
-    { name: 'TracingConfig', prop: 'TracingConfig' },
+    {
+      name: 'ContentBasedDeduplication',
+      prop: 'ContentBasedDeduplication',
+      resetValue: 'false',
+    },
+    { name: 'TracingConfig', prop: 'TracingConfig', resetValue: 'PassThrough' },
     { name: 'SignatureVersion', prop: 'SignatureVersion' },
     { name: 'FifoThroughputScope', prop: 'FifoThroughputScope' },
-    { name: 'ArchivePolicy', prop: 'ArchivePolicy', serialize: true },
+    { name: 'ArchivePolicy', prop: 'ArchivePolicy', serialize: true, resetValue: '{}' },
     { name: 'DataProtectionPolicy', prop: 'DataProtectionPolicy', serialize: true },
     // Issue #3413. 262144 (256 KiB) is SNS's standard maximum and what a
     // topic that never set the attribute enforces; a fresh topic REPORTS no
@@ -131,7 +146,11 @@ export async function applyUpdate(
     const oldVal = previousProperties[attr.prop];
     if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
       let value: string;
-      if (newVal === undefined || newVal === null) {
+      if (
+        newVal === undefined ||
+        newVal === null ||
+        (newVal === '' && attr.resetValue !== undefined)
+      ) {
         value = attr.resetValue ?? '';
       } else if (attr.serialize && typeof newVal !== 'string') {
         value = JSON.stringify(newVal);
