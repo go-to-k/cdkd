@@ -6,14 +6,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * names that failure by its class plus the `--verbose` pointer; the per-node
  * `Failed:` line keeps AWS's text.
  */
-const log = vi.hoisted(() => ({ error: vi.fn(), debug: vi.fn() }));
+const log = vi.hoisted(() => ({ error: vi.fn(), debug: vi.fn(), warn: vi.fn() }));
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    child: () => ({ debug: log.debug, info: vi.fn(), warn: vi.fn(), error: log.error }),
+    child: () => ({ debug: log.debug, info: vi.fn(), warn: log.warn, error: log.error }),
   }),
 }));
 
-import { WorkGraph, type WorkNode } from '../../../src/deployment/work-graph.js';
+import {
+  ASSET_UPLOAD_INTERRUPTED,
+  WorkGraph,
+  type WorkNode,
+} from '../../../src/deployment/work-graph.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 
@@ -82,6 +86,23 @@ describe('WorkGraph failure summary (#2319)', () => {
           'AWS returned no error message (the response body was empty).'
       );
     });
+  });
+
+  it('reports an aborted asset upload as an interruption, not a failure (go-to-k/cdkd#6162)', async () => {
+    log.warn.mockReset();
+    const interrupted = new Error(
+      'Asset upload to s3://b/k interrupted by user (Ctrl+C); the multipart upload was aborted.'
+    );
+    interrupted.name = ASSET_UPLOAD_INTERRUPTED;
+
+    const rejection = await failing(interrupted);
+
+    // The interruption itself, not "1 node(s) failed".
+    expect(rejection).toBe(interrupted);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(log.warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      `Interrupted: asset:A: ${interrupted.message}`,
+    ]);
   });
 
   it("keeps cdkd's own text (negative control)", async () => {

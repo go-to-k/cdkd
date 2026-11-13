@@ -178,37 +178,68 @@ describe('every user-facing pointer goes through the verbose-aware helpers', () 
     ]);
   });
 
-  it('every hint worded around --verbose sits inside a verbose-aware helper call', async () => {
-    // Wider than the AWS-message pointer: `for the details`, `for the cause of
-    // each`, `to see what ...` (go-to-k/cdkd#6162 parent review). A hint line
-    // must carry, or follow within two lines, a verboseAwareText /
-    // verbosePointerSentence / verbosePointerTail call.
+  /**
+   * The src-wide scan: every code line worded around `--verbose` ("re-run ...
+   * --verbose", "--verbose for", "--verbose to see") must carry, or follow
+   * within two lines, a verboseAwareText / verbosePointerSentence /
+   * verbosePointerTail call. A newly hard-coded hint fails it.
+   */
+  const HINT = /re-?run[^`'"]*--verbose|--verbose (for|to see)/i;
+  const AWARE = /verboseAwareText\(|verbosePointer(Sentence|Tail)\(\)/;
+  function ungatedHints(file: string, text: string): string[] {
+    const lines = text.split('\n');
+    const out: string[] = [];
+    lines.forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line) || !HINT.test(line)) return;
+      if (!AWARE.test(lines.slice(Math.max(0, i - 2), i + 1).join('\n'))) out.push(`${file}:${i + 1}`);
+    });
+    return out;
+  }
+  // Exactly two exemptions, neither a re-run of THIS command (plus the
+  // module that defines the pointer and the helpers).
+  const EXEMPT = new Set([
+    'src/deployment/recreate-targets/probe.ts', // another command's flag: `cdkd state show` with --verbose
+    'src/utils/error-handler/base-errors.ts', // a flag list: "--resource-timeout ..., or --verbose to see the"
+    'src/utils/aws-failure-text.ts', // defines VERBOSE_POINTER and the helpers
+  ]);
+
+  it('the scan flags a hard-coded hint and passes a gated one (self-test)', () => {
+    expect(
+      ungatedHints('x.ts', "  logger.warn(`boom. Re-run with --verbose for AWS's own message.`);")
+    ).toEqual(['x.ts:1']);
+    expect(ungatedHints('x.ts', '  `boom; re-run with --verbose for the details`,')).toEqual([
+      'x.ts:1',
+    ]);
+    expect(
+      ungatedHints(
+        'x.ts',
+        "  return verbosePointerSentence()\n    ? `x; re-run with --verbose for the AWS error text`\n    : `y`;"
+      )
+    ).toEqual([]);
+    expect(ungatedHints('x.ts', '  // Re-run with --verbose for the details.')).toEqual([]);
+  });
+
+  it('no src file hard-codes a --verbose hint outside the helpers', async () => {
     const { execFileSync } = await import('node:child_process');
     const { readFileSync } = await import('node:fs');
-    const hint = /re-?run[^`'"]*--verbose|--verbose (for|to see)/i;
-    const aware = /verboseAwareText\(|verbosePointer(Sentence|Tail)\(\)/;
-    // Not a re-run of THIS command: another command's flag, or a flag list.
-    const exempt = new Set([
-      'src/deployment/recreate-targets/probe.ts', // `cdkd state show` with --verbose
-      'src/utils/error-handler/base-errors.ts', // "--resource-timeout ..., or --verbose to see the"
-      'src/utils/aws-failure-text.ts', // defines VERBOSE_POINTER
-    ]);
     const files = execFileSync('git', ['ls-files', 'src/**/*.ts', 'src/*.ts'], { encoding: 'utf8' })
       .split('\n')
-      .filter((f) => f !== '' && !exempt.has(f));
-    const offenders: string[] = [];
+      .filter((f) => f !== '' && !EXEMPT.has(f));
     let hits = 0;
+    const offenders: string[] = [];
     for (const file of files) {
-      const lines = readFileSync(file, 'utf8').split('\n');
-      lines.forEach((line, i) => {
-        if (/^\s*(\/\/|\*|\/\*)/.test(line) || !hint.test(line)) return;
-        hits++;
-        const window = lines.slice(Math.max(0, i - 2), i + 1).join('\n');
-        if (!aware.test(window)) offenders.push(`${file}:${i + 1}`);
-      });
+      const text = readFileSync(file, 'utf8');
+      hits += text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l) && HINT.test(l)).length;
+      offenders.push(...ungatedHints(file, text));
     }
     expect(offenders).toEqual([]);
-    // Non-vacuity: the sweep's sites are really in the population.
+    // Non-vacuity: the gated sites (getatt-refusals, dynamodb-index-busy-delete,
+    // drift, scrub, rollback, divergent-region, legacy, state-record, ...) are
+    // really in the scanned population.
     expect(hits).toBeGreaterThanOrEqual(9);
+    // Each exemption still holds a hint; drop it from EXEMPT once it does not.
+    for (const file of [...EXEMPT].filter((f) => !f.endsWith('aws-failure-text.ts'))) {
+      expect(readFileSync(file, 'utf8')).toMatch(HINT);
+    }
   });
 });

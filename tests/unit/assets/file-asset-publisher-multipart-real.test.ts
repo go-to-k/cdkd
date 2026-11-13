@@ -35,6 +35,8 @@ let failPartNumber: string | undefined;
 let refuseAbort = false;
 /** When set, every UploadPart waits for this before answering. */
 let partGate: Promise<void> | undefined;
+/** When set, CreateMultipartUpload waits for this before answering. */
+let createGate: Promise<void> | undefined;
 
 async function bodyLength(body: unknown): Promise<number> {
   if (body === undefined || body === null) return 0;
@@ -68,6 +70,7 @@ const recordingHandler = {
       return { response: { statusCode: 404, headers: {}, body: Readable.from([]) } };
     }
     if (request.method === 'POST' && 'uploads' in query) {
+      if (createGate !== undefined) await createGate;
       return ok(
         {},
         xml(
@@ -133,7 +136,13 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   return { ...actual, S3Client: RecordingS3Client };
 });
 
-const { FileAssetPublisher, MULTIPART_UPLOAD_THRESHOLD, abortOnInterrupt } =
+const { ASSET_UPLOAD_INTERRUPTED } = await import('../../../src/deployment/work-graph.js');
+const {
+  FileAssetPublisher,
+  MULTIPART_UPLOAD_THRESHOLD,
+  abortInFlightMultipartUploads,
+  AssetUploadInterruptedError,
+} =
   await import('../../../src/assets/file-asset-publisher.js');
 
 /** S3's own name for each recorded request. */
@@ -155,6 +164,7 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
     failPartNumber = undefined;
     refuseAbort = false;
     partGate = undefined;
+    createGate = undefined;
     dir = mkdtempSync(join(tmpdir(), 'cdkd-multipart-real-'));
   });
 
@@ -227,56 +237,77 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
     expect(recorded.map(operation)).toContain('AbortMultipartUpload');
   });
 
-  it('aborts the in-flight multipart upload on an interrupt a command handles', async () => {
-    // deploy owns SIGINT (graceful Ctrl-C); stand in for that listener.
+  /** Wait until `op` has been recorded (the upload reached that point). */
+  async function until(op: string): Promise<void> {
+    for (let i = 0; i < 400 && !recorded.some((r) => operation(r) === op); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(recorded.map(operation)).toContain(op);
+  }
+
+  it("a Ctrl-C deploy handles does not stop an upload (deploy's first signal waits)", async () => {
     const commandHandler = (): void => {};
     process.on('SIGINT', commandHandler);
     let open!: () => void;
     partGate = new Promise((resolve) => (open = resolve));
     try {
       const pending = publishFileOfSize(22_004_168);
-      // Wait until the upload is in flight (CreateMultipartUpload answered).
-      for (let i = 0; i < 200 && !recorded.some((r) => operation(r) === 'UploadPart'); i++) {
-        await new Promise((r) => setTimeout(r, 5));
-      }
-      expect(process.listenerCount('SIGINT')).toBe(2);
+      await until('UploadPart');
+      // The publisher adds no listener of its own.
+      expect(process.listenerCount('SIGINT')).toBe(1);
       process.emit('SIGINT', 'SIGINT');
       open();
-      await expect(pending).rejects.toThrow('Upload aborted.');
-      expect(recorded.map(operation)).toContain('AbortMultipartUpload');
-      expect(recorded.map(operation)).not.toContain('CompleteMultipartUpload');
-      // The publisher's listener is gone again.
-      expect(process.listenerCount('SIGINT')).toBe(1);
+      await pending;
+      expect(recorded.map(operation)).toContain('CompleteMultipartUpload');
+      expect(recorded.map(operation)).not.toContain('AbortMultipartUpload');
     } finally {
       open?.();
       process.removeListener('SIGINT', commandHandler);
     }
   });
-});
 
-describe('abortOnInterrupt', () => {
-  it('adds no listener for a signal nothing handles, so Ctrl-C keeps its default exit', () => {
-    const before = process.listenerCount('SIGINT');
-    const sigtermBefore = process.listenerCount('SIGTERM');
-    const release = abortOnInterrupt(new AbortController());
-    expect(process.listenerCount('SIGINT')).toBe(before === 0 ? 0 : before + 1);
-    expect(process.listenerCount('SIGTERM')).toBe(sigtermBefore === 0 ? 0 : sigtermBefore + 1);
-    release();
-    expect(process.listenerCount('SIGINT')).toBe(before);
-    expect(process.listenerCount('SIGTERM')).toBe(sigtermBefore);
+  it('abortInFlightMultipartUploads aborts the upload on S3 before it resolves', async () => {
+    let open!: () => void;
+    partGate = new Promise((resolve) => (open = resolve));
+    try {
+      const pending = publishFileOfSize(22_004_168);
+      pending.catch(() => undefined);
+      await until('UploadPart');
+      const aborting = abortInFlightMultipartUploads();
+      open();
+      await aborting;
+      // Resolved only after the abort reached S3: deploy exits right after.
+      expect(recorded.map(operation)).toContain('AbortMultipartUpload');
+      const error = await pending.then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      // An interruption, not a failure.
+      expect(error).toBeInstanceOf(AssetUploadInterruptedError);
+      // The name the work graph reports as `Interrupted:`.
+      expect(error?.name).toBe(ASSET_UPLOAD_INTERRUPTED);
+      expect(recorded.map(operation)).not.toContain('CompleteMultipartUpload');
+    } finally {
+      open?.();
+    }
   });
 
-  it('aborts on SIGTERM when a command handles it', () => {
-    const handler = (): void => {};
-    process.on('SIGTERM', handler);
-    const controller = new AbortController();
-    const release = abortOnInterrupt(controller);
+  it('aborts an upload whose CreateMultipartUpload was still in flight at the interrupt', async () => {
+    let open!: () => void;
+    createGate = new Promise((resolve) => (open = resolve));
     try {
-      process.emit('SIGTERM', 'SIGTERM');
-      expect(controller.signal.aborted).toBe(true);
+      const pending = publishFileOfSize(22_004_168);
+      pending.catch(() => undefined);
+      await until('CreateMultipartUpload');
+      const aborting = abortInFlightMultipartUploads();
+      // S3 answers the create only now, after the abort fired.
+      open();
+      await aborting;
+      const abort = recorded.find((r) => operation(r) === 'AbortMultipartUpload');
+      expect(abort?.query['uploadId']).toBe('upload-1');
+      await expect(pending).rejects.toBeInstanceOf(AssetUploadInterruptedError);
     } finally {
-      release();
-      process.removeListener('SIGTERM', handler);
+      open?.();
     }
   });
 });

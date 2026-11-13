@@ -25,24 +25,38 @@ import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
 
 /**
- * Abort `controller` on SIGINT / SIGTERM while a multipart upload is in flight,
- * so an interrupted deploy aborts the upload instead of leaving its parts.
- *
- * Only for a signal some command already HANDLES (deploy's graceful Ctrl-C,
- * and the SIGTERM it forwards): adding the first listener for a signal would
- * replace Node's default exit with "abort the upload and carry on", changing
- * what Ctrl-C does in a command that never asked for graceful handling. There
- * a killed process leaves the parts to the bucket's lifecycle rule.
- *
- * Returns the function that removes the listeners again.
+ * The multipart uploads in flight, each as the function that interrupts it.
+ * See {@link abortInFlightMultipartUploads}.
  */
-export function abortOnInterrupt(controller: AbortController): () => void {
-  const signals = (['SIGINT', 'SIGTERM'] as const).filter((s) => process.listenerCount(s) > 0);
-  const onSignal = (): void => controller.abort();
-  for (const signal of signals) process.on(signal, onSignal);
-  return () => {
-    for (const signal of signals) process.removeListener(signal, onSignal);
-  };
+const inFlightUploads = new Set<() => Promise<void>>();
+let trackerSeq = 0;
+
+/**
+ * Abort every multipart upload in flight, and resolve once each is aborted on
+ * S3 too (go-to-k/cdkd#6162).
+ *
+ * For `deploy`'s SECOND Ctrl-C, which force-exits: it awaits this (bounded)
+ * before `process.exit`, so a killed deploy does not leave billed parts. The
+ * FIRST Ctrl-C does not call it: deploy promises to wait for operations in
+ * progress, and an upload is one. Never rejects.
+ */
+export async function abortInFlightMultipartUploads(): Promise<void> {
+  await Promise.allSettled([...inFlightUploads].map((interrupt) => interrupt()));
+}
+
+/**
+ * An upload stopped by {@link abortInFlightMultipartUploads}: an interruption
+ * the user asked for, not a failure: the work graph reports it as
+ * `Interrupted:` rather than `Failed:`.
+ */
+export class AssetUploadInterruptedError extends Error {
+  constructor(destination: string) {
+    super(
+      `Asset upload to ${destination} interrupted by user (Ctrl+C); the multipart upload was aborted.`
+    );
+    // `ASSET_UPLOAD_INTERRUPTED` in `work-graph.ts` matches this name.
+    this.name = 'AssetUploadInterruptedError';
+  }
 }
 
 /**
@@ -267,14 +281,45 @@ export class FileAssetPublisher {
       leavePartsOnError: true,
       abortController,
     });
-    const releaseSignals = abortOnInterrupt(abortController);
+    // `done()` rejects the moment the controller aborts, which can be while
+    // CreateMultipartUpload is still in flight: `upload.uploadId` is then not
+    // set yet, but the upload WILL exist once S3 answers. So the create's own
+    // answer is captured here, and the abort waits for it.
+    let createAnswer: Promise<string | undefined> | undefined;
+    const trackerName = `cdkdTrackCreateMultipartUpload${++trackerSeq}`;
+    client.middlewareStack?.add(
+      (next, context) => async (args) => {
+        const result = next(args);
+        if (context.commandName === 'CreateMultipartUploadCommand') {
+          createAnswer = result.then(
+            (r) => (r.output as { UploadId?: string }).UploadId,
+            () => undefined
+          );
+        }
+        return result;
+      },
+      { step: 'initialize', name: trackerName }
+    );
+    let interrupted = false;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => (settle = resolve));
+    const interrupt = async (): Promise<void> => {
+      interrupted = true;
+      abortController.abort();
+      await settled;
+    };
+    inFlightUploads.add(interrupt);
     try {
       await upload.done();
     } catch (error) {
-      await this.abortMultipartUpload(client, bucket, key, upload.uploadId);
+      const uploadId = upload.uploadId ?? (await createAnswer);
+      await this.abortMultipartUpload(client, bucket, key, uploadId);
+      if (interrupted) throw new AssetUploadInterruptedError(`s3://${bucket}/${key}`);
       throw error;
     } finally {
-      releaseSignals();
+      inFlightUploads.delete(interrupt);
+      client.middlewareStack?.remove(trackerName);
+      settle();
     }
   }
 
