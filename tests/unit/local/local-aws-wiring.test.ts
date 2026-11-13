@@ -356,6 +356,49 @@ describe('runDetached under --aws-emulator (#6132)', () => {
   });
 });
 
+describe('envAfterWiring / extraLoopbackPorts (the cr.Provider endpoint, go-to-k/cdkd#6213)', () => {
+  const HOP = 'http://127.0.0.1:51313/' + 'a'.repeat(64);
+
+  it('sets the variables after the emulator wiring, and forwards the extra port last', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_ENDPOINT_URL_LAMBDA: 'https://elsewhere' },
+      envAfterWiring: { AWS_ENDPOINT_URL_LAMBDA: HOP, AWS_ENDPOINT_URL_SFN: HOP },
+      extraLoopbackPorts: [51313],
+      cmd: [],
+      hostPort: 9000,
+    });
+    const flags = envFlags(lastRun().args);
+    expect(flags).toEqual(
+      expect.arrayContaining([
+        `AWS_ENDPOINT_URL_LAMBDA=${HOP}`,
+        `AWS_ENDPOINT_URL_SFN=${HOP}`,
+        'AWS_ENDPOINT_URL=https://127.0.0.1:9297',
+      ])
+    );
+    expect(flags).not.toContain('AWS_ENDPOINT_URL_LAMBDA=https://elsewhere');
+    // The emulator's port first: the forwarder's health probe goes there.
+    expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), [9297, 51313]);
+  });
+
+  it('forwards no extra port on the host network', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: {},
+      envAfterWiring: { AWS_ENDPOINT_URL_LAMBDA: HOP },
+      extraLoopbackPorts: [51313],
+      cmd: [],
+      hostPort: 9000,
+      network: 'host',
+    });
+    expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), []);
+  });
+});
+
 describe('full --aws-emulator mode with the SQS sidecar (go-to-k/cdk-local#912, cdkd#6178)', () => {
   const sqsWiring = (): WorkloadAwsWiring => {
     const w = emulatorWiring();

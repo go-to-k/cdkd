@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
+import { LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -36,6 +38,7 @@ const dr = vi.hoisted(() => ({
   killAndDrainContainerLogs: vi.fn(),
   followContainerLogs: vi.fn(),
   pickFreePort: vi.fn(),
+  dockerBridgeGateway: vi.fn(),
 }));
 vi.mock('../../../src/local/docker-runner.js', () => dr);
 vi.mock('../../../src/local/docker-version.js', () => ({
@@ -53,9 +56,13 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
   synthesizedStacks: () => assembly.stacks,
 }));
 
-const { invokeCustomResourceFunctionLocally, resetLocalCustomResourceRuntimeForTest } =
+const {
+  invokeCustomResourceFunctionLocally,
+  lambdaClientForRegion,
+  resetLocalCustomResourceRuntimeForTest,
+} =
   await import('../../../src/local/custom-resource-runtime.js');
-const { setLocalCustomResourceRuntimeEnabled } =
+const { setLocalCustomResourceRuntimeEnabled, withCustomResourceStack } =
   await import('../../../src/local/custom-resource-runtime-gate.js');
 
 const TOKEN = 'arn:aws:lambda:eu-west-1:000000000000:function:Handler-abc';
@@ -332,5 +339,132 @@ describe('teardown', () => {
     await invoke();
     process.emit('exit', 0);
     expect(dr.removeContainersSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cr.Provider second hop (go-to-k/cdkd#6213)', () => {
+  const CREDS = { accessKeyId: 'EMULATORKEY', secretAccessKey: 'emusecret' };
+  beforeEach(() => {
+    wiring.value = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true },
+      emulatorCredentials: CREDS,
+    };
+  });
+
+  it('wires the container to the local Lambda / Step Functions endpoint, after the wiring', async () => {
+    await invoke();
+    const opts = dr.runDetached.mock.calls[0]![0] as {
+      env: Record<string, string>;
+      envAfterWiring?: Record<string, string>;
+      extraLoopbackPorts?: number[];
+      sensitiveEnvKeys: Set<string>;
+    };
+    const url = opts.envAfterWiring?.['AWS_ENDPOINT_URL_LAMBDA'];
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:(\d+)\/[0-9a-f]{64}$/);
+    expect(opts.envAfterWiring?.['AWS_ENDPOINT_URL_SFN']).toBe(url);
+    expect(opts.extraLoopbackPorts).toEqual([Number(/:(\d+)\//.exec(url!)![1])]);
+    // The docker client reads AWS_ENDPOINT_URL_* itself: never in its environment.
+    expect(opts.sensitiveEnvKeys.has('AWS_ENDPOINT_URL_LAMBDA')).toBe(false);
+    expect(opts.env['AWS_ENDPOINT_URL_LAMBDA']).toBeUndefined();
+  });
+
+  it('does not wire it without the emulator credentials a forwarded call is signed with', async () => {
+    wiring.value = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true },
+    };
+    await invoke();
+    const opts = dr.runDetached.mock.calls[0]![0] as { envAfterWiring?: unknown };
+    expect(opts.envAfterWiring).toBeUndefined();
+  });
+
+  const hopOf = (call = 0) =>
+    (dr.runDetached.mock.calls[call]![0] as { envAfterWiring?: Record<string, string> })
+      .envAfterWiring;
+
+  it('does not wire it for an emulator on another host (review C1)', async () => {
+    wiring.value = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://emu.lan:9297', loopback: false },
+      emulatorCredentials: CREDS,
+    };
+    await invoke();
+    expect(hopOf()).toBeUndefined();
+  });
+
+  it('starts nothing outside full emulator mode, even with credentials (T12)', async () => {
+    wiring.value = {
+      mode: 'forward',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true },
+      emulatorCredentials: CREDS,
+    };
+    await expect(invoke()).resolves.toBeUndefined();
+    expect(dr.runDetached).not.toHaveBeenCalled();
+  });
+
+  it("revokes the container's token once its event finished (T11)", async () => {
+    await invoke();
+    const url = hopOf()!['AWS_ENDPOINT_URL_LAMBDA']!;
+    // A signed call on a live token is forwarded (502: no emulator here); a
+    // revoked token is refused before that.
+    const client = new LambdaClient({
+      region: 'us-east-1',
+      endpoint: url,
+      credentials: CREDS,
+      maxAttempts: 1,
+    });
+    await expect(client.send(new ListFunctionsCommand({}))).rejects.toMatchObject({
+      $metadata: { httpStatusCode: 403 },
+    });
+  });
+
+  it('runs the container without it, and stops offering it, when the forwarder cannot reach it (C4)', async () => {
+    dr.runDetached.mockRejectedValueOnce(
+      new CdkdError('forwarder: ETIMEDOUT', 'LOCAL_AWS_EMULATOR_FORWARDER_FAILED')
+    );
+    await invoke();
+    expect(hopOf(0)).toBeDefined();
+    expect(hopOf(1)).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('not reachable from containers'));
+    await invoke();
+    expect(hopOf(2)).toBeUndefined();
+  });
+
+  it('does not retry another docker failure (C4)', async () => {
+    dr.runDetached.mockRejectedValueOnce(new Error('no such image'));
+    await expect(invoke()).rejects.toThrow('no such image');
+    expect(dr.runDetached).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('lambdaClientForRegion (review C2)', () => {
+  it("uses the event's client in its region, and one client per other region", async () => {
+    const base = new LambdaClient({ region: 'eu-west-1' });
+    const clientFor = lambdaClientForRegion(base);
+    expect(await clientFor('arn:aws:lambda:eu-west-1:000000000000:function:f')).toBe(base);
+    expect(await clientFor('just-a-name')).toBe(base);
+    const other = await clientFor('arn:aws:lambda:us-east-1:000000000000:function:f');
+    expect(other).not.toBe(base);
+    expect(await other.config.region()).toBe('us-east-1');
+    expect(await clientFor('arn:aws:lambda:us-east-1:000000000000:function:g')).toBe(other);
+  });
+});
+
+describe('a destroy resolves the function in the stack it destroys', () => {
+  function twin(name: string, env: Record<string, unknown>): StackInfo {
+    const s = appStack(name);
+    (s.template.Resources!['Fn']!.Properties as Record<string, unknown>)['Environment'] = {
+      Variables: env,
+    };
+    return s;
+  }
+
+  it('picks the bound stack among stacks with the same logical ids and code', async () => {
+    assembly.stacks = [twin('Other', { A: 'other' }), twin('Mine', { A: 'mine' })];
+    plan.resolveZipImagePlan.mockClear();
+    await withCustomResourceStack('Mine', () => invoke());
+    const lambda = plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo };
+    expect(lambda.stack.stackName).toBe('Mine');
   });
 });

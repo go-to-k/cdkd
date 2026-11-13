@@ -1,6 +1,8 @@
 // cdk-local's accessor rather than `local-aws-wiring.ts`'s `localAwsEmulatorActive`
 // (the same one-line read): that module pulls CLI modules into the provider's
 // import graph, which the provider must not depend on.
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { getActiveWorkloadAwsWiring } from 'cdk-local/internal';
 
 function localAwsEmulatorActive(): boolean {
@@ -42,4 +44,24 @@ export function localCustomResourceCommand(): string | undefined {
  */
 export function localCustomResourceRuntimeActive(): boolean {
   return enabled && localAwsEmulatorActive();
+}
+
+const destroyingStack = new AsyncLocalStorage<string>();
+
+/**
+ * Run `fn` with `stackName` as the stack whose custom resources are being
+ * deleted. A destroy binds no naming scope (`getCurrentStackName()` is
+ * `undefined` there), so without this a custom resource whose logical id and
+ * provider code also exist in another stack of the app could be matched to
+ * that other stack's template entry, whose environment differs
+ * (go-to-k/cdkd#6213: the `cr.Provider` second hop resolves its targets from
+ * it).
+ */
+export function withCustomResourceStack<T>(stackName: string, fn: () => T): T {
+  return destroyingStack.run(stackName, fn);
+}
+
+/** The stack {@link withCustomResourceStack} bound, if any. */
+export function customResourceStackName(): string | undefined {
+  return destroyingStack.getStore();
 }

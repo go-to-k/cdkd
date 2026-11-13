@@ -410,8 +410,10 @@ breaks the provider functions of common constructs such as
 `--aws-emulator`, `cdkd deploy`, `cdkd destroy`, `cdkd state destroy` and
 `cdkd rollback` run the function a custom resource's `ServiceToken` points at
 in the official AWS Lambda runtime image, in Docker, the way
-`cdkd local invoke` does. The function still exists in the emulator; only the
-custom resource event runs on your machine.
+`cdkd local invoke` does. For a `cr.Provider`, the functions that one calls
+(your `onEventHandler` and `isCompleteHandler`) and its waiter state machine
+run there too. The functions still exist in the emulator; only the custom
+resource events run on your machine.
 
 | Topic | What to know |
 | --- | --- |
@@ -421,7 +423,8 @@ custom resource event runs on your machine.
 | Runtime image | Used from the local Docker cache, else pulled once per run. When it cannot be pulled, cdkd prints one warning and sends the event to the emulator. |
 | Identity | The container gets the emulator's keys, endpoint and CA only, like a `cdkd local` container. |
 | Response | CDK's Node.js handlers send the response to port 443 whatever the URL says, so with an emulator on `127.0.0.1` the container gets a response URL signed for port 443 and forwards that port to the emulator. An emulator on another host keeps the URL as signed. |
-| Provider framework | Only the `ServiceToken` function runs locally. A `cr.Provider` framework function that calls your handler through `lambda:Invoke` still runs that handler in the emulator. |
+| Provider framework | A `cr.Provider`'s handlers run locally too. The framework function calls your `onEventHandler` and `isCompleteHandler` through `lambda:Invoke`, and with `isCompleteHandler` it starts a Step Functions waiter. Each container cdkd starts gets a local endpoint as its Lambda and Step Functions endpoint (`AWS_ENDPOINT_URL_LAMBDA`, `AWS_ENDPOINT_URL_SFN`). A synchronous invoke of a function that the calling function's environment names with `Fn::GetAtt` or `Ref` in the same stack runs that function locally, with the rules above, including the one-time warning when it falls back to the emulator (image unavailable, function not found in the assembly). The waiter state machine runs locally when it has the shape CDK synthesizes (Lambda `Task` states with `Retry` and `Catch`), each task in the runtime image. Every other call goes to the emulator: other functions, asynchronous or version-qualified invokes, other state machines, and every other Lambda or Step Functions API. |
+| Local endpoint | Used only with an emulator on `127.0.0.1`; with an emulator on another host, a `cr.Provider`'s handlers run in the emulator. If containers cannot reach the endpoint (for example, a firewall in front of the Docker bridge on Linux), cdkd prints one warning and runs the handlers in the emulator. Listens on `127.0.0.1` only (on Linux also on the Docker bridge gateway, which is where containers reach the host). A request must carry the container's token in its URL and be signed with the emulator's keys; under `--auth off` the keys are fixed placeholders, so the token and the loopback-only listener are the only gate. A call it does not run locally is signed again with the emulator's keys and sent to the emulator, never anywhere else. |
 | Opt out | `--no-local-custom-resources` sends every event to the emulator's own runtime. |
 
 ## Troubleshooting

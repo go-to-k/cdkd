@@ -40,6 +40,7 @@ import {
   announceOrphansAndConfirm,
 } from './preflight.js';
 import { destroyStackUnderLock } from './under-lock.js';
+import { withCustomResourceStack } from '../../../local/custom-resource-runtime-gate.js';
 
 /**
  * Run the destroy lifecycle for one stack against an already-loaded
@@ -440,20 +441,23 @@ async function destroyStackInRegion(
     }
   }
 
-  return destroyStackUnderLock({
-    stackName,
-    state,
-    ctx,
-    logger,
-    result,
-    regionForState,
-    refusalRecovery,
-    stackLockBase,
-    journaledOrphans,
-    needsStrongRefCheck,
-    stackNoEchoValues,
-    destroyProviderRegistry,
-    destroyAwsClients,
-    restoreBaseRegionAndClients,
-  });
+  // The stack the local custom-resource runtime resolves functions in.
+  return withCustomResourceStack(stackName, () =>
+    destroyStackUnderLock({
+      stackName,
+      state,
+      ctx,
+      logger,
+      result,
+      regionForState,
+      refusalRecovery,
+      stackLockBase,
+      journaledOrphans,
+      needsStrongRefCheck,
+      stackNoEchoValues,
+      destroyProviderRegistry,
+      destroyAwsClients,
+      restoreBaseRegionAndClients,
+    })
+  );
 }

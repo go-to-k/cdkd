@@ -10,9 +10,11 @@
  * execution of the custom-resource event moves, through the machinery
  * `cdkd local invoke` uses (`resolveZipImagePlan`, `runDetached`, the RIE).
  *
- * - Scope: the `ServiceToken` function only. A `cr.Provider` framework
- *   function that calls the user's handler through `lambda:Invoke` still
- *   reaches the emulator for that second hop.
+ * - Scope: the `ServiceToken` function, and (go-to-k/cdkd#6213) what a
+ *   `cr.Provider` framework function calls from there: every container gets
+ *   the local endpoint of `custom-resource-second-hop.ts` as its Lambda /
+ *   Step Functions endpoint, which runs the user's handlers and the waiter
+ *   state machine locally too and forwards every other call to the emulator.
  * - Code: the function's code from the local cloud assembly
  *   ({@link synthesizedStacks}). Handler, runtime, layers come from the
  *   template; the environment, timeout and memory from the deployed function
@@ -35,11 +37,12 @@ import {
   GetFunctionConfigurationCommand,
   type FunctionConfiguration,
   type InvocationResponse,
-  type LambdaClient,
+  LambdaClient,
 } from '@aws-sdk/client-lambda';
 import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
@@ -52,12 +55,14 @@ import type { ResolvedZipLambda } from './lambda-resolver/types.js';
 import { getActiveWorkloadAwsWiring, setContainerRegion } from './local-aws-wiring.js';
 import {
   NO_LOCAL_CUSTOM_RESOURCES_FLAG,
+  customResourceStackName,
   localCustomResourceCommand,
   localCustomResourceRuntimeActive,
   setLocalCustomResourceRuntimeEnabled,
 } from './custom-resource-runtime-gate.js';
 import { responsePresignClient } from '../provisioning/providers/custom-resource-response-endpoint.js';
 import {
+  dockerBridgeGateway,
   ensureDockerAvailable,
   followContainerLogs,
   imageInLocalCache,
@@ -74,6 +79,12 @@ import { resolveHostGatewayExtraHosts } from './docker-version.js';
 import { invokeRie, waitForRieReady } from './rie-client.js';
 import { resolveZipImagePlan, type ImagePlan } from '../cli/commands/local-invoke/image-plan.js';
 import { resolveRuntimeImage } from './runtime-image.js';
+import {
+  forwardToEmulator,
+  startSecondHopEndpoint,
+  type LocalFunction,
+  type SecondHopEndpoint,
+} from './custom-resource-second-hop.js';
 
 /** `CloudWatch`'s `LogType: 'Tail'` cap, which the emulator path's `LogResult` carries. */
 const LOG_TAIL_MAX_BYTES = 4096;
@@ -90,6 +101,10 @@ const warnedOnce = new Set<string>();
 /** The in-flight events' synchronous teardowns, run by ONE `exit` listener. */
 const exitCleanups = new Set<() => void>();
 let exitHookInstalled = false;
+/** The `cr.Provider` second-hop endpoint (#6213), started with the first local event. */
+let secondHop: Promise<SecondHopEndpoint | undefined> | undefined;
+/** Set when a container could not reach the endpoint: later events skip it. */
+let secondHopDisabled = false;
 
 /** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
@@ -97,6 +112,10 @@ export function resetLocalCustomResourceRuntimeForTest(): void {
   dockerAvailable = undefined;
   runtimeImages.clear();
   warnedOnce.clear();
+  const endpoint = secondHop;
+  secondHop = undefined;
+  secondHopDisabled = false;
+  void endpoint?.then((e) => e?.close());
 }
 
 function warnOnce(key: string, message: string): void {
@@ -330,7 +349,7 @@ export async function invokeCustomResourceFunctionLocally(
   const choice = chooseServiceTokenFunction(
     findServiceTokenFunctions(stacks, customResourceLogicalId),
     deployed,
-    getCurrentStackName()
+    getCurrentStackName() ?? customResourceStackName()
   );
   if ('reason' in choice) {
     warnOnce(
@@ -354,12 +373,120 @@ export async function invokeCustomResourceFunctionLocally(
   );
   const response = await responseUrlForContainer(clients.s3, request['ResponseURL']);
   return runInContainer(
-    lambda,
-    deployed,
+    { lambda, deployed, forwardPort: response.forwardPort },
     serviceToken,
     response.url === undefined ? request : { ...request, ResponseURL: response.url },
-    response.forwardPort
+    await secondHopEndpoint(clients.lambda)
   );
+}
+
+/**
+ * A Lambda client in the region of a function ARN: the endpoint outlives the
+ * event that started it, whose client is bound to that event's region. A
+ * name or an ARN in that same region uses the event's client.
+ */
+export function lambdaClientForRegion(
+  base: LambdaClient
+): (functionName: string) => Promise<LambdaClient> {
+  const byRegion = new Map<string, LambdaClient>();
+  return async (functionName) => {
+    const region = regionOfFunctionArn(functionName);
+    if (region === undefined || region === (await base.config.region())) return base;
+    let client = byRegion.get(region);
+    if (client === undefined) {
+      // cdkd-local-role-identity: cdkd's own GetFunctionConfiguration on AWS
+      // Emulator (full emulator mode only), as the event's client is; what it
+      // resolves never reaches the container.
+      client = new LambdaClient({ ...ambientClientDefaults(), region });
+      byRegion.set(region, client);
+    }
+    return client;
+  };
+}
+
+/**
+ * The `cr.Provider` second-hop endpoint (#6213), started once per process
+ * with the first local event; `undefined` (calls go to the emulator as
+ * before) unless the wiring is full emulator mode with its own keys, which a
+ * forwarded call is signed with.
+ */
+function secondHopEndpoint(lambdaClient: LambdaClient): Promise<SecondHopEndpoint | undefined> {
+  if (secondHopDisabled) return Promise.resolve(undefined);
+  secondHop ??= (async (): Promise<SecondHopEndpoint | undefined> => {
+    const wiring = getActiveWorkloadAwsWiring();
+    // Full emulator mode is the gate's own condition (the only caller is past
+    // it); `forwardToEmulator` re-checks it on every forwarded call.
+    if (
+      wiring === undefined ||
+      wiring.emulatorEndpoint === undefined ||
+      wiring.emulatorCredentials === undefined ||
+      // Loopback only, as the ResponseURL re-sign: the container reaches the
+      // endpoint through its loopback forwarder, which a remote emulator's
+      // wiring does not start (and whose health probe would then hit this
+      // plaintext endpoint).
+      !wiring.emulatorEndpoint.loopback
+    ) {
+      return undefined;
+    }
+    const clientFor = lambdaClientForRegion(lambdaClient);
+    try {
+      return await startSecondHopEndpoint({
+        getFunctionConfiguration: async (functionName) => {
+          try {
+            return await (
+              await clientFor(functionName)
+            ).send(
+              new GetFunctionConfigurationCommand({
+                FunctionName: functionName,
+              })
+            );
+          } catch (err) {
+            getLogger().debug(
+              safeMsg`GetFunctionConfiguration(${functionName}) failed: ${describeAwsFailure(err).detail}`
+            );
+            return undefined;
+          }
+        },
+        chooseFunction: (caller, logicalId, deployed) =>
+          chooseServiceTokenFunction(
+            [
+              {
+                stack: caller.lambda.stack,
+                logicalId,
+                resource: caller.lambda.stack.template.Resources![logicalId]!,
+              },
+            ],
+            deployed,
+            caller.lambda.stack.stackName
+          ),
+        imageAvailable: (lambda) => runtimeImageAvailable(resolveRuntimeImage(lambda.runtime)),
+        runLocally: async (target, event) =>
+          runInContainer(
+            target,
+            target.deployed.FunctionArn ?? '',
+            event,
+            await secondHopEndpoint(lambdaClient)
+          ),
+        forward: forwardToEmulator,
+        emulatorCredentials: wiring.emulatorCredentials,
+        // Docker Desktop's `host.docker.internal` is the host's loopback; on
+        // Linux it is the bridge gateway.
+        ...(process.platform === 'linux' && {
+          containerGateway: dockerBridgeGateway,
+        }),
+        sleep: (ms) =>
+          new Promise((resolveSleep) => {
+            setTimeout(resolveSleep, ms).unref();
+          }),
+      });
+    } catch (err) {
+      getLogger().debug(
+        safeMsg`The cr.Provider endpoint did not start: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return undefined;
+    }
+  })();
+  return secondHop;
 }
 
 /**
@@ -416,14 +543,22 @@ export async function responseUrlForContainer(
   return { url: signed, forwardPort: Number(url.port) };
 }
 
+/** The variables a container's Lambda / Step Functions clients follow to the second-hop endpoint. */
+export const SECOND_HOP_ENDPOINT_ENV_KEYS = [
+  'AWS_ENDPOINT_URL_LAMBDA',
+  'AWS_ENDPOINT_URL_SFN',
+] as const;
+
 async function runInContainer(
-  lambda: ResolvedZipLambda,
-  deployed: FunctionConfiguration,
-  serviceToken: string,
-  request: Record<string, unknown>,
-  forwardPort: number | undefined
+  fn: LocalFunction,
+  functionArn: string,
+  request: unknown,
+  endpoint: SecondHopEndpoint | undefined
 ): Promise<InvocationResponse> {
+  const { lambda, deployed, forwardPort } = fn;
   const logger = getLogger();
+  // This container's own token: its calls resolve against ITS template entry.
+  const hop = endpoint?.register(fn);
   let imagePlan: ImagePlan | undefined;
   let containerId: string | undefined;
   let forwarderId: string | undefined;
@@ -469,27 +604,63 @@ async function runInContainer(
       AWS_LAMBDA_LOG_STREAM_NAME: 'local',
       ...functionEnv,
     };
-    setContainerRegion(env, regionOfFunctionArn(serviceToken) ?? lambda.stack.region);
+    setContainerRegion(env, regionOfFunctionArn(functionArn) ?? lambda.stack.region);
+    const hopEnv: Record<string, string> = {};
+    if (hop !== undefined) {
+      for (const key of SECOND_HOP_ENDPOINT_ENV_KEYS) hopEnv[key] = hop.url;
+    }
 
     const hostPort = await pickFreePort();
     const extraHosts = await resolveHostGatewayExtraHosts();
     starting.push(containerName);
-    containerId = await runDetached({
-      name: containerName,
-      image: imagePlan.image,
-      mounts: imagePlan.mounts,
-      ...(imagePlan.extraMounts !== undefined && { extraMounts: imagePlan.extraMounts }),
+    const plan = imagePlan;
+    const runOptions = (name: string, withHop: boolean): Parameters<typeof runDetached>[0] => ({
+      name,
+      image: plan.image,
+      mounts: plan.mounts,
+      ...(plan.extraMounts !== undefined && { extraMounts: plan.extraMounts }),
       env,
       // The function's own variables may hold resolved secrets: keep their
       // values off the `docker run` argv.
       sensitiveEnvKeys: new Set(Object.keys(functionEnv)),
+      // On the argv: the docker client reads `AWS_ENDPOINT_URL_*` itself, so
+      // they cannot travel in its environment. The URL's token only names the
+      // caller; the endpoint accepts a request only when it is signed with the
+      // emulator's secret key, which stays off the argv.
+      ...(withHop &&
+        hop !== undefined && {
+          envAfterWiring: hopEnv,
+          extraLoopbackPorts: [hop.port],
+        }),
       ...(extraHosts.length > 0 && { extraHosts }),
-      cmd: imagePlan.cmd,
+      cmd: plan.cmd,
       hostPort,
       host: CONTAINER_HOST,
-      ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
-      ...(imagePlan.tmpfs !== undefined && { tmpfs: imagePlan.tmpfs }),
+      ...(plan.platform !== undefined && { platform: plan.platform }),
+      ...(plan.tmpfs !== undefined && { tmpfs: plan.tmpfs }),
     });
+    try {
+      containerId = await runDetached(runOptions(containerName, true));
+    } catch (err) {
+      // Only a forwarder failure: anything else fails the same way without it.
+      if (
+        hop === undefined ||
+        (err as { code?: unknown } | null)?.code !== 'LOCAL_AWS_EMULATOR_FORWARDER_FAILED'
+      ) {
+        throw err;
+      }
+      // The forwarder could not reach the endpoint (a host firewall in front
+      // of the Docker bridge, say). The first hop still works without it:
+      // run this container without the endpoint, and stop offering it.
+      const retryName = `${containerName}-nohop`;
+      starting.push(retryName);
+      containerId = await runDetached(runOptions(retryName, false));
+      secondHopDisabled = true;
+      warnOnce(
+        'second-hop',
+        safeMsg`The cr.Provider endpoint is not reachable from containers (${err instanceof Error ? err.message : String(err)}), so a cr.Provider's handlers run in AWS Emulator's own Lambda runtime.`
+      );
+    }
     // Captured, not relayed: the handler may print the event, which carries
     // the resource's properties. The tail travels as `LogResult` like the
     // emulator's, which the response handling prints only on a failure.
@@ -536,6 +707,7 @@ async function runInContainer(
     }
     for (const dir of tmpDirs()) rmSync(dir, { recursive: true, force: true });
     exitCleanups.delete(onExit);
+    hop?.release();
   }
 }
 

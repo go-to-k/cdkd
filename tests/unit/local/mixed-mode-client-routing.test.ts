@@ -332,6 +332,11 @@ const EXEMPT: { file: string; phrase: string; why: string }[] = [
   },
   { file: 'src/utils/aws-clients.ts', phrase: 'SSMClient', why: "the deploy bag's client, as above" },
   {
+    file: 'src/local/custom-resource-runtime.ts',
+    phrase: 'ambientClientDefaults(), region',
+    why: "the custom-resource runtime's GetFunctionConfiguration in another region (go-to-k/cdkd#6213): it runs only in full emulator mode (its gate), never in mixed mode",
+  },
+  {
     file: 'src/provisioning/providers/ssm-parameter-provider.ts',
     phrase: 'clientDefaultsFor(this.credentialConfig)',
     why: 'provisioning an AWS::SSM::Parameter on deploy',
