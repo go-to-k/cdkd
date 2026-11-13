@@ -448,7 +448,14 @@ It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
 | Case | What to do |
 | --- | --- |
 | The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
-| A queue URL from an environment variable (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Not rewritten; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+| A container env value that is exactly a real queue URL (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Rewritten to the same queue on the container's SQS endpoint, so the call lands in the emulator. |
+| Any other real queue URL (read at run time from SSM Parameter Store, Secrets Manager or the event, or inside a larger value) | Fails closed: the container's `/etc/hosts` maps the real SQS host names (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com`, `queue.amazonaws.com`) to `127.0.0.1`, so the connection is refused before a signed request leaves the machine. |
+
+A container whose SQS is excepted to real AWS (mixed mode, `"real-aws"`) gets
+neither: its queue URLs reach real SQS. Not covered: the FIPS and dual-stack
+SQS hosts, which AWS does not return as queue URLs, a client given an explicit
+real `endpoint` in code, and a literal real `AWS_ENDPOINT_URL_SQS` in the
+container's env.
 
 To keep some services on real AWS while the rest goes to the emulator, see
 [AWS Emulator mixed mode](#aws-emulator-mixed-mode).
@@ -529,6 +536,15 @@ workload only:
 
 Every service you do not mark stays on the emulator, so a forgotten entry
 fails closed: the call reaches the emulator, never a shared real environment.
+For SQS, whose queue URL names the host the AWS SDK for JavaScript v3 sends
+to, a queue URL in the container's env is rewritten to the emulator's and
+every other real SQS host is unreachable from the container (see the SQS
+queue URL cases above).
+
+The startup line names where each exception is marked, by service and
+section (`DYNAMODB under Parameters (every workload); S3 under
+MyStack/PyFn`). `local invoke` and `local invoke-agentcore`, which run one
+workload, print that workload's exceptions only, once the target is resolved.
 
 #### What it is for
 

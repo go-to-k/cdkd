@@ -21,9 +21,11 @@ import {
 } from '../../../synthesis/synthesizer.js';
 import { refuseFailedLookups } from '../../../synthesis/failed-lookups.js';
 import { resolveApp } from '../../config-loader.js';
+import { readCdkPathOrUndefined } from '../../cdk-path.js';
 import { createLocalStateProvider, resolveCfnFallbackRegion } from '../local-state-source.js';
 import type { LocalStateProvider } from 'cdk-local';
 import { getEmbedConfig } from 'cdk-local';
+import { logMixedModeForWorkload } from 'cdk-local/internal';
 import {
   AGENTCORE_A2A_PROTOCOL,
   AGENTCORE_AGUI_PROTOCOL,
@@ -328,7 +330,7 @@ export async function localInvokeAgentCoreCommand(
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).
-    await activateLocalAwsAndRoleArn(options);
+    await activateLocalAwsAndRoleArn({ ...options, singleWorkload: true });
     await ensureDockerAvailable();
 
     // Under `--aws-emulator` the container gets the emulator's keys only, so
@@ -405,6 +407,11 @@ export async function localInvokeAgentCoreCommand(
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
+    // Mixed mode: the line names THIS runtime's exceptions only (go-to-k/cdkd#6257).
+    logMixedModeForWorkload(
+      { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
+      `AgentCore runtime ${resolved.stack.stackName}/${resolved.logicalId}`
+    );
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;
     const isAgui = resolved.protocol === AGENTCORE_AGUI_PROTOCOL;

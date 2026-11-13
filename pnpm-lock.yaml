@@ -374,8 +374,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.166.1
-        version: 0.166.1(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
+        specifier: ^0.166.3
+        version: 0.166.3(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.6.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -505,14 +505,27 @@ packages:
     peerDependencies:
       '@aws-cdk/cloud-assembly-schema': '>=53.25.0'
 
-  '@aws-cdk/cloud-assembly-api@2.5.0':
-    resolution: {integrity: sha512-cE19OP9Ad3f04wkvntxqMxwKXutvkVyymwiqHsvEnmBktXjdm6Ydjd2X7b9QcU3QvbL7Gdt4bc3d4STMROCjfg==}
+  '@aws-cdk/cloud-assembly-api@3.0.0':
+    resolution: {integrity: sha512-/URaK/LT3OXH0RArT7Fb8PYG3rZ23saBDGKZcDaPDPPAlXizJwSB8IehA5KgAcSZ6mNu/T89T2H3FJ9wD5q6FQ==}
     engines: {node: '>= 18.0.0'}
     peerDependencies:
-      '@aws-cdk/cloud-assembly-schema': '>=55.0.0'
+      '@aws-cdk/cloud-assembly-schema': '>=55.3.0'
+
+  '@aws-cdk/cloud-assembly-api@3.0.1':
+    resolution: {integrity: sha512-yvQgiFqnY/Qls1L4nRPtaNcYB5kmApKtgVuZ0wKusoy0tJkQ4OW3MF4+apIZF1cN6cmnWFv2HEThQR1HXtRi7g==}
+    engines: {node: '>= 18.0.0'}
+    peerDependencies:
+      '@aws-cdk/cloud-assembly-schema': '>=55.6.0'
 
   '@aws-cdk/cloud-assembly-schema@55.1.0':
     resolution: {integrity: sha512-q8tWC7UBXb1KnKuJEoNL3qfYg5wQGARHrxXfTVgTPWyKwvk/w0PpRPIp0BiOgyox+obSHwCKjiieE4pYBs88fw==}
+    engines: {node: '>= 18.0.0'}
+    bundledDependencies:
+      - jsonschema
+      - semver
+
+  '@aws-cdk/cloud-assembly-schema@55.6.0':
+    resolution: {integrity: sha512-gvgzQtc0ZEcYc8WXMyCfbwJ1xlGWM/X6rG5gEiCSqT8c7e31c4tVQ5nhdgztKJ+E0UL4BCsVN0s/3YP62NJ/yg==}
     engines: {node: '>= 18.0.0'}
     bundledDependencies:
       - jsonschema
@@ -539,8 +552,8 @@ packages:
   '@aws-cdk/service-spec-types@0.0.294':
     resolution: {integrity: sha512-TPm/H7bEG//3LBsp3BrjImB7CCOpbmvtJ/SzC/a7y1Q7Zi6ZQjYl4nXDnY16VrfVmneHIo14dhmNbcpHCL3PHA==}
 
-  '@aws-cdk/toolkit-lib@1.44.0':
-    resolution: {integrity: sha512-s528NBRpizSRPXY/93fMr8PxlZxqXHEGg3yhE8AnOy1aSjCvpsSuKmBSPZO0xwM1c2suoX/eF/Lq7gnPwBX0MQ==}
+  '@aws-cdk/toolkit-lib@1.46.1':
+    resolution: {integrity: sha512-rl+hoGAaERXr+3nfaSqyTQfvN1So4Fl4yflPS4iQzBxx7L6Bri3BnSdPiQ/Hk9KmiwMgvzqq84lPipw26uhq8Q==}
     engines: {node: '>= 18.0.0'}
     peerDependencies:
       '@aws-cdk/cli-plugin-contract': ^2
@@ -3258,11 +3271,11 @@ packages:
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
 
-  cdk-from-cfn@0.338.0:
-    resolution: {integrity: sha512-jIrGLU8g2CLkn4fPtaDP0QurSbtnDWiMUTykaohQRldjImhGBWRTIAO8H/yS2mMIKnJu3pN9VD1t39cIgUSbQg==}
+  cdk-from-cfn@0.340.0:
+    resolution: {integrity: sha512-MFPx2lEv2z72uoEadtmZJaDlvbQ7t23EX3MIxuKG6ylY8w4SqBfP4i5oZ5AAoD4snILLe6xaygvRVLrgWA4EKA==}
 
-  cdk-local@0.166.1:
-    resolution: {integrity: sha512-7/qkd8xD2DV1MrQwF4Lb3jOzsNJeXDSi32F8ZvfQcgSbhNN461hmJcq3svsR3EnxNG7r9EbDeknw9IojRba3JA==}
+  cdk-local@0.166.3:
+    resolution: {integrity: sha512-NonYkGTC72vzQyydF8YQgzt4k6AL04zIx3c9PO4XgEXJVHIzYf9Lmoc1jbhhAuxKgM7ANh3FvH6KGvTTYiyNyQ==}
     engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
@@ -3938,9 +3951,6 @@ packages:
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
 
-  json-source-map@0.6.1:
-    resolution: {integrity: sha512-1QoztHPsMQqhDq0hlXY5ZqcEdUzxQEIxgFkKl4WUp2pgShObl+9ovi4kRh2TfvAfxAoHOJ9vIMEqk3k4iex7tg==}
-
   jsonc-parser@3.3.1:
     resolution: {integrity: sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==}
 
@@ -4448,6 +4458,11 @@ packages:
 
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
+  semver@7.8.6:
+    resolution: {integrity: sha512-9lpSSU4Mly3mrtruwLs1eLK6+gzbzqeBFwRNjIjE+9LuDpWdYctrQlQ3ej1Ilgi7gknpsTRnPoLP8DpCHqHIJw==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -4977,14 +4992,21 @@ snapshots:
       jsonschema: 1.5.0
       semver: 7.8.5
 
-  '@aws-cdk/cloud-assembly-api@2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)':
+  '@aws-cdk/cloud-assembly-api@3.0.0(@aws-cdk/cloud-assembly-schema@55.6.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 55.1.0
-      json-source-map: 0.6.1
+      '@aws-cdk/cloud-assembly-schema': 55.6.0
       jsonschema: 1.5.0
       semver: 7.8.5
 
+  '@aws-cdk/cloud-assembly-api@3.0.1(@aws-cdk/cloud-assembly-schema@55.6.0)':
+    dependencies:
+      '@aws-cdk/cloud-assembly-schema': 55.6.0
+      jsonschema: 1.5.0
+      semver: 7.8.6
+
   '@aws-cdk/cloud-assembly-schema@55.1.0': {}
+
+  '@aws-cdk/cloud-assembly-schema@55.6.0': {}
 
   '@aws-cdk/cloudformation-diff@2.187.7(@aws-sdk/client-cloudformation@3.1164.0)':
     dependencies:
@@ -4997,9 +5019,9 @@ snapshots:
       string-width: 4.2.3
       table: 6.9.0
 
-  '@aws-cdk/cx-api@2.257.0(@aws-cdk/cloud-assembly-schema@55.1.0)':
+  '@aws-cdk/cx-api@2.257.0(@aws-cdk/cloud-assembly-schema@55.6.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 55.1.0
+      '@aws-cdk/cloud-assembly-schema': 55.6.0
 
   '@aws-cdk/service-spec-types@0.0.292':
     dependencies:
@@ -5009,14 +5031,14 @@ snapshots:
     dependencies:
       '@cdklabs/tskb': 0.0.4
 
-  '@aws-cdk/toolkit-lib@1.44.0(@aws-cdk/cli-plugin-contract@2.182.2)':
+  '@aws-cdk/toolkit-lib@1.46.1(@aws-cdk/cli-plugin-contract@2.182.2)':
     dependencies:
       '@aws-cdk/cdk-assets-lib': 1.4.8
       '@aws-cdk/cli-plugin-contract': 2.182.2
-      '@aws-cdk/cloud-assembly-api': 2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)
-      '@aws-cdk/cloud-assembly-schema': 55.1.0
+      '@aws-cdk/cloud-assembly-api': 3.0.0(@aws-cdk/cloud-assembly-schema@55.6.0)
+      '@aws-cdk/cloud-assembly-schema': 55.6.0
       '@aws-cdk/cloudformation-diff': 2.187.7(@aws-sdk/client-cloudformation@3.1164.0)
-      '@aws-cdk/cx-api': 2.257.0(@aws-cdk/cloud-assembly-schema@55.1.0)
+      '@aws-cdk/cx-api': 2.257.0(@aws-cdk/cloud-assembly-schema@55.6.0)
       '@aws-sdk/client-appsync': 3.1164.0
       '@aws-sdk/client-bedrock-agentcore-control': 3.1164.0
       '@aws-sdk/client-cloudcontrol': 3.1164.0
@@ -5045,7 +5067,7 @@ snapshots:
       '@smithy/shared-ini-file-loader': 4.7.2
       '@smithy/util-retry': 4.3.8
       '@smithy/util-waiter': 4.3.0
-      cdk-from-cfn: 0.338.0
+      cdk-from-cfn: 0.340.0
       chalk: 4.1.2
       chokidar: 4.0.3
       cross-spawn: 7.0.6
@@ -5054,7 +5076,7 @@ snapshots:
       fs-extra: 11.3.4
       p-limit: 3.1.0
       picomatch: 4.0.7
-      semver: 7.8.5
+      semver: 7.8.6
       wrap-ansi: 7.0.0
       yaml: 2.9.1
       yazl: 3.3.1
@@ -7975,12 +7997,12 @@ snapshots:
 
   ccount@2.0.1: {}
 
-  cdk-from-cfn@0.338.0: {}
+  cdk-from-cfn@0.340.0: {}
 
-  cdk-local@0.166.1(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
+  cdk-local@0.166.3(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.6.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
     dependencies:
-      '@aws-cdk/cloud-assembly-api': 2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)
-      '@aws-cdk/toolkit-lib': 1.44.0(@aws-cdk/cli-plugin-contract@2.182.2)
+      '@aws-cdk/cloud-assembly-api': 3.0.1(@aws-cdk/cloud-assembly-schema@55.6.0)
+      '@aws-cdk/toolkit-lib': 1.46.1(@aws-cdk/cli-plugin-contract@2.182.2)
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-sdk/client-bedrock-agentcore-control': 3.1164.0
       '@aws-sdk/client-cloudformation': 3.1164.0
@@ -8718,8 +8740,6 @@ snapshots:
 
   json-schema-traverse@1.0.0: {}
 
-  json-source-map@0.6.1: {}
-
   jsonc-parser@3.3.1: {}
 
   jsonfile@6.2.1:
@@ -9317,6 +9337,8 @@ snapshots:
     optional: true
 
   semver@7.8.5: {}
+
+  semver@7.8.6: {}
 
   shebang-command@2.0.0:
     dependencies:

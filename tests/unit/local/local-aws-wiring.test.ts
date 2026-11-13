@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   hostDefaults: vi.fn(),
   attach: vi.fn(),
   ensureImage: vi.fn(),
+  activateArgs: vi.fn(),
 }));
 
 vi.mock('node:child_process', async () => {
@@ -45,6 +46,10 @@ vi.mock('cdk-local/internal', async () => {
     resolveHostDefaultCredentials: mocks.hostDefaults,
     attachLoopbackForwarder: mocks.attach,
     ensureForwarderImage: mocks.ensureImage,
+    activateWorkloadAwsWiring: (...a: Parameters<typeof actual.activateWorkloadAwsWiring>) => {
+      mocks.activateArgs(...a);
+      return actual.activateWorkloadAwsWiring(...a);
+    },
   };
 });
 
@@ -1077,3 +1082,134 @@ function restoreProcessEnv(snapshot: Record<string, string | undefined>): void {
   for (const k of Object.keys(process.env)) if (!(k in snapshot)) delete process.env[k];
   for (const [k, v] of Object.entries(snapshot)) if (v !== undefined) process.env[k] = v;
 }
+
+describe('SQS host blocks under --aws-emulator (go-to-k/cdkd#6257, go-to-k/cdk-local#947)', () => {
+  const REAL_QUEUE = 'https://sqs.us-east-1.amazonaws.com/123456789012/orders';
+  /** The `--add-host` values of an argv. */
+  const addHosts = (args: string[]): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < args.length - 1; i++) if (args[i] === '--add-host') out.push(args[i + 1]!);
+    return out;
+  };
+  const BLOCKED = [
+    'sqs.us-east-1.amazonaws.com:127.0.0.1',
+    'us-east-1.queue.amazonaws.com:127.0.0.1',
+    'queue.amazonaws.com:127.0.0.1',
+  ];
+
+  it('runDetached, full emulator mode: the real SQS hosts map to 127.0.0.1 and an env queue URL is rewritten', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_REGION: 'us-east-1', QUEUE_URL: REAL_QUEUE },
+      cmd: [],
+      hostPort: 9000,
+      extraHosts: [{ host: 'host.docker.internal', ip: 'host-gateway' }],
+    });
+    const { args } = lastRun();
+    const hosts = addHosts(args);
+    expect(hosts).toEqual(expect.arrayContaining([...BLOCKED, 'host.docker.internal:host-gateway']));
+    expect(hosts).toContain('sqs.eu-west-1.amazonaws.com:127.0.0.1');
+    expect(envFlags(args)).toContain('QUEUE_URL=https://127.0.0.1:9297/123456789012/orders');
+  });
+
+  it('runDetached, mixed mode: blocked when SQS goes to the emulator, not when SQS is excepted to real AWS', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    mocks.hostDefaults.mockResolvedValue(HOST_KEYS);
+    await runDetached({ image: 'img', mounts: [], env: { AWS_REGION: 'us-east-1' }, cmd: [], hostPort: 9000 });
+    expect(addHosts(lastRun().args)).toEqual(expect.arrayContaining(BLOCKED));
+
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_SQS: 'real-aws', QUEUE_URL: REAL_QUEUE },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args } = lastRun();
+    expect(addHosts(args).some((h) => h.includes('amazonaws.com'))).toBe(false);
+    expect(envFlags(args)).toContain(`QUEUE_URL=${REAL_QUEUE}`);
+  });
+
+  it('runDetached on the host network: a queue URL pointed at the sidecar is re-pointed at the emulator', async () => {
+    const w = emulatorWiring();
+    setActiveWorkloadAwsWiring({
+      ...w,
+      env: { ...w.env, AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:47297' },
+      loopbackPorts: [9297, 47297],
+      sidecar: {
+        port: 47297,
+        endpoint: 'https://127.0.0.1:47297',
+        upstream: w.emulatorEndpoint!,
+        configHostPath: '/tmp/cdkd-sqs-x/resign.json',
+        passthrough: true,
+      },
+    });
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_REGION: 'us-east-1', QUEUE_URL: REAL_QUEUE },
+      cmd: [],
+      hostPort: 9000,
+      network: 'host',
+    });
+    const { args } = lastRun();
+    expect(envFlags(args)).toContain('QUEUE_URL=https://127.0.0.1:9297/123456789012/orders');
+    expect(addHosts(args)).toEqual(expect.arrayContaining(BLOCKED));
+  });
+
+  it('runDetached with no --aws-emulator adds no SQS host block', async () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    mocks.hostDefaults.mockResolvedValue(HOST_KEYS);
+    await runDetached({ image: 'img', mounts: [], env: { QUEUE_URL: REAL_QUEUE }, cmd: [], hostPort: 9000 });
+    expect(addHosts(lastRun().args)).toEqual([]);
+  });
+
+  const task = { family: 'fam', containers: [], volumes: [] } as unknown as ResolvedEcsTask;
+  const ecsContainer = (environment: Record<string, string>): ResolvedEcsContainer =>
+    ({
+      name: 'app',
+      environment,
+      secrets: [],
+      portMappings: [],
+      mountPoints: [],
+      ulimits: [],
+      links: [],
+    }) as unknown as ResolvedEcsContainer;
+  const ecsArgs = (environment: Record<string, string>): ReturnType<typeof buildDockerRunArgs> =>
+    buildDockerRunArgs({
+      task,
+      container: ecsContainer(environment),
+      image: 'img',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      containerHost: '127.0.0.1',
+      region: 'us-east-1',
+      envOverrides: undefined,
+      roleArn: undefined,
+      platformOverride: undefined,
+    } as unknown as Parameters<typeof buildDockerRunArgs>[0]);
+
+  it('ECS buildDockerRunArgs: the blocks go on the container and the namespace owner, never the joiner', () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    const built = ecsArgs({ QUEUE_URL: REAL_QUEUE });
+    expect(addHosts(built.args)).toEqual(expect.arrayContaining(BLOCKED));
+    expect(built.forwarder?.namespace.addHosts).toEqual(expect.arrayContaining(BLOCKED));
+    expect(built.forwarder?.args).not.toContain('--add-host');
+    expect(envFlags(built.args)).toContain('QUEUE_URL=https://127.0.0.1:9297/123456789012/orders');
+  });
+
+  it('ECS buildDockerRunArgs, mixed mode: no block for a container whose SQS is excepted to real AWS', () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    expect(addHosts(ecsArgs({}).args)).toEqual(expect.arrayContaining(BLOCKED));
+    const excepted = ecsArgs({ AWS_ENDPOINT_URL_SQS: 'real-aws' });
+    expect(addHosts(excepted.args).some((h) => h.includes('amazonaws.com'))).toBe(false);
+  });
+
+  it('activateLocalAwsWiring passes singleWorkload through, so the mixed-mode line waits for the target', async () => {
+    await activateLocalAwsWiring({ singleWorkload: true });
+    expect(mocks.activateArgs).toHaveBeenLastCalledWith(expect.objectContaining({ singleWorkload: true }));
+  });
+});

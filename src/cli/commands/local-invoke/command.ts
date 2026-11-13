@@ -1,3 +1,4 @@
+import { logMixedModeForWorkload } from 'cdk-local/internal';
 import { rmSync } from 'node:fs';
 import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
@@ -303,7 +304,7 @@ export async function localInvokeCommand(
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).
-    await activateLocalAwsAndRoleArn(options);
+    await activateLocalAwsAndRoleArn({ ...options, singleWorkload: true });
 
     await ensureDockerAvailable();
 
@@ -372,6 +373,11 @@ export async function localInvokeCommand(
     refuseFailedLookups([lambda.stack], stacks, failedLookups);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
+    // Mixed mode: the line names THIS function's exceptions only (go-to-k/cdkd#6257).
+    logMixedModeForWorkload(
+      { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
+      `Lambda ${lambda.stack.stackName}/${lambda.logicalId}`
+    );
 
     // Resolve the docker image + bind-mounts + cmd / entrypoint / workdir /
     // platform that depend on the function's `kind`. ZIP Lambdas use a

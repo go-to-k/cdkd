@@ -1,4 +1,10 @@
-import { LOOPBACK_FORWARDER_IMAGE, noImplicitEcrPullArgs } from 'cdk-local/internal';
+import {
+  LOOPBACK_FORWARDER_IMAGE,
+  awsEmulatorSqsHostBlocks,
+  noImplicitEcrPullArgs,
+  repointLocalSqsQueueUrlsInEnv,
+  sqsEmulatorOriginOf,
+} from 'cdk-local/internal';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
@@ -288,14 +294,26 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     wired.env['AWS_ENDPOINT_URL_SQS'] === wiring.sidecar.endpoint
   ) {
     delete wired.env['AWS_ENDPOINT_URL_SQS'];
+    // The env's queue URLs were pointed at the sidecar (go-to-k/cdk-local#947):
+    // point them at the emulator, where SQS now goes.
+    const emulator = sqsEmulatorOriginOf(wired.env);
+    if (emulator) repointLocalSqsQueueUrlsInEnv(wired.env, wiring.sidecar.endpoint, emulator);
   }
+  const finalEnv = { ...wired.env, ...opts.envAfterWiring };
+  // Under --aws-emulator, the real SQS hosts are unreachable from a container
+  // whose SQS goes to the emulator, so a queue URL the workload reads at run
+  // time (SSM, Secrets Manager, an event) fails closed instead of reaching
+  // real SQS (go-to-k/cdkd#6257, go-to-k/cdk-local#947). Empty for a container
+  // whose SQS is excepted to real AWS.
+  const sqsBlocks = awsEmulatorSqsHostBlocks(finalEnv, wiring);
   const wiredOpts: DockerRunOptions = {
     ...opts,
-    env: { ...wired.env, ...opts.envAfterWiring },
+    env: finalEnv,
     extraMounts: wired.extraMounts,
     ...(opts.sensitiveEnvKeys !== undefined && {
       sensitiveEnvKeys: callerSecretKeysAfterWiring(opts, wiring.env, wired.env),
     }),
+    ...(sqsBlocks.length > 0 && { extraHosts: [...(opts.extraHosts ?? []), ...sqsBlocks] }),
   };
   // The extra ports go LAST: under `--aws-emulator` the forwarder's health
   // probe goes to the first port, which must be the emulator's.
