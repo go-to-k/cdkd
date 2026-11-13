@@ -247,7 +247,7 @@ export async function resolveHostCredentialsForSigV4(
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   if (assumeRoleArn) {
     try {
-      return await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+      return await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.emulateRoleVia);
     } catch (err) {
       logger.warn(
         assumeRoleFallbackWarning({

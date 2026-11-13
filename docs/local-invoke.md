@@ -75,6 +75,7 @@ Docker is required. See [Local Execution](local-emulation.md#requirements).
 | `--debug-port <port>` | off | Wait for a Node debugger on this port. See [`--debug-port`](#debug-port). |
 | `--assume-role [arn]` | off | Run the handler under the function's execution role. See [`--assume-role`](#assume-role-run-under-the-deployed-execution-role). |
 | `--no-assume-role` | — | Keep your own credentials and silence the hint to use `--assume-role`. |
+| `--emulate-role-via <arn>` | — | Role to emulate the execution role through when its assume is refused. See [`--assume-role`](#assume-role-run-under-the-deployed-execution-role). |
 | `--no-pull` | off | Skip `docker pull`. See [`--no-pull` and `--no-build`](#no-pull-and-no-build-by-code-path). |
 | `--no-build` | off | Skip `docker build` for a container-image Lambda. |
 | `--layer-role-arn <arn>` | — | Role to assume before downloading a layer named by ARN. See [Lambda layers](#lambda-layers). |
@@ -341,16 +342,28 @@ When you omit the flag and pass `--from-state`, cdkd logs the deployed role's
 ARN once, so that you can run again with the flag. `--no-assume-role` keeps
 your credentials and suppresses that log line.
 
-The role's trust policy must allow you to assume it. The execution role CDK
-creates by default trusts only `lambda.amazonaws.com`, so add a trust
-statement for yourself first.
+To run as the real role, its trust policy must allow you to assume it. The
+execution role CDK creates by default trusts only `lambda.amazonaws.com`.
 [Trusting yourself in the role](local-emulation.md#trusting-yourself-in-the-role)
-shows how.
+shows how to add a trust statement.
+
+Without that statement the assume is refused, and cdkd emulates the role
+instead: it gets credentials for you with the role's policies as session
+policies, and warns that this is an approximation. An IAM user needs nothing
+more. With other credentials, such as IAM Identity Center, also pass
+`--emulate-role-via <arn>` naming a role you can assume.
+[When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you)
+lists what the emulation does not reproduce and when it is skipped.
+
+```bash
+cdkd local invoke MyStack/Handler --from-state --assume-role \
+  --emulate-role-via arn:aws:iam::123456789012:role/DeveloperRole
+```
 
 The flag is a development aid and does not enforce anything. If the role
-cannot be assumed, or the ARN read from state is not a well-formed role ARN,
-cdkd warns and runs the handler with your credentials. The handler then runs
-with your own permissions, not the role's.
+can be neither assumed nor emulated, or the ARN read from state is not a
+well-formed role ARN, cdkd warns and runs the handler with your credentials.
+The handler then runs with your own permissions, not the role's.
 
 ## Lambda layers
 

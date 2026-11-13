@@ -12,6 +12,7 @@ import {
   profileCredentialsForWorkload,
 } from '../../../local/local-aws-wiring.js';
 import { explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
+import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -182,6 +183,10 @@ export async function localStartApiCommand(
   if (options.layerRoleArn !== undefined) {
     explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
   }
+  checkEmulateRoleVia(options.emulateRoleVia, {
+    roleFlag: '--assume-role or --assume-role-auto',
+    roleRequested: options.assumeRole !== undefined || options.assumeRoleAuto === true,
+  });
   // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
   // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
   // follow the emulator (`local-aws-wiring.ts`).
@@ -560,6 +565,7 @@ export async function localStartApiCommand(
           stateSourceActive,
           skipPull: options.pull === false,
           ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
+          ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
           ...(profileCredentials && { profileCredentials }),
           ...(profileCredsFile && { profileCredsFile }),
           ...dynamicReferenceSpecOptions(options),

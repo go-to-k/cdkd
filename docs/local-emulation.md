@@ -170,7 +170,7 @@ code makes reach real AWS as you. They come from, in order:
 
 | Source | Used when |
 | --- | --- |
-| `--assume-role` (or the command's equivalent below) | The flag is given and the role can be assumed. |
+| `--assume-role` (or the command's equivalent below) | The flag is given and the role can be assumed, or [emulated](#when-the-role-does-not-trust-you). |
 | `--profile <name>` | The flag is given. |
 | Your default credential chain | Neither flag is given: `AWS_ACCESS_KEY_ID` and its pair, `AWS_PROFILE`, the shared credentials and config files, IAM Identity Center. |
 
@@ -198,8 +198,11 @@ cdkd assumes the role with your own credentials, so the role's trust policy
 must allow `sts:AssumeRole` from you. A role CDK creates by default trusts only
 the service that runs the code, such as `lambda.amazonaws.com` for a Lambda
 function or `ecs-tasks.amazonaws.com` for an ECS task. Without a change, the
-assume is refused with AccessDenied. Add a statement to the role's trust policy
-in the stack you develop against:
+assume is refused with AccessDenied, and on `local invoke`, `local start-api`,
+`local run-task` and `local invoke-agentcore` cdkd then
+[emulates the role's permissions](#when-the-role-does-not-trust-you) instead.
+To run as the real role, add a statement to the role's trust policy in the
+stack you develop against:
 
 ```ts
 (fn.role as iam.Role).assumeRolePolicy?.addStatements(
@@ -219,6 +222,55 @@ trust policy.
 
 Keep this change out of production stacks, because it lets that principal act
 as the function.
+
+### When the role does not trust you
+
+When the role flag's AssumeRole is refused with AccessDenied, `local invoke`,
+`local start-api`, `local run-task` and `local invoke-agentcore` emulate the
+role instead of running with your own credentials. cdkd reads the role's inline
+and attached managed policies, then gets credentials for you with those
+policies as session policies. Only what both you and the role allow is allowed,
+so a permission the role lacks fails locally. No CDK change is needed.
+
+| Your credentials | How cdkd gets the credentials |
+| --- | --- |
+| An IAM user | `sts:GetFederationToken` with the session policies. |
+| Anything else (IAM Identity Center, a role session) | `sts:AssumeRole` of the role you name with `--emulate-role-via <arn>`, with the session policies. |
+| Anything else, without `--emulate-role-via` | No emulation: cdkd warns and handles the refusal as before. |
+
+`--emulate-role-via` names a role you can already assume, such as your
+developer role. It also takes precedence for an IAM user.
+
+```bash
+cdkd local invoke MyStack/Handler --from-state --assume-role \
+  --emulate-role-via arn:aws:iam::123456789012:role/DeveloperRole
+```
+
+cdkd warns once per role in each run, because it is an approximation:
+
+- Resource-based policies, KMS key policies and `aws:PrincipalArn` conditions
+  that name the role see your identity instead, so what they grant or deny
+  the role is not reproduced.
+- The role's permissions boundary and session tags are not reproduced.
+- Policy variables such as `${aws:username}` and `${aws:userid}` take the
+  emulated session's values, not the role's. A role session has no
+  `aws:username`.
+- A GetFederationToken session cannot call IAM, and of STS only
+  `GetCallerIdentity`.
+
+Reading the role needs `iam:ListRolePolicies`, `iam:GetRolePolicy` and
+`iam:ListAttachedRolePolicies`, and the role must be in your own account.
+
+cdkd does not emulate, and warns, when the role's policies do not fit in session
+policies: more than 10 managed policies, more than 2,048 characters of inline
+policy JSON plus managed policy ARNs, or STS answering `PackedPolicyTooLarge`.
+It then handles the refusal as before: `local invoke` and
+`local invoke-agentcore` run with your own credentials, and `local start-api`
+and `local run-task` stop with the AssumeRole error.
+
+The engine commands (`local start-service`, `local start-alb`,
+`local start-cloudfront`, `local start-agentcore`, `local start-web-function`,
+`local start-microvm`) do not emulate yet.
 
 `--role-arn` is a different flag. It names the role cdkd assumes for its own
 AWS calls.

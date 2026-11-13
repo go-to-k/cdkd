@@ -3,6 +3,7 @@ import {
   redactedAwsCause,
 } from '../../../utils/local-aws-failure.js';
 import { realAwsException } from '../../../local/local-aws-wiring.js';
+import { emulateRoleAfterDeniedAssume } from '../../../local/role-permission-emulation.js';
 import {
   displayIdent,
   plainIdentOr,
@@ -210,7 +211,9 @@ function partitionOfArn(arn: string | undefined): string {
 export async function assumeTaskRole(
   roleArn: string,
   region: string | undefined,
-  route: { realAws: boolean }
+  route: { realAws: boolean },
+  /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201), for a refused assume. */
+  emulateRoleVia?: string
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // Both `--assume-task-role <arn>` and the task definition's `TaskRoleArn`
   // (a template literal, passed through verbatim) arrive here unchecked, so the
@@ -247,6 +250,18 @@ export async function assumeTaskRole(
     };
   } catch (err) {
     if (err instanceof CdkdError) throw err;
+    // The role's trust policy refused the caller: emulate its permissions with
+    // session policies instead (go-to-k/cdkd#6201). `undefined` (not a refusal,
+    // or emulation impossible — warned) keeps the refusal below.
+    const emulated = await emulateRoleAfterDeniedAssume(err, {
+      roleArn,
+      region,
+      realAws: route.realAws,
+      ...(emulateRoleVia !== undefined && { emulateRoleVia }),
+      flag: '--assume-task-role',
+      sessionNamePrefix: 'cdkd-local-run-task',
+    });
+    if (emulated) return emulated;
     // See `resolvePlaceholderAccount` (go-to-k/cdkd#4857).
     const rendered = describeLocalAwsFailureForWarn(err, 'STS AssumeRole');
     throw new CdkdError(

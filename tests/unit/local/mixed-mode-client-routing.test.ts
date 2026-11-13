@@ -381,6 +381,14 @@ const STS_DECISION = /mixedModeActive\(\)|realAwsException\('STS'\)/;
  */
 const TASK_ROLE_ROUTE_FILE = 'src/cli/commands/local-run-task/stack-account.ts';
 const TASK_ROLE_ROUTE_DECISION = new RegExp(`${STS_DECISION.source}|route\\.realAws\\b`);
+/**
+ * Role-permission emulation (go-to-k/cdkd#6201) REPLACES a refused assume-role
+ * hop, so its STS and IAM clients take that hop's route from the caller
+ * (`args.realAws`, a REQUIRED field of `EmulateRoleArgs`) rather than deciding
+ * one of their own.
+ */
+const ROLE_EMULATION_FILE = 'src/local/role-permission-emulation.ts';
+const ROLE_EMULATION_DECISION = /args\.realAws\b/;
 
 describe('population: every AWS SDK client in src/ is accounted for', () => {
   const offenders: string[] = [];
@@ -403,6 +411,12 @@ describe('population: every AWS SDK client in src/ is accounted for', () => {
         continue;
       }
       if (!onLocalSurface(rel)) continue;
+      if (rel === ROLE_EMULATION_FILE && (c.cls === 'STSClient' || c.cls === 'IAMClient')) {
+        if (!c.args.startsWith('{') || !passesRealAws(c, ROLE_EMULATION_DECISION)) {
+          offenders.push(`${where}: an emulation client takes the refused hop's route (realAws: args.realAws)`);
+        } else stsSeen++;
+        continue;
+      }
       if (c.cls === 'STSClient') {
         const decision = rel === TASK_ROLE_ROUTE_FILE ? TASK_ROLE_ROUTE_DECISION : STS_DECISION;
         if (!c.args.startsWith('{') || !passesRealAws(c, decision)) {
@@ -416,7 +430,8 @@ describe('population: every AWS SDK client in src/ is accounted for', () => {
 
   it('the task-role STS route is a REQUIRED parameter, so no caller falls back by omission (#6147)', () => {
     const src = readFileSync(join(ROOT, TASK_ROLE_ROUTE_FILE), 'utf8');
-    expect(src.match(/\broute: \{ realAws: boolean \}\n/g)?.length).toBe(2);
+    // `,?`: `assumeTaskRole` takes `--emulate-role-via` after it (go-to-k/cdkd#6201).
+    expect(src.match(/\broute: \{ realAws: boolean \},?\n/g)?.length).toBe(2);
     expect(src).not.toMatch(/\broute: \{ realAws: boolean \} =/);
   });
 

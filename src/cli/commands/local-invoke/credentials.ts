@@ -8,6 +8,7 @@ import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
 import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
+import { emulateRoleAfterDeniedAssume } from '../../../local/role-permission-emulation.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
 import {
@@ -42,6 +43,8 @@ export async function applyLambdaCredentialEnv(
   dockerEnv: Record<string, string>,
   args: {
     assumeRoleArn?: string;
+    /** `--emulate-role-via`: the role to emulate through when the assume is refused (#6201). */
+    emulateRoleVia?: string;
     region?: string;
     /** The stack's own region: the container's region when nothing names one. */
     stackRegion?: string;
@@ -77,7 +80,11 @@ export async function applyLambdaCredentialEnv(
   });
   if (args.assumeRoleArn) {
     try {
-      const creds = await assumeLambdaExecutionRole(args.assumeRoleArn, containerRegion);
+      const creds = await assumeLambdaExecutionRole(
+        args.assumeRoleArn,
+        containerRegion,
+        args.emulateRoleVia
+      );
       // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
       // entire job is to choose the emulated function's identity. Its STS client
       // opts out of the `--role-arn` role, so the hop is answered by the caller.
@@ -130,7 +137,8 @@ export async function applyLambdaCredentialEnv(
  */
 async function assumeLambdaExecutionRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  emulateRoleVia: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // A `CdkdError`, so the STS-failure warn this lands in prints its remedy
   // rather than withholding it (go-to-k/cdkd#2300).
@@ -145,13 +153,30 @@ async function assumeLambdaExecutionRole(
     ...(region && { region }),
   });
   try {
-    const response = await sts.send(
-      sendableAssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `cdkd-local-invoke-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
+    let response;
+    try {
+      response = await sts.send(
+        sendableAssumeRoleCommand({
+          RoleArn: roleArn,
+          RoleSessionName: `cdkd-local-invoke-${Date.now()}`,
+          DurationSeconds: 3600,
+        })
+      );
+    } catch (err) {
+      // The role's trust policy refused the caller: emulate its permissions
+      // with session policies instead (go-to-k/cdkd#6201). `undefined` (not a
+      // refusal, or emulation impossible — warned) keeps the old fallback.
+      const emulated = await emulateRoleAfterDeniedAssume(err, {
+        roleArn,
+        region,
+        realAws: mixedModeActive(),
+        ...(emulateRoleVia !== undefined && { emulateRoleVia }),
+        flag: '--assume-role',
+        sessionNamePrefix: 'cdkd-local-invoke',
+      });
+      if (emulated) return emulated;
+      throw err;
+    }
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
       throw new CdkdError(

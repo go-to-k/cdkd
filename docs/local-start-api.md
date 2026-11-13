@@ -94,6 +94,7 @@ Docker is required. See [Local Execution](local-emulation.md#requirements).
 | `--debug-port-base <port>` | — | Give each Lambda a Node debugger port. See [`--debug-port-base`](local-start-api-containers.md#debug-port-base). |
 | `--assume-role <arn-or-pair>` | — | Run handlers under an execution role. See [`--assume-role` and `--assume-role-auto`](#assume-role-and-assume-role-auto). |
 | `--assume-role-auto` | off | Run each Lambda under its own execution role. |
+| `--emulate-role-via <arn>` | — | Role to emulate an execution role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--layer-role-arn <arn>` | — | Role to assume before downloading a layer named by ARN. |
 | `--mtls-truststore <path>` | — | PEM CA bundle. Turns on HTTPS with client-certificate checks. See [Mutual TLS](local-start-api-mtls.md). |
 | `--mtls-cert <path>` | — | PEM server certificate. Required with the other two `--mtls-*` flags. |

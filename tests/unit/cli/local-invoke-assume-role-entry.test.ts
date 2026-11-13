@@ -48,6 +48,7 @@ import { STSClient } from '@aws-sdk/client-sts';
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-task.js';
 import { createLocalInvokeAgentCoreCommand } from '../../../src/cli/commands/local-invoke-agentcore.js';
+import { createLocalStartApiCommand } from '../../../src/cli/commands/local-start-api.js';
 import { releaseStdoutForPayload } from '../../../src/utils/logger.js';
 
 const DOCKER_SENTINEL = 'SENTINEL: reached ensureDockerAvailable';
@@ -160,4 +161,72 @@ function createLocalInvokeLeaf(): import('commander').Command {
   const invoke = local.commands.find((c) => c.name() === 'invoke')!;
   return invoke;
 }
+
+/**
+ * go-to-k/cdkd#6201: `--emulate-role-via <arn>` is refused at entry when
+ * malformed, on every command that takes it, and warns when no role flag
+ * would ever read it (absent, or `--no-assume-role`).
+ */
+describe('--emulate-role-via is checked at handler entry (go-to-k/cdkd#6201)', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(async () => {
+    for (const m of Object.values(mocks)) m.mockReset();
+    vi.mocked(STSClient).mockClear();
+    mocks.ensureDockerAvailable.mockRejectedValue(new Error(DOCKER_SENTINEL));
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    releaseStdoutForPayload();
+  });
+
+  const GOOD_ARN = 'arn:aws:iam::123456789012:role/Good';
+  const unusedWarned = (): boolean =>
+    (warn.mock.calls as unknown[][]).some((c) =>
+      String(c[0]).startsWith('--emulate-role-via has no effect')
+    );
+  const commands: Array<
+    [string, () => import('commander').Command, string[], string[], string[]]
+  > = [
+    ['local invoke', createLocalInvokeLeaf, ['MyStack/Fn'], ['--assume-role'], ['--no-assume-role']],
+    ['local start-api', createLocalStartApiCommand, [], ['--assume-role-auto'], []],
+    ['local run-task', createLocalRunTaskCommand, ['MyStack/Task'], ['--assume-task-role'], []],
+    [
+      'local invoke-agentcore',
+      createLocalInvokeAgentCoreCommand,
+      ['MyStack/Agent'],
+      ['--assume-role'],
+      ['--no-assume-role'],
+    ],
+  ];
+
+  describe.each(commands)('%s', (_label, make, prefix, roleFlag, optOut) => {
+    it('refuses a malformed value before any STS or docker work', async () => {
+      const err = await runCmd(make, [...prefix, ...roleFlag, '--emulate-role-via', 'not-an-arn']);
+      expect((err as Error).message).toMatch(/^Invalid --emulate-role-via value: AssumeRole refused/);
+      expect(mocks.ensureDockerAvailable).not.toHaveBeenCalled();
+      expect(vi.mocked(STSClient)).not.toHaveBeenCalled();
+    });
+
+    it('accepts a well-formed value with the role flag, silently (negative control)', async () => {
+      const err = await runCmd(make, [...prefix, ...roleFlag, '--emulate-role-via', GOOD_ARN]);
+      expect((err as Error).message).toBe(DOCKER_SENTINEL);
+      expect(unusedWarned()).toBe(false);
+    });
+
+    it('warns when no role flag would read it', async () => {
+      await runCmd(make, [...prefix, '--emulate-role-via', GOOD_ARN]);
+      expect(unusedWarned()).toBe(true);
+    });
+
+    if (optOut.length > 0) {
+      it('warns under the explicit opt-out too', async () => {
+        await runCmd(make, [...prefix, ...optOut, '--emulate-role-via', GOOD_ARN]);
+        expect(unusedWarned()).toBe(true);
+      });
+    }
+  });
+});
 

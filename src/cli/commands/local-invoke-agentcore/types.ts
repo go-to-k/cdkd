@@ -67,6 +67,8 @@ export interface LocalInvokeAgentCoreOptions {
    *   - `--no-assume-role` → `false`
    */
   assumeRole?: string | boolean;
+  /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201): see `local invoke`'s. */
+  emulateRoleVia?: string;
   /** Role ARN to assume before authenticating against ECR for the container image pull. */
   ecrRoleArn?: string;
   /** `--from-state` — load cdkd's S3 state for the target stack. */

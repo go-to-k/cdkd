@@ -68,6 +68,8 @@ export interface LocalStartApiOptions {
   envVars?: string;
   /** D8.2: bare ARN (global) and/or `<LogicalId>=<arn>` (per-Lambda). */
   assumeRole?: AssumeRoleOption;
+  /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201): see `local invoke`'s. */
+  emulateRoleVia?: string;
   /**
    * Issue #256 Option 1 - `--assume-role-auto`: auto-resolve EACH
    * routed Lambda's own execution role per-Lambda (literal ARN /
