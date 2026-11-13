@@ -41,16 +41,17 @@ turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
-exits, names fixtures `ls tests/integration/` lists in the PR's OWN repo (a cdkd
+exits, names only fixtures that `ls tests/integration/` lists in the PR's OWN repo (a cdkd
 brief once named cdk-local's), has it run `/run-integ` step 5's block AS
-WRITTEN in ONE launch call per fixture (a zsh loop's unsplit `set -- $p` killed
-two in 5 s) under the budget the PARENT computed with that block, named per
+WRITTEN in ONE launch call per fixture, never step 5's SET loop (a zsh loop's
+unsplit `set -- $p` killed two in 5 s) under the budget the PARENT computed with that block, named per
 fixture in the brief (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line
 (#5519), wait on ONE command exiting with that PID and stop every
 background Monitor before the final report (#5413), bans attribution
-lines in the ledger commit (#5104), relaunches only after `pgrep -f verify.sh`
-plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (#5695), to a NEW log name (`.run2.log`; an `rm` of the old by a variable glob is refused), and STOPs on an unreadable state record (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
+lines in the ledger commit (#5104), relaunches (each fixture's stdout file under a NEW name, `.run2.log`; an `rm` of
+the old by a variable glob is refused) only after `pgrep -f verify.sh`
+plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (#5695), and STOPs on an unreadable state record (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff — unless that file
 only WRAPS an AWS error code, naming the call, not the cause (AWS's text: CloudTrail
 `errorMessage` (lags), else a `--region` replay, deleting what it makes, #6079): CloudTrail's
