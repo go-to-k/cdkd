@@ -1,5 +1,6 @@
 import { CdkdError } from '../../../utils/error-handler.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
 import {
   refuseMalformedOrphanRecords,
@@ -135,7 +136,7 @@ export async function planStackRefactor(input: {
     throw new CdkdError(
       safeMsg`cdkd refactor refused stack ${stackName} (${region}): ` +
         `'cdkd diff' reports a condition 'cdkd deploy' refuses to start on. ` +
-        `Resolve what 'cdkd diff ${stackName}' reports, then re-run cdkd refactor.`,
+        `Resolve what '${pasteableCommand('cdkd diff', [{ value: stackName, hole: 'stack', opts: { patternMatched: true } }]).command}' reports, then re-run ${cdkdRemedy('cdkd refactor')}.`,
       'REFACTOR_REFUSED'
     );
   }
@@ -177,7 +178,7 @@ export async function planStackRefactor(input: {
   const skipped: SkippedRename[] = [];
   const candidates = proposal.renames.filter((r) => {
     if (!orphanIds.has(r.from)) return true;
-    const reason = `a rollback-orphan record also names ${r.from}; run 'cdkd deploy' first to settle it`;
+    const reason = `a rollback-orphan record also names ${r.from}; run '${cdkdRemedy('cdkd deploy')}' first to settle it`;
     if (r.source === 'override') refusedOverrides.push({ from: r.from, to: r.to, reason });
     else skipped.push({ rename: r, reason });
     return false;

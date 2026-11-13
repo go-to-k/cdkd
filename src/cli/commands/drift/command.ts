@@ -36,6 +36,7 @@ import {
   withheldTargetClause,
   quotedOrDescribed,
   commandHole,
+  cdkdRemedy,
 } from '../../../utils/pasteable-command.js';
 import {
   foldRegionOption,
@@ -382,7 +383,7 @@ export async function driftCommand(
             logger.info(line);
           }
           logger.info(
-            safeMsg`Re-run 'cdkd drift' without --${mode} to see which resources and why — ` +
+            safeMsg`Re-run '${cdkdRemedy('cdkd drift')}' without --${mode} to see which resources and why — ` +
               `with a deleted resource in the stack, that run exits 1.`
           );
         }
@@ -479,7 +480,7 @@ function refuseDeletedForRemediation(
         logger.warn(
           safeMsg`  ! ${reportHeading(report)} ${reportResource(outcome)}: NOT ` +
             (mode === 'revert' ? 'reverted' : 'accepted') +
-            safeMsg` — ${nestedRecordMissingClause(report, outcome)} ${NESTED_RECORD_MISSING_REMEDY}`
+            safeMsg` — ${nestedRecordMissingClause(report, outcome)} ${nestedRecordMissingRemedy()}`
         );
         continue;
       }
@@ -535,8 +536,8 @@ function deletedRefusalError(
  * is re-running the import, so the text must NOT lead with deleting them.
  * Otherwise (a hand edit, `cdkd state orphan`) cdkd no longer tracks them.
  */
-const NESTED_RECORD_MISSING_REMEDY =
-  `If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that ` +
+const nestedRecordMissingRemedy = (): string =>
+  `If the parent was imported with '${cdkdRemedy('cdkd import', '--migrate-from-cloudformation')}' and that ` +
   `import stopped part-way, its nested stacks were not recorded yet: re-run that import ` +
   `with --force, which rebuilds the parent record from the stack and then records them. ` +
   `Otherwise the resources the nested stack held are no longer tracked by cdkd and may ` +
@@ -661,7 +662,7 @@ function resolveTargetRefs(
       : stateRefs;
     if (candidates.length === 0) {
       throw new Error(
-        'No stacks found in state bucket. Run `cdkd deploy` first, or pass --all explicitly.'
+        `No stacks found in state bucket. Run \`${cdkdRemedy('cdkd deploy')}\` first, or pass --all explicitly.`
       );
     }
     // go-to-k/cdkd#4533: a nested stack's record is part of its parent's, so
@@ -686,7 +687,7 @@ function resolveTargetRefs(
     const matches = stateRefs.filter((r) => r.stackName === stackName);
     if (matches.length === 0) {
       throw new Error(
-        `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+        `No state found for stack '${stackName}'. Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
       );
     }
     if (options.stackRegion) {

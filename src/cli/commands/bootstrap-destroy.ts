@@ -713,7 +713,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           `Refusing to delete state bucket '${bucketName}': region(s) ` +
             `${markerSiblings.otherRegions.map((r) => displayIdent(r)).join(', ')} are still opted in to cdkd asset ` +
             `storage (their bootstrap markers live in this bucket). Run ` +
-            `'cdkd bootstrap --destroy --region <r>' for each first.`,
+            `${pasteableCommand('cdkd bootstrap', [{ literal: '--destroy' }, { flag: '--region', hole: 'r' }]).command} for each first.`,
           'STATE_BUCKET_HOLDS_MARKERS'
         );
       }

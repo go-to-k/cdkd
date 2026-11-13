@@ -1,5 +1,5 @@
 import { nameGenerationOf } from '../../state/name-generation.js';
-import { deployReplaceCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, deployReplaceCommand } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
@@ -187,14 +187,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         safeMsg`  ⚠ Rollback: the old resource of ${shownLogicalId(op.logicalId)} (${oldShown}) still ` +
           `exists — the deploy's delete of it was not confirmed — so it is re-adopted instead of ` +
           `re-created. Part of it may have been removed before that delete failed: check it ` +
-          safeMsg`with cdkd drift after the rollback.${describedPhysicalIdPointer(oldShown)}`
+          safeMsg`with ${cdkdRemedy('cdkd drift')} after the rollback.${describedPhysicalIdPointer(oldShown)}`
       );
       result.warnings++;
       return replayReadopt(s, {
         reason:
           `the old resource survived a delete that was refused or never sent during the ` +
           `deploy and was re-adopted instead of re-created; the provider may have run part of ` +
-          `that delete, so check it with cdkd drift`,
+          `that delete, so check it with ${cdkdRemedy('cdkd drift')}`,
       });
     }
     if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
@@ -210,7 +210,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     !requireRestorableBaseline(prev.properties, logger, {
       logicalId: op.logicalId,
       consequence: 'create a default-configured resource and then delete the live one',
-      remedy: 'Re-run `cdkd deploy` to re-converge it.',
+      remedy: `Re-run \`${cdkdRemedy('cdkd deploy')}\` to re-converge it.`,
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {

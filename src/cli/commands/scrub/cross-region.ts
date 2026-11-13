@@ -1,4 +1,5 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { CdkdError } from '../../../utils/error-handler.js';
 import { IntrinsicFunctionResolver } from '../../../deployment/intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../../../deployment/intrinsic-resolver/dynamic-refs.js';
@@ -139,7 +140,7 @@ function regionAmbiguousScrubSecretError(
       `regions is two independent values, so scrub would look for the WRONG plaintext — leaving ` +
       `the real one in state while reporting the stack clean, and using the foreign value as a ` +
       `needle that can rewrite an unrelated literal. Refusing instead. Spell the reference as a ` +
-      `full ARN, which names its region and is resolved there, then re-run 'cdkd scrub'.`,
+      `full ARN, which names its region and is resolved there, then re-run '${cdkdRemedy('cdkd scrub')}'.`,
     'SCRUB_SECRET_REGION_AMBIGUOUS'
   );
 }

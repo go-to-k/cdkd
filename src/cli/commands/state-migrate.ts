@@ -17,6 +17,7 @@ import {
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -370,7 +371,7 @@ async function assertNoActiveLocks(s3: S3Client, bucket: string): Promise<void> 
     const more = locks.length > 3 ? ` (+${locks.length - 3} more)` : '';
     throw new Error(
       `Refusing to migrate: ${locks.length} active lock file(s) found in '${bucket}': ${sample}${more}. ` +
-        `Wait for in-flight cdkd operations to complete, or run 'cdkd force-unlock <stack>' if a lock is stale.`
+        `Wait for in-flight cdkd operations to complete, or run ${pasteableCommand('cdkd force-unlock', [{ hole: 'stack' }]).command} if a lock is stale.`
     );
   }
 }

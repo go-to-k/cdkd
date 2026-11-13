@@ -1,4 +1,5 @@
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   plainOrDescribed,
@@ -65,10 +66,15 @@ export interface StackDetail {
  * refusal, the unsupported-version refusal and an AWS read failure in the same
  * `StateError`, so any finer reason would be a guess about the class.
  */
-const STATE_READ_FAILED_REASON =
-  'state record could not be read; run `cdkd state show` for the error';
-export const LOCK_READ_FAILED_REASON =
-  'lock could not be read; run `cdkd state show` for the error';
+function stateReadFailedReason(): string {
+  return `state record could not be read; run \`${stateShowCommand()}\` for the error`;
+}
+export function lockReadFailedReason(): string {
+  return `lock could not be read; run \`${stateShowCommand()}\` for the error`;
+}
+function stateShowCommand(): string {
+  return cdkdRemedy('cdkd state show');
+}
 /**
  * The lock reason for a LEGACY row (no region). `cdkd state show` refuses such
  * a record before it reads the lock, so pointing there would send the user to
@@ -85,8 +91,9 @@ export const LEGACY_LOCK_READ_FAILED_REASON = 'lock could not be read';
  * is set: the text row never prints `Resources: null`, and the warning counts
  * the row (issue #3069).
  */
-const RESOURCES_MALFORMED_REASON =
-  'resources is not a JSON object; run `cdkd state show --json` to see the record';
+function resourcesMalformedReason(): string {
+  return `resources is not a JSON object; run \`${cdkdRemedy('cdkd state show', '--json')}\` to see the record`;
+}
 
 /**
  * The machine-readable half of `stateReadError` under `--long --json`. A
@@ -96,14 +103,16 @@ const RESOURCES_MALFORMED_REASON =
 export type StateReadErrorKind = 'read-failed' | 'resources-malformed';
 
 /** The fixed `stateReadError` text for each {@link StateReadErrorKind}. */
-export const STATE_READ_REASONS: Record<StateReadErrorKind, string> = {
-  'read-failed': STATE_READ_FAILED_REASON,
-  'resources-malformed': RESOURCES_MALFORMED_REASON,
-};
+export function stateReadReasons(): Record<StateReadErrorKind, string> {
+  return {
+    'read-failed': stateReadFailedReason(),
+    'resources-malformed': resourcesMalformedReason(),
+  };
+}
 
 /**
  * A record's resource count, or `null` when its `resources` is not a JSON
- * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
+ * object ({@link resourcesMalformedReason}). An absent or `null` bag counts
  * as zero, the tolerance `docs/cli-state.md` documents for it.
  */
 /**
@@ -129,7 +138,7 @@ export function resourceCountOrNull(resources: unknown): number | null {
 
 /**
  * Run one read and report whether it threw, WITHOUT keeping the error. The
- * error is dropped on purpose ({@link STATE_READ_FAILED_REASON} says why): a
+ * error is dropped on purpose ({@link stateReadFailedReason} says why): a
  * caller that never holds it cannot copy it into a row.
  */
 export async function readOrFailure<T>(
@@ -288,7 +297,7 @@ export function describedStackRef(ref: StackStateRef): string {
 export function legacyRecordSubject(stackName: string): string {
   return isPasteableIdent(stackName)
     ? `Stack ${stackName}`
-    : `A stack whose name is not a plain identifier (see 'cdkd state list --long')`;
+    : `A stack whose name is not a plain identifier (see '${cdkdRemedy('cdkd state list', '--long')}')`;
 }
 
 /**
@@ -317,7 +326,9 @@ export function legacyRecordRefusal(stackName: string): Error {
  * both described read the same, and the operator needs the route to the
  * records as stored.
  */
-export const STATE_LIST_POINTER = `'cdkd state list --long' shows the records as stored.`;
+export function stateListPointer(): string {
+  return `'${cdkdRemedy('cdkd state list', '--long')}' shows the records as stored.`;
+}
 
 /** Whether `describedStackRef` describes either half of `ref`. */
 export function refIsDescribed(ref: StackStateRef): boolean {
@@ -383,7 +394,7 @@ export function noStateInRegionError(
   return new Error(
     `No state found for ${subject} in region ${requested}. ` +
       `Available regions: ${candidates.join(', ')}.` +
-      (anyDescribed ? ` ${STATE_LIST_POINTER}` : '')
+      (anyDescribed ? ` ${stateListPointer()}` : '')
   );
 }
 

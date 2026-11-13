@@ -1,6 +1,7 @@
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displayAwsMessage, safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -46,7 +47,7 @@ export async function applyStackRefactor(input: {
     if (!stateData || stateData.etag !== plan.etag) {
       throw new CdkdError(
         safeMsg`The state of stack ${plan.stackName} (${plan.region}) changed after cdkd ` +
-          `refactor planned it, so nothing was written for this stack. Re-run cdkd refactor.`,
+          `refactor planned it, so nothing was written for this stack. Re-run ${cdkdRemedy('cdkd refactor')}.`,
         'REFACTOR_STATE_CHANGED'
       );
     }
@@ -88,8 +89,8 @@ export async function applyStackRefactor(input: {
 export function rollbackJournalRefusal(stackName: string, region: string): CdkdError {
   return new CdkdError(
     safeMsg`cdkd refactor refused stack ${stackName} (${region}): an earlier deploy left a ` +
-      safeMsg`rollback journal, so nothing was written for this stack. Run 'cdkd rollback ${stackName}' ` +
-      `or a successful 'cdkd deploy' first.`,
+      safeMsg`rollback journal, so nothing was written for this stack. Run '${pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack', opts: { patternMatched: true } }]).command}' ` +
+      `or a successful '${cdkdRemedy('cdkd deploy')}' first.`,
     'REFACTOR_REFUSED'
   );
 }

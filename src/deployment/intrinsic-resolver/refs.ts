@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import {
@@ -192,8 +193,8 @@ export async function resolveRef(
             `usable TableARN for this S3 Tables table (a cdkd older than v0.201.0 recorded none), ` +
             `and CloudFormation's Ref of a table is its TableARN, which its physical id does not ` +
             `contain. No usable one could be read from AWS either. If the state records none, ` +
-            `run 'cdkd deploy' with permission to call s3tables:GetTable so cdkd records it; if ` +
-            `it records a value that is not the table's ARN, re-import the table with 'cdkd import'.`
+            `run '${cdkdRemedy('cdkd deploy')}' with permission to call s3tables:GetTable so cdkd records it; if ` +
+            `it records a value that is not the table's ARN, re-import the table with '${cdkdRemedy('cdkd import')}'.`
         )
       );
     }

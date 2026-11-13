@@ -5,6 +5,7 @@
 // open the scope itself — would put the same call in four places where one of
 // them will eventually be forgotten. Revisit if that module ever grows an
 // import of its own.
+import { pasteableCommand } from './pasteable-command.js';
 import {
   beginCommandInterruptScope,
   endCommandInterruptScope,
@@ -322,7 +323,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       // dependency at the site.
       process.stderr.write(
         '\nForce-quit.\n' +
-          'If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n'
+          `If the next run reports a stack lock, release it with: ${pasteableCommand('cdkd force-unlock', [{ hole: 'stack-name' }]).command}\n`
       );
       process.exit(130);
     }
@@ -346,7 +347,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
         `\nInterrupted before ${opts.command} armed its per-stack teardown — ` +
           `quitting now. No delete was issued for this stack; on a multi-stack run, ` +
           `stacks processed earlier are already destroyed.\n` +
-          `If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n`
+          `If the next run reports a stack lock, release it with: ${pasteableCommand('cdkd force-unlock', [{ hole: 'stack-name' }]).command}\n`
       );
       process.exit(130);
     }

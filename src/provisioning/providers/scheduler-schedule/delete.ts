@@ -12,7 +12,7 @@ import { markNonRetryable, markRedactedCause } from '../../../deployment/retryab
 import { displaySafe, isPasteableIdent, safeMsg } from '../../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../../state/lock-contention-message.js';
-import { hasClauseBreak, isInertUnquoted } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, hasClauseBreak, isInertUnquoted } from '../../../utils/pasteable-command.js';
 import { isAwsCliLiteral } from '../../replacement-protection-advice.js';
 import {
   redactedDeleteAddressFields,
@@ -56,7 +56,7 @@ export async function deleteByRecordedIdentity(
 ): Promise<void | ResourceDeleteResult> {
   if (!context?.expectedRegion) {
     this.logger.warn(
-      safeMsg`Schedule ${logicalId} is recorded with a secret-derived GroupName and no stack region, so cdkd cannot scope the search for it; skipping deletion and keeping its state record. Delete the schedule by hand, then drop the record with 'cdkd orphan'.`
+      safeMsg`Schedule ${logicalId} is recorded with a secret-derived GroupName and no stack region, so cdkd cannot scope the search for it; skipping deletion and keeping its state record. Delete the schedule by hand, then drop the record with '${cdkdRemedy('cdkd orphan')}'.`
     );
     return { outcome: 'skipped', reason: NO_REGION_FOR_SCHEDULE_SEARCH_SKIP_REASON };
   }
@@ -139,7 +139,7 @@ export async function deleteByRecordedIdentity(
   const { matches } = found;
   if (matches.length === 0 && found.datedOnly > 0) {
     this.logger.warn(
-      safeMsg`Schedule ${logicalId}: a schedule of its name carries the recorded creation date but not the recorded target or role (edited outside cdkd?), so cdkd cannot tell whether it is this one; skipping deletion and keeping its state record. Delete it by hand if it is, then drop the record with 'cdkd orphan'.`
+      safeMsg`Schedule ${logicalId}: a schedule of its name carries the recorded creation date but not the recorded target or role (edited outside cdkd?), so cdkd cannot tell whether it is this one; skipping deletion and keeping its state record. Delete it by hand if it is, then drop the record with '${cdkdRemedy('cdkd orphan')}'.`
     );
     return { outcome: 'skipped', reason: AMBIGUOUS_SCHEDULE_SKIP_REASON };
   }

@@ -42,6 +42,7 @@ import { logicalIdShown, resourceTypeShown } from '../provisioning/composite-id.
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { CdkdError } from '../utils/error-handler.js';
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { dropFailedCommands } from './rollback-executor/journaled-orphans.js';
 import { displacedPhysicalIdShown } from './nested-child-journal.js';
 import { carriesSecretMask } from './secret-redaction.js';
@@ -298,7 +299,7 @@ async function settlePending(
             safeMsg`The CREATE of ${named} ${ended} in AWS after cdkd stopped waiting, and made ` +
               safeMsg`${madeShown}. cdkd cannot prove its id is unique (it may be a name, which can ` +
               safeMsg`since belong to another resource), so this deploy does not take it over, and creating ${logicalIdShown(op.logicalId)} ` +
-              'again will ask for the name it holds. Adopt it with cdkd import (--resource ' +
+              safeMsg`again will ask for the name it holds. Adopt it with ${cdkdRemedy('cdkd import')} (--resource ` +
               safeMsg`${logicalIdShown(op.logicalId)}=<its id>), or delete it, then re-run. It is kept in the ` +
               'rollback journal as a resource the failed deploy created.'
           );
@@ -319,7 +320,7 @@ async function settlePending(
           safeMsg`Cloud Control no longer has the CREATE request of ${named}: requests expire after ` +
             'seven days, and a request is not visible from another account or region. cdkd cannot ' +
             'tell whether it created the resource and stops tracking the request. If it exists, ' +
-            'adopt it with cdkd import or delete it by hand.'
+            safeMsg`adopt it with ${cdkdRemedy('cdkd import')} or delete it by hand.`
         );
         settlements.set(token, { kind: 'drop' });
         break;

@@ -7,6 +7,7 @@ import { CdkdError, IntrinsicResolutionRefusalError } from '../../../utils/error
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg, displayIdent } from '../../../utils/display-safe.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import {
   classifyReplaySecretRegion,
@@ -344,7 +345,7 @@ function regionAmbiguousDriftSecretError(
       `rather than in '${consumerRegion}'. A secret of the same name in two regions is two ` +
       `independent values, so cdkd would compare against — and with --revert WRITE — the WRONG ` +
       `secret. Refusing instead. Spell the reference as a full ARN, which names its region and ` +
-      `is resolved there, then re-run 'cdkd drift'.`,
+      `is resolved there, then re-run '${cdkdRemedy('cdkd drift')}'.`,
     'DRIFT_SECRET_REGION_AMBIGUOUS'
   );
 }
@@ -382,7 +383,7 @@ export function refuseUnprovenDriftSecret(
         `the same name in two regions is two independent values, so cdkd would compare against — ` +
         `and with --revert WRITE — the WRONG secret. Refusing instead. Make the parent stacks' ` +
         `state readable (or repair a record whose parent link disagrees with its key), or spell ` +
-        `the reference as a full ARN, then re-run 'cdkd drift'.`,
+        `the reference as a full ARN, then re-run '${cdkdRemedy('cdkd drift')}'.`,
       'DRIFT_SECRET_REGION_UNKNOWN'
     );
   }

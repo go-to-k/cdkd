@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { ELBv2Provider } from '../elbv2-provider.js';
 import {
   DescribeTargetHealthCommand,
@@ -151,7 +152,7 @@ export function diffAttributeBag(
     const be = one ? 'is' : 'are';
     const theValue = one ? 'the value' : 'the values';
     this.logger.warn(
-      safeMsg`${logicalId}: AWS reports ${bag} ${noun} ${keys}, which the recorded baseline holds no value for. No Elastic Load Balancing call removes an attribute key, so the revert leaves ${values} in place, and 'cdkd drift' keeps reporting ${them}. If ${values} ${be} what you intend, run 'cdkd drift --accept' to record ${them}; otherwise declare ${theValue} in the template and deploy.`
+      safeMsg`${logicalId}: AWS reports ${bag} ${noun} ${keys}, which the recorded baseline holds no value for. No Elastic Load Balancing call removes an attribute key, so the revert leaves ${values} in place, and 'cdkd drift' keeps reporting ${them}. If ${values} ${be} what you intend, run '${cdkdRemedy('cdkd drift', '--accept')}' to record ${them}; otherwise declare ${theValue} in the template and deploy.`
     );
   }
   return submitted;

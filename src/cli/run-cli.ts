@@ -18,6 +18,8 @@
  * printed; none exists in cdkd or its dependencies today.
  */
 
+import { pasteableCommand } from '../utils/pasteable-command.js';
+
 /**
  * The exit status of a command whose `main()` never settled: 70, `EX_SOFTWARE`
  * (sysexits.h, "internal software error"). It REPLACES any code the command
@@ -27,14 +29,17 @@
 export const UNSETTLED_COMMAND_EXIT_CODE = 70;
 
 /** What an operator is told when the event loop drained under a pending command. */
-export const UNSETTLED_COMMAND_MESSAGE =
-  'Error: cdkd stopped before the command finished: it was waiting on work that ' +
-  'nothing could resume, so the process ran out of things to do. This is most ' +
-  'likely a cdkd bug; please report it at https://github.com/go-to-k/cdkd/issues. ' +
-  'The command did not complete, and anything after the point it stopped did not run.\n' +
-  'If the command takes a stack lock, it may still be held: it expires at its TTL, ' +
-  'or, once no other cdkd process is working on the stack, ' +
-  'release it with: cdkd force-unlock <stack-name>\n';
+export function unsettledCommandMessage(): string {
+  return (
+    'Error: cdkd stopped before the command finished: it was waiting on work that ' +
+    'nothing could resume, so the process ran out of things to do. This is most ' +
+    'likely a cdkd bug; please report it at https://github.com/go-to-k/cdkd/issues. ' +
+    'The command did not complete, and anything after the point it stopped did not run.\n' +
+    'If the command takes a stack lock, it may still be held: it expires at its TTL, ' +
+    'or, once no other cdkd process is working on the stack, ' +
+    `release it with: ${pasteableCommand('cdkd force-unlock', [{ hole: 'stack-name' }]).command}\n`
+  );
+}
 
 /** The `code` of `CliUsageError` (`src/cli/arg-parser.ts`). */
 export const CLI_USAGE_ERROR_CODE = 'cdkd.invalidArgument';
@@ -47,7 +52,7 @@ export function runCli(main: () => Promise<void>): void {
     process.off('beforeExit', onBeforeExit);
     if (settled) return;
     process.exitCode = UNSETTLED_COMMAND_EXIT_CODE;
-    process.stderr.write(UNSETTLED_COMMAND_MESSAGE);
+    process.stderr.write(unsettledCommandMessage());
   };
   process.on('beforeExit', onBeforeExit);
 

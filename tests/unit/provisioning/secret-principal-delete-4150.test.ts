@@ -465,7 +465,7 @@ describe('IAMPolicyProvider.delete with a secret-derived principal list (go-to-k
     expect(printed()).toContain(
       "a principal the secret's CURRENT value names does not hold this inline policy"
     );
-    expect(printed()).toContain("'cdkd orphan <constructPath>'");
+    expect(printed()).toContain("cdkd orphan '<constructPath>'");
     // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
     expect(printed()).toContain(
       "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource P', which drops only this record"
@@ -839,7 +839,7 @@ describe('UserToGroupAddition delete with a secret-derived Users (go-to-k/cdkd#4
     });
     expect(inputs()).toEqual([]);
     expect(printed()).toContain("a user the secret's CURRENT value names is not in the group");
-    expect(printed()).toContain("'cdkd orphan <constructPath>'");
+    expect(printed()).toContain("cdkd orphan '<constructPath>'");
     // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
     expect(printed()).toContain(
       "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"

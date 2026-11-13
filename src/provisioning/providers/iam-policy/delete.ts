@@ -1,3 +1,4 @@
+import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import type { IAMPolicyProvider } from '../iam-policy-provider.js';
 import {
   DeleteRolePolicyCommand,
@@ -401,7 +402,7 @@ export async function deleteImpl(
 
     if (secretPrincipalLacksGrant) {
       this.logger.warn(
-        safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
+        safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command}, or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
       );
       return { outcome: 'skipped', reason: POLICY_SECRET_PRINCIPAL_LACKS_GRANT_SKIP_REASON };
     }

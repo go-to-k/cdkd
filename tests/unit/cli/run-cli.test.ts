@@ -16,13 +16,13 @@ import { afterEach, describe, expect, it } from 'vite-plus/test';
 
 import {
   UNSETTLED_COMMAND_EXIT_CODE,
-  UNSETTLED_COMMAND_MESSAGE,
+  unsettledCommandMessage,
 } from '../../../src/cli/run-cli.js';
 import { isolatedChildEnv, writeSourceLoaderHooks } from '../source-loader-hooks.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const SPAWN_TIMEOUT_MS = 30_000;
-const LOCK_HINT = 'release it with: cdkd force-unlock <stack-name>';
+const LOCK_HINT = "release it with: cdkd force-unlock '<stack-name>'";
 
 const scratchDirs: string[] = [];
 afterEach(() => {
@@ -88,7 +88,7 @@ describe('runCli (issue #3939)', () => {
     expect(UNSETTLED_COMMAND_EXIT_CODE).toBe(70);
     const result = runMain('await new Promise(() => {});');
     expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
-    expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+    expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
     expect(result.stderr).toContain(LOCK_HINT);
     expect(result.stdout).toBe('');
   }, SPAWN_TIMEOUT_MS + 5_000);
@@ -102,7 +102,7 @@ describe('runCli (issue #3939)', () => {
         'await new Promise(() => {});'
     );
     expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
-    expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+    expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
   }, SPAWN_TIMEOUT_MS + 5_000);
 
   it('the same when it drains mid-way through: output before the stall is kept', () => {
@@ -114,7 +114,7 @@ describe('runCli (issue #3939)', () => {
     );
     expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
     expect(result.stdout).toBe('before\n');
-    expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+    expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
   }, SPAWN_TIMEOUT_MS + 5_000);
 
   it('a main() that settles exits 0 without the message, even with ref\'d work after it', () => {
@@ -127,13 +127,13 @@ describe('runCli (issue #3939)', () => {
   it('a stall REPLACES an exit code the command had already set (diff exits 1 on changes)', () => {
     const result = runMain('process.exitCode = 1;\nawait new Promise(() => {});');
     expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
-    expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+    expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
   }, SPAWN_TIMEOUT_MS + 5_000);
 
   it('a stall replaces an exit code 0 the command had set', () => {
     const result = runMain('process.exitCode = 0;\nawait new Promise(() => {});');
     expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
-    expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+    expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
   }, SPAWN_TIMEOUT_MS + 5_000);
 
   it('a main() that settles keeps an exit code it set itself', () => {
@@ -145,7 +145,7 @@ describe('runCli (issue #3939)', () => {
     const result = runMain("throw new Error('boom');");
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Fatal error: Error: boom');
-    expect(result.stderr).not.toContain(UNSETTLED_COMMAND_MESSAGE);
+    expect(result.stderr).not.toContain(unsettledCommandMessage());
   }, SPAWN_TIMEOUT_MS + 5_000);
 
   // go-to-k/cdkd#6251: an option-value usage error prints its message only.
@@ -196,7 +196,7 @@ describe('dist/cli.js runs main() through runCli (issue #3939)', () => {
     () => {
       const result = runBuiltCliWithStubbedTree('() => new Promise(() => {})');
       expect(result.status).toBe(UNSETTLED_COMMAND_EXIT_CODE);
-      expect(count(result.stderr, UNSETTLED_COMMAND_MESSAGE)).toBe(1);
+      expect(count(result.stderr, unsettledCommandMessage())).toBe(1);
     },
     SPAWN_TIMEOUT_MS + 5_000
   );

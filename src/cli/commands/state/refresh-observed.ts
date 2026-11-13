@@ -1,5 +1,5 @@
 import {
-  commandHole,
+  cdkdRemedy,
   pasteableCommand,
   withheldTargetClause,
 } from '../../../utils/pasteable-command.js';
@@ -25,7 +25,7 @@ import { collectAcceptRefused, readAcceptRefusedTemplate } from '../state-refres
 import {
   describedStackRef,
   legacyRecordSubject,
-  STATE_LIST_POINTER,
+  stateListPointer,
   refIsDescribed,
   resolveSingleRegion,
 } from './refs.js';
@@ -145,7 +145,7 @@ async function stateRefreshObservedCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      `Stack name is required. Usage: cdkd state refresh-observed ${commandHole('stacks...')} | --all`
+      `Stack name is required. Usage: ${pasteableCommand('cdkd state refresh-observed', [{ hole: 'stacks...' }]).command} | --all`
     );
   }
 
@@ -247,7 +247,7 @@ async function stateRefreshObservedCommand(
       const targetList = targets.map(describedStackRef).join(', ');
       // A described half is not an identity, so name where the records can be
       // seen as stored before the `y` is asked for.
-      if (targets.some(refIsDescribed)) logger.info(STATE_LIST_POINTER);
+      if (targets.some(refIsDescribed)) logger.info(stateListPointer());
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
       );
@@ -400,7 +400,7 @@ async function stateRefreshObservedCommand(
       const parts: string[] = [];
       if (totalFailed > 0) {
         parts.push(
-          `${totalFailed} per-resource readback failure(s); re-run 'cdkd state refresh-observed' to retry them.`
+          `${totalFailed} per-resource readback failure(s); re-run '${cdkdRemedy('cdkd state refresh-observed')}' to retry them.`
         );
       }
       if (totalNotFound > 0) {

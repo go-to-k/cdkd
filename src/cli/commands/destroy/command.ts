@@ -3,6 +3,7 @@
  */
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import {
+  cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
   quotedOrDescribed,
@@ -366,7 +367,7 @@ export async function destroyCommand(
         if (totalErrors > 0) {
           throw new PartialFailureError(
             `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-              `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
+              `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run '${cdkdRemedy('cdkd destroy')}' to retry.`
           );
         }
         if (notInApp.length > 0) logger.warn(renderNotInAppWarning(notInApp));
@@ -949,8 +950,8 @@ export async function destroyCommand(
       // failures → exit 1).
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-          `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
+          `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run '${cdkdRemedy('cdkd destroy')}' to retry. ` +
+          `If the same resource keeps failing, ${pasteableCommand('cdkd state orphan', [{ hole: 'stack' }, { flag: '--stack-region', hole: 'region' }]).command} removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -964,7 +965,7 @@ export async function destroyCommand(
       // reaches here with the command-level flag set and nothing left to
       // finish, and the message would then be false in both halves.
       throw new PartialFailureError(
-        `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd destroy' to finish.`
+        `Destroy interrupted by Ctrl-C. State preserved — re-run '${cdkdRemedy('cdkd destroy')}' to finish.`
       );
     }
     if (totalSkipped > 0) {

@@ -9,7 +9,7 @@ import type { ConsoleLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
-import { commandHole } from '../../../utils/pasteable-command.js';
+import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import {
   inferCrossStackStackDeps,
@@ -160,7 +160,7 @@ export async function selectDestroyTargets(
       if (error instanceof StageLoadError) {
         const named = new StageLoadError(
           `${error.message} To destroy a deployed stack without the app: ` +
-            `cdkd state destroy ${commandHole('stack')}.`
+            `${pasteableCommand('cdkd state destroy', [{ hole: 'stack' }]).command}.`
         );
         // Keep the reader's frames under the new header, so `--verbose`
         // points at where the Stage failed, not at this re-raise.
@@ -197,7 +197,6 @@ export async function selectDestroyTargets(
     // No synthesized app -- synth failed, or no app is configured -- so there
     // is no app scope at all (#3839). The hint names no batch form: every
     // batch over state is cross-app.
-    const hole = commandHole('stack');
     throw new CdkdError(
       `${selector} selects among the stacks this app synthesizes, and ` +
         (synthError ? 'the app could not be synthesized' : 'no app is configured') +
@@ -206,7 +205,7 @@ export async function selectDestroyTargets(
         (synthError
           ? 'Fix the app so it synthesizes'
           : 'Configure the app with --app or cdk.json') +
-        `, or name each stack exactly: cdkd destroy ${hole}, or cdkd state destroy ${hole}, ` +
+        `, or name each stack exactly: ${pasteableCommand('cdkd destroy', [{ hole: 'stack' }]).command}, or ${pasteableCommand('cdkd state destroy', [{ hole: 'stack' }]).command}, ` +
         'which needs no app.',
       'DESTROY_NO_APP_SCOPE',
       synthError

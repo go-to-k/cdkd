@@ -1,5 +1,6 @@
 // A LEAF: `destroy.ts` and `state.ts` throw this, and their tests mock
 // `destroy-runner.js` whole, so it cannot live there.
+import { cdkdRemedy, pasteableCommand } from '../../utils/pasteable-command.js';
 
 /**
  * The run-level message a `cdkd destroy` / `cdkd state destroy` ending in
@@ -29,9 +30,13 @@ export function skippedDestroyMessage(
     `counts as ONE entry and may cover several of its own resources — the per-stack ` +
     `summaries above give the exact breakdown. State preserved (the records are kept). ` +
     `The per-resource 'skipped (...)' lines and their warnings name each cause and whether ` +
-    `repairing the record in state.json helps: where it does, repair it and re-run '${rerunCommand}'; ` +
+    `repairing the record in state.json helps: where it does, repair it and re-run '${
+      rerunCommand === 'cdkd destroy'
+        ? cdkdRemedy('cdkd destroy')
+        : cdkdRemedy('cdkd state destroy')
+    }'; ` +
     `otherwise (for example a custom-resource Delete handler that reported FAILED), delete ` +
-    `the resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.` +
+    `the resources by hand and drop the records with ${pasteableCommand('cdkd state orphan', [{ hole: 'stack' }, { flag: '--stack-region', hole: 'region' }]).command}.` +
     (totalOrphanSkips > 0 ? ` Separately, ${orphanSentence}` : '')
   );
 }

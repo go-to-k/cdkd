@@ -674,7 +674,7 @@ describe('Scheduler Schedule GroupName: confirmed by the recorded identity (go-t
       expect(isMarkedNonRetryable(error)).toBe(true);
       const message = (error as Error).message;
       expect(message).toContain('carries the recorded creation date but not the recorded target or role');
-      expect(message).toContain('cdkd orphan <construct path>');
+      expect(message).toContain("cdkd orphan '<constructPath>'");
       expect(message).not.toContain('rotated');
       expect(message).not.toContain("restore the secret's value");
       expect(message).not.toContain(NAME);
@@ -706,7 +706,7 @@ describe('Scheduler Schedule GroupName: confirmed by the recorded identity (go-t
       expect(isMarkedNonRetryable(error)).toBe(true);
       expect((error as Error).message).toContain('holds no schedule of this name');
       // The out-of-band-deleted path is named too (CODE-R2-N2).
-      expect((error as Error).message).toContain('cdkd orphan <construct path>');
+      expect((error as Error).message).toContain("cdkd orphan '<constructPath>'");
       expect((error as Error).message).not.toContain(NAME);
       expect(sent()).toEqual(['GetScheduleCommand']);
     }

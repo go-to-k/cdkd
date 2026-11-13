@@ -4,6 +4,7 @@
  * Moved verbatim out of `src/state/lock-manager.ts` (go-to-k/cdkd#5835); the
  * `LockManager` class keeps one `f.call(this, ...)` delegator per moved method.
  */
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import type { LockManager } from '../lock-manager.js';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import type { LockInfo } from '../../types/state.js';
@@ -88,7 +89,7 @@ export async function acquireLock(
           this.logger.warn(
             `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: its current ` +
               `version could not be identified, so removing it could delete a lock another process ` +
-              `has since taken. Clear it with cdkd force-unlock.`
+              `has since taken. Clear it with ${cdkdRemedy('cdkd force-unlock')}.`
           );
           return false;
         }
@@ -118,7 +119,7 @@ export async function acquireLock(
             this.logger.warn(
               `Cannot take over the expired lock for stack ${stackRef(stackName, region)}: this endpoint ` +
                 `or policy will not evaluate a conditional delete, and removing it unconditionally ` +
-                `could delete a lock another process has since taken. Clear it with cdkd force-unlock.`
+                `could delete a lock another process has since taken. Clear it with ${cdkdRemedy('cdkd force-unlock')}.`
             );
             return false;
           } else if (this.isNotOursError(deleteError)) {

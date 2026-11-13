@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   type CommandArg,
@@ -75,7 +76,7 @@ export async function pickStackRegion(
     if (flag) return flag;
     if (synthRegion) return synthRegion;
     throw new Error(
-      `No state found for stack ${quotedOrNotShown(stackName)}. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack ${quotedOrNotShown(stackName)}. Run '${cdkdRemedy('cdkd state list')}' to see available stacks.`
     );
   }
   if (flag) {

@@ -1,4 +1,5 @@
 import {
+  cdkdRemedy,
   pasteableCommand,
   type CommandArg,
   type PasteableCommand,
@@ -414,12 +415,12 @@ export function reportDriftBaselineGaps(
         (unreadableCount > 0
           ? `Repair the ${unreadableCount} unreadable record(s) named above first — ` +
             `'cdkd state refresh-observed' refuses a record that holds one. Then capture a ` +
-            `baseline and run 'cdkd drift' to verify the stack matches AWS.`
+            `baseline and run '${cdkdRemedy('cdkd drift')}' to verify the stack matches AWS.`
           : refreshCommand !== undefined
-            ? `${refreshNote}Capture a baseline before export, then run 'cdkd drift' to verify the stack ` +
+            ? `${refreshNote}Capture a baseline before export, then run '${cdkdRemedy('cdkd drift')}' to verify the stack ` +
               `matches AWS, with: ${refreshCommand}`
             : `Capture a baseline before export with ${refreshWithheld} Then run ` +
-              `'cdkd drift' to verify the stack matches AWS.`)
+              `'${cdkdRemedy('cdkd drift')}' to verify the stack matches AWS.`)
     );
     for (const [logicalId] of refreshable.slice(0, NAMED_BASELINE_IDS)) {
       // Sanitized like the unreadable-entry list above, and for the same

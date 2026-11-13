@@ -105,7 +105,7 @@ describe('watchCommandInterrupt (issue #2117)', () => {
       // also the path where the user would be left with no recovery command at
       // all. It stays a placeholder because this handler has no per-stack
       // context to qualify it with (issue #2170).
-      expect(cap.output.join('')).toContain('cdkd force-unlock <stack-name>');
+      expect(cap.output.join('')).toContain('cdkd force-unlock \'<stack-name>\'');
     } finally {
       cap.restore();
     }
@@ -220,7 +220,7 @@ describe('watchCommandInterrupt (issue #2117)', () => {
       expect(cap.output.join('')).not.toContain('no stack lock is held');
       // Hedged the same way the branch above is, so the user losing the
       // process is still told how to recover.
-      expect(cap.output.join('')).toContain('cdkd force-unlock <stack-name>');
+      expect(cap.output.join('')).toContain('cdkd force-unlock \'<stack-name>\'');
     } finally {
       cap.restore();
     }

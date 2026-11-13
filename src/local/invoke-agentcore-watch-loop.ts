@@ -25,6 +25,7 @@
  *     no-op WARN).
  */
 
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { attachLocalLoopbackForwarder } from './local-aws-wiring.js';
 import { basename, dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -262,7 +263,7 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
         logger.error(
           `Reload failed: ${describeAwsFailure(err).detail}. ` +
             'The previous container may already be torn down; exiting --watch loop. ' +
-            'Re-run cdkd local invoke-agentcore --watch to recover.'
+            `Re-run ${cdkdRemedy('cdkd local invoke-agentcore', '--watch')} to recover.`
         );
         reloadFailed = true;
         currentAbort?.abort();

@@ -24,7 +24,7 @@ import type { ConsoleLogger } from '../../../utils/logger.js';
 import type { RollbackJournal } from '../../../types/rollback-journal.js';
 import {
   backendErrorText,
-  NESTED_NAME_DESCRIBED_NOTE,
+  nestedNameDescribedNote,
   safe,
   actionLabel,
   importedOpLabel,
@@ -179,7 +179,7 @@ export async function previewNestedChildRevert(
     ? `nested stack ${childStackName}`
     : 'a nested stack whose name is not a plain identifier';
   const withPointer = (lines: string[]): string[] =>
-    plain ? lines : [...lines, `        ${NESTED_NAME_DESCRIBED_NOTE}`];
+    plain ? lines : [...lines, `        ${nestedNameDescribedNote()}`];
   if (runId === undefined) {
     return withPointer([
       `      (${shown}: this segment carries no deploy run id — its revert will FAIL ` +

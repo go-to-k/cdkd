@@ -226,7 +226,7 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
       // resources are live, so a whole-stack orphan would re-create them all
       // (go-to-k/cdkd#3996).
       expect(error?.message).toContain(
-        "drop this bucket's record with 'cdkd orphan <StackPath>/<Path/To/Bucket>', which removes " +
+        "drop this bucket's record with cdkd orphan '<StackPath>/<Path/To/Bucket>', which removes " +
           'only that record'
       );
       expect(error?.message).toContain(

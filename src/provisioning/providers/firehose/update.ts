@@ -260,7 +260,7 @@ export async function applyUpdate(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      `Switching Firehose destination type from '${prevDestKey}' to '${destKey}' is not supported in-place — AWS UpdateDestination requires the same destination type as the original CreateDeliveryStream. Re-deploy with ${deployReplaceCommand()}.`
+      `Switching Firehose destination type from '${prevDestKey}' to '${destKey}' is not supported in-place — AWS UpdateDestination requires the same destination type as the original CreateDeliveryStream. Re-deploy with ${deployReplaceCommand()}`
     );
   }
 

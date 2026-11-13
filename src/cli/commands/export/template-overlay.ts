@@ -1,6 +1,7 @@
 import { displayIdent, displaySafe, truncateCodePoints } from '../../../utils/display-safe.js';
 import { type Tag as CfnTag } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../../utils/logger.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { type ImportPlanEntry } from './plan-types.js';
 import { plainOrNotShown, quotedOrNotShown, rowIdent, showRecordValue } from './render.js';
 
@@ -270,7 +271,7 @@ export function unrepresentableOverlayMessage(
     `${refusalReason(current)}. ` +
     `Declare ${displayIdent(field)} as the scalar ${showRecordValue(value)} (or drop the ` +
     `addPropertyOverride that ` +
-    `made it a list) and re-run 'cdkd export'.`
+    `made it a list) and re-run '${cdkdRemedy('cdkd export')}'.`
   );
 }
 

@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import {
   ListObjectVersionsCommand,
   NoSuchBucket,
@@ -414,7 +415,7 @@ export async function probeStatefulRecreateTargetsAsync(
               `--recreate-via-cc-api / --recreate-via-sdk-provider: CloudWatch Logs reported ` +
                 `${target.logicalId} (log group ${target.physicalId}) missing, but this stack's ` +
                 `state record names a region that is not the one its S3 key holds, so cdkd ` +
-                `cannot attribute that not-found to any region — run 'cdkd state show' with ` +
+                `cannot attribute that not-found to any region — run '${cdkdRemedy('cdkd state show')}' with ` +
                 `--verbose to see what the record claims, and repair it. Re-run with ` +
                 `--force-stateful-recreation if the log group really is disposable (that flag ` +
                 `clears the data guard for every target in the run). Until then it is treated ` +

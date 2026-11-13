@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   GlueClient,
@@ -210,7 +211,7 @@ export function icebergTableInputRefusalMessage(
           `IcebergTableInput the AWS SDK serializer drops the unknown member, so ` +
           `the table comes back without its Iceberg metadata; under the SDK spelling ` +
           `CreateIcebergTableInput the value IS sent and Glue rejects the call, failing this ` +
-          `one rollback operation. Either way, fix it forward with 'cdkd deploy' using the ` +
+          `one rollback operation. Either way, fix it forward with '${cdkdRemedy('cdkd deploy')}' using the ` +
           `working shape below.`
         : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
           `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +

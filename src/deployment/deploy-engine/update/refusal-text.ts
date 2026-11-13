@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { recordedProtectionNote } from '../../../provisioning/recorded-protection.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 
@@ -152,7 +153,7 @@ function nowWrittenCreateOnlyRefusal(input: {
     (input.evidence ?? []).some((property) => !nowWritten.includes(property))
       ? ''
       : safeMsg` If AWS already holds ${written} (cdkd drift compares it), re-record the ` +
-        safeMsg`resource instead: cdkd import with --resource '${logicalId}=PHYSICAL_ID' (its physical ` +
+        safeMsg`resource instead: ${cdkdRemedy('cdkd import')} with --resource '${logicalId}=PHYSICAL_ID' (its physical ` +
         `id, quoted) and --force writes a record without this evidence and changes nothing in AWS.`)
   );
 }

@@ -1,5 +1,6 @@
 /** The failed-op replay, split out of `rollback-executor.ts` (go-to-k/cdkd#5835). */
 
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import {
   journaledOrphanKeepReason,
   nonEmptyOrUndefined,
@@ -620,10 +621,9 @@ export async function replayFailedOperationsUnbound(
               // half-applied resource shows no change and is never
               // re-converged. `cdkd drift` is the command that reads AWS.
               remedy:
-                'Inspect it with `cdkd drift` (this op died mid-flight, so its remote state is ' +
-                'unknown) and re-converge with `cdkd drift --revert` or `cdkd deploy`.',
-              retry:
-                're-running `cdkd rollback --revert-failed` retries this op (a plain `cdkd rollback` replays only the COMPLETED ops and then pops the whole segment, discarding this record)',
+                `Inspect it with \`${cdkdRemedy('cdkd drift')}\` (this op died mid-flight, so its remote state is ` +
+                `unknown) and re-converge with \`${cdkdRemedy('cdkd drift', '--revert')}\` or \`${cdkdRemedy('cdkd deploy')}\`.`,
+              retry: `re-running \`${cdkdRemedy('cdkd rollback', '--revert-failed')}\` retries this op (a plain \`cdkd rollback\` replays only the COMPLETED ops and then pops the whole segment, discarding this record)`,
             })
           ) {
             recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_CAUSE);

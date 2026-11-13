@@ -13,6 +13,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import {
   changedDependencyOf,
   isPairableType,
@@ -160,7 +161,7 @@ export function hintSidesOf(
 export function movedToHint(movedTo: MovedTo): string {
   return (
     ` (moved to ${displayIdent(movedTo.stackName)}.${displayIdent(movedTo.logicalId)}, ` +
-    "run 'cdkd refactor' to keep it)"
+    `run '${cdkdRemedy('cdkd refactor')}' to keep it)`
   );
 }
 

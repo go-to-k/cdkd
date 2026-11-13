@@ -1,4 +1,5 @@
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   type CommandArg,
@@ -347,7 +348,7 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
   // the key JSON-escaped, byte-for-byte.
   const subject = isPasteableIdent(logicalId)
     ? logicalId
-    : `this resource (its logical id is not a plain identifier; read it with 'cdkd state show')`;
+    : `this resource (its logical id is not a plain identifier; read it with '${cdkdRemedy('cdkd state show')}')`;
   return (
     `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
@@ -528,7 +529,7 @@ function recordedArnIdentifier(options: {
         `cdkd's physical id for ${resourceType} is ${shapeWord} '${physicalIdShape}', but ` +
           `CloudFormation IMPORT identifies the resource by its ${field}, which cdkd state does ` +
           `not record usably for ${quotedOrNotShown(logicalId)} (${recordedNote}). Re-deploy the stack once so ` +
-          `cdkd records ${field}, then re-run cdkd export.`
+          `cdkd records ${field}, then re-run ${cdkdRemedy('cdkd export')}.`
       );
     },
   };

@@ -830,7 +830,7 @@ export function withheldTargetClause(
   }
   return (
     ` ${subject} ${why} — so it is not named in the command below; ` +
-    `list the records as stored with 'cdkd state list --long' and act on the one whose key ` +
+    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}' and act on the one whose key ` +
     `matches.`
   );
 }

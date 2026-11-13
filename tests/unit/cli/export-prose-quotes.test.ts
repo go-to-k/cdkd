@@ -45,6 +45,10 @@ const NOT_SHOWN = '(not shown: it is not a plain identifier)';
 const ALLOWED_HAND_QUOTES: Readonly<Record<string, { count: number; reason: string }>> = {
   VPC_CIDR_ASSOCIATION_ID_PREFIX: { count: 1, reason: 'a cdkd constant' },
   EIP_ALLOCATION_ID_PREFIX: { count: 1, reason: 'a cdkd constant' },
+  "cdkdRemedy('cdkd state list')": { count: 1, reason: 'a remedy command cdkd spells itself (#6262)' },
+  "cdkdRemedy('cdkd state show')": { count: 1, reason: 'a remedy command cdkd spells itself (#6262)' },
+  "cdkdRemedy('cdkd drift')": { count: 3, reason: 'a remedy command cdkd spells itself (#6262)' },
+  "cdkdRemedy('cdkd export')": { count: 1, reason: 'a remedy command cdkd spells itself (#6262)' },
   compositeShape: { count: 2, reason: 'a cdkd literal id shape (`<a>|<b>`)' },
   key: { count: 1, reason: "a property name from cdkd's own splitter table" },
   physicalIdShape: { count: 1, reason: 'a cdkd literal id shape from COMPOSITE_PHYSICAL_ID_IDENTIFIERS' },

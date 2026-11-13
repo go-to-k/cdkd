@@ -6,6 +6,7 @@ import type { ConsoleLogger } from '../../../utils/logger.js';
 import type { Logger } from '../../../types/config.js';
 import { isReadableResourceEntry } from '../../../state/malformed-resources-bag.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import {
   undeclaredEmptyObservedKeys,
   calculateResourceDrift,
@@ -608,7 +609,7 @@ export function warnIfPreV10BaselineGap(
     `'cdkd import' and that import REFUSED to capture a baseline, cdkd cannot tell — so it ` +
     `compares them against their recorded properties, which can hold a placeholder the ` +
     `deployed stack never used and can surface a live secret in this report. ` +
-    `Re-run 'cdkd import' for this stack to put the record right.`;
+    `Re-run '${cdkdRemedy('cdkd import')}' for this stack to put the record right.`;
   // SEPARATE line, and it is the half a review round had to add. The first
   // wording said this warning "stops after the stack's next deploy", which is
   // FALSE and dangerous: `saveState` stamps the CURRENT schema version

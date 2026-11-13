@@ -1,5 +1,6 @@
 import { logicalIdShown, resourceTypeShown } from '../../../provisioning/composite-id.js';
 import {
+  cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
@@ -134,14 +135,20 @@ export function stackRegionIsPlain(stackName: string, region: string): boolean {
 }
 
 /** Printed under a nested-child plan line whose child name was described. */
-export const NESTED_NAME_DESCRIBED_NOTE =
-  "(The nested stack's name is not a plain identifier, so it is described, not named; " +
-  "list the records as stored with 'cdkd state list --long'.)";
+export function nestedNameDescribedNote(): string {
+  return (
+    "(The nested stack's name is not a plain identifier, so it is described, not named; " +
+    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.)`
+  );
+}
 
 /** Printed under the plan header when {@link stackRegionShown} described a value. */
-export const STACK_REGION_DESCRIBED_NOTE =
-  '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
-  "list the records as stored with 'cdkd state list --long'.)";
+export function stackRegionDescribedNote(): string {
+  return (
+    '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
+    `list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.)`
+  );
+}
 
 /**
  * The `DeletionPolicy Snapshot — ...` note a planned Snapshot delete carries

@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import {
   DeleteTableCommand,
   DescribeTableCommand,
@@ -396,7 +397,7 @@ export async function createPhaseCommit(
         `Partial-create cleanup failed for ${tableName}: ${cleanupMsg} ` +
           (registeredBeforeReplicas.length > 0
             ? `Its write scalable targets and scaling policies may still be registered. To ` +
-              `remove the table and them, run cdkd rollback --revert-failed.`
+              `remove the table and them, run ${cdkdRemedy('cdkd rollback', '--revert-failed')}.`
             : `To remove the orphaned AWS-side table, run: ` +
               pasteableAwsCommand(
                 maskSecrets

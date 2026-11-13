@@ -1,4 +1,5 @@
 import {
+  cdkdRemedy,
   type PasteableCommand,
   pasteableCommand,
   withheldTargetClause,
@@ -276,7 +277,7 @@ export function unresolvableCrossStackReadError(
       `Refusing rather than continuing: the value that reference carries may be a secret, and ` +
       `scrub would then have no plaintext to look for — reporting the stack clean over state ` +
       `that still holds it. Deploy the producer stack (or correct the reference) and re-run ` +
-      `'cdkd scrub'.`,
+      `'${cdkdRemedy('cdkd scrub')}'.`,
     'SCRUB_CROSS_STACK_READ_UNRESOLVED'
   );
 }
@@ -388,7 +389,7 @@ export function scrubRefusalWording(
             // is not shown at all, so "shown masked" would be false of it.
             (proseWithholds(scrubOrder[i]!) ? 'not shown above and' : 'shown masked and') +
             ` is not named in the command below; list the records as stored with ` +
-            `'cdkd state list --long' and act on the record whose stack name matches.`
+            `'${cdkdRemedy('cdkd state list', '--long')}' and act on the record whose stack name matches.`
           : withheldTargetClause(b, 'stack', 'cdkd scrub', subject)
       )
     ),

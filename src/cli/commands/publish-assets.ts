@@ -48,6 +48,8 @@ import {
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { safeStringify } from '../../utils/aws-failure-text.js';
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 interface PublishAssetsOptions {
   app?: string;
@@ -209,7 +211,7 @@ async function publishAssetsCommand(
     } catch {
       logger.info(
         'No cdkd state bucket found — publishing to the asset-manifest destinations ' +
-          "(CDK bootstrap storage) verbatim. Run 'cdkd bootstrap' to opt into cdkd-owned " +
+          safeMsg`(CDK bootstrap storage) verbatim. Run '${cdkdRemedy('cdkd bootstrap')}' to opt into cdkd-owned ` +
           "asset storage that 'cdk gc' never touches."
       );
       markerAccess = null;

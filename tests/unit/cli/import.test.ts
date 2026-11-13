@@ -7269,7 +7269,7 @@ describe('cdkd import', () => {
       // causes reach this catch.
       // Per-resource: 'cdkd state orphan' would drop the whole stack's record (go-to-k/cdkd#3996).
       expect(warned).toContain(
-        "remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'"
+        "remove this resource from state with cdkd orphan '<StackPath/Path/To/Resource>'"
       );
     });
 

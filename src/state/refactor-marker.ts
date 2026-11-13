@@ -10,6 +10,7 @@
  * first state read, so it adds no wait) and refuses any stack a listed move
  * involves. Ids only, never a value.
  */
+import { cdkdRemedy, pasteableCommand } from '../utils/pasteable-command.js';
 import { CdkdError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -152,7 +153,7 @@ export function refactorMarkerRefusalMessage(
     return (
       safeMsg`${command} refused stack ${stackName} (${region}): the cdkd refactor marker ` +
       safeMsg`${verdict.key} cannot be read, so whether a move involving this stack is ` +
-      'unfinished is unknown. Inspect it in the state bucket; run cdkd refactor to finish the ' +
+      `unfinished is unknown. Inspect it in the state bucket; run ${cdkdRemedy('cdkd refactor')} to finish the ` +
       'moves it lists, or delete it once no move is in progress.'
     );
   }
@@ -164,7 +165,12 @@ export function refactorMarkerRefusalMessage(
     safeMsg`${involved.map((m) => `${m.fromStack}.${m.from} -> ${m.toStack}.${m.to}`).join(', ')} ` +
     'did not finish, and acting on this stack now could delete a resource another stack ' +
     'owns or create it a second time. Run ' +
-    safeMsg`'cdkd refactor ${sources.join(' ')}' to finish the move, then re-run.`
+    safeMsg`'${
+      pasteableCommand(
+        'cdkd refactor',
+        sources.map((source) => ({ value: source, hole: 'stack', opts: { patternMatched: true } }))
+      ).command
+    }' to finish the move, then re-run.`
   );
 }
 
@@ -214,7 +220,7 @@ export async function updateRefactorMarker(
     if (outcome === 'saved') return;
   }
   throw new CdkdError(
-    'The cdkd refactor marker kept changing under concurrent refactors; re-run cdkd refactor.',
+    `The cdkd refactor marker kept changing under concurrent refactors; re-run ${cdkdRemedy('cdkd refactor')}.`,
     'REFACTOR_STATE_CHANGED'
   );
 }

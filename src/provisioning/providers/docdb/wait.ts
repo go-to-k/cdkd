@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { DocDBProvider } from '../docdb-provider.js';
 import {
   DescribeDBClustersCommand,
@@ -39,7 +40,7 @@ export async function waitForApplied<T>(
     if (Date.now() - startTime + delay >= capMs) {
       const keys = pending.map(([key]) => key).join(', ');
       this.logger.warn(
-        safeMsg`${logicalId}: the new ${keys} did not read back when cdkd stopped waiting; AWS accepted the change, so cdkd drift may report the old value as the baseline. Once it applies, run cdkd drift --accept.`
+        safeMsg`${logicalId}: the new ${keys} did not read back when cdkd stopped waiting; AWS accepted the change, so cdkd drift may report the old value as the baseline. Once it applies, run ${cdkdRemedy('cdkd drift', '--accept')}.`
       );
       return;
     }

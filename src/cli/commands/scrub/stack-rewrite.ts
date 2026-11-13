@@ -1,5 +1,6 @@
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure, verboseAwareText } from '../../../utils/aws-failure-text.js';
 import {
   scrubResourceRecord,
@@ -184,9 +185,9 @@ export async function scrubStackRewritePass({
       refuse(
         `${shownStack}'s state has no record of the nested-stack row that deploys it, so the ` +
           `parameters it was deployed with are unknown`,
-        `Deploy ${shownStack} so it records the row, then re-run cdkd scrub; if its ` +
+        `Deploy ${shownStack} so it records the row, then re-run ${cdkdRemedy('cdkd scrub')}; if its ` +
           `Condition keeps the row out of the deploy, the child record is left over — ` +
-          `remove it with cdkd state destroy.`
+          `remove it with ${cdkdRemedy('cdkd state destroy')}.`
       );
       continue;
     }
@@ -198,7 +199,7 @@ export async function scrubStackRewritePass({
         `the Parameters ${shownStack} passes it could not be resolved to the values a deploy ` +
           `would hand it, so what it inherited is unknown`,
         verboseAwareText(
-          'Re-run cdkd scrub with --verbose to see which value failed to resolve, and fix that.',
+          `Re-run ${cdkdRemedy('cdkd scrub')} with --verbose to see which value failed to resolve, and fix that.`,
           'The debug output above shows which value failed to resolve; fix that.'
         )
       );
@@ -772,7 +773,7 @@ export async function scrubStackRewritePass({
               `but the other stacks' state could not be read to confirm none of them still ` +
               safeMsg`reads one (${maskSecretsInText(describeAwsFailure(err).detail, corpus)}), ` +
               `so NONE was dropped and this stack is not reported clean. Fix the read and ` +
-              `re-run cdkd scrub.`
+              safeMsg`re-run ${cdkdRemedy('cdkd scrub')}.`
           );
           dropping = new Set();
         }
@@ -800,7 +801,7 @@ export async function scrubStackRewritePass({
               `dropped, since that read would break, and this stack is not reported clean: ` +
               `a value left beside the references scrub writes can be printed by cdkd diff. ` +
               `Stop the consumer reading it (or declare the output again), or redeploy a ` +
-              `consumer whose record predates the reads, then re-run cdkd scrub.`
+              safeMsg`consumer whose record predates the reads, then re-run ${cdkdRemedy('cdkd scrub')}.`
           );
           dropping = new Set([...dropping].filter((key) => !read.has(key)));
         }

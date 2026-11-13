@@ -3,6 +3,7 @@ import {
   renderNestedTemplateTreeDefect,
 } from '../../../utils/nested-template-cycle.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { getLogger } from '../../../utils/logger.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
 import type { LockManager } from '../../../state/lock-manager.js';
@@ -335,7 +336,7 @@ export async function runScrubTargets({
             `the scrub of ${shownStack}, which deploys it, failed, so its inputs are unknown`,
             // A LIVE child in the ordinary case (a throttle, a held lock): the
             // remedy is the parent's, never a delete.
-            `Fix the failure reported for ${shownStack} and re-run cdkd scrub.`
+            `Fix the failure reported for ${shownStack} and re-run ${cdkdRemedy('cdkd scrub')}.`
           ).map((child) =>
             nestedChildWorkItem(
               // A refusal target reads nothing off its parent's StackInfo.
@@ -379,8 +380,8 @@ export async function runScrubTargets({
               `deployed with`
           : `no nested-stack row in ${shownStack}'s template or state record reaches it, so ` +
               `scrub has no template to learn its secrets from`,
-        `Inspect it with cdkd state show; if it is left over, remove it with ` +
-          `cdkd state destroy (resources) or cdkd state orphan (record only).`
+        `Inspect it with ${cdkdRemedy('cdkd state show')}; if it is left over, remove it with ` +
+          `${cdkdRemedy('cdkd state destroy')} (resources) or ${cdkdRemedy('cdkd state orphan')} (record only).`
       );
     } catch (err) {
       failures.push({ stackName: `${stackName}~*` });

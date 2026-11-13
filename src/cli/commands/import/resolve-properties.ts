@@ -15,7 +15,11 @@ import {
   type ParameterTaint,
 } from '../../../analyzer/parameter-dependence.js';
 import { displayIdent, displayStackName } from '../../../utils/display-safe.js';
-import { plainOrDescribed } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  plainOrDescribed,
+} from '../../../utils/pasteable-command.js';
 import { logicalIdShown, resourceTypeShown } from '../../../provisioning/composite-id.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { StackState } from '../../../types/state.js';
@@ -534,9 +538,9 @@ export async function resolveImportedProperties(
       // parameter names on that line are shown only when plain too.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${maskSecretsInText(describeAwsFailure(err).detail, recordedSecretValues)}.\n` +
-          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'.` +
+          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with ${pasteableCommand('cdkd orphan', [{ hole: 'StackPath/Path/To/Resource' }]).command}.` +
           (unboundParameterNames.length > 0
-            ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.map((name) => plainOrDescribed(name, 'parameter name')).join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
+            ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.map((name) => plainOrDescribed(name, 'parameter name')).join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next '${cdkdRemedy('cdkd deploy')}'.`
             : '')
       );
       threw = true;
@@ -693,7 +697,7 @@ export async function resolveImportedProperties(
             ? ` — ${unreadable.length} of them because their properties could not be checked for such a dependence`
             : '') +
           `. Their recorded properties hold the 'Default', NOT the deployed value, and no observed drift baseline was captured for them by this import ` +
-          `(the live value may be a secret this import cannot position a redaction for). Review 'cdkd diff' before the next 'cdkd deploy'.`
+          `(the live value may be a secret this import cannot position a redaction for). Review '${cdkdRemedy('cdkd diff')}' before the next '${cdkdRemedy('cdkd deploy')}'.`
       );
     }
   }

@@ -1,5 +1,6 @@
 import { movedToHint, type MovedTo } from '../../../analyzer/refactor-hints.js';
 import { stripForDisplay } from '../../../utils/regexp.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { ResourceChange } from '../../../types/state.js';
 import { INTRINSIC_KEYS } from '../../../analyzer/diff-calculator.js';
 import type { OutputChange } from '../../../analyzer/outputs-diff.js';
@@ -305,7 +306,8 @@ export function renderChangeLines(
  * benign half of each, and `cdkd scrub` finding nothing is the expected
  * outcome there.
  */
-const REDACTED_LEGACY_PLAINTEXT = '<redacted: may be legacy plaintext in state — run `cdkd scrub`>';
+const redactedLegacyPlaintext = (): string =>
+  `<redacted: may be legacy plaintext in state — run \`${cdkdRemedy('cdkd scrub')}\`>`;
 
 /**
  * The guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
@@ -359,7 +361,7 @@ export function renderOutputChangeLines(
       (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`)
     );
   const renderOld = (change: OutputChange): string =>
-    change.oldValueRedacted ? REDACTED_LEGACY_PLAINTEXT : render(change.oldValue);
+    change.oldValueRedacted ? redactedLegacyPlaintext() : render(change.oldValue);
 
   for (const change of outputChanges) {
     const exported = change.isExport ? ' [export]' : '';

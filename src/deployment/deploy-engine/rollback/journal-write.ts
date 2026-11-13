@@ -3,6 +3,7 @@
  * Split out of `deploy-engine/rollback.ts` (go-to-k/cdkd#5835), which
  * re-exports what it exported.
  */
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { getCurrentSkipPrefix } from '../../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../../state/deployment-events-store.js';
@@ -90,7 +91,7 @@ export async function writeRollbackJournalSegment(
   } catch (journalError) {
     deps.logger.warn(
       safeMsg`Failed to write rollback journal: ${asIsMessage(describeAwsFailure(journalError).detail)}. ` +
-        `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
+        safeMsg`'cdkd rollback' will NOT be able to revert this deploy — use '${cdkdRemedy('cdkd deploy')}' to resume or '${cdkdRemedy('cdkd destroy')}' to clean up.`
     );
     return false;
   }

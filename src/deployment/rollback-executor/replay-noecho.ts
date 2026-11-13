@@ -1,6 +1,6 @@
 import type { ResourceState } from '../../types/state.js';
 import { CdkdError } from '../../utils/error-handler.js';
-import { plainOrDescribed } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, plainOrDescribed } from '../../utils/pasteable-command.js';
 import {
   carriesSecretMask,
   isMarkedCoordinate,
@@ -123,7 +123,7 @@ function unreadableNoEchoLeafRefusal(
       `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds a NoEcho value ` +
         `only as the redaction mask ('${SECRET_MASK}') at ${shownPaths(coordinates)}, and ${why}. ` +
         `cdkd sent nothing rather than write the mask to the live resource. Restore the property ` +
-        `with 'cdkd deploy', which sends the NoEcho parameter's value again (a NoEcho attribute ` +
+        `with '${cdkdRemedy('cdkd deploy')}', which sends the NoEcho parameter's value again (a NoEcho attribute ` +
         `of a custom resource is sent again only when that custom resource updates in the same ` +
         `deploy).`,
       'ROLLBACK_REDACTED_BASELINE'
@@ -153,7 +153,7 @@ export function refuseMarkedNoEchoRecreate(
       `baseline holds a NoEcho value only as the redaction mask ('${SECRET_MASK}') at ` +
       `${shownPaths(shown)}, and there is no live resource to read that value back from, so cdkd ` +
       `sent nothing rather than create the resource with the mask. Restore the stack with ` +
-      `'cdkd deploy', which sends the NoEcho parameter's value again.`,
+      `'${cdkdRemedy('cdkd deploy')}', which sends the NoEcho parameter's value again.`,
     'ROLLBACK_REDACTED_BASELINE'
   );
 }

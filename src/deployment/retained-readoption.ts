@@ -5,6 +5,7 @@
  * resource) and a later create of the same stack here may take back by its
  * generated name. Shared by `cdkd destroy` and the deploy engine.
  */
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import type { RetainedResource, S3StateBackend } from '../state/s3-state-backend.js';
 import { RetainedTimeUnconfirmedError } from '../state/retained-time.js';
 import type { ResourceState } from '../types/state.js';
@@ -116,7 +117,7 @@ export async function recordRetainedForReadoption(
     logger.warn(
       safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
         safeMsg`(${describeAwsFailure(error).summary}). A later deploy may refuse to create one over ` +
-        `its kept copy, or not name them; adopt a kept one with 'cdkd import'.`
+        safeMsg`its kept copy, or not name them; adopt a kept one with '${cdkdRemedy('cdkd import')}'.`
     );
   }
 }

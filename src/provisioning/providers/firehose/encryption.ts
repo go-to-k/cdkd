@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { FirehoseProvider } from '../firehose-provider.js';
 import {
   DescribeDeliveryStreamCommand,
@@ -122,8 +123,8 @@ export async function warnIfUnfinished<T>(
     this.logger.warn(
       safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. `.concat(
         markUnsettled === undefined
-          ? "Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's."
-          : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run 'cdkd drift --accept' once the stream no longer reads ENABLING or DISABLING (an accept during the transition keeps the key unsettled).`
+          ? `Run '${cdkdRemedy('cdkd drift')}' to compare, then '${cdkdRemedy('cdkd drift', '--revert')}' to apply the recorded setting or '${cdkdRemedy('cdkd drift', '--accept')}' to record the stream's.`
+          : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run '${cdkdRemedy('cdkd drift', '--accept')}' once the stream no longer reads ENABLING or DISABLING (an accept during the transition keeps the key unsettled).`
       )
     );
     throw error;

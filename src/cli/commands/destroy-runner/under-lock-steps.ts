@@ -5,6 +5,7 @@
 import { refusePendingMovesOut } from '../../../state/pending-moves.js';
 import { readRefactorMarker, refuseRefactorMarker } from '../../../state/refactor-marker.js';
 import {
+  cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
   withheldTargetClause,
@@ -90,7 +91,7 @@ export async function recheckUnderLock({
       throw new CdkdError(
         safeMsg`cdkd destroy refused stack ${stackName} (${regionForState}): its state ` +
           'changed after it was read (another command wrote it while this one waited for ' +
-          'confirmation), so nothing was deleted. Re-run cdkd destroy.',
+          `confirmation), so nothing was deleted. Re-run ${cdkdRemedy('cdkd destroy')}.`,
         'STATE_CHANGED'
       );
     }
@@ -232,7 +233,7 @@ export function makeSummaryHints(
     )
       ? ''
       : ` A target that is not a plain identifier is printed as a quoted '<stack>' or ` +
-        `'<region>' placeholder; list the records as stored with 'cdkd state list --long'.`) +
+        `'<region>' placeholder; list the records as stored with '${cdkdRemedy('cdkd state list', '--long')}'.`) +
     (targets.length === 0
       ? ''
       : ((clause) => (clause === '' ? '' : ` ${clause}`))(
@@ -563,7 +564,7 @@ export function printDestroySummary({
   } else if (result.interrupted && result.errorCount === 0) {
     logger.warn(
       `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
-        `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to finish.`
+        `State preserved — re-run '${cdkdRemedy('cdkd destroy')}' / '${cdkdRemedy('cdkd state destroy')}' to finish.`
     );
   } else if (result.errorCount === 0) {
     // Skips only. Nothing FAILED, so "partially destroyed" with an error
@@ -637,7 +638,7 @@ export function printDestroySummary({
       [...new Set(lines.split('\n').filter((l) => l !== ''))].map((l) => `\n${l}`).join('');
     logger.warn(
       `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
-        `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
+        `State preserved — re-run '${cdkdRemedy('cdkd destroy')}' / '${cdkdRemedy('cdkd state destroy')}' to clean up. ` +
         (journaledOrphanFailures > 0
           ? `${journaledOrphanFailures} of the failures are resources a failed deploy created that ` +
             `only the rollback journal records: re-run the destroy to retry them. Do not drop ` +
