@@ -2,7 +2,7 @@ import {
   describeLocalAwsFailureForWarn,
   redactedAwsCause,
 } from '../../../utils/local-aws-failure.js';
-import { mixedModeActive, realAwsException } from '../../../local/local-aws-wiring.js';
+import { realAwsException } from '../../../local/local-aws-wiring.js';
 import {
   displayIdent,
   plainIdentOr,
@@ -52,7 +52,13 @@ function readFromCfnStack(source: StackAccountSource): boolean {
  */
 export async function resolvePlaceholderAccount(
   arn: string,
-  source: StackAccountSource
+  source: StackAccountSource,
+  /**
+   * Which STS answers (go-to-k/cdkd#6147): the one the role is then assumed
+   * in, since the emulator's account and the real one differ. Defaults to the
+   * `Parameters`-level STS route.
+   */
+  route: { realAws: boolean } = { realAws: realAwsException('STS') }
 ): Promise<string> {
   const { region, profile } = source;
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
@@ -63,8 +69,8 @@ export async function resolvePlaceholderAccount(
     // CloudFormation sees only the caller's own account, so the account filled into a task-role ARN is the
     // caller's, never a `--role-arn` assumed for cdkd's own calls (go-to-k/cdkd#5001).
     sts = new STSClient({
-      // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
-      ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws: realAwsException('STS') }),
+      // Mixed mode: the account lookup follows the STS route the role is assumed through (#6150, #6147).
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws: route.realAws }),
       ...(region && { region }),
       ...(profile && { profile }),
     });
@@ -74,8 +80,8 @@ export async function resolvePlaceholderAccount(
     // one deployed there, so the account filled into the task-role ARN is the DEPLOY account: asked through
     // `awsClientDefaults` as that role (go-to-k/cdkd#5001). Only the account ID is taken; the ARN it completes is assumed as the caller.
     sts = new STSClient({
-      // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
-      ...awsClientDefaults({ profile, realAws: realAwsException('STS') }),
+      // Mixed mode: the account lookup follows the STS route the role is assumed through (#6150, #6147).
+      ...awsClientDefaults({ profile, realAws: route.realAws }),
       ...(region && { region }),
       // `--profile` is the identity both state sources read through when no role
       // is published, so the account must be asked as it too.
@@ -114,11 +120,17 @@ export async function resolvePlaceholderAccount(
  * Assume `roleArn` and return temp credentials. Mirrors the same flow
  * `cdkd local invoke --assume-role` uses.
  *
+ * `route.realAws` picks the STS (go-to-k/cdkd#6147): `false` sends the call to
+ * AWS Emulator whenever `--aws-emulator` is active (the role deployed there,
+ * signed with the emulator's keys), `true` to real AWS. Without
+ * `--aws-emulator` there is no override and both mean real AWS.
+ *
  * @internal exported for unit tests (go-to-k/cdkd#4857).
  */
 export async function assumeTaskRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  route: { realAws: boolean } = { realAws: false }
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // Both `--assume-task-role <arn>` and the task definition's `TaskRoleArn`
   // (a template literal, passed through verbatim) arrive here unchecked, so the
@@ -129,8 +141,8 @@ export async function assumeTaskRole(
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
   const sts = new STSClient({
-    // Mixed mode: an STS hop establishing the REAL identity stays on real AWS (#6150).
-    ...awsClientDefaults({ ignoreAssumedRole: true, realAws: mixedModeActive() }),
+    // `--aws-emulator`: the emulator's STS unless the caller asks for the real one (#6147).
+    ...awsClientDefaults({ ignoreAssumedRole: true, realAws: route.realAws }),
     ...(region && { region }),
   });
   try {

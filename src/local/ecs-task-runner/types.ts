@@ -18,11 +18,32 @@ export interface RunEcsTaskOptions {
    */
   stateSourceGiven?: boolean;
   /**
-   * AWS Emulator mixed mode (go-to-k/cdkd#6150): the REAL identity for the
-   * containers that keep a `"real-aws"` exception, as env keys; the metadata
-   * sidecar (`taskCredentials`) then serves the emulator's keys.
+   * AWS Emulator mixed mode (go-to-k/cdkd#6150): the caller's REAL identity
+   * (`--profile`, else the default chain) for the containers that keep a
+   * `"real-aws"` exception, as env keys; the metadata sidecar
+   * (`taskCredentials`) then serves emulator-issued credentials.
    */
   mixedModeRealCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
+  /**
+   * Mixed mode with `--assume-task-role` (go-to-k/cdkd#6147): the task role
+   * assumed in REAL AWS, given instead of `mixedModeRealCredentials` to an
+   * excepting container that also excepts STS.
+   */
+  mixedModeRealTaskCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
+  /**
+   * `--assume-task-role` under `--aws-emulator`, not mixed mode
+   * (go-to-k/cdkd#6147): the task role assumed in AWS Emulator. It replaces
+   * the emulator's keys in every container, so each runs as the role there.
+   */
+  emulatorTaskCredentials?: {
     accessKeyId: string;
     secretAccessKey: string;
     sessionToken?: string;
