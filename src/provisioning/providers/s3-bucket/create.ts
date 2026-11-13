@@ -31,7 +31,7 @@ import { S3BucketProvider } from '../s3-bucket-provider.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../../masked-retry-logger.js';
 import { declaresBucketObjectLock, manualBucketDeletionClause } from './shared.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerSentence } from '../../../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import {
   explicitDenyPolicyKind,
@@ -583,7 +583,7 @@ export async function create(
             safeMsg`already existed: the region probe (${preflight.errorName}) and the bucket ` +
             safeMsg`listing (${ownershipUnknown}) both failed. In us-east-1 CreateBucket answers 200 ` +
             `OK over a bucket you own, so if one existed it has now been configured and ` +
-            `recorded as this stack's. Re-run with --verbose for AWS's own message.`
+            `recorded as this stack's. ${verbosePointerSentence()}`.trimEnd()
         );
       }
       this.logger.debug(`Created S3 bucket: ${this.shown(bucketName)}`);
@@ -761,7 +761,7 @@ export async function create(
           this.logger.warn(
             safeMsg`Failed to clean up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) ` +
               safeMsg`(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
-              `Re-run with --verbose for AWS's own message. ` +
+              verbosePointerSentence() +
               safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask, true)}`
           );
         }
@@ -789,7 +789,7 @@ export async function create(
           safeMsg`Not cleaning up S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after a wiring failure: ` +
             `this deploy could not confirm whether it created the bucket (region probe failed: ` +
             safeMsg`${preflight.errorName}), and in us-east-1 a successful CreateBucket does not ` +
-            `prove it. Re-run with --verbose for AWS's own message. If cdkd created it, the ` +
+            `prove it. ${verbosePointerSentence()}If cdkd created it, the ` +
             `bucket is an orphan. ` +
             safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask, false)}`
         );

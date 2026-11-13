@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 /**
  * go-to-k/cdkd#2319: the work graph's `N node(s) failed` rejection is thrown,
@@ -15,6 +15,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { WorkGraph, type WorkNode } from '../../../src/deployment/work-graph.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 
 const CONCURRENCY = { 'asset-build': 4, 'asset-publish': 8, stack: 4 };
 const CALLER = 'arn:aws:sts::123456789012:assumed-role/Deployer/session';
@@ -54,6 +55,33 @@ describe('WorkGraph failure summary (#2319)', () => {
     expect(log.error.mock.calls.map((c) => String(c[0]))).toEqual([
       `Failed: asset:A: User: ${CALLER} is not authorized to perform: s3:PutObject`,
     ]);
+  });
+
+  describe('on a --verbose run (go-to-k/cdkd#6162)', () => {
+    afterEach(() => {
+      registerVerboseRunProbe(() => false);
+    });
+
+    it('drops the --verbose pointer and logs every field of the failure at debug', async () => {
+      registerVerboseRunProbe(() => true);
+      log.debug.mockReset();
+      const error = new Error('UnknownError');
+      error.name = 'Unknown';
+      Object.assign(error, {
+        $fault: 'client',
+        $metadata: { httpStatusCode: 413 },
+        $response: { statusCode: 413, headers: { 'content-length': '0' } },
+      });
+
+      const rejection = await failing(error);
+
+      expect(rejection.message).toBe('1 node(s) failed:\n  - asset:A: Unknown.');
+      expect(log.debug.mock.calls.map((c) => String(c[0]))).toContain(
+        'Failure detail for asset:A: HTTP 413, name Unknown, message "UnknownError", ' +
+          'fault client, response content-length 0. ' +
+          'AWS returned no error message (the response body was empty).'
+      );
+    });
   });
 
   it("keeps cdkd's own text (negative control)", async () => {

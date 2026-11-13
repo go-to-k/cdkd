@@ -2,6 +2,7 @@ import type { Logger, LogLevel } from '../types/config.js';
 import { displaySafe, terminalSafe } from './display-safe.js';
 import { getLiveRenderer } from './live-renderer.js';
 import { currentLogLineMasker, type LogLineMasker } from './log-line-masker.js';
+import { registerVerboseRunProbe } from './aws-failure-text.js';
 import { getCurrentStackOutputBuffer } from './stack-context.js';
 
 /**
@@ -403,6 +404,10 @@ class ChildLogger extends ConsoleLogger {
  * Global logger instance
  */
 let globalLogger: ConsoleLogger | null = null;
+
+// A `--verbose` run drops "Re-run with --verbose ..." from every failure
+// summary (go-to-k/cdkd#6162); `aws-failure-text.ts` is a leaf, so it asks here.
+registerVerboseRunProbe(() => globalLogger?.getLevel() === 'debug');
 
 /**
  * Get or create global logger

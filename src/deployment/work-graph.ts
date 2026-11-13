@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsErrorDiagnostics, describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { DeploymentNotApprovedError, isSoftAbort } from '../utils/error-handler.js';
 
@@ -117,7 +117,15 @@ export class WorkGraph {
               // go-to-k/cdkd#5136: a declined prompt is not a failure to report
               // twice; the summary below prints it once, softly.
               if (isSoftAbort(error)) this.logger.debug(safeMsg`Not approved: ${node.id}`);
-              else this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
+              else {
+                this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
+                // go-to-k/cdkd#6162: the message alone can be the SDK's
+                // `UnknownError` placeholder (an empty error body), which left
+                // a `--verbose` run with nothing more to read than without it.
+                this.logger.debug(
+                  `Failure detail for ${node.id}: ${describeAwsErrorDiagnostics(error)}`
+                );
+              }
             })
             .finally(() => {
               active[node.type]--;
