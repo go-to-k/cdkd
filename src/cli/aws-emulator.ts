@@ -20,6 +20,14 @@
  *   off), so a client that ever escaped the override resolves the emulator's
  *   endpoint and keys or none at all: it fails against the emulator and never
  *   signs a request to real AWS.
+ *
+ * AWS Emulator mixed mode is the one exception (go-to-k/cdkd#6150): a
+ * `cdkd local` command whose `--env-vars` file excepts a service to real AWS
+ * (`"AWS_ENDPOINT_URL_<SERVICE>": "real-aws"`) keeps the host's real identity,
+ * for the excepted services' calls alone: every other call — cdkd's own
+ * included — still goes to the emulator, signed with its keys (the process
+ * default, `mixedModeEmulatorOverride`). Every non-local command stays
+ * emulator-only.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -32,6 +40,8 @@ import {
   EMULATOR_SCRUBBED_ENV_KEYS,
   getAwsEndpointOverride,
   parseAwsEndpoint,
+  readAwsEmulatorEnvVarsFile,
+  realAwsServicesOf,
   readEmulatorRunFiles,
   resolveAwsEmulatorOption,
 } from 'cdk-local/internal';
@@ -128,6 +138,15 @@ export function prepareAwsEmulatorForCommand(
   // runs against the emulator's STS there, and the override outranks the
   // role's keys anyway. Everything else applies to it too.
   const local = underLocalCommand(actionCommand);
+  // Mixed mode: the real identity is kept for the excepted services' calls, so
+  // no credential is dropped and the environment is not pointed at the
+  // emulator (a client that escaped the emulator default would carry a
+  // real-key signature there). The command's activation validates the
+  // exceptions and starts the re-signing wiring.
+  if (local && localCommandIsMixedMode(actionCommand)) {
+    keepHostClientsOnRealAws();
+    return undefined;
+  }
 
   const ignored: string[] = [];
   if (clearOption(actionCommand, 'profile')) ignored.push('--profile');
@@ -173,6 +192,50 @@ export function prepareAwsEmulatorForCommand(
   if (local) return undefined;
   setAwsEndpointOverrideSource(getAwsEndpointOverride);
   return () => onStderr(() => activateAwsEmulatorForCommand(flag));
+}
+
+/**
+ * Mixed mode signs the excepted services' cdkd-side calls with the REAL
+ * identity, so they must go to real AWS: a shell `AWS_ENDPOINT_URL*` (or a
+ * profile's `endpoint_url`) aimed at the emulator would carry a real-key
+ * signature to it. The containers never get these (cdk-local's mixed wiring
+ * forwards no host endpoint); the host clients ignore them too, with one
+ * notice. Every emulator-bound client sets its endpoint explicitly, which this
+ * does not touch.
+ */
+function keepHostClientsOnRealAws(): void {
+  const ignored: string[] = [];
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('AWS_ENDPOINT_URL')) {
+      if (process.env[key] !== '') ignored.push(key);
+      delete process.env[key];
+    }
+  }
+  process.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] = 'true';
+  if (ignored.length > 0) {
+    const names = ignored.join(', ');
+    onStderr(() =>
+      getLogger().info(
+        safeMsg`--aws-emulator (mixed mode): ignoring ${names}; the "real-aws" exceptions go to real AWS.`
+      )
+    );
+  }
+}
+
+/**
+ * True when a `cdkd local` command's `--env-vars` file excepts at least one
+ * service to real AWS with `"real-aws"`. One on the bare `AWS_ENDPOINT_URL`
+ * names no service, and the old `"aws-emulator"` value is no exception: such
+ * a run stays full-emulator here (fail closed), and the command's activation
+ * refuses the value.
+ */
+function localCommandIsMixedMode(actionCommand: Command): boolean {
+  const envVars = actionCommand.optsWithGlobals<{ envVars?: unknown }>().envVars;
+  if (typeof envVars !== 'string' || envVars === '') return false;
+  // `readAwsEmulatorEnvVarsFile` reads through cdk-local's
+  // `readEnvVarsFileText`: a pipe-backed path is read once and kept, so the
+  // command's own read still gets the text.
+  return realAwsServicesOf(readAwsEmulatorEnvVarsFile(envVars).exceptions).length > 0;
 }
 
 /**

@@ -70,7 +70,7 @@ export { cleanupEcsRun } from './ecs-task-runner/cleanup.js';
 export { buildDependencyGraph, topoSort } from './ecs-task-runner/containers.js';
 export { buildDockerRunArgs } from './ecs-task-runner/docker-run-args.js';
 
-import { getActiveWorkloadAwsWiring } from './local-aws-wiring.js';
+import { getActiveWorkloadAwsWiring, warnAwsEmulatorStateSourceHint } from './local-aws-wiring.js';
 import {
   removeNamespaceForwarder,
   startNamespaceForwarder,
@@ -138,6 +138,9 @@ export function describeDetachedForwarders(state: EcsRunState): string | undefin
   return safeMsg`Under the loopback AWS endpoint, these task containers share the network of a forwarder container, so that filter does not list them: ${containers}. Remove them before their forwarders: ${forwarders}.`;
 }
 
+/** A task-resolution warning for an Environment / Secrets entry it dropped. */
+const DROPPED_ENTRY = /(?:^|: )(?:Environment|Secret) '.*' dropped:/;
+
 /**
  * Top-level entry point. Mutates `state` as it makes progress so the
  * caller's `cleanup(state)` can roll back partial side effects on any
@@ -157,6 +160,11 @@ export async function runEcsTask(
   }
 
   for (const w of task.warnings) logger.warn(w);
+  // `--aws-emulator` with no state source: one hint after the dropped entries.
+  warnAwsEmulatorStateSourceHint(
+    task.warnings.filter((w) => DROPPED_ENTRY.test(w)).length,
+    options.stateSourceGiven === true
+  );
 
   // Build the dependency DAG up front so cyclic configs fail before we
   // touch docker.
@@ -268,6 +276,8 @@ export async function runEcsTask(
       dynamicEnvByContainer.set(
         c.name,
         await resolveDynamicReferencesInEnv(c.environment, {
+          // Mixed mode: routed by THIS container's own sentinels (go-to-k/cdkd#6150).
+          workload: { containerName: c.name },
           region: firstUsableRegion(
             options.stateRecordRegion,
             options.stackRegion,
@@ -403,6 +413,9 @@ export async function runEcsTask(
         : {}),
       ...(options.profileCredentialsFile && {
         profileCredentialsFile: options.profileCredentialsFile,
+      }),
+      ...(options.mixedModeRealCredentials && {
+        mixedModeRealCredentials: options.mixedModeRealCredentials,
       }),
     });
     dockerCmds.set(container.name, built.args);

@@ -4,6 +4,7 @@ import {
   awaitLoopbackForwarderStatus,
   buildNamespaceOwnerForwarderDockerArgs,
   describeForwarderFailure,
+  loopbackForwarderPlan,
   type LoopbackForwarderNamespace,
   type LoopbackForwarderResult,
   type WorkloadAwsWiring,
@@ -39,7 +40,8 @@ const execFileAsync = promisify(execFile);
  * container's own start reports a port clash under its own name.
  *
  * When the forwarder runs but reports FAIL, or never reports, it is removed.
- * Under `--aws-emulator` that throws (nothing of the container has started
+ * Under `--aws-emulator`, and in mixed mode for a container that uses the
+ * re-signing sidecar, that throws (nothing of the container has started
  * yet); under `forward` it is a warning (once per port per run for a FAIL
  * report, once per container for a start failure) and resolves
  * `false`: the caller starts the container on its own network endpoint,
@@ -55,17 +57,26 @@ export async function startNamespaceForwarder(
   const label =
     wiring.mode === 'emulator'
       ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
-      : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+      : wiring.mixed
+        ? `--aws-emulator ${wiring.mixed.emulatorEndpoint.url} (mixed mode)`
+        : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the re-signing sidecar's
+  // port is served by the sidecar, not the TCP forwarder, and a container
+  // that uses it asked for the emulator, so a failure is fatal there as under
+  // `--aws-emulator`.
+  const plan = loopbackForwarderPlan(wiring, ports);
+  const fatal = wiring.mode === 'emulator' || plan.resignConfigHostPath !== undefined;
   // Pull the image first, outside the tracked step: a pull creates nothing.
   await prepareLocalLoopbackForwarder(wiring);
   const { name } = forwarder;
   const args = buildNamespaceOwnerForwarderDockerArgs({
     name,
     namespace: forwarder.namespace,
-    ports,
+    ports: plan.ports,
     probe: wiring.probeHealth ? 'health' : 'tcp',
     ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
     ...(wiring.skipPull ? { skipPull: true } : {}),
+    ...(plan.resignConfigHostPath ? { resignConfigHostPath: plan.resignConfigHostPath } : {}),
   });
   getLogger()
     .child('ecs-runner')
@@ -85,10 +96,10 @@ export async function startNamespaceForwarder(
     if (state.closing) throw interruptedError();
     // A failed `docker run -d` can still have created the container.
     await removeNamespaceForwarder(state, name);
-    if (wiring.mode === 'emulator') throw err;
+    if (fatal) throw err;
     // `forward`: the container starts on its own endpoint as before. A host
     // port clash then fails ITS `docker run`, under its own name.
-    return failed(state, wiring, `start:${containerName}`, `${label}: ${(err as Error).message}`);
+    return failed(state, fatal, `start:${containerName}`, `${label}: ${(err as Error).message}`);
   }
   let result: LoopbackForwarderResult;
   try {
@@ -97,14 +108,14 @@ export async function startNamespaceForwarder(
     if (state.closing) throw interruptedError();
     // The forwarder exited before reporting, or never reported.
     await removeNamespaceForwarder(state, name);
-    return failed(state, wiring, `start:${containerName}`, `${label}: ${(err as Error).message}`);
+    return failed(state, fatal, `start:${containerName}`, `${label}: ${(err as Error).message}`);
   }
   if (state.closing) throw interruptedError();
   if (result.ok) return true;
   await removeNamespaceForwarder(state, name);
   return failed(
     state,
-    wiring,
+    fatal,
     String(result.failedPort ?? 0),
     describeForwarderFailure(result, label)
   );
@@ -131,13 +142,8 @@ export async function removeNamespaceForwarder(state: EcsRunState, name: string)
   state.forwarders = state.forwarders.filter((f) => f.name !== name);
 }
 
-function failed(
-  state: EcsRunState,
-  wiring: WorkloadAwsWiring,
-  key: string,
-  message: string
-): false {
-  if (wiring.mode === 'emulator') {
+function failed(state: EcsRunState, fatal: boolean, key: string, message: string): false {
+  if (fatal) {
     throw new CdkdError(message, 'LOCAL_AWS_EMULATOR_FORWARDER_FAILED');
   }
   state.forwarderWarnings ??= new Set<string>();

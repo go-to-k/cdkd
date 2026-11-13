@@ -25,6 +25,8 @@ export interface CallerResolverRecorder {
   ssmSend: Recorded;
   destroy: Recorded;
   profiles: Array<string | undefined>;
+  /** The workload each fetch was routed for (AWS Emulator mixed mode, go-to-k/cdkd#6150). */
+  workloads?: unknown[];
 }
 
 export async function callerResolverModule(
@@ -36,12 +38,18 @@ export async function callerResolverModule(
     createCallerDynamicReferenceResolver: (profile: string | undefined) => {
       dr.profiles.push(profile);
       return new DynamicReferenceResolver({
-        secretsManagerClientFactory: (region) => ({
-          send: ((cmd: { input: unknown }) => dr.smSend(region, cmd.input)) as never,
+        secretsManagerClientFactory: (region, route) => ({
+          send: ((cmd: { input: unknown }) => {
+            dr.workloads?.push(route.workload);
+            return dr.smSend(region, cmd.input);
+          }) as never,
           destroy: () => dr.destroy('secretsmanager', region),
         }),
-        ssmClientFactory: (region) => ({
-          send: ((cmd: { input: unknown }) => dr.ssmSend(region, cmd.input)) as never,
+        ssmClientFactory: (region, route) => ({
+          send: ((cmd: { input: unknown }) => {
+            dr.workloads?.push(route.workload);
+            return dr.ssmSend(region, cmd.input);
+          }) as never,
           destroy: () => dr.destroy('ssm', region),
         }),
       });

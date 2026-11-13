@@ -389,7 +389,9 @@ export async function localInvokeAgentCoreCommand(
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
-      await resolveCfnFallbackRegion(options, candidate?.region)
+      await resolveCfnFallbackRegion(options, candidate?.region),
+      // Mixed mode: names follow THIS runtime's own sentinels (go-to-k/cdkd#6150).
+      { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
     );
     const { context: imageContext, loaded: loadedState } =
       stateProvider && candidate
@@ -761,4 +763,28 @@ export async function localInvokeAgentCoreCommand(
     await cleanup();
     if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
+}
+
+/**
+ * The AWS Emulator mixed-mode workload of the runtime `target` names (its
+ * logical ID and `aws:cdk:path`), found BEFORE full resolution so the state
+ * provider built ahead of it resolves names by this runtime's own sentinels
+ * (go-to-k/cdkd#6150). `undefined` when the target names no single runtime:
+ * the names then follow the run's routing, and the resolver reports the
+ * target itself.
+ */
+export function agentCoreTargetWorkload(
+  target: string,
+  stacks: readonly Parameters<typeof listTargets>[0][number][]
+): { logicalId: string; cdkPath: string | undefined } | undefined {
+  const hits = listTargets([...stacks]).agentCoreRuntimes.filter(
+    (e) => e.qualifiedId === target || e.displayPath === target || e.logicalId === target
+  );
+  if (hits.length !== 1) return undefined;
+  const hit = hits[0]!;
+  const resource = stacks.find((s) => s.stackName === hit.stackName)?.template.Resources?.[
+    hit.logicalId
+  ];
+  const path = (resource?.Metadata as Record<string, unknown> | undefined)?.['aws:cdk:path'];
+  return { logicalId: hit.logicalId, cdkPath: typeof path === 'string' ? path : undefined };
 }

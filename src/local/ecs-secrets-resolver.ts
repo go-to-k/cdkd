@@ -5,6 +5,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../utils/local-aws-failure.js';
 import { ownValue } from '../utils/own-keys.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { realAwsException } from './local-aws-wiring.js';
 
 /**
  * Resolve `ContainerDefinitions[].Secrets[].ValueFrom` references to real
@@ -99,25 +100,55 @@ export async function resolveEcsSecrets(
   // the SDK chain's first link read back the triple `applyRoleArnIfSet` had
   // just overwritten. Reading that sentence as a specification is how a
   // "simplification" reintroduces it.
-  const secretsClient =
-    options.secretsManagerClient ??
-    new SecretsManagerClient({
-      ...awsClientDefaults({ ignoreAssumedRole: true }),
-      ...(options.region && { region: options.region }),
-    });
-  const ssmClient =
-    options.ssmClient ??
-    new SSMClient({
-      ...awsClientDefaults({ ignoreAssumedRole: true }),
-      ...(options.region && { region: options.region }),
-    });
-  const ownsSecretsClient = options.secretsManagerClient === undefined;
-  const ownsSsmClient = options.ssmClient === undefined;
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): each container's secrets go
+  // where ITS exceptions send the service (`Parameters` plus its own section),
+  // as its runtime calls do. One client per (service, side), built lazily: a
+  // container excepting the service shares the real-AWS client, every other
+  // one the emulator client.
+  const owned: { destroy(): void }[] = [];
+  const secretsClients = new Map<boolean, SecretsManagerClient>();
+  const ssmClients = new Map<boolean, SSMClient>();
+  const secretsFor = (containerName: string): SecretsManagerClient => {
+    if (options.secretsManagerClient) return options.secretsManagerClient;
+    const workload = { containerName };
+    // Mixed mode: real AWS only for a `"real-aws"` exception of THIS container.
+    const realAws = realAwsException('SECRETS_MANAGER', workload);
+    let client = secretsClients.get(realAws);
+    if (!client) {
+      client = new SecretsManagerClient({
+        ...awsClientDefaults({ ignoreAssumedRole: true, realAws }),
+        ...(options.region && { region: options.region }),
+      });
+      secretsClients.set(realAws, client);
+      owned.push(client);
+    }
+    return client;
+  };
+  const ssmFor = (containerName: string): SSMClient => {
+    if (options.ssmClient) return options.ssmClient;
+    const workload = { containerName };
+    // Mixed mode: real AWS only for a `"real-aws"` exception of THIS container.
+    const realAws = realAwsException('SSM', workload);
+    let client = ssmClients.get(realAws);
+    if (!client) {
+      client = new SSMClient({
+        ...awsClientDefaults({ ignoreAssumedRole: true, realAws }),
+        ...(options.region && { region: options.region }),
+      });
+      ssmClients.set(realAws, client);
+      owned.push(client);
+    }
+    return client;
+  };
 
   try {
     const results = await Promise.all(
       entries.map(async (entry) => {
-        const value = await resolveOne(entry, secretsClient, ssmClient);
+        const value = await resolveOne(
+          entry,
+          () => secretsFor(entry.containerName),
+          () => ssmFor(entry.containerName)
+        );
         logger.debug(
           `Resolved secret ${displayIdent(entry.containerName)}.${displayIdent(entry.name)} (${displayIdent(entry.valueFrom, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })})`
         );
@@ -126,23 +157,22 @@ export async function resolveEcsSecrets(
     );
     return results;
   } finally {
-    if (ownsSecretsClient) secretsClient.destroy();
-    if (ownsSsmClient) ssmClient.destroy();
+    for (const c of owned) c.destroy();
   }
 }
 
 async function resolveOne(
   entry: SecretEntry,
-  secretsClient: SecretsManagerClient,
-  ssmClient: SSMClient
+  secretsClient: () => SecretsManagerClient,
+  ssmClient: () => SSMClient
 ): Promise<string> {
   const arn = entry.valueFrom;
   const shape = classifySecretArn(arn);
   switch (shape.kind) {
     case 'secrets-manager':
-      return resolveSecretsManager(entry, shape, secretsClient);
+      return resolveSecretsManager(entry, shape, secretsClient());
     case 'ssm':
-      return resolveSsm(entry, shape, ssmClient);
+      return resolveSsm(entry, shape, ssmClient());
     case 'unknown':
       throw new EcsSecretsResolutionError(
         `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} references an unsupported ValueFrom shape ${displayIdent(arn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}. ` +

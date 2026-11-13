@@ -2,7 +2,11 @@ import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-ref
 import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { activateLocalAwsAndRoleArn } from '../../../local/local-aws-wiring.js';
+import { groupWorkloadsRoutedApart, UNNAMED_WORKLOAD } from 'cdk-local/internal';
+import {
+  activateLocalAwsAndRoleArn,
+  getActiveWorkloadAwsWiring,
+} from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn } from '../../../utils/role-arn.js';
 import {
   Synthesizer,
@@ -228,10 +232,14 @@ export async function localRunTaskCommand(
     // Checked on the candidate, before any state read so an expired credential
     // reports the lookup; the target resolver below picks the same stack.
     refuseFailedLookups(candidate ? [candidate] : [], stacks, failedLookups);
+    // AWS Emulator mixed mode: the base record follows the exceptions every
+    // container shares (`Parameters`); a container whose own section excepts
+    // differently is re-resolved below with its own (go-to-k/cdkd#6150).
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
-      candidate?.region
+      candidate?.region,
+      getActiveWorkloadAwsWiring()?.mixed ? { workload: UNNAMED_WORKLOAD } : {}
     );
 
     // Issue #264: build the optional substitution context BEFORE resolving
@@ -245,6 +253,7 @@ export async function localRunTaskCommand(
       options
     );
     const task = resolveEcsTaskTarget(target, stacks, imageContext);
+    await applyPerContainerNames(task, target, stacks, candidate, options, imageContext);
     // An uncovered same-stack ECR image that nothing can cover any more (no
     // `--image-override`, and no boot prompt: not a terminal, or
     // `--no-interactive-overrides`) refuses HERE, before an `--assume-task-role`
@@ -287,10 +296,13 @@ export async function localRunTaskCommand(
           crossStackResolver: resolver,
           // Issue #2056: a producer output persisted as its `{{resolve:...}}`
           // token resolves against the producer's region at this boundary.
-          resolveDynamicReferences: (value, producerRegion) =>
+          // cdk-local passes the container the value is for (mixed mode:
+          // routed by that container's own exceptions, go-to-k/cdkd#6150).
+          resolveDynamicReferences: (value, producerRegion, workload) =>
             dynamicRefs.resolveString(value, {
               region: producerRegion,
               consumer: `Task ${task.taskDefinitionLogicalId} cross-stack env value`,
+              workload,
               // Overrides apply later, at docker-run time, so none can skip this.
               overridable: false,
             }),
@@ -400,6 +412,7 @@ export async function localRunTaskCommand(
     // on an old / unavailable daemon (never throws). Mirrors cdk-local #483.
     const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
     if (hostGatewayExtraHosts.length > 0) runOpts.hostGatewayExtraHosts = hostGatewayExtraHosts;
+    if (stateProvider) runOpts.stateSourceGiven = true;
 
     // go-to-k/cdkd#5768 — `--image-override`: rebuild a pinned
     // (deployed-registry) task-def image from a local Dockerfile and thread
@@ -499,5 +512,58 @@ export async function localRunTaskCommand(
     // exists) instead of Node's default exit, which would skip `docker rm -f`
     // and the dispose.
     if (sigintHandler) process.off('SIGINT', sigintHandler);
+  }
+}
+
+/**
+ * AWS Emulator mixed mode (go-to-k/cdkd#6150): give each container the names
+ * ITS `"real-aws"` exceptions resolve to. The task was resolved against the
+ * record of the exceptions every container shares (`Parameters`); a container
+ * whose own section excepts a different set (a DynamoDB exception for one
+ * container only, or a `null` clearing one) gets its `environment` and
+ * `secrets` from a resolution against a record of its own set. Otherwise a
+ * container excepting DynamoDB would get the EMULATOR's table name and address
+ * it on real AWS, or the reverse. The image stays the base resolution's.
+ *
+ * The base context is reused: only the state record differs, loaded ONCE
+ * per distinct excepted set, so the context's own lookups (STS for the pseudo
+ * parameters) and their warnings are not repeated.
+ */
+export async function applyPerContainerNames(
+  task: ReturnType<typeof resolveEcsTaskTarget>,
+  target: string,
+  stacks: Parameters<typeof resolveEcsTaskTarget>[1],
+  candidate: Parameters<typeof buildEcsImageResolutionContext>[0],
+  options: LocalRunTaskOptions,
+  baseContext: Parameters<typeof resolveEcsTaskTarget>[2]
+): Promise<void> {
+  // No base context: the template needs no state, so no name differs by routing.
+  if (!getActiveWorkloadAwsWiring()?.mixed || !candidate || !baseContext) return;
+  // cdk-local's grouping (go-to-k/cdk-local#905): the containers whose own
+  // section routes a different set than `UNNAMED_WORKLOAD`, by that set.
+  const groups = groupWorkloadsRoutedApart(task.containers, (c) => ({ containerName: c.name }));
+  for (const group of groups) {
+    const names = group.items.map((c) => c.name);
+    const provider = createLocalStateProvider(options, candidate.stackName, candidate.region, {
+      workload: group.workload,
+    });
+    if (!provider) continue;
+    try {
+      const loaded = await provider.load(candidate.stackName, candidate.region);
+      if (!loaded) continue;
+      const own = resolveEcsTaskTarget(target, stacks, {
+        ...baseContext,
+        stateResources: loaded.resources,
+      });
+      for (const name of names) {
+        const mine = own.containers.find((c) => c.name === name);
+        const into = task.containers.find((c) => c.name === name);
+        if (!mine || !into) continue;
+        into.environment = mine.environment;
+        into.secrets = mine.secrets;
+      }
+    } finally {
+      provider.dispose();
+    }
   }
 }

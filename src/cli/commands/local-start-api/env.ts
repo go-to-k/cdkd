@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { readEnvVarsFileText } from 'cdk-local/internal';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { getLogger } from '../../../utils/logger.js';
@@ -62,7 +63,10 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    // Through cdk-local's reader: a pipe-backed path (`<(jq ...)`,
+    // `/dev/stdin`) is read once, so the mixed-mode sentinel scan and this
+    // read see the same text (go-to-k/cdkd#6150).
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`

@@ -2,6 +2,7 @@ import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { DynamicReferenceResolver } from 'cdk-local/internal';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { realAwsException } from './local-aws-wiring.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 
 /**
@@ -25,17 +26,23 @@ export function createCallerDynamicReferenceResolver(
   // No `profile` for the resolver itself: it reads one only to build its own
   // default clients, which both factories below replace.
   return new DynamicReferenceResolver({
-    secretsManagerClientFactory: (region) =>
-      new SecretsManagerClient({
-        ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+    secretsManagerClientFactory: (region, route) => {
+      // Mixed mode: real AWS only for a `"real-aws"` exception of THIS workload.
+      const realAws = realAwsException('SECRETS_MANAGER', route.workload);
+      return new SecretsManagerClient({
+        ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws }),
         ...(region && { region: canonicalizeRegion(region) }),
         ...(profile && { profile }),
-      }),
-    ssmClientFactory: (region) =>
-      new SSMClient({
-        ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      });
+    },
+    ssmClientFactory: (region, route) => {
+      // Mixed mode: real AWS only for a `"real-aws"` exception of THIS workload.
+      const realAws = realAwsException('SSM', route.workload);
+      return new SSMClient({
+        ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws }),
         ...(region && { region: canonicalizeRegion(region) }),
         ...(profile && { profile }),
-      }),
+      });
+    },
   });
 }

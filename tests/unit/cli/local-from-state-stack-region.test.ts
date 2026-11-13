@@ -84,7 +84,7 @@ function optionsAsEngineCommandLeavesThem(rawStackRegion: string): Record<string
 }
 
 const buildProvider = (options: Record<string, unknown>): LocalStateProvider => {
-  const provider = cdkdExtraStateProviders.fromState!(options as never);
+  const provider = cdkdExtraStateProviders.fromState!(options as never, {});
   if (!provider) throw new Error('expected the --from-state factory to build a provider');
   return provider as unknown as LocalStateProvider;
 };

@@ -41,7 +41,7 @@ describe('cdkd --from-state factory: --stack-region case (issue #1836)', () => {
       fromState: true,
       statePrefix: 'cdkd',
       ...(stackRegion !== undefined && { stackRegion }),
-    });
+    }, {});
     expect(captured).toHaveLength(1);
     return captured[0]!;
   };
@@ -119,7 +119,7 @@ describe('cdkd --from-state factory: --stack-region case (issue #1836)', () => {
         statePrefix: 'cdkd',
         stackRegion: 'us-east-1',
         rawStackRegion: 'US-EAST-1',
-      } as never);
+      } as never, {});
       expect(captured).toHaveLength(1);
       expect(captured[0]!['rawStackRegion']).toBe('US-EAST-1');
       expect(captured[0]!['stackRegion']).toBe('us-east-1');
@@ -158,7 +158,7 @@ describe('cdkd --from-state factory: --region case (issue #1836)', () => {
       fromState: true,
       statePrefix: 'cdkd',
       ...(region !== undefined && { region }),
-    });
+    }, {});
     expect(captured).toHaveLength(1);
     return captured[0]!;
   };

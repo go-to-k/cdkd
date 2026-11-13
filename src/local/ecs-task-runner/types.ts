@@ -12,6 +12,21 @@ export class EcsTaskRunnerError extends Error {
 export interface RunEcsTaskOptions {
   /** `--cluster <name>`. Surfaced to metadata sidecar and the network prefix. */
   cluster: string;
+  /**
+   * `--from-state` / `--from-cfn-stack` was given: the `--aws-emulator`
+   * state-source hint after the dropped-entry warnings stays quiet.
+   */
+  stateSourceGiven?: boolean;
+  /**
+   * AWS Emulator mixed mode (go-to-k/cdkd#6150): the REAL identity for the
+   * containers that keep a `"real-aws"` exception, as env keys; the metadata
+   * sidecar (`taskCredentials`) then serves the emulator's keys.
+   */
+  mixedModeRealCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
   /** Override container env vars (SAM-style top-level keys are container names; `Parameters` is global). */
   envOverrides?: Record<string, Record<string, string | null> | undefined>;
   /** Host IP to bind published container ports to. Default `127.0.0.1`. */

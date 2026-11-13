@@ -6,6 +6,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import {
   activateLocalAwsAndRoleArn,
   profileCredentialsForWorkload,
+  warnAwsEmulatorStateSourceHint,
 } from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn, explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import {
@@ -662,10 +663,14 @@ async function resolveInvokeTemplateEnvWith(
   // exclusive — the helper throws when both are set. Returns
   // `undefined` when neither is set (skip the substitution pass
   // entirely; PR 1 warn-and-drop behavior is preserved).
+  // AWS Emulator mixed mode: names, `{{resolve:...}}` and SSM parameters
+  // follow THIS function's own sentinels (go-to-k/cdkd#6150).
+  const workload = { logicalId: lambda.logicalId, cdkPath: lambdaCdkPath };
   const stateProvider = createLocalStateProvider(
     options,
     lambda.stack.stackName,
-    lambda.stack.region
+    lambda.stack.region,
+    { workload }
   );
   if (stateProvider) {
     try {
@@ -696,6 +701,7 @@ async function resolveInvokeTemplateEnvWith(
             dynamicRefs.resolveString(value, {
               region: producerRegion,
               consumer: `Lambda ${lambda.logicalId} cross-stack env value`,
+              workload,
             }),
         };
         if (envHasIntrinsicValue(templateEnv)) {
@@ -752,6 +758,7 @@ async function resolveInvokeTemplateEnvWith(
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
     );
   }
+  warnAwsEmulatorStateSourceHint(envResult.unresolved.length, stateProvider !== undefined);
 
   // Same-stack dynamic references, against the region of the stack that owns
   // the env. Left as they are: keys already holding plaintext (the audit's
@@ -762,6 +769,8 @@ async function resolveInvokeTemplateEnvWith(
   const plaintextKeys = new Set<string>(stateAudit?.sensitiveKeys ?? []);
   for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    // Mixed mode: routed by THIS function's own sentinels (go-to-k/cdkd#6150).
+    workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
     region: firstUsableRegion(
       ownerRegion,
       options.stackRegion,

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readEnvVarsFileText } from 'cdk-local/internal';
+import { realAwsException } from '../../../local/local-aws-wiring.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -107,8 +108,14 @@ export async function resolvePseudoParametersForInvoke(
       // (go-to-k/cdkd#5001): `--from-cfn-stack` reads it as the CALLER (#3240) and
       // CloudFormation sees only the caller's own account, so the account is the
       // caller's, never a `--role-arn` assumed for cdkd's own calls.
+      const realAws = realAwsException('STS');
       sts = new STSClient({
-        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
+        // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+        ...awsClientDefaults({
+          profile: options.profile,
+          ignoreAssumedRole: true,
+          realAws,
+        }),
         ...(region && { region }),
         ...(options.profile && { profile: options.profile }),
       });
@@ -118,7 +125,8 @@ export async function resolvePseudoParametersForInvoke(
       // account, asked through `awsClientDefaults` as that role (go-to-k/cdkd#5001). Only the
       // account ID is taken; no credential reaches the emulated function.
       sts = new STSClient({
-        ...awsClientDefaults({ profile: options.profile }),
+        // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+        ...awsClientDefaults({ profile: options.profile, realAws: realAwsException('STS') }),
         ...(region && { region }),
         // `--profile` is the identity both state sources read through when no
         // role is published, so the account must be asked as it too.
@@ -182,7 +190,10 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    // Through cdk-local's reader: a pipe-backed path (`<(jq ...)`,
+    // `/dev/stdin`) is read once, so the mixed-mode sentinel scan and this
+    // read see the same text (go-to-k/cdkd#6150).
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`

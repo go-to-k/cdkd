@@ -72,7 +72,7 @@ These pages cover behaviour that is the same for every command:
 | --- | --- | --- |
 | `--profile <profile>` | default credential chain | AWS profile for your credentials and config settings. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's AWS calls. See [`--role-arn`](#role-arn). |
-| `--aws-emulator [url]` | `CDKD_AWS_EMULATOR` | Send every AWS call to a local AWS Emulator, with its keys only. See [Deploying into AWS Emulator](local-emulation.md#deploying-into-aws-emulator). |
+| `--aws-emulator [url]` | `CDKD_AWS_EMULATOR` | Send every AWS call to a local AWS Emulator, with its keys only. See [Deploying into AWS Emulator](local-emulation.md#deploying-into-aws-emulator); on `cdkd local`, `"real-aws"` in `--env-vars` keeps chosen services on real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode)). |
 | `-y`, `--yes` | `false` | Answer confirmation prompts with the recommended response. |
 | `--verbose` | `false` | Debug-level logging. |
 | `-V`, `--version` | | Print the cdkd version (top level only). |

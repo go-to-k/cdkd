@@ -1,4 +1,5 @@
 import { getLogger } from '../../../utils/logger.js';
+import { realAwsException } from '../../../local/local-aws-wiring.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import {
   createLocalStateProvider,
@@ -15,6 +16,27 @@ import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
 import type { LocalStartApiOptions } from './types.js';
 import { reachedLambdas, lambdaOwners } from './served-lambdas.js';
 import { getTemplateEnv } from './env.js';
+import {
+  awsEmulatorRealServices,
+  groupWorkloadsRoutedApart,
+  UNNAMED_WORKLOAD,
+  type AwsEmulatorWorkload,
+} from 'cdk-local/internal';
+import { readCdkPathOrUndefined } from '../../cdk-path.js';
+
+/**
+ * The key of the state record a Lambda substitutes from: its stack, and in AWS
+ * Emulator mixed mode the services ITS `"real-aws"` exceptions name
+ * (`Parameters` plus its own section, go-to-k/cdkd#6150). Two Lambdas of one
+ * stack with different exceptions read different records: a function excepting
+ * DynamoDB gets the real table's name, one that does not gets the emulator's —
+ * the name each one's runtime addresses where its calls go. Outside mixed mode
+ * it is the stack name alone.
+ */
+export function stateBundleKey(stackName: string, workload: AwsEmulatorWorkload): string {
+  const real = awsEmulatorRealServices(workload);
+  return real === undefined ? stackName : JSON.stringify([stackName, real]);
+}
 
 /**
  * Per-stack `--from-state` substitution input consumed by
@@ -120,10 +142,42 @@ export async function loadStateForRoutedStacks(
   // rationale). Bare `--from-cfn-stack` is safe because each routed
   // stack uses its own cdkd stack name.
   rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
-  for (const stackName of reachableStackNames) {
+  // One load per (stack, routed set), grouped as cdk-local groups its own
+  // multi-workload commands (go-to-k/cdk-local#905): each stack's shared names
+  // for `UNNAMED_WORKLOAD` (`Parameters` exceptions only; the plain stack load
+  // outside mixed mode), plus one per group of Lambdas whose own section
+  // excepts a different set (`groupWorkloadsRoutedApart`). A Lambda then finds
+  // its record by `stateBundleKey`.
+  const loads = new Map<string, { stackName: string; workload: AwsEmulatorWorkload }>();
+  const lambdas: { stackName: string; workload: AwsEmulatorWorkload }[] = [];
+  for (const ref of reachedLambdas(routes, routesWithAuth)) {
+    for (const owner of lambdaOwners(ref, stacks)) {
+      const resource = owner.template.Resources?.[ref.logicalId];
+      lambdas.push({
+        stackName: owner.stackName,
+        workload: {
+          logicalId: ref.logicalId,
+          cdkPath: resource ? readCdkPathOrUndefined(resource) : undefined,
+        },
+      });
+    }
+  }
+  for (const { stackName } of lambdas) {
+    const key = stateBundleKey(stackName, UNNAMED_WORKLOAD);
+    if (!loads.has(key)) loads.set(key, { stackName, workload: UNNAMED_WORKLOAD });
+  }
+  for (const group of groupWorkloadsRoutedApart(lambdas, (l) => l.workload)) {
+    for (const { stackName } of group.items) {
+      const key = stateBundleKey(stackName, group.workload);
+      if (!loads.has(key)) loads.set(key, { stackName, workload: group.workload });
+    }
+  }
+  for (const [key, { stackName, workload }] of loads) {
     const stack = stacks.find((s) => s.stackName === stackName);
     if (!stack) continue;
-    const provider = createLocalStateProvider(options, stack.stackName, stack.region);
+    const provider = createLocalStateProvider(options, stack.stackName, stack.region, {
+      workload,
+    });
     if (!provider) continue;
     try {
       const loaded = await provider.load(stack.stackName, stack.region);
@@ -149,7 +203,7 @@ export async function loadStateForRoutedStacks(
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;
       }
-      out.set(stackName, bundle);
+      out.set(key, bundle);
       logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);
     } finally {
       provider.dispose();
@@ -201,8 +255,14 @@ export async function resolvePseudoParametersForStartApi(
       // (go-to-k/cdkd#5001): `--from-cfn-stack` reads it as the CALLER (#3240) and
       // CloudFormation sees only the caller's own account, so the account is the
       // caller's, never a `--role-arn` assumed for cdkd's own calls.
+      const realAws = realAwsException('STS');
       sts = new STSClient({
-        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
+        // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+        ...awsClientDefaults({
+          profile: options.profile,
+          ignoreAssumedRole: true,
+          realAws,
+        }),
         ...(region && { region }),
         ...(options.profile && { profile: options.profile }),
       });
@@ -212,7 +272,8 @@ export async function resolvePseudoParametersForStartApi(
       // account, asked through `awsClientDefaults` as that role (go-to-k/cdkd#5001). Only the
       // account ID is taken; no credential reaches the emulated function.
       sts = new STSClient({
-        ...awsClientDefaults({ profile: options.profile }),
+        // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+        ...awsClientDefaults({ profile: options.profile, realAws: realAwsException('STS') }),
         ...(region && { region }),
         // `--profile` is the identity both state sources read through when no
         // role is published, so the account must be asked as it too.

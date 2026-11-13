@@ -145,6 +145,42 @@ describe('loadStateForStack — globalClients lifecycle', () => {
     expect(() => fresh.s3).not.toThrow();
   });
 
+  it('scopedClients: the read publishes nothing global and leaves an existing global intact (mixed mode, #6150)', async () => {
+    mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+    mocks.verifyBucketExistsMock.mockImplementation(async () => {
+      // DURING the read, the global is still the caller's.
+      expect(getAwsClients()).toBe(before);
+    });
+    mocks.listStacksMock.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mocks.getStateMock.mockResolvedValue({ state: { stackName: 'MyStack', resources: {} }, etag: 'e' });
+    const before = getAwsClients();
+    const result = await loadStateForStack('MyStack', 'us-east-1', {
+      statePrefix: 'cdkd',
+      region: 'us-east-1',
+      scopedClients: true,
+    });
+    expect(result?.region).toBe('us-east-1');
+    expect(mocks.verifyBucketExistsMock).toHaveBeenCalledTimes(1);
+    // ...and after it: not replaced, not reset.
+    expect(getAwsClients()).toBe(before);
+  });
+
+  it("warn: the read's warnings go to the given sink instead of the logger", async () => {
+    mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+    mocks.verifyBucketExistsMock.mockResolvedValue(undefined);
+    mocks.listStacksMock.mockResolvedValue([]);
+    const sink = vi.fn();
+    const result = await loadStateForStack('MyStack', 'us-east-1', {
+      statePrefix: 'cdkd',
+      region: 'us-east-1',
+      warn: sink,
+    });
+    expect(result).toBeUndefined();
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(String(sink.mock.calls[0]![0])).toContain('no cdkd state found');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('resets globalClients after a bucket-resolution failure (warn-and-fall-back path)', async () => {
     mocks.resolveStateBucketWithDefaultMock.mockRejectedValue(new Error('bucket lookup failed'));
 

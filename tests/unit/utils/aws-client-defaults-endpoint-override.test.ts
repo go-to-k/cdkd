@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it } from 'vite-plus/test';
 
 import {
   awsClientDefaults,
+  awsEndpointOverrideActive,
   resetAwsClientDefaults,
+  runWithRealAws,
   setAssumedRoleCredentials,
   setAwsEndpointOverrideSource,
   type AwsEndpointOverrideDefaults,
@@ -92,5 +94,27 @@ describe('awsClientDefaults under an endpoint override', () => {
     const d = awsClientDefaults();
     expect(d.endpoint).toBe('http://127.0.0.1:4566');
     expect('credentials' in d).toBe(false);
+  });
+});
+
+describe('the real-AWS escape in AWS Emulator mixed mode (go-to-k/cdkd#6150)', () => {
+  it('realAws: true skips the override for that client only', () => {
+    setAwsEndpointOverrideSource(() => EMULATOR);
+    expect(awsClientDefaults({ realAws: true }).endpoint).toBeUndefined();
+    expect('credentials' in awsClientDefaults({ realAws: true })).toBe(false);
+    expect(awsClientDefaults({ realAws: false }).endpoint).toBe(EMULATOR.endpoint);
+    expect(awsClientDefaults().endpoint).toBe(EMULATOR.endpoint);
+  });
+
+  it('runWithRealAws puts every client built inside it, across awaits, on real AWS, and nothing outside', async () => {
+    setAwsEndpointOverrideSource(() => EMULATOR);
+    const inside = await runWithRealAws(async () => {
+      await Promise.resolve();
+      return { defaults: awsClientDefaults(), active: awsEndpointOverrideActive() };
+    });
+    expect(inside.defaults.endpoint).toBeUndefined();
+    expect(inside.active).toBe(false);
+    expect(awsClientDefaults().endpoint).toBe(EMULATOR.endpoint);
+    expect(awsEndpointOverrideActive()).toBe(true);
   });
 });

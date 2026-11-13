@@ -49,10 +49,18 @@ const mocks = vi.hoisted(() => ({
   destroy: vi.fn(),
   /** The `profile` each site handed the caller-identity helper. */
   profiles: [] as Array<string | undefined>,
+  workloads: [] as unknown[],
 }));
 
 // Only the caller-identity helper is doubled: a site that bypassed it would
 // build real SDK clients and trip the AWS fence.
+// cdk-local's state-source hint (go-to-k/cdkd#6150) is gated once per PROCESS;
+// answer every ask here, so each case reads its own call site.
+vi.mock('cdk-local/internal', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  takeAwsEmulatorStateSourceHint: () => 'AWS-EMULATOR-STATE-SOURCE-HINT',
+}));
+
 vi.mock('../../../src/local/dynamic-reference.js', async () =>
   (await import('../_caller-resolver-double.js')).callerResolverModule(mocks)
 );
@@ -245,6 +253,7 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
       if (typeof m === 'function') m.mockReset();
     }
     mocks.profiles.length = 0;
+    mocks.workloads.length = 0;
     env = {};
     mocks.resolveApp.mockReturnValue('node app.js');
     mocks.synthesize.mockResolvedValue({ stacks: [makeStack()], assemblyDir: 'cdk.out' });
@@ -267,6 +276,19 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
   afterEach(() => {
     rmSync(workDir, { recursive: true, force: true });
     releaseStdoutForPayload();
+  });
+
+  it('mixed mode: the lookup and the state provider are routed for THIS function (go-to-k/cdkd#6150)', async () => {
+    env = { DB_PASSWORD: SAME_STACK_REF };
+    mocks.resolveLambdaTarget.mockImplementation(() => {
+      const l = makeZipLambda();
+      return { ...l, resource: { ...l.resource, Metadata: { 'aws:cdk:path': 'Producer/Consumer/Resource' } } };
+    });
+    await invoke(['--from-state']);
+    const workload = { logicalId: 'Consumer', cdkPath: 'Producer/Consumer/Resource' };
+    expect(mocks.workloads).toEqual([workload]);
+    // The state provider is built for the same workload.
+    expect(mocks.createLocalStateProvider.mock.calls[0]?.[3]).toEqual({ workload });
   });
 
   it('same stack: the container gets the resolved value, off the docker argv', async () => {
@@ -402,6 +424,27 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
 
     expect(r.env?.['DB_PASSWORD']).toBe(PRODUCER_REF);
     expect(mocks.smSend).not.toHaveBeenCalled();
+  });
+
+  it('--aws-emulator with no state source: ONE hint after the dropped-variable warnings (go-to-k/cdkd#6150)', async () => {
+    env = { TABLE: { Ref: 'Table' }, QUEUE: { Ref: 'Queue' } };
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    setActiveWorkloadAwsWiring({ mode: 'emulator', env: {}, scrubEnvKeys: [], mounts: [], loopbackPorts: [], probeHealth: true, dispose: () => {} } as never);
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      const { resolveInvokeTemplateEnv } = await import('../../../src/cli/commands/local-invoke.js');
+      await resolveInvokeTemplateEnv(makeZipLambda(), { output: 'cdk.out', verbose: false } as never);
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      const hints = lines.filter((l) => l === 'AWS-EMULATOR-STATE-SOURCE-HINT');
+      expect(hints).toHaveLength(1);
+      // After the per-variable warnings.
+      expect(lines.indexOf(hints[0]!)).toBe(lines.length - 1);
+      expect(lines.filter((l) => l.includes('was dropped. Override it with --env-vars'))).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+      setActiveWorkloadAwsWiring(undefined);
+    }
   });
 
   it('--profile reaches the resolver, which is built once per invoke', async () => {

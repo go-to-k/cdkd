@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
-import { addAwsEndpointOptions, getAwsEndpointOverride } from 'cdk-local/internal';
+import { addAwsEndpointOptions } from 'cdk-local/internal';
+import { mixedModeEmulatorOverride } from '../../local/local-aws-wiring.js';
 import { setAwsEndpointOverrideSource } from '../../utils/aws-client-defaults.js';
 import {
   appOptions,
@@ -154,7 +155,10 @@ export function createLocalCommand(): Command {
   // cdkd's own AWS clients follow the `--aws-emulator` endpoint whichever
   // command activates it: cdkd's four commands through `activateLocalAwsWiring`,
   // the cdk-local engine commands inside cdk-local's own handler.
-  setAwsEndpointOverrideSource(getAwsEndpointOverride);
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the emulator is the default
+  // there too, so a cdkd call fails closed onto it; an excepted call opts out
+  // with `realAws`.
+  setAwsEndpointOverrideSource(mixedModeEmulatorOverride);
 
   const local = new Command('local').description(
     'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'

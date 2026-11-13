@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readEnvVarsFileText } from 'cdk-local/internal';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import {
@@ -19,7 +19,10 @@ export function readEnvOverridesFile(
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    // Through cdk-local's reader: a pipe-backed path (`<(jq ...)`,
+    // `/dev/stdin`) is read once, so the mixed-mode sentinel scan and this
+    // read see the same text (go-to-k/cdkd#6150).
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`

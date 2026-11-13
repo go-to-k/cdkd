@@ -1,5 +1,10 @@
 import { getLogger } from '../../../utils/logger.js';
-import { setContainerRegion } from '../../../local/local-aws-wiring.js';
+import {
+  mixedModeActive,
+  realAwsException,
+  setContainerRegion,
+  warnAwsEmulatorStateSourceHint,
+} from '../../../local/local-aws-wiring.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../../utils/pasteable-command.js';
@@ -109,6 +114,9 @@ async function buildContainerEnvWith(
   const logger = getLogger();
   const overrides = readEnvOverridesFile(options.envVars);
   const cdkPath = readCdkPathOrUndefined(resolved.resource);
+  // AWS Emulator mixed mode: `{{resolve:...}}` follows THIS runtime's own
+  // sentinels (go-to-k/cdkd#6150).
+  const workload = { logicalId: resolved.logicalId, cdkPath };
   // Keys an `--env-vars` override replaces never reach state substitution, so
   // an override also skips a cross-stack dynamic-reference lookup.
   const overriddenKeys = keysOverriddenBy(
@@ -131,6 +139,7 @@ async function buildContainerEnvWith(
         dynamicRefs.resolveString(value, {
           region: producerRegion,
           consumer: `AgentCore Runtime ${resolved.logicalId} cross-stack env value`,
+          workload,
         }),
     };
     const pseudo =
@@ -167,6 +176,7 @@ async function buildContainerEnvWith(
         `or pass a state-source flag (e.g. --from-cfn-stack) to recover deployed values.`
     );
   }
+  warnAwsEmulatorStateSourceHint(envResult.unresolved.length, stateProvider !== undefined);
 
   // Same-stack dynamic references, against the region of the stack owning
   // the runtime. Plaintext keys (the `sensitiveKeys` above) and `--env-vars`
@@ -174,6 +184,7 @@ async function buildContainerEnvWith(
   const skipKeys = keysNotFromTemplate(templateEnv, envResult.resolved);
   for (const key of sensitiveEnvKeys) skipKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    workload,
     region: firstUsableRegion(
       loaded?.region,
       options.stackRegion,
@@ -221,7 +232,8 @@ export async function resolveStackAccountId(
     // CloudFormation sees only the caller's own account, so `${AWS::AccountId}` is the
     // caller's, never a `--role-arn` assumed for cdkd's own calls (go-to-k/cdkd#5001).
     sts = new STSClient({
-      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws: realAwsException('STS') }),
       ...(region && { region }),
       ...(profile && { profile }),
     });
@@ -232,7 +244,8 @@ export async function resolveStackAccountId(
     // `awsClientDefaults` as that role (go-to-k/cdkd#5001). Only the account ID is taken; no
     // credential reaches the emulated agent.
     sts = new STSClient({
-      ...awsClientDefaults({ profile }),
+      // Mixed mode: the account lookup follows the STS route — the emulator unless `Parameters` excepts STS (#6150).
+      ...awsClientDefaults({ profile, realAws: realAwsException('STS') }),
       ...(region && { region }),
       ...(profile && { profile }),
     });
@@ -512,7 +525,8 @@ export async function assumeAgentCoreExecutionRole(
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
   const sts = new STSClient({
-    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    // Mixed mode: an STS hop establishing the REAL identity stays on real AWS (#6150).
+    ...awsClientDefaults({ ignoreAssumedRole: true, realAws: mixedModeActive() }),
     ...(region && { region }),
   });
   try {

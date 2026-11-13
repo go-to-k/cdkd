@@ -55,12 +55,22 @@ export interface S3LocalStateProviderOptions {
    * decide that compare.
    */
   rawStackRegion?: string;
+  /**
+   * What the read's warnings start with (default `--from-state`). AWS
+   * Emulator mixed mode names its emulator side, so a miss there does not
+   * read as a real-AWS one (go-to-k/cdkd#6150).
+   */
+  logPrefix?: string;
+  /** Where the read's warnings go ({@link LoadStateForStackOptions.warn}). */
+  warn?: (message: string) => void;
+  /** The read runs inside the caller's client scope ({@link LoadStateForStackOptions.scopedClients}). */
+  scopedClients?: boolean;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {
   // erasableSyntaxOnly forbids parameter-property shorthand; declare
   // fields explicitly + assign in the body.
-  public readonly label = '--from-state';
+  public readonly label: string;
   private readonly opts: S3LocalStateProviderOptions;
   // The cross-stack resolver allocates its own AWS clients (one per
   // build) that must be disposed in the outer `finally`. Tracked so
@@ -80,6 +90,7 @@ export class S3LocalStateProvider implements LocalStateProvider {
 
   constructor(opts: S3LocalStateProviderOptions) {
     this.opts = opts;
+    this.label = opts.logPrefix ?? '--from-state';
   }
 
   public async load(
@@ -95,6 +106,9 @@ export class S3LocalStateProvider implements LocalStateProvider {
       ...(this.opts.stateBucket !== undefined && { stateBucket: this.opts.stateBucket }),
       ...(this.opts.region !== undefined && { region: this.opts.region }),
       ...(this.opts.profile !== undefined && { profile: this.opts.profile }),
+      ...(this.opts.logPrefix !== undefined && { logPrefix: this.opts.logPrefix }),
+      ...(this.opts.warn !== undefined && { warn: this.opts.warn }),
+      ...(this.opts.scopedClients === true && { scopedClients: true }),
     };
     const loaded = await loadStateForStack(stackName, synthRegion, loadOpts);
     if (!loaded) return undefined;
