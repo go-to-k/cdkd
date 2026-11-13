@@ -1,6 +1,7 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { parseZonedTimestamp } from './providers/rds/zoned-timestamp.js';
 
 /** The types whose create restores from `SourceDBClusterIdentifier`. */
 const RESTORING_TYPES: ReadonlySet<string> = new Set([
@@ -13,7 +14,7 @@ const RESTORING_TYPES: ReadonlySet<string> = new Set([
 export interface RestoreSourceScope {
   region?: string | undefined;
   account?: string | undefined;
-  /** The replaced record's attributes: its `DBClusterResourceId` names it too. */
+  /** The replaced record's attributes: its `DBClusterResourceId` (an instance's `DbiResourceId`) names it too. */
   attributes?: Record<string, unknown> | undefined;
 }
 
@@ -51,6 +52,114 @@ function automatedSnapshotOf(
 }
 
 /**
+ * Whether a DB instance's bag declares a point-in-time restore, as the
+ * handler's `isRestoreToPointInTime` reads it; `providers/rds/instance-pitr.ts`
+ * reads it from here.
+ */
+export function declaresInstancePointInTime(properties: Record<string, unknown>): boolean {
+  const latest = properties['UseLatestRestorableTime'];
+  if (latest === true || (typeof latest === 'string' && latest.toLowerCase() === 'true')) {
+    return true;
+  }
+  return ['RestoreTime', 'SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId'].some(
+    (key) => properties[key] != null && properties[key] !== ''
+  );
+}
+
+/** Why a point-in-time create names no engine source (the handler's "Cannot fetch the engine"). */
+export const POINT_IN_TIME_NO_SOURCE_REASON =
+  'the template names no source to restore to a point in time from (SourceDBInstanceIdentifier, SourceDbiResourceId or SourceDBInstanceAutomatedBackupsArn), so cdkd cannot read its engine; declare Engine or a source, as CloudFormation requires ("Cannot fetch the engine")';
+
+/**
+ * The template-only reason a DB instance create with these properties fails
+ * before any call, `undefined` when there is none: a `RestoreTime` that
+ * `java.time.ZonedDateTime` cannot parse (on any create, as the handler's
+ * `validateRequest`; a blank one passes), a `UseLatestRestorableTime` that is
+ * no boolean, a source key that is no string, or, for a point-in-time
+ * restore, no `Engine` and no source to read it from. The provider's create
+ * reads it (`providers/rds/instance-pitr.ts`), and {@link refuseRestoreFromItself}
+ * reads it BEFORE a replacement's delete, which would otherwise take the old
+ * instance and its backups for a create bound to fail.
+ */
+export function pointInTimeTemplateRefusal(
+  properties: Record<string, unknown>
+): string | undefined {
+  const time = properties['RestoreTime'];
+  if (time != null && !(typeof time === 'string' && time.trim() === '')) {
+    if (typeof time !== 'string' || parseZonedTimestamp(time) === undefined) {
+      return 'RestoreTime must be an ISO 8601 timestamp with a time zone, such as 2026-01-01T00:00:00Z';
+    }
+  }
+  const latest = properties['UseLatestRestorableTime'];
+  if (
+    latest != null &&
+    typeof latest !== 'boolean' &&
+    !(typeof latest === 'string' && ['true', 'false'].includes(latest.toLowerCase()))
+  ) {
+    return 'UseLatestRestorableTime must be true or false';
+  }
+  for (const key of ['SourceDBInstanceAutomatedBackupsArn', 'SourceDbiResourceId']) {
+    const value = properties[key];
+    if (value != null && typeof value !== 'string') return `${key} must be a string`;
+  }
+  if (!declaresInstancePointInTime(properties)) return undefined;
+  const engine = properties['Engine'];
+  const named = [
+    'SourceDBInstanceIdentifier',
+    'SourceDbiResourceId',
+    'SourceDBInstanceAutomatedBackupsArn',
+  ];
+  if (
+    !(typeof engine === 'string' && engine !== '') &&
+    !named.some((key) => typeof properties[key] === 'string' && properties[key] !== '')
+  ) {
+    return POINT_IN_TIME_NO_SOURCE_REASON;
+  }
+  return undefined;
+}
+
+/**
+ * A DB instance's point-in-time source that is the instance `physicalId`
+ * names: by `SourceDBInstanceIdentifier`, or, where the record holds its
+ * `DbiResourceId` (`scope.attributes`), by `SourceDbiResourceId`.
+ * `deployment/restore-source-identity.ts` reads the live id for a record
+ * without one, and the instance an automated backups ARN backs up.
+ */
+function refuseInstancePointInTimeFromItself(
+  resourceType: string,
+  properties: Record<string, unknown>,
+  physicalId: string,
+  logicalId: string,
+  scope: RestoreSourceScope
+): void {
+  const refuse = (key: string): never => {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: ${key} names the DB instance this creates or replaces, whose delete removes the automated backups a point-in-time restore reads; restore from another instance's backups instead. Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  };
+  const source = properties['SourceDBInstanceIdentifier'];
+  if (
+    typeof source === 'string' &&
+    source !== '' &&
+    clusterName(source) === clusterName(physicalId) &&
+    !elsewhere(source, scope)
+  ) {
+    refuse('SourceDBInstanceIdentifier');
+  }
+  const own = scope.attributes?.['DbiResourceId'];
+  if (typeof own !== 'string' || own === '') return;
+  const resourceId = properties['SourceDbiResourceId'];
+  if (typeof resourceId === 'string' && resourceId.toLowerCase() === own.toLowerCase()) {
+    refuse('SourceDbiResourceId');
+  }
+}
+
+/**
  * Refuses a restore whose source is the very cluster `physicalId` names
  * (#5638; by name, or by the `DBClusterResourceId` its record holds), or one
  * of that cluster's automated snapshots, which its delete
@@ -72,6 +181,26 @@ export function refuseRestoreFromItself(
   // delete removes its automated ones (`DeleteAutomatedBackups` defaults to
   // true) as a cluster's does.
   if (resourceType === 'AWS::RDS::DBInstance') {
+    // go-to-k/cdkd#5640: a create bound to fail on its template alone fails
+    // before a replacement's delete, which cannot be undone.
+    const refusal = pointInTimeTemplateRefusal(properties);
+    if (refusal !== undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${resourceType} ${logicalId}: ${refusal}; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    // go-to-k/cdkd#5640: a point-in-time key makes a restore from the
+    // source's automated backups, tested before the replica and the snapshot
+    // (which it then does not read), and the delete removes those backups.
+    if (declaresInstancePointInTime(properties)) {
+      refuseInstancePointInTimeFromItself(resourceType, properties, physicalId, logicalId, scope);
+      return;
+    }
     const instanceSnapshot = properties['DBSnapshotIdentifier'];
     // A declared source (an instance's or a Multi-AZ DB cluster's) makes a
     // read replica, which reads no snapshot.

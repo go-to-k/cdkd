@@ -818,6 +818,10 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
     // go-to-k/cdkd#5640: the snapshot a restore reads first lists one.
     DescribeDBSnapshotsCommand: () => ({ DBSnapshots: [{ Engine: 'postgres' }] }),
     DescribeDBClusterSnapshotsCommand: () => ({ DBClusterSnapshots: [{ Engine: 'postgres' }] }),
+    // go-to-k/cdkd#5640: the automated backup a point-in-time restore reads first.
+    DescribeDBInstanceAutomatedBackupsCommand: () => ({
+      DBInstanceAutomatedBackups: [{ Engine: 'postgres' }],
+    }),
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
@@ -1178,16 +1182,67 @@ const INSTANCE_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         [`update-add:${key}`]: {
-          why: `an instance is restored from a snapshot only when it is created, and CloudFormation fails an added snapshot as "Resource is immutable", so update() refuses it before any call (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640)`,
+          why: `an instance is restored from a snapshot only when it is created, and CloudFormation fails an added snapshot as "Resource is immutable", so update() refuses it before any call (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640)`,
           says: new RegExp(`${key} cannot be added or changed on an existing DB instance`),
         },
       },
       expectedSilent: {
-        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added snapshot (changedSnapshotRestoreKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
+        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added snapshot (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
         [`update-remove:${key}`]: `no ModifyDBInstance member: a removed snapshot changes nothing, as CloudFormation's handler treats it as mutable and sends nothing (ImmutabilityHelper.is${key}Mutable, read from the handler source, not measured; ${SRC})`,
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         ...INSTANCE_ENGINE_SILENT,
         'create:Engine': `an undeclared engine is the snapshot's, which the arm lists as the declared one, so the restore sends the same Engine (readSnapshotRestoreSource in ${SRC}, as the handler's fetchEngine; go-to-k/cdkd#5640)`,
+        ...Object.fromEntries(
+          ['AllocatedStorage', 'StorageType', 'BackupRetentionPeriod'].map((k) => [
+            `update-remove:${k}`,
+            CFN_DIFF_KEPT(k),
+          ])
+        ),
+      },
+    })),
+    ...(
+      [
+        ['RestoreTime', '2026-11-01T00:00:00Z'],
+        ['UseLatestRestorableTime', true],
+        [
+          'SourceDBInstanceAutomatedBackupsArn',
+          `arn:aws:rds:us-east-1:${ACCOUNT}:auto-backup:ab-source1`,
+        ],
+        ['SourceDbiResourceId', 'db-source1'],
+      ] as const
+    ).map(([key, value]) => ({
+      name: `a point-in-time restore by ${key} (go-to-k/cdkd#5640)`,
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.micro',
+        Engine: 'postgres',
+        [key]: value,
+        AllocatedStorage: '100',
+        StorageType: 'gp3',
+        BackupRetentionPeriod: 3,
+      },
+      // A timestamp: the default variant is no ZonedDateTime, which the create refuses.
+      ...(key === 'RestoreTime' && { variants: { RestoreTime: '2026-11-02T00:00:00Z' } }),
+      expectedRemovalThrows: {
+        ...((key === 'RestoreTime' || key === 'UseLatestRestorableTime') && {
+          'create:Engine': {
+            why: `with no Engine and no source to read it from, CloudFormation's fetchEngine fails the create ("Cannot fetch the engine"), so create() refuses it before any call (pointInTimeRestoreEngine in ${SRC}, go-to-k/cdkd#5640)`,
+            says: /cannot read its engine; declare Engine or a source/,
+          },
+        }),
+        [`update-add:${key}`]: {
+          why: `an instance is restored to a point in time only when it is created, and CloudFormation fails an added key as "Resource is immutable", so update() refuses it before any call (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640)`,
+          says: new RegExp(`${key} cannot be added or changed on an existing DB instance`),
+        },
+      },
+      expectedSilent: {
+        [`update-vary:${key}`]: `no comparable run: the vary probe's baseline update adds the key to a bag without it, which update() refuses before any call as an added point-in-time key (changedCreateTimeKeys in ${SRC}, go-to-k/cdkd#5640), and a varied value is refused the same way`,
+        ...(key === 'SourceDBInstanceAutomatedBackupsArn' && {
+          'create:Engine': `an undeclared engine is the automated backup's, which the arm lists as the declared one, so the restore sends the same Engine (pointInTimeRestoreEngine in ${SRC}, as the handler's fetchEngine; go-to-k/cdkd#5640)`,
+        }),
+        [`update-remove:${key}`]: `no ModifyDBInstance member: a removed point-in-time key changes nothing, as CloudFormation's handler treats it as mutable and sends nothing (ImmutabilityHelper.is${key}Mutable, read from the handler source, not measured; ${SRC})`,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        ...INSTANCE_ENGINE_SILENT,
         ...Object.fromEntries(
           ['AllocatedStorage', 'StorageType', 'BackupRetentionPeriod'].map((k) => [
             `update-remove:${k}`,

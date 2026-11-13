@@ -57,7 +57,12 @@ import {
   replicaSourceOf,
   withPreviousReplicaSource,
 } from './read-replica.js';
-import { changedSnapshotRestoreKeys, unconfirmedSnapshotRestoreKeys } from './instance-restore.js';
+import {
+  SNAPSHOT_RESTORE_KEYS,
+  changedCreateTimeKeys,
+  unconfirmedCreateTimeKeys,
+} from './instance-restore.js';
+import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -167,48 +172,79 @@ export async function updateDBInstance(
 
   // go-to-k/cdkd#5640: the read replica's source (`./read-replica.ts`).
   refuseMalformedReplicaSource(properties, resourceType, logicalId, physicalId);
-  const sourceChange = replicaSourceChange(properties, previousProperties);
-  // go-to-k/cdkd#5640: an added or changed restore snapshot is refused before
-  // any change, as CloudFormation fails the update ("Resource is immutable");
-  // a removed one changes nothing, and neither is ever sent. A rollback replay
-  // or a `drift --revert` restores the record the instance was created from,
-  // so it sends nothing and records it as it is.
-  const changedSnapshots = changedSnapshotRestoreKeys(
+  // A point-in-time restore's source is no replica's: the restore-key refusal
+  // below owns a change, and a removal has nothing to promote. Either side
+  // counts: a rollback replay restoring a point-in-time record over one whose
+  // template dropped the keys hands the record over as `properties`.
+  const sourceChange =
+    declaresPointInTimeRestore(previousProperties) || declaresPointInTimeRestore(properties)
+      ? 'unchanged'
+      : replicaSourceChange(properties, previousProperties);
+  // go-to-k/cdkd#5640: an added or changed restore snapshot or point-in-time
+  // key is refused before any change, as CloudFormation fails the update
+  // ("Resource is immutable"); a removed one changes nothing, and none is ever
+  // sent. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
+  // names the restore's source, so a changed one is refused the same way
+  // (`isSourceDBInstanceIdentifierMutable`). A rollback replay or a
+  // `drift --revert` restores the record the instance was created from, so it
+  // sends nothing and records it as it is.
+  const restoreKeys = [
+    ...SNAPSHOT_RESTORE_KEYS,
+    ...POINT_IN_TIME_KEYS,
+    ...(declaresPointInTimeRestore(previousProperties) ? ['SourceDBInstanceIdentifier'] : []),
+  ];
+  const changedRestoreKeys = changedCreateTimeKeys(
+    restoreKeys,
     properties,
     previousProperties,
     context?.changedProperties,
     context?.noEchoOnlyChangedProperties
   );
-  const unconfirmedSnapshots = unconfirmedSnapshotRestoreKeys(
+  const unconfirmedRestoreKeys = unconfirmedCreateTimeKeys(
+    restoreKeys,
     properties,
     previousProperties,
     context?.noEchoOnlyChangedProperties
   );
-  if (unconfirmedSnapshots.length > 0) {
+  if (unconfirmedRestoreKeys.length > 0) {
     this.logger.warn(
-      safeMsg`DBInstance ${logicalId}: ${unconfirmedSnapshots.join(', ')} may have changed (a NoEcho value cdkd cannot compare with its record); not applied: an instance is restored from a snapshot only when it is created.`
+      safeMsg`DBInstance ${logicalId}: ${unconfirmedRestoreKeys.join(', ')} may have changed (a NoEcho value cdkd cannot compare with its record); not applied: an instance is restored only when it is created.`
     );
   }
   if (
-    changedSnapshots.length > 0 &&
+    changedRestoreKeys.length > 0 &&
     context?.replayingState !== true &&
     context?.desiredFromAwsReadback !== true
   ) {
-    const { mask: snapshotMask } = withDerivedNameMasks(
+    const { mask: restoreMask } = withDerivedNameMasks(
       this.logger,
       createMaskedLogSinks(this.logger, context?.maskSecrets),
       [[previousProperties['DBInstanceIdentifier'], physicalId]]
     );
+    const fromSnapshot = changedRestoreKeys.some((key) =>
+      (SNAPSHOT_RESTORE_KEYS as readonly string[]).includes(key)
+    );
+    const toPointInTime = changedRestoreKeys.some(
+      (key) => !(SNAPSHOT_RESTORE_KEYS as readonly string[]).includes(key)
+    );
+    const how =
+      fromSnapshot && toPointInTime
+        ? 'from a snapshot or to a point in time'
+        : fromSnapshot
+          ? 'from a snapshot'
+          : 'to a point in time';
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      snapshotMask(
-        `${changedSnapshots.join(' and ')} cannot be added or changed on an existing DB instance — ` +
-          `an instance is restored from a snapshot only when it is created, and CloudFormation ` +
+      restoreMask(
+        `${changedRestoreKeys.join(' and ')} cannot be added or changed on an existing DB instance — ` +
+          `an instance is restored ${how} only when it is created, and CloudFormation ` +
           `refuses the same update ("Resource is immutable"). Removing it changes nothing. ` +
           `Nothing was applied to DB instance ${physicalId}. To keep the instance as it is, ` +
-          `declare the snapshot the previous deploy declared (or none, if it declared none). ` +
-          `To replace it with an instance restored from the snapshot, ` +
+          (toPointInTime
+            ? `declare the values the previous deploy declared (or none, if it declared none). `
+            : `declare the snapshot the previous deploy declared (or none, if it declared none). `) +
+          `To replace it with an instance restored ${fromSnapshot && !toPointInTime ? 'from the snapshot' : 'as declared'}, ` +
           (String(previousProperties['DeletionProtection']) === 'true'
             ? protectedReplacementAdvice({
                 evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
@@ -217,7 +253,7 @@ export async function updateDBInstance(
                   before: 'aws rds modify-db-instance --db-instance-identifier',
                   identifier: physicalId,
                   after: '--no-deletion-protection --apply-immediately',
-                  maskSecrets: snapshotMask,
+                  maskSecrets: restoreMask,
                 },
               })
             : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +

@@ -32,7 +32,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
 
-- **restore-source-guard.ts** - Refuses restoring from the cluster or its/the DB instance's automated snapshot pre-delete (#5628); unrecorded ids: `deployment/restore-source-identity.ts`; a LEAF.
+- **restore-source-guard.ts** - Refuses restoring from the cluster/DB instance or its auto snapshot/backups pre-delete (#5628); unrecorded ids: `deployment/restore-source-identity.ts`; a LEAF.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 

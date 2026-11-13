@@ -48,8 +48,9 @@ import type { RDSProvider } from '../rds-provider.js';
  *   cross-region replica keeps the Cloud Control route
  *   (`findValueRoutedProperties` in `property-coverage.ts`).
  *
- * `ReplicaMode`, `SourceDBClusterIdentifier` and the point-in-time properties
- * stay SDK-unwired, so a template declaring one keeps its Cloud Control route.
+ * `ReplicaMode` and `SourceDBClusterIdentifier` stay SDK-unwired, so a template
+ * declaring one keeps its Cloud Control route. A point-in-time key beside a
+ * source makes the create a point-in-time restore instead (`./instance-pitr.ts`).
  */
 
 /** The declared source: `undefined` when absent or empty, as the handler's `hasValue`. */

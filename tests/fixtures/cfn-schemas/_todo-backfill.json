@@ -41,13 +41,9 @@
       "DomainIAMRoleName",
       "DomainOu",
       "ReplicaMode",
-      "RestoreTime",
       "SourceDBClusterIdentifier",
-      "SourceDBInstanceAutomatedBackupsArn",
-      "SourceDbiResourceId",
       "TdeCredentialArn",
-      "TdeCredentialPassword",
-      "UseLatestRestorableTime"
+      "TdeCredentialPassword"
     ]
   },
   "bogusTolerated": {

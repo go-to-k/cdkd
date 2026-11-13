@@ -5,11 +5,13 @@ import type { Construct } from 'constructs';
 
 /**
  * go-to-k/cdkd#5640: `AWS::RDS::DBInstance` restored from a snapshot through
- * cdkd's SDK route (`DBSnapshotIdentifier`, `DBClusterSnapshotIdentifier`).
+ * cdkd's SDK route (`DBSnapshotIdentifier`, `DBClusterSnapshotIdentifier`),
+ * and to a point in time (`UseLatestRestorableTime`).
  *
  * - `Source` is a PostgreSQL `db.t3.micro` instance with a database `appdb`,
  *   master user `cdkdadmin` (password managed in Secrets Manager by RDS) and
- *   no automated backups (retention 0). `SourceCluster` is a Multi-AZ DB
+ *   one day of automated backups (a point-in-time restore reads them).
+ *   `SourceCluster` is a Multi-AZ DB
  *   cluster (PostgreSQL, `db.c6gd.medium`, io1 100 GiB at 1000 IOPS, the
  *   `rds-multiaz-cluster` fixture's measured shape) with master user
  *   `postgres` and retention 1. verify.sh takes a manual snapshot of each (a
@@ -22,8 +24,15 @@ import type { Construct } from 'constructs';
  *   CopyTagsToSnapshot) and members only CloudFormation's follow-up
  *   ModifyDBInstance carries (the retention, the backup window). `SnapInstance`
  *   also declares a MasterUsername the restore cannot set (cdkd warns).
- * - CDKD_TEST_UPDATE=true: `SnapInstance`'s `BackupRetentionPeriod` 3 -> 4,
- *   in place.
+ * - CDKD_TEST_PITR=true adds `PitrInstance`, restored from `Source` to its
+ *   latest restorable time (`SourceDBInstanceIdentifier` +
+ *   `UseLatestRestorableTime: true`), declaring no engine. It declares a
+ *   member only the restore call carries (Port, MaxAllocatedStorage) and
+ *   members only the follow-up carries (the retention, the backup window).
+ *   CDKD_TEST_PITR_RESTORE_TIME adds that `RestoreTime` to it (an update
+ *   cdkd refuses).
+ * - CDKD_TEST_UPDATE=true: `SnapInstance`'s `BackupRetentionPeriod` 3 -> 4
+ *   and `PitrInstance`'s 2 -> 3, in place.
  *
  * Fixed names so verify.sh can read them back and sweep them.
  */
@@ -33,6 +42,8 @@ export class RdsDbInstanceSnapshotRestoreStack extends cdk.Stack {
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const snapshotId = process.env.CDKD_TEST_SNAPSHOT_ID;
     const clusterSnapshotId = process.env.CDKD_TEST_CLUSTER_SNAPSHOT_ID;
+    const pointInTime = process.env.CDKD_TEST_PITR === 'true';
+    const restoreTime = process.env.CDKD_TEST_PITR_RESTORE_TIME;
 
     cdk.Tags.of(this).add('cdkd-integ-fixture', 'rds-dbinstance-snapshot-restore');
 
@@ -64,7 +75,10 @@ export class RdsDbInstanceSnapshotRestoreStack extends cdk.Stack {
       masterUsername: 'cdkdadmin',
       manageMasterUserPassword: true,
       dbSubnetGroupName: subnetGroup.ref,
-      backupRetentionPeriod: 0,
+      backupRetentionPeriod: 1,
+      // Declared so the maintenance window never overlaps the backup window.
+      preferredBackupWindow: '04:00-04:30',
+      preferredMaintenanceWindow: 'sun:10:00-sun:10:30',
       publiclyAccessible: false,
       deletionProtection: false,
     });
@@ -124,6 +138,28 @@ export class RdsDbInstanceSnapshotRestoreStack extends cdk.Stack {
         deletionProtection: false,
       });
       fromCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
+
+    if (pointInTime) {
+      const restoredToTime = new rds.CfnDBInstance(this, 'PitrInstance', {
+        dbInstanceIdentifier: 'cdkd-integ-rds-inst-pitr-5640',
+        // With a point-in-time key, the restore's source, not a replica's.
+        sourceDbInstanceIdentifier: source.ref,
+        useLatestRestorableTime: true,
+        ...(restoreTime !== undefined && restoreTime !== '' && { restoreTime }),
+        dbInstanceClass: 'db.t3.micro',
+        dbSubnetGroupName: subnetGroup.ref,
+        // On the restore call.
+        port: '5436',
+        maxAllocatedStorage: 40,
+        // On the follow-up ModifyDBInstance only.
+        backupRetentionPeriod: isUpdate ? 3 : 2,
+        preferredBackupWindow: '07:00-07:30',
+        preferredMaintenanceWindow: 'sun:10:00-sun:10:30',
+        publiclyAccessible: false,
+        deletionProtection: false,
+      });
+      restoredToTime.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     }
   }
 }

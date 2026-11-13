@@ -1,6 +1,7 @@
 import { canonicalAssociatedRoles } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { sameReplicaSource } from './read-replica.js';
+import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
 import {
   canonicalAdditionalStorageVolumes,
   withDeclaredVolumeMembers,
@@ -68,6 +69,11 @@ export function getDriftUnknownPaths(
       // go-to-k/cdkd#5640: RestoreDBInstanceFromDBSnapshot inputs, never read back.
       'DBSnapshotIdentifier',
       'DBClusterSnapshotIdentifier',
+      // go-to-k/cdkd#5640: RestoreDBInstanceToPointInTime inputs, never read back.
+      ...POINT_IN_TIME_KEYS,
+      // ...and a point-in-time restore's source, which RDS keeps no record of
+      // (`ReadReplicaSourceDBInstanceIdentifier` names a replica's only).
+      ...(declaresPointInTimeRestore(properties) ? ['SourceDBInstanceIdentifier'] : []),
     ];
     // go-to-k/cdkd#5640: an undeclared replication retention reads as the
     // instance's own BackupRetentionPeriod, which RDS applies by default, so

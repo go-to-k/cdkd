@@ -24,10 +24,10 @@ import { declared, positive } from './read-replica.js';
  * - CREATE: a non-empty value of either key makes the create a
  *   `RestoreDBInstanceFromDBSnapshot` (`isRestoreFromSnapshot` /
  *   `isRestoreFromClusterSnapshot`), carrying both keys as declared. The
- *   point-in-time keys and a read replica's source are tested first: the
- *   point-in-time keys are still SDK-unwired (a template declaring one keeps
- *   the Cloud Control route), and a declared `SourceDBInstanceIdentifier`
- *   makes a read replica, which reads neither snapshot key.
+ *   point-in-time keys and a read replica's source are tested first: a
+ *   point-in-time key makes a `RestoreDBInstanceToPointInTime`
+ *   (`./instance-pitr.ts`), and a declared `SourceDBInstanceIdentifier`
+ *   makes a read replica; neither reads a snapshot key.
  * - The engine, when the template declares none, is the snapshot's
  *   (`fetchEngine`: the DB snapshot when declared, else the cluster snapshot).
  *   A DB snapshot is also read when `MultiAZ` is not true: an undeclared
@@ -329,17 +329,19 @@ export function unusedSnapshotRestoreKeys(properties: Record<string, unknown>): 
  * call for it (`shouldUpdateAfterCreate`): when nothing else does, the handler
  * sends no follow-up and they are not applied, so cdkd sends none either and
  * names them. A read replica's create carries the Database Insights and
- * Performance Insights members itself.
+ * Performance Insights members itself, a point-in-time restore's
+ * `MaxAllocatedStorage`.
  */
 export function followUpOnlyKeys(
   properties: Record<string, unknown>,
-  kind: 'replica' | 'restore'
+  kind: 'replica' | 'restore' | 'pitr'
 ): string[] {
   return [
-    'MaxAllocatedStorage',
+    // A point-in-time restore carries it on its own call.
+    ...(kind === 'pitr' ? [] : ['MaxAllocatedStorage']),
     'AllowMajorVersionUpgrade',
     'MasterUserSecret',
-    ...(kind === 'restore'
+    ...(kind !== 'replica'
       ? [
           'DatabaseInsightsMode',
           'PerformanceInsightsRetentionPeriod',
@@ -393,12 +395,30 @@ export function snapshotRestoredDifferences(
 }
 
 /**
- * The snapshot keys an update adds or changes, which the handler fails as
- * "Resource is immutable" (`isDBSnapshotIdentifierMutable`,
- * `isDBClusterSnapshotIdentifierMutable`): mutable only when unchanged or
- * removed (empty on the desired side).
+ * Whether a create-time key holds a value an update could be asked to apply:
+ * a string key when non-empty (`StringUtils.isNullOrEmpty`), and
+ * `UseLatestRestorableTime` only when true (`isUseLatestRestorableTimeMutable`
+ * treats any other value as mutable).
  */
-export function changedSnapshotRestoreKeys(
+function createTimeKeySet(key: string, value: unknown): boolean {
+  if (key === 'UseLatestRestorableTime') return coerceCfnBoolean(value) === true;
+  return value != null && value !== '';
+}
+
+function sameCreateTimeValue(key: string, a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  return key === 'UseLatestRestorableTime' && coerceCfnBoolean(a) === coerceCfnBoolean(b);
+}
+
+/**
+ * The create-time keys (`keys`) an update adds or changes, which the handler
+ * fails as "Resource is immutable" (`isDBSnapshotIdentifierMutable`,
+ * `isDBClusterSnapshotIdentifierMutable`, and the point-in-time keys'
+ * `is*Mutable`): mutable only when unchanged or removed (unset on the desired
+ * side).
+ */
+export function changedCreateTimeKeys(
+  keys: readonly string[],
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   /**
@@ -416,10 +436,10 @@ export function changedSnapshotRestoreKeys(
    */
   noEchoOnly?: ReadonlySet<string>
 ): string[] {
-  return SNAPSHOT_RESTORE_KEYS.filter((key) => {
+  return keys.filter((key) => {
     const desired = properties[key];
-    if (desired == null || desired === '') return false;
-    if (desired === previousProperties[key]) return false;
+    if (!createTimeKeySet(key, desired)) return false;
+    if (sameCreateTimeValue(key, desired, previousProperties[key])) return false;
     if (noEchoOnly?.has(key) === true) return false;
     if (changedProperties !== undefined) return changedProperties.has(key);
     return true;
@@ -427,19 +447,20 @@ export function changedSnapshotRestoreKeys(
 }
 
 /**
- * The snapshot keys {@link changedSnapshotRestoreKeys} leaves alone only
+ * The create-time keys {@link changedCreateTimeKeys} leaves alone only
  * because the change set names them for an unconfirmed `NoEcho` value: they
  * may have changed, which an update cannot apply, so the caller warns.
  */
-export function unconfirmedSnapshotRestoreKeys(
+export function unconfirmedCreateTimeKeys(
+  keys: readonly string[],
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   noEchoOnly: ReadonlySet<string> | undefined
 ): string[] {
   if (noEchoOnly === undefined) return [];
-  return SNAPSHOT_RESTORE_KEYS.filter((key) => {
+  return keys.filter((key) => {
     const desired = properties[key];
-    if (desired == null || desired === '') return false;
-    return desired !== previousProperties[key] && noEchoOnly.has(key);
+    if (!createTimeKeySet(key, desired)) return false;
+    return !sameCreateTimeValue(key, desired, previousProperties[key]) && noEchoOnly.has(key);
   });
 }
