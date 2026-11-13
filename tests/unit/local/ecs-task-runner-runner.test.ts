@@ -2499,7 +2499,10 @@ describe('runEcsTask — namespace-owning loopback forwarder (go-to-k/cdkd#6142)
     expect(pairs(fwd!, '--network')).toEqual(['cdkd-local-task-fake']);
     expect(pairs(fwd!, '--network-alias')).toEqual(['app', 'app.svc']);
     expect(pairs(fwd!, '-p')).toEqual(['127.0.0.1:8080:80/tcp']);
-    expect(pairs(fwd!, '--add-host')).toEqual(['host.docker.internal:192.168.65.254']);
+    // Plus the real SQS host blocks under --aws-emulator (go-to-k/cdkd#6257).
+    const fwdHosts = pairs(fwd!, '--add-host');
+    expect(fwdHosts[0]).toBe('host.docker.internal:192.168.65.254');
+    expect(fwdHosts).toContain('sqs.us-east-1.amazonaws.com:127.0.0.1');
     expect(pairs(fwd!, '--link')).toEqual(['db:database']);
     expect(fwd).not.toContain('--pid');
     expect(fwd!.slice(-2)).toEqual(['9297', 'tcp']);

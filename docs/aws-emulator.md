@@ -376,9 +376,15 @@ The emulator answers with real-shaped queue URLs, and the AWS SDK for
 JavaScript v3 sends SQS requests to the queue URL's host. A sidecar rewrites
 those URLs in the emulator's answers: with an `https` emulator URL whose run
 wrote `ca.pem`, and always in mixed mode. On the host network no sidecar
-runs. A queue URL that reaches the handler as an environment variable
-(`--from-state`, `--from-cfn-stack`, `--env-vars`) is not rewritten: pass
-`useQueueUrlAsEndpoint: false` to that `SQSClient`.
+runs. A container environment variable that is exactly a real queue URL
+(from `--from-state`, `--from-cfn-stack` or `--env-vars`) is rewritten to the
+same queue on the container's SQS endpoint, so a `SendMessage` to it lands in
+the emulator. Any other real queue URL, such as one the handler reads at run
+time from SSM Parameter Store, Secrets Manager or its event, fails closed: the
+container's `/etc/hosts` maps the real SQS host names to `127.0.0.1`, so the
+connection is refused before a signed request leaves the machine. A container
+whose SQS is excepted to real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode))
+gets neither.
 
 In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its

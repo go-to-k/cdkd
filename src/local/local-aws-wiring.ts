@@ -76,6 +76,13 @@ export interface LocalAwsWiringOptions {
    * misspelled variable stop the command.
    */
   envVars?: string | undefined;
+  /**
+   * The command runs ONE workload (`invoke`, `invoke-agentcore`): the
+   * mixed-mode startup line is left to `logMixedModeForWorkload`, called once
+   * the target is resolved, so it names that workload's exceptions only
+   * (go-to-k/cdkd#6257).
+   */
+  singleWorkload?: boolean | undefined;
 }
 
 /**
@@ -101,6 +108,7 @@ export async function activateLocalAwsWiring(options: LocalAwsWiringOptions): Pr
       // path is read once and the command's own `--env-vars` read gets the
       // same text; the parsed file drives per-workload routing.
       envVars: options.envVars,
+      singleWorkload: options.singleWorkload,
     });
   } catch (err) {
     // The error's own CAUSE, not the error: chaining the error itself only
