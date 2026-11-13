@@ -376,8 +376,9 @@ export async function localRunTaskCommand(
     // ARN is used. When TaskRoleArn references an inline same-stack IAM Role
     // the resolver emits the state record's deployed ARN under a state source
     // (go-to-k/cdkd#6189), else a synth-time placeholder ARN
-    // (`arn:aws:iam::${AWS::AccountId}:role/<LogicalId>`); we fill in the account
-    // segment lazily via STS only when bare `--assume-task-role` is set,
+    // (`arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<LogicalId>`); we fill
+    // in the partition and account lazily via STS only when bare
+    // `--assume-task-role` is set,
     // so the STS round-trip does not fire on the common pass-through path.
     //
     // Under `--aws-emulator` the role is assumed in the emulator; in mixed
