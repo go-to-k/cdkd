@@ -3,6 +3,7 @@ import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { removeProtectionTypeList } from '../provisioning/remove-protection-types.js';
 import { resourceTimeoutOptions } from './options/resource-timeout.js';
+import { parsePositiveIntegerOption } from './arg-parser.js';
 import {
   allowUnsupportedTypesOption,
   preferSdkRouteOption,
@@ -583,19 +584,19 @@ export const deployOptions = [
   // Cloud Control began answering with retryable failures.
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(20)
-    .argParser((value) => parseInt(value, 10)),
+    .argParser(parsePositiveIntegerOption),
   new Option('--stack-concurrency <number>', 'Maximum concurrent stack deployments')
     .default(4)
-    .argParser((value) => parseInt(value, 10)),
+    .argParser(parsePositiveIntegerOption),
   new Option(
     '--asset-publish-concurrency <number>',
     'Maximum concurrent asset publish operations (S3 uploads + ECR push)'
   )
     .default(8)
-    .argParser((value) => parseInt(value, 10)),
+    .argParser(parsePositiveIntegerOption),
   new Option('--image-build-concurrency <number>', 'Maximum concurrent Docker image builds')
     .default(4)
-    .argParser((value) => parseInt(value, 10)),
+    .argParser(parsePositiveIntegerOption),
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),

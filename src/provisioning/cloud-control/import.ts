@@ -1,7 +1,10 @@
 import type { CloudControlProvider } from '../cloud-control-provider.js';
 import { GetResourceCommand } from '@aws-sdk/client-cloudcontrol';
 import { displaySafe } from '../../utils/display-safe.js';
-import { getTopLevelAttributeNames } from '../read-only-properties.js';
+import {
+  getTopLevelAttributeNames,
+  isAwsEmulatorRegistryMissType,
+} from '../read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from '../cc-import-identifier.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../types/resource.js';
@@ -316,8 +319,14 @@ export async function maskUncertifiedModelValues(
           `recorded as "${SECRET_MASK}" rather than risking a credential in ` +
           `state.json; an Fn::GetAtt against such a resource fails with a ` +
           `named refusal until that resource is next created or updated by a ` +
-          `deploy. Grant cloudformation:DescribeType and re-import to record ` +
-          `its attributes.`
+          // Under --aws-emulator a type its registry lacks is no missing
+          // permission (go-to-k/cdkd#6249): the consequence stays, the
+          // impossible remedy goes.
+          (isAwsEmulatorRegistryMissType(resourceType)
+            ? `deploy. The AWS Emulator's CloudFormation registry has no schema ` +
+              `for this type, so no permission change helps here.`
+            : `deploy. Grant cloudformation:DescribeType and re-import to record ` +
+              `its attributes.`)
       );
     }
   }

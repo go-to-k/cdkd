@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 import { addAwsEndpointOptions } from 'cdk-local/internal';
 import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import {
@@ -186,7 +187,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
           '/ws open-to-close window. Raise this for long-running agent calls that exceed the default.'
       )
         .default(120000)
-        .argParser(parseTimeoutMs)
+        .argParser(cliArgParser(parseTimeoutMs))
     )
     .addOption(
       new Option(

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -51,7 +51,9 @@ import {
   describeTypeQueueDepth,
   describeTypeRetryDelays,
   describeTypeWithThrottleRetry,
+  resetAwsEmulatorRegistryMissReportForTests,
 } from '../../../src/provisioning/describe-type.js';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 
 /** A type cdkd holds no schema snapshot for. */
 const UNSNAPSHOTTED = 'AWS::NoSnapshot::Type';
@@ -1020,5 +1022,61 @@ describe('an unparseable DescribeType schema (issue #5254)', () => {
       warn: mockLoggerWarn,
       error: mockLoggerError,
     });
+  });
+});
+
+// go-to-k/cdkd#6249: under --aws-emulator a TypeNotFoundException is the
+// emulator's registry lacking the type, not a missing permission.
+describe('getCreateOnlyPropertyPaths under --aws-emulator (#6249)', () => {
+  function typeNotFound(type: string): Error {
+    const error = new Error(`The type '${type}' cannot be found.`);
+    error.name = 'TypeNotFoundException';
+    return error;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCloudFormationSend.mockReset();
+    clearCreateOnlyPropertiesCache();
+    resetAwsEmulatorRegistryMissReportForTests();
+  });
+  afterEach(() => {
+    setAwsEndpointOverrideSource(undefined);
+  });
+
+  it('falls back with no Grant warning and one info line for the whole run', async () => {
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9497' }));
+    mockCloudFormationSend.mockImplementation(async (cmd: { input: { TypeName: string } }) => {
+      throw typeNotFound(cmd.input.TypeName);
+    });
+
+    const sqs = await getCreateOnlyPropertyPaths('AWS::SQS::Queue');
+    const none = await getCreateOnlyPropertyPaths(UNSNAPSHOTTED);
+    await getCreateOnlyPropertyPaths('AWS::SNS::Topic');
+
+    expect(sqs).toEqual(CREATE_ONLY_PATHS_SNAPSHOT.get('AWS::SQS::Queue'));
+    expect(none).toEqual([]);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(mockLoggerInfo).toHaveBeenCalledTimes(1);
+    expect(String(mockLoggerInfo.mock.calls[0]![0])).not.toContain('Grant');
+    const debug = mockLoggerDebug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(debug).toContain('AWS::SQS::Queue');
+    expect(debug).toContain(UNSNAPSHOTTED);
+  });
+
+  it('keeps the Grant warning for any other failure under the emulator', async () => {
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9497' }));
+    mockCloudFormationSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    await getCreateOnlyPropertyPaths('AWS::SQS::Queue');
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(String(mockLoggerWarn.mock.calls[0]![0])).toContain('Grant cloudformation:DescribeType');
+  });
+
+  it('keeps the Grant warning for TypeNotFoundException against real AWS', async () => {
+    mockCloudFormationSend.mockRejectedValueOnce(typeNotFound('AWS::SQS::Queue'));
+    await getCreateOnlyPropertyPaths('AWS::SQS::Queue');
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(String(mockLoggerWarn.mock.calls[0]![0])).toContain('Grant cloudformation:DescribeType');
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 });

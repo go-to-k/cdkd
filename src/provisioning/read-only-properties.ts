@@ -71,7 +71,11 @@
  * type.
  */
 
-import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import {
+  describeTypeWithThrottleRetry,
+  hasNoRegistrySchema,
+  isAwsEmulatorRegistryMiss,
+} from './describe-type.js';
 import {
   SHAPE_MISMATCHED_GETATT_ATTRIBUTES,
   WRITABLE_GETATT_ATTRIBUTES,
@@ -113,8 +117,23 @@ const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | un
  */
 const attributeNamesCache = new Map<string, ReadonlySet<string>>();
 
+/**
+ * Types whose lookup failed because the AWS Emulator's registry lacks them
+ * ({@link isAwsEmulatorRegistryMiss}, go-to-k/cdkd#6249). An `undefined`
+ * answer carries no error, so a caller that would advise granting
+ * `cloudformation:DescribeType` asks {@link isAwsEmulatorRegistryMissType}
+ * first. Never set against real AWS.
+ */
+const emulatorRegistryMissTypes = new Set<string>();
+
+/** Whether the last failed lookup of `resourceType` was an emulator registry miss. */
+export function isAwsEmulatorRegistryMissType(resourceType: string): boolean {
+  return emulatorRegistryMissTypes.has(resourceType);
+}
+
 /** Clear the per-type caches. Test-only helper. */
 export function clearReadOnlyPropertiesCache(): void {
+  emulatorRegistryMissTypes.clear();
   readOnlyPropertiesCache.clear();
   attributeNamesCache.clear();
   deployAttributeNamesCache.clear();
@@ -221,6 +240,7 @@ export function getTopLevelReadOnlyProperties(
   // window, out of a function documented never to throw (see the header).
   const entry = fetchTopLevelReadOnlyProperties(resourceType).catch((error) => {
     if (!isDefinitiveRefusal(error)) readOnlyPropertiesCache.delete(resourceType);
+    if (isAwsEmulatorRegistryMiss(error)) emulatorRegistryMissTypes.add(resourceType);
     const message = describeAwsFailure(error).detail;
     getLogger()
       .child('ReadOnlyProperties')

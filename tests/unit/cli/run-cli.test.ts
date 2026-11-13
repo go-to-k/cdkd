@@ -147,6 +147,18 @@ describe('runCli (issue #3939)', () => {
     expect(result.stderr).toContain('Fatal error: Error: boom');
     expect(result.stderr).not.toContain(UNSETTLED_COMMAND_MESSAGE);
   }, SPAWN_TIMEOUT_MS + 5_000);
+
+  // go-to-k/cdkd#6251: an option-value usage error prints its message only.
+  it('a CliUsageError prints its message and exits with its code, with no Fatal error or stack', () => {
+    const result = runMain(
+      "throw Object.assign(new Error('error: Invalid --keep value \"a b\".'), { code: 'cdkd.invalidArgument', exitCode: 1 });"
+    );
+    expect(result).toEqual({
+      status: 1,
+      stdout: '',
+      stderr: 'error: Invalid --keep value "a b".\n',
+    });
+  }, SPAWN_TIMEOUT_MS + 5_000);
 });
 
 /**

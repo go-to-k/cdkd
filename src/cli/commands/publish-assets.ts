@@ -1,4 +1,5 @@
 import { Option, Command } from 'commander';
+import { parsePositiveIntegerOption } from '../arg-parser.js';
 import {
   appOptions,
   commonOptions,
@@ -439,12 +440,12 @@ export function createPublishAssetsCommand(): Command {
         'Maximum concurrent asset publish operations'
       )
         .default(8)
-        .argParser((value) => parseInt(value, 10))
+        .argParser(parsePositiveIntegerOption)
     )
     .addOption(
       new Option('--image-build-concurrency <number>', 'Maximum concurrent Docker image builds')
         .default(4)
-        .argParser((value) => parseInt(value, 10))
+        .argParser(parsePositiveIntegerOption)
     )
     .addOption(useCdkBootstrapAssetsOption)
     .action(withErrorHandling(publishAssetsCommand));

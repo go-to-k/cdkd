@@ -63,6 +63,7 @@ import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-onl
 import { clearPrimaryIdentifierCache } from '../../../src/provisioning/cc-import-identifier.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 
 const TYPE = 'AWS::Pinpoint::APNSChannel';
 
@@ -168,6 +169,58 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('cloudformation:DescribeType');
     expect(warned).toContain(TYPE);
+  });
+
+  // go-to-k/cdkd#6249: under --aws-emulator a TypeNotFoundException is the
+  // emulator's registry lacking the type. The masking (and its warning)
+  // stays; the "Grant" remedy, which cannot help, goes.
+  it('under --aws-emulator a registry miss still fails closed but drops the Grant remedy', async () => {
+    const miss = Object.assign(new Error(`The type '${TYPE}' cannot be found.`), {
+      name: 'TypeNotFoundException',
+      $metadata: { httpStatusCode: 404 },
+    });
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9497' }));
+    try {
+      mockCloudFormationSend.mockRejectedValue(miss);
+      wireGetResource({ Id: 'chan-1', PrivateKey: APNS_PRIVATE_KEY });
+
+      const result = await new CloudControlProvider().import({
+        logicalId: 'Chan',
+        resourceType: TYPE,
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: 'chan-1',
+      });
+
+      expect(result?.attributes).toEqual({ Id: SECRET_MASK, PrivateKey: SECRET_MASK });
+      const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(TYPE);
+      expect(warned).toContain("AWS Emulator's CloudFormation registry has no schema");
+      expect(warned).not.toContain('Grant cloudformation:DescribeType');
+    } finally {
+      setAwsEndpointOverrideSource(undefined);
+    }
+  });
+
+  it('against real AWS a TypeNotFoundException keeps the Grant remedy', async () => {
+    mockCloudFormationSend.mockRejectedValue(
+      Object.assign(new Error('not found'), {
+        name: 'TypeNotFoundException',
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+    wireGetResource({ Id: 'chan-1' });
+    await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('Grant cloudformation:DescribeType');
   });
 
   it('does not warn about a missing grant when the schema resolved fine', async () => {

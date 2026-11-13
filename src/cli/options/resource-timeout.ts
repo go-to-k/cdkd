@@ -4,6 +4,7 @@
  * Split out of `../options.ts`, which re-exports the public names.
  */
 import { Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -177,7 +178,7 @@ export const resourceTimeoutOptions = [
       'TYPE=DURATION (e.g. AWS::CloudFront::Distribution=10m) for a per-type override.'
   )
     .default(undefined, '5m')
-    .argParser(parseResourceTimeoutToken('--resource-warn-after')),
+    .argParser(cliArgParser(parseResourceTimeoutToken('--resource-warn-after'))),
   new Option(
     '--resource-timeout <duration_or_type=duration>',
     'Abort a single resource operation that exceeds this wall-clock duration. ' +
@@ -190,7 +191,7 @@ export const resourceTimeoutOptions = [
       'warning is logged so the user can override explicitly.'
   )
     .default(undefined, '30m')
-    .argParser(parseResourceTimeoutToken('--resource-timeout')),
+    .argParser(cliArgParser(parseResourceTimeoutToken('--resource-timeout'))),
 ];
 
 /**

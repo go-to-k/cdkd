@@ -53,6 +53,7 @@ import {
   type WorkloadAwsWiring,
 } from 'cdk-local/internal';
 import { runDetached } from '../../../src/local/docker-runner.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   activateLocalAwsWiring,
   applyLocalAwsWiring,
@@ -337,6 +338,85 @@ describe('runDetached under --aws-emulator (#6132)', () => {
       ])
     );
     expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), [9297]);
+  });
+
+  // go-to-k/cdkd#6248: CDK's BucketDeployment handler sets AWS_CA_BUNDLE, and
+  // the local custom-resource runner marks the function's whole environment
+  // sensitive. The wiring forces its own CA path over it, so the key carries
+  // no caller value: it goes on the argv with the wiring's CA and draws no
+  // "Rename the env var" warning.
+  it('passes a wiring-replaced trust variable on the argv without a collision warning', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_CA_BUNDLE: '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', OWN: 'secret' },
+      sensitiveEnvKeys: new Set(['AWS_CA_BUNDLE', 'OWN']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args, env } = lastRun();
+    expect(envFlags(args)).toContain(`AWS_CA_BUNDLE=${CA_PATH}`);
+    // The caller's other secrets keep the value-less form.
+    expect(envFlags(args)).toContain('OWN');
+    expect(env['OWN']).toBe('secret');
+    expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Rename the env var/);
+  });
+
+  it('keeps a key the caller sets again in envAfterWiring sensitive (its value is the caller\'s)', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_DISABLE_HOST_PREFIX_INJECTION: 'false' },
+      sensitiveEnvKeys: new Set(['AWS_DISABLE_HOST_PREFIX_INJECTION']),
+      // The same value the wiring forces, so only the envAfterWiring guard
+      // tells this key apart from a wiring-owned one.
+      envAfterWiring: { AWS_DISABLE_HOST_PREFIX_INJECTION: 'true' },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args, env } = lastRun();
+    expect(envFlags(args)).toContain('AWS_DISABLE_HOST_PREFIX_INJECTION');
+    expect(envFlags(args)).not.toContain('AWS_DISABLE_HOST_PREFIX_INJECTION=true');
+    expect(env['AWS_DISABLE_HOST_PREFIX_INJECTION']).toBe('true');
+  });
+
+  it('still warns when a sensitive caller value collides and the wiring does not replace it', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { DOCKER_HOST: 'tcp://evil:2375' },
+      sensitiveEnvKeys: new Set(['DOCKER_HOST']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args } = lastRun();
+    expect(args.join(' ')).not.toContain('DOCKER_HOST');
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/"DOCKER_HOST".*Rename the env var/);
+  });
+
+  it('keeps a caller CA value that collides sensitive in forward mode (the wiring does not replace it)', async () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    mocks.hostDefaults.mockResolvedValue(undefined);
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_CA_BUNDLE: '/own/ca.pem' },
+      sensitiveEnvKeys: new Set(['AWS_CA_BUNDLE']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args } = lastRun();
+    expect(envFlags(args).some((f) => f.startsWith('AWS_CA_BUNDLE'))).toBe(false);
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/"AWS_CA_BUNDLE".*Rename the env var/);
   });
 
   it('fails the run when the forwarder image cannot be pulled', async () => {
