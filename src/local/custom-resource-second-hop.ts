@@ -116,6 +116,9 @@ export interface ForwardResponse {
   body: Buffer;
 }
 
+/** How far a request's `x-amz-date` may be from now, as AWS allows. */
+const MAX_CLOCK_SKEW_MS = 15 * 60 * 1000;
+
 /** Lambda's synchronous payload cap is 6 MB; a little room for the framing. */
 const MAX_BODY_BYTES = 7 * 1024 * 1024;
 
@@ -224,8 +227,6 @@ export interface SecondHopEndpoint {
     port: number;
     release(): void;
   };
-  /** The executions started locally and not finished yet (tests). */
-  pendingExecutions(): Promise<unknown>[];
   close(): Promise<void>;
 }
 
@@ -234,8 +235,13 @@ export interface SecondHopEndpoint {
  */
 export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<SecondHopEndpoint> {
   const registrations = new Map<string, Registration>();
-  const executions = new Set<Promise<unknown>>();
   const logger = getLogger();
+  const warned = new Set<string>();
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    logger.warn(message);
+  };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -331,15 +337,19 @@ export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<Secon
   const resolveTarget = async (
     caller: LocalFunction,
     functionName: string
-  ): Promise<LocalFunction | { reason: string }> => {
+  ): Promise<LocalFunction | { reason: string; referenced: boolean }> => {
     const logicalId = callerReferencedLogicalId(caller, functionName, 'AWS::Lambda::Function');
-    if (logicalId === undefined) return { reason: 'the caller does not reference it' };
+    if (logicalId === undefined) {
+      return { reason: 'the caller does not reference it', referenced: false };
+    }
     const deployed = await deps.getFunctionConfiguration(functionName);
-    if (deployed === undefined) return { reason: 'AWS Emulator does not describe it' };
+    if (deployed === undefined) {
+      return { reason: 'AWS Emulator does not describe it', referenced: true };
+    }
     const choice = deps.chooseFunction(caller, logicalId, deployed);
-    if ('reason' in choice) return choice;
+    if ('reason' in choice) return { reason: choice.reason, referenced: true };
     if (!(await deps.imageAvailable(choice.lambda))) {
-      return { reason: 'its Lambda runtime image is not available' };
+      return { reason: 'its Lambda runtime image is not available', referenced: true };
     }
     return { lambda: choice.lambda, deployed, forwardPort: caller.forwardPort };
   };
@@ -361,13 +371,41 @@ export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<Secon
     }
     const target = await resolveTarget(caller, functionName);
     if ('reason' in target) {
-      logger.debug(safeMsg`Invoke of ${functionName} goes to AWS Emulator: ${target.reason}`);
+      if (target.referenced) {
+        // The caller names it, so it was meant to run here: say why it does not.
+        warnOnce(
+          `invoke:${functionName}`,
+          safeMsg`Function ${functionName} runs in AWS Emulator's own Lambda runtime, not locally: ${target.reason}.`
+        );
+      } else {
+        logger.debug(safeMsg`Invoke of ${functionName} goes to AWS Emulator: ${target.reason}`);
+      }
       return undefined;
     }
     logger.info(
       safeMsg`Running function ${target.lambda.logicalId} (${target.lambda.runtime}), invoked by ${caller.lambda.logicalId}, in the Lambda runtime image locally`
     );
-    const result = await deps.runLocally(target, event);
+    let result: InvocationResponse;
+    try {
+      result = await deps.runLocally(target, event);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        safeMsg`Function ${target.lambda.logicalId} could not run in the Lambda runtime image locally: ${message}`
+      );
+      // A function error, as Lambda reports one: a 5xx would make the
+      // caller's SDK retry, and run a Create handler again.
+      result = {
+        StatusCode: 200,
+        FunctionError: 'Unhandled',
+        Payload: Buffer.from(
+          JSON.stringify({
+            errorType: 'LocalRuntimeError',
+            errorMessage: `cdkd could not run the function in the Lambda runtime image locally: ${message}`,
+          })
+        ) as unknown as InvocationResponse['Payload'],
+      };
+    }
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-amz-executed-version': '$LATEST',
@@ -396,7 +434,9 @@ export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<Secon
     const stateMachineArn = body['stateMachineArn'];
     if (typeof stateMachineArn !== 'string') return undefined;
     const declined = (reason: string): undefined => {
-      logger.warn(
+      warnOnce(
+        // cdkd-arn-display: a de-duplication key, never printed.
+        `sfn:${stateMachineArn}`,
         // cdkd-arn-display: a state machine ARN from the emulator, not a role; through safeMsg.
         safeMsg`The state machine ${stateMachineArn} runs on AWS Emulator, not locally: ${reason}.`
       );
@@ -479,10 +519,9 @@ export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<Secon
     // cdkd-arn-display: the API answer to the container, never printed.
     const executionArn = `${stateMachineArn.replace(':stateMachine:', ':execution:')}:${execName}`;
     logger.info(safeMsg`Running state machine ${smLogicalId} (the cr.Provider waiter) locally`);
-    const execution = runExecution(smLogicalId, plan, targets, input).finally(() =>
-      executions.delete(execution)
-    );
-    executions.add(execution);
+    // In the background, as Step Functions runs it: the framework's own
+    // response (submitted by the last task) is what cdkd's S3 poll waits for.
+    void runExecution(smLogicalId, plan, targets, input);
     return {
       status: 200,
       headers: { 'content-type': 'application/x-amz-json-1.0' },
@@ -590,7 +629,6 @@ export async function startSecondHopEndpoint(deps: SecondHopDeps): Promise<Secon
         },
       };
     },
-    pendingExecutions: () => [...executions],
     close: async () => {
       await Promise.all(
         [server, gatewayServer]
@@ -644,8 +682,17 @@ export async function verifySignature(
   const signingDate = new Date(
     `${amzDate.slice(0, 4)}-${amzDate.slice(4, 6)}-${amzDate.slice(6, 8)}T${amzDate.slice(9, 11)}:${amzDate.slice(11, 13)}:${amzDate.slice(13, 15)}Z`
   );
+  if (Math.abs(Date.now() - signingDate.getTime()) > MAX_CLOCK_SKEW_MS) return false;
   const signedHeaders = signedHeaderList!.split(';');
   if (!signedHeaders.includes('host')) return false;
+  // The payload hash is computed HERE, from the bytes received: smithy's
+  // signer takes an `x-amz-content-sha256` header at its word, which would
+  // let a captured signature carry any body. A header that is not the body's
+  // hash (`UNSIGNED-PAYLOAD` included) is refused; without the header the
+  // signer hashes the body itself.
+  const payloadHash = createHash('sha256').update(req.body).digest('hex');
+  const claimedHash = req.headers['x-amz-content-sha256'];
+  if (claimedHash !== undefined && claimedHash !== payloadHash) return false;
   const headers: Record<string, string> = {};
   for (const name of signedHeaders) {
     const value = req.headers[name];
@@ -663,6 +710,8 @@ export async function verifySignature(
     region: region!,
     service: service!,
     sha256: NodeSha256,
+    // Hash only what the client signed: no `x-amz-content-sha256` added.
+    applyChecksum: false,
   });
   const resigned = await signer.sign(
     {

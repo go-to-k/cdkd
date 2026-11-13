@@ -5,6 +5,7 @@ import {
   runWaiterPlan,
   templateDefinitionWithTargets,
   type WaiterPlan,
+  type WaiterTask,
   type WaiterTaskResult,
 } from '../../../src/local/custom-resource-waiter.js';
 
@@ -159,5 +160,133 @@ describe('runWaiterPlan', () => {
       () => Promise.resolve()
     );
     expect(outcome).toEqual({ status: 'FAILED', error: 'Boom', cause: 'c' });
+  });
+});
+
+describe('runWaiterPlan error matching and defaults (T14)', () => {
+  const task = (over: Partial<WaiterTask> = {}): WaiterTask => ({
+    targetLogicalId: 'F',
+    functionArn: IS_COMPLETE_ARN,
+    end: true,
+    retry: [],
+    catch: [],
+    ...over,
+  });
+  const fail = (error: string): WaiterTaskResult => ({ ok: false, error, cause: 'c' });
+
+  it('matches an error name exactly, not by prefix', async () => {
+    const p: WaiterPlan = {
+      startAt: 'a',
+      states: new Map([['a', task({ retry: [{ ErrorEquals: ['Retry'], MaxAttempts: 5 }] })]]),
+    };
+    const runTask = vi.fn(() => Promise.resolve(fail('RetryLater')));
+    const outcome = await runWaiterPlan(p, {}, runTask, () => Promise.resolve());
+    expect(outcome.status).toBe('FAILED');
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('States.TaskFailed matches a task error but not States.Timeout', async () => {
+    const plan2 = (): WaiterPlan => ({
+      startAt: 'a',
+      states: new Map([
+        ['a', task({ end: false, catch: [{ ErrorEquals: ['States.TaskFailed'], Next: 'b' }] })],
+        ['b', task()],
+      ]),
+    });
+    const seen: string[] = [];
+    const run = (first: WaiterTaskResult) =>
+      runWaiterPlan(
+        plan2(),
+        {},
+        (state) => {
+          seen.push(state);
+          return Promise.resolve(state === 'a' ? first : { ok: true, output: 1 });
+        },
+        () => Promise.resolve()
+      );
+    expect((await run(fail('Boom'))).status).toBe('SUCCEEDED');
+    expect(seen).toEqual(['a', 'b']);
+    seen.length = 0;
+    expect(await run(fail('States.Timeout'))).toMatchObject({ status: 'FAILED' });
+    expect(seen).toEqual(['a']);
+  });
+
+  it('resets the retry counts after a Catch moves to another state', async () => {
+    const retrier = { ErrorEquals: ['States.ALL'], MaxAttempts: 1, IntervalSeconds: 0 };
+    const p: WaiterPlan = {
+      startAt: 'a',
+      states: new Map([
+        ['a', task({ retry: [retrier], catch: [{ ErrorEquals: ['States.ALL'], Next: 'b' }] })],
+        ['b', task({ end: false, retry: [retrier], catch: [{ ErrorEquals: ['States.ALL'], Next: 'a' }] })],
+      ]),
+    };
+    // a fails twice (1 retry), b fails twice (1 retry), then a succeeds.
+    const answers = [fail('x'), fail('x'), fail('x'), fail('x'), { ok: true, output: 'done' } as const];
+    const seen: string[] = [];
+    const outcome = await runWaiterPlan(
+      p,
+      {},
+      (state) => {
+        seen.push(state);
+        return Promise.resolve(answers.shift()!);
+      },
+      () => Promise.resolve()
+    );
+    expect(seen).toEqual(['a', 'a', 'b', 'b', 'a']);
+    expect(outcome).toEqual({ status: 'SUCCEEDED', output: 'done' });
+  });
+
+  it("uses Step Functions' defaults: MaxAttempts 3, IntervalSeconds 1, BackoffRate 2", async () => {
+    const p: WaiterPlan = {
+      startAt: 'a',
+      states: new Map([['a', task({ retry: [{ ErrorEquals: ['States.ALL'] }] })]]),
+    };
+    const sleep = vi.fn((_ms: number) => Promise.resolve());
+    const runTask = vi.fn(() => Promise.resolve(fail('x')));
+    await runWaiterPlan(p, {}, runTask, sleep);
+    expect(runTask).toHaveBeenCalledTimes(4);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000, 2000, 4000]);
+  });
+});
+
+describe('matchWaiterDefinition shape checks (T14)', () => {
+  const tpl = (states: string, startAt = 'a') =>
+    `{"StartAt":"${startAt}","States":${states.replace(/@F@/g, 'cdkd-local-target:Fn')}}`;
+  const dep = (states: string, startAt = 'a') =>
+    `{"StartAt":"${startAt}","States":${states.replace(/@F@/g, IS_COMPLETE_ARN)}}`;
+  const ok = '{"a":{"Type":"Task","Resource":"@F@","End":true}}';
+
+  it('accepts the minimal shape', () => {
+    expect(matchWaiterDefinition(tpl(ok), dep(ok))).not.toHaveProperty('reason');
+  });
+
+  it('requires exactly one of End and Next', () => {
+    const both = '{"a":{"Type":"Task","Resource":"@F@","End":true,"Next":"a"}}';
+    const neither = '{"a":{"Type":"Task","Resource":"@F@"}}';
+    expect(matchWaiterDefinition(tpl(both), dep(both))).toHaveProperty('reason');
+    expect(matchWaiterDefinition(tpl(neither), dep(neither))).toHaveProperty('reason');
+  });
+
+  it('declines a Next or Catch target that does not exist', () => {
+    const next = '{"a":{"Type":"Task","Resource":"@F@","Next":"zz"}}';
+    const caught =
+      '{"a":{"Type":"Task","Resource":"@F@","End":true,"Catch":[{"ErrorEquals":["States.ALL"],"Next":"zz"}]}}';
+    expect(matchWaiterDefinition(tpl(next), dep(next))).toHaveProperty('reason');
+    expect(matchWaiterDefinition(tpl(caught), dep(caught))).toHaveProperty('reason');
+  });
+
+  it('declines a StartAt that differs from the deployed one or names no state', () => {
+    expect(matchWaiterDefinition(tpl(ok), dep(ok, 'b'))).toHaveProperty('reason');
+    expect(matchWaiterDefinition(tpl(ok, 'b'), dep(ok, 'b'))).toHaveProperty('reason');
+  });
+
+  it('declines a target id that is not a plain logical id', () => {
+    const sm = {
+      Type: 'AWS::StepFunctions::StateMachine',
+      Properties: {
+        DefinitionString: { 'Fn::Join': ['', ['{"x":"', { 'Fn::GetAtt': ['Fn"x', 'Arn'] }, '"}']] },
+      },
+    };
+    expect(templateDefinitionWithTargets(sm as never)).toBeUndefined();
   });
 });

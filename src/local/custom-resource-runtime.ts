@@ -37,11 +37,12 @@ import {
   GetFunctionConfigurationCommand,
   type FunctionConfiguration,
   type InvocationResponse,
-  type LambdaClient,
+  LambdaClient,
 } from '@aws-sdk/client-lambda';
 import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
@@ -102,6 +103,8 @@ const exitCleanups = new Set<() => void>();
 let exitHookInstalled = false;
 /** The `cr.Provider` second-hop endpoint (#6213), started with the first local event. */
 let secondHop: Promise<SecondHopEndpoint | undefined> | undefined;
+/** Set when a container could not reach the endpoint: later events skip it. */
+let secondHopDisabled = false;
 
 /** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
@@ -111,6 +114,7 @@ export function resetLocalCustomResourceRuntimeForTest(): void {
   warnedOnce.clear();
   const endpoint = secondHop;
   secondHop = undefined;
+  secondHopDisabled = false;
   void endpoint?.then((e) => e?.close());
 }
 
@@ -377,26 +381,61 @@ export async function invokeCustomResourceFunctionLocally(
 }
 
 /**
+ * A Lambda client in the region of a function ARN: the endpoint outlives the
+ * event that started it, whose client is bound to that event's region. A
+ * name or an ARN in that same region uses the event's client.
+ */
+export function lambdaClientForRegion(
+  base: LambdaClient
+): (functionName: string) => Promise<LambdaClient> {
+  const byRegion = new Map<string, LambdaClient>();
+  return async (functionName) => {
+    const region = regionOfFunctionArn(functionName);
+    if (region === undefined || region === (await base.config.region())) return base;
+    let client = byRegion.get(region);
+    if (client === undefined) {
+      // cdkd-local-role-identity: cdkd's own GetFunctionConfiguration on AWS
+      // Emulator (full emulator mode only), as the event's client is; what it
+      // resolves never reaches the container.
+      client = new LambdaClient({ ...ambientClientDefaults(), region });
+      byRegion.set(region, client);
+    }
+    return client;
+  };
+}
+
+/**
  * The `cr.Provider` second-hop endpoint (#6213), started once per process
  * with the first local event; `undefined` (calls go to the emulator as
  * before) unless the wiring is full emulator mode with its own keys, which a
  * forwarded call is signed with.
  */
 function secondHopEndpoint(lambdaClient: LambdaClient): Promise<SecondHopEndpoint | undefined> {
+  if (secondHopDisabled) return Promise.resolve(undefined);
   secondHop ??= (async (): Promise<SecondHopEndpoint | undefined> => {
     const wiring = getActiveWorkloadAwsWiring();
+    // Full emulator mode is the gate's own condition (the only caller is past
+    // it); `forwardToEmulator` re-checks it on every forwarded call.
     if (
-      wiring?.mode !== 'emulator' ||
+      wiring === undefined ||
       wiring.emulatorEndpoint === undefined ||
-      wiring.emulatorCredentials === undefined
+      wiring.emulatorCredentials === undefined ||
+      // Loopback only, as the ResponseURL re-sign: the container reaches the
+      // endpoint through its loopback forwarder, which a remote emulator's
+      // wiring does not start (and whose health probe would then hit this
+      // plaintext endpoint).
+      !wiring.emulatorEndpoint.loopback
     ) {
       return undefined;
     }
+    const clientFor = lambdaClientForRegion(lambdaClient);
     try {
       return await startSecondHopEndpoint({
         getFunctionConfiguration: async (functionName) => {
           try {
-            return await lambdaClient.send(
+            return await (
+              await clientFor(functionName)
+            ).send(
               new GetFunctionConfigurationCommand({
                 FunctionName: functionName,
               })
@@ -574,11 +613,12 @@ async function runInContainer(
     const hostPort = await pickFreePort();
     const extraHosts = await resolveHostGatewayExtraHosts();
     starting.push(containerName);
-    containerId = await runDetached({
-      name: containerName,
-      image: imagePlan.image,
-      mounts: imagePlan.mounts,
-      ...(imagePlan.extraMounts !== undefined && { extraMounts: imagePlan.extraMounts }),
+    const plan = imagePlan;
+    const runOptions = (name: string, withHop: boolean): Parameters<typeof runDetached>[0] => ({
+      name,
+      image: plan.image,
+      mounts: plan.mounts,
+      ...(plan.extraMounts !== undefined && { extraMounts: plan.extraMounts }),
       env,
       // The function's own variables may hold resolved secrets: keep their
       // values off the `docker run` argv.
@@ -587,17 +627,40 @@ async function runInContainer(
       // they cannot travel in its environment. The URL's token only names the
       // caller; the endpoint accepts a request only when it is signed with the
       // emulator's secret key, which stays off the argv.
-      ...(hop !== undefined && {
-        envAfterWiring: hopEnv,
-        extraLoopbackPorts: [hop.port],
-      }),
+      ...(withHop &&
+        hop !== undefined && {
+          envAfterWiring: hopEnv,
+          extraLoopbackPorts: [hop.port],
+        }),
       ...(extraHosts.length > 0 && { extraHosts }),
-      cmd: imagePlan.cmd,
+      cmd: plan.cmd,
       hostPort,
       host: CONTAINER_HOST,
-      ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
-      ...(imagePlan.tmpfs !== undefined && { tmpfs: imagePlan.tmpfs }),
+      ...(plan.platform !== undefined && { platform: plan.platform }),
+      ...(plan.tmpfs !== undefined && { tmpfs: plan.tmpfs }),
     });
+    try {
+      containerId = await runDetached(runOptions(containerName, true));
+    } catch (err) {
+      // Only a forwarder failure: anything else fails the same way without it.
+      if (
+        hop === undefined ||
+        (err as { code?: unknown } | null)?.code !== 'LOCAL_AWS_EMULATOR_FORWARDER_FAILED'
+      ) {
+        throw err;
+      }
+      // The forwarder could not reach the endpoint (a host firewall in front
+      // of the Docker bridge, say). The first hop still works without it:
+      // run this container without the endpoint, and stop offering it.
+      const retryName = `${containerName}-nohop`;
+      starting.push(retryName);
+      containerId = await runDetached(runOptions(retryName, false));
+      secondHopDisabled = true;
+      warnOnce(
+        'second-hop',
+        safeMsg`The cr.Provider endpoint is not reachable from containers (${err instanceof Error ? err.message : String(err)}), so a cr.Provider's handlers run in AWS Emulator's own Lambda runtime.`
+      );
+    }
     // Captured, not relayed: the handler may print the event, which carries
     // the resource's properties. The tail travels as `LogResult` like the
     // emulator's, which the response handling prints only on a failure.
