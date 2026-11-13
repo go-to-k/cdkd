@@ -13,6 +13,7 @@ import {
   CreateRepositoryCommand,
   PutImageTagMutabilityCommand,
 } from '@aws-sdk/client-ecr';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -34,6 +35,11 @@ import {
   markerSubject,
   parseBootstrapMarker,
 } from './marker.js';
+import {
+  applyAbortIncompleteMultipartUpload,
+  abortIncompleteMultipartWarning,
+  ABORT_INCOMPLETE_MULTIPART_DAYS,
+} from './lifecycle.js';
 
 /**
  * Options for {@link ensureAssetStorage}. Clients are injected so the
@@ -313,6 +319,22 @@ export async function ensureAssetStorage(
     );
     logger.info(
       '✓ Configured asset bucket (AES-256 encryption, public access block, deny external access)'
+    );
+  }
+
+  // Issue #6185: abort incomplete multipart uploads after one day, as the CDK
+  // bootstrap bucket does (a file asset over 5 MiB is uploaded in parts, #6184).
+  // Runs for new AND existing buckets: a read-merge-write that keeps every
+  // existing rule and is a no-op once the rule is there. A failure warns —
+  // bootstrap without the lifecycle permissions must keep succeeding.
+  const lifecycle = await applyAbortIncompleteMultipartUpload(s3Client, assetBucket, {
+    expectedBucketOwner: accountId,
+  });
+  if (lifecycle.status === 'failed') {
+    logger.warn(abortIncompleteMultipartWarning(assetBucket, lifecycle));
+  } else if (lifecycle.status === 'added') {
+    logger.info(
+      safeMsg`✓ Set asset bucket lifecycle rule (abort incomplete multipart uploads after ${ABORT_INCOMPLETE_MULTIPART_DAYS} day)`
     );
   }
 

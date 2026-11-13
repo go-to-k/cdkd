@@ -39,6 +39,12 @@ vi.mock('@aws-sdk/client-s3', () => ({
   PutBucketPolicyCommand: vi
     .fn()
     .mockImplementation((input) => ({ ...input, _type: 'PutBucketPolicy' })),
+  GetBucketLifecycleConfigurationCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ ...input, _type: 'GetBucketLifecycleConfiguration' })),
+  PutBucketLifecycleConfigurationCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ ...input, _type: 'PutBucketLifecycleConfiguration' })),
 }));
 
 vi.mock('@aws-sdk/client-ecr', () => ({
@@ -449,6 +455,8 @@ describe('ensureAssetStorage', () => {
       'PutBucketEncryption',
       'PutPublicAccessBlock',
       'PutBucketPolicy',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
     ]);
     const createCall = mockS3Send.mock.calls[1]![0];
     expect(createCall.CreateBucketConfiguration).toBeUndefined();
@@ -587,7 +595,13 @@ describe('ensureAssetStorage', () => {
     // HeadBucket 200 + DescribeRepositories 200 (defaults).
     const { putRawObject, options } = makeOptions();
     await ensureAssetStorage(options);
-    expect(s3CallTypes()).toEqual(['HeadBucket']);
+    // An existing bucket without --force: only the lifecycle read-merge-write
+    // (issue #6185) follows the ownership probe.
+    expect(s3CallTypes()).toEqual([
+      'HeadBucket',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
+    ]);
     expect(ecrCallTypes()).toEqual(['DescribeRepositories']);
     expect(putRawObject).toHaveBeenCalledTimes(1);
   });
@@ -600,12 +614,50 @@ describe('ensureAssetStorage', () => {
       'PutBucketEncryption',
       'PutPublicAccessBlock',
       'PutBucketPolicy',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
     ]);
     expect(ecrCallTypes()).toEqual(['DescribeRepositories', 'PutImageTagMutability']);
     // Every configuration PUT is owner-pinned.
     for (const call of mockS3Send.mock.calls.slice(1)) {
       expect(call[0].ExpectedBucketOwner).toBe(ACCOUNT);
     }
+  });
+
+  // Issue #6185: the lifecycle step keeps existing rules, and a refusal to read or
+  // write the configuration warns instead of failing the bootstrap.
+  it('keeps an existing bucket rule when adding the abort-incomplete-multipart rule', async () => {
+    const userRule = { ID: 'user', Status: 'Enabled', Filter: { Prefix: 'x/' }, Expiration: { Days: 9 } };
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'GetBucketLifecycleConfiguration'
+        ? Promise.resolve({ Rules: [userRule] })
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions();
+    await ensureAssetStorage(options);
+    const put = mockS3Send.mock.calls.map((c) => c[0]).find(
+      (c) => c._type === 'PutBucketLifecycleConfiguration'
+    );
+    expect(put.ExpectedBucketOwner).toBe(ACCOUNT);
+    expect(put.LifecycleConfiguration.Rules).toHaveLength(2);
+    expect(put.LifecycleConfiguration.Rules[0]).toEqual(userRule);
+    expect(put.LifecycleConfiguration.Rules[1].AbortIncompleteMultipartUpload).toEqual({
+      DaysAfterInitiation: 1,
+    });
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns, and still writes the marker, when the lifecycle configuration is not accessible', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'GetBucketLifecycleConfiguration'
+        ? Promise.reject(awsError('AccessDenied', 403))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions();
+    await ensureAssetStorage(options);
+    expect(s3CallTypes()).not.toContain('PutBucketLifecycleConfiguration');
+    expect(mockLoggerWarn.mock.calls.some((c) => String(c[0]).includes('lifecycle rule'))).toBe(true);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a foreign-owned bucket on the HeadBucket probe (403) and writes no marker', async () => {
@@ -765,6 +817,8 @@ describe('cross-region asset-bucket adoption (issue #2240)', () => {
       'PutBucketEncryption',
       'PutPublicAccessBlock',
       'PutBucketPolicy',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
     ]);
     expect(putRawObject).toHaveBeenCalledTimes(1);
   });
@@ -922,6 +976,8 @@ describe('cross-region asset-bucket adoption (issue #2240)', () => {
       'PutBucketEncryption',
       'PutPublicAccessBlock',
       'PutBucketPolicy',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
     ]);
   });
 
@@ -1211,7 +1267,11 @@ describe('ensureAssetStorage — custom names (issue #1011)', () => {
     // HeadBucket 200 + DescribeRepositories 200 (defaults) — nothing created.
     const result = await ensureAssetStorage(options);
     expect(result).toEqual({ assetBucket: CUSTOM_BUCKET, containerRepo: CUSTOM_REPO });
-    expect(mockS3Send.mock.calls.map((c) => c[0]._type)).toEqual(['HeadBucket']);
+    expect(mockS3Send.mock.calls.map((c) => c[0]._type)).toEqual([
+      'HeadBucket',
+      'GetBucketLifecycleConfiguration',
+      'PutBucketLifecycleConfiguration',
+    ]);
     expect(mockEcrSend.mock.calls.map((c) => c[0]._type)).toEqual(['DescribeRepositories']);
     expect(putRawObject).toHaveBeenCalledTimes(1);
   });
