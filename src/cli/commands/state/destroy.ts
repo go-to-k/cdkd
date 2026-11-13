@@ -49,6 +49,7 @@ import {
   multipleRegionsError,
 } from './refs.js';
 import { setupStateBackend, renderRecovery, stackRegionOption } from './setup.js';
+import { refuseDestroyTargetsWithoutApp } from '../destroy-runner/emulator-custom-resources.js';
 
 /**
  * The stack whose recorded `terminationProtection` covers `stackName`
@@ -308,16 +309,22 @@ async function stateDestroyCommand(
     // Only for the records the loop below destroys (`stateDestroyTargets`).
     const crossPrefixCheck = { cache: new CrossPrefixGuard(setup.stateBackend) };
     if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
+    const customResourceTargets: Array<{ stackName: string; region: string }> = [];
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
-        void crossPrefixCheck.cache.full(
-          name,
-          ref.region ?? (await setup.regionFor(name)),
-          'prestart'
-        );
+        const targetRegion = ref.region ?? (await setup.regionFor(name));
+        void crossPrefixCheck.cache.full(name, targetRegion, 'prestart');
+        customResourceTargets.push({ stackName: name, region: targetRegion });
       }
     }
+    // go-to-k/cdkd#6246: under `--aws-emulator`, every target (and its nested
+    // stacks) is checked before the first one is touched.
+    await refuseDestroyTargetsWithoutApp(
+      customResourceTargets,
+      setup.stateBackend,
+      setup.awsClients
+    );
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):

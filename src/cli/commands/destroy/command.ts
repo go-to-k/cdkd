@@ -56,6 +56,7 @@ import { skippedDestroyMessage } from '../destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../../deployment/noecho-delete-reresolution.js';
 import { selectDestroyTargets, orderDestroyTargets, type DestroyTarget } from './select-targets.js';
 import { plannedDestroyRegion, protectionNotNamed, purgeEventsAfterDestroy } from './helpers.js';
+import { refuseDestroyTargetsWithoutApp } from '../destroy-runner/emulator-custom-resources.js';
 
 /**
  * Destroy command implementation
@@ -464,6 +465,7 @@ export async function destroyCommand(
         fallbackRegionByName.get(target.stackName) ?? region
       );
     };
+    const customResourceTargets: Array<{ stackName: string; region: string }> = [];
     for (const target of targets) {
       if (
         target.synth?.terminationProtection === true &&
@@ -474,8 +476,11 @@ export async function destroyCommand(
       const planned = plannedRegionFor(target);
       if (planned !== undefined) {
         void crossPrefixCheck.cache.full(target.stackName, planned, 'prestart');
+        customResourceTargets.push({ stackName: target.stackName, region: planned });
       }
     }
+    // go-to-k/cdkd#6246: every target and its nested stacks, before any is touched.
+    await refuseDestroyTargetsWithoutApp(customResourceTargets, stateBackend, awsClients);
     for (const [stackIndex, target] of targets.entries()) {
       const stackName = target.stackName;
       logger.info(`\nPreparing to destroy stack: ${describeTarget(target)}`);

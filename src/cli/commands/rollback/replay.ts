@@ -51,10 +51,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../deployment/inline-policy-claims.js';
-import {
-  dropFailedHint,
-  makeForeignHolderScan,
-} from '../../../deployment/rollback-executor/journaled-orphans.js';
+import { makeForeignHolderScan } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
 import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
@@ -91,6 +88,7 @@ import {
   displacedOpLabel,
   failedOpsToReplay,
   confirm,
+  failedRollbackTail,
 } from './render.js';
 import type { RollbackOptions } from './options.js';
 import {
@@ -945,10 +943,8 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
     }
     if (totalFailures > 0) {
       throw new PartialFailureError(
-        `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-          `re-run the rollback to retry.` +
-          dropFailedHint(stackName, region, failedOrphanIds) +
-          rerunRollback(stackName)
+        `Rollback completed with ${totalFailures} failed operation(s). Journal preserved` +
+          failedRollbackTail(stackName, region, failedOrphanIds)
       );
     }
     if (totalWarnings > 0) {

@@ -45,6 +45,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
 import { getLogger } from '../utils/logger.js';
 import { synthesizedStacks } from '../synthesis/synthesized-stacks.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
@@ -58,6 +59,7 @@ import {
   customResourceStackName,
   localCustomResourceCommand,
   localCustomResourceRuntimeActive,
+  resetCustomResourceFailuresForTest,
   setLocalCustomResourceRuntimeEnabled,
 } from './custom-resource-runtime-gate.js';
 import { responsePresignClient } from '../provisioning/providers/custom-resource-response-endpoint.js';
@@ -109,6 +111,7 @@ let secondHopDisabled = false;
 /** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
   setLocalCustomResourceRuntimeEnabled(true);
+  resetCustomResourceFailuresForTest();
   dockerAvailable = undefined;
   runtimeImages.clear();
   warnedOnce.clear();
@@ -281,14 +284,46 @@ async function dockerIsAvailable(): Promise<boolean> {
 /**
  * The warning for a command that read no cloud assembly. Only a DESTROY gets
  * "run `cdkd destroy` from the app": for `cdkd rollback` (or anything else)
- * that remedy would delete the stack the user meant to keep.
+ * that remedy would delete the stack the user meant to keep. A destroy whose
+ * record holds custom resources is refused before it deletes anything
+ * (`destroy-runner/emulator-custom-resources.ts`, go-to-k/cdkd#6246), so the
+ * destroy wording is left for an entry the refusal does not read (a journaled
+ * orphan). `cdkd rollback` never reads the app,
+ * so its remedy is a deploy forward (go-to-k/cdkd#6247).
  */
-export function noAssemblyWarning(command: string | undefined): string {
+export function noAssemblyWarning(command: string | undefined, stackName?: string): string {
   const head =
     `This command did not synthesize the CDK app, so custom resource functions run in AWS ` +
     `Emulator's own Lambda runtime, which can fail.`;
+  // The top-level stack: a nested child's record is `<parent>~<logicalId>`,
+  // and only the parent is a stack of the app.
+  const topLevel = stackName?.split('~')[0];
+  const remedy = (verb: string): { clause: string; command: string } => {
+    const built = pasteableCommand(verb, [
+      topLevel === undefined || topLevel === ''
+        ? { hole: 'stack' }
+        : { value: topLevel, hole: 'stack', opts: { plainIdent: true } },
+    ]);
+    return {
+      clause: withheldTargetClause(built, 'stack', verb, "This stack's name"),
+      command: built.command,
+    };
+  };
   if (command === 'destroy' || command === 'state destroy') {
-    return `${head} Run \`cdkd destroy --aws-emulator\` from the app's directory to run them locally.`;
+    const destroy = remedy('cdkd destroy');
+    return (
+      `${head} Run the destroy from the app's directory to run them locally.${destroy.clause}` +
+      `\nRun from the app's directory: ${destroy.command}`
+    );
+  }
+  if (command === 'rollback') {
+    const deploy = remedy('cdkd deploy');
+    return (
+      `${head} cdkd rollback never reads the app, so a custom resource that fails here fails the ` +
+      `same way on every re-run: deploy forward instead, from the app's directory (Docker ` +
+      `running), which runs them locally.${deploy.clause}` +
+      `\nDeploy forward with: ${deploy.command}`
+    );
   }
   return `${head} Pass ${NO_LOCAL_CUSTOM_RESOURCES_FLAG} to silence this.`;
 }
@@ -343,7 +378,13 @@ export async function invokeCustomResourceFunctionLocally(
   const stacks = synthesizedStacks();
   if (stacks.length === 0) {
     // `cdkd state destroy`, `cdkd rollback`, or a destroy run without the app.
-    warnOnce('no-assembly', noAssemblyWarning(localCustomResourceCommand()));
+    warnOnce(
+      'no-assembly',
+      noAssemblyWarning(
+        localCustomResourceCommand(),
+        customResourceStackName() ?? getCurrentStackName()
+      )
+    );
     return undefined;
   }
   const choice = chooseServiceTokenFunction(
