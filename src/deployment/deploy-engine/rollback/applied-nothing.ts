@@ -36,9 +36,14 @@ export function revertSkipsFailedCreate(op: FailedOperation): boolean {
   return failedCreateRecordedNoPhysicalId(op) && op.pendingCloudControlRequest === undefined;
 }
 
-/** Whether `cdkd rollback --revert-failed` has nothing to act on for `op`. */
+/**
+ * Whether `cdkd rollback --revert-failed` has nothing to act on for `op`: a
+ * failed DELETE (its resource is still in place; the revert plans
+ * `skip-failed-noop`), a refused UPDATE ({@link appliedNothing}, #6118), or a
+ * failed CREATE the revert can only skip ({@link revertSkipsFailedCreate}).
+ */
 export function revertFailedHasNothingToDo(op: FailedOperation): boolean {
-  return appliedNothing(op) || revertSkipsFailedCreate(op);
+  return op.changeType === 'DELETE' || appliedNothing(op) || revertSkipsFailedCreate(op);
 }
 
 /** What the revert itself warns for a {@link revertSkipsFailedCreate} op. */

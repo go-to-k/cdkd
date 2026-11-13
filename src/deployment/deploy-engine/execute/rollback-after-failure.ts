@@ -241,9 +241,7 @@ export async function rollbackFailedDeploy(
         for (const op of gone) engine.logger.warn(deletedOutsideCdkdMessage(op, false));
         // go-to-k/cdkd#6204: a failed CREATE with no physical id is only
         // skipped by the revert; its manual check is named instead.
-        const actionable = kept.some(
-          (op) => op.changeType !== 'DELETE' && !revertFailedHasNothingToDo(op)
-        );
+        const actionable = kept.some((op) => !revertFailedHasNothingToDo(op));
         if (!actionable) {
           for (const op of kept.filter(revertSkipsFailedCreate)) {
             engine.logger.warn(unaddressableFailedCreateMessage(op));

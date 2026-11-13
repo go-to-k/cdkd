@@ -345,9 +345,9 @@ export async function settleJournalAfterCleanRollback(
   );
   // The write warns on its own failure; claiming a kept record would contradict it.
   if (!kept) return true;
-  // go-to-k/cdkd#6118 / #6204: a refused UPDATE, or a failed CREATE with no
-  // physical id, is nothing `--revert-failed` can act on; the CREATE's manual
-  // check is named instead.
+  // go-to-k/cdkd#6118 / #6204: a failed DELETE, a refused UPDATE, or a failed
+  // CREATE with no physical id is nothing `--revert-failed` can act on; the
+  // CREATE's manual check is named instead.
   if (revertable.every(revertFailedHasNothingToDo)) {
     for (const op of revertable.filter(revertSkipsFailedCreate)) {
       deps.logger.warn(unaddressableFailedCreateMessage(op));

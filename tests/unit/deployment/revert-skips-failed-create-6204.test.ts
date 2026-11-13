@@ -26,11 +26,17 @@ describe('revertSkipsFailedCreate (go-to-k/cdkd#6204)', () => {
     ['a recovered physical id', { physicalId: 'phys-B', physicalIdRecoveredFromError: true }],
     ['an abandoned Cloud Control request (re-polled first)', { pendingCloudControlRequest: { requestToken: 't', abandonedAt: 1 } }],
     ['an UPDATE change type', { changeType: 'UPDATE', attemptedProperties: { p: 1 } }],
-    ['a DELETE change type', { changeType: 'DELETE' }],
   ])('is false for %s', (_l, over) => {
     const op = { ...create, ...over } as FailedOperation;
     expect(revertSkipsFailedCreate(op)).toBe(false);
     expect(revertFailedHasNothingToDo(op)).toBe(false);
+  });
+
+  it('counts a failed DELETE as nothing to do: the revert plans skip-failed-noop', () => {
+    const op: FailedOperation = { ...create, changeType: 'DELETE', physicalId: 'phys-B' };
+    expect(classifyFailedOp(op, {})).toBe('skip-failed-noop');
+    expect(revertSkipsFailedCreate(op)).toBe(false);
+    expect(revertFailedHasNothingToDo(op)).toBe(true);
   });
 
   it('keeps the #6118 refused UPDATE as nothing to do', () => {

@@ -451,6 +451,65 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
     });
 
+    // go-to-k/cdkd#6204: the revert plans a failed DELETE as
+    // `skip-failed-noop`, so a DELETE-only kept set prints no command.
+    it('a failed DELETE keeps its journal record but prints no --revert-failed remedy (#6204)', async () => {
+      const engine = buildEngine({
+        changes: new Map<string, ResourceChange>([
+          ['A', makeChange('A')],
+          ['B', { logicalId: 'B', changeType: 'DELETE', resourceType: 'AWS::SQS::Queue' } as ResourceChange],
+        ]),
+        deps: { A: [], B: [] },
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: { B: record('B') },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.delete.mockImplementation((logicalId: string) =>
+        logicalId === 'B' ? Promise.reject(new Error('B delete failed')) : Promise.resolve(undefined)
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      const retained = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      expect(retained.failedOperations.map((o: { changeType: string }) => o.changeType)).toEqual(['DELETE']);
+      expect([...logged('info'), ...logged('warn')].some((m) => m.includes('--revert-failed'))).toBe(false);
+    });
+
+    // go-to-k/cdkd#6204: a skip-only failed CREATE beside an UPDATE the revert
+    // can act on still gets the command (the revert warns about the CREATE).
+    it('a failed no-id CREATE beside a failed UPDATE still prints the remedy (mixed set, #6204)', async () => {
+      const engine = buildEngine({
+        changes: new Map<string, ResourceChange>([
+          ['A', makeChange('A')],
+          ['B', makeChange('B')],
+          ['C', updateChange('C')],
+        ]),
+        deps: { A: [], B: [], C: [] },
+        failOn: new Set(['B']),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: { C: record('C') },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(new Error('C failed'));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      const retained = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      const failed = retained.failedOperations as Array<{ logicalId: string; attemptedProperties?: unknown }>;
+      expect(failed.map((o) => o.logicalId).sort()).toEqual(['B', 'C']);
+      expect(failed.find((o) => o.logicalId === 'C')!.attemptedProperties).toBeDefined();
+      expect(logged('info').some((m) => m.includes(`Revert it with: cdkd rollback ${stackName} --revert-failed`))).toBe(true);
+      expect(logged('warn').some((m) => m.includes('recorded no physical id'))).toBe(false);
+    });
+
     it('control: a non-refused failed UPDATE still prints the --revert-failed remedy', async () => {
       const { engine } = failingUpdateEngine(undefined);
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
@@ -931,6 +990,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     ['a failed CREATE that recorded a physical id (issue #1208)', { physicalId: 'phys-B' }, true],
     ['a failed CREATE that recorded no physical id (#6204)', {}, false],
     ['a failed CREATE with a name generation but no physical id (#6204)', { nameGeneration: 1 }, false],
+    ['a failed DELETE (#6204)', { changeType: 'DELETE', physicalId: 'phys-B' }, false],
   ])('next deploy after a failed-only journal of %s', async (_label, extra, expectNote) => {
     const changes = new Map([['A', makeChange('A')]]);
     const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });

@@ -141,8 +141,8 @@ export async function settleJournalAtStart(
         journal.segments.every((s) => s.operations.length === 0) &&
         journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
       // go-to-k/cdkd#6118 / #6204: every kept failed op is a refused update
-      // that applied nothing or a failed create the revert can only skip, so
-      // `--revert-failed` has nothing to act on and no note is printed.
+      // that applied nothing, or a failed delete or create the revert can only
+      // skip, so `--revert-failed` has nothing to act on and no note is printed.
       const nothingToRevert =
         failedOnly &&
         journal.segments.every((s) => (s.failedOperations ?? []).every(revertFailedHasNothingToDo));
