@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { addAwsEndpointOptions } from 'cdk-local/internal';
+import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import {
   appOptions,
   commonOptions,
@@ -209,6 +210,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
           'credentials (or the --profile overlay) unchanged even when --from-state / --from-cfn-stack is set.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--ecr-role-arn <arn>',

@@ -74,6 +74,7 @@ Docker is required. The first run also pulls the ECS metadata sidecar image,
 | --- | --- | --- |
 | `<target>` | — | The `AWS::ECS::TaskDefinition` to run. Required. |
 | `--assume-task-role [arn]` | off | Give the containers the task role's credentials, or those of the ARN you pass. See [AWS credentials in containers](#aws-credentials-in-containers). |
+| `--emulate-role-via <arn>` | — | Role to emulate the task role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--detach` | off | Start the containers and exit. No log streaming and no teardown. |
 | `--keep-running` | off | Leave the containers in place when the task exits. The network and sidecar are still removed. |
 | `--cluster <name>` | `cdkd-local` | Cluster name the metadata endpoint reports, and the prefix of the Docker network name. |

@@ -102,6 +102,8 @@ export async function buildContainerSpec(args: {
    * cross-account role that can read all of them.
    */
   layerRoleArn?: string;
+  /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201), for a refused `--assume-role`. */
+  emulateRoleVia?: string;
   /**
    * Issue #654: profile-resolved credentials to forward into the Lambda
    * container's env when `--profile <p>` is set AND this Lambda has no
@@ -140,6 +142,7 @@ export async function buildContainerSpec(args: {
     stateSourceActive,
     skipPull,
     layerRoleArn,
+    emulateRoleVia,
     profileCredentials,
     profileCredsFile,
     profile,
@@ -321,7 +324,7 @@ export async function buildContainerSpec(args: {
     profile,
   });
   if (roleArn) {
-    const creds = await assumeLambdaExecutionRole(roleArn, containerRegion);
+    const creds = await assumeLambdaExecutionRole(roleArn, containerRegion, emulateRoleVia);
     // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
     // entire job is to choose this Lambda's identity. Its STS client opts out
     // of the `--role-arn` role, so the hop is answered by the caller.

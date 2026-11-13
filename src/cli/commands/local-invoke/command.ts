@@ -295,6 +295,9 @@ export async function localInvokeCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
+    if (options.emulateRoleVia !== undefined) {
+      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
+    }
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).
@@ -452,6 +455,7 @@ export async function localInvokeCommand(
     // degrade-on-STS-failure rationale.
     await applyLambdaCredentialEnv(dockerEnv, {
       ...(resolvedAssumeRoleArn && { assumeRoleArn: resolvedAssumeRoleArn }),
+      ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
       ...(options.region !== undefined && { region: options.region }),
       ...(lambda.stack.region !== undefined && { stackRegion: lambda.stack.region }),
       ...(stateRegion !== undefined && { stateRegion }),

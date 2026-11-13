@@ -52,6 +52,12 @@ export interface LocalInvokeOptions {
    */
   assumeRole?: string | boolean;
   /**
+   * `--emulate-role-via <arn>` (go-to-k/cdkd#6201): when the `--assume-role`
+   * AssumeRole is refused, emulate the execution role's permissions by
+   * assuming THIS role with the execution role's policies as session policies.
+   */
+  emulateRoleVia?: string;
+  /**
    * Issue #448: explicit role to `sts:AssumeRole` into before calling
    * `lambda:GetLayerVersion` for every literal-ARN entry in a Lambda's
    * `Properties.Layers`. Required only when the dev's default

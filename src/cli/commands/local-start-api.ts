@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { addAwsEndpointOptions } from 'cdk-local/internal';
+import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import {
   appOptions,
   commonOptions,
@@ -129,6 +130,7 @@ export function createLocalStartApiCommand(): Command {
           'Compatible with `--assume-role <LogicalId>=<arn>` per-Lambda overrides — the map wins for named Lambdas, auto-resolve handles the rest.'
       ).default(false)
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--watch',

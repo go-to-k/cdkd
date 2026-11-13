@@ -200,6 +200,9 @@ export async function localRunTaskCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
+    if (options.emulateRoleVia !== undefined) {
+      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
+    }
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).
@@ -438,7 +441,12 @@ export async function localRunTaskCommand(
         options.assumeTaskRole === true
           ? await resolvePlaceholderAccount(roleArnTemplate, options, { realAws })
           : roleArnTemplate;
-      const creds = await assumeTaskRole(resolvedRoleArn, options.region, { realAws });
+      const creds = await assumeTaskRole(
+        resolvedRoleArn,
+        options.region,
+        { realAws },
+        options.emulateRoleVia
+      );
       if (realAws) assumedCredentials = creds;
       else emulatorTaskCredentials = creds;
     }

@@ -26,6 +26,8 @@ export interface LocalRunTaskOptions {
    * The runner branches on `typeof options.assumeTaskRole`.
    */
   assumeTaskRole?: string | boolean;
+  /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201): see `local invoke`'s. */
+  emulateRoleVia?: string;
   pull: boolean;
   /**
    * Optional role ARN passed to `pullEcrImage` for cross-account /

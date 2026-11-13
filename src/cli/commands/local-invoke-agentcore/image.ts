@@ -270,7 +270,11 @@ export async function resolveAgentCoreCodeImageFromS3(
     | undefined;
   if (assumeRoleArn) {
     try {
-      credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+      credentials = await assumeAgentCoreExecutionRole(
+        assumeRoleArn,
+        region,
+        options.emulateRoleVia
+      );
     } catch (err) {
       logger.warn(
         assumeRoleFallbackWarning({

@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { addAwsEndpointOptions } from 'cdk-local/internal';
+import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import { mixedModeEmulatorOverride } from '../../local/local-aws-wiring.js';
 import { setAwsEndpointOverrideSource } from '../../utils/aws-client-defaults.js';
 import {
@@ -242,6 +243,7 @@ export function createLocalCommand(): Command {
           '"run with --assume-role" hint. Distinct from omitting the flag, which still prints that hint.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--layer-role-arn <arn>',

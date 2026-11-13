@@ -320,6 +320,9 @@ export async function localInvokeAgentCoreCommand(
         (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
       );
     }
+    if (options.emulateRoleVia !== undefined) {
+      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
+    }
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).

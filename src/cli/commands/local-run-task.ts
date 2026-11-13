@@ -14,6 +14,7 @@ import {
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { addAwsEndpointOptions, addImageOverrideOptions } from 'cdk-local/internal';
+import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import { localRunTaskCommand } from './local-run-task/command.js';
 
 export { resolvePlaceholderAccount, assumeTaskRole } from './local-run-task/stack-account.js';
@@ -69,6 +70,7 @@ export function createLocalRunTaskCommand(): Command {
           "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override."
       )
     )
+    .addOption(emulateRoleViaOption('--assume-task-role'))
     .addOption(
       new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
     )

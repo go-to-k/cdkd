@@ -17,6 +17,7 @@ import {
   sendableAssumeRoleCommand,
 } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
+import { emulateRoleAfterDeniedAssume } from '../../../local/role-permission-emulation.js';
 import { readCdkPathOrUndefined } from '../../cdk-path.js';
 import type { LocalStateProvider, LocalStateRecord } from 'cdk-local';
 import { getEmbedConfig } from 'cdk-local';
@@ -202,6 +203,7 @@ async function buildContainerEnvWith(
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
+    ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
     ...(options.region !== undefined && { region: options.region }),
     ...(resolved.stack.region !== undefined && { stackRegion: resolved.stack.region }),
     ...(loaded?.region !== undefined && { stateRegion: loaded.region }),
@@ -277,6 +279,8 @@ export async function applyAgentCoreCredentialEnv(
   dockerEnv: Record<string, string>,
   args: {
     assumeRoleArn?: string;
+    /** `--emulate-role-via <arn>` (go-to-k/cdkd#6201), for a refused assume. */
+    emulateRoleVia?: string;
     region?: string;
     /** The stack's own region (`env.region` on the CDK stack). */
     stackRegion?: string;
@@ -305,7 +309,11 @@ export async function applyAgentCoreCredentialEnv(
   if (args.assumeRoleArn) {
     const stsRegion = containerRegion;
     try {
-      const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
+      const creds = await assumeAgentCoreExecutionRole(
+        args.assumeRoleArn,
+        stsRegion,
+        args.emulateRoleVia
+      );
       // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
       // entire job is to choose the emulated agent's identity. Its STS client
       // opts out of the `--role-arn` role, so the hop is answered by the caller.
@@ -523,7 +531,8 @@ export function forwardAwsEnv(env: Record<string, string>): void {
 
 export async function assumeAgentCoreExecutionRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  emulateRoleVia?: string
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // A `CdkdError`, so the STS-failure warn this lands in prints its remedy
   // rather than withholding it (go-to-k/cdkd#2300).
@@ -541,13 +550,30 @@ export async function assumeAgentCoreExecutionRole(
     ...(region && { region }),
   });
   try {
-    const response = await sts.send(
-      sendableAssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
+    let response;
+    try {
+      response = await sts.send(
+        sendableAssumeRoleCommand({
+          RoleArn: roleArn,
+          RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
+          DurationSeconds: 3600,
+        })
+      );
+    } catch (err) {
+      // The role's trust policy refused the caller: emulate its permissions
+      // with session policies instead (go-to-k/cdkd#6201). `undefined` (not a
+      // refusal, or emulation impossible — warned) keeps each caller's fallback.
+      const emulated = await emulateRoleAfterDeniedAssume(err, {
+        roleArn,
+        region,
+        realAws: mixedModeActive(),
+        ...(emulateRoleVia !== undefined && { emulateRoleVia }),
+        flag: '--assume-role',
+        sessionNamePrefix: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore`,
+      });
+      if (emulated) return emulated;
+      throw err;
+    }
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
       throw new CdkdError(
