@@ -321,6 +321,20 @@ the emulator in the first place takes the same flag on `bootstrap` and
 A handler that misses the endpoint fails with a credential error rather than
 reaching real AWS, because the container holds no real credentials.
 
+AWS Emulator answers SQS calls with real-shaped queue URLs
+(`https://sqs.<region>.amazonaws.com/<account>/<queue>`), and the AWS SDK for
+JavaScript v3 sends each SQS request to its queue URL's host, which would
+leave the emulator. A sidecar in each workload rewrites the queue URLs in the
+emulator's answers to its own loopback address, so the next call stays local.
+It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
+[mixed mode](#aws-emulator-mixed-mode); a container's own
+`AWS_ENDPOINT_URL_SQS` wins.
+
+| Case | What to do |
+| --- | --- |
+| The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+| A queue URL from an environment variable (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Not rewritten; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+
 To keep some services on real AWS while the rest goes to the emulator, see
 [AWS Emulator mixed mode](#aws-emulator-mixed-mode).
 

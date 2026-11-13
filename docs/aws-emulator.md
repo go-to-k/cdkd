@@ -35,13 +35,14 @@ practical details of running the two together. The flag reference is in
 
 2. Deploy your stack
 
-   Resources and file assets go to the emulator. On an emulator with no cdkd
-   state bucket, the deploy bootstraps it first: it creates the state bucket,
-   then the asset storage for each stack's region, without a prompt and with
-   an info line for each. A
-   restarted emulator starts empty, so the next deploy bootstraps it again.
-   An explicit `cdkd bootstrap --aws-emulator` still works, but you do not
-   need it.
+   Resources and file assets go to the emulator. There is no separate
+   bootstrap step: on an emulator with no cdkd state bucket, `cdkd deploy`
+   creates the state bucket, then the asset storage for each stack's region,
+   without a prompt and with an info line for each. `cdkd import` creates the
+   state bucket the same way. A restarted emulator starts empty, so the next
+   deploy bootstraps it again. An explicit `cdkd bootstrap --aws-emulator`
+   still works, but you do not need it; see
+   [Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
 
    ```bash
    cdkd deploy MyStack --aws-emulator
