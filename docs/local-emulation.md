@@ -475,7 +475,8 @@ it always does without the flag. With the flag, it marks the exception.
 | --- | --- | --- |
 | `"real-aws"` on `AWS_ENDPOINT_URL_<SERVICE>` | Dropped (a no-op) | That service goes to real AWS |
 | `"real-aws"` on the bare `AWS_ENDPOINT_URL` | Dropped | Refused: mark each service, or drop the flag |
-| A literal URL | Used as it is | Used as it is, never signed again |
+| A literal URL on `AWS_ENDPOINT_URL_<SERVICE>` | Used as it is | Used as it is, never signed again |
+| A literal URL on the bare `AWS_ENDPOINT_URL` | Used as it is | With no exception, replaced by the emulator's endpoint; with exceptions, used as it is |
 | `"aws-emulator"` (the old form) | Refused, with the migration | Refused, with the migration |
 
 A variable the AWS SDKs never read, such as `AWS_ENDPOINT_URL_SECRETSMANAGER`,
@@ -490,6 +491,8 @@ is refused with the SDK spelling (`AWS_ENDPOINT_URL_SECRETS_MANAGER`).
 | Calls to non-excepted services | Through a re-signing sidecar in the workload's network namespace (`AWS_ENDPOINT_URL=https://127.0.0.1:47297`), which drops the request's signature and signs it again with the emulator's keys. No real-key signature reaches the emulator. |
 | Calls to excepted services | Straight to real AWS: each gets its real regional endpoint in its own `AWS_ENDPOINT_URL_<SERVICE>`. |
 | `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` | Forced to `false`, so an image cannot make the SDK skip the endpoints. |
+| The CDK app's own synth | The emulator with its keys, as with `--aws-emulator` alone: exceptions apply to the workload and to cdkd's own calls, never to synth. |
+| cdkd's own process | Keeps your identity only for the excepted calls (and the STS hops that establish it); every other call it makes goes to the emulator with its keys. |
 | Container trust | A CA bundle with the emulator's CA, a CA made for this run (for the sidecar's certificate) and the public roots. |
 | Your shell's `AWS_ENDPOINT_URL*` and a profile's `endpoint_url` | Ignored, with one notice, for containers and for cdkd's own calls. |
 

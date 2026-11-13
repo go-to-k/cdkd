@@ -20,11 +20,13 @@
  * - under `--aws-emulator`, containers get the emulator's credentials ONLY
  *   (the host's are scrubbed), its CA and the hygiene variables, and every AWS
  *   client cdkd and cdk-local build follows the endpoint;
- * - AWS Emulator mixed mode (`--aws-emulator` plus an `"aws-emulator"`
- *   sentinel on an `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars`,
- *   go-to-k/cdkd#6150): containers keep the real identity, the routed
- *   services go to a re-signing sidecar in the workload's namespace, and
- *   cdkd's own clients stay on real AWS.
+ * - AWS Emulator mixed mode (`--aws-emulator` plus a `"real-aws"` exception
+ *   on an `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars`, go-to-k/cdkd#6150):
+ *   everything still goes to the emulator — through a re-signing sidecar in
+ *   the workload's namespace — except the excepted services, which go to real
+ *   AWS; a container keeping an exception holds the real identity, every
+ *   other one the emulator's keys only. cdkd's own clients default to the
+ *   emulator too, and an excepted call opts out (`realAwsException`).
  *
  * This module is the cdkd side: it activates the wiring for a command, and
  * applies it at cdkd's own docker-run layer (`runDetached` in
@@ -66,8 +68,10 @@ export interface LocalAwsWiringOptions {
   /** `--no-pull` as commander parses it (`false`): the forwarder image is not pulled either. */
   pull?: boolean | undefined;
   /**
-   * `--env-vars <file>`: an `"aws-emulator"` sentinel in it selects mixed
-   * mode, and without `--aws-emulator` stops the command naming the flag.
+   * `--env-vars <file>`: under `--aws-emulator`, a `"real-aws"` exception in
+   * it selects mixed mode; without the flag the value is a no-op. The old
+   * `"aws-emulator"` value, a bare `AWS_ENDPOINT_URL` exception and a
+   * misspelled variable stop the command.
    */
   envVars?: string | undefined;
 }
@@ -225,8 +229,9 @@ export function loopbackPortsFor(
     // The re-signing sidecar listens on the workload's own loopback; on the
     // host network that is the host's, shared by every workload of the run.
     throw new CdkdError(
-      'An aws-emulator sentinel (mixed mode) needs the AWS Emulator re-signing sidecar, which cannot run on ' +
-        'the host network. Drop the host network for this workload, or use --aws-emulator without a sentinel.',
+      'A run with "real-aws" exceptions (AWS Emulator mixed mode) cannot use the host network: its ' +
+        're-signing sidecar listens on the workload\'s own loopback. Drop the "real-aws" exceptions or the ' +
+        'host network.',
       'LOCAL_AWS_EMULATOR_FORWARDER_FAILED'
     );
   }
@@ -308,7 +313,7 @@ export function setContainerRegion(env: Record<string, string>, region: string |
 
 /**
  * True while `--aws-emulator` is active for this command run in full-emulator
- * mode (no sentinel): the emulator's keys are then the only identity. False
+ * mode (no "real-aws" exception): the emulator's keys are then the only identity. False
  * in mixed mode, where workloads keep the real identity.
  */
 export function localAwsEmulatorActive(): boolean {

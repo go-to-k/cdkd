@@ -115,7 +115,7 @@ async function buildContainerEnvWith(
   const overrides = readEnvOverridesFile(options.envVars);
   const cdkPath = readCdkPathOrUndefined(resolved.resource);
   // AWS Emulator mixed mode: `{{resolve:...}}` follows THIS runtime's own
-  // sentinels (go-to-k/cdkd#6150).
+  // "real-aws" exceptions (go-to-k/cdkd#6150).
   const workload = { logicalId: resolved.logicalId, cdkPath };
   // Keys an `--env-vars` override replaces never reach state substitution, so
   // an override also skips a cross-stack dynamic-reference lookup.

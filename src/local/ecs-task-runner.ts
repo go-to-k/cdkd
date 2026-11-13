@@ -276,7 +276,7 @@ export async function runEcsTask(
       dynamicEnvByContainer.set(
         c.name,
         await resolveDynamicReferencesInEnv(c.environment, {
-          // Mixed mode: routed by THIS container's own sentinels (go-to-k/cdkd#6150).
+          // Mixed mode: routed by THIS container's own "real-aws" exceptions (go-to-k/cdkd#6150).
           workload: { containerName: c.name },
           region: firstUsableRegion(
             options.stateRecordRegion,

@@ -664,7 +664,7 @@ async function resolveInvokeTemplateEnvWith(
   // `undefined` when neither is set (skip the substitution pass
   // entirely; PR 1 warn-and-drop behavior is preserved).
   // AWS Emulator mixed mode: names, `{{resolve:...}}` and SSM parameters
-  // follow THIS function's own sentinels (go-to-k/cdkd#6150).
+  // follow THIS function's own "real-aws" exceptions (go-to-k/cdkd#6150).
   const workload = { logicalId: lambda.logicalId, cdkPath: lambdaCdkPath };
   const stateProvider = createLocalStateProvider(
     options,
@@ -769,7 +769,7 @@ async function resolveInvokeTemplateEnvWith(
   const plaintextKeys = new Set<string>(stateAudit?.sensitiveKeys ?? []);
   for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-    // Mixed mode: routed by THIS function's own sentinels (go-to-k/cdkd#6150).
+    // Mixed mode: routed by THIS function's own "real-aws" exceptions (go-to-k/cdkd#6150).
     workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
     region: firstUsableRegion(
       ownerRegion,

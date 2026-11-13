@@ -274,7 +274,7 @@ export async function buildContainerSpec(args: {
   let dynamic: Awaited<ReturnType<typeof resolveDynamicReferencesInEnv>>;
   try {
     dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-      // Mixed mode: routed by THIS function's own sentinels (go-to-k/cdkd#6150).
+      // Mixed mode: routed by THIS function's own "real-aws" exceptions (go-to-k/cdkd#6150).
       workload: { logicalId, cdkPath: lambdaCdkPath },
       region: firstUsableRegion(
         stateBundle?.region,

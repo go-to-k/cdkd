@@ -389,6 +389,49 @@ describe('full --aws-emulator mode with the SQS sidecar (go-to-k/cdk-local#912, 
   });
 });
 
+describe('"real-aws" without --aws-emulator is stripped from the container env (go-to-k/cdkd#6150)', () => {
+  it('runDetached: the value never reaches the container', async () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    mocks.hostDefaults.mockResolvedValue(undefined);
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws', KEEP: '1' },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const flags = envFlags(lastRun().args);
+    expect(flags.some((f) => f.startsWith('AWS_ENDPOINT_URL_SECRETS_MANAGER'))).toBe(false);
+    expect(flags).toContain('KEEP=1');
+  });
+
+  it('ECS buildDockerRunArgs: an --env-vars "real-aws" never reaches the container', () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    const built = buildDockerRunArgs({
+      task: { family: 'fam', containers: [], volumes: [] } as unknown as ResolvedEcsTask,
+      container: {
+        name: 'app',
+        environment: {},
+        secrets: [],
+        portMappings: [],
+        mountPoints: [],
+        ulimits: [],
+        links: [],
+      } as unknown as ResolvedEcsContainer,
+      image: 'img',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      containerHost: '127.0.0.1',
+      region: 'us-east-1',
+      envOverrides: { Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
+      roleArn: undefined,
+      platformOverride: undefined,
+    } as Parameters<typeof buildDockerRunArgs>[0]);
+    expect(envFlags(built.args).some((f) => f.startsWith('AWS_ENDPOINT_URL_SECRETS_MANAGER'))).toBe(false);
+  });
+});
+
 describe('forward mode tolerates a forwarder image pull failure', () => {
   it('still starts the workload', async () => {
     setActiveWorkloadAwsWiring(forwardWiring());
@@ -455,6 +498,15 @@ describe('activateLocalAwsWiring', () => {
     it('refuses the old "aws-emulator" value without the flag too', async () => {
       const err = await activate({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
       expect(err).toBeInstanceOf(CdkdError);
+    });
+
+    it('pins the bare AWS_ENDPOINT_URL refusal text', async () => {
+      const err = await activate({ Parameters: { AWS_ENDPOINT_URL: 'real-aws' } }, 'https://127.0.0.1:1');
+      expect((err as Error).message).toBe(
+        '--env-vars: "AWS_ENDPOINT_URL": "real-aws" would send every AWS call to real AWS, which is what running ' +
+          'without --aws-emulator does. Remove --aws-emulator to run against real AWS, or keep it and mark only ' +
+          'the services that must reach real AWS, e.g. "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws".'
+      );
     });
 
     it('"real-aws" without --aws-emulator is a no-op: the run is plain forward mode', async () => {
@@ -760,7 +812,11 @@ describe('AWS Emulator mixed mode (go-to-k/cdkd#6150)', () => {
       network: 'host',
     }).catch((e) => e);
     expect(err).toBeInstanceOf(CdkdError);
-    expect((err as Error).message).toMatch(/host network/);
+    expect((err as Error).message).toBe(
+      'A run with "real-aws" exceptions (AWS Emulator mixed mode) cannot use the host network: its ' +
+        "re-signing sidecar listens on the workload's own loopback. Drop the \"real-aws\" exceptions or the " +
+        'host network.'
+    );
     expect(mocks.execFile.mock.calls.filter((c) => (c[1] as string[])[0] === 'run')).toEqual([]);
   });
 

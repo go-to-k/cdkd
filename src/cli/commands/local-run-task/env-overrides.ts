@@ -20,7 +20,7 @@ export function readEnvOverridesFile(
   let raw: string;
   try {
     // Through cdk-local's reader: a pipe-backed path (`<(jq ...)`,
-    // `/dev/stdin`) is read once, so the mixed-mode sentinel scan and this
+    // `/dev/stdin`) is read once, so the mixed-mode "real-aws" scan and this
     // read see the same text (go-to-k/cdkd#6150).
     raw = readEnvVarsFileText(filePath);
   } catch (err) {

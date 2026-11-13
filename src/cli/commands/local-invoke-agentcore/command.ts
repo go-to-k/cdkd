@@ -390,7 +390,7 @@ export async function localInvokeAgentCoreCommand(
       options,
       candidate?.stackName ?? '',
       await resolveCfnFallbackRegion(options, candidate?.region),
-      // Mixed mode: names follow THIS runtime's own sentinels (go-to-k/cdkd#6150).
+      // Mixed mode: names follow THIS runtime's own "real-aws" exceptions (go-to-k/cdkd#6150).
       { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
     );
     const { context: imageContext, loaded: loadedState } =
@@ -768,7 +768,7 @@ export async function localInvokeAgentCoreCommand(
 /**
  * The AWS Emulator mixed-mode workload of the runtime `target` names (its
  * logical ID and `aws:cdk:path`), found BEFORE full resolution so the state
- * provider built ahead of it resolves names by this runtime's own sentinels
+ * provider built ahead of it resolves names by this runtime's own "real-aws" exceptions
  * (go-to-k/cdkd#6150). `undefined` when the target names no single runtime:
  * the names then follow the run's routing, and the resolver reports the
  * target itself.
