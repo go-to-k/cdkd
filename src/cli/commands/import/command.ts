@@ -23,6 +23,7 @@ import {
   registerAllProviders,
 } from '../../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
+import { ensureAwsEmulatorStateBucket } from '../emulator-auto-bootstrap.js';
 import { TemplateParser } from '../../../analyzer/template-parser.js';
 import {
   resolveApp,
@@ -91,12 +92,6 @@ export async function importCommand(
   exportInferredRegionForSdk(effectiveRegion);
   const region = effectiveRegion.region;
 
-  const stateBucket = await resolveStateBucketWithDefault(
-    options.stateBucket,
-    region,
-    legacyStateBucketFallbackRegion(effectiveRegion)
-  );
-
   if (options.region) {
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
@@ -114,6 +109,25 @@ export async function importCommand(
   // on us-east-1), destroyed with the command's clients.
   let targetClients: AwsClients | undefined;
   try {
+    // go-to-k/cdkd#6186: under `--aws-emulator` only, create the state bucket
+    // when the emulator has none (a no-op on real AWS), through the command's
+    // own clients, as `cdkd deploy` does. Never under --dry-run, which creates
+    // nothing. Both this and the resolution below run after the bag is set, so
+    // the resolution's `getAwsClients()` is that bag (as in deploy), not a
+    // region-less default one.
+    if (!options.dryRun) {
+      await ensureAwsEmulatorStateBucket({
+        cliBucket: options.stateBucket,
+        region,
+        s3: awsClients.s3,
+        sts: awsClients.sts,
+      });
+    }
+    const stateBucket = await resolveStateBucketWithDefault(
+      options.stateBucket,
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
+    );
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
     // Every contention message this command (and its nested recursion) raises
     // points at the SAME lock object it was working on (issue #2170).
