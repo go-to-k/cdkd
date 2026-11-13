@@ -74,6 +74,7 @@ import {
   noEchoAttributeOverridesFor,
   noEchoPositionSources,
 } from './noecho.js';
+import { noEchoMacCover, noEchoMacInputBindingsFor } from './noecho-macs.js';
 
 /** The `CREATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionCreate(
@@ -165,7 +166,15 @@ export async function provisionCreate(
       conditions,
       stackName
     );
-  if (fingerprintSources !== undefined) {
+  // go-to-k/cdkd#6209: the keys whose MAC entry the save may bind to their
+  // inputs, walked once with the fingerprints below.
+  const macCover = noEchoMacCover(engine, desiredProps, () =>
+    noEchoPositionSources(engine.noEchoRun, stateResources, template, conditions)
+  );
+  const fingerprinter =
+    fingerprintSources &&
+    inputFingerprinter(desiredProps, fingerprintSources, (key) => macCover.get(key));
+  if (fingerprinter !== undefined) {
     engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
       await maskedInputFingerprintsFor(
@@ -174,10 +183,18 @@ export async function provisionCreate(
           engine.secretsRun.fingerprintNoEchoValues,
           engine.options.inheritedSecrets,
         ]),
-        inputFingerprinter(desiredProps, fingerprintSources)
+        fingerprinter
       )
     );
   }
+  // go-to-k/cdkd#6209: what the save binds this create's NoEcho value MACs to.
+  await noEchoMacInputBindingsFor(
+    engine,
+    logicalId,
+    macCover,
+    fingerprinter,
+    engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
   engine.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
   // Named so the provider call below can bind the SAME bag into its
   // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE

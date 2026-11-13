@@ -6,8 +6,11 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CloudFormationTemplate, UpdateContext } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
-import { noEchoParametersReadBy } from '../secret-redaction.js';
+import { noEchoParametersReadBy, type NoEchoPositionSources } from '../secret-redaction.js';
+import type { BindingFingerprinter } from '../masked-property-fingerprints.js';
+import { noEchoMacParametersOf } from '../noecho-value-macs.js';
 import { noEchoPositionSources } from './noecho.js';
+import { readsOnlyNoEchoParameters } from './update/noecho-macs.js';
 
 // Re-exported so `update-in-place.ts` takes both from one import (file-size cap).
 export { noEchoPositionSources };
@@ -34,6 +37,64 @@ export async function awaitNoEchoMacsFor(
   if (sources === undefined || sources.parameters.size === 0) return;
   if (noEchoParametersReadBy(declared[logicalId]?.Properties ?? {}, sources).length === 0) return;
   await macs.macs();
+}
+
+/**
+ * go-to-k/cdkd#6209: the keys of `desiredProps` whose NoEcho value MAC entry
+ * may carry an input binding, each with the `NoEcho` parameters its MACs
+ * cover: a top-level property that reads a `NoEcho` parameter AND something
+ * else (a key reading nothing but `NoEcho` parameters settles without one,
+ * and its entry stays as before). Empty for a stack declaring no `NoEcho`
+ * parameter, before `sources` is even built: no walk, no resolution, no AWS
+ * call. Handed to `inputFingerprinter` as its `coveredFor`, so the binding
+ * comes from the same walk as the input fingerprint.
+ */
+export function noEchoMacCover(
+  engine: Pick<DeployEngine, 'noEchoRun'>,
+  desiredProps: Record<string, unknown>,
+  sources: () => NoEchoPositionSources | undefined
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const cover = new Map<string, ReadonlySet<string>>();
+  if (engine.noEchoRun.noEchoMacs === undefined) return cover;
+  const positions = sources();
+  if (positions === undefined || positions.parameters.size === 0) return cover;
+  for (const key of Object.keys(desiredProps)) {
+    const value = desiredProps[key];
+    const parameters = noEchoMacParametersOf(value, positions);
+    if (parameters.length === 0 || readsOnlyNoEchoParameters(value, positions.parameters)) continue;
+    cover.set(key, new Set(parameters));
+  }
+  return cover;
+}
+
+/**
+ * go-to-k/cdkd#6209: records (and returns) the input bindings of
+ * `logicalId`'s resolution in this deploy: for each key of `cover`
+ * ({@link noEchoMacCover}), the input fingerprint it resolves to when every
+ * input other than its `NoEcho` parameters was resolved and hashed, read
+ * from `fingerprinter`'s memoized walk (`binding`), for a key `stampable`
+ * holds only (the input fingerprints the save may stamp: a binding is
+ * stamped only beside one, so any other key's walk would be wasted). A walk
+ * that throws is no binding. Replaces the logical id's previous entry, so a
+ * later resolution never leaves an earlier one's binding behind.
+ */
+export async function noEchoMacInputBindingsFor(
+  engine: Pick<DeployEngine, 'noEchoRun'>,
+  logicalId: string,
+  cover: ReadonlyMap<string, ReadonlySet<string>>,
+  fingerprinter: BindingFingerprinter | undefined,
+  stampable: Readonly<Record<string, string>> | undefined
+): Promise<ReadonlyMap<string, string>> {
+  const bindings = new Map<string, string>();
+  engine.noEchoRun.noEchoMacInputBindings.delete(logicalId);
+  if (fingerprinter === undefined || stampable === undefined) return bindings;
+  for (const key of cover.keys()) {
+    if (!Object.hasOwn(stampable, key)) continue;
+    const binding = await fingerprinter.binding(key).catch(() => undefined);
+    if (binding !== undefined) bindings.set(key, binding);
+  }
+  if (bindings.size > 0) engine.noEchoRun.noEchoMacInputBindings.set(logicalId, bindings);
+  return bindings;
 }
 
 /**

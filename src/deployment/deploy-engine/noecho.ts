@@ -133,6 +133,12 @@ export class NoEchoRunState {
    * clears its entry.
    */
   noEchoMacSent = new Map<string, Set<string>>();
+  /**
+   * go-to-k/cdkd#6209: per logical id, each property's fully resolved input
+   * fingerprint from its latest resolution (`noEchoMacInputBindingsFor`): the
+   * UPDATE matches the record's binding against it, the save stamps it.
+   */
+  noEchoMacInputBindings = new Map<string, ReadonlyMap<string, string>>();
   /** go-to-k/cdkd#6146: this deploy's schema write-only lookups (`macWriteOnlyKeys`). */
   macWriteOnlyLookups = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 }

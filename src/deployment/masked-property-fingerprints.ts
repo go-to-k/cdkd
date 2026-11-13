@@ -64,6 +64,9 @@ export type {
 export {
   nestedStackOutputClass,
   maskedInputFingerprint,
+  maskedInputBinding,
+  maskedInputProof,
+  maskedInputWalk,
   classifyPassedParameters,
   recordPassedParameterClasses,
   passedParameterClassesOf,
@@ -86,4 +89,7 @@ export {
   withMaskedPropertyFingerprints,
   backfillMaskedPropertyFingerprints,
 } from './masked-property-fingerprints/records.js';
-export type { InputFingerprinter } from './masked-property-fingerprints/records.js';
+export type {
+  BindingFingerprinter,
+  InputFingerprinter,
+} from './masked-property-fingerprints/records.js';

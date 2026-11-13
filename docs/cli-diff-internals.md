@@ -288,9 +288,10 @@ reads each such resource back and updates the ones whose value moved (see
 The one exception is a property whose record carries a `noEchoValueMacs` MAC
 (a KMS keyed MAC of the value last sent): on a top-level stack the diff makes
 one `GenerateMac` per `NoEcho` parameter, and a write-only property (by the
-type's schema) that reads nothing but `NoEcho` parameters and literals, whose
-MAC differs, is shown as changed, with one note naming it, as the deploy sends
-it. A diff role without `kms:GenerateMac` logs that at debug and previews as
+type's schema) whose MAC differs is shown as changed, with one note naming it,
+as the deploy sends it. That holds for a property reading nothing but `NoEcho`
+parameters and literals, and for one whose other inputs all resolve to values
+that hold no `NoEcho` value. A diff role without `kms:GenerateMac` logs that at debug and previews as
 before.
 
 A record written before `version: 11` still holds the value it last sent in

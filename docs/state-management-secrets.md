@@ -158,12 +158,18 @@ of every `NoEcho` parameter value, bound to the stack and the parameter, and
 records it for each property that was sent the value. The record holds only
 the MAC, never the value. The next deploy computes the MAC again and compares:
 
-- An equal MAC means the property is not sent again, but only when the
-  property reads nothing except `NoEcho` parameters, literals and the stack's
-  own pseudo parameters (`AWS::Region`, `AWS::AccountId`, ...). A property that
-  also reads a resource attribute, another parameter, a condition, a mapping,
-  a cross-stack value or a `{{resolve:...}}` reference inside the same string
-  could have changed without its MAC changing, so it is sent as without a MAC.
+- An equal MAC means the property is not sent again when it reads nothing
+  except `NoEcho` parameters, literals and the stack's own pseudo parameters
+  (`AWS::Region`, `AWS::AccountId`, ...).
+- A property that also reads other inputs (a resource attribute such as a
+  Lambda function's ARN, another parameter, a condition, a mapping, a
+  cross-stack value) could have changed without its MAC changing. Its MAC
+  record also holds a hash of those inputs as the deploy that sent it
+  resolved them, so an equal MAC skips it only while today's inputs resolve
+  to the same hash. An input cdkd cannot resolve and hash (a custom resource's
+  attribute, a value derived from a secret, a `{{resolve:...}}` reference
+  an intrinsic such as `Fn::Join` or `Fn::Sub` joins to another value) sends
+  it as without a MAC.
 - A different MAC means the value changed, so the property is sent.
 - No MAC, for example on the first deploy after an upgrade, after the key was
   replaced, after a failed update or a rollback, or without the key or the
@@ -175,9 +181,9 @@ sending without a MAC. Re-putting the definition deletes every resource the
 stack declares on the API outside it, so a `Body` cdkd cannot compare is not
 put, and the deploy warns that a change to the value alone is not applied. A
 `Body` is compared once the key and the permission are in place, a create or a
-put has recorded its MAC, and it reads nothing but `NoEcho` parameters and
-literals; a `Body` that also reads, say, a Lambda function's ARN keeps the
-warning.
+put has recorded its MAC, and its other inputs, such as a Lambda function's
+ARN, resolve to what they were at that put; one reading an input cdkd cannot
+resolve and hash keeps the warning.
 
 A stack with no `NoEcho` parameter makes no KMS call. A stack that has one
 makes one `GenerateMac` call per `NoEcho` parameter per deploy, run in

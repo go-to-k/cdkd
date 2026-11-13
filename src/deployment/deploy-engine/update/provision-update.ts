@@ -604,6 +604,7 @@ export async function provisionUpdate(
     movedAsWritten,
     unsettledNames,
     current: engine.noEchoRun.noEchoMacs?.settled(),
+    inputBindings: engine.noEchoRun.noEchoMacInputBindings.get(logicalId),
   });
   for (const key of macConfirmedPaths) parameterSettledPaths.add(key);
   if (macConfirmedPaths.size > 0 || macChangedPaths.size > 0) {
@@ -619,7 +620,7 @@ export async function provisionUpdate(
   }
   if (macReadsOther.size > 0) {
     engine.logger.debug(
-      safeMsg`${logicalId}: ${[...macReadsOther].sort().join(', ')} carry the NoEcho values they were last sent, but also read a value their MACs do not cover (a resource attribute, a plain parameter): compared as without a MAC`
+      safeMsg`${logicalId}: ${[...macReadsOther].sort().join(', ')} carry the NoEcho values they were last sent, but also read a value their MACs do not cover (a resource attribute, a plain parameter) with no equal, fully resolved input binding: compared as without a MAC`
     );
   }
   if (macChangedPaths.size > 0) {

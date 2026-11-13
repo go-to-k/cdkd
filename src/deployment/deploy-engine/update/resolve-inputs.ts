@@ -30,6 +30,7 @@ import {
   printNestedStackReadsOnly,
 } from '../resolver-context.js';
 import { noEchoAttributeOverridesFor, noEchoPositionSources } from '../noecho.js';
+import { noEchoMacCover, noEchoMacInputBindingsFor } from '../noecho-macs.js';
 import { isWhollyMask } from './helpers.js';
 
 /**
@@ -368,7 +369,12 @@ export async function resolveUpdateInputs(
       conditions,
       stackName
     );
-  const fingerprints = fingerprintSources && inputFingerprinter(desiredProps, fingerprintSources);
+  // go-to-k/cdkd#6209: the keys whose MAC entry may carry an input binding,
+  // walked once with their NoEcho parameters as the cover.
+  const macCover = noEchoMacCover(engine, desiredProps, () => noEchoSources);
+  const fingerprints =
+    fingerprintSources &&
+    inputFingerprinter(desiredProps, fingerprintSources, (key) => macCover.get(key));
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)
   );
@@ -387,6 +393,16 @@ export async function resolveUpdateInputs(
       )
     );
   }
+  // go-to-k/cdkd#6209: today's fully resolved input fingerprints of the keys
+  // reading a NoEcho parameter and something else: what a MAC match must find
+  // bound in the record's entry, and what the save binds a new entry to.
+  await noEchoMacInputBindingsFor(
+    engine,
+    logicalId,
+    macCover,
+    fingerprints,
+    fingerprints && engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
   // go-to-k/cdkd#4543: for a nested-stack row, how each value it passes may
   // enter the child's input fingerprints, read off THIS (the parent's)
   // template, recorded on the bag the provider call is bound to, where the

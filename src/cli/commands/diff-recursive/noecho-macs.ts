@@ -12,8 +12,10 @@ import {
 } from '../../../deployment/deploy-engine/update/noecho-macs.js';
 import type { ResourceChange, ResourceState } from '../../../types/state.js';
 import {
+  maskedInputProof,
   maskedPropertyFingerprint,
   maskedPropertyFingerprintsOf,
+  type MaskedInputSources,
 } from '../../../deployment/masked-property-fingerprints.js';
 import {
   createNoEchoValueMacs,
@@ -40,9 +42,12 @@ import { getCreateOnlyPropertyPaths } from '../../../provisioning/create-only-pr
  * report; one a readback merely omits, which the deploy also lets a MAC
  * decide, is under-reported here, since the preview reads nothing back), not
  * unsettled, its template text unchanged since the MACs were
- * written (the go-to-k/cdkd#4451 fingerprint), reading nothing but NoEcho
- * parameters and literals, and not create-only (the deploy never replaces on
- * a `NoEcho` parameter's word, maintainer decision 1 on #4043).
+ * written (the go-to-k/cdkd#4451 fingerprint), and not create-only (the
+ * deploy never replaces on a `NoEcho` parameter's word, maintainer decision 1
+ * on #4043). It must read nothing but NoEcho parameters and literals, or
+ * (go-to-k/cdkd#6209) have every other input resolved and hashed
+ * (`maskedInputProof` over `inputSources`) with no NoEcho value in what they
+ * resolved to: then the deploy's positioned guard holds too.
  */
 /**
  * One run's NoEcho value MACs per stack binding (`noEchoMacBinding`): no
@@ -65,6 +70,59 @@ function macsFor(args: Parameters<typeof previewNoEchoMacChanges>[0]) {
   );
 }
 
+/**
+ * Whether every input of `value` other than the NoEcho `parameters` resolves
+ * and hashes, and nothing it resolved to holds the value of a NoEcho
+ * parameter of the stack (any length: a short one only makes this answer no,
+ * the preview it had). The search reads the form's JSON and also its string
+ * leaves (object keys included) run together, so a value an `Fn::Join` with an empty delimiter
+ * would build from two resolved operands is found too (one joined around a
+ * delimiter or `Fn::Sub` text is not: the diff may then claim a send the
+ * deploy's positioned guard declines, warning instead). A NoEcho parameter with no bound value here (one
+ * this preview could not read) has no needle to search for: no claim. Never
+ * throws.
+ */
+async function resolvesWithoutEcho(
+  value: unknown,
+  parameters: readonly string[],
+  args: Parameters<typeof previewNoEchoMacChanges>[0]
+): Promise<boolean> {
+  if (args.inputSources === undefined || args.parameterValues === undefined) return false;
+  const proof = await maskedInputProof(value, args.inputSources, new Set(parameters)).catch(
+    () => undefined
+  );
+  if (proof === undefined) return false;
+  const leaves: string[] = [];
+  const collect = (node: unknown): void => {
+    if (typeof node === 'string') leaves.push(node);
+    else if (Array.isArray(node)) node.forEach(collect);
+    else if (node !== null && typeof node === 'object') {
+      // A resolved object's KEYS too: the JSON text holds them escaped only.
+      for (const [key, child] of Object.entries(node)) {
+        leaves.push(key);
+        collect(child);
+      }
+    }
+  };
+  collect(proof.form);
+  const texts = [JSON.stringify(proof.form) ?? '', leaves.join('')];
+  for (const name of args.sources.parameters) {
+    if (!Object.hasOwn(args.parameterValues, name) || args.parameterValues[name] === undefined) {
+      return false;
+    }
+    const raw = args.parameterValues[name];
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const item of values) {
+      const needle = typeof item === 'string' ? item : JSON.stringify(item);
+      if (needle === undefined || needle.length === 0) continue;
+      // A string leaf is in `leaves` raw, so its JSON-escaped spelling needs
+      // no search of its own; the JSON text adds keys and non-string values.
+      if (texts.some((text) => text.includes(needle))) return false;
+    }
+  }
+  return true;
+}
+
 export async function previewNoEchoMacChanges(args: {
   changes: Map<string, ResourceChange>;
   template: CloudFormationTemplate;
@@ -80,6 +138,8 @@ export async function previewNoEchoMacChanges(args: {
   cache?: NoEchoMacCache;
   /** One schema write-only lookup per type for the whole run (`cdkd refactor`); else per call. */
   writeOnlyLookups?: MacWriteOnlyLookups;
+  /** The input fingerprint's sources (go-to-k/cdkd#4543); absent: only a key reading nothing else. */
+  inputSources?: MaskedInputSources;
 }): Promise<string[]> {
   if (args.nestedChild || args.parameterValues === undefined) return [];
   if (args.sources.parameters.size === 0) return [];
@@ -121,11 +181,17 @@ export async function previewNoEchoMacChanges(args: {
       if ((change.propertyChanges ?? []).some((pc) => pc.path === key)) continue;
       // Only a key every NoEcho leaf of which sits where the template reads a
       // NoEcho parameter (no attribute or other route that could carry the
-      // value elsewhere): the deploy's `positioned` guard, decidable here only
-      // for a key that reads nothing else.
-      if (!readsOnlyNoEchoParameters(templateProps[key], args.sources.parameters)) continue;
+      // value elsewhere): the deploy's `positioned` guard, decidable here for
+      // a key that reads nothing else, or whose every other input resolved to
+      // a value holding no NoEcho value.
       const parameters = noEchoMacParametersOf(templateProps[key], args.sources);
-      if (noEchoMacVerdict(entry, parameters, current) === 'changed') keys.push(key);
+      if (noEchoMacVerdict(entry, parameters, current) !== 'changed') continue;
+      if (
+        readsOnlyNoEchoParameters(templateProps[key], args.sources.parameters) ||
+        (await resolvesWithoutEcho(templateProps[key], parameters, args))
+      ) {
+        keys.push(key);
+      }
     }
     if (keys.length === 0) continue;
     const createOnly = await getCreateOnlyPropertyPaths(change.resourceType).catch(

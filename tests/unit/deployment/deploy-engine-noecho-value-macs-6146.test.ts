@@ -820,3 +820,506 @@ describe('cdkd diff agrees with the deploy (go-to-k/cdkd#6146 parity)', () => {
     expect(kms.constructed).toBe(0);
   });
 });
+
+describe('a key that also reads resolved inputs settles only on a bound, equal, fully resolved input fingerprint (go-to-k/cdkd#6209)', () => {
+  const ARN_1 = 'arn:aws:lambda:us-east-1:123456789012:function:f1';
+  const ARN_2 = 'arn:aws:lambda:us-east-1:123456789012:function:f2';
+  const uri = (arn: string): string =>
+    `arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${arn}/invocations`;
+  const bodyOf = (target: string, attribute = 'Arn'): Record<string, unknown> => ({
+    openapi: '3.0.1',
+    info: { title: 't', version: '1' },
+    'x-token': { Ref: 'Token' },
+    paths: {
+      '/a': {
+        get: {
+          'x-amazon-apigateway-integration': {
+            uri: {
+              'Fn::Sub': `arn:aws:apigateway:\${AWS::Region}:lambda:path/2015-03-31/functions/\${${target}.${attribute}}/invocations`,
+            },
+          },
+        },
+      },
+    },
+  });
+  const BODY = bodyOf('Fn');
+  const apiTemplate = (value: string, body: Record<string, unknown> = BODY): CloudFormationTemplate =>
+    ({
+      Parameters: { Token: { Type: 'String', NoEcho: true, Default: value } },
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: 'f1' } },
+        Thing: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h' } },
+        R: { Type: 'AWS::ApiGateway::RestApi', Properties: { Body: body } },
+      },
+    }) as CloudFormationTemplate;
+  const LEVELS = [['Fn', 'Thing'], ['R']];
+  const fnRecord = (arn: string): ResourceState =>
+    ({
+      physicalId: 'f1',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'f1' },
+      attributes: { Arn: arn },
+      dependencies: [],
+    }) as ResourceState;
+  const thingRecord = (): ResourceState =>
+    ({
+      physicalId: 'thing1',
+      resourceType: 'Custom::Thing',
+      properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h' },
+      attributes: { Arn: ARN_1 },
+      dependencies: [],
+    }) as ResourceState;
+  const apiRecord = (body: Record<string, unknown> = BODY): ResourceState =>
+    ({
+      physicalId: 'api1',
+      resourceType: 'AWS::ApiGateway::RestApi',
+      properties: {
+        Body: {
+          openapi: '3.0.1',
+          info: { title: 't', version: '1' },
+          'x-token': '***',
+          paths: { '/a': { get: { 'x-amazon-apigateway-integration': { uri: uri(ARN_1) } } } },
+        },
+      },
+      attributes: { RootResourceId: 'root1' },
+      dependencies: ['Fn', 'Thing'],
+      noEchoLeaves: [['Body', 'x-token']],
+      maskedPropertyFingerprints: { Body: maskedPropertyFingerprint(body) },
+      provisionedBy: 'sdk',
+    }) as ResourceState;
+  const initial = (body: Record<string, unknown> = BODY): StackState =>
+    stateOf({ Fn: fnRecord(ARN_1), Thing: thingRecord(), R: apiRecord(body) });
+
+  /** The first deploy: no MAC yet, so the Body is sent (the provider puts it) and stamped. */
+  async function stamped(body: Record<string, unknown> = BODY): Promise<StackState> {
+    const run = await deploy({ state: initial(body), template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    expect(run.noEchoOnly['R']).toEqual(['Body']);
+    return run.saved!;
+  }
+  const entryOf = (state: StackState) =>
+    (state.resources['R']!.noEchoValueMacs as Record<string, Record<string, unknown>>)['Body']!;
+
+  it('stamps the input fingerprint beside the MAC, as an object no older reader counts', async () => {
+    const saved = await stamped();
+    const entry = entryOf(saved);
+    expect(entry['Token']).toBe(macOf(OLD));
+    const binding = entry['cdkd:inputs'] as { fingerprint: string };
+    expect(typeof binding).toBe('object');
+    expect(binding.fingerprint).toMatch(/^inputs-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{64}$/);
+    // It is the same fingerprint the masked-property skip records.
+    expect(binding.fingerprint).toBe(saved.resources['R']!.maskedPropertyInputFingerprints?.['Body']);
+    // An older cdkd reads only the string members: exactly the MACs.
+    expect(Object.values(entry).filter((v) => typeof v === 'string')).toEqual([macOf(OLD)]);
+    expect(saved.version).toBe(17);
+    expectNoValueOrMacLogged(macOf(OLD));
+  });
+
+  it('an unchanged NoEcho value and an unchanged GetAtt: no update, so no put and no stop-gap', async () => {
+    const saved = await stamped();
+    logs.length = 0;
+    const run = await deploy({ state: saved, template: apiTemplate(OLD), levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    expect(run.updated).toEqual([]);
+    expect(logs.some((l) => l.includes('also read a value their MACs do not cover'))).toBe(false);
+    expectNoValueOrMacLogged(macOf(OLD));
+  });
+
+  it('the GetAtt target changed: the Body is put as a change', async () => {
+    const saved = await stamped();
+    saved.resources['Fn'] = fnRecord(ARN_2);
+    const run = await deploy({ state: saved, template: apiTemplate(OLD), levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    expect(run.updated).toEqual(['R']);
+    expect(run.changed['R']).toEqual(['Body']);
+    expect(run.noEchoOnly['R']).toEqual([]);
+    // The new send is stamped with the new inputs.
+    const before = (entryOf(saved)['cdkd:inputs'] as { fingerprint: string }).fingerprint;
+    const after = (entryOf(run.saved!)['cdkd:inputs'] as { fingerprint: string }).fingerprint;
+    expect(after).not.toBe(before);
+  });
+
+  it('the NoEcho value changed: the Body is put as a change', async () => {
+    const saved = await stamped();
+    const run = await deploy({ state: saved, template: apiTemplate(NEW), levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    expect(run.changed['R']).toEqual(['Body']);
+    expect(run.noEchoOnly['R']).toEqual([]);
+    expect(entryOf(run.saved!)['Token']).toBe(macOf(NEW));
+  });
+
+  it('the GetAtt moved behind a re-baselined input fingerprint: the binding does not match, so the stop-gap stands as before', async () => {
+    // The GetAtt shares the masked leaf with the NoEcho value, so the
+    // recorded bag cannot show it moved: only a fingerprint can.
+    const body = {
+      openapi: '3.0.1',
+      info: { title: 't', version: '1' },
+      'x-token': { 'Fn::Join': ['', [{ Ref: 'Token' }, '|', { 'Fn::GetAtt': ['Fn', 'Arn'] }]] },
+    };
+    const state = initial(body);
+    state.resources['R']!.properties = { Body: { openapi: '3.0.1', info: { title: 't', version: '1' }, 'x-token': '***' } };
+    const first = await deploy({ state, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(first.noEchoOnly['R']).toEqual(['Body']);
+    const saved = first.saved!;
+    expect('cdkd:inputs' in entryOf(saved)).toBe(true);
+    // Control: unmoved, the joined GetAtt settles like the separate one.
+    const settled = await deploy({ state: saved, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(settled.thrown).toBeUndefined();
+    expect(settled.updated).toEqual([]);
+    // The masked-property skip's own entry is unbound (an older writer), so
+    // the deploy re-baselines it to today's inputs and sees nothing moved.
+    delete saved.resources['R']!.maskedPropertyInputFingerprints;
+    saved.resources['Fn'] = fnRecord(ARN_2);
+    const run = await deploy({ state: saved, template: apiTemplate(OLD, body), levels: LEVELS, keep: ['Body'] });
+    expect(run.thrown).toBeUndefined();
+    expect(run.changed['R']).toEqual(['Body']);
+    expect(run.noEchoOnly['R']).toEqual(['Body']);
+    expect(logs.some((l) => l.includes('also read a value their MACs do not cover'))).toBe(true);
+    // Kept unsent: the entry is carried with the binding of the deploy that sent it.
+    expect(entryOf(run.saved!)).toEqual(entryOf(saved));
+  });
+
+  it.each([
+    ['no binding (an entry an older cdkd wrote)', (entry: Record<string, unknown>) => delete entry['cdkd:inputs']],
+    ['a binding of other inputs', (entry: Record<string, unknown>) => {
+      entry['cdkd:inputs'] = { fingerprint: `inputs-sha256:${'0'.repeat(64)}+sha256:${'0'.repeat(64)}` };
+    }],
+    ['a malformed binding', (entry: Record<string, unknown>) => {
+      entry['cdkd:inputs'] = 'inputs-sha256:not-an-object';
+    }],
+  ])('%s: compared as without a MAC (the stop-gap)', async (_label, edit) => {
+    const saved = await stamped();
+    edit(entryOf(saved));
+    const run = await deploy({ state: saved, template: apiTemplate(OLD), levels: LEVELS, keep: ['Body'] });
+    expect(run.thrown).toBeUndefined();
+    expect(run.noEchoOnly['R']).toEqual(['Body']);
+  });
+
+  it('an input kept as written (a custom resource attribute) is no proof: no binding, and the stop-gap stands', async () => {
+    const body = bodyOf('Thing');
+    const saved = await stamped(body);
+    expect(entryOf(saved)['Token']).toBe(macOf(OLD));
+    expect('cdkd:inputs' in entryOf(saved)).toBe(false);
+    const run = await deploy({ state: saved, template: apiTemplate(OLD, body), levels: LEVELS, keep: ['Body'] });
+    expect(run.thrown).toBeUndefined();
+    expect(run.noEchoOnly['R']).toEqual(['Body']);
+  });
+
+  it('a template whose text holds the NoEcho value as a literal gets no binding (the fingerprint is refused)', async () => {
+    const body = { ...BODY, 'x-literal': OLD };
+    const state = initial(body);
+    (state.resources['R']!.properties['Body'] as Record<string, unknown>)['x-literal'] = '***';
+    const run = await deploy({ state, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    const entry = entryOf(run.saved!);
+    expect(entry['Token']).toBe(macOf(OLD));
+    expect('cdkd:inputs' in entry).toBe(false);
+    expect(JSON.stringify(run.saved)).not.toContain(OLD);
+  });
+
+  it('an RDS-style write-only key beside a resource attribute is re-sent once, then settles', async () => {
+    const value = { 'Fn::Join': ['', [{ Ref: 'Token' }, '@', { 'Fn::GetAtt': ['Fn', 'Arn'] }]] };
+    const t = (v: string): CloudFormationTemplate =>
+      ({
+        Parameters: { Token: { Type: 'String', NoEcho: true, Default: v } },
+        Resources: {
+          Fn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: 'f1' } },
+          R: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/p/r', Type: 'String', Value: value, Description: 'd' } },
+        },
+      }) as CloudFormationTemplate;
+    const state = stateOf({
+      Fn: fnRecord(ARN_1),
+      R: record(undefined, { maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) }, dependencies: ['Fn'] }),
+    });
+    const levels = [['Fn'], ['R']];
+    const first = await deploy({ state, template: t(OLD), levels });
+    expect(first.thrown).toBeUndefined();
+    expect(first.updated).toEqual(['R']);
+    const second = await deploy({ state: first.saved!, template: t(OLD), levels });
+    expect(second.thrown).toBeUndefined();
+    expect(second.updated).toEqual([]);
+    const moved = structuredClone(first.saved!);
+    moved.resources['Fn'] = fnRecord(ARN_2);
+    const third = await deploy({ state: moved, template: t(OLD), levels });
+    expect(third.thrown).toBeUndefined();
+    expect(third.updated).toEqual(['R']);
+    // A CREATE binds its MACs too: the next deploy settles the key.
+    const created = await deploy({ state: stateOf({ Fn: fnRecord(ARN_1) }), template: t(OLD), levels });
+    expect(created.thrown).toBeUndefined();
+    const entry = (created.saved!.resources['R']!.noEchoValueMacs as Record<string, Record<string, unknown>>)['Value']!;
+    expect(entry['cdkd:inputs']).toEqual({ fingerprint: expect.stringMatching(/^inputs-sha256:/) });
+    const afterCreate = await deploy({ state: created.saved!, template: t(OLD), levels });
+    expect(afterCreate.thrown).toBeUndefined();
+    expect(afterCreate.updated).toEqual([]);
+  });
+
+  it('cdkd diff claims no MAC change where a resolved input holds the NoEcho value (the deploy cannot position it)', async () => {
+    const saved = await stamped();
+    // The queue ARN now embeds the new NoEcho value: the deploy finds that
+    // value outside a parameter position and gives no verdict.
+    saved.resources['Fn'] = fnRecord(`${ARN_1}-${NEW}`);
+    const preview = await previewNoEchoMacChanges({
+      changes: new Map([
+        [
+          'R',
+          {
+            logicalId: 'R',
+            resourceType: 'AWS::ApiGateway::RestApi',
+            changeType: 'NO_CHANGE',
+            currentProperties: { Body: '***' },
+            desiredProperties: { Body: '***' },
+          } as ResourceChange,
+        ],
+      ]),
+      template: apiTemplate(NEW),
+      resources: saved.resources,
+      parameterValues: { Token: NEW },
+      sources: { parameters: new Set(['Token']) },
+      nestedChild: false,
+      stackName: 's',
+      region: 'us-east-1',
+      stackInstanceId: undefined,
+      logger: { debug: () => undefined, info: () => undefined },
+      inputSources: {
+        template: apiTemplate(NEW),
+        parameterInput: (name: string) =>
+          name === 'Token' ? { kind: 'secret' } : { kind: 'unknown' },
+        resolve: async (node: unknown) => {
+          const text = JSON.stringify(node);
+          if (text.includes('AWS::Region')) return { value: 'us-east-1' };
+          return { value: `${ARN_1}-${NEW}` };
+        },
+      },
+    });
+    expect(preview).toEqual([]);
+    // Control: the same preview with an ARN free of the value names the Body.
+    const control = await previewNoEchoMacChanges({
+      changes: new Map([
+        [
+          'R',
+          {
+            logicalId: 'R',
+            resourceType: 'AWS::ApiGateway::RestApi',
+            changeType: 'NO_CHANGE',
+            currentProperties: { Body: '***' },
+            desiredProperties: { Body: '***' },
+          } as ResourceChange,
+        ],
+      ]),
+      template: apiTemplate(NEW),
+      resources: saved.resources,
+      parameterValues: { Token: NEW },
+      sources: { parameters: new Set(['Token']) },
+      nestedChild: false,
+      stackName: 's',
+      region: 'us-east-1',
+      stackInstanceId: undefined,
+      logger: { debug: () => undefined, info: () => undefined },
+      inputSources: {
+        template: apiTemplate(NEW),
+        parameterInput: (name: string) =>
+          name === 'Token' ? { kind: 'secret' } : { kind: 'unknown' },
+        resolve: async (node: unknown) =>
+          JSON.stringify(node).includes('AWS::Region') ? { value: 'us-east-1' } : { value: ARN_2 },
+      },
+    });
+    expect(control).toEqual(['R.Body']);
+  });
+
+  it('cdkd diff claims nothing when a NoEcho value is unbound or split across joined operands', async () => {
+    const saved = await stamped();
+    const split = {
+      ...BODY,
+      'x-split': { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Fn', 'Arn'] }, { Ref: 'AWS::Region' }]] },
+    };
+    const run = (
+      body: Record<string, unknown>,
+      values: Record<string, unknown>,
+      region: string,
+      arn: string,
+      noEcho: string[] = ['Token']
+    ) =>
+      previewNoEchoMacChanges({
+        changes: new Map([
+          [
+            'R',
+            {
+              logicalId: 'R',
+              resourceType: 'AWS::ApiGateway::RestApi',
+              changeType: 'NO_CHANGE',
+              currentProperties: { Body: '***' },
+              desiredProperties: { Body: '***' },
+            } as ResourceChange,
+          ],
+        ]),
+        template: apiTemplate(NEW, body),
+        resources: {
+          ...saved.resources,
+          R: { ...saved.resources['R']!, maskedPropertyFingerprints: { Body: maskedPropertyFingerprint(body) } },
+        },
+        parameterValues: values,
+        sources: { parameters: new Set(noEcho) },
+        nestedChild: false,
+        stackName: 's',
+        region: 'us-east-1',
+        stackInstanceId: undefined,
+        logger: { debug: () => undefined, info: () => undefined },
+        inputSources: {
+          template: apiTemplate(NEW, body),
+          parameterInput: (name: string) => (name === 'Token' ? { kind: 'secret' } : { kind: 'unknown' }),
+          resolve: async (node: unknown) =>
+            JSON.stringify(node).includes('AWS::Region') ? { value: region } : { value: arn },
+        },
+      });
+    // The value is joined from the two resolved operands.
+    const head = NEW.slice(0, 7);
+    expect(await run(split, { Token: NEW }, NEW.slice(7), head)).toEqual([]);
+    // Control: the same operands without the value name the Body.
+    expect(await run(split, { Token: NEW }, 'us-east-1', ARN_2)).toEqual(['R.Body']);
+    // Another NoEcho parameter of the stack with no value here: no needle to
+    // search for, so no claim (the Body's own Token MAC still differs).
+    expect(await run(BODY, { Token: NEW }, 'us-east-1', ARN_2, ['Token', 'Other'])).toEqual([]);
+    expect(await run(BODY, { Token: NEW, Other: 'zz-other' }, 'us-east-1', ARN_2, ['Token', 'Other'])).toEqual([
+      'R.Body',
+    ]);
+    // A list (CommaDelimitedList) NoEcho value: each item is a needle.
+    expect(
+      await run(BODY, { Token: NEW, Other: ['zz', 'list-item-6209'] }, 'us-east-1', `${ARN_2}-list-item-6209`, [
+        'Token',
+        'Other',
+      ])
+    ).toEqual([]);
+    // A resolved OBJECT whose key holds the value (with a quote): keys are
+    // searched raw too.
+    const objectArn = { 'k-q"key-6209': 'v' } as unknown as string;
+    expect(await run(BODY, { Token: NEW, Other: 'q"key-6209' }, 'us-east-1', objectArn, ['Token', 'Other'])).toEqual(
+      []
+    );
+    expect(await run(BODY, { Token: NEW, Other: 'zz-other' }, 'us-east-1', objectArn, ['Token', 'Other'])).toEqual([
+      'R.Body',
+    ]);
+    // A value holding a quote, found in the raw leaves (the JSON text escapes it).
+    expect(
+      await run(BODY, { Token: NEW, Other: 'q"uote' }, 'us-east-1', `${ARN_2}-q"uote`, ['Token', 'Other'])
+    ).toEqual([]);
+  });
+
+  it('cdkd diff: an input it cannot resolve makes no claim', async () => {
+    const saved = await stamped();
+    const out = await previewNoEchoMacChanges({
+      changes: new Map([
+        [
+          'R',
+          {
+            logicalId: 'R',
+            resourceType: 'AWS::ApiGateway::RestApi',
+            changeType: 'NO_CHANGE',
+            currentProperties: { Body: '***' },
+            desiredProperties: { Body: '***' },
+          } as ResourceChange,
+        ],
+      ]),
+      template: apiTemplate(NEW),
+      resources: saved.resources,
+      parameterValues: { Token: NEW },
+      sources: { parameters: new Set(['Token']) },
+      nestedChild: false,
+      stackName: 's',
+      region: 'us-east-1',
+      stackInstanceId: undefined,
+      logger: { debug: () => undefined, info: () => undefined },
+      inputSources: {
+        template: apiTemplate(NEW),
+        parameterInput: (name: string) => (name === 'Token' ? { kind: 'secret' } : { kind: 'unknown' }),
+        resolve: () => Promise.reject(new Error('unreadable')),
+      },
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('cdkd diff over-claims a NoEcho value an intrinsic joins around a delimiter (documented; the deploy warns instead)', async () => {
+    const saved = await stamped();
+    const delimited = {
+      ...BODY,
+      'x-split': { 'Fn::Join': ['-', [{ 'Fn::GetAtt': ['Fn', 'Arn'] }, { Ref: 'AWS::Region' }]] },
+    };
+    const head = NEW.slice(0, NEW.indexOf('-'));
+    const tail = NEW.slice(NEW.indexOf('-') + 1);
+    const out = await previewNoEchoMacChanges({
+      changes: new Map([
+        [
+          'R',
+          {
+            logicalId: 'R',
+            resourceType: 'AWS::ApiGateway::RestApi',
+            changeType: 'NO_CHANGE',
+            currentProperties: { Body: '***' },
+            desiredProperties: { Body: '***' },
+          } as ResourceChange,
+        ],
+      ]),
+      template: apiTemplate(NEW, delimited),
+      resources: {
+        ...saved.resources,
+        R: { ...saved.resources['R']!, maskedPropertyFingerprints: { Body: maskedPropertyFingerprint(delimited) } },
+      },
+      parameterValues: { Token: NEW },
+      sources: { parameters: new Set(['Token']) },
+      nestedChild: false,
+      stackName: 's',
+      region: 'us-east-1',
+      stackInstanceId: undefined,
+      logger: { debug: () => undefined, info: () => undefined },
+      inputSources: {
+        template: apiTemplate(NEW, delimited),
+        parameterInput: (name: string) => (name === 'Token' ? { kind: 'secret' } : { kind: 'unknown' }),
+        resolve: async (node: unknown) =>
+          JSON.stringify(node).includes('AWS::Region') ? { value: tail } : { value: head },
+      },
+    });
+    // The Join's result spells the value, which neither its operands nor
+    // their run-together text holds: the preview names the Body, the deploy's
+    // positioned guard would decline it.
+    expect(out).toEqual(['R.Body']);
+  });
+
+  it('a Body also holding an unchanged {{resolve:}} reference beside the GetAtt settles, and a rotation does not re-send it', async () => {
+    const REF = '{{resolve:secretsmanager:s6146:SecretString:queue::}}';
+    const body = { ...BODY, 'x-ref': REF };
+    const state = initial(body);
+    (state.resources['R']!.properties['Body'] as Record<string, unknown>)['x-ref'] = REF;
+    const first = await deploy({ state, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(first.noEchoOnly['R']).toEqual(['Body']);
+    expect('cdkd:inputs' in entryOf(first.saved!)).toBe(true);
+    const again = await deploy({ state: first.saved!, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(again.thrown).toBeUndefined();
+    expect(again.updated).toEqual([]);
+    secretVersion.id = 'ffffffff-0000-1111-2222-333333333333';
+    const rotated = await deploy({ state: first.saved!, template: apiTemplate(OLD, body), levels: LEVELS });
+    expect(rotated.thrown).toBeUndefined();
+    expect(rotated.updated).toEqual([]);
+  });
+
+  it('cdkd diff agrees: nothing for the settled Body, the property for a moved GetAtt', async () => {
+    const { computeStackDiff } = await import('../../../src/cli/commands/diff-recursive.js');
+    const saved = await stamped();
+    const backend = { getState: async () => null } as never;
+    const diffOf = async (state: StackState, tpl: CloudFormationTemplate) =>
+      (
+        await computeStackDiff(state, tpl, 'us-east-1', 's', backend, new DiffCalculator(), {
+          previewMaskedInputs: true,
+        })
+      ).changes.get('R')!;
+    expect((await diffOf(saved, apiTemplate(OLD))).changeType).toBe('NO_CHANGE');
+    // A changed NoEcho value: the deploy puts the Body, and the diff says so.
+    const changed = await diffOf(saved, apiTemplate(NEW));
+    expect(changed.changeType).toBe('UPDATE');
+    expect(changed.propertyChanges?.map((pc) => pc.path)).toEqual(['Body']);
+    expect(logs.some((l) => l.includes('R.Body read a NoEcho parameter whose value changed'))).toBe(true);
+    const moved = structuredClone(saved);
+    moved.resources['Fn'] = fnRecord(ARN_2);
+    const shown = await diffOf(moved, apiTemplate(OLD));
+    expect(shown.changeType).toBe('UPDATE');
+    expect(shown.propertyChanges?.map((pc) => pc.path)).toEqual(['Body']);
+  });
+});

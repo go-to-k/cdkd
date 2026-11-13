@@ -275,7 +275,8 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
           templateProps,
           macSources,
           this.noEchoRun.noEchoMacs?.settled(),
-          this.noEchoRun.noEchoMacKept.get(logicalId)
+          this.noEchoRun.noEchoMacKept.get(logicalId),
+          this.noEchoRun.noEchoMacInputBindings.get(logicalId)
         ),
         constructPathOf(this.noEchoRun.constructPathTemplate, logicalId)
       ),
