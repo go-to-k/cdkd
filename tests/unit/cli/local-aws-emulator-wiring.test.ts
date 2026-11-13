@@ -63,7 +63,8 @@ describe('the cdkd-owned commands enter through activateLocalAwsAndRoleArn', () 
     'src/cli/commands/local-invoke-agentcore/command.ts',
   ])('%s', (file) => {
     const src = readFileSync(join(root, file), 'utf8');
-    expect(src.split('await activateLocalAwsAndRoleArn(options);').length - 1).toBe(1);
+    // `invoke` / `invoke-agentcore` add `singleWorkload: true` (go-to-k/cdkd#6257).
+    expect(src.match(/await activateLocalAwsAndRoleArn\((?:options|\{ \.\.\.options, singleWorkload: true \})\);/g)?.length).toBe(1);
     expect(src).not.toMatch(/applyRoleArnForLocal\(|applyRoleArnIfSet\(/);
   });
 });
