@@ -202,6 +202,7 @@ the asset bucket, the ECR repository and the marker, the same way
 | --- | --- |
 | Interactive run | One prompt per region (`[Y/n]`, default yes). |
 | `--yes`, or no terminal | Created at once, with an info line. |
+| `--aws-emulator` | Created at once, with an info line. No prompt. |
 | Prompt declined, or creation failed | The deploy continues in legacy mode with a warning. |
 | `--dry-run` | Nothing is created. |
 | `--use-cdk-bootstrap-assets` | Nothing is created, and the marker is not read. |
@@ -210,8 +211,22 @@ To opt out, pass `--no-auto-asset-storage`, or set
 `context.cdkd.autoAssetStorage: false` in `cdk.json`.
 
 Only `deploy` creates storage. `diff`, `import` and `publish-assets` never
-create resources. Auto-create always uses the default names, so custom names
-need an explicit `cdkd bootstrap`.
+create asset storage. Auto-create always uses the default names, so custom
+names need an explicit `cdkd bootstrap`.
+
+## Bootstrap in AWS Emulator
+
+AWS Emulator keeps everything in memory, so each emulator start begins with
+no state bucket. Under `--aws-emulator`, `cdkd deploy` and `cdkd import`
+create the state bucket themselves when the emulator has none, configured the
+same way `cdkd bootstrap` configures it, and print one info line. `deploy`
+then creates the asset storage for each stack's region without a prompt (see
+the table above). So after starting the emulator, `cdkd deploy MyStack
+--aws-emulator` is enough. `cdkd bootstrap --aws-emulator` still works, and is
+needed for custom asset-storage names.
+
+Against real AWS nothing changes: a missing state bucket still stops the
+command with a pointer to `cdkd bootstrap`.
 
 ## Custom asset-storage names
 

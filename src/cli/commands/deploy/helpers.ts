@@ -65,7 +65,7 @@ export async function confirmAutoAssetStorageCreate(args: {
   }
   if (args.yes || !process.stdin.isTTY) {
     logger.info(
-      `Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
+      safeMsg`Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
         `region; opt out with --no-auto-asset-storage).`
     );
     return true;

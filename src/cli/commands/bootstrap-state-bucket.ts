@@ -117,7 +117,11 @@ export async function configureStateBucket(args: StateBucketSetupArgs): Promise<
   // client that CREATED the bucket — so the bucket is in its partition by
   // construction.
   logger.debug('Setting bucket policy...');
-  const bucketPolicy = buildDenyExternalAccessPolicy(bucketName, accountId, await s3.config.region());
+  const bucketPolicy = buildDenyExternalAccessPolicy(
+    bucketName,
+    accountId,
+    await s3.config.region()
+  );
 
   await s3.send(
     new PutBucketPolicyCommand({

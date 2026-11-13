@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   CreateBucketCommand,
   HeadBucketCommand,
@@ -11,9 +11,9 @@ import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 vi.mock('../../../src/cli/commands/confirm-prompt.js', () => ({
   promptYesNo: vi.fn(async () => false),
 }));
-vi.mock('../../../src/state/state-bucket-lifecycle.js', async (orig) => ({
-  ...(await orig<typeof import('../../../src/state/state-bucket-lifecycle.js')>()),
-  applyCustomResourceResponseExpiration: vi.fn(async () => ({ status: 'added' })),
+vi.mock('../../../src/state/state-bucket-lifecycle.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/state/state-bucket-lifecycle.js')>()),
+  applyCustomResourceResponseExpiration: vi.fn(async () => ({ status: 'added' as const })),
 }));
 
 import { ensureAwsEmulatorStateBucket } from '../../../src/cli/commands/emulator-auto-bootstrap.js';
