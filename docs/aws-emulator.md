@@ -437,6 +437,23 @@ This is a limit of the emulator's runtime, reported in the
 a function of your own through `cdkd local invoke`, which uses the official
 Lambda runtime image, instead of invoking it in the emulator.
 
+### A Node.js function fails with `Cannot find module 'https'`
+
+The emulator's embedded Node.js runtime does not provide every Node built-in
+module. `https` is one of those missing, on `nodejs20.x`, `nodejs22.x` and
+`nodejs24.x` alike, and a function that loads one fails with
+`Runtime.ImportModuleError: Error: Cannot find module 'https'`. See
+[aws/aws-emulator#28](https://github.com/aws/aws-emulator/issues/28) and
+[aws/aws-emulator#325](https://github.com/aws/aws-emulator/issues/325).
+
+This includes the provider functions of CDK's Node.js custom resources, which
+send their response over `https`. One example is
+`new s3.Bucket(..., { autoDeleteObjects: true })` (`Custom::S3AutoDeleteObjects`).
+The custom resource's CREATE fails, and the deploy rolls back. Until the
+emulator provides these modules, leave such constructs out of the stack you
+deploy into the emulator. Run a function of your own through
+`cdkd local invoke` instead.
+
 ### A Docker image asset is refused
 
 ```text
