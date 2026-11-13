@@ -157,12 +157,11 @@ BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
 the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
 restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
 name: scan the account by stack prefix and resource family too. Probe each HALF
-of a multi-part fix separately (a pre-fix run stops at its first failing check,
-so per-resource checks collect FAILs and exit after the last, #6169; a DEPLOY
-failure: remove that phase to prove the next; where the kept half WAITS for the removed
-call's effect, the RED is that wait's timeout, before any
-fixture assertion — predict and budget it, #5657), and add a NEGATIVE CONTROL. Where the fix
-SKIPS
+of a multi-part fix separately (per-resource checks collect FAILs and exit
+after the last, #6169; a DEPLOY failure stops the run: drop that phase to prove
+the next; where the kept half WAITS for the dropped call's effect, the RED is
+that wait's timeout, before any assertion — budget it, #5657), and add a
+NEGATIVE CONTROL. Where the fix SKIPS
 something, give the fixture a second, ORDINARY difference — a phase redeploying
 a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
 test. More vacuity shapes:
