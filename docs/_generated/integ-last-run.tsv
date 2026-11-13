@@ -322,6 +322,7 @@ parameters	2026-11-04T05:01:38Z	PASS	38	standard	deploy+destroy 0 errors, orph c
 partial-create-handback	2026-11-04T23:32:14Z	PASS	287	verify.sh	rc ok; partial-create cleanup deleted only own resources; own temp state bucket; orph clean
 perf-cross-backend-check	2026-11-05T05:41:56Z	PASS	3096	verify.sh	NEW e98438fe vs npm 0.322.1: single/redeploy/teardown/prefix/adopt no diff; scale deploy +5.18s DIFFERENT (not reproduced in a 5-run re-measure, +1.93s no diff; concurrent RDS load both runs; tracked in #5798); cw THROTTLED (not comparable)
 pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
+pipes-input-template-removal	2026-11-13T18:07:10Z	PASS	115	verify.sh	rc ok, orph clean
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
