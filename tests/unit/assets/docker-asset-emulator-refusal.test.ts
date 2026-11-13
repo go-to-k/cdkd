@@ -66,7 +66,7 @@ describe('Docker image assets under --aws-emulator', () => {
         accountId: '000000000000',
         region: 'us-east-1',
       })
-    ).toThrow(/Fn\/AssetImage.*real amazonaws\.com registry/);
+    ).toThrow(/Fn\/AssetImage.*does not accept image pushes.*real amazonaws\.com registry/);
   });
 
   it('build, push and publish refuse with no docker or ECR call', async () => {
