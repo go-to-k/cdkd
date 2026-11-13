@@ -7,10 +7,39 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from 'cdk-local/internal';
-import { buildDockerImage } from '../../../src/assets/docker-build.js';
-import { runDockerForeground, runDockerStreaming } from '../../../src/utils/docker-cmd.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+
+// A pass-through spy on `spawn`, to see exactly what options a docker spawn got.
+const spawnSpy = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      spawnSpy(...args);
+      return actual.spawn(...args);
+    },
+  };
+});
+
+/**
+ * cdk-local caches the stripped config dir per process (and it is external to
+ * vitest, so `vi.resetModules()` does not reset it); the cache is dropped when
+ * the dir no longer exists. `afterEach` removes the dirs a test used, so each
+ * test builds its own from its own host config. The `marker` check proves it.
+ */
+async function load() {
+  const internal = await import('cdk-local/internal');
+  const build = await import('../../../src/assets/docker-build.js');
+  const cmd = await import('../../../src/utils/docker-cmd.js');
+  return {
+    setAwsEmulatorServiceRouting: internal.setAwsEmulatorServiceRouting,
+    setAwsEndpointOverride: internal.setAwsEndpointOverride,
+    buildDockerImage: build.buildDockerImage,
+    runDockerForeground: cmd.runDockerForeground,
+    runDockerStreaming: cmd.runDockerStreaming,
+  };
+}
 
 const EMU = {
   endpoint: 'https://127.0.0.1:9403',
@@ -32,16 +61,25 @@ function fakeDocker(): string {
   return bin;
 }
 const seen = (): string[] => readFileSync(log, 'utf-8').trim().split('\n');
-const configOf = (dir: string): unknown => JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'));
+const configOf = (dir: string): unknown => {
+  const cfg = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { marker?: string };
+  // The stripped copy was made from THIS test's host config, not a cached one.
+  expect(cfg.marker).toBe(root);
+  return cfg;
+};
 
-beforeEach(() => {
+let m: Awaited<ReturnType<typeof load>>;
+
+beforeEach(async () => {
+  m = await load();
+  spawnSpy.mockClear();
   for (const k of KEYS) saved[k] = process.env[k];
   root = mkdtempSync(join(tmpdir(), 'cdkd-6187-'));
   hostDir = join(root, 'host');
   mkdirSync(hostDir);
   writeFileSync(
     join(hostDir, 'config.json'),
-    JSON.stringify({ auths: { [ECR]: { auth: 'ZWNyOnRvaw==' } }, credsStore: 'osxkeychain' })
+    JSON.stringify({ auths: { [ECR]: { auth: 'ZWNyOnRvaw==' } }, credsStore: 'osxkeychain' }).replace('{', `{"marker":"${root}",`)
   );
   log = join(root, 'log');
   writeFileSync(log, '');
@@ -52,8 +90,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setAwsEmulatorServiceRouting(undefined);
-  setAwsEndpointOverride(undefined);
+  for (const dir of readFileSync(log, 'utf-8').split('\n')) {
+    if (dir && dir !== hostDir) rmSync(dir, { recursive: true, force: true });
+  }
+  m.setAwsEmulatorServiceRouting(undefined);
+  m.setAwsEndpointOverride(undefined);
   for (const k of KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -63,6 +104,7 @@ afterEach(() => {
 
 describe('docker spawns under --aws-emulator', () => {
   it('runDockerStreaming and runDockerForeground use an ECR-free DOCKER_CONFIG', async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     setAwsEndpointOverride(EMU);
     await runDockerStreaming(['pull', `${ECR}/a:1`], { streamLive: false });
     await runDockerForeground(['pull', `${ECR}/a:1`]);
@@ -75,6 +117,7 @@ describe('docker spawns under --aws-emulator', () => {
   });
 
   it('a directory-mode asset build holds no ECR credential', async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     setAwsEndpointOverride(EMU);
     mkdirSync(join(root, 'asset.x'));
     await buildDockerImage({ source: { directory: 'asset.x' } }, root, {
@@ -88,6 +131,7 @@ describe('docker spawns under --aws-emulator', () => {
   });
 
   it('an executable-mode asset build holds no ECR credential', async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     setAwsEndpointOverride(EMU);
     const script = join(root, 'build.sh');
     writeFileSync(script, `#!/bin/sh\necho "$DOCKER_CONFIG" >> "${log}"\necho built-tag\n`);
@@ -102,6 +146,7 @@ describe('docker spawns under --aws-emulator', () => {
   });
 
   it("a directory-mode build routes by its workload's own ECR exception", async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     setAwsEmulatorServiceRouting({
       realServices: [],
       override: EMU,
@@ -123,6 +168,7 @@ describe('docker spawns under --aws-emulator', () => {
   });
 
   it('a "real-aws" ECR exception keeps the host config', async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     setAwsEmulatorServiceRouting({
       realServices: [],
       override: EMU,
@@ -133,7 +179,25 @@ describe('docker spawns under --aws-emulator', () => {
   });
 
   it('outside --aws-emulator the host config is untouched', async () => {
+    const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, buildDockerImage, runDockerForeground, runDockerStreaming } = m;
     await runDockerStreaming(['pull', `${ECR}/a:1`], { streamLive: false });
     expect(seen()).toEqual([hostDir]);
+  });
+
+  it('DOCKER_CONFIG unset on the host stays unset, and the spawn options are passed through unchanged', async () => {
+    const { runDockerStreaming } = m;
+    delete process.env['DOCKER_CONFIG'];
+    await runDockerStreaming(['pull', `${ECR}/a:1`], { streamLive: false });
+    expect(seen()).toEqual(['']);
+    // No env was injected: an implementation that always adds the registry
+    // env would hand `spawn` an env object here.
+    const opts = spawnSpy.mock.calls.at(-1)![2] as { env?: unknown };
+    expect(opts.env).toBeUndefined();
+  });
+
+  it('each test reflects its own host config (no stripped dir carried across tests)', async () => {
+    m.setAwsEndpointOverride(EMU);
+    await m.runDockerStreaming(['pull', `${ECR}/a:1`], { streamLive: false });
+    configOf(seen()[0]!);
   });
 });
