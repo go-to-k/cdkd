@@ -276,7 +276,12 @@ A deprecated `--region` flag still overrides all three and prints a removal
 warning. `--help` does not list it.
 
 A Lambda container gets that region as `AWS_REGION`, and `AWS_DEFAULT_REGION`
-beside it.
+beside it. On `local invoke`, `local start-api` and `local invoke-agentcore`,
+when none of those three is set, the container gets the region of the loaded
+state record (`--from-state` / `--from-cfn-stack`), then your AWS profile's
+`region`, which is where `cdkd deploy` put an env-agnostic stack. The same
+region is used for the `--assume-role` STS call. With no region anywhere, the
+container gets none.
 
 ## Local AWS endpoints
 

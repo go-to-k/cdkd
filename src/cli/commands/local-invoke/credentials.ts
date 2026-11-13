@@ -1,5 +1,8 @@
-import { firstUsableRegion } from 'cdk-local/internal';
-import { mixedModeActive, setContainerRegion } from '../../../local/local-aws-wiring.js';
+import {
+  mixedModeActive,
+  resolveContainerRegion,
+  setContainerRegion,
+} from '../../../local/local-aws-wiring.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
@@ -42,38 +45,46 @@ export async function applyLambdaCredentialEnv(
     region?: string;
     /** The stack's own region: the container's region when nothing names one. */
     stackRegion?: string;
+    /** The loaded state record's region (`--from-state` / `--from-cfn-stack`). */
+    stateRegion?: string;
+    /** `--profile`: its `region =` line is the last fallback (go-to-k/cdkd#6200). */
+    profile?: string;
     profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     profileCredsFile?: { containerPath: string; profileName: string };
   }
 ): Promise<void> {
   const logger = getLogger();
   let assumeSucceeded = false;
+  // A Lambda always runs with `AWS_REGION` set, so BOTH arms below give the
+  // container the region cdkd itself resolved — `--region`, the host variables,
+  // the stack's own region, the state record's, then the profile's — through one
+  // chain ({@link resolveContainerRegion}). The `--assume-role` arm used to stop
+  // after the host variables and the fallback arm after the stack region, so an
+  // environment-agnostic stack whose region lived only in `~/.aws/config` ran
+  // with no region and the handler failed `Region is missing`
+  // (go-to-k/cdkd#6200, after go-to-k/cdkd#6132). `--region` wins over a host
+  // `AWS_REGION` on both arms.
+  //
+  // Issue #1836: the answer is folded (`canonicalizeRegion`) — STS endpoint
+  // resolution is case-SENSITIVE, so a raw `AWS_REGION=CN-NORTH-1` talked to the
+  // COMMERCIAL partition, both for the AssumeRole client below and for every SDK
+  // client the handler builds. `forwardAwsEnv` folds the copied variables too.
+  const containerRegion = await resolveContainerRegion({
+    region: args.region,
+    stackRegion: args.stackRegion,
+    stateRegion: args.stateRegion,
+    profile: args.profile,
+  });
   if (args.assumeRoleArn) {
-    // Issue #1836: the chain that ESCAPES the handler-entry fold. `--region`
-    // arrives already folded, but the two env-var fall-throughs do not — so
-    // `--assume-role` with `AWS_REGION=CN-NORTH-1` and no `--region` handed the
-    // raw value BOTH to the AssumeRole STS client below (whose endpoint
-    // resolution is case-SENSITIVE, so it talked to the COMMERCIAL partition)
-    // and to the container's own `AWS_REGION`, i.e. to every SDK client the
-    // handler builds. Same shape as `applyAgentCoreCredentialEnv`'s fourth
-    // chain (issue #1814).
-    //
-    // This arm covers the `--assume-role` path ONLY. The default path's copy of
-    // the container region is folded in {@link forwardAwsEnv} below — folding
-    // just here made the same command answer differently depending on whether
-    // `--assume-role` was passed.
-    const stsRegion = canonicalizeRegion(
-      args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
-    );
     try {
-      const creds = await assumeLambdaExecutionRole(args.assumeRoleArn, stsRegion);
+      const creds = await assumeLambdaExecutionRole(args.assumeRoleArn, containerRegion);
       // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
       // entire job is to choose the emulated function's identity. Its STS client
       // opts out of the `--role-arn` role, so the hop is answered by the caller.
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      setContainerRegion(dockerEnv, stsRegion);
+      setContainerRegion(dockerEnv, containerRegion);
       assumeSucceeded = true;
     } catch (err) {
       logger.warn(
@@ -99,18 +110,6 @@ export async function applyLambdaCredentialEnv(
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
     }
-    // A Lambda always runs with `AWS_REGION` set. The same chain the
-    // `--assume-role` arm and `${AWS::Region}` use (`--region`, then the host
-    // variables), then the stack's own region, as deployed Lambda would get;
-    // without it a handler's first SDK call failed with `Region is missing`
-    // (go-to-k/cdkd#6132's live run). `--region` wins over a host
-    // `AWS_REGION` here exactly as it does on the `--assume-role` arm.
-    const containerRegion = firstUsableRegion(
-      args.region,
-      process.env['AWS_REGION'],
-      process.env['AWS_DEFAULT_REGION'],
-      args.stackRegion
-    );
     setContainerRegion(dockerEnv, containerRegion);
   }
 }

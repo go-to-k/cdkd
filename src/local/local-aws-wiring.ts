@@ -40,6 +40,7 @@ import {
   awsEmulatorEnvName,
   effectiveLoopbackPorts,
   ensureForwarderImage,
+  firstUsableRegion,
   getActiveWorkloadAwsWiring,
   getAwsEndpointOverride,
   isAwsServiceRoutedToEmulator,
@@ -56,6 +57,7 @@ import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { applyRoleArnForLocal } from './local-role-arn.js';
 import { CONTAINER_AWS_CREDENTIALS_PATH } from '../cli/commands/local-profile-credentials-file.js';
+import { resolveSdkDefaultRegion } from '../cli/region-options.js';
 
 /** The options a cdkd-owned `cdkd local` command passes to {@link activateLocalAwsWiring}. */
 export interface LocalAwsWiringOptions {
@@ -309,6 +311,45 @@ export function setContainerRegion(env: Record<string, string>, region: string |
   const folded = canonicalizeRegion(region);
   env['AWS_REGION'] = folded;
   env['AWS_DEFAULT_REGION'] = folded;
+}
+
+/**
+ * The region a workload container runs in, which is also the region its
+ * `--assume-role` STS hop uses. A deployed Lambda / AgentCore runtime always
+ * has `AWS_REGION`, so the container gets the region cdkd itself resolved:
+ *
+ *   1. `--region`, then the host `AWS_REGION`, then `AWS_DEFAULT_REGION`;
+ *   2. the stack's own region (`env.region` on a CDK stack);
+ *   3. the loaded state record's region (`--from-state` / `--from-cfn-stack`),
+ *      i.e. where the stack was actually deployed;
+ *   4. the selected profile's `region =` line — the same SDK sample
+ *      `resolveEffectiveRegion` gives `deploy` (go-to-k/cdkd#2029).
+ *
+ * Without the last two, an environment-agnostic stack whose region lived only
+ * in `~/.aws/config` ran with no region at all, and the handler's first SDK
+ * call failed with `Region is missing` (go-to-k/cdkd#6200). The profile is
+ * sampled only when nothing above answers, so the common path builds no client.
+ * There is deliberately no `us-east-1` literal at the end: with nothing
+ * configured anywhere the container is left region-less rather than pointed at
+ * a region nobody named. `unknown-region` and blank values are skipped
+ * (`firstUsableRegion`); the answer is folded (`canonicalizeRegion`).
+ */
+export async function resolveContainerRegion(sources: {
+  region?: string | undefined;
+  stackRegion?: string | undefined;
+  stateRegion?: string | undefined;
+  profile?: string | undefined;
+}): Promise<string | undefined> {
+  const named = firstUsableRegion(
+    sources.region,
+    process.env['AWS_REGION'],
+    process.env['AWS_DEFAULT_REGION'],
+    sources.stackRegion,
+    sources.stateRegion
+  );
+  if (named) return canonicalizeRegion(named);
+  const fromProfile = firstUsableRegion(await resolveSdkDefaultRegion(sources.profile));
+  return fromProfile ? canonicalizeRegion(fromProfile) : undefined;
 }
 
 /**

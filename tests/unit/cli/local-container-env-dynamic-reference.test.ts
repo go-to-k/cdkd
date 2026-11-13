@@ -125,6 +125,37 @@ function agentCoreState(storedOutput: string) {
   return { provider, loaded, resolveImport, resolveGetStackOutput };
 }
 
+describe('local invoke-agentcore buildContainerEnv: container region (go-to-k/cdkd#6200)', () => {
+  it('an env-agnostic runtime under a loaded state record runs in the record region', async () => {
+    const s = agentCoreState('unused');
+    const runtime = agentCoreRuntime({});
+    (runtime as unknown as { stack: { region?: string } }).stack.region = undefined;
+    const out = await buildContainerEnv(
+      runtime,
+      {} as never,
+      undefined,
+      undefined,
+      s.provider,
+      s.loaded,
+      undefined
+    );
+    expect(out.env['AWS_REGION']).toBe('eu-west-1');
+  });
+
+  it("the runtime stack's own region reaches the container", async () => {
+    const out = await buildContainerEnv(
+      agentCoreRuntime({}),
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined
+    );
+    expect(out.env['AWS_REGION']).toBe('us-east-1');
+  });
+});
+
 describe('local invoke-agentcore buildContainerEnv resolves dynamic references (#2056)', () => {
   it('--aws-emulator with no state source: ONE hint after the dropped-variable warnings (go-to-k/cdkd#6150)', async () => {
     const lines = await underEmulator(() =>

@@ -318,6 +318,18 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
     expect(mocks.smSend.mock.calls.map((c) => c[0])).toEqual(['sa-east-1']);
   });
 
+  it('an env-agnostic stack under --from-state runs in the state record region (go-to-k/cdkd#6200)', async () => {
+    // The command path end to end: `resolveInvokeTemplateEnv` hands the loaded
+    // record's region to `applyLambdaCredentialEnv`, which puts it in the
+    // container. No `--region`, no host region variables (tests/setup.ts).
+    const agnostic = { ...makeStack(), region: undefined } as unknown as StackInfo;
+    mocks.resolveLambdaTarget.mockImplementation(() => makeZipLambda(agnostic));
+    mocks.createLocalStateProvider.mockReturnValue(fakeStateProvider('unused').provider);
+    const r = await invoke(['--from-state']);
+    expect(r.env?.['AWS_REGION']).toBe(STATE_REGION);
+    expect(r.env?.['AWS_DEFAULT_REGION']).toBe(STATE_REGION);
+  });
+
   it('bare --assume-role with --from-state still sees the loaded state (no "no state" fallback)', async () => {
     env = { DB_PASSWORD: SAME_STACK_REF };
     mocks.createLocalStateProvider.mockReturnValue(fakeStateProvider('unused').provider);

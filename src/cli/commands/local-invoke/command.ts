@@ -386,6 +386,7 @@ export async function localInvokeCommand(
       env: templateEnvResolved,
       sensitiveEnvKeys,
       stateForRoleHint,
+      stateRegion,
     } = await resolveInvokeTemplateEnv(lambda, options);
 
     // Auto-resolve the execution-role ARN from state when the user passed
@@ -453,6 +454,8 @@ export async function localInvokeCommand(
       ...(resolvedAssumeRoleArn && { assumeRoleArn: resolvedAssumeRoleArn }),
       ...(options.region !== undefined && { region: options.region }),
       ...(lambda.stack.region !== undefined && { stackRegion: lambda.stack.region }),
+      ...(stateRegion !== undefined && { stateRegion }),
+      ...(options.profile !== undefined && { profile: options.profile }),
       ...(profileCredentials && { profileCredentials }),
       ...(profileCredsFile && { profileCredsFile }),
     });
@@ -590,6 +593,11 @@ export interface InvokeTemplateEnvResult {
   sensitiveEnvKeys: Set<string>;
   /** The loaded state, when a state-source flag loaded one (the `--assume-role` hint path). */
   stateForRoleHint?: StackState;
+  /**
+   * The loaded state record's region: where the stack was deployed. A fallback
+   * for the container's `AWS_REGION` (go-to-k/cdkd#6200).
+   */
+  stateRegion?: string;
 }
 
 /**
@@ -786,6 +794,7 @@ async function resolveInvokeTemplateEnvWith(
     env: dynamic.env,
     sensitiveEnvKeys: new Set([...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys]),
     ...(stateForRoleHint !== undefined && { stateForRoleHint }),
+    ...(ownerRegion !== undefined && { stateRegion: ownerRegion }),
   };
 }
 

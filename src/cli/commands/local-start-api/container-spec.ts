@@ -1,4 +1,5 @@
 import {
+  resolveContainerRegion,
   setContainerRegion,
   warnAwsEmulatorStateSourceHint,
 } from '../../../local/local-aws-wiring.js';
@@ -308,22 +309,28 @@ export async function buildContainerSpec(args: {
     lambdaResource: lambda.resource,
     stateBundle,
   });
+  // A Lambda always runs with `AWS_REGION` set: `--region`, the host variables
+  // (`stsRegion`), the stack's own region, the state record's, then the
+  // profile's — one chain for BOTH arms, the same as `cdkd local invoke`'s
+  // (go-to-k/cdkd#6200; an environment-agnostic stack whose region lived only in
+  // `~/.aws/config` ran region-less and the handler failed `Region is missing`).
+  const containerRegion = await resolveContainerRegion({
+    region: stsRegion,
+    stackRegion: lambda.stack.region,
+    stateRegion: stateBundle?.region,
+    profile,
+  });
   if (roleArn) {
-    const creds = await assumeLambdaExecutionRole(roleArn, stsRegion);
+    const creds = await assumeLambdaExecutionRole(roleArn, containerRegion);
     // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
     // entire job is to choose this Lambda's identity. Its STS client opts out
     // of the `--role-arn` role, so the hop is answered by the caller.
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
     dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-    setContainerRegion(dockerEnv, stsRegion);
+    setContainerRegion(dockerEnv, containerRegion);
   } else {
     forwardAwsEnv(dockerEnv);
-    // A Lambda always runs with `AWS_REGION` set. `stsRegion` is `--region`,
-    // then the host variables (the `--assume-role` arm's region too), then the
-    // stack's own region; without it a handler's first SDK call failed with
-    // `Region is missing` (go-to-k/cdkd#6132's live run).
-    const containerRegion = firstUsableRegion(stsRegion, lambda.stack.region);
     setContainerRegion(dockerEnv, containerRegion);
     // Issue #654: when `--profile <p>` is set AND this Lambda has no
     // `--assume-role` mapping, overlay the profile-resolved credentials
