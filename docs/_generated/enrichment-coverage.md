@@ -88,7 +88,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
 | `AWS::Neptune::DBInstance` | `Endpoint`, `Port` |
 | `AWS::RDS::DBCluster` | `DBClusterArn`, `StorageEncryptionType`, `StorageThroughput` |
-| `AWS::RDS::DBInstance` | `AutomaticRestartTime`, `CertificateDetails`, `DBInstanceArn`, `DBInstanceStatus`, `DbiResourceId`, `InstanceCreateTime`, `IsStorageConfigUpgradeAvailable`, `LatestRestorableTime`, `ListenerEndpoint`, `PercentProgress`, `ReadReplicaDBClusterIdentifiers`, `ReadReplicaDBInstanceIdentifiers`, `ResumeFullAutomationModeTime`, `SecondaryAvailabilityZone`, `StatusInfos`, `StorageOperationPercentProgress`, `StorageOperationStatus` |
+| `AWS::RDS::DBInstance` | `AutomaticRestartTime`, `CertificateDetails`, `DBInstanceArn`, `DBInstanceStatus`, `DbiResourceId`, `Endpoint`, `InstanceCreateTime`, `IsStorageConfigUpgradeAvailable`, `LatestRestorableTime`, `ListenerEndpoint`, `PercentProgress`, `ReadReplicaDBClusterIdentifiers`, `ReadReplicaDBInstanceIdentifiers`, `ResumeFullAutomationModeTime`, `SecondaryAvailabilityZone`, `StatusInfos`, `StorageOperationPercentProgress`, `StorageOperationStatus` |
 | `AWS::RDS::DBProxy` | `DBProxyArn`, `Endpoint`, `VpcId` |
 | `AWS::RDS::DBProxyEndpoint` | `DBProxyEndpointArn`, `Endpoint`, `IsDefault`, `VpcId` |
 | `AWS::RDS::DBSubnetGroup` | `DBSubnetGroupArn` |
@@ -223,7 +223,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::Pipes::Pipe` | yes | enriched | `Arn` (OK), `CreationTime` (OK), `CurrentState` (OK), `LastModifiedTime` (OK), `StateReason` (OK) |
 | `AWS::RDS::DBCluster` | yes | sdk-fallback-gap | `DBClusterArn` (GAP), `DBClusterResourceId` (OK), `Endpoint` (OK), `ReadEndpoint` (OK), `StorageEncryptionType` (GAP), `StorageThroughput` (GAP) |
-| `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (OK), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP), `StorageOperationPercentProgress` (GAP), `StorageOperationStatus` (GAP) |
+| `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (GAP), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP), `StorageOperationPercentProgress` (GAP), `StorageOperationStatus` (GAP) |
 | `AWS::RDS::DBProxy` | yes | sdk-fallback-gap | `DBProxyArn` (GAP), `Endpoint` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyEndpoint` | yes | sdk-fallback-gap | `DBProxyEndpointArn` (GAP), `Endpoint` (GAP), `IsDefault` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyTargetGroup` | yes | enriched | `TargetGroupArn` (allow) |
