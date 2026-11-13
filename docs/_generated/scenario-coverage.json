@@ -2201,6 +2201,11 @@
       "scenarios": []
     },
     {
+      "name": "pipes-input-template-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "profile-region-default",
       "annotated": false,
       "scenarios": []
@@ -3886,6 +3891,7 @@
     "partial-create-handback",
     "perf-cross-backend-check",
     "pipes-fix-forward-orphan",
+    "pipes-input-template-removal",
     "profile-region-default",
     "rds-dbcluster-pitr-restore",
     "rds-dbinstance-additional-storage-volumes",

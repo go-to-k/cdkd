@@ -18,7 +18,14 @@ import { withRemovalDefaults } from '../../update-removal.js';
 import { planTagDiff, tagMapAsList, tagPlanWarning } from '../../tag-list.js';
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
-import { desiredTagMap, toSdkTargetParameters, toUpdateSourceParameters } from './shared.js';
+import {
+  desiredTagMap,
+  parameterMembersLeftInPlace,
+  parameterMembersLeftInPlaceWarning,
+  toSdkTargetParameters,
+  toUpdateParameterBlock,
+  toUpdateSourceParameters,
+} from './shared.js';
 
 export async function update(
   this: PipesPipeProvider,
@@ -79,9 +86,39 @@ export async function update(
   const desiredTags = desiredTagMap(desired['Tags'], logicalId, physicalId);
   this.logger.debug(mask(`Updating Pipe ${logicalId}: ${physicalId}`));
 
+  // go-to-k/cdkd#6233: an unsettled TargetParameters reaches here with its
+  // recorded value replaced by the live read, which never returns this
+  // write-only block, so what AWS holds is unknown: re-send it, clearing any
+  // InputTemplate the template does not declare (a '' sent to a pipe holding
+  // none was measured accepted and inert).
+  const targetUnknown = context?.unsettledProperties?.has('TargetParameters') === true;
   let settled: DescribePipeCommandOutput | undefined;
   try {
-    if (this.pipeFieldsChanged(desired, previousProperties)) {
+    if (this.pipeFieldsChanged(desired, previousProperties) || targetUnknown) {
+      // go-to-k/cdkd#6233: a removed InputTemplate is sent as '' (UpdatePipe
+      // keeps an omitted member); any other removed member is reported.
+      const enrichmentParameters = toUpdateParameterBlock(
+        desired['EnrichmentParameters'],
+        previousProperties['EnrichmentParameters'],
+        (value) => value as PipeEnrichmentParameters
+      );
+      const targetParameters = toUpdateParameterBlock(
+        desired['TargetParameters'],
+        targetUnknown ? { InputTemplate: '' } : previousProperties['TargetParameters'],
+        toSdkTargetParameters
+      );
+      const leftInPlace = (['EnrichmentParameters', 'TargetParameters'] as const).flatMap((block) =>
+        parameterMembersLeftInPlace(block, desired[block], previousProperties[block])
+      );
+      if (leftInPlace.length > 0) {
+        this.logger.warn(
+          parameterMembersLeftInPlaceWarning(
+            logicalId,
+            leftInPlace,
+            context?.replayingState ? 'rollback' : 'deploy'
+          )
+        );
+      }
       const input: UpdatePipeCommandInput = {
         Name: physicalId,
         RoleArn: desired['RoleArn'] as string,
@@ -95,12 +132,8 @@ export async function update(
         ...(desired['Enrichment'] !== undefined && {
           Enrichment: desired['Enrichment'] as string,
         }),
-        ...(desired['EnrichmentParameters'] !== undefined && {
-          EnrichmentParameters: desired['EnrichmentParameters'] as PipeEnrichmentParameters,
-        }),
-        ...(desired['TargetParameters'] !== undefined && {
-          TargetParameters: toSdkTargetParameters(desired['TargetParameters']),
-        }),
+        ...(enrichmentParameters !== undefined && { EnrichmentParameters: enrichmentParameters }),
+        ...(targetParameters !== undefined && { TargetParameters: targetParameters }),
         ...(desired['LogConfiguration'] !== undefined && {
           LogConfiguration: this.logConfigurationOf(desired['LogConfiguration']),
         }),
@@ -118,6 +151,7 @@ export async function update(
       for (const key of this.changedPipeFields(desired, previousProperties)) {
         context?.markUnsettled?.(key);
       }
+      if (targetUnknown) context?.markUnsettled?.('TargetParameters');
       const accepted = await this.getClient().send(new UpdatePipeCommand(input));
       settled = await this.waitForSettled(
         physicalId,

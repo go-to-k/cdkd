@@ -161,13 +161,17 @@ export class PipesPipeProvider implements ResourceProvider {
 
   /**
    * Removals `update()` handles itself: `SourceParameters` through
-   * {@link toUpdateSourceParameters}, `Tags` through `UntagResource`.
-   * `EnrichmentParameters` / `TargetParameters` are deliberately absent: what
-   * `UpdatePipe` does with a block that is left out is not documented, so the
-   * deploy reports their removal rather than claim it.
+   * {@link toUpdateSourceParameters}, `Tags` through `UntagResource`, and
+   * `EnrichmentParameters` / `TargetParameters` through
+   * `toUpdateParameterBlock` (go-to-k/cdkd#6233), which clears a removed
+   * `InputTemplate`; `update()` itself reports every other member those blocks
+   * drop, so the removal is still reported rather than claimed.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
-    ['AWS::Pipes::Pipe', new Set(['SourceParameters', 'Tags'])],
+    [
+      'AWS::Pipes::Pipe',
+      new Set(['SourceParameters', 'Tags', 'EnrichmentParameters', 'TargetParameters']),
+    ],
   ]);
 
   constructor(options: PipesProviderOptions = {}) {
