@@ -1,4 +1,5 @@
 import type { ELBv2Provider } from '../elbv2-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   ModifyLoadBalancerAttributesCommand,
   SetSubnetsCommand,
@@ -122,7 +123,7 @@ export async function updateLoadBalancer(
           evidence:
             "cdkd's recorded properties for this load balancer carry " +
             'LoadBalancerAttributes deletion_protection.enabled=true',
-          replaceFlags: 'cdkd deploy --replace',
+          replaceFlags: deployReplaceCommand(),
           disable: {
             before: 'aws elbv2 modify-load-balancer-attributes --load-balancer-arn',
             identifier: physicalId,
@@ -132,7 +133,7 @@ export async function updateLoadBalancer(
             maskSecrets,
           },
         })
-      : 'For Name / Type / Scheme re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.';
+      : `For Name / Type / Scheme re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`;
     throw new ResourceUpdateNotSupportedError(
       'AWS::ElasticLoadBalancingV2::LoadBalancer',
       logicalId,

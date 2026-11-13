@@ -17,6 +17,7 @@ import {
   STANDARD_USER_POOL_ATTRIBUTES,
 } from './shared.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import type { UpdateContext, ResourceUpdateResult } from '../../../types/resource.js';
 import {
   readDeclaredMfaConfiguration,
@@ -817,7 +818,8 @@ export function replacementRemedy(
   physicalId: string,
   deletionProtected: boolean
 ): string {
-  const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+  // With the run's flags (go-to-k/cdkd#6245).
+  const replaceFlags = deployReplaceCommand(true);
   return deletionProtected
     ? protectedReplacementAdvice({
         evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",

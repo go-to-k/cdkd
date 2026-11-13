@@ -16,6 +16,7 @@ import {
   type AwsAccountInfo,
 } from '../../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../../utils/aws-partition.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   AccountIdUnavailableError,
   ProvisioningError,
@@ -390,7 +391,7 @@ export async function updateApi(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'ProtocolType is immutable on AWS::ApiGatewayV2::Api; re-deploy with cdkd deploy --replace'
+      `ProtocolType is immutable on AWS::ApiGatewayV2::Api; re-deploy with ${deployReplaceCommand()}`
     );
   }
   // Planned (and a malformed desired Tags refused) before any call.

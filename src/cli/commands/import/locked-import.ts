@@ -13,6 +13,7 @@ import {
 import { readDeployedParameters } from '../import-deployed-parameters.js';
 import { namesAnyDeclaredParameter } from '../../../analyzer/parameter-dependence.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { logicalIdShown } from '../../../provisioning/composite-id.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
 import type { StackState } from '../../../types/state.js';
@@ -558,9 +559,10 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // go-to-k/cdkd#4705: the stack now has a record here, so it claims its
   // stack registry marker (record first, then marker).
   await claimRegistryMarkerAfterImport(stateBackend, stackInfo.stackName, targetRegion, logger);
+  // The diff carries the run's flags, `--aws-emulator` included (go-to-k/cdkd#6245).
   logger.info(
-    `  ${importedRows.length} resource(s) imported. ` +
-      `Run 'cdkd diff' to see how the imported state lines up with the template.`
+    safeMsg`  ${importedRows.length} resource(s) imported. ` +
+      safeMsg`See how the imported state lines up with the template with: ${cdkdRemedy('cdkd diff')}`
   );
 
   // Recursive per-child state writes (issue #464). For every nested

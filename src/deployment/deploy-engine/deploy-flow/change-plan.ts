@@ -5,6 +5,7 @@ import { withStackScope } from '../../../provisioning/resource-name.js';
 import { nextNameGeneration } from '../../../state/name-generation.js';
 import { loadKeptInHistory } from '../../kept-in-history.js';
 import { displayStackName, safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import {
   checkDestructivePlan,
   isNoEchoPromotionOnly,
@@ -205,7 +206,8 @@ export async function prepareChangeExecution(
         safeMsg`An earlier deployment of ${displayStackName(stackName)} kept ${String(kept.length)} ` +
           'resource(s) here (DeletionPolicy: Retain). This deploy does not take ' +
           'them back: it creates new resources under new names, as CloudFormation does. To manage a ' +
-          "kept resource again, adopt it with 'cdkd import'."
+          // With the run's flags, `--aws-emulator` included (go-to-k/cdkd#6245).
+          safeMsg`kept resource again, adopt it with: ${cdkdRemedy('cdkd import')}`
       );
     }
   }

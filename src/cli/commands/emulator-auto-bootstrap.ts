@@ -5,6 +5,7 @@ import { awsEndpointOverrideActive } from '../../utils/aws-client-defaults.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import { getDefaultStateBucketName, resolveStateBucketWithSource } from '../config-loader.js';
 import { configureStateBucket, createStateBucket } from './bootstrap-state-bucket.js';
 
@@ -77,7 +78,11 @@ export async function ensureAwsEmulatorStateBucket(args: {
     const msg = error instanceof Error ? error.message : String(error);
     throw new CdkdError(
       safeMsg`AWS Emulator auto-bootstrap of state bucket ${bucketName} failed: ${msg}. ` +
-        'Run `cdkd bootstrap --aws-emulator --force` to retry.',
+        // The run's own `--aws-emulator[=<url>]` (go-to-k/cdkd#6245): a bare
+        // flag would reach the default port, not this emulator. An emulator
+        // selected through CDKD_AWS_EMULATOR reaches the pasted command from
+        // the same shell.
+        `Retry with: ${cdkdRemedy('cdkd bootstrap', '--force')}`,
       'AWS_EMULATOR_BOOTSTRAP_FAILED',
       error instanceof Error ? error : undefined
     );

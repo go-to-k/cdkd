@@ -17,6 +17,7 @@ import {
 
 import { vectorIndexesShapeDetail } from '../../dynamodb-vector-indexes.js';
 import { protectedReplacementAdvice } from '../../replacement-protection-advice.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import type { ResourceUpdateResult, UpdateContext, SecretMasker } from '../../../types/resource.js';
 import { keepUnreadReplicaMembers } from '../../dynamodb-replica-settings.js';
@@ -233,8 +234,10 @@ export async function updateInScope(
   // `extractLocalDeletionProtection` finds no local replica and falls back to
   // the top-level flag, i.e. the short advice -- the same direction
   // protection-enabled-out-of-band already takes.
-  const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
   const replaceRemedy = async (): Promise<string> => {
+    // Built here, with the run's flags (go-to-k/cdkd#6245), only when a
+    // refusal needs it.
+    const replaceFlags = deployReplaceCommand(true);
     let guardRegion = '';
     try {
       guardRegion = (await this.dynamoDBClient.config.region()) ?? '';

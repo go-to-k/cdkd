@@ -332,7 +332,7 @@ destroy_stack ok "B2 destroy" "${LOCAL_DIST}" "${NEW_STACK}"
 assert_role_exists "B2 (DeletionPolicy: Retain)" "${B_ROLE1}"
 
 deploy_stack ok "B3 redeploy" "${LOCAL_DIST}" "${NEW_STACK}"
-assert_log_has "B3: the warning names the remedy" "adopt it with 'cdkd import'" "This deploy does not take"
+assert_log_has "B3: the warning names the remedy" "adopt it with: cdkd import" "This deploy does not take"
 B_ROLE2="$(role_name_in_state "${NEW_STACK}")" || fail "B3: could not read the state"
 [ -n "${B_ROLE2}" ] || fail "B3: state records no ${ROLE_ID}"
 assert_ne "B3: the new role's name differs from the kept one" "${B_ROLE2}" "${B_ROLE1}"

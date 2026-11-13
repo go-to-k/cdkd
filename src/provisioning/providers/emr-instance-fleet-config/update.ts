@@ -1,4 +1,5 @@
 import type { EMRInstanceFleetConfigProvider } from '../emr-instance-fleet-config-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { ModifyInstanceFleetCommand, type InstanceFleetModifyConfig } from '@aws-sdk/client-emr';
 import {
   ProvisioningError,
@@ -51,7 +52,7 @@ export async function update(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `AWS EMR InstanceFleetConfig ${key} is immutable on AWS — it is fixed when the instance fleet is created. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        `AWS EMR InstanceFleetConfig ${key} is immutable on AWS — it is fixed when the instance fleet is created. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
       );
     }
   }

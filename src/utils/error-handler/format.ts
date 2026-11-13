@@ -16,7 +16,10 @@ export function isCdkdError(error: unknown): error is CdkdError {
 export function formatError(error: unknown): string {
   if (isCdkdError(error)) {
     let message = `${error.name}: ${error.message}`;
-    if (error.cause) {
+    // A cause whose whole message the error's own message already carries adds
+    // nothing but a second copy (go-to-k/cdkd#6250: `--aws-emulator`'s
+    // health-check failure, re-thrown as a CdkdError with the same text).
+    if (error.cause && !error.message.includes(error.cause.message)) {
       // Sanitized HERE, at the one place every cause is printed, rather than at
       // each thrower (issue #3003). A cause is routinely an underlying
       // `SyntaxError` from `JSON.parse`, and V8 quotes the offending INPUT in

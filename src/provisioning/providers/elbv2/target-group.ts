@@ -1,4 +1,5 @@
 import type { ELBv2Provider } from '../elbv2-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   CreateTargetGroupCommand,
   DeleteTargetGroupCommand,
@@ -305,7 +306,7 @@ export async function updateTargetGroup(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `ELBv2 TargetGroup ${immutableKey} is immutable on AWS — no Modify* API accepts it; it is fixed at creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        `ELBv2 TargetGroup ${immutableKey} is immutable on AWS — no Modify* API accepts it; it is fixed at creation. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
       );
     }
   }

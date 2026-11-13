@@ -729,7 +729,7 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(events).toEqual([`create ${genName('Kept', 1)}`]);
     expect(held.has(genName('Kept', 0))).toBe(true);
     const warned = logger['warn']!.mock.calls.map((c) => String(c[0]));
-    expect(warned.some((w) => w.includes('Kept') && w.includes("'cdkd import'"))).toBe(true);
+    expect(warned.some((w) => w.includes('Kept') && w.includes('adopt it with: cdkd import'))).toBe(true);
   });
 
   describe('a legacy stack (no stack instance id) is unchanged', () => {

@@ -1,4 +1,5 @@
 import type { SchedulerScheduleProvider } from '../scheduler-schedule-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateScheduleCommand,
   ResourceNotFoundException,
@@ -295,7 +296,7 @@ export async function update(
       // that names `cdkd deploy --replace` (go-to-k/cdkd#4214's rule).
       `GroupName addresses the schedule (from ${groupShown(mask(previousGroupName ?? 'default'))} ` +
         `to ${groupShown(mask(groupName ?? 'default'))}); ` +
-        `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
+        `re-run with ${deployReplaceCommand()} to recreate it in the new group ` +
         `(--replace is a boolean flag and takes no resource id; it applies to every ` +
         `resource in the run whose in-place update is refused)`
     );

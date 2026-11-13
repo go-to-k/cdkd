@@ -225,7 +225,7 @@ describe('a Glue table replacement meeting an occupied address (issue #3932)', (
       // The provider's summary ends in a period and the refusal adds its own
       // sentence end: one period, not two (go-to-k/cdkd#2319).
       expect(error!.message).not.toContain('..');
-      expect(error!.message).toContain('re-run with `cdkd deploy --replace`');
+      expect(error!.message).toContain('re-run with cdkd deploy --replace');
       expect(sentCommands()).toEqual(['CreateTableCommand']);
     });
   });

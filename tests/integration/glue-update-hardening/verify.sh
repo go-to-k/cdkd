@@ -976,7 +976,7 @@ if [ "${SAME_RC}" -eq 0 ]; then
   exit 1
 fi
 if ! printf '%s' "${SAME_OUT}" | grep -F "RenameTable (AWS::Glue::Table) requires replacement, but the create-first attempt collided with the existing resource:" >/dev/null \
-  || ! printf '%s' "${SAME_OUT}" | grep -F -- "re-run with \`cdkd deploy --replace\`" >/dev/null; then
+  || ! printf '%s' "${SAME_OUT}" | grep -F -- "re-run with cdkd deploy --replace" >/dev/null; then
   echo "FAIL: the same-address replacement failed, but not on the engine's collision advice offering --replace (#3932)" >&2
   printf '%s\n' "${SAME_OUT}" >&2
   exit 1

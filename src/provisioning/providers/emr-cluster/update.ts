@@ -20,6 +20,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { protectedReplacementAdvice } from '../../replacement-protection-advice.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import { emrClusterInstancesReplaced } from '../../../analyzer/replacement-rules.js';
@@ -306,8 +307,9 @@ export async function update(
   // A THUNK, not a value: both refusals are defence-in-depth arms that fire
   // only when the replacement layer was bypassed, so building an ~900-char
   // sentence on every ordinary `update()` would be pure waste.
-  const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
-  const replaceRemedy = (): string =>
+  const replaceRemedy = (): string => {
+    // With the run's flags (go-to-k/cdkd#6245).
+    const replaceFlags = deployReplaceCommand(true);
     // `toBoolean` is the SAME predicate this provider's own wire read uses
     // (`create()` / the `SetTerminationProtection` arm), not
     // `isTruthyCfnBoolean`: the two disagree on `TerminationProtected: 1`,
@@ -315,7 +317,7 @@ export async function update(
     // as unprotected -- so the short advice would go to a cluster AWS really
     // is protecting. Sharing the wire's predicate is the `config-shape.ts`
     // rule applied to a read.
-    toBoolean(prevInstances['TerminationProtected']) === true
+    return toBoolean(prevInstances['TerminationProtected']) === true
       ? protectedReplacementAdvice({
           evidence:
             "cdkd's recorded properties for this cluster carry " +
@@ -328,6 +330,7 @@ export async function update(
           },
         })
       : `Re-deploy with ${replaceFlags}, or destroy + redeploy the stack.`;
+  };
 
   let instancesPlan: InstancesInPlacePlan = EMPTY_INSTANCES_PLAN;
   if (changed('Instances')) {

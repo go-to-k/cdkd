@@ -1,4 +1,5 @@
 import { ApiGatewayV2Client, GetApiCommand, NotFoundException } from '@aws-sdk/client-apigatewayv2';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -268,7 +269,7 @@ export async function update(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'Unsupported API Gateway V2 resource type for in-place update in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
+        `Unsupported API Gateway V2 resource type for in-place update in cdkd; re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
       );
   }
 }

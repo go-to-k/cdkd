@@ -1,4 +1,5 @@
 import type { EFSProvider } from '../efs-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateFileSystemCommand,
   DeleteFileSystemCommand,
@@ -50,7 +51,7 @@ export async function updateFileSystem(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `AWS EFS FileSystem ${key} is immutable on AWS — UpdateFileSystem does not accept ${key}; the property is fixed at creation. Re-deploy with cdkd deploy --replace --force-stateful-recreation (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
+        `AWS EFS FileSystem ${key} is immutable on AWS — UpdateFileSystem does not accept ${key}; the property is fixed at creation. Re-deploy with ${deployReplaceCommand(true)} (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
       );
     }
   }

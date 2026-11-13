@@ -1,4 +1,5 @@
 import type { FirehoseProvider } from '../firehose-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   DescribeDeliveryStreamCommand,
   UpdateDestinationCommand,
@@ -259,7 +260,7 @@ export async function applyUpdate(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      `Switching Firehose destination type from '${prevDestKey}' to '${destKey}' is not supported in-place — AWS UpdateDestination requires the same destination type as the original CreateDeliveryStream. Re-deploy with cdkd deploy --replace.`
+      `Switching Firehose destination type from '${prevDestKey}' to '${destKey}' is not supported in-place — AWS UpdateDestination requires the same destination type as the original CreateDeliveryStream. Re-deploy with ${deployReplaceCommand()}.`
     );
   }
 

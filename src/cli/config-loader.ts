@@ -11,6 +11,7 @@ import {
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { StateError } from '../utils/error-handler.js';
+import { missingStateBucketRemedy } from '../utils/missing-state-bucket-remedy.js';
 import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
@@ -681,7 +682,7 @@ export async function resolveStateBucketWithDefaultAndSource(
         `Looked for '${newName}' (current default) and '${legacyName}'` +
         (fallbackName === undefined ? '' : ` / '${fallbackName}'`) +
         ` (legacy default). ` +
-        `Run 'cdkd bootstrap' to create '${newName}'.`
+        missingStateBucketRemedy(`'${newName}'`)
     );
   } finally {
     probe.destroy();

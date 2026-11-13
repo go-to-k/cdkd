@@ -1,4 +1,5 @@
 import type { ECSProvider } from '../ecs-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   CreateClusterCommand,
   DeleteClusterCommand,
@@ -470,7 +471,7 @@ export async function updateTaskDefinition(
     throw new ResourceUpdateNotSupportedError(
       'AWS::ECS::TaskDefinition',
       logicalId,
-      'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change but Tags registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
+      `ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change but Tags registers a new revision via RegisterTaskDefinition. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
     );
   }
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.

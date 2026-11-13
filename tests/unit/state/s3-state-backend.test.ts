@@ -150,6 +150,39 @@ describe('S3StateBackend.verifyBucketExists', () => {
     expect((caught as Error).message).toMatch(/cdkd bootstrap/);
   });
 
+  it('names the real-AWS remedy without an override, and the emulator one with it (go-to-k/cdkd#6245)', async () => {
+    const { resetAwsClientDefaults, setAwsEndpointOverrideSource } = await import(
+      '../../../src/utils/aws-client-defaults.js'
+    );
+    const { buildProgram } = await import('../../../src/cli/program.js');
+    const { setPasteableRunFlags, setPasteableVerbFlags } = await import(
+      '../../../src/utils/pasteable-run-context.js'
+    );
+    const err = Object.assign(new Error('Not Found'), { name: 'NotFound' });
+    s3Client.send.mockRejectedValue(err);
+    const real = (await backend.verifyBucketExists().catch((e: unknown) => e)) as Error;
+    expect(real.message).toBe(
+      "State bucket 'my-state-bucket' does not exist. Run 'cdkd bootstrap' to create it, or " +
+        'specify an existing bucket via --state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.'
+    );
+    buildProgram();
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9493' }) as never);
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+    try {
+      const emu = (await backend.verifyBucketExists().catch((e: unknown) => e)) as Error;
+      expect(emu.message).toBe(
+        "State bucket 'my-state-bucket' does not exist. AWS Emulator keeps nothing across restarts, " +
+          'so a new or restarted emulator has no cdkd bootstrap yet. A cdkd deploy without --dry-run ' +
+          'creates the state bucket on its own; or bootstrap the emulator now with:\n' +
+          'cdkd bootstrap --aws-emulator=https://127.0.0.1:9493'
+      );
+    } finally {
+      resetAwsClientDefaults();
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
+  });
+
   it('threads the underlying AWS error as `cause` on the missing-bucket arm', async () => {
     // go-to-k/cdkd#2075. Without the cause the retry classifiers
     // (`isTransientServerError` / `isThrottlingError` / `isMarkedNonRetryable`)
