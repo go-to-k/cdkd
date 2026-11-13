@@ -28,6 +28,56 @@ export function hasPending<T>(executor: DagExecutor<T>): boolean {
   return false;
 }
 
+/**
+ * go-to-k/cdkd#6244: for each of `ids`, the NEAREST dependencies that are
+ * members of the phase being executed, walking THROUGH every non-member
+ * (a `NO_CHANGE` row) instead of dropping it. An unchanged resource is
+ * already satisfied only for itself: when it reads a changed resource and a
+ * changed resource reads it (`MyRes` → a `cr.Provider` framework function →
+ * the `onEvent` function), the reader must still wait for the changed one
+ * behind it, as CloudFormation orders them.
+ *
+ * Memoized per non-member node, so a large template walks each unchanged node
+ * once; a cycle guard keeps a malformed graph from recursing forever (the
+ * executor reports the deadlock itself).
+ */
+export function nearestMemberDependencies(
+  ids: Iterable<string>,
+  dependenciesOf: (id: string) => readonly string[],
+  isMember: (id: string) => boolean
+): Map<string, Set<string>> {
+  const through = new Map<string, Set<string>>();
+  const visiting = new Set<string>();
+  const collect = (deps: readonly string[], into: Set<string>): void => {
+    for (const dep of deps) {
+      if (isMember(dep)) {
+        into.add(dep);
+        continue;
+      }
+      for (const reached of membersBehind(dep)) into.add(reached);
+    }
+  };
+  const membersBehind = (id: string): Set<string> => {
+    const cached = through.get(id);
+    if (cached) return cached;
+    const reached = new Set<string>();
+    if (visiting.has(id)) return reached;
+    visiting.add(id);
+    collect(dependenciesOf(id), reached);
+    visiting.delete(id);
+    through.set(id, reached);
+    return reached;
+  };
+  const result = new Map<string, Set<string>>();
+  for (const id of ids) {
+    const reached = new Set<string>();
+    collect(dependenciesOf(id), reached);
+    reached.delete(id);
+    result.set(id, reached);
+  }
+  return result;
+}
+
 export function buildDeletionDependencies(
   deleteIds: Set<string>,
   state: StackState,
