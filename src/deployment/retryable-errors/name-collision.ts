@@ -443,7 +443,9 @@ export function isNameCooldownError(message: string): boolean {
  * collision), never contradict it.
  */
 const REDACTED_ALREADY_EXISTS_CLASS = new RegExp(
-  `\\b[A-Za-z0-9]*AlreadyExists(?:Exception|Fault)?(?=\\. ${escapeRegExp(VERBOSE_POINTER)})`,
+  // The pointer is absent on a `--verbose` run (go-to-k/cdkd#6162), where the
+  // summary is the bare `<Class>.`: the sentence end is then the boundary.
+  `\\b[A-Za-z0-9]*AlreadyExists(?:Exception|Fault)?(?=\\.(?: ${escapeRegExp(VERBOSE_POINTER)})?(?:\\s|$|[;)'"]))`,
   'g'
 );
 

@@ -476,7 +476,7 @@ export function describeAwsStatusReason(
   return {
     summary: code
       ? withVerbosePointer(code)
-      : verbosePointerSentence().trimEnd() || "AWS's reason is in the debug output.",
+      : verbosePointerSentence().trimEnd() || "AWS's reason is in the debug output above.",
     detail: message,
     redacted: true,
   };
@@ -507,32 +507,42 @@ export function describeAwsErrorDiagnostics(error: unknown): string {
 /** The SDK's own text for a failure whose response carried no error body. */
 const SDK_PLACEHOLDER_MESSAGES = new Set(['', 'UnknownError', 'Unknown']);
 
-function awsErrorDiagnostics(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return `a non-Error value of type ${typeof error}: ${safeStringify(error)}`;
-  }
-  const e = error as Error & {
-    Code?: unknown;
-    code?: unknown;
-    $fault?: unknown;
-    $metadata?: {
-      httpStatusCode?: unknown;
-      requestId?: unknown;
-      extendedRequestId?: unknown;
-      cfId?: unknown;
-      attempts?: unknown;
-    };
-    $response?: { statusCode?: unknown; headers?: Record<string, unknown> };
+interface SdkErrorShape extends Error {
+  Code?: unknown;
+  code?: unknown;
+  cause?: unknown;
+  $fault?: unknown;
+  $metadata?: {
+    httpStatusCode?: unknown;
+    requestId?: unknown;
+    extendedRequestId?: unknown;
+    cfId?: unknown;
+    attempts?: unknown;
   };
-  const parts: string[] = [];
+  $response?: { statusCode?: unknown; headers?: Record<string, unknown> };
+}
+
+/** The HTTP status a layer's RESPONSE carried, if it got one. */
+function responseStatus(e: SdkErrorShape): number | undefined {
   const status = e.$metadata?.httpStatusCode ?? e.$response?.statusCode;
-  const responded = typeof status === 'number';
-  if (responded) parts.push(`HTTP ${status}`);
-  parts.push(`name ${safeStringify(e.name)}`);
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** `name`, `Code`, `code` and `message` of one layer. */
+function layerFields(e: SdkErrorShape): string[] {
+  const parts = [`name ${safeStringify(e.name)}`];
   if (e.Code !== undefined && e.Code !== e.name) parts.push(`Code ${safeStringify(e.Code)}`);
   if (e.code !== undefined) parts.push(`code ${safeStringify(e.code)}`);
   const message = typeof e.message === 'string' ? e.message : safeStringify(e.message);
   parts.push(`message ${JSON.stringify(message)}`);
+  return parts;
+}
+
+/** What the SDK recorded about the exchange: status, ids, attempts, body length. */
+function exchangeFields(e: SdkErrorShape): string[] {
+  const parts: string[] = [];
+  const status = responseStatus(e);
+  if (status !== undefined) parts.push(`HTTP ${status}`);
   if (e.$fault !== undefined) parts.push(`fault ${safeStringify(e.$fault)}`);
   const meta = e.$metadata;
   if (meta?.requestId !== undefined) parts.push(`request id ${safeStringify(meta.requestId)}`);
@@ -543,31 +553,53 @@ function awsErrorDiagnostics(error: unknown): string {
   if (meta?.attempts !== undefined) parts.push(`attempts ${safeStringify(meta.attempts)}`);
   const length = e.$response?.headers?.['content-length'];
   if (length !== undefined) parts.push(`response content-length ${safeStringify(length)}`);
+  return parts;
+}
 
-  // The `cause` chain, bounded: a socket error (`EPIPE`, `ECONNRESET`) rides
-  // here when the SDK wraps it.
-  let cause: unknown = (e as { cause?: unknown }).cause;
-  for (let depth = 0; cause !== undefined && cause !== null && depth < 3; depth++) {
-    if (cause instanceof Error) {
-      const c = cause as Error & { code?: unknown };
-      parts.push(
-        `cause ${safeStringify(c.name)}${c.code !== undefined ? ` (${safeStringify(c.code)})` : ''}: ` +
-          JSON.stringify(c.message)
-      );
-      cause = (c as { cause?: unknown }).cause;
-    } else {
-      parts.push(`cause ${safeStringify(cause)}`);
+/**
+ * Every layer of the failure, outermost first: a stack node's error is
+ * cdkd's own wrap with the SDK error on its `cause` chain, so the exchange
+ * fields are read from EACH layer, not only the top one. Bounded at four.
+ */
+function awsErrorDiagnostics(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return `a non-Error value of type ${typeof error}: ${safeStringify(error)}`;
+  }
+  const layers: SdkErrorShape[] = [];
+  const segments: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 4; depth++) {
+    if (!(current instanceof Error)) {
+      segments.push(`cause ${safeStringify(current)}`);
       break;
     }
+    const layer = current as SdkErrorShape;
+    layers.push(layer);
+    const fields = [...exchangeFields(layer), ...layerFields(layer)].join(', ');
+    segments.push(depth === 0 ? fields : `cause: ${fields}`);
+    current = layer.cause;
   }
 
+  // The verdict speaks only about an SDK exchange, and only when one is on
+  // the chain: cdkd's own refusal gets none (it is not an AWS failure at all).
+  const answered = layers.find((l) => responseStatus(l) !== undefined || l.$fault !== undefined);
   let verdict = '';
-  if (!responded && e.$fault === undefined) {
+  if (answered !== undefined) {
+    const message = typeof answered.message === 'string' ? answered.message : '';
+    if (SDK_PLACEHOLDER_MESSAGES.has(message) && answered.Code === undefined) {
+      const length = answered.$response?.headers?.['content-length'];
+      verdict =
+        ' AWS returned no error message' +
+        (length === '0' || length === 0 ? ' (the response body was empty).' : '.');
+    }
+  } else if (
+    layers.some(
+      (l) => l.$metadata !== undefined || (typeof l.code === 'string' && /^E[A-Z]+$/.test(l.code))
+    )
+  ) {
+    // An SDK attempt record or a socket error code with no response: the
+    // request never got an answer (`EPIPE`, `ECONNRESET`, a timeout).
     verdict = ' No AWS response was received: the request failed before AWS answered.';
-  } else if (SDK_PLACEHOLDER_MESSAGES.has(message) && e.Code === undefined) {
-    verdict =
-      ' AWS returned no error message' +
-      (length === '0' || length === 0 ? ' (the response body was empty).' : '.');
   }
-  return `${parts.join(', ')}.${verdict}`;
+  return `${segments.join('; ')}.${verdict}`;
 }

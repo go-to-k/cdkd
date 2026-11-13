@@ -6,7 +6,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
-import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerTail } from '../../utils/aws-failure-text.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { quietS3Logger } from '../../utils/sdk-call-log.js';
@@ -548,7 +548,7 @@ export async function readApiGatewayV2DefinitionObject(
     }
     const wrapped = new ProvisioningError(
       `Cannot update ${logicalId} (${resourceType}): reading its OpenAPI definition ` +
-        `${shown} failed with ${errorClass}.${next ?? ''} ${VERBOSE_POINTER}`,
+        `${shown} failed with ${errorClass}.${next ?? ''}${verbosePointerTail()}`,
       resourceType,
       logicalId,
       physicalId,

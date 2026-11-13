@@ -77,8 +77,8 @@ describe('WorkGraph failure summary (#2319)', () => {
 
       expect(rejection.message).toBe('1 node(s) failed:\n  - asset:A: Unknown.');
       expect(log.debug.mock.calls.map((c) => String(c[0]))).toContain(
-        'Failure detail for asset:A: HTTP 413, name Unknown, message "UnknownError", ' +
-          'fault client, response content-length 0. ' +
+        'Failure detail for asset:A: HTTP 413, fault client, response content-length 0, ' +
+          'name Unknown, message "UnknownError". ' +
           'AWS returned no error message (the response body was empty).'
       );
     });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   isNameCollisionError,
   isNameCollisionErrorFrom,
@@ -9,7 +9,10 @@ import {
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 import { withRetry } from '../../../src/deployment/retry.js';
-import { describeAwsFailure } from '../../../src/utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  registerVerboseRunProbe,
+} from '../../../src/utils/aws-failure-text.js';
 
 // go-to-k/cdkd#5088: a #2319 wrap reduces an AWS failure to
 // `<error.name>. Re-run with --verbose for AWS's own message.`. When the class
@@ -221,5 +224,55 @@ describe('enumerated walk against the pre-#5088 classifier', () => {
     // Floors: the defect class is exercised, and genuine collisions survive.
     expect(changed).toBeGreaterThanOrEqual(20);
     expect(stampedRetryable).toBeGreaterThanOrEqual(40);
+  });
+});
+
+// go-to-k/cdkd#6162: a `--verbose` run drops the pointer, so the summary ends
+// at the bare `<Class>.`; the strip must still find the class there.
+describe('the same verdicts on a --verbose run (no pointer in the summary)', () => {
+  beforeEach(() => {
+    registerVerboseRunProbe(() => true);
+  });
+  afterEach(() => {
+    registerVerboseRunProbe(() => false);
+  });
+
+  it('Route 53 HostedZoneAlreadyExists is not re-create retryable', () => {
+    const error = redactedWrap(HOSTED_ZONE_REUSE);
+    expect(error.message).toContain('HostedZoneAlreadyExists.');
+    expect(error.message).not.toContain('--verbose');
+    expect(isNameCollisionError(retryClassificationText(error))).toBe(true);
+    expect(recreateRetryable(error)).toBe(false);
+    expect(isNameCollisionErrorFrom(error, 'Res')).toBe(false);
+  });
+
+  it('S3 BucketAlreadyExists is not re-create retryable', () => {
+    const error = redactedWrap(
+      awsError('BucketAlreadyExists', 'The requested bucket name is not available.'),
+      { relay: false }
+    );
+    expect(recreateRetryable(error)).toBe(false);
+  });
+
+  it('withRetry does not retry the wrap', async () => {
+    const op = vi.fn(() => Promise.reject(redactedWrap(HOSTED_ZONE_REUSE)));
+    await expect(
+      withRetry(op, 'Res', {
+        isRetryable: isRecreateRetryableError,
+        maxRetries: 3,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+      })
+    ).rejects.toThrow('HostedZoneAlreadyExists');
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('a genuine class-only collision still classifies', () => {
+    const error = redactedWrap(
+      awsError('ResourceAlreadyExistsException', 'Event bus x already exists.'),
+      { relay: false }
+    );
+    expect(recreateRetryable(error)).toBe(true);
+    expect(isNameCollisionErrorFrom(error, 'Res')).toBe(true);
   });
 });

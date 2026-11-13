@@ -11,7 +11,7 @@ import {
   type PropagateTags,
   type AvailabilityZoneRebalancing,
 } from '@aws-sdk/client-ecs';
-import { describeAwsFailure, VERBOSE_POINTER } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerTail } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
@@ -376,7 +376,7 @@ export function wrapWaiterResultError(
   if (typeof state !== 'string' || !/^[A-Z]+$/.test(state)) return error;
   log.debug(`ECS service ${logicalId} ServicesStable waiter result: ${error.message}`);
   const reduced = new Error(
-    `the ServicesStable waiter ended in state ${state}${error.name && error.name !== 'Error' ? ` (${error.name})` : ''}. ${VERBOSE_POINTER}`,
+    `the ServicesStable waiter ended in state ${state}${error.name && error.name !== 'Error' ? ` (${error.name})` : ''}.${verbosePointerTail()}`,
     { cause: error }
   );
   // Keep the waiter's name (`TimeoutError`): `isAmbiguousOutcomeError` and
