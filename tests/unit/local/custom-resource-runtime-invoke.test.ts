@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
@@ -61,11 +61,14 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
 }));
 
 const {
+  chooseCallerStackFunction,
   invokeCustomResourceFunctionLocally,
   lambdaClientForRegion,
   resetLocalCustomResourceRuntimeForTest,
 } =
   await import('../../../src/local/custom-resource-runtime.js');
+const { withNestedStacks } = await import('../../../src/local/custom-resource-nested-stacks.js');
+const { withStackScopeBeforeStateRead } = await import('../../../src/provisioning/resource-name.js');
 const { setLocalCustomResourceRuntimeEnabled, withCustomResourceStack } =
   await import('../../../src/local/custom-resource-runtime-gate.js');
 
@@ -508,5 +511,78 @@ describe('a destroy resolves the function in the stack it destroys', () => {
     await withCustomResourceStack('Mine', () => invoke());
     const lambda = plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo };
     expect(lambda.stack.stackName).toBe('Mine');
+  });
+});
+
+describe('a custom resource inside a nested stack (go-to-k/cdkd#6261)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-cr-nested-invoke-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const nestedRow = (assetPath: string) => ({
+    Type: 'AWS::CloudFormation::Stack',
+    Metadata: { 'aws:asset:path': assetPath },
+  });
+
+  /** `App` whose `Inner` row names a template holding `Cr` -> `Fn`, and `Inner2` below it the same. */
+  function nestedApp(parentAlsoHasCr = false): StackInfo {
+    writeFileSync(join(dir, 'Inner2.json'), JSON.stringify(appStack().template));
+    const innerTemplate = appStack().template;
+    innerTemplate.Resources!['Inner2'] = nestedRow('Inner2.json') as never;
+    writeFileSync(join(dir, 'Inner.json'), JSON.stringify(innerTemplate));
+    const parent = appStack('App');
+    if (!parentAlsoHasCr) parent.template.Resources = {};
+    parent.template.Resources!['Inner'] = nestedRow('Inner.json') as never;
+    return { ...parent, nestedTemplates: { Inner: join(dir, 'Inner.json') } };
+  }
+
+  const stackOfPlan = () =>
+    (plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo }).stack.stackName;
+
+  it('runs locally on a deploy, resolved in the nested template', async () => {
+    assembly.stacks = [nestedApp()];
+    const answer = await withStackScopeBeforeStateRead('App~Inner', () => invoke());
+    expect(answer).toBeDefined();
+    expect(dr.runDetached).toHaveBeenCalledTimes(1);
+    expect(stackOfPlan()).toBe('App~Inner');
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('runs locally on a destroy of a grandchild', async () => {
+    assembly.stacks = [nestedApp()];
+    await withCustomResourceStack('App~Inner~Inner2', () => invoke());
+    expect(stackOfPlan()).toBe('App~Inner~Inner2');
+  });
+
+  it("never borrows the parent's same-named function, nor the parent the child's", async () => {
+    assembly.stacks = [nestedApp(true)];
+    await withCustomResourceStack('App~Inner', () => invoke());
+    expect(stackOfPlan()).toBe('App~Inner');
+    plan.resolveZipImagePlan.mockClear();
+    await withCustomResourceStack('App', () => invoke());
+    expect(stackOfPlan()).toBe('App');
+  });
+
+  it('still declines a nested stack the assembly does not hold', async () => {
+    assembly.stacks = [nestedApp()];
+    expect(await withCustomResourceStack('App~Gone', () => invoke())).toBeUndefined();
+    expect(String(log.warn.mock.calls[0]![0])).toContain('not found in the stack being deployed');
+    expect(dr.runDetached).not.toHaveBeenCalled();
+  });
+
+  it("resolves a cr.Provider's second hop in the nested template", () => {
+    const [, child] = withNestedStacks([nestedApp()]);
+    const callerFn = { lambda: { stack: child }, deployed: {} } as unknown as Parameters<
+      typeof chooseCallerStackFunction
+    >[0];
+    const choice = chooseCallerStackFunction(callerFn, 'Fn', DEPLOYED);
+    expect('lambda' in choice && choice.lambda.stack.stackName).toBe('App~Inner');
+    expect(chooseCallerStackFunction(callerFn, 'Missing', DEPLOYED)).toEqual({
+      reason: 'its function was not found in the stack being deployed',
+    });
   });
 });

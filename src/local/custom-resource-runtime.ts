@@ -16,7 +16,8 @@
  *   Step Functions endpoint, which runs the user's handlers and the waiter
  *   state machine locally too and forwards every other call to the emulator.
  * - Code: the function's code from the local cloud assembly
- *   ({@link synthesizedStacks}). Handler, runtime, layers come from the
+ *   ({@link synthesizedStacks}, and the nested templates below them,
+ *   go-to-k/cdkd#6261). Handler, runtime, layers come from the
  *   template; the environment, timeout and memory from the deployed function
  *   (`GetFunctionConfiguration` on the emulator), i.e. the resolved values.
  * - Container: `runDetached` applies the active `--aws-emulator` wiring — the
@@ -48,6 +49,7 @@ import { safeMsg } from '../utils/display-safe.js';
 import { pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
 import { getLogger } from '../utils/logger.js';
 import { synthesizedStacks } from '../synthesis/synthesized-stacks.js';
+import { withNestedStacks } from './custom-resource-nested-stacks.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { getCurrentStackName } from '../provisioning/resource-name.js';
@@ -388,7 +390,9 @@ export async function invokeCustomResourceFunctionLocally(
     return undefined;
   }
   const choice = chooseServiceTokenFunction(
-    findServiceTokenFunctions(stacks, customResourceLogicalId),
+    // Nested stacks too (go-to-k/cdkd#6261): a child deploys and destroys as
+    // `<parent>~<logicalId>`, which is the name the scope below carries.
+    findServiceTokenFunctions(withNestedStacks(stacks), customResourceLogicalId),
     deployed,
     getCurrentStackName() ?? customResourceStackName()
   );
@@ -446,6 +450,29 @@ export function lambdaClientForRegion(
 }
 
 /**
+ * The function a `cr.Provider` framework container calls (#6213), resolved in
+ * the caller's OWN stack: its template entry is the one the first hop chose,
+ * so for a framework inside a nested stack this is the nested template, named
+ * `<parent>~<logicalId>` (go-to-k/cdkd#6261).
+ */
+export function chooseCallerStackFunction(
+  caller: LocalFunction,
+  logicalId: string,
+  deployed: { Handler?: string | undefined; Runtime?: string | undefined }
+): { lambda: ResolvedZipLambda } | { reason: string } {
+  const resources = caller.lambda.stack.template.Resources ?? {};
+  const resource = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+  if (resource === undefined) {
+    return { reason: 'its function was not found in the stack being deployed' };
+  }
+  return chooseServiceTokenFunction(
+    [{ stack: caller.lambda.stack, logicalId, resource }],
+    deployed,
+    caller.lambda.stack.stackName
+  );
+}
+
+/**
  * The `cr.Provider` second-hop endpoint (#6213), started once per process
  * with the first local event; `undefined` (calls go to the emulator as
  * before) unless the wiring is full emulator mode with its own keys, which a
@@ -488,18 +515,7 @@ function secondHopEndpoint(lambdaClient: LambdaClient): Promise<SecondHopEndpoin
             return undefined;
           }
         },
-        chooseFunction: (caller, logicalId, deployed) =>
-          chooseServiceTokenFunction(
-            [
-              {
-                stack: caller.lambda.stack,
-                logicalId,
-                resource: caller.lambda.stack.template.Resources![logicalId]!,
-              },
-            ],
-            deployed,
-            caller.lambda.stack.stackName
-          ),
+        chooseFunction: chooseCallerStackFunction,
         imageAvailable: (lambda) => runtimeImageAvailable(resolveRuntimeImage(lambda.runtime)),
         runLocally: async (target, event) =>
           runInContainer(
