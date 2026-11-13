@@ -1,6 +1,7 @@
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import {
   IntrinsicFunctionResolver,
   isUnboundTemplateParameter,
@@ -404,6 +405,9 @@ export async function resolveImportedProperties(
     ...(Object.keys(conditions).length > 0 && { conditions }),
     stateBackend,
     stackName: stackState.stackName,
+    // go-to-k/cdkd#6170: the tail the stack's deploys resolve `AWS::StackId`
+    // with, so an imported record holds the value the next deploy compares.
+    stackIdTail: () => stackIdTailOf(stackState, stackState.stackName),
   };
 
   // What the NoEcho positional pass after the loop reads, per record

@@ -395,6 +395,18 @@ export interface StackState {
   stackInstanceId?: string;
 
   /**
+   * State schema v16 (go-to-k/cdkd#6170): `true` when this stack's first
+   * state write minted its {@link stackInstanceId} with a v16+ binary, so its
+   * `AWS::StackId` ends in a UUID derived one-way from that id
+   * (`stackIdTailOf`, `src/state/stack-id-tail.ts`) as CloudFormation's ends
+   * in a per-stack UUID. ABSENT = the stack keeps the constant `.../cdkd` tail
+   * it was deployed with, forever: changing it would replace every resource
+   * named from it. Set only where the id is minted; carried with it through
+   * `stackInstanceIdCarriedFrom`.
+   */
+  stackIdFromInstance?: true;
+
+  /**
    * State schema v13 (go-to-k/cdkd#5064): per logical id whose record LEFT
    * this stack (a deploy's delete, `Retain` included, or `cdkd orphan`), the
    * highest name generation that record reached (`max(nameGeneration,

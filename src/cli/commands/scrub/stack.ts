@@ -71,6 +71,7 @@ import { type ScrubStackResult, exportNameDisplayOver } from './stack-result.js'
 import { scrubStackResolvePass } from './stack-resolve.js';
 import { scrubStackRewritePass } from './stack-rewrite.js';
 import { copiesOfParentRow } from './noecho.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 
 /**
  * Scrub one stack's state. Re-resolves the template's per-resource properties to
@@ -570,6 +571,8 @@ export async function scrubStack(
       ...(Object.keys(parameters).length > 0 && { parameters }),
       ...(Object.keys(conditions).length > 0 && { conditions }),
       stackName: stack.stackName,
+      // go-to-k/cdkd#6170: the tail the deploy resolved `AWS::StackId` with.
+      stackIdTail: () => stackIdTailOf(state, stack.stackName),
       stateBackend: resolverStateBackend,
       ...(recordedSecretValues && { recordedSecretValues }),
       // Issue #2134: the evidence that arms the resolver's own region

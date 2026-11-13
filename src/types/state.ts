@@ -221,14 +221,40 @@
  *       the record would drop the names, and the item would be kept instead of
  *       removed. A v14 document is read unchanged (nothing attempted).
  *
+ * - 16 — adds `StackState.stackIdFromInstance` (issue
+ *       [#6170](https://github.com/go-to-k/cdkd/issues/6170)): `true` on a
+ *       stack whose first state write minted its `stackInstanceId` with this
+ *       version, whose `AWS::StackId` then ends in a UUID derived from that id
+ *       instead of the constant `cdkd`. Read through `stackIdTailOf`. A bump,
+ *       for v10's reason: an older binary rewriting the record would drop the
+ *       marker, and the next deploy would resolve `AWS::StackId` back to
+ *       `.../cdkd`, replacing every resource named from it. A v15 document is
+ *       read unchanged (the `cdkd` tail it was deployed with).
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
+export type StateSchemaVersion =
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5
+  | 6
+  | 7
+  | 8
+  | 9
+  | 10
+  | 11
+  | 12
+  | 13
+  | 14
+  | 15
+  | 16;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 15;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 16;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -237,7 +263,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 15;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
 ];
 
 // The record shapes and their helpers live in the sibling `state/`

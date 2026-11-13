@@ -14,6 +14,7 @@ import { SECRET_MASK } from '../../../deployment/secret-redaction.js';
 import { stateSecretNameNeedles } from '../../../deployment/secret-name-needles.js';
 import { type CdkdStateStackTree, quotedOrNotShown, recordValueOrNotShown } from './render.js';
 import { flattenCdkdStateTreeRootFirst } from './stack-tree.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 
 /**
  * Strip the template down to only the resources we intend to import.
@@ -607,6 +608,8 @@ export async function buildResolvedParametersPerStack(args: {
       secretNameSink: new Map<string, string>(),
       parameters: parentParamValues,
       stackName: parentNode.cdkdName,
+      // go-to-k/cdkd#6170: the tail the deploy resolved the parent's row with.
+      stackIdTail: () => stackIdTailOf(parentNode.state, parentNode.cdkdName),
       ...(args.stateBackend && { stateBackend: args.stateBackend }),
     };
     const { params, intrinsicSkipped } = await resolveChildImportParameters(

@@ -256,7 +256,7 @@ resource, keyed by its logical ID from the template.
 
 | Field | Meaning |
 | --- | --- |
-| `version` | The [schema version](state-management-schema-versions.md); currently `13` |
+| `version` | The [schema version](state-management-schema-versions.md); currently `16` |
 | `stackName`, `region` | The stack, and the region its resources are in |
 | `resources` | One entry per resource, keyed by logical ID |
 | `outputs` | Each stack output's name and resolved value |

@@ -209,6 +209,7 @@ export function resolverContextDeps(this: DeployEngine): ResolverContextDeps {
     recordedImports: () => this.recordedImports,
     recordedOutputReads: () => this.recordedOutputReads,
     runProducerRegionEvidence: () => this.runProducerRegionEvidence,
+    runStackIdTail: () => this.runStackIdTail,
   };
 }
 

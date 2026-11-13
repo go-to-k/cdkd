@@ -5,6 +5,10 @@ import { captureStoredNoEchoNamingValues, stateNamingSecrets } from './masking.j
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import { stackIdTailOf } from '../../state/stack-id-tail.js';
+import type { StackInstanceIdentity } from '../../state/stack-instance-id.js';
+import { randomUUID } from 'node:crypto';
+import { StateError } from '../../utils/error-handler.js';
 import { nameGenerationsOf } from '../../state/name-generation.js';
 import { flushKeptForReadoption } from './delete.js';
 import { adoptRollbackOrphans, producerRegionEvidence } from './rollback.js';
@@ -237,6 +241,34 @@ export async function doDeployWithPrefetch(
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
+    // go-to-k/cdkd#6170: a first deploy's identity, settled BEFORE its
+    // conditions, diff and approval table resolve `AWS::StackId`, so each of
+    // them sees the tail the creates are sent with: the one an interrupted
+    // earlier run wrote ahead (with the flag it recorded), else a candidate
+    // id the write-ahead below writes. It shares the sibling read the
+    // write-ahead takes, so a first deploy pays no extra call; an ordinary
+    // deploy (a record exists) never reads it. Optional for the test doubles,
+    // which keep the id the write-ahead returns.
+    // `--dry-run` reads nothing and writes nothing: it previews with a
+    // candidate id the real first deploy will not reuse.
+    const firstDeployIdentityRead =
+      idArrivesLater && engine.stateBackend.peekStackInstanceSibling
+        ? engine.options.dryRun
+          ? Promise.resolve(null)
+          : engine.stateBackend.peekStackInstanceSibling(stackName, engine.stackRegion)
+        : undefined;
+    firstDeployIdentityRead?.catch(() => undefined);
+    let firstDeployIdentity: StackInstanceIdentity | undefined;
+    engine.runStackIdTail = () =>
+      stackIdTailOf(
+        currentState.stackInstanceId === undefined && firstDeployIdentity !== undefined
+          ? {
+              stackInstanceId: firstDeployIdentity.stackInstanceId,
+              ...(firstDeployIdentity.stackIdFromInstance && { stackIdFromInstance: true }),
+            }
+          : currentState,
+        stackName
+      );
     refuseUnreadableLoadedState(engine, {
       stackName,
       currentState,
@@ -358,6 +390,12 @@ export async function doDeployWithPrefetch(
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
       0;
 
+    if (firstDeployIdentityRead !== undefined) {
+      firstDeployIdentity = (await firstDeployIdentityRead) ?? {
+        stackInstanceId: randomUUID(),
+        stackIdFromInstance: true,
+      };
+    }
     const { conditions, conditionVerdicts } = await evaluateDeployConditions(engine, {
       stackName,
       template,
@@ -512,11 +550,29 @@ export async function doDeployWithPrefetch(
     const resolveStackInstanceId = async (): Promise<void> => {
       if (currentStateData !== null && currentStateData !== undefined) return;
       if (engine.options.dryRun || currentState.stackInstanceId !== undefined) return;
-      currentState.stackInstanceId = await engine.stateBackend.stackInstanceIdForFirstWrite(
+      const id = await engine.stateBackend.stackInstanceIdForFirstWrite(
         stackName,
         engine.stackRegion,
-        { writeAhead: true }
+        { writeAhead: true, ...(firstDeployIdentity && { candidate: firstDeployIdentity }) }
       );
+      // The plan resolved `AWS::StackId` from `firstDeployIdentity`; a
+      // different id here would send creates a value the plan never showed.
+      // Under the lock only this deploy writes the sibling, so this is a
+      // concurrent writer outside the lock.
+      if (firstDeployIdentity !== undefined && id !== firstDeployIdentity.stackInstanceId) {
+        throw new StateError(
+          `The write-ahead stack instance id of stack ${displayStackName(stackName)} changed ` +
+            'while this deploy was planning. Nothing was created; re-run the deploy.'
+        );
+      }
+      currentState.stackInstanceId = id;
+      // State schema v16 (go-to-k/cdkd#6170): a stack born here takes its
+      // `AWS::StackId` tail from this id, and so does a re-run of one whose
+      // write-ahead recorded the flag; a re-run of an older binary's first
+      // deploy (a version 1 sibling) keeps `cdkd`, the tail its creates used.
+      if (firstDeployIdentity?.stackIdFromInstance ?? true) {
+        currentState.stackIdFromInstance = true;
+      }
     };
     // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
     // capture of each unchanged record that holds a token and no provenance,
