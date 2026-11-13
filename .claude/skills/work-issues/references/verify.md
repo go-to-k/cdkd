@@ -89,7 +89,7 @@ checks.
   fixture sourcing it); dropped AWS text (an id an SDK error echoes) has no
   literal, so grep its error code and API call, in fixtures the PR never edits
   too (#5268). Run each fixture named before merge, whatever the change's own
-  tier: no vitest run executes them, so one stays red on `main` (#4394, #5046).
+  tier: no vitest run executes them, so one stays red on `main` (#5046).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
@@ -131,7 +131,7 @@ deterministic by shrinking that wait with a per-type `--resource-timeout
 the competing resource's budget too), plus a verdict that the shrink took
 effect (#5975). A NEEDLE (hint, retry regex,
 fixture refusal grep) is copied from cdkd's red output on EACH route, never
-reasoned nor the `aws` CLI's (#4336, #5592, #5680); a refusal the
+reasoned nor the `aws` CLI's (#5680); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`; when that holds
 only the code, AWS's text is the CloudTrail event's `errorMessage` (`aws
@@ -176,7 +176,7 @@ test. More vacuity shapes:
   issue is that slot: make it a `FAIL` before the run (#4548).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
-- **A self-compared baseline, or a 0 count with no prior 1, proves nothing**: change the value out of band first (#5648, #5649).
+- **A self-compared baseline, or a 0 count with no prior 1, proves nothing**: change the value out of band first (#5649).
 
 ### 8-e. Watching runs and pollers
 
@@ -191,15 +191,15 @@ SOLE command.
 
 ### 8-f. Fixture environment prechecks
 
-**Check a fixture's unstated PRECONDITIONS before spending a run**:
+**Check a fixture's unstated PRECONDITIONS first**:
 
 ```bash
 aws s3api head-bucket --bucket "cdk-hnb659fds-assets-<acct>-<region>"   # bootstrapped?
 aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                      # cdkd regions
 ```
 
-**A docker-dependent fixture is an environment blocker — prefer one reaching
-the same code without it.** Where docker is required (any `local-*` fixture),
+**Docker is an environment blocker: prefer a fixture reaching the same code
+without it.** Where docker is required (any `local-*` fixture),
 verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
 `[verify] SKIP` exits 0 and is NOT a pass.
 
@@ -219,7 +219,8 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
   a regression" is no decline in a file the PR holds (#3640;
   `filing.md`'s scope tripwire still applies); WITHDRAW an addition whose part
   keeps producing blockers. A right finding can carry a wrong FIX: check the
-  PREMISE, and record a decline in the PR body.
+  PREMISE (PR text: the live `gh pr view --json body`, #6198), and record a
+  decline in the PR body.
 
 ### 8-i. Fresh deploys, and who verifies what
 

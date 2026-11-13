@@ -29,9 +29,8 @@ same PR.
   in one call, run the gated command in the next, re-creating not appending.
   - A blocked `cp` restore leaves a file MID-PROBE (failing in the suite, passing
     alone, reading as pollution), so verify a restore in the same call; and make
-    `/tmp` consumables per LANE (`mktemp`, print the path, and pass it LITERALLY
-    to the next call — shell variables do not survive between calls), or a
-    retry eats another's.
+    `/tmp` consumables per LANE (`mktemp`, its path passed LITERALLY to the
+    next call), or a retry eats another's.
 - **"All green" is the EXIT CODE, not the summary** — a run can print every test
   passing and exit 1 (test-file type errors show as `Errors`), and
   `vp run typecheck` skips `**/*.test.ts`: run `typecheck:test`, read ITS rc.
@@ -41,6 +40,9 @@ All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
 `Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll.
+A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel (it reads
+every owner's) is the maintainer's: ask, then destroy under
+`CDKD_BUGHUNT_OWNER=<that owner>` (#6227).
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
 replaces the WHOLE body, silently reverting prior edits, and no delta shows in
@@ -70,14 +72,13 @@ git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded pat
 Re-run the checks, `git push --force-with-lease`. If the harness denies it,
 `git checkout -B <branch> origin/<branch>`, `git merge origin/main`,
 the generators and `vp run integ-ledger-normalize`, commit what changed
-(`merge=union` hides the ledger conflict locally), push plainly:
+(`ship.md` §9), push plainly:
 lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase OR that merge, after `vp install
 --frozen-lockfile` and a rebuild**: a pre-rebase green attests to a tree that no
 longer exists. Stale `dist/` is the usual cause; a dependency bump the other,
-which `[ -d node_modules ]` pre-flights skip (a build straight after `merge
-origin/main` missed cdk-local's new `dockerRegistryEnv` export). **Re-run the generators too**
+which `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
 (`vp run gen:all-matrices`): `docs/_generated/**` and pages like
 `docs/cli-flag-coverage.md` derive from the TREE.
 
