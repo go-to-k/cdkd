@@ -810,10 +810,12 @@ describe('PipesPipeProvider review-round cases', () => {
     }
   });
 
-  it('declares SourceParameters and Tags removals as handled in update()', () => {
+  it('declares SourceParameters, Tags and both parameter blocks (#6233) as handled in update()', () => {
     expect([...new PipesPipeProvider().removalHandledInUpdate.get(TYPE)!].sort()).toEqual([
+      'EnrichmentParameters',
       'SourceParameters',
       'Tags',
+      'TargetParameters',
     ]);
   });
 
