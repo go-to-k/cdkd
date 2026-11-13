@@ -12,11 +12,12 @@ import type { UpdateContext, ResourceUpdateResult } from '../../../types/resourc
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import {
+  holdsSecretDerivedEntry,
   onlySecretDerived,
   recordedPrincipalsRepair,
   SECRET_DERIVED_READ_LIVE,
 } from '../../iam-policy-targets.js';
-import { principalsOf, PRINCIPAL_NAMES } from './shared.js';
+import { managedPolicyAttributes, principalsOf, PRINCIPAL_NAMES } from './shared.js';
 
 export async function update(
   this: IAMManagedPolicyProvider,
@@ -277,6 +278,7 @@ export async function update(
     }
   }
 
+  let createdVersionId: string | undefined;
   try {
     // Update PolicyDocument by creating a new version + setting as default.
     // AWS caps managed policies at 5 versions; prune the oldest non-default
@@ -292,13 +294,14 @@ export async function update(
         : '';
       if (newDocStr !== oldDocStr) {
         await this.ensureVersionCapacity(physicalId, log);
-        await this.iamClient.send(
+        const versionResponse = await this.iamClient.send(
           new CreatePolicyVersionCommand({
             PolicyArn: physicalId,
             PolicyDocument: newDocStr,
             SetAsDefault: true,
           })
         );
+        createdVersionId = versionResponse?.PolicyVersion?.VersionId;
         log.debug(`Updated PolicyDocument for ${v(physicalId)}`);
       }
     }
@@ -325,12 +328,26 @@ export async function update(
       log
     );
 
+    // go-to-k/cdkd#6232: `attributes` REPLACES the record. The PolicyId never
+    // changes for this ARN, so the record's is carried; the DefaultVersionId
+    // is the new version's when this update created one, else the record's.
+    // Anything not in hand stays absent and the resolver re-reads it.
+    const recorded = context?.recordedAttributes;
+    const recordedString = (key: string): string | undefined => {
+      const value = recorded?.[key];
+      // A redacted value (`***`, or an id the state redaction spliced a
+      // `{{resolve:...}}` into) is never carried: left absent, it is re-read.
+      return typeof value === 'string' && value !== '' && !holdsSecretDerivedEntry(value)
+        ? value
+        : undefined;
+    };
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
-        PolicyArn: physicalId,
-      },
+      attributes: managedPolicyAttributes(physicalId, {
+        PolicyId: recordedString('PolicyId'),
+        DefaultVersionId: createdVersionId ?? recordedString('DefaultVersionId'),
+      }),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;

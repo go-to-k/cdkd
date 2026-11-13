@@ -13,6 +13,7 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { managedPolicyAttributes } from './shared.js';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -181,17 +182,17 @@ export async function importImpl(
         );
       }
       try {
-        await this.iamClient.send(new GetPolicyCommand({ PolicyArn: explicit }));
-        return { physicalId: explicit, attributes: { PolicyArn: explicit } };
+        const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: explicit }));
+        return { physicalId: explicit, attributes: managedPolicyAttributes(explicit, resp.Policy) };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;
         throw err;
       }
     }
     // Otherwise treat as a policy name + walk customer-managed policies.
-    const arnByName = await this.findPolicyArnByName(explicit);
-    if (arnByName) {
-      return { physicalId: arnByName, attributes: { PolicyArn: arnByName } };
+    const byName = await this.findPolicyByName(explicit);
+    if (byName) {
+      return { physicalId: byName.Arn, attributes: managedPolicyAttributes(byName.Arn, byName) };
     }
     return null;
   }

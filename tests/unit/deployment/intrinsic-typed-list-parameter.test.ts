@@ -258,30 +258,27 @@ describe('a List<AWS::...> parameter resolves to a LIST end to end', () => {
   it('a list-valued Fn::GetAtt placeholder is REFUSED rather than comma-joined', async () => {
     // CloudFormation fails the resource with "variable
     // Vpc.CidrBlockAssociations in Fn::Sub expression does not resolve to a
-    // string" (measured).
+    // string" (measured). That attribute is now read live (go-to-k/cdkd#6232),
+    // so a list served from the RECORD is exercised through another one.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context: ResolverContext = {
       template: {
-        Resources: { Vpc: { Type: 'AWS::EC2::VPC', Properties: {} } },
+        Resources: { Lb: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: {} } },
       } as unknown as CloudFormationTemplate,
       resources: {
-        Vpc: {
-          physicalId: 'vpc-1',
-          resourceType: 'AWS::EC2::VPC',
+        Lb: {
+          physicalId: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/lb/1',
+          resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
           properties: {},
-          attributes: { CidrBlockAssociations: ['assoc-a', 'assoc-b'] },
+          attributes: { SecurityGroups: ['sg-a', 'sg-b'] },
         },
       } as unknown as ResolverContext['resources'],
     };
-    const error = await refusalOf(
-      resolver,
-      { 'Fn::Sub': 'v=${Vpc.CidrBlockAssociations}' },
-      context
-    );
+    const error = await refusalOf(resolver, { 'Fn::Sub': 'v=${Lb.SecurityGroups}' }, context);
     expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect((error as Error).message).toContain(
-      'Fn::Sub: the variable ${Vpc.CidrBlockAssociations} resolves to a list (an array of 2 items)'
+      'Fn::Sub: the variable ${Lb.SecurityGroups} resolves to a list (an array of 2 items)'
     );
   });
 });

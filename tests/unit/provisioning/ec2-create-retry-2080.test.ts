@@ -220,7 +220,10 @@ class FakeEc2 {
       name.startsWith('Describe') &&
       input['VpcIds'] === undefined &&
       input['SubnetIds'] === undefined &&
-      name !== 'DescribeSecurityGroupsCommand'
+      name !== 'DescribeSecurityGroupsCommand' &&
+      // The VPC create's default-ACL read-back (go-to-k/cdkd#6232), filtered
+      // by the new VPC's id like the security-group one: not an orphan lookup.
+      name !== 'DescribeNetworkAclsCommand'
     ) {
       this.lookups.push(name);
     }
@@ -329,6 +332,8 @@ class FakeEc2 {
         return { Addresses: this.addresses.map((a) => ({ ...a, Tags: [...a.Tags] })) };
       case 'DescribeSecurityGroupsCommand':
         return { SecurityGroups: [{ GroupId: 'sg-default' }] };
+      case 'DescribeNetworkAclsCommand':
+        return { NetworkAcls: [{ NetworkAclId: 'acl-default' }] };
       default:
         return {};
     }

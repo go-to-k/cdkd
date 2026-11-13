@@ -1,4 +1,26 @@
+import { definedAttributes } from '../../attribute-map.js';
 import { readPrincipalLists } from '../../iam-policy-targets.js';
+
+/**
+ * go-to-k/cdkd#6232: the `Fn::GetAtt` attributes a managed policy records —
+ * `PolicyArn`, plus the `PolicyId` (`ANPA…`) and `DefaultVersionId` (`v1`,
+ * `v2`, …) IAM reported for it. Neither can be built from the ARN, so one
+ * the response did not carry is left ABSENT (`definedAttributes`): the
+ * resolver then re-reads it rather than serving a placeholder.
+ */
+export function managedPolicyAttributes(
+  policyArn: string,
+  policy: { PolicyId?: string | undefined; DefaultVersionId?: string | undefined } | undefined
+): Record<string, unknown> {
+  return definedAttributes({
+    PolicyArn: policyArn,
+    PolicyId: policyIdentityToken(policy?.PolicyId),
+    DefaultVersionId:
+      typeof policy?.DefaultVersionId === 'string' && policy.DefaultVersionId !== ''
+        ? policy.DefaultVersionId
+        : undefined,
+  });
+}
 
 /** A bag's three principal lists, read by literal key (see `readPrincipalLists`). */
 export const principalsOf = (bag: Record<string, unknown>) =>
