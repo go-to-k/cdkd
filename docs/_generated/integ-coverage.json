@@ -8888,6 +8888,7 @@
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "select-out-of-bounds",
         "shared-stackname-multi-region",
         "stack-id-uuid",
         "stale-attribute-heal",
@@ -9282,6 +9283,9 @@
         ],
         "secrets-dynamic-ref": [
           "l1",
+          "l2"
+        ],
+        "select-out-of-bounds": [
           "l2"
         ],
         "shared-stackname-multi-region": [

@@ -57,7 +57,8 @@ import { CdkdError } from './base-errors.js';
  *    refusal" is a property of the THROW rather than of the one catch that
  *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874),
  *    `resolveSelect`'s refusal of an index that does not resolve to a
- *    non-negative integer ([#3574](https://github.com/go-to-k/cdkd/issues/3574)),
+ *    non-negative integer ([#3574](https://github.com/go-to-k/cdkd/issues/3574))
+ *    or is past the end of its list ({@link SelectOutOfBoundsRefusalError}),
  *    and `refuseCoercedInheritedSecret`, which refuses an already-resolved
  *    value whose type cannot be coerced. Their non-reachability has two
  *    DIFFERENT reasons, so do not collapse them: a `${...}` placeholder cannot
@@ -112,6 +113,22 @@ export class IntrinsicResolutionRefusalError extends CdkdError {
     super(message, code, cause);
     this.name = 'IntrinsicResolutionRefusalError';
     Object.setPrototypeOf(this, IntrinsicResolutionRefusalError.prototype);
+  }
+}
+
+/**
+ * `resolveSelect`'s refusal of an index past the end of its resolved list
+ * (go-to-k/cdkd#6181), in group 2 of {@link IntrinsicResolutionRefusalError}.
+ * CloudFormation refuses such a template outright, so a SUBCLASS lets
+ * `evaluateConditions` re-raise it instead of downgrading the condition to
+ * false, which would prune (and so delete) a resource CloudFormation never
+ * gets to evaluate.
+ */
+export class SelectOutOfBoundsRefusalError extends IntrinsicResolutionRefusalError {
+  constructor(message: string) {
+    super(message, undefined, 'SELECT_OUT_OF_BOUNDS');
+    this.name = 'SelectOutOfBoundsRefusalError';
+    Object.setPrototypeOf(this, SelectOutOfBoundsRefusalError.prototype);
   }
 }
 

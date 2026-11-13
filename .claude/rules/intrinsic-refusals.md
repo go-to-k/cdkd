@@ -14,20 +14,20 @@ paths:
 
 # Intrinsic-resolution refusals
 
-Issue #1740. Per-site reasons:
+#1740. Per-site reasons:
 `IntrinsicResolutionRefusalError`'s JSDoc in `utils/error-handler/refusal-errors.ts`.
 
 - Warn-and-keep-the-raw-`${...}` answers an unknown `Fn::Sub` variable, and must
   NEVER answer a deliberate refusal: that ships a literal
   `${Resource.Attribute}` to AWS under a green deploy.
 - Refusals throw `IntrinsicResolutionRefusalError` and the `Fn::Sub` catch
-  RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn` / `*Url`
-  shape hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
+  RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn`/`*Url`
+  hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
   unknown-account guard, a declared resource, an unbound declared
-  parameter with no `Default`, and an `Fn::GetAtt` cdkd cannot build or
+  parameter with no `Default`, an out-of-bounds `Fn::Select`, an `Fn::GetAtt` cdkd cannot build or
   CloudFormation does not define (`refuseUnconstructibleAttribute` /
   `refuseUndefinedAttribute`, #4077 —
-  never answer `undefined`, which `Fn::Join` / `Fn::Sub` render as text); an UNDECLARED head, or a bound or defaulted
+  never `undefined`, which a join renders as text); an UNDECLARED head, or a bound or defaulted
   parameter, warns. `resolveSub`'s own LIST refusal (#3809) is thrown only
   after the walk and its final dynamic-reference pass, so a later reference
   still records its needle. `resolveSplit`'s two refusals,
@@ -39,12 +39,12 @@ Issue #1740. Per-site reasons:
   written. The refusal of a SECRET result of a RESOLVABLE token assembled from a
   secret (#4166; its needle half reads the INHERITED bag only) is template-route only too, and for `secretsmanager` / `ssm-secure` it runs BEFORE the lookup (#4266), so the assembled id never reaches AWS. Both use the class too: a refusal is a property of
   the THROW, not of the catch that inspects it.
-- **A stale-record refusal is worded from the HEAL OUTCOME** (#1852): "not enriched ... file an issue" only when the re-read completed without the attribute or was never attempted; a failed / not-found read says so and names the real remedy, as the PREVIEW's read when the healer is `readOnly` (`cdkd diff`'s heals nothing). Never promise "the next update heals it" alone — a no-change deploy runs no update. They stay `markNonRetryable`: the outcome is memoized per deploy.
+- **A stale-record refusal is worded from the HEAL OUTCOME** (#1852): "not enriched ... file an issue" only when the re-read completed without the attribute or was never attempted; a failed / not-found read says so and names the real remedy, as the PREVIEW's read with a `readOnly` healer. Never promise "the next update heals it" alone — a no-change deploy runs no update. They stay `markNonRetryable`: the outcome is memoized per deploy.
 - **`cdkd scrub` needs a distinction the base class cannot make.** A PERMANENT
   refusal is an unremediable FINDING (the rest of the stack is still scrubbed,
   exit non-zero); a USER-FIXABLE one must REFUSE the stack, since a re-run after
-  the fix scrubs it. Exactly one site is permanent — `resolveGetStackOutput`'s
-  cross-account refusal, which throws `CrossAccountSecretRefusalError`. Scrub
+  the fix scrubs it. Exactly one site is permanent — the cross-account
+  `CrossAccountSecretRefusalError`. Scrub
   matches THAT subclass: matching the base class downgrades the fixable siblings
   and prints `No plaintext secrets found` over surviving plaintext.
   `MalformedProducerRecordRefusalError` (another stack's damaged record) becomes
@@ -56,6 +56,5 @@ Issue #1740. Per-site reasons:
   `refuseUnservedAttribute` ARE time-dependent.
 - **Where the intrinsic SITS decides what the user sees.** In a resource
   property it fails the resource; in a stack Output `deploy` catches it
-  per-output and exits 0 (`--strict-getatt` fails the deploy); in
-  `Conditions`, the class-agnostic `evaluateConditions` downgrades it to
-  `false`.
+  per-output and exits 0 (`--strict-getatt` fails the deploy); in `Conditions`, `evaluateConditions` downgrades it to `false`, bar
+  `SelectOutOfBoundsRefusalError` (re-raised, as in CFn).

@@ -2695,6 +2695,11 @@
       "scenarios": []
     },
     {
+      "name": "select-out-of-bounds",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -3911,6 +3916,7 @@
     "secrets-rotation-schedule",
     "secretsmanager-replica-rekey",
     "secretsmanager-update-value-source",
+    "select-out-of-bounds",
     "servicediscovery",
     "shared-stackname-multi-region",
     "sns-event-source",
