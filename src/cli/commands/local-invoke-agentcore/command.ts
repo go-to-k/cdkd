@@ -10,6 +10,7 @@ import {
   profileCredentialsForWorkload,
 } from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn, explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
+import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
 import { resolveSingleTarget } from '../../../local/target-picker.js';
@@ -320,9 +321,10 @@ export async function localInvokeAgentCoreCommand(
         (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
       );
     }
-    if (options.emulateRoleVia !== undefined) {
-      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
-    }
+    checkEmulateRoleVia(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: options.assumeRole === true || typeof options.assumeRole === 'string',
+    });
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).

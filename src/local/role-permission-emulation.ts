@@ -109,10 +109,18 @@ export function buildSessionPolicy(policies: RolePolicies): SessionPolicyPlan {
       };
     }
     const [version] = [...versions];
-    policy = JSON.stringify({
-      ...(version !== undefined && version !== '' && { Version: version }),
-      Statement: statements,
-    });
+    policy =
+      statements.length === 0
+        ? // Inline policies with no statement grant nothing; an empty
+          // `Statement` would be refused or, with no managed ARN, mean "no
+          // session policy" — the via role's full permissions.
+          managedArns.length === 0
+          ? DENY_ALL_POLICY
+          : ''
+        : JSON.stringify({
+            ...(version !== undefined && version !== '' && { Version: version }),
+            Statement: statements,
+          });
   }
   const chars = policy.length + managedArns.reduce((sum, arn) => sum + arn.length, 0);
   if (chars > SESSION_POLICY_MAX_CHARS) {
@@ -129,12 +137,14 @@ export function isIamUserArn(arn: string | undefined): boolean {
   return arn !== undefined && /^arn:[^:]+:iam::\d{12}:user\//.test(arn);
 }
 
-/** The refusal `AssumeRole` answers when the trust policy does not allow the caller. */
+/**
+ * The refusal `AssumeRole` answers when the trust policy does not allow the
+ * caller. By NAME only: a bare 403 is also `InvalidClientTokenId`,
+ * `SignatureDoesNotMatch` or `ExpiredToken` — broken caller credentials, which
+ * emulation cannot help and must not hide.
+ */
 export function isAssumeRoleAccessDenied(err: unknown): boolean {
-  const name = (err as { name?: unknown } | null)?.name;
-  const status = (err as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
-    ?.httpStatusCode;
-  return name === 'AccessDenied' || status === 403;
+  return (err as { name?: unknown } | null)?.name === 'AccessDenied';
 }
 
 /** The last path segment of a role ARN: `IAM GetRolePolicy`'s `RoleName`. */
@@ -149,6 +159,8 @@ function roleNameOf(roleArn: string): string {
  * start-api` once per Lambda that shares it.
  */
 const noticedRoles = new Set<string>();
+/** The "cannot emulate" warning, likewise once per role per process. */
+const failedRoles = new Set<string>();
 
 export interface EmulateRoleArgs {
   /** The execution role whose `AssumeRole` was refused. */
@@ -185,6 +197,8 @@ export async function emulateRoleAfterDeniedAssume(
   try {
     return await emulate(args);
   } catch (unexpected) {
+    if (failedRoles.has(args.roleArn)) return undefined;
+    failedRoles.add(args.roleArn);
     // cdkd-raw-beside-safe: `args.flag` is a caller LITERAL (the flag's own name).
     getLogger().warn(
       safeMsg`${args.flag}: emulating the role's permissions failed: ${describeLocalAwsFailureForWarn(unexpected, 'role permission emulation')}.`
@@ -197,6 +211,8 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
   const logger = getLogger();
   const shownRole = displayIdent(args.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
   const cannot = (reason: string): undefined => {
+    if (failedRoles.has(args.roleArn)) return undefined;
+    failedRoles.add(args.roleArn);
     // cdkd-raw-beside-safe: `args.flag` is a caller LITERAL (the flag's own
     // name), and `reason` is cdkd's own text with any AWS failure already
     // rendered by `describeLocalAwsFailureForWarn`; `safeMsg` flattens both.
@@ -274,12 +290,22 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
         );
       }
     } catch (stsErr) {
-      if ((stsErr as { name?: unknown } | null)?.name === 'PackedPolicyTooLarge') {
+      const stsName = (stsErr as { name?: unknown } | null)?.name;
+      // The SDK names the modeled error `PackedPolicyTooLargeException`; the
+      // wire code `PackedPolicyTooLarge` is accepted too.
+      if (stsName === 'PackedPolicyTooLargeException' || stsName === 'PackedPolicyTooLarge') {
         return cannot(
           "the role's policies are larger than STS accepts as session policies (PackedPolicyTooLarge)"
         );
       }
-      return cannot(describeLocalAwsFailureForWarn(stsErr, 'STS session-policy credentials'));
+      const rendered = describeLocalAwsFailureForWarn(stsErr, 'STS session-policy credentials');
+      // Temporary IAM-user credentials (GetSessionToken / MFA) still have a
+      // `user/` ARN, but STS refuses GetFederationToken for them.
+      return cannot(
+        args.emulateRoleVia === undefined
+          ? `${rendered}. Temporary IAM user credentials (GetSessionToken / MFA) cannot call sts:GetFederationToken; pass --emulate-role-via <arn> naming a role you can assume instead`
+          : rendered
+      );
     }
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
@@ -297,7 +323,7 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
       // the only user value through `displayIdent`, and the rest are counts
       // and cdkd's literals.
       logger.warn(
-        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's permissions boundary and session tags are not reproduced.${federationNote}`
+        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's permissions boundary and session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
       );
     }
     return {

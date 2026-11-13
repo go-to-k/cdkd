@@ -138,7 +138,11 @@ login for the role's account in your Docker config.
 - **Role hops are signed by you.** The `--assume-role`, `--ecr-role-arn` and
   `--layer-role-arn` hops are signed by your own identity, so the target role's
   trust policy must trust you, not only the `--role-arn` role. The credentials
-  a hop returns still do the image pull or layer fetch.
+  a hop returns still do the image pull or layer fetch. On `local invoke`,
+  `local start-api`, `local run-task` and `local invoke-agentcore`, a refused
+  `--assume-role` (`--assume-task-role`) is
+  [emulated with session policies](local-emulation.md#when-the-role-does-not-trust-you),
+  also signed by you.
 - **Deployed S3 origins and KeyValueStores.** On `local start-cloudfront
   --from-state`, the deployed S3-origin and KeyValueStore reads run as you. A
   cross-account deploy may need your access to those.

@@ -8,6 +8,7 @@ import {
   getActiveWorkloadAwsWiring,
 } from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn } from '../../../utils/role-arn.js';
+import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -200,9 +201,10 @@ export async function localRunTaskCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    if (options.emulateRoleVia !== undefined) {
-      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
-    }
+    checkEmulateRoleVia(options.emulateRoleVia, {
+      roleFlag: '--assume-task-role',
+      roleRequested: options.assumeTaskRole === true || typeof options.assumeTaskRole === 'string',
+    });
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).

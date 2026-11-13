@@ -9,6 +9,7 @@ import {
   warnAwsEmulatorStateSourceHint,
 } from '../../../local/local-aws-wiring.js';
 import { assertFlagRoleArn, explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
+import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -295,9 +296,10 @@ export async function localInvokeCommand(
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    if (options.emulateRoleVia !== undefined) {
-      assertFlagRoleArn('--emulate-role-via', options.emulateRoleVia);
-    }
+    checkEmulateRoleVia(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: options.assumeRole === true || typeof options.assumeRole === 'string',
+    });
     // BEFORE `--role-arn` and every AWS client: under `--aws-emulator` the
     // role hop, `--from-state`, `{{resolve:...}}` and `--from-cfn-stack` all
     // follow the emulator (`local-aws-wiring.ts`).

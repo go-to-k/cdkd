@@ -246,12 +246,15 @@ cdkd local invoke MyStack/Handler --from-state --assume-role \
   --emulate-role-via arn:aws:iam::123456789012:role/DeveloperRole
 ```
 
-cdkd warns on every emulated run, because it is an approximation:
+cdkd warns once per role in each run, because it is an approximation:
 
 - Resource-based policies, KMS key policies and `aws:PrincipalArn` conditions
   that name the role see your identity instead, so what they grant or deny
   the role is not reproduced.
 - The role's permissions boundary and session tags are not reproduced.
+- Policy variables such as `${aws:username}` and `${aws:userid}` take the
+  emulated session's values, not the role's. A role session has no
+  `aws:username`.
 - A GetFederationToken session cannot call IAM, and of STS only
   `GetCallerIdentity`.
 
