@@ -83,6 +83,9 @@ export async function resolveSidecarCredentials(
  * `callerIdentityNeeded` is whether a mixed-mode container keeping an
  * exception still takes the caller's real identity: none when the task role
  * covers every such container.
+ *
+ * It reads the env before dynamic references resolve, and `buildDockerRunArgs`
+ * after; the two agree unless a reference resolves to `"real-aws"`.
  */
 export function planTaskRoleCredentials(
   containers: ReadonlyArray<Pick<ResolvedEcsContainer, 'name' | 'environment'>>,

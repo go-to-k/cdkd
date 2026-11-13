@@ -391,7 +391,9 @@ export async function localRunTaskCommand(
     let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
     let emulatorTaskCredentials: RunEcsTaskOptions['taskCredentials'];
     let resolvedRoleArn: string | undefined;
-    if (options.assumeTaskRole === true && !task.taskRoleArn) {
+    const assumes = plan.assumeInRealAws || plan.assumeInEmulator;
+    // A flag mixed mode ignores (warned above) needs no TaskRoleArn either.
+    if (options.assumeTaskRole === true && !task.taskRoleArn && assumes) {
       throw new Error(
         `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
           `Either the task definition does not set TaskRoleArn, or it points at a resource cdkd cannot resolve to an IAM Role at synth time. ` +
@@ -405,7 +407,7 @@ export async function localRunTaskCommand(
           ? options.assumeTaskRole
           : undefined;
     // At most one STS: the emulator's under `--aws-emulator`, real otherwise.
-    if (roleArnTemplate !== undefined && (plan.assumeInRealAws || plan.assumeInEmulator)) {
+    if (roleArnTemplate !== undefined && assumes) {
       const realAws = plan.assumeInRealAws;
       // The bare flag's placeholder account is asked of the same STS: the
       // emulator's account and the real one differ.
