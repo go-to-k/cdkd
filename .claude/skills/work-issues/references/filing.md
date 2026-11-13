@@ -36,7 +36,8 @@ omitted is a FORCED parallel change.
 
 **The backfill campaign is the one generated fan-out**: one issue per resource
 type, labelled `backfill-type` and with no parent, which
-`.github/workflows/backfill-issues-sync.yml` creates and closes. Do not start another (#3423).
+`.github/workflows/backfill-issues-sync.yml` creates, updates and
+closes. Do not start another (#3423).
 Every backlog listing in `triage.md` (§1, §3-0, §3-a) EXCLUDES the label (`backfill-type`), and so does §10's folded-finding count in `retro.md`, where it matters because a sync
 rewrites every generated body into `- [ ]` rows; a listing added to either file
 carries it. Put a type's claim, measurement or decision in a comment on ITS
