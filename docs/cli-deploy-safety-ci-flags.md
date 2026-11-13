@@ -56,8 +56,8 @@ name:
 
 | Attribute name | The guess | Result |
 | --- | --- | --- |
-| Ends in `Arn` | Is not `arn:`-shaped | The deploy fails |
-| Ends in `Url` | Is not an http(s) URL | The deploy fails |
+| Ends in `Arn` or `ARN` | Is not `arn:`-shaped | The deploy fails |
+| Ends in `Url` or `URL` | Is not an http(s) URL | The deploy fails |
 | Anything else | Any value | A warning; the deploy continues |
 
 A failure names the resource and the attribute and carries an issue link. The

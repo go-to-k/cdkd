@@ -180,7 +180,8 @@ describe('WAFv2WebACLProvider', () => {
         Id: TEST_ID,
         LabelNamespace: 'awswaf:123456789012:webacl:my-acl:',
       });
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      // + the post-update GetWebACL that reads Capacity (issue #6238)
+      expect(mockSend).toHaveBeenCalledTimes(3);
 
       const getCall = mockSend.mock.calls[0][0];
       expect(getCall.constructor.name).toBe('GetWebACLCommand');
@@ -336,6 +337,82 @@ describe('WAFv2WebACLProvider', () => {
       };
     }
 
+    // Issue #6238: `Capacity` is a CloudFormation `Fn::GetAtt` attribute.
+    it('create records Capacity read from GetWebACL', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } })
+        .mockResolvedValueOnce({ WebACL: { ARN: TEST_ARN, Id: TEST_ID, Capacity: 700 } });
+      const result = await new WAFv2WebACLProvider().create('MyWebACL', 'AWS::WAFv2::WebACL', {
+          Name: 'my-acl',
+          Scope: 'REGIONAL',
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+        });
+      expect(result.attributes).toStrictEqual({ Arn: TEST_ARN, Id: TEST_ID, Capacity: 700 });
+    });
+
+    it('update records the Capacity of the SECOND GetWebACL (post-update)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ LockToken: 'lock', WebACL: { Capacity: 700 } })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ WebACL: { Capacity: 900 } });
+      const result = await new WAFv2WebACLProvider().update(
+        'MyWebACL',
+        TEST_ARN,
+        'AWS::WAFv2::WebACL',
+        {
+          Name: 'my-acl',
+          Scope: 'REGIONAL',
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+        },
+        {
+          Name: 'my-acl',
+          Scope: 'REGIONAL',
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+        }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[2][0].constructor.name).toBe('GetWebACLCommand');
+      expect(result.attributes).toStrictEqual({ Arn: TEST_ARN, Id: TEST_ID, Capacity: 900 });
+    });
+
+    it('update survives a failed post-update GetWebACL and omits Capacity', async () => {
+      mockSend
+        .mockResolvedValueOnce({ LockToken: 'lock', WebACL: { Capacity: 700 } })
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error('WAFUnavailableEntityException'));
+      const result = await new WAFv2WebACLProvider().update(
+        'MyWebACL',
+        TEST_ARN,
+        'AWS::WAFv2::WebACL',
+        {
+          Name: 'my-acl',
+          Scope: 'REGIONAL',
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+        },
+        {
+          Name: 'my-acl',
+          Scope: 'REGIONAL',
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: 'm', SampledRequestsEnabled: true },
+        }
+      );
+      expect(result.attributes).toStrictEqual({ Arn: TEST_ARN, Id: TEST_ID });
+      expect(result.attributes).not.toHaveProperty('Capacity');
+    });
+
+    it('import records Capacity', async () => {
+      mockSend.mockResolvedValueOnce({
+        WebACL: { ARN: TEST_ARN, Id: TEST_ID, Capacity: 123 },
+        LockToken: 'lock',
+      });
+      const result = await provider.import(makeInput({ knownPhysicalId: TEST_ARN }));
+      expect(result?.attributes).toStrictEqual({ Arn: TEST_ARN, Id: TEST_ID, Capacity: 123 });
+    });
+
     it('create survives a failed LabelNamespace read-back and omits the attribute', async () => {
       mockSend
         .mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } })
@@ -431,6 +508,7 @@ describe('WAFv2WebACLProvider update region guard (issue #2613)', () => {
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
       'GetWebACLCommand',
       'UpdateWebACLCommand',
+      'GetWebACLCommand',
     ]);
   });
 
@@ -443,6 +521,7 @@ describe('WAFv2WebACLProvider update region guard (issue #2613)', () => {
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
       'GetWebACLCommand',
       'UpdateWebACLCommand',
+      'GetWebACLCommand',
     ]);
   });
 });

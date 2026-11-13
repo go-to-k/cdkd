@@ -183,6 +183,36 @@ describe('S3TablesProvider', () => {
       expect(result.attributes).toEqual({ TableARN: realArn });
       expect(mockSend).toHaveBeenCalledWith(expect.any(CreateTableCommand));
     });
+
+    // Issue #6238
+    const createInput = {
+      TableBucketARN: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket',
+      Namespace: 'my-namespace',
+      Name: 'my-table',
+      Format: 'ICEBERG',
+    };
+    const REAL_ARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket/table/OPAQUE-AWS-ID';
+
+    it('records WarehouseLocation and VersionToken from a GetTable after create', async () => {
+      mockSend
+        .mockResolvedValueOnce({ tableARN: REAL_ARN, versionToken: 'create-vt' })
+        .mockResolvedValueOnce({ warehouseLocation: 's3://wh-s3alias--table-s3', versionToken: 'get-vt' });
+      const result = await provider.create('MyTable', 'AWS::S3Tables::Table', createInput);
+      expect(result.attributes).toStrictEqual({
+        TableARN: REAL_ARN,
+        WarehouseLocation: 's3://wh-s3alias--table-s3',
+        VersionToken: 'get-vt',
+      });
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(GetTableCommand);
+    });
+
+    it('a failed GetTable keeps TableARN and the CreateTable versionToken, omits WarehouseLocation, and does not throw', async () => {
+      mockSend
+        .mockResolvedValueOnce({ tableARN: REAL_ARN, versionToken: 'create-vt' })
+        .mockRejectedValueOnce(new Error('InternalServerError'));
+      const result = await provider.create('MyTable', 'AWS::S3Tables::Table', createInput);
+      expect(result.attributes).toStrictEqual({ TableARN: REAL_ARN, VersionToken: 'create-vt' });
+    });
   });
 
   // ─── deleteTable ──────────────────────────────────────────────────

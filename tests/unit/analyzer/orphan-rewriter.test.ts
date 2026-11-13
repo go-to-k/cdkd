@@ -1763,6 +1763,17 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     );
   });
 
+  it("does not serve an AppSync API key's ApiKeyId, the same x-api-key value (#6238)", async () => {
+    const KEY = 'da2-plaintextapikeyvalue123';
+    const result = await rewriteResourceReferences(
+      repoState({ ApiKey: KEY, ApiKeyId: KEY }, 'ApiKeyId', 'AWS::AppSync::ApiKey'),
+      ['Repo'],
+      fakeRegistry(vi.fn(async () => 'live-answer'))
+    );
+    expect(JSON.stringify(result.rewrites)).not.toContain(KEY);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(KEY);
+  });
+
   for (const [label, value] of [
     ['a top-level Password leaf', { Host: 'h', Password: 'pw-plaintext-1' }],
     ['a nested credential leaf', { Conn: [{ Credentials: 'pw-plaintext-1' }] }],

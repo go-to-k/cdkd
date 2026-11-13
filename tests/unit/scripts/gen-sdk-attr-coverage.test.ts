@@ -200,6 +200,31 @@ describe('classifyType', () => {
     expect(c.bucket).toBe('gap');
     expect(c.gaps).toEqual(['ServiceUrl']);
   });
+
+  // Issue #6238: CloudFormation spells some of these `...ARN` / `...URL`.
+  it('flags an upper-case *ARN readOnly that is not cached', () => {
+    const c = classifyType(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ['AutoScalingGroupARN'],
+      new Set(),
+      new Set(),
+      EMPTY
+    );
+    expect(c.bucket).toBe('gap');
+    expect(c.gaps).toEqual(['AutoScalingGroupARN']);
+  });
+
+  it('marks an upper-case *ARN readOnly covered once the provider caches it', () => {
+    const c = classifyType(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ['AutoScalingGroupARN'],
+      new Set(['AutoScalingGroupARN']),
+      new Set(),
+      EMPTY
+    );
+    expect(c.bucket).toBe('covered');
+    expect(c.arnAttributes[0].status).toBe('cached');
+  });
 });
 
 describe('buildReport / findGaps', () => {

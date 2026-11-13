@@ -322,7 +322,7 @@ describe('AppSync ApiKey id is masked in every log line and message (go-to-k/cdk
         knownPhysicalId: PID,
       });
 
-      expect(result).toEqual({ physicalId: PID, attributes: { ApiKey: KEY } });
+      expect(result).toEqual({ physicalId: PID, attributes: { ApiKey: KEY, ApiKeyId: KEY } });
       expect(lineWith('warn', 'ARN attribute was NOT recorded')).toContain(
         `Imported ${TYPE} (${SHOWN_PID})`
       );

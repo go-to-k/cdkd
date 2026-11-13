@@ -379,6 +379,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // state records carry; the fixture sweeps the prefix.
       'docdb-restore',
       'eventbridge-api-destination',
+      // go-to-k/cdkd#6238: an AppSync API key, whose id is the credential and
+      // the physical id; the fixture sweeps the prefix.
+      'getatt-sdk-attr-shapes',
       'iam-access-key',
       // Issue #5364: an AppSync API key, whose id is the credential and the
       // physical id the import records; the fixture sweeps the prefix.

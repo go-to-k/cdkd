@@ -159,6 +159,8 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
       'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij'
     );
     expect(result.attributes?.['ApiKey']).toBe('da2-abcdefghij');
+    // Issue #6238: CloudFormation's `Fn::GetAtt ApiKeyId`, the same value.
+    expect(result.attributes?.['ApiKeyId']).toBe('da2-abcdefghij');
   });
 
   // The healing path. A resource created by a pre-#1681 binary keeps its
@@ -191,6 +193,7 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
       { Description: 'changed' },
       {
         ApiKey: 'da2-abcdefghij',
+        ApiKeyId: 'da2-abcdefghij',
         Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij',
       },
     ],
@@ -420,6 +423,7 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
       'abcd1234|da2-abcdefghij',
       {
         ApiKey: 'da2-abcdefghij',
+        ApiKeyId: 'da2-abcdefghij',
         Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij',
       },
     ],

@@ -193,6 +193,45 @@ describe('ASGProvider create', () => {
   });
 });
 
+describe('ASGProvider records AutoScalingGroupARN (issue #6238)', () => {
+  const ARN =
+    'arn:aws:autoscaling:us-east-1:123456789012:autoScalingGroup:abc:autoScalingGroupName/my-asg';
+  const mockAsg = () =>
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        return Promise.resolve({
+          AutoScalingGroups: [{ AutoScalingGroupName: 'my-asg', AutoScalingGroupARN: ARN }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+  it('create records AutoScalingGroupARN equal to Arn', async () => {
+    mockAsg();
+    const result = await new ASGProvider().create('MyAsg', RESOURCE_TYPE, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 1,
+      MaxSize: 3,
+      LaunchTemplate: { LaunchTemplateId: 'lt-aaaa1111', Version: '$Latest' },
+    });
+    expect(result.attributes?.['AutoScalingGroupARN']).toBe(ARN);
+    expect(result.attributes?.['Arn']).toBe(ARN);
+  });
+
+  it('update records AutoScalingGroupARN equal to Arn', async () => {
+    mockAsg();
+    const result = await new ASGProvider().update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: 'my-asg', MinSize: 1, MaxSize: 5 },
+      { AutoScalingGroupName: 'my-asg', MinSize: 1, MaxSize: 3 }
+    );
+    expect(result.attributes?.['AutoScalingGroupARN']).toBe(ARN);
+    expect(result.attributes?.['Arn']).toBe(ARN);
+  });
+});
+
 describe('ASGProvider update', () => {
   it('issues UpdateAutoScalingGroup with mutable diff and skips immutable AutoScalingGroupName diff', async () => {
     mockSend.mockResolvedValue({});

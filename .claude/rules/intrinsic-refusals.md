@@ -21,7 +21,7 @@ paths:
   NEVER answer a deliberate refusal: that ships a literal
   `${Resource.Attribute}` to AWS under a green deploy.
 - Refusals throw `IntrinsicResolutionRefusalError` and the `Fn::Sub` catch
-  RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn`/`*Url`
+  RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn`/`*Url` (or `*ARN`/`*URL`)
   hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
   unknown-account guard, a declared resource, an unbound declared
   parameter with no `Default`, an out-of-bounds `Fn::Select`, an `Fn::GetAtt` cdkd cannot build or

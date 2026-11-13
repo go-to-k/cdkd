@@ -1348,6 +1348,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-sdk-attr-shapes",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getstackoutput-crossregion",
       "annotated": true,
       "scenarios": [
@@ -3822,6 +3827,7 @@
     "firehose-msk-source",
     "generated-name-security-group",
     "getatt-fallback-guard",
+    "getatt-sdk-attr-shapes",
     "globaltable-fix-forward-orphan",
     "globaltable-template-baseline-drift",
     "glue-securityconfig-replace",

@@ -453,6 +453,37 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    // Issue #6238: WarehouseLocation / VersionToken are CloudFormation
+    // `Fn::GetAtt` attributes, read from the same GetTable response.
+    const WAREHOUSE = 's3://abc123-s3alias--table-s3';
+    const read = { tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl', warehouseLocation: WAREHOUSE, versionToken: 'vt-1' };
+
+    it('records WarehouseLocation and VersionToken on the composite arm', async () => {
+      mockSend.mockResolvedValueOnce(read);
+      const result = await provider.import({ ...input, knownPhysicalId: `${BUCKET_ARN}|ns|tbl` });
+      expect(result?.attributes).toStrictEqual({
+        TableARN: TABLE_ARN,
+        WarehouseLocation: WAREHOUSE,
+        VersionToken: 'vt-1',
+      });
+    });
+
+    it('records WarehouseLocation and VersionToken on the bare-ARN arm (Cloud-Control-routed)', async () => {
+      forcedDrops.value = ['SomeNewProperty'];
+      mockSend.mockResolvedValueOnce(read);
+      const result = await provider.import({
+        ...input,
+        properties: { ...input.properties, SomeNewProperty: 'x' },
+        knownPhysicalId: TABLE_ARN,
+      });
+      expect(result?.physicalId).toBe(TABLE_ARN);
+      expect(result?.attributes).toStrictEqual({
+        TableARN: TABLE_ARN,
+        WarehouseLocation: WAREHOUSE,
+        VersionToken: 'vt-1',
+      });
+    });
+
     it('verifies and adopts a well-formed composite, caching the real ARN', async () => {
       mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
 

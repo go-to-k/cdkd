@@ -115,6 +115,41 @@ describe('IntrinsicFunctionResolver - unknown-attribute fallback shape guard (is
     ).rejects.toThrow(/"my-widget-name" is not a URL \(http\(s\):\/\/\.\.\.\)/);
   });
 
+  // Issue #6238: upper-case suffixes are guarded like `Arn` / `Url`.
+  it('throws on an ARN-suffixed (upper case) attribute when the physicalId is name-shaped', async () => {
+    const context = mkContext('my-asg-name');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'AutoScalingGroupARN'] }, context)
+    ).rejects.toThrow(
+      /Cannot resolve Fn::GetAtt \[Widget, AutoScalingGroupARN\] for AWS::Example::Widget/
+    );
+  });
+
+  it('throws on a URL-suffixed (upper case) attribute when the physicalId is not an http(s) URL', async () => {
+    const context = mkContext('my-widget-name');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'QueueURL'] }, context)
+    ).rejects.toThrow(/"my-widget-name" is not a URL \(http\(s\):\/\/\.\.\.\)/);
+  });
+
+  it('keeps the fallback for an upper-case ARN attribute when the physicalId IS an ARN', async () => {
+    const arn = 'arn:aws:autoscaling:us-east-1:123456789012:autoScalingGroup:abc:autoScalingGroupName/g';
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Widget', 'AutoScalingGroupARN'] },
+      mkContext(arn)
+    );
+    expect(result).toBe(arn);
+  });
+
+  it('a non-ARN/URL name (GroupName) still warns and falls back', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Widget', 'GroupName'] },
+      mkContext('my-widget-name')
+    );
+    expect(result).toBe('my-widget-name');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown attribute GroupName'));
+  });
+
   it('keeps the fallback when the physicalId already IS a URL', async () => {
     const url = 'https://example.us-east-1.amazonaws.com/my-widget';
     const context = mkContext(url);
