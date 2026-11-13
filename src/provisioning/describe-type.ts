@@ -265,10 +265,12 @@ export function reportAwsEmulatorRegistryMiss(resourceType: string, fallback: st
   );
   if (emulatorRegistryMissReported) return;
   emulatorRegistryMissReported = true;
+  const where = verboseAwareText(
+    '(--verbose names each type).',
+    '(each type is logged at debug level).'
+  );
   logger.info(
-    "--aws-emulator: the emulator's CloudFormation registry lacks some resource types, so cdkd " +
-      'uses its offline fallbacks for them instead of the live schema ' +
-      verboseAwareText('(--verbose names each type).', '(each type is logged at debug level).')
+    safeMsg`--aws-emulator: the emulator's CloudFormation registry lacks some resource types, so cdkd uses its offline fallbacks for them instead of the live schema ${where}`
   );
 }
 
