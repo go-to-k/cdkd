@@ -48,6 +48,33 @@ export function rerunRollback(stackName: string): string {
 }
 
 /**
+ * go-to-k/cdkd#6247: the tail of a failed rollback when a custom resource's
+ * handler failed in AWS Emulator's own Lambda runtime, which `cdkd rollback`
+ * uses because it never reads the CDK app. That runtime fails CDK's own
+ * provider functions every time, so {@link rerunRollback}'s `Re-run with:`
+ * would loop; the way out is a deploy forward from the app, which runs the
+ * handlers locally. `--no-local-custom-resources` would not help either: it
+ * sends them to the same runtime.
+ */
+export function deployForwardForEmulatorCustomResources(
+  stackName: string,
+  logicalIds: readonly string[]
+): string {
+  const deploy = pasteableCommand('cdkd deploy', [
+    { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+  ]);
+  const named = logicalIds.map((id) => plainOrDescribed(id, 'logical id')).join(', ');
+  return (
+    ` Custom resource(s) ${named} failed in AWS Emulator's own Lambda runtime, which cdkd ` +
+    `rollback uses because it never reads the CDK app, so a re-run fails the same way. Deploy ` +
+    `forward instead, from the app's directory with the version you want to keep (Docker ` +
+    `running), which runs the handlers locally.` +
+    withheldTargetClause(deploy, 'stack', 'cdkd deploy', "This stack's name") +
+    `\nDeploy forward with: ${deploy.command}`
+  );
+}
+
+/**
  * The error text of a state-backend or lock call, for a warning printed in the
  * run that ends in {@link rerunRollback}'s labelled line. The backend's message
  * names the stack and region, both taken from a journal S3 key, and it

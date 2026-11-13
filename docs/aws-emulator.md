@@ -422,6 +422,8 @@ resource events run on your machine.
 | --- | --- |
 | Requirement | Docker. Without it, cdkd prints one warning and sends the event to the emulator as before. |
 | Code | Read from the synthesized cloud assembly, together with the handler, runtime and layers. A command that does not synthesize (`cdkd state destroy`, `cdkd rollback`, or a destroy without the app) cannot find it and sends the event to the emulator, with a warning. |
+| Destroy without the app | `cdkd state destroy`, or a `cdkd destroy` that did not read the app, refuses a stack whose record holds custom resources before it asks for confirmation or deletes anything (with `--yes` too). Their Delete handlers would run in the emulator's own runtime, and the same run would delete the handler functions, so nothing could delete what the custom resources manage afterwards. Run `cdkd destroy <stack> --aws-emulator` from the app's directory, or pass `--no-local-custom-resources` to send the events to the emulator's runtime anyway. |
+| Rollback | `cdkd rollback` never reads the app. When a custom resource's handler fails in the emulator's runtime, the failed rollback does not tell you to re-run it, because a re-run fails the same way. It prints `cdkd deploy <stack>` instead: deploy forward from the app's directory, with the version you want to keep. |
 | Configuration | Environment variables, timeout and memory are the deployed function's. A destroy or rollback after the app changed runs the code of the app as it is now with the configuration that was deployed. |
 | Runtime image | Used from the local Docker cache, else pulled once per run. When it cannot be pulled, cdkd prints one warning and sends the event to the emulator. |
 | Identity | The container gets the emulator's keys, endpoint and CA only, like a `cdkd local` container. |
@@ -496,7 +498,9 @@ sent the event to the emulator:
   `ServiceToken` is not a `Fn::GetAtt` of a function in the same template).
   For `cdkd state destroy` or a destroy without the app, run
   `cdkd destroy --aws-emulator` from the app's directory instead. `cdkd rollback`
-  never reads the app; its custom resource events stay in the emulator.
+  never reads the app; its custom resource events stay in the emulator, so when
+  one fails, deploy forward from the app with `cdkd deploy --aws-emulator`
+  rather than re-running the rollback.
 
 Run a function of your own through `cdkd local invoke`, which uses the same
 image, instead of invoking it in the emulator.

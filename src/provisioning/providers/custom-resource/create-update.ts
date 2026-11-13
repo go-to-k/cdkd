@@ -15,6 +15,7 @@ import type {
 } from '../../../types/resource.js';
 import { maskerOrIdentity, type MaskerFn } from '../../masked-retry-logger.js';
 import { markAuxiliaryFailure } from '../../auxiliary-failure.js';
+import { noteCustomResourceFailure } from '../../../local/custom-resource-runtime-gate.js';
 import {
   crUnresolvedTokenUpdateRemedy,
   CR_UNRESOLVED_TOKEN_CREATE_REMEDY,
@@ -318,6 +319,9 @@ export async function create(
     // (the handler function, the response object, the SNS topic): none can
     // be this resource's name collision (#3826).
     markAuxiliaryFailure(error, logicalId);
+    // go-to-k/cdkd#6247: a failure in AWS Emulator's own runtime for lack of
+    // an app is not one a re-run of the same command can fix.
+    noteCustomResourceFailure(logicalId);
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
       context?.maskSecrets,
@@ -423,6 +427,7 @@ export async function update(
       ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
     };
   } catch (error) {
+    noteCustomResourceFailure(logicalId);
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
       context?.maskSecrets,

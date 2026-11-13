@@ -58,6 +58,7 @@ import {
   customResourceStackName,
   localCustomResourceCommand,
   localCustomResourceRuntimeActive,
+  resetCustomResourceFailuresForTest,
   setLocalCustomResourceRuntimeEnabled,
 } from './custom-resource-runtime-gate.js';
 import { responsePresignClient } from '../provisioning/providers/custom-resource-response-endpoint.js';
@@ -109,6 +110,7 @@ let secondHopDisabled = false;
 /** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
   setLocalCustomResourceRuntimeEnabled(true);
+  resetCustomResourceFailuresForTest();
   dockerAvailable = undefined;
   runtimeImages.clear();
   warnedOnce.clear();
@@ -281,7 +283,12 @@ async function dockerIsAvailable(): Promise<boolean> {
 /**
  * The warning for a command that read no cloud assembly. Only a DESTROY gets
  * "run `cdkd destroy` from the app": for `cdkd rollback` (or anything else)
- * that remedy would delete the stack the user meant to keep.
+ * that remedy would delete the stack the user meant to keep. A destroy whose
+ * record holds custom resources is refused before it deletes anything
+ * (`destroy-runner/emulator-custom-resources.ts`, go-to-k/cdkd#6246), so the
+ * destroy wording is left for an entry the refusal does not read (a journaled
+ * orphan). `cdkd rollback` never reads the app,
+ * so its remedy is a deploy forward (go-to-k/cdkd#6247).
  */
 export function noAssemblyWarning(command: string | undefined): string {
   const head =
@@ -289,6 +296,13 @@ export function noAssemblyWarning(command: string | undefined): string {
     `Emulator's own Lambda runtime, which can fail.`;
   if (command === 'destroy' || command === 'state destroy') {
     return `${head} Run \`cdkd destroy --aws-emulator\` from the app's directory to run them locally.`;
+  }
+  if (command === 'rollback') {
+    return (
+      `${head} cdkd rollback never reads the app, so a custom resource that fails here fails the ` +
+      `same way on every re-run: deploy forward instead, with \`cdkd deploy --aws-emulator\` from ` +
+      `the app's directory (Docker running), which runs them locally.`
+    );
   }
   return `${head} Pass ${NO_LOCAL_CUSTOM_RESOURCES_FLAG} to silence this.`;
 }

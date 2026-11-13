@@ -5,6 +5,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { getActiveWorkloadAwsWiring } from 'cdk-local/internal';
 
+import { synthesizedStacks } from '../synthesis/synthesized-stacks.js';
+
 function localAwsEmulatorActive(): boolean {
   return getActiveWorkloadAwsWiring()?.mode === 'emulator';
 }
@@ -44,6 +46,40 @@ export function localCustomResourceCommand(): string | undefined {
  */
 export function localCustomResourceRuntimeActive(): boolean {
   return enabled && localAwsEmulatorActive();
+}
+
+/**
+ * Whether a custom resource event of this run goes to AWS Emulator's own
+ * Lambda runtime because the command read no cloud assembly (`cdkd state
+ * destroy`, `cdkd rollback`, a destroy without the app): the local runtime is
+ * on, but has no function code to run. That runtime fails CDK's own provider
+ * functions every time (`Cannot find module 'https'` / `'zlib'`, `_signal`),
+ * so a re-run of the same command cannot do better (go-to-k/cdkd#6246,
+ * go-to-k/cdkd#6247).
+ */
+export function customResourcesRunWithoutApp(): boolean {
+  return localCustomResourceRuntimeActive() && synthesizedStacks().length === 0;
+}
+
+const failedWithoutApp = new Set<string>();
+
+/**
+ * Record that custom resource `logicalId`'s handler failed while
+ * {@link customResourcesRunWithoutApp} held, so `cdkd rollback` does not
+ * advise re-running itself (go-to-k/cdkd#6247). A no-op otherwise.
+ */
+export function noteCustomResourceFailure(logicalId: string): void {
+  if (customResourcesRunWithoutApp()) failedWithoutApp.add(logicalId);
+}
+
+/** The custom resources {@link noteCustomResourceFailure} recorded, in order. */
+export function customResourcesFailedWithoutApp(): readonly string[] {
+  return [...failedWithoutApp];
+}
+
+/** Test seam: forget {@link noteCustomResourceFailure}'s records. */
+export function resetCustomResourceFailuresForTest(): void {
+  failedWithoutApp.clear();
 }
 
 const destroyingStack = new AsyncLocalStorage<string>();

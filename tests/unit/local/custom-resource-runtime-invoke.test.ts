@@ -179,7 +179,19 @@ describe('declines, so the event goes to the emulator', () => {
     const warning = String(log.warn.mock.calls[0]![0]);
     expect(warning).toContain('did not synthesize the CDK app');
     expect(warning).not.toContain('destroy');
-    expect(warning).toContain('--no-local-custom-resources');
+    // go-to-k/cdkd#6247: a re-run of the rollback fails the same way, and the
+    // silence flag only sends the event to the same runtime: the remedy is a
+    // deploy forward from the app.
+    expect(warning).toContain('fails the same way on every re-run');
+    expect(warning).toContain('`cdkd deploy --aws-emulator`');
+    expect(warning).not.toContain('--no-local-custom-resources');
+  });
+
+  it('under another command with no assembly: the silence flag', async () => {
+    setLocalCustomResourceRuntimeEnabled(true, 'import');
+    assembly.stacks = [];
+    expect(await invoke()).toBeUndefined();
+    expect(String(log.warn.mock.calls[0]![0])).toContain('--no-local-custom-resources');
   });
 
   it('when the function is not in the assembly: undefined and a warning', async () => {
