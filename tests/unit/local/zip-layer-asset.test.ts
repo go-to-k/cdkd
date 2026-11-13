@@ -63,6 +63,27 @@ describe('resolveAssetCodePath: acceptZipFile', () => {
   });
 });
 
+describe('resolveLambdaLayers: a same-stack .zip layer asset', () => {
+  it('resolves to the .zip file', async () => {
+    const { resolveLambdaLayers } = await import('../../../src/local/lambda-resolver/layers.js');
+    const stack = {
+      stackName: 'S',
+      assetManifestPath: join(dir, 'S.assets.json'),
+      template: {
+        Resources: {
+          AwsCliLayer: {
+            Type: 'AWS::Lambda::LayerVersion',
+            Metadata: { 'aws:asset:path': 'asset.abc.zip' },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    expect(resolveLambdaLayers(stack, 'Fn', { Layers: [{ Ref: 'AwsCliLayer' }] })).toEqual([
+      { kind: 'asset', logicalId: 'AwsCliLayer', assetPath: zipPath },
+    ]);
+  });
+});
+
 describe('materializeLambdaLayersIncludingArns (local invoke, custom-resource runtime)', () => {
   it('extracts a .zip layer and hands the dir to the caller', async () => {
     const plan = await materializeLambdaLayersIncludingArns([assetLayer()], { pull: true });
