@@ -199,6 +199,24 @@ describe('planOrphanAdoption on a stack with an instance id', () => {
     expect(provider.import).not.toHaveBeenCalled();
   });
 
+  it("under --aws-emulator the import remedy carries the run's flag (go-to-k/cdkd#6245)", async () => {
+    const { buildProgram } = await import('../../../src/cli/program.js');
+    const { setPasteableRunFlags, setPasteableVerbFlags } = await import(
+      '../../../src/utils/pasteable-run-context.js'
+    );
+    buildProgram();
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+    try {
+      const outcome = await plan(true).result;
+      expect(outcome.warnings[0]).toMatch(
+        /adopt it with: cdkd import --aws-emulator=https:\/\/127\.0\.0\.1:9493$/
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
+  });
+
   it('drops the record once its logical id is managed again, silently', async () => {
     const outcome = await plan(true, ['Kept']).result;
     expect(outcome.remaining).toEqual([]);

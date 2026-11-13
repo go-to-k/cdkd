@@ -440,6 +440,9 @@ describe('AutoScalingGroup name-change refusal (site 8)', () => {
     expect(message).toContain('DeletionProtection: prevent-all-deletion');
     expect(message).toContain('cdkd deploy has no --remove-protection flag');
     expect(message).toContain('--auto-scaling-group-name my-asg --deletion-protection none');
+    // Not a stateful type: the bare --replace, no --force-stateful-recreation (go-to-k/cdkd#6245).
+    expect(message).toContain('so cdkd deploy --replace alone will NOT succeed');
+    expect(message).not.toContain('--force-stateful-recreation');
   });
 
   it('routes a planted group name through the gate (go-to-k/cdkd#4205)', async () => {

@@ -106,7 +106,7 @@ describe('emulator health check (#6250)', () => {
     const error = await activateAwsEmulatorForCommand(httpUrl).catch((e: unknown) => e);
     const printed = formatError(error);
     expect(printed).toContain(
-      'The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): AWS Emulator serves HTTPS, so use --aws-emulator https://127.0.0.1:9493.'
+      'The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): if this port is AWS Emulator, it serves HTTPS, so use --aws-emulator https://127.0.0.1:9493.'
     );
     expect(printed).not.toContain('Caused by');
   });

@@ -416,6 +416,19 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
       )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });
+
+  it('names the bare --replace for a destination-type switch, not the stateful pair (go-to-k/cdkd#6245)', async () => {
+    const error = await provider
+      .update(
+        'L',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { RedshiftDestinationConfiguration: { ClusterJDBCURL: 'jdbc:redshift://...' } },
+        { ExtendedS3DestinationConfiguration: { BucketArn: 'arn:aws:s3:::dest-bucket' } }
+      )
+      .catch((e: unknown) => e);
+    expect(String((error as Error).message)).toContain('Re-deploy with cdkd deploy --replace.');
+  });
 });
 
 describe('FirehoseProvider.update — Redshift destination (#549)', () => {

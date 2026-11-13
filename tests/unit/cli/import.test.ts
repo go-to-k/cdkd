@@ -640,6 +640,38 @@ describe('cdkd import', () => {
     expect(noticeCall).toBeDefined();
   });
 
+  it("ends on a cdkd diff that carries the run's --aws-emulator (go-to-k/cdkd#6245)", async () => {
+    const { buildProgram } = await import('../../../src/cli/program.js');
+    const { setPasteableRunFlags, setPasteableVerbFlags } = await import(
+      '../../../src/utils/pasteable-run-context.js'
+    );
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: { BucketName: 'b' },
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    }));
+    buildProgram();
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+    try {
+      await runImport(['import', '--app', 'x', '--yes']);
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
+    const line = infoSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('resource(s) imported'));
+    expect(line).toBe(
+      '  1 resource(s) imported. See how the imported state lines up with the template with: ' +
+        'cdkd diff --aws-emulator=https://127.0.0.1:9493'
+    );
+  });
+
   // The rewrite walks Parameters too, and `resolveImportedProperties` binds a
   // Parameter's `Default` before resolving `{Ref: …}` in a resource. So passing
   // the REWRITTEN template to that call instead of the pre-rewrite snapshot

@@ -35,6 +35,20 @@ afterEach(() => {
 
 const stack = [{ value: 'MyStack', hole: 'stack' }] as const;
 
+/** True when `source` spells a `cdkd deploy --replace` remedy as literals (#6245's fence). */
+function replaceLiteralIn(source: string): boolean {
+  const flat = source
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n')
+    // `${'cdkd deploy'}` -> cdkd deploy
+    .replace(/\$\{\s*(['"`])([^'"`]*)\1\s*\}/g, '$2')
+    // 'a ' + 'b', across line breaks -> a b
+    .replace(/(['"`])\s*\+\s*(['"`])/g, '')
+    .replace(/\s+/g, ' ');
+  return /cdkd deploy --replace(?!\\?`? would)/.test(flat);
+}
+
 describe('without a built program or recorded flags', () => {
   it('adds nothing when no verb table is registered', () => {
     setPasteableRunFlags({ profile: 'prod', stateBucket: 'b' });
@@ -78,23 +92,43 @@ describe('the verb table is read off the real Commander tree', () => {
     // A `cdkd deploy --replace` the operator is told to RUN goes through
     // `deployReplaceCommand`, which appends the run's flags. Comment lines and
     // the descriptive "`cdkd deploy --replace` would ..." clauses are exempt.
+    //
+    // Each file is NORMALISED first, so a split spelling is caught too: an
+    // inlined literal (`${'cdkd deploy'}`), a literal concatenation across `+`
+    // and line breaks, and any run of whitespace. Cheap, not a parser: it
+    // sees literals only, which is the shape a hand-written remedy takes.
     const offenders: string[] = [];
     const walk = (dir: string): void => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) walk(full);
-        else if (e.name.endsWith('.ts')) {
-          readFileSync(full, 'utf8')
-            .split('\n')
-            .forEach((line, i) => {
-              if (/^\s*(\*|\/\/|\/\*)/.test(line)) return;
-              if (/cdkd deploy --replace(?!\\?`? would)/.test(line)) offenders.push(`${full}:${i + 1}`);
-            });
+        else if (e.name.endsWith('.ts') && replaceLiteralIn(readFileSync(full, 'utf8'))) {
+          offenders.push(full);
         }
       }
     };
     walk('src');
     expect(offenders).toEqual([]);
+  });
+
+  it('the replacement-remedy fence sees split spellings (probe)', () => {
+    const caught = [
+      "const a = 'Re-deploy with cdkd deploy --replace.';",
+      'const a = `Re-deploy with ${"cdkd deploy"} --replace.`;',
+      "const a = 'Re-deploy with cdkd deploy ' + '--replace.';",
+      "const a = 'Re-deploy with cdkd deploy ' +\n  '--replace.';",
+      "const a = 'Re-deploy with cdkd  deploy   --replace.';",
+      'const a = "cdkd deploy" + " --replace";',
+    ];
+    for (const src of caught) expect(replaceLiteralIn(src), src).toBe(true);
+    const passed = [
+      "// Re-deploy with cdkd deploy --replace.",
+      " * `cdkd deploy --replace` in a doc comment",
+      "const a = `\\`cdkd deploy --replace\\` would refuse the same way`;",
+      "const a = `Re-deploy with ${deployReplaceCommand()}.`;",
+      "const a = cdkdRemedy('cdkd deploy', '--replace');",
+    ];
+    for (const src of passed) expect(replaceLiteralIn(src), src).toBe(false);
   });
 
   it('records the state flags where the command declares them', () => {

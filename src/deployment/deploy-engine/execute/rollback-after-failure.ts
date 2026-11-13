@@ -46,6 +46,20 @@ import type { DeployRun } from './run.js';
  * with the run's flags, so under `--aws-emulator` a pasted one does not run
  * against real AWS (go-to-k/cdkd#6245).
  */
+/**
+ * The interrupted path's recovery. Not `recoveryHint`: a nested child's
+ * interrupt reaches the parent wrapped and is not recognised as one there
+ * (go-to-k/cdkd#3875), so no parent message can be promised to follow.
+ * A nested child therefore names the TOP-LEVEL stack's commands itself.
+ */
+export function interruptedRemedy(parentStack: string | undefined, stackName: string): string {
+  if (parentStack === undefined) return partialStateRemedy(stackName);
+  return (
+    'This is a nested stack: recover it through its top-level stack. ' +
+    partialStateRemedy(parentStack.split('~')[0]!)
+  );
+}
+
 function partialStateRemedy(stackName: string): string {
   const stack = { value: stackName, hole: 'stack' } as const;
   const matched = { ...stack, opts: { patternMatched: true } } as const;
@@ -136,7 +150,7 @@ export async function rollbackFailedDeploy(
       // asIsMessage: the remedy's line breaks are cdkd's own, and its stack
       // name is gated by `pasteableCommand`.
       safeMsg`Partial state saved (${Object.keys(newResources).length} resources). ${asIsMessage(
-        recoveryHint(engine.rollbackDeps(), partialStateRemedy(stackName))
+        interruptedRemedy(engine.rollbackDeps().options.parentStackInfo?.parentStack, stackName)
       )}`
     );
     throw error;

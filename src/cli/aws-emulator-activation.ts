@@ -70,5 +70,6 @@ export function plainHttpHint(message: string): string {
     );
   if (m === null) return '';
   const httpsUrl = `https://${m[1]!}`;
-  return safeMsg` The port answered, but not in plain HTTP (${m[2]!}): AWS Emulator serves HTTPS, so use --aws-emulator ${httpsUrl}.`;
+  // "If": any non-HTTP service on the port (TLS or not) fails the same way.
+  return safeMsg` The port answered, but not in plain HTTP (${m[2]!}): if this port is AWS Emulator, it serves HTTPS, so use --aws-emulator ${httpsUrl}.`;
 }

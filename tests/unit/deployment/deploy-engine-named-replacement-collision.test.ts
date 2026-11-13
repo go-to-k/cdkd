@@ -199,7 +199,10 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(err).not.toBeNull();
     expect(err!.cause?.message).toMatch(/custom-named resource requires replacing/);
     expect(err!.cause?.message).toMatch(/rename the resource/i);
-    expect(err!.cause?.message).toMatch(/cdkd deploy --replace/);
+    // The exact flags: a stateful pair here would be refused for this type (go-to-k/cdkd#6245).
+    expect(err!.cause?.message).toContain(
+      'or re-run with cdkd deploy --replace to delete the old resource FIRST'
+    );
     // The safe create-first order left the old resource alive.
     expect(callOrder).toEqual(['create']);
   });

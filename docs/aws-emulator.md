@@ -460,7 +460,7 @@ Check, in order:
   URL reaches the port but fails the check, and the message ends with:
 
   ```text
-  The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): AWS Emulator serves HTTPS, so use --aws-emulator https://127.0.0.1:9297.
+  The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): if this port is AWS Emulator, it serves HTTPS, so use --aws-emulator https://127.0.0.1:9297.
   ```
 
 ### `No cdkd state bucket found`
