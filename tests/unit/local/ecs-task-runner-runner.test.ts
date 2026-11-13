@@ -319,12 +319,22 @@ vi.mock('cdk-local/internal', async () => {
 // go-to-k/cdkd#6203: the profile / `~/.aws/config` region the container
 // region chain samples last. Undefined by default so no case reads the host's
 // real config.
-const regionStubs = vi.hoisted(() => ({ profileRegion: undefined as string | undefined }));
+const regionStubs = vi.hoisted(() => ({
+  profileRegion: undefined as string | undefined,
+  /** The profile each sample was made with. */
+  profiles: [] as Array<string | undefined>,
+}));
 vi.mock('../../../src/cli/region-options.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/cli/region-options.js')>(
     '../../../src/cli/region-options.js'
   );
-  return { ...actual, resolveSdkDefaultRegion: async () => regionStubs.profileRegion };
+  return {
+    ...actual,
+    resolveSdkDefaultRegion: async (profile?: string) => {
+      regionStubs.profiles.push(profile);
+      return regionStubs.profileRegion;
+    },
+  };
 });
 
 // go-to-k/cdkd#6132 / #6142: the forwarder image pull the start loop runs
@@ -2761,6 +2771,19 @@ describe('runEcsTask — container region (go-to-k/cdkd#6203)', () => {
     regionStubs.profileRegion = 'us-east-1';
     expect(await regionHandedToContainer({}, 'us-west-2')).toBe('us-west-2');
     expect(await regionHandedToContainer({ stateRecordRegion: 'sa-east-1' })).toBe('sa-east-1');
+  });
+
+  it("the stack's own region wins over the state record's", async () => {
+    expect(await regionHandedToContainer({ stateRecordRegion: 'sa-east-1' }, 'us-west-2')).toBe(
+      'us-west-2'
+    );
+  });
+
+  it('samples the --profile region with that profile', async () => {
+    regionStubs.profileRegion = 'us-east-1';
+    regionStubs.profiles.length = 0;
+    expect(await regionHandedToContainer({ profile: 'p' })).toBe('us-east-1');
+    expect(regionStubs.profiles).toEqual(['p']);
   });
 
   it('leaves the container region-less when nothing names a region', async () => {
