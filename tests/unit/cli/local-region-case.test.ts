@@ -380,15 +380,17 @@ describe('cdkd local invoke: --assume-role STS region case (issue #1836)', () =>
   });
 
   it('builds no region-bearing STS client when no region signal exists at all', async () => {
-    // The chain can legitimately resolve to `undefined` (no flag, no env), and
-    // the fold must pass that through rather than coerce it to a string — the
-    // SDK's own region chain is the correct fallback there.
+    // The chain can legitimately resolve to `undefined` (no flag, no env, no
+    // stack / state region, and a profile with no `region =`), and the fold
+    // must pass that through rather than coerce it to a string. The first
+    // client is the profile-region sample (go-to-k/cdkd#6200), which this mock
+    // answers with nothing; the AssumeRole client is then built region-less.
     primeAssumeRole();
     const env: Record<string, string> = {};
 
     await applyLambdaCredentialEnv(env, { assumeRoleArn: ROLE });
 
-    expect(stsClientConfigs).toEqual([{}]);
+    expect(stsClientConfigs).toEqual([{}, {}]);
     expect(env['AWS_REGION']).toBeUndefined();
   });
 });

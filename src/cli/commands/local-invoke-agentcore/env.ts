@@ -2,6 +2,7 @@ import { getLogger } from '../../../utils/logger.js';
 import {
   mixedModeActive,
   realAwsException,
+  resolveContainerRegion,
   setContainerRegion,
   warnAwsEmulatorStateSourceHint,
 } from '../../../local/local-aws-wiring.js';
@@ -202,6 +203,9 @@ async function buildContainerEnvWith(
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
+    ...(resolved.stack.region !== undefined && { stackRegion: resolved.stack.region }),
+    ...(loaded?.region !== undefined && { stateRegion: loaded.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
     ...(profileCredentials !== undefined && { profileCredentials }),
     ...(profileCredsFile !== undefined && {
       profileCredsFile: {
@@ -274,20 +278,32 @@ export async function applyAgentCoreCredentialEnv(
   args: {
     assumeRoleArn?: string;
     region?: string;
+    /** The stack's own region (`env.region` on the CDK stack). */
+    stackRegion?: string;
+    /** The loaded state record's region (a state-source flag). */
+    stateRegion?: string;
+    /** `--profile`: its `region =` line is the last fallback (go-to-k/cdkd#6200). */
+    profile?: string;
     profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     profileCredsFile?: { containerPath: string; profileName: string };
   }
 ): Promise<void> {
   const logger = getLogger();
   let assumeSucceeded = false;
+  // A deployed runtime always has `AWS_REGION`: one chain for BOTH arms —
+  // `--region`, the host variables, the stack's own region, the state record's,
+  // then the profile's (go-to-k/cdkd#6200; an environment-agnostic stack whose
+  // region lived only in `~/.aws/config` ran region-less). Folded, so
+  // `--assume-role` with `AWS_REGION=CN-NORTH-1` hands neither the AssumeRole
+  // STS client nor the container the raw value (the FOURTH chain of #1814).
+  const containerRegion = await resolveContainerRegion({
+    region: args.region,
+    stackRegion: args.stackRegion,
+    stateRegion: args.stateRegion,
+    profile: args.profile,
+  });
   if (args.assumeRoleArn) {
-    // FOURTH chain, and the one that escapes the handler-entry fold entirely:
-    // `args.region` is this helper's own parameter, so `--assume-role` with
-    // `AWS_REGION=CN-NORTH-1` and no `--region` handed the raw value BOTH to
-    // the AssumeRole STS client below and to the container's own `AWS_REGION`.
-    const stsRegion = canonicalizeRegion(
-      args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
-    );
+    const stsRegion = containerRegion;
     try {
       const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
       // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
@@ -309,12 +325,7 @@ export async function applyAgentCoreCredentialEnv(
     forwardAwsEnv(dockerEnv);
     // The same chain as the `--assume-role` arm: `--region` wins over the
     // forwarded host region, written to both region variables.
-    setContainerRegion(
-      dockerEnv,
-      canonicalizeRegion(
-        args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
-      )
-    );
+    setContainerRegion(dockerEnv, containerRegion);
     applyProfileCredentialsOverlay(dockerEnv, args.profileCredentials, false);
     if (args.profileCredsFile) {
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;

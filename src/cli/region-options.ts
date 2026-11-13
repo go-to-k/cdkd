@@ -245,8 +245,12 @@ export const LEGACY_DEFAULT_REGION = 'us-east-1';
  * Returns `undefined` rather than throwing when the chain answers nothing -
  * a client with no resolvable region REJECTS, and that rejection is the normal
  * "no region configured" signal rather than an error worth surfacing.
+ *
+ * Exported for {@link resolveContainerRegion} in `src/local/local-aws-wiring.ts`
+ * (go-to-k/cdkd#6200), which gives a `cdkd local` container the same profile
+ * region this function answers for `deploy`.
  */
-async function resolveSdkDefaultRegion(profile?: string): Promise<string | undefined> {
+export async function resolveSdkDefaultRegion(profile?: string): Promise<string | undefined> {
   const { STSClient } = await import('@aws-sdk/client-sts');
   let client: InstanceType<typeof STSClient> | undefined;
   try {
