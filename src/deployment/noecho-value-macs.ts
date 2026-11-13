@@ -27,7 +27,10 @@ import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { awsEndpointOverrideActive } from '../utils/aws-client-defaults.js';
 import { safeMsg } from '../utils/display-safe.js';
 import type { ResourceState } from '../types/state.js';
-import { isWrittenFromDeployedTemplate } from './masked-property-fingerprints.js';
+import {
+  isWrittenFromDeployedTemplate,
+  maskedPropertyInputFingerprintsOf,
+} from './masked-property-fingerprints.js';
 import { noEchoParametersReadBy, type NoEchoPositionSources } from './secret-redaction.js';
 import { declaresNoEcho } from './noecho-declared.js';
 
@@ -95,8 +98,54 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * go-to-k/cdkd#6209: the member of a property's MAC entry that binds it to the
+ * input fingerprint (`inputs-sha256:...`) of the deploy that sent the value,
+ * stamped only for a property that reads more than `NoEcho` parameters and
+ * whose every other input was resolved and hashed then. No parameter name can
+ * spell it (CloudFormation parameter names are alphanumeric), and its value is
+ * an OBJECT (`{ fingerprint }`): an older cdkd reads only string members of an
+ * entry ({@link noEchoValueMacsOf}), so it never counts it, and every entry
+ * it rebuilds or keeps drops it; a record it does not write keeps it beside
+ * the MACs it describes.
+ */
+export const NOECHO_MAC_INPUT_BINDING = 'cdkd:inputs';
+
+/** The persisted spelling of a binding member. */
+export interface NoEchoMacInputBinding {
+  fingerprint: string;
+}
+
+/** The input-fingerprint prefix a binding must carry (`INPUT_FINGERPRINT_PREFIX`). */
+const BINDING_PREFIX = 'inputs-sha256:';
+
+/**
+ * A record's MAC-entry input bindings by property (go-to-k/cdkd#6209), read
+ * tolerantly: a malformed member is no binding (the property then settles
+ * only as a key reading nothing but `NoEcho` parameters would).
+ */
+export function noEchoMacInputBindingsOf(record: unknown): Map<string, string> {
+  const read = new Map<string, string>();
+  if (!isPlainRecord(record)) return read;
+  const field = (record as { noEchoValueMacs?: unknown }).noEchoValueMacs;
+  if (!isPlainRecord(field)) return read;
+  for (const [key, entry] of Object.entries(field)) {
+    if (!isPlainRecord(entry) || !Object.hasOwn(entry, NOECHO_MAC_INPUT_BINDING)) continue;
+    const member = entry[NOECHO_MAC_INPUT_BINDING];
+    const fingerprint = isPlainRecord(member) ? member['fingerprint'] : undefined;
+    if (typeof fingerprint === 'string' && fingerprint.startsWith(BINDING_PREFIX)) {
+      read.set(key, fingerprint);
+    }
+  }
+  return read;
+}
+
+/**
  * A record's `noEchoValueMacs`, read tolerantly: a malformed field, entry or
- * value is absent (no MAC: the property keeps the re-send).
+ * value is absent (no MAC: the property keeps the re-send). Only string
+ * members are read: the input binding ({@link NOECHO_MAC_INPUT_BINDING}) is
+ * an object, read by {@link noEchoMacInputBindingsOf}; a STRING member of
+ * that name is malformed and counts here, so the entry names another
+ * parameter set and gives no verdict.
  */
 export function noEchoValueMacsOf(record: unknown): Map<string, Map<string, string>> {
   const read = new Map<string, Map<string, string>>();
@@ -393,8 +442,18 @@ export function noEchoMacParametersOf(
  * by this deploy, one entry per top-level property of `templateProps` that
  * reads a `NoEcho` parameter and has every MAC in `current`. A property in
  * `kept` (the provider left it unsent, go-to-k/cdkd#6140's stop-gap) keeps
- * its previous entry, which still describes what AWS holds. A record this
- * deploy did not write (a skip, a failed update) carries its field as it was.
+ * its previous entry, which still describes what AWS holds, its input
+ * binding included. A record this deploy did not write (a skip, a failed
+ * update) carries its field as it was.
+ *
+ * `inputBindings` (go-to-k/cdkd#6209): per property, the input fingerprint
+ * THIS deploy resolved it with, present only when every non-`NoEcho` input
+ * was resolved and hashed; a rebuilt entry carries it beside its MACs, so the
+ * binding is always the one of the deploy whose value the MACs describe. It
+ * is stamped only while equal to the input fingerprint `persisted` itself
+ * holds for the key (`maskedPropertyInputFingerprints`, stamped by the same
+ * save): that stamp refuses a template whose text holds a secret's value, so
+ * the binding never hashes one either.
  */
 export function withNoEchoValueMacs(
   persisted: ResourceState,
@@ -402,7 +461,8 @@ export function withNoEchoValueMacs(
   templateProps: Record<string, unknown> | undefined,
   sources: NoEchoPositionSources | undefined,
   current: ReadonlyMap<string, NoEchoMac> | undefined,
-  kept?: ReadonlySet<string>
+  kept?: ReadonlySet<string>,
+  inputBindings?: ReadonlyMap<string, string>
 ): ResourceState {
   if (!isWrittenFromDeployedTemplate(writtenBag)) return persisted;
   if (templateProps === undefined) {
@@ -412,17 +472,34 @@ export function withNoEchoValueMacs(
     return without as ResourceState;
   }
   const previous = noEchoValueMacsOf(persisted);
-  const entries: Array<[string, Record<string, string>]> = [];
+  // Read only when a kept entry or a binding needs them.
+  let previousBindings: Map<string, string> | undefined;
+  let stamped: ReadonlyMap<string, string> | undefined;
+  const entries: Array<[string, Record<string, string | NoEchoMacInputBinding>]> = [];
+  const withBinding = (
+    entry: Record<string, string>,
+    fingerprint: string | undefined
+  ): Record<string, string | NoEchoMacInputBinding> =>
+    fingerprint === undefined ? entry : { ...entry, [NOECHO_MAC_INPUT_BINDING]: { fingerprint } };
   for (const key of Object.keys(templateProps)) {
     const parameters = noEchoMacParametersOf(templateProps[key], sources);
     if (parameters.length === 0) continue;
     if (kept?.has(key) === true) {
       const before = previous.get(key);
-      if (before !== undefined) entries.push([key, Object.fromEntries(before)]);
+      if (before !== undefined) {
+        previousBindings ??= noEchoMacInputBindingsOf(persisted);
+        entries.push([key, withBinding(Object.fromEntries(before), previousBindings.get(key))]);
+      }
       continue;
     }
     const entry = noEchoValueMacsFor(parameters, current);
-    if (entry !== undefined) entries.push([key, entry]);
+    const binding = inputBindings?.get(key);
+    if (entry !== undefined && binding !== undefined) {
+      stamped ??= maskedPropertyInputFingerprintsOf(persisted);
+      entries.push([key, withBinding(entry, binding === stamped.get(key) ? binding : undefined)]);
+    } else if (entry !== undefined) {
+      entries.push([key, entry]);
+    }
   }
   const { noEchoValueMacs: _previous, ...rest } = persisted;
   if (entries.length === 0) return _previous === undefined ? persisted : (rest as ResourceState);

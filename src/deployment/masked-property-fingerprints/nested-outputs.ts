@@ -21,6 +21,7 @@ import {
   hasOpaqueAttributes,
   inputForm,
   intrinsicKey,
+  isProven,
   isPlainObject,
   mapReadClass,
   NESTED_OUTPUT_PREFIX,
@@ -480,17 +481,77 @@ export async function maskedInputFingerprint(
   templateValue: unknown,
   sources: MaskedInputSources
 ): Promise<string | undefined> {
-  let form: unknown;
+  return (await maskedInputWalk(templateValue, sources))?.fingerprint;
+}
+
+/**
+ * ONE input walk of `templateValue`: its input fingerprint, the form it
+ * hashes, and (go-to-k/cdkd#6209, only with a `covered` set) whether it is
+ * proven ({@link maskedInputBinding}). The cover never changes the form, so
+ * the fingerprint is {@link maskedInputFingerprint}'s either way.
+ * `undefined` when an input is unknown on this side.
+ */
+export async function maskedInputWalk(
+  templateValue: unknown,
+  sources: MaskedInputSources,
+  covered?: ReadonlySet<string>
+): Promise<{ fingerprint: string; form: unknown; proven: boolean } | undefined> {
+  let part: InputForm;
   try {
-    form = (await inputForm(templateValue, newWalk(sources))).form;
+    part = await inputForm(
+      templateValue,
+      covered === undefined ? newWalk(sources) : newWalk(sources, undefined, covered)
+    );
   } catch (error) {
     if (error instanceof UnknownInput) return undefined;
     throw error;
   }
+  return {
+    fingerprint: inputFingerprintOf(part.form, templateValue),
+    form: part.form,
+    proven: covered !== undefined && isProven(part),
+  };
+}
+
+function inputFingerprintOf(form: unknown, templateValue: unknown): string {
   const digest = createHash('sha256')
     .update(canonicalJson({ layout: INPUT_FINGERPRINT_LAYOUT, value: form }))
     .digest('hex');
   return `${INPUT_FINGERPRINT_PREFIX}${digest}${TEXT_HALF_SEPARATOR}${maskedPropertyFingerprint(templateValue)}`;
+}
+
+/**
+ * go-to-k/cdkd#6209: the input fingerprint of one property (the same value
+ * {@link maskedInputFingerprint} gives) when EVERY input it reads was
+ * resolved and hashed, or is a reference to a parameter in `covered` (the
+ * `NoEcho` parameters whose value MACs the property's entry holds); else
+ * `undefined`. An input kept as written (a secret-reading or opaque
+ * attribute, a cross-stack read or nested output not classed clean, a
+ * parameter carrying a reference, any `{{resolve:...}}` reference) is no
+ * proof that it did not move, so no binding is made or matched.
+ */
+export async function maskedInputBinding(
+  templateValue: unknown,
+  sources: MaskedInputSources,
+  covered: ReadonlySet<string>
+): Promise<string | undefined> {
+  return (await maskedInputProof(templateValue, sources, covered))?.fingerprint;
+}
+
+/**
+ * {@link maskedInputBinding}'s fingerprint with the form it hashes (each
+ * resolved input in place, a covered parameter as its `Ref`), for a caller
+ * that must also check what the resolved inputs hold; `undefined` when unproven.
+ */
+export async function maskedInputProof(
+  templateValue: unknown,
+  sources: MaskedInputSources,
+  covered: ReadonlySet<string>
+): Promise<{ fingerprint: string; form: unknown } | undefined> {
+  const walked = await maskedInputWalk(templateValue, sources, covered);
+  return walked?.proven === true
+    ? { fingerprint: walked.fingerprint, form: walked.form }
+    : undefined;
 }
 
 /**

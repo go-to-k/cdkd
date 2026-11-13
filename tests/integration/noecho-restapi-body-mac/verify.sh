@@ -12,6 +12,17 @@
 # and records a MAC. Phase 2 redeploys value A with an ordinary Description
 # change: the Body is NOT put (the probe survives, no stop-gap warning).
 # Phase 3 deploys value B: the Body IS put (the probe is gone).
+#
+# go-to-k/cdkd#6209: the Body also reads the queue's Fn::GetAtt Arn, so a MAC
+# match settles it only through the input fingerprint bound to the MAC entry
+# (`cdkd:inputs`). Phase 2b redeploys the phase 2 template unchanged: no put,
+# no stop-gap warning. Before #6209 both phases fell back to the stop-gap.
+# Phase 4 keeps value B and moves only the GetAtt input the binding alone can
+# see: the queue's recorded Arn is edited out of band and the Body's #4543
+# input fingerprint dropped (as an older writer leaves it), so the deploy
+# re-baselines that one to today's inputs. The MAC matches, the binding does
+# not: the Body takes the stop-gap (the `readsOther` line, no put, never a
+# skip). A binding that ignored its inputs would settle it silently instead.
 
 set -euo pipefail
 
@@ -58,6 +69,9 @@ API_NAME="${STACK}-api"
 RUN_ID="${RUN_ID:-$(date +%s)}"
 VALUE_A="noecho-mac-a-${RUN_ID}"
 VALUE_B="noecho-mac-b-${RUN_ID}"
+# Unique per run: SQS refuses to re-create a name deleted under 60 s ago.
+QUEUE_NAME="${STACK}-q-${RUN_ID}"
+export CDKD_TEST_NOECHO_MAC_QUEUE="${QUEUE_NAME}"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d)"
 
@@ -82,6 +96,23 @@ body_mac() { # the recorded MAC of Token for the API's Body ('' when none)
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).resources.Api;process.stdout.write(String(r?.noEchoValueMacs?.Body?.Token??""))})'
 }
+body_binding() { # the input fingerprint bound to the Body's MAC entry ('' when none)
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).resources.Api;process.stdout.write(String(r?.noEchoValueMacs?.Body?.["cdkd:inputs"]?.fingerprint??""))})'
+}
+expect_settled() { # expect_settled <phase> <log>: the Body was decided by its MAC and bound inputs
+  if grep -qF 'could not compare with the value it last sent' "$2"; then
+    echo "FAIL: $1 fell back to the no-MAC stop-gap" >&2; exit 1
+  fi
+  # Sentinel for the line below: the MAC-match line is printed on every MAC
+  # match, so a reworded or missing one fails here instead of passing as absent.
+  if ! grep -qF 'carry the NoEcho parameter values they were last sent' "$2"; then
+    echo "FAIL: $1 printed no MAC match line (wording drifted, or the MAC was not compared)" >&2; exit 1
+  fi
+  if grep -qF 'also read a value their MACs do not cover' "$2"; then
+    echo "FAIL: $1 did not settle the GetAtt-reading Body by its bound input fingerprint" >&2; exit 1
+  fi
+}
 expect_no_plaintext() { # expect_no_plaintext <description> <file>
   if grep -qF -e "${VALUE_A}" -e "${VALUE_B}" "$2"; then echo "FAIL: $1 holds a NoEcho value" >&2; exit 1; fi
   echo "    OK: $1 holds no NoEcho value"
@@ -103,6 +134,12 @@ cleanup() {
   set +eu
   [ -f "${LOCAL_DIST}" ] && CDKD_TEST_NOECHO_MAC_TOKEN="${VALUE_A}" node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   local id
+  # This run's queue only, by its exact name: a concurrent run's is its own.
+  local url
+  url="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null)"
+  case "${url}" in
+    "https://"*"/${QUEUE_NAME}") aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 ;;
+  esac
   for id in $(api_ids_named "${API_NAME}"); do
     # DeleteRestApi allows one call per 30 s per account.
     aws apigateway delete-rest-api --rest-api-id "${id}" --region "${REGION}" >/dev/null 2>&1 \
@@ -166,6 +203,11 @@ case "${MAC_A}" in
   kms-hmac-sha256:arn:aws*:kms:*) echo "    OK: the Body's MAC is recorded" ;;
   *) echo "FAIL: no Body MAC recorded after the create (got '${MAC_A}')" >&2; exit 1 ;;
 esac
+BINDING_A="$(body_binding)"
+case "${BINDING_A}" in
+  inputs-sha256:*+sha256:*) echo "    OK: the Body's MAC entry is bound to its input fingerprint" ;;
+  *) echo "FAIL: no input binding beside the Body MAC (got '${BINDING_A}')" >&2; exit 1 ;;
+esac
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${LOG_DIR}/state-1.json" --region "${REGION}" >/dev/null
 expect_no_plaintext "state.json" "${LOG_DIR}/state-1.json"
 # Positive control: the log being scanned is the deploy's, not an empty file.
@@ -185,16 +227,18 @@ echo "==> Phase 2: value A again, Description changed (the Body must not be put)
 deploy_with "${VALUE_A}" true "${LOG_DIR}/p2.log"
 expect_eq "Description updated (the API was updated)" "$(aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}" --query description --output text)" "phase-2"
 expect_eq "probe survives (no Body put)" "$(paths_of "${API_ID}")" "/ /probe /spec "
-# The stop-gap's warning would mean the MAC was not used; its sentinel is the
-# MAC line, which the deploy prints at debug when the MAC matches.
-if grep -qF 'could not compare with the value it last sent' "${LOG_DIR}/p2.log"; then
-  echo "FAIL: phase 2 fell back to the no-MAC stop-gap" >&2; exit 1
-fi
-if ! grep -qF 'carry the NoEcho parameter values they were last sent' "${LOG_DIR}/p2.log"; then
-  echo "FAIL: phase 2 printed no MAC match line (wording drifted, or the MAC was not compared)" >&2; exit 1
-fi
+# The stop-gap's warning would mean the MAC was not used.
+expect_settled "phase 2" "${LOG_DIR}/p2.log"
 expect_eq "MAC unchanged" "$(body_mac)" "${MAC_A}"
 expect_no_plaintext "the phase 2 deploy log" "${LOG_DIR}/p2.log"
+
+echo "==> Phase 2b: the phase 2 template unchanged (no put, no stop-gap warning)"
+deploy_with "${VALUE_A}" true "${LOG_DIR}/p2b.log"
+expect_eq "probe survives (no Body put)" "$(paths_of "${API_ID}")" "/ /probe /spec "
+expect_settled "phase 2b" "${LOG_DIR}/p2b.log"
+expect_eq "MAC unchanged" "$(body_mac)" "${MAC_A}"
+expect_eq "input binding unchanged" "$(body_binding)" "${BINDING_A}"
+expect_no_plaintext "the phase 2b deploy log" "${LOG_DIR}/p2b.log"
 
 echo "==> Phase 3 preview: cdkd diff with value B names the Body (diff/deploy parity)"
 CDKD_TEST_NOECHO_MAC_TOKEN="${VALUE_B}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
@@ -231,9 +275,53 @@ aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${LOG_DIR}/state-3.json" --region
 expect_no_plaintext "state.json" "${LOG_DIR}/state-3.json"
 expect_no_plaintext "the phase 3 deploy log" "${LOG_DIR}/p3.log"
 
+echo "==> Phase 4: value B again, the queue Arn moved where only the binding sees it (stop-gap, never a skip)"
+aws apigateway create-resource --rest-api-id "${API_ID}" --parent-id "${ROOT_ID}" --path-part probe --region "${REGION}" >/dev/null
+expect_eq "paths with the probe again" "$(paths_of "${API_ID}")" "/ /probe /spec "
+BINDING_3="$(body_binding)"
+[ -n "${BINDING_3}" ] || { echo "FAIL: no input binding before phase 4 (two empty values would compare equal)" >&2; exit 1; }
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${LOG_DIR}/state-4-in.json" --region "${REGION}" >/dev/null
+node -e '
+  const fs = require("fs");
+  const [file, out, suffix] = process.argv.slice(1);
+  const s = JSON.parse(fs.readFileSync(file, "utf8"));
+  const queue = s.resources.Queue, api = s.resources.Api;
+  if (!queue || typeof queue.attributes?.Arn !== "string" || !api?.maskedPropertyInputFingerprints?.Body) {
+    console.error("FAIL: phase 4 seed: the state lacks the Queue Arn or the Body input fingerprint"); process.exit(1);
+  }
+  queue.attributes.Arn = queue.attributes.Arn + suffix;
+  delete api.maskedPropertyInputFingerprints;
+  fs.writeFileSync(out, JSON.stringify(s));
+' "${LOG_DIR}/state-4-in.json" "${LOG_DIR}/state-4-seed.json" "-moved-${RUN_ID}"
+aws s3 cp "${LOG_DIR}/state-4-seed.json" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --content-type application/json >/dev/null
+deploy_with "${VALUE_B}" true "${LOG_DIR}/p4.log"
+# The verdict was reached and the binding rejected: the readsOther line names
+# the Body (positive grep: a reworded line fails here), and no MAC match.
+if ! grep -qF 'also read a value their MACs do not cover' "${LOG_DIR}/p4.log"; then
+  echo "FAIL: phase 4 printed no readsOther line (the binding was not rejected, or the wording drifted)" >&2; exit 1
+fi
+if grep -qF 'carry the NoEcho parameter values they were last sent' "${LOG_DIR}/p4.log"; then
+  echo "FAIL: phase 4 settled the Body by its MAC though its GetAtt input moved" >&2; exit 1
+fi
+if ! grep -qF 'could not compare with the value it last sent' "${LOG_DIR}/p4.log"; then
+  echo "FAIL: phase 4 did not take the stop-gap (no warning)" >&2; exit 1
+fi
+expect_eq "probe survives (the stop-gap does not put)" "$(paths_of "${API_ID}")" "/ /probe /spec "
+expect_eq "MAC unchanged (same value)" "$(body_mac)" "${MAC_B}"
+expect_eq "input binding kept with the unsent Body" "$(body_binding)" "${BINDING_3}"
+expect_no_plaintext "the phase 4 deploy log" "${LOG_DIR}/p4.log"
+if grep -qF -e "${MAC_B##*:}" "${LOG_DIR}/p4.log"; then echo "FAIL: the phase 4 deploy log holds a MAC" >&2; exit 1; fi
+
 echo "==> Destroy"
 CDKD_TEST_NOECHO_MAC_TOKEN="${VALUE_B}" node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "REST API ${API_ID} still exists after destroy" aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"
+# DeleteQueue takes up to 60 s to take effect: poll the strict probe.
+queue_gone=false
+for _ in $(seq 1 18); do
+  if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then queue_gone=true; break; fi
+  sleep 5
+done
+[ "${queue_gone}" = true ] || { echo "FAIL: queue ${QUEUE_NAME} still exists 90 s after destroy" >&2; exit 1; }
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 echo "==> Final teardown + state-version sweep"

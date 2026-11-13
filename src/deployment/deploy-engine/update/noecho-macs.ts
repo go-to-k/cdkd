@@ -9,6 +9,7 @@ import { maskedPropertyFingerprintsOf } from '../../masked-property-fingerprints
 import { subPlaceholders } from '../../masked-property-fingerprints/input-walk.js';
 import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import {
+  noEchoMacInputBindingsOf,
   noEchoMacParametersOf,
   noEchoMacVerdict,
   noEchoValueMacsOf,
@@ -76,7 +77,8 @@ const STACK_CONSTANT_PSEUDO_PARAMETERS = new Set([
  * `Ref`, a cross-stack read, a condition, a mapping) may move without moving
  * the template text or the NoEcho values, and an input fingerprint keeps some
  * of them as written or re-baselines an unbound one to today's (code review
- * of go-to-k/cdkd#6146), so such a key gets no MAC match.
+ * of go-to-k/cdkd#6146), so such a key gets a MAC match only through the
+ * input binding its entry carries (go-to-k/cdkd#6209).
  */
 export function readsOnlyNoEchoParameters(value: unknown, noEcho: ReadonlySet<string>): boolean {
   const named = (name: string, locals?: ReadonlySet<string>): boolean =>
@@ -122,6 +124,11 @@ export function readsOnlyNoEchoParameters(value: unknown, noEcho: ReadonlySet<st
   return walk(value, false);
 }
 
+/** Whether a recorded input binding exists and equals today's (both fully resolved). */
+function boundAndEqual(recorded: string | undefined, today: string | undefined): boolean {
+  return recorded !== undefined && today !== undefined && recorded === today;
+}
+
 /**
  * Splits `candidates` into the keys whose MACs CONFIRM the value they were
  * last sent and those whose MACs prove it CHANGED. A key gets a verdict only
@@ -134,7 +141,12 @@ export function readsOnlyNoEchoParameters(value: unknown, noEcho: ReadonlySet<st
  * - it is not unsettled by an earlier failed update (go-to-k/cdkd#5380);
  * - for a MATCH only: it is a pure function of its text, the `NoEcho`
  *   parameters and the stack's constant pseudo parameters
- *   ({@link readsOnlyNoEchoParameters});
+ *   ({@link readsOnlyNoEchoParameters}), or (go-to-k/cdkd#6209) its entry
+ *   carries an input binding equal to `inputBindings`' (today's input
+ *   fingerprint, present only when every non-`NoEcho` input it reads was
+ *   resolved and hashed). The binding is written with the MACs, by the deploy
+ *   that sent the value, and never re-baselined, so an equal one proves the
+ *   resolved inputs are the ones that value was sent with;
  * - every fresh `NoEcho` leaf of it lies at a position where the template
  *   reads a `NoEcho` PARAMETER (no value-arm leaf another source echoes, no
  *   stale coordinate), so the MACs of the parameters it reads cover them all;
@@ -155,6 +167,8 @@ export function noEchoMacVerdicts(args: {
   movedAsWritten: (key: string) => boolean;
   unsettledNames: ReadonlySet<string>;
   current: ReadonlyMap<string, NoEchoMac> | undefined;
+  /** Today's fully resolved input fingerprints by key (`noEchoMacInputBindingsFor`). */
+  inputBindings?: ReadonlyMap<string, string> | undefined;
 }): { confirmed: Set<string>; changed: Set<string>; readsOther: Set<string> } {
   const confirmed = new Set<string>();
   const changed = new Set<string>();
@@ -165,6 +179,7 @@ export function noEchoMacVerdicts(args: {
   const recorded = noEchoValueMacsOf(args.record);
   if (recorded.size === 0) return none;
   const fingerprinted = maskedPropertyFingerprintsOf(args.record);
+  const bound = noEchoMacInputBindingsOf(args.record);
   for (const key of args.candidates) {
     if (!recorded.has(key) || !fingerprinted.has(key)) continue;
     if (args.movedAsWritten(key) || args.unsettledNames.has(key)) continue;
@@ -184,6 +199,7 @@ export function noEchoMacVerdicts(args: {
     if (verdict === 'confirmed') {
       const noEcho = args.sources?.parameters ?? new Set<string>();
       if (readsOnlyNoEchoParameters(args.templateProperties[key], noEcho)) confirmed.add(key);
+      else if (boundAndEqual(bound.get(key), args.inputBindings?.get(key))) confirmed.add(key);
       else readsOther.add(key);
     } else if (verdict === 'changed') changed.add(key);
   }

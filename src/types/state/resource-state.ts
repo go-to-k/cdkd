@@ -497,8 +497,20 @@ export interface ResourceState {
    * FAILED update would keep it verbatim, hence the v17 refusal (reasons in
    * `docs/state-schema-internals.md`). Helpers:
    * `src/deployment/noecho-value-macs.ts`.
+   *
+   * go-to-k/cdkd#6209 (no bump): an entry may also hold `cdkd:inputs`, an
+   * OBJECT `{ fingerprint }` binding it to the input fingerprint of the deploy
+   * that sent the value, stamped only for a property that reads more than
+   * `NoEcho` parameters, literals, the stack's constant pseudo parameters and
+   * `{{resolve:...}}` references no intrinsic joins,
+   * with every other input resolved and hashed, and only beside the same
+   * save's unrefused `maskedPropertyInputFingerprints` entry. A match settles
+   * such a property only while today's fingerprint is fully resolved and
+   * equal to it. An older cdkd reads only the string members: it never counts
+   * the binding, drops it from an entry it rebuilds or keeps, and leaves it
+   * beside the MACs it describes in a record it does not write.
    */
-  noEchoValueMacs?: Record<string, Record<string, string>> | undefined;
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> | undefined;
 }
 
 /**

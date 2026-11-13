@@ -484,3 +484,259 @@ describe('noEchoMacVerdicts (the UPDATE arm guards)', async () => {
     expect(out.confirmed.size + out.changed.size).toBe(0);
   });
 });
+
+describe('the MAC entry input binding (go-to-k/cdkd#6209)', async () => {
+  const { noEchoMacInputBindingsOf, NOECHO_MAC_INPUT_BINDING } = await import(
+    '../../../src/deployment/noecho-value-macs.js'
+  );
+  const { noEchoMacVerdicts } = await import('../../../src/deployment/deploy-engine/update/noecho-macs.js');
+  const { noEchoMacInputBindingsFor } = await import('../../../src/deployment/deploy-engine/noecho-macs.js');
+  const { maskedPropertyFingerprint } = await import('../../../src/deployment/masked-property-fingerprints.js');
+  const sources = { parameters: new Set(['P']) };
+  const value = { 'Fn::Join': ['', [{ Ref: 'P' }, { 'Fn::GetAtt': ['Db', 'Arn'] }]] };
+  const TEXT = maskedPropertyFingerprint(value);
+  const FP = `inputs-sha256:${'a'.repeat(64)}+${TEXT}`;
+  const OTHER_FP = `inputs-sha256:${'c'.repeat(64)}+${TEXT}`;
+  const templateProps = { Value: value };
+  const base = (extra: Partial<ResourceState> = {}): ResourceState =>
+    ({ physicalId: 'id', resourceType: 'T', properties: { Value: '***' }, ...extra }) as ResourceState;
+
+  it('is no parameter name, and not a MAC to the reader of MACs', () => {
+    expect(NOECHO_MAC_INPUT_BINDING).not.toMatch(/^[A-Za-z0-9]+$/);
+    const record = base({
+      noEchoValueMacs: { Value: { P: 'm', [NOECHO_MAC_INPUT_BINDING]: { fingerprint: FP } } },
+    });
+    expect([...noEchoValueMacsOf(record).get('Value')!.keys()]).toEqual(['P']);
+    expect(noEchoMacInputBindingsOf(record)).toEqual(new Map([['Value', FP]]));
+  });
+
+  it.each([
+    ['a string', 'inputs-sha256:x'],
+    ['no fingerprint', {}],
+    ['another prefix', { fingerprint: 'sha256:x' }],
+    ['a non-string fingerprint', { fingerprint: 1 }],
+  ])('reads %s as no binding', (_label, member) => {
+    const record = base({ noEchoValueMacs: { Value: { P: 'm', [NOECHO_MAC_INPUT_BINDING]: member } } } as never);
+    expect(noEchoMacInputBindingsOf(record).size).toBe(0);
+  });
+
+  it('a string member under the binding name is malformed: the entry gives no verdict', () => {
+    const record = base({
+      maskedPropertyFingerprints: { Value: maskedPropertyFingerprint({ Ref: 'P' }) },
+      noEchoValueMacs: { Value: { P: formatNoEchoMac(mac(1)), [NOECHO_MAC_INPUT_BINDING]: FP } },
+    } as never);
+    const out = noEchoMacVerdicts({
+      candidates: new Set(['Value']),
+      record,
+      templateProperties: { Value: { Ref: 'P' } },
+      sources,
+      pendingParameterLeaves: new Map([['Value', [{ path: [], plaintext: 'v' }]]]),
+      parameterCoordinates: [['Value']],
+      staleCoordinates: [],
+      movedAsWritten: () => false,
+      unsettledNames: new Set<string>(),
+      current: new Map([['P', mac(1)]]),
+    });
+    expect(out.confirmed.size + out.changed.size + out.readsOther.size).toBe(0);
+  });
+
+  it('the save stamps a given binding beside the MACs, and none without one', () => {
+    const bag = markWrittenFromDeployedTemplate({ Value: 'v' });
+    const current = new Map([['P', mac(5)]]);
+    const fingerprinted = (input?: string) =>
+      base({
+        maskedPropertyFingerprints: { Value: TEXT },
+        ...(input !== undefined && { maskedPropertyInputFingerprints: { Value: input } }),
+      });
+    expect(
+      withNoEchoValueMacs(fingerprinted(FP), bag, templateProps, sources, current, undefined, new Map([['Value', FP]]))
+        .noEchoValueMacs
+    ).toEqual({ Value: { P: formatNoEchoMac(mac(5)), [NOECHO_MAC_INPUT_BINDING]: { fingerprint: FP } } });
+    expect(withNoEchoValueMacs(fingerprinted(FP), bag, templateProps, sources, current).noEchoValueMacs).toEqual({
+      Value: { P: formatNoEchoMac(mac(5)) },
+    });
+    // The save's own input fingerprint was refused (a secret in the template
+    // text) or differs: no binding either.
+    for (const record of [fingerprinted(undefined), fingerprinted(OTHER_FP)]) {
+      expect(
+        withNoEchoValueMacs(record, bag, templateProps, sources, current, undefined, new Map([['Value', FP]]))
+          .noEchoValueMacs
+      ).toEqual({ Value: { P: formatNoEchoMac(mac(5)) } });
+    }
+  });
+
+  it('a rebuilt entry never keeps the previous binding; a kept one keeps it', () => {
+    const bag = markWrittenFromDeployedTemplate({ Value: 'v' });
+    const prior = base({
+      noEchoValueMacs: { Value: { P: 'old', [NOECHO_MAC_INPUT_BINDING]: { fingerprint: FP } } } as never,
+    });
+    const current = new Map([['P', mac(5)]]);
+    expect(withNoEchoValueMacs(prior, bag, templateProps, sources, current).noEchoValueMacs).toEqual({
+      Value: { P: formatNoEchoMac(mac(5)) },
+    });
+    expect(
+      withNoEchoValueMacs(prior, bag, templateProps, sources, current, new Set(['Value']), new Map([['Value', OTHER_FP]]))
+        .noEchoValueMacs
+    ).toEqual({ Value: { P: 'old', [NOECHO_MAC_INPUT_BINDING]: { fingerprint: FP } } });
+  });
+
+  const verdictOf = (recordBinding: string | undefined, today: string | undefined, current = mac(1)) =>
+    noEchoMacVerdicts({
+      candidates: new Set(['Value']),
+      record: base({
+        maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+        noEchoValueMacs: {
+          Value: {
+            P: formatNoEchoMac(mac(1)),
+            ...(recordBinding !== undefined && { [NOECHO_MAC_INPUT_BINDING]: { fingerprint: recordBinding } }),
+          },
+        } as never,
+      }),
+      templateProperties: templateProps,
+      sources,
+      pendingParameterLeaves: new Map([['Value', [{ path: [], plaintext: 'v' }]]]),
+      parameterCoordinates: [['Value']],
+      staleCoordinates: [],
+      movedAsWritten: () => false,
+      unsettledNames: new Set<string>(),
+      current: new Map([['P', current]]),
+      ...(today !== undefined && { inputBindings: new Map([['Value', today]]) }),
+    });
+
+  it('a match on a key reading more settles only on a recorded binding equal to today\'s', () => {
+    expect([...verdictOf(FP, FP).confirmed]).toEqual(['Value']);
+    expect([...verdictOf(FP, OTHER_FP).readsOther]).toEqual(['Value']);
+    expect([...verdictOf(FP, undefined).readsOther]).toEqual(['Value']);
+    expect([...verdictOf(undefined, FP).readsOther]).toEqual(['Value']);
+    for (const out of [verdictOf(FP, OTHER_FP), verdictOf(FP, undefined), verdictOf(undefined, FP)]) {
+      expect(out.confirmed.size).toBe(0);
+    }
+  });
+
+  it('a difference is a change whatever the binding says', () => {
+    expect([...verdictOf(FP, OTHER_FP, mac(2)).changed]).toEqual(['Value']);
+    expect([...verdictOf(undefined, undefined, mac(2)).changed]).toEqual(['Value']);
+  });
+
+  describe('noEchoMacCover and noEchoMacInputBindingsFor', async () => {
+    const { noEchoMacCover } = await import('../../../src/deployment/deploy-engine/noecho-macs.js');
+    const { inputFingerprinter } = await import('../../../src/deployment/masked-property-fingerprints.js');
+    const inputSources = (resolve: () => Promise<{ value: unknown }>) =>
+      ({
+        template: {
+          Parameters: { P: { Type: 'String', NoEcho: true } },
+          Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: {} } },
+        },
+        parameterInput: (name: string) => (name === 'P' ? { kind: 'secret' } : { kind: 'unknown' }),
+        resolve: vi.fn(resolve),
+      }) as never as import('../../../src/deployment/masked-property-fingerprints.js').MaskedInputSources & {
+        resolve: ReturnType<typeof vi.fn>;
+      };
+    const engine = (macs: unknown) =>
+      ({ noEchoRun: { noEchoMacs: macs, noEchoMacInputBindings: new Map() } }) as never as {
+        noEchoRun: { noEchoMacs: unknown; noEchoMacInputBindings: Map<string, ReadonlyMap<string, string>> };
+      };
+    type Positions = { parameters: ReadonlySet<string> } | undefined;
+    const bindingsOf = async (
+      e: ReturnType<typeof engine>,
+      props: Record<string, unknown>,
+      positions: Positions,
+      s: ReturnType<typeof inputSources> | undefined
+    ) => {
+      const thunk = vi.fn(() => positions);
+      const cover = noEchoMacCover(e as never, props, thunk as never);
+      const fingerprinter = s && inputFingerprinter(props, s, (key) => cover.get(key));
+      const stampable = Object.fromEntries(Object.keys(props).map((key) => [key, 'stamped']));
+      return {
+        out: await noEchoMacInputBindingsFor(e as never, 'R', cover, fingerprinter, stampable),
+        thunk,
+        cover,
+      };
+    };
+
+    it('a stack whose run makes no MACs builds no sources, walks and resolves nothing', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      const e = engine(undefined);
+      const { out, thunk } = await bindingsOf(e, templateProps, sources, s);
+      expect(out.size).toBe(0);
+      expect(thunk).not.toHaveBeenCalled();
+      expect(s.resolve).not.toHaveBeenCalled();
+      expect(e.noEchoRun.noEchoMacInputBindings.size).toBe(0);
+    });
+
+    it('a template positioning no NoEcho parameter covers nothing', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      const e = engine({});
+      for (const positions of [{ parameters: new Set<string>() }, undefined]) {
+        const { out, cover } = await bindingsOf(e, templateProps, positions, s);
+        expect(out.size + cover.size).toBe(0);
+      }
+      expect(s.resolve).not.toHaveBeenCalled();
+    });
+
+    it('no input sources (no template): no binding, and no earlier one left behind', async () => {
+      const e = engine({});
+      e.noEchoRun.noEchoMacInputBindings.set('R', new Map([['Value', FP]]));
+      const { out, cover } = await bindingsOf(e, templateProps, sources, undefined);
+      expect([...cover.keys()]).toEqual(['Value']);
+      expect(out.size).toBe(0);
+      expect(e.noEchoRun.noEchoMacInputBindings.has('R')).toBe(false);
+    });
+
+    it('binds a key reading more, never a key reading only NoEcho parameters, and replaces the previous entry', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      const e = engine({});
+      e.noEchoRun.noEchoMacInputBindings.set('R', new Map([['Stale', FP]]));
+      const { out, cover } = await bindingsOf(e, { Value: value, Pure: { Ref: 'P' }, Plain: 'x' }, sources, s);
+      expect([...cover.entries()]).toEqual([['Value', new Set(['P'])]]);
+      expect([...out.keys()]).toEqual(['Value']);
+      expect(out.get('Value')).toMatch(/^inputs-sha256:/);
+      expect(e.noEchoRun.noEchoMacInputBindings.get('R')).toBe(out);
+    });
+
+    it('the binding and the input fingerprint come from ONE walk: each input is resolved once', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      const cover = new Map([['Value', new Set(['P'])]]);
+      const fingerprinter = inputFingerprinter(templateProps, s, (key) => cover.get(key));
+      const fingerprint = await fingerprinter('Value');
+      const binding = await fingerprinter.binding('Value');
+      expect(binding).toBe(fingerprint);
+      expect(s.resolve).toHaveBeenCalledTimes(1);
+      // A key with no cover is walked without one: no binding, same fingerprint.
+      const plain = inputFingerprinter(templateProps, inputSources(async () => ({ value: 'arn:db' })));
+      expect(await plain('Value')).toBe(fingerprint);
+      expect(await plain.binding('Value')).toBeUndefined();
+    });
+
+    it('only a key the save may stamp (it has an input fingerprint) is walked for a binding', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      const e = engine({});
+      const cover = new Map([['Value', new Set(['P'])]]);
+      const fingerprinter = inputFingerprinter(templateProps, s, (key) => cover.get(key));
+      expect((await noEchoMacInputBindingsFor(e as never, 'R', cover, fingerprinter, {})).size).toBe(0);
+      expect(s.resolve).not.toHaveBeenCalled();
+      expect((await noEchoMacInputBindingsFor(e as never, 'R', cover, fingerprinter, undefined)).size).toBe(0);
+      expect(s.resolve).not.toHaveBeenCalled();
+      const out = await noEchoMacInputBindingsFor(e as never, 'R', cover, fingerprinter, { Value: 'stamped' });
+      expect([...out.keys()]).toEqual(['Value']);
+      expect(s.resolve).toHaveBeenCalledTimes(1);
+    });
+
+    it('a walk that throws is no binding, never a failed deploy', async () => {
+      const s = inputSources(async () => ({ value: 'arn:db' }));
+      (s as { parameterInput: unknown }).parameterInput = () => {
+        throw new TypeError('unexpected');
+      };
+      const e = engine({});
+      await expect(bindingsOf(e, templateProps, sources, s).then((r) => r.out)).resolves.toEqual(new Map());
+    });
+
+    it('an input that cannot be resolved is no binding, and leaves no earlier one', async () => {
+      const s = inputSources(async () => Promise.reject(new Error('no')));
+      const e = engine({});
+      e.noEchoRun.noEchoMacInputBindings.set('R', new Map([['Value', FP]]));
+      expect((await bindingsOf(e, templateProps, sources, s)).out.size).toBe(0);
+      expect(e.noEchoRun.noEchoMacInputBindings.has('R')).toBe(false);
+    });
+  });
+});

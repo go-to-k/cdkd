@@ -62,7 +62,7 @@ interface ResourceState {
   constructPath?: string; // no bump: display only; `redactStateForPersist` stamps it (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
-  noEchoValueMacs?: Record<string, Record<string, string>>; // v17+: per key, per NoEcho param, KMS HMAC of what was sent (#6146)
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>>; // v17+: key -> param -> KMS HMAC; `cdkd:inputs` (no bump, #6209)
   nameGeneration?: number; // v13+: absent = 0
   nameGenerationHigh?: number; // v13+: set by a rollback
   unsettledProperties?: string[]; // v14+: names a failed update had started changing (#5380)
@@ -72,7 +72,7 @@ interface ResourceState {
 
 `acceptedCreateOnlyDrops` is EVIDENCE, read only via `acceptedCreateOnlyDropsOf` (malformed = none): the #2790 refusal fires only for a key it names (an imported or pre-v7 record holds create-only keys AWS holds). A create, replacement or rollback re-create rebuilds it, an in-place update carries what `properties` keeps (`acceptedCreateOnlyDropsEvidence`), CC clears it, other spreading writers keep it.
 
-Neither field hashes a secret-derived value. `noEchoValueMacs`: a KMS keyed MAC, no oracle without `kms:GenerateMac`: `docs/state-schema-internals.md`. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
+Neither field hashes a secret-derived value. `noEchoValueMacs` (KMS MAC, no oracle): `docs/state-schema-internals.md`. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
 
 `secretNamedAttributes` (#3869) is PRINT-ONLY attribute KEYS, read by `secretNameNeedlesOf`, rewritten by each create or update of the row; absent = not known.
 

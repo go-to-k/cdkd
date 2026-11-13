@@ -203,10 +203,43 @@ export function parameterInputsFor(args: {
   };
 }
 
-/** A node's form for the hash, and whether it holds no unresolved input. */
+/**
+ * A node's form for the hash, and whether it holds no unresolved input.
+ *
+ * `proven` (go-to-k/cdkd#6209): every input under the node was resolved and
+ * hashed, or is a reference to a parameter in `Walk.covered` (a `NoEcho`
+ * parameter whose value MAC the caller compares), `AWS::NoValue`, or a
+ * template leaf holding a `{{resolve:...}}` reference no intrinsic joins
+ * into another value, which is compared as its text, as CloudFormation
+ * compares it (one an intrinsic joins shares its result with the value it is
+ * joined to: unproven). It never
+ * changes `form` or `concrete`, which the diff and the masked-property skip
+ * read, and it is computed only for a walk with a `covered` set (every other
+ * walk does no work for it). Absent reads as `concrete`: a site that does not say is unproven
+ * whenever it keeps an input as written.
+ */
 export interface InputForm {
   form: unknown;
   concrete: boolean;
+  proven?: boolean;
+}
+
+/** Whether an intrinsic's operand joins a `{{resolve:...}}` reference into its result. */
+function carriesReference(operand: unknown): boolean {
+  return canonicalJson(operand).includes(DYNAMIC_REFERENCE_OPEN);
+}
+
+/**
+ * `{ proven }` when `walk` computes proof (`covered` set), else nothing: the
+ * diff's and the masked-property skip's walks pay no work for it.
+ */
+function proof(walk: Walk, proven: () => boolean): { proven?: boolean } {
+  return walk.covered === undefined ? {} : { proven: proven() };
+}
+
+/** Whether every input under `part` is resolved and hashed or covered ({@link InputForm}). */
+export function isProven(part: InputForm): boolean {
+  return part.concrete || part.proven === true;
 }
 
 export type Taint = 'clean' | 'tainted' | 'unknown';
@@ -221,6 +254,12 @@ export interface Walk {
   stackChain: ReadonlySet<string>;
   /** Shared by every nested-output classification one entry point starts. */
   shared: NestedShared;
+  /**
+   * go-to-k/cdkd#6209: the parameters a reference to which counts as proven
+   * though it is kept as written (see {@link InputForm}). Absent for every
+   * caller but the NoEcho value MAC binding, so nothing else reads `proven`.
+   */
+  covered?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -512,7 +551,8 @@ export async function resolvedInput(node: unknown, walk: Walk): Promise<InputFor
 }
 
 async function nameInput(name: string, node: unknown, walk: Walk): Promise<InputForm> {
-  if (name === 'AWS::NoValue') return { form: node, concrete: false };
+  // `AWS::NoValue` is template text: proven, though kept as written.
+  if (name === 'AWS::NoValue') return { form: node, concrete: false, ...proof(walk, () => true) };
   if (name.startsWith('AWS::')) return resolvedInput(node, walk);
   if (Object.hasOwn(walk.resources, name)) {
     const taint = taintOf(name, walk);
@@ -523,7 +563,12 @@ async function nameInput(name: string, node: unknown, walk: Walk): Promise<Input
   if (Object.hasOwn(walk.parameters, name)) {
     const input = walk.sources.parameterInput(name);
     if (input.kind === 'unknown') throw new UnknownInput();
-    if (input.kind === 'secret') return { form: node, concrete: false };
+    if (input.kind === 'secret') {
+      // A covered parameter's value is compared by its MAC, not hashed here.
+      return walk.covered?.has(name) === true
+        ? { form: node, concrete: false, proven: true }
+        : { form: node, concrete: false };
+    }
     return { form: input.value, concrete: true };
   }
   // A name the template does not declare: kept as written on every side.
@@ -553,11 +598,17 @@ async function inputForms(values: readonly unknown[], walk: Walk): Promise<Input
  */
 export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
   if (typeof value === 'string') {
-    return { form: value, concrete: !value.includes(DYNAMIC_REFERENCE_OPEN) };
+    return value.includes(DYNAMIC_REFERENCE_OPEN)
+      ? { form: value, concrete: false, ...proof(walk, () => true) }
+      : { form: value, concrete: true };
   }
   if (Array.isArray(value)) {
     const parts = await inputForms(value, walk);
-    return { form: parts.map((p) => p.form), concrete: parts.every((p) => p.concrete) };
+    return {
+      form: parts.map((p) => p.form),
+      concrete: parts.every((p) => p.concrete),
+      ...proof(walk, () => parts.every(isProven)),
+    };
   }
   if (!isPlainObject(value)) return { form: value, concrete: true };
   const key = intrinsicKey(value);
@@ -570,6 +621,7 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
     return {
       form: Object.fromEntries(entries.map((k, i) => [k, parts[i]!.form])),
       concrete: parts.every((p) => p.concrete),
+      ...proof(walk, () => parts.every(isProven)),
     };
   }
   const operand = value[key];
@@ -623,6 +675,8 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       const vars = await inputForm(explicit, walk);
       const placeholders: Array<[string, unknown]> = [];
       let concrete = vars.concrete && !text.includes(DYNAMIC_REFERENCE_OPEN);
+      // Computed only for a walk with a cover (`proof`).
+      let proven = walk.covered !== undefined && isProven(vars) && !carriesReference(operand);
       for (const name of subPlaceholders(text)) {
         if (Object.hasOwn(explicit, name)) continue;
         const dot = name.indexOf('.');
@@ -649,10 +703,12 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
               : await nameInput(name, { Ref: name }, walk);
         placeholders.push([name, part.form]);
         concrete &&= part.concrete;
+        proven &&= walk.covered !== undefined && isProven(part);
       }
       return {
         form: { [key]: [text, vars.form, Object.fromEntries(placeholders)] },
         concrete,
+        ...proof(walk, () => proven),
       };
     }
     case 'Fn::ImportValue':
@@ -667,8 +723,13 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       return resolved.concrete ? resolved : { form: { [key]: args.form }, concrete: false };
     }
     default: {
+      // A pure function of its operands (`Fn::Join`, `Fn::Base64`, ...).
       const args = await inputForm(operand, walk);
-      return { form: { [key]: args.form }, concrete: args.concrete };
+      return {
+        form: { [key]: args.form },
+        concrete: args.concrete,
+        ...proof(walk, () => isProven(args) && !carriesReference(operand)),
+      };
     }
   }
 }
@@ -678,9 +739,11 @@ export function newWalk(
   nested: { stackChain: ReadonlySet<string>; shared: NestedShared } = {
     stackChain: new Set(),
     shared: newShared(),
-  }
+  },
+  covered?: ReadonlySet<string>
 ): Walk {
   return {
+    ...(covered !== undefined && { covered }),
     sources,
     resources: isPlainObject(sources.template.Resources) ? sources.template.Resources : {},
     parameters: isPlainObject(sources.template.Parameters) ? sources.template.Parameters : {},

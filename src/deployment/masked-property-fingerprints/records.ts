@@ -21,30 +21,48 @@ import {
   templateCarriesNeedle,
 } from './core.js';
 import { isPlainObject, type MaskedInputSources } from './input-walk.js';
-import { maskedInputFingerprint } from './nested-outputs.js';
+import { maskedInputWalk } from './nested-outputs.js';
 
 /**
  * One property's input fingerprint by key, computed at most once per key. A
  * resolution that throws reads as `undefined`, never as a failed deploy: the
  * fingerprint only decides whether a masked property is re-sent.
+ *
+ * `binding` (go-to-k/cdkd#6209): the same fingerprint when the key's walk is
+ * proven over the parameters `coveredFor(key)` names, from the SAME memoized
+ * walk, so a key both fingerprinted and bound resolves its inputs once. Only
+ * a key `coveredFor` names is walked with a cover (and pays for the proof).
  */
 export type InputFingerprinter = (key: string) => Promise<string | undefined>;
 
+/** An {@link InputFingerprinter} that also answers the go-to-k/cdkd#6209 binding. */
+export type BindingFingerprinter = InputFingerprinter & {
+  binding(key: string): Promise<string | undefined>;
+};
+
 export function inputFingerprinter(
   templateProps: Record<string, unknown>,
-  sources: MaskedInputSources
-): InputFingerprinter {
-  const memo = new Map<string, Promise<string | undefined>>();
-  return (key) => {
+  sources: MaskedInputSources,
+  coveredFor?: (key: string) => ReadonlySet<string> | undefined
+): BindingFingerprinter {
+  const memo = new Map<string, Promise<{ fingerprint: string; proven: boolean } | undefined>>();
+  const walk = (key: string) => {
     let pending = memo.get(key);
     if (pending === undefined) {
       pending = Object.hasOwn(templateProps, key)
-        ? maskedInputFingerprint(templateProps[key], sources).catch(() => undefined)
+        ? maskedInputWalk(templateProps[key], sources, coveredFor?.(key)).catch(() => undefined)
         : Promise.resolve(undefined);
       memo.set(key, pending);
     }
     return pending;
   };
+  const fingerprinter = async (key: string) => (await walk(key))?.fingerprint;
+  return Object.assign(fingerprinter, {
+    binding: async (key: string) => {
+      const walked = await walk(key);
+      return walked?.proven === true ? walked.fingerprint : undefined;
+    },
+  });
 }
 
 /**

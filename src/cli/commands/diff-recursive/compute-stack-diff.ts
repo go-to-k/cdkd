@@ -531,6 +531,7 @@ export async function computeStackDiff(
     logger,
     ...(noEchoMacCache !== undefined && { cache: noEchoMacCache }),
     ...(macWriteOnlyLookups !== undefined && { writeOnlyLookups: macWriteOnlyLookups }),
+    ...(maskedInputs !== undefined && { inputSources: maskedInputs.sources }),
   });
   if (macMoved.length > 0) {
     logger.info(

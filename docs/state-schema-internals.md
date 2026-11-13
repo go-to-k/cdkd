@@ -1713,14 +1713,40 @@ stack with no instance id.
   NoEcho-only one, so the REST API `Body` is put). A verdict needs the key's
   template text unmoved (the record's text fingerprint), every fresh `NoEcho`
   leaf at a position where the template reads a `NoEcho` parameter, and an
-  entry naming exactly the parameters the key reads under the same key ARN; an
-  equal MAC settles only a key that reads nothing but `NoEcho` parameters,
-  literals and the stack's constant pseudo parameters (a `{{resolve:...}}`
-  token only as a leaf of its own), since anything else can move unseen.
-  Anything else is no verdict: the pre-#6146 behaviour (a re-send; the REST API
+  entry naming exactly the parameters the key reads under the same key ARN. An
+  equal MAC settles a key that reads nothing but `NoEcho` parameters, literals
+  and the stack's constant pseudo parameters (a `{{resolve:...}}` token only as
+  a leaf of its own). A key that also reads other inputs settles only through
+  the entry's input binding (below). Anything else is no verdict: the pre-#6146 behaviour (a re-send; the REST API
   `Body` stop-gap). `cdkd diff` marks a top-level stack's schema write-only
   property whose MAC differs as changed under the same guards, and makes no
   KMS call unless a record carries the field.
+- **Input binding** (`cdkd:inputs`, no version bump): for a key that also
+  reads other inputs (a REST API `Body` with an `Fn::GetAtt` Lambda
+  integration, a password joined with an endpoint), the entry holds
+  `{ "fingerprint": "inputs-sha256:...+sha256:..." }`, the key's input
+  fingerprint as the deploy that sent the value resolved it. It is written
+  only when every input other than the entry's `NoEcho` parameters was
+  resolved and hashed, and only beside the same save's
+  `maskedPropertyInputFingerprints` entry for the key (equal to it; a
+  template whose text holds a secret's value has none, so gets no binding).
+  An input kept as written (a secret-reading or custom resource attribute, a
+  nested output not classed clean, a cross-stack read named by a secret, a
+  parameter carrying a reference, a `{{resolve:...}}` reference joined into a
+  leaf) is no proof that it did not move; a template leaf holding a reference
+  no intrinsic joins is compared as its text, as for a key reading only
+  `NoEcho` parameters. An equal MAC settles the key
+  only when today's fingerprint is also fully resolved and equal to the
+  binding. The binding is rebuilt with the MACs and kept with them when a key
+  is left unsent; it is never re-baselined, unlike
+  `maskedPropertyInputFingerprints`, so it always describes the send the MACs
+  describe. It hashes no `NoEcho` value: those stay as their `Ref`.
+  No bump: the member is an OBJECT, and an older binary reads only an entry's
+  STRING members, so it never counts it. Every entry it rebuilds or keeps
+  drops the binding (a missing binding is the behaviour without one), and a
+  record it does not write keeps the binding beside the MACs it describes.
+  `cdkd diff` also marks such a key whose MAC differs as changed when its
+  other inputs resolve to values holding no `NoEcho` value.
 - **Not an oracle**: testing a guess needs `kms:GenerateMac` on the key, which
   reading `state.json` (a cross-account `Fn::GetStackOutput` consumer, a
   noncurrent S3 version) does not grant. This is why it is not the salted
@@ -2342,7 +2368,7 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
-  noEchoValueMacs?: Record<string, Record<string, string>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146)
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
   nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none

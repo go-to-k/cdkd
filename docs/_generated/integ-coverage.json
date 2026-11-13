@@ -8460,6 +8460,7 @@
         "nested-stack-rollback",
         "noecho-named-producer",
         "noecho-parameter-masking",
+        "noecho-restapi-body-mac",
         "perf-cross-backend-check",
         "pipes-fix-forward-orphan",
         "refactor-command",
@@ -8634,6 +8635,9 @@
         ],
         "noecho-parameter-masking": [
           "l1"
+        ],
+        "noecho-restapi-body-mac": [
+          "l2"
         ],
         "perf-cross-backend-check": [
           "l2",
