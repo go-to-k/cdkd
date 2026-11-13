@@ -854,6 +854,8 @@ export async function resolveContainerImagePlan(
       `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (cross-region is supported — the ECR client is built for the image URI's region; pass --ecr-role-arn for a cross-account image)...`
     );
     imageRef = await pullEcrImage(lambda.imageUri, {
+      // Mixed mode: real ECR only when THIS function excepts ECR (#6179).
+      workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),

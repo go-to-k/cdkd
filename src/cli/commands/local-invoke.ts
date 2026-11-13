@@ -146,6 +146,10 @@ const CDKD_EMBED_CONFIG = {
   // sidecar config from `loopbackForwarderPlan` (the ECS namespace owner), and
   // `runDetached` drops the sidecar's SQS endpoint on the host network.
   awsEmulatorSqsSidecar: true,
+  // The deploy the `--aws-emulator` "no state source" hint names
+  // (go-to-k/cdk-local#915, cdkd#6179): cdkd's deploy is top-level, not
+  // `cdkd local deploy`.
+  deployCommand: 'cdkd deploy',
 } as const;
 
 /**

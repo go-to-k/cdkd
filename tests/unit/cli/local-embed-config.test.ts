@@ -42,6 +42,7 @@ describe('cdkd local embed-config branding', () => {
       // workload's inputs resolve as the caller on cdk-local's engine commands.
       workloadIdentity: 'caller',
       awsEmulatorSqsSidecar: true,
+      deployCommand: 'cdkd deploy',
     });
   });
 

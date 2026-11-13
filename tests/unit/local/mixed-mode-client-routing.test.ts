@@ -354,7 +354,7 @@ const EXEMPT: { file: string; phrase: string; why: string }[] = [
   {
     file: 'src/local/ecr-puller.ts',
     phrase: 'clientDefaultsFor(credentialConfig',
-    why: 'the ECR login for a deployed image: a deploy artifact, read from the emulator under the flag',
+    why: 'the ECR pull: `pullEcrImage` runs the whole pull on real AWS (`runWithRealAws`) when the workload excepts ECR (#6179), else on the process default',
   },
 ];
 

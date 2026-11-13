@@ -386,9 +386,7 @@ export function mixedModeEmulatorOverride(): AwsEndpointOverride | undefined {
 export function warnAwsEmulatorStateSourceHint(dropped: number, stateSourceGiven: boolean): void {
   if (dropped === 0 || stateSourceGiven) return;
   const hint = takeAwsEmulatorStateSourceHint();
-  // cdk-local names the deploy after the embed `cliName` (`cdkd local`); the
-  // deploy is the top-level `cdkd deploy`.
-  if (hint !== undefined) getLogger().warn(hint.replace('`cdkd local deploy ', '`cdkd deploy '));
+  if (hint !== undefined) getLogger().warn(hint);
 }
 
 export { getActiveWorkloadAwsWiring };

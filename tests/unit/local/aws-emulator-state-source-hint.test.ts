@@ -30,13 +30,10 @@ afterEach(() => {
 describe('the --aws-emulator state-source hint', () => {
   it("prints cdk-local's hint once: cdk-local's gate answers once per process", () => {
     setActiveWorkloadAwsWiring({ mode: 'emulator', dispose: () => {} } as unknown as WorkloadAwsWiring);
-    take
-      .mockReturnValueOnce('pass --from-state (deployed with `cdkd local deploy --aws-emulator`)')
-      .mockReturnValue(undefined);
+    take.mockReturnValueOnce('HINT').mockReturnValue(undefined);
     warnAwsEmulatorStateSourceHint(2, false);
     warnAwsEmulatorStateSourceHint(3, false);
-    // cdk-local names the deploy after the embed cliName (`cdkd local`); cdkd's deploy is top-level.
-    expect(warn.mock.calls).toEqual([['pass --from-state (deployed with `cdkd deploy --aws-emulator`)']]);
+    expect(warn.mock.calls).toEqual([['HINT']]);
   });
 
   it('does not even ask with a state source or with nothing dropped (the gate is not consumed)', () => {
@@ -47,17 +44,20 @@ describe('the --aws-emulator state-source hint', () => {
   });
 });
 
-describe("cdk-local's hint text, unmocked", () => {
-  it('names both state sources with the cdkd deploy, and --env-vars', async () => {
+describe("cdk-local's hint text under cdkd's embed config, unmocked", () => {
+  it('names `cdkd deploy --aws-emulator` (the deployCommand cdkd passes), and answers exactly once', async () => {
     const actual = await vi.importActual<typeof import('cdk-local/internal')>('cdk-local/internal');
-    const { setEmbedConfig, resetEmbedConfig } = await import('cdk-local');
-    setEmbedConfig({ cliName: 'cdkd' });
+    const { resetEmbedConfig } = await import('cdk-local');
+    const { createLocalCommand } = await import('../../../src/cli/commands/local-invoke.js');
+    createLocalCommand();
     actual.setActiveWorkloadAwsWiring({ mode: 'emulator', dispose: () => {} } as unknown as WorkloadAwsWiring);
     try {
       const text = actual.takeAwsEmulatorStateSourceHint() ?? '';
-      expect(text).toContain('--from-state (the stack deployed into AWS Emulator with `cdkd deploy --aws-emulator`)');
+      expect(text).toContain('`cdkd deploy --aws-emulator`');
+      expect(text).not.toContain('cdkd local deploy');
       expect(text).toContain('--from-cfn-stack');
       expect(text).toContain('--env-vars');
+      expect(actual.takeAwsEmulatorStateSourceHint()).toBeUndefined();
     } finally {
       actual.setActiveWorkloadAwsWiring(undefined);
       resetEmbedConfig();

@@ -1730,3 +1730,75 @@ describe('pullEcrImage — credential identity (#3588)', () => {
     ]);
   });
 });
+
+describe('pullEcrImage in AWS Emulator mixed mode: per workload (go-to-k/cdkd#6150 / #6179)', () => {
+  const OVERRIDE = {
+    endpoint: 'https://127.0.0.1:9381',
+    credentials: { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 'e' },
+  };
+  beforeEach(async () => {
+    stsSendMock.mockReset();
+    stsConstructorMock.mockReset();
+    ecrSendMock.mockReset();
+    ecrConstructorMock.mockReset();
+    runDockerMock.mockReset();
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
+    __resetStsCachesForTesting();
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const { setActiveWorkloadAwsWiring, setAwsEmulatorServiceRouting } = await import('cdk-local/internal');
+    const { setAwsEndpointOverrideSource } = await import('../../../src/utils/aws-client-defaults.js');
+    const { mixedModeEmulatorOverride } = await import('../../../src/local/local-aws-wiring.js');
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      mixed: { realServices: ['ECR'], emulatorClientOverride: OVERRIDE },
+      dispose: () => {},
+    } as never);
+    setAwsEmulatorServiceRouting({
+      realServices: ['ECR'],
+      override: OVERRIDE,
+      envOverrides: { 'MyStack/FnA': { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
+    });
+    setAwsEndpointOverrideSource(mixedModeEmulatorOverride);
+  });
+  afterEach(async () => {
+    const { setActiveWorkloadAwsWiring, setAwsEmulatorServiceRouting } = await import('cdk-local/internal');
+    const { setAwsEndpointOverrideSource } = await import('../../../src/utils/aws-client-defaults.js');
+    setActiveWorkloadAwsWiring(undefined);
+    setAwsEmulatorServiceRouting(undefined);
+    setAwsEndpointOverrideSource(undefined);
+  });
+
+  const URI = '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t';
+  const endpointOf = (m: typeof ecrConstructorMock): unknown =>
+    (m.mock.calls[0]![0] as { endpoint?: string }).endpoint;
+  const keyOf = (m: typeof ecrConstructorMock): unknown =>
+    (m.mock.calls[0]![0] as { credentials?: { accessKeyId?: string } }).credentials?.accessKeyId;
+
+  it('a workload whose own section excepts ECR pulls from REAL ECR (no emulator endpoint or keys)', async () => {
+    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA' } });
+    expect(endpointOf(ecrConstructorMock)).toBeUndefined();
+    expect(keyOf(ecrConstructorMock)).not.toBe(OVERRIDE.credentials.accessKeyId);
+    expect(endpointOf(stsConstructorMock)).toBeUndefined();
+  });
+
+  it('an unmarked workload stays on the emulator: its endpoint and keys', async () => {
+    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' } });
+    expect(endpointOf(ecrConstructorMock)).toBe(OVERRIDE.endpoint);
+    expect(keyOf(ecrConstructorMock)).toBe(OVERRIDE.credentials.accessKeyId);
+  });
+
+  it('the two sides keep separate caller-identity caches', async () => {
+    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' } });
+    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA' } });
+    expect(stsSendMock.mock.calls.filter((c) => c[0]._kind === 'GetCallerIdentity')).toHaveLength(2);
+  });
+});

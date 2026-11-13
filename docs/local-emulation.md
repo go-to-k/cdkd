@@ -506,7 +506,19 @@ guarantee.
 | `--from-state` / `--from-cfn-stack` names | Per resource type: an excepted service's resources come from the real copy |
 | `${AWS::AccountId}` lookups | `Parameters` excepts `STS` |
 | `--role-arn`, `--assume-role`, `--profile` resolution (STS) | Always: they establish the real identity |
-| The ECR login, a `fromS3` code bundle, a layer ARN | Never: deployed artifacts are read from the emulator under the flag |
+| The ECR login and pull of a deployed image | That workload excepts `ECR` |
+| An AgentCore `fromS3` code bundle | That runtime excepts `S3` |
+| A literal layer ARN | That function excepts `LAMBDA` |
+
+To run an image that exists only in real ECR (not pushed to the emulator),
+except ECR for that workload; the image's token and pull then come from real
+ECR with your real identity, while its runtime calls stay on the emulator:
+
+```json
+{
+  "MyStack/ImageHandler": { "AWS_ENDPOINT_URL_ECR": "real-aws" }
+}
+```
 
 Names follow each workload's own exceptions: per function (`local invoke`,
 `local start-api`), per runtime (`local invoke-agentcore`) and per container

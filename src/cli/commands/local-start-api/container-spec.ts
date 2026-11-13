@@ -7,6 +7,7 @@ import {
   firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
+  type AwsEmulatorWorkload,
 } from 'cdk-local/internal';
 import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-reference.js';
 import { tmpdir } from 'node:os';
@@ -180,7 +181,10 @@ export async function buildContainerSpec(args: {
     // `lambda:GetLayerVersion` before the merge step. The per-ARN
     // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
     // dirs so the same shutdown path cleans every one.
-    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
+    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn, {
+      logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    });
 
     // Issue #768: pin `--platform` to the function's declared arch on the
     // ZIP container run too (the IMAGE branch below always has). Without
@@ -505,7 +509,11 @@ export async function resolveContainerImageForStartApi(
     // (issue #2536).
     `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (uses your own credentials — this command has no --ecr-role-arn, so a cross-account image needs cross-account ECR permissions)...`
   );
-  const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
+  const imageRef = await pullEcrImage(lambda.imageUri, {
+    skipPull,
+    // Mixed mode: real ECR only when THIS function excepts ECR (#6179).
+    workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
+  });
   return { imageRef };
 }
 
@@ -565,7 +573,9 @@ async function resolveLocalBuildPlan(
 export async function materializeLambdaLayers(
   layers: ResolvedLambdaLayer[],
   layerTmpDirs: Set<string>,
-  layerRoleArn: string | undefined
+  layerRoleArn: string | undefined,
+  /** Mixed mode: a literal layer ARN reads real Lambda only for this function's LAMBDA exception (#6179). */
+  workload?: AwsEmulatorWorkload
 ): Promise<string | undefined> {
   if (layers.length === 0) return undefined;
 
@@ -580,6 +590,7 @@ export async function materializeLambdaLayers(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
+      ...(workload && { workload }),
       // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
       // cdk-local reads `roleArn` by truthiness and would pull as the caller.
       ...(layerRoleArn !== undefined && {
