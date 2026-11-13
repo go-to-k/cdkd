@@ -11,6 +11,11 @@ app's functions and APIs against what you deployed. One flag,
 `--aws-emulator`, sets up every command, so the whole loop runs without real
 AWS credentials, shell variables or a redeploy per code edit.
 
+Think of `--aws-emulator` as the switch for the target environment. With it,
+the deploy, the state that `--from-state` reads and the calls your code makes
+at run time all move to the emulator together. Without it, all three stay on
+real AWS.
+
 This page walks through that loop, what each tool contributes, and the
 practical details of running the two together. The flag reference is in
 [Local Execution](local-emulation.md#aws-emulator).
@@ -146,9 +151,52 @@ cdkd local start-api --from-cfn-stack --aws-emulator --port 3000
 So you can keep `cdk deploy` for deploying and still use `cdkd local` to run
 the code.
 
+## Where a value comes from, and where a call goes
+
+Two flags decide what a local run does, and they answer different questions.
+Take a table, a function that receives the table's name, and one line of the
+handler:
+
+```ts
+const table = new dynamodb.Table(this, 'MyTable', {
+  partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+});
+const handler = new lambda.Function(this, 'Handler', {
+  // ...
+  environment: { TABLE_NAME: table.tableName }, // synthesizes to { Ref: MyTable }
+});
+table.grantWriteData(handler);
+```
+
+```ts
+await ddb.send(new PutItemCommand({ TableName: process.env.TABLE_NAME, Item: item }));
+```
+
+1. **Where does `TABLE_NAME` come from?** In the template it is
+   `{ Ref: MyTable }`, not a name. `--from-state` replaces it with the table
+   name recorded when you deployed the stack. Without it, cdkd cannot know the
+   name.
+2. **Where does the PutItem request go?** `--aws-emulator` sends it to the
+   emulator. Without the flag it goes to real AWS.
+
+| | Without `--from-state` | With `--from-state` |
+| --- | --- | --- |
+| Without `--aws-emulator` | `TABLE_NAME` is dropped with a warning naming it; PutItem goes to real AWS with no table name and fails. | `TABLE_NAME` is the real table's name (from `cdkd deploy MyStack`); PutItem writes to it in real AWS. |
+| With `--aws-emulator` | `TABLE_NAME` is dropped, and one hint names `--from-state`, `--from-cfn-stack` and `--env-vars`; PutItem goes to the emulator with no table name and fails. | `TABLE_NAME` is the emulator's table name (from `cdkd deploy MyStack --aws-emulator`); PutItem writes to it in the emulator. |
+
+`--from-cfn-stack` fills the same table from the CloudFormation stack instead
+of cdkd's state. A value you give `TABLE_NAME` in `--env-vars` wins in every
+cell. With a `"real-aws"` exception for DynamoDB (see
+[Mixed mode](#mixed-mode)), the bottom-right cell uses the real table's name
+and writes to real AWS, while every other service stays on the emulator.
+
+The same table, with the per-command details, is in
+[Where a value comes from, and where a call goes](local-emulation.md#where-a-value-comes-from-and-where-a-call-goes).
+
 ## Real credentials are never used
 
-Under `--aws-emulator`, the emulator's identity is the only one cdkd uses:
+Under `--aws-emulator`, with no `"real-aws"` exception, the emulator's
+identity is the only one cdkd uses:
 
 - Every AWS call cdkd makes goes to the emulator, signed with the emulator's
   keys.
@@ -170,19 +218,88 @@ cdkd prints one line naming what it ignored, never the values:
 ```
 
 You can therefore keep your usual profile exported while you work against the
-emulator.
+emulator. The one exception is [mixed mode](#mixed-mode), which you turn on
+by marking a service `"real-aws"`.
 
 ## Mixed mode
 
-Sometimes only some services should be local: for example, DynamoDB writes in
-the emulator while Bedrock or a real S3 bucket stays in AWS. Mixed mode routes
-chosen services from a `cdkd local` container to the emulator and leaves the
-rest on real AWS. You name the services in the `--env-vars` file by setting
-`AWS_ENDPOINT_URL_<SERVICE>` to `"aws-emulator"`.
+Sometimes a service has to stay on real AWS while everything else runs in the
+emulator: Bedrock for an AI agent, since the emulator cannot run real models,
+or a real secret your handler reads while its writes stay local. Keep
+`--aws-emulator`, which sends every service to the emulator, and mark each
+exception in the `--env-vars` file by setting its `AWS_ENDPOINT_URL_<SERVICE>`
+to `"real-aws"`:
 
-Unlike the rest of `--aws-emulator`, mixed mode calls your real account for every service
-you do not list, so the container runs with your real credentials. List every
-service whose writes must stay local.
+```json
+{
+  "Parameters": {
+    "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws",
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "real-aws"
+  }
+}
+```
+
+```bash
+cdkd local invoke MyStack/Handler --from-state --env-vars env.json --aws-emulator
+```
+
+`Parameters` applies to every workload; a section named by a function's
+logical ID or CDK path (or an ECS container name) applies to that workload
+only. A service you do not mark stays on the emulator, so a forgotten entry
+fails closed: the call reaches the emulator, never your real account.
+
+Once a workload has an exception, its container holds your real identity for
+the excepted services. Every other call goes through a sidecar that signs it
+again with the emulator's keys, so no real-key signature reaches the emulator.
+
+### Deploy to both sides first
+
+With an exception and `--from-state`, the names come from two copies of the
+stack: the excepted services' resources from the real copy, everything else
+from the emulator's. Deploy the same stack, with the same stack name and CDK
+context, to both sides:
+
+```bash
+cdkd deploy MyStack --aws-emulator    # the emulator copy
+cdkd deploy MyStack                   # the real copy, for the excepted services
+```
+
+With `--from-cfn-stack`, deploy the real copy with `cdk deploy`. When one side
+has no copy, a warning names the resources whose names could not be resolved.
+
+### One env.json, with and without the flag
+
+A `"real-aws"` value does nothing without `--aws-emulator`: without the flag
+everything already goes to real AWS. So you can keep one `env.json` and add or
+drop the flag.
+
+| `AWS_ENDPOINT_URL*` value in `--env-vars` | What happens |
+| --- | --- |
+| `"real-aws"` on `AWS_ENDPOINT_URL_<SERVICE>` | Under the flag, that service goes to real AWS. Without it, a no-op. |
+| A literal URL on `AWS_ENDPOINT_URL_<SERVICE>` | Passed to the container as it is and never signed again. In a workload with a `"real-aws"` exception, the request carries your real identity's signature. |
+| `"real-aws"` on the bare `AWS_ENDPOINT_URL` | Refused under the flag: to send everything to real AWS, drop `--aws-emulator`. |
+| `"aws-emulator"` | Refused, with how to rewrite it as `"real-aws"` exceptions. |
+| A name the SDKs never read (`AWS_ENDPOINT_URL_SECRETSMANAGER`) | Refused, naming the SDK spelling (`AWS_ENDPOINT_URL_SECRETS_MANAGER`). |
+
+### cdkd's own calls follow the exceptions
+
+What cdkd fetches for a workload before it starts follows that workload's
+exceptions too:
+
+| cdkd's call | Goes to real AWS when the workload excepts |
+| --- | --- |
+| `{{resolve:secretsmanager:...}}` | `SECRETS_MANAGER` |
+| `{{resolve:ssm:...}}`, `{{resolve:ssm-secure:...}}` | `SSM` |
+| ECS task `Secrets` on `local run-task` | The service in the secret's ARN |
+| The ECR login and pull of a deployed image | `ECR` |
+| An AgentCore `fromS3` code bundle | `S3` |
+| A literal layer ARN | `LAMBDA` |
+
+So an image that exists only in real ECR runs with `ECR` excepted for that
+workload, while the image's own calls stay on the emulator.
+
+The full rules, including credentials, signing and limits, are in
+[AWS Emulator mixed mode](local-emulation.md#aws-emulator-mixed-mode).
 
 ## Run the emulator
 
@@ -240,6 +357,7 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | `--auth off` | When the emulator runs without authentication, there is no `emulator_credentials` file. cdkd notices, and containers get fixed placeholder keys. |
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
 | Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set, else the region in the run's `config` (`us-east-1`). Each emulator serves one region. |
+| SQS queue URLs | The emulator returns real-shaped queue URLs, which the AWS SDK for JavaScript v3 sends requests to. With an `https` emulator URL, a sidecar rewrites them in the emulator's answers so SQS calls stay local; on the host network no sidecar runs. A queue URL from an environment variable (`--from-state`, `--env-vars`) is not rewritten: pass `useQueueUrlAsEndpoint: false` to that `SQSClient`. |
 | Docker image assets | Refused before anything is built. The emulator's ECR returns repository URIs on the real `amazonaws.com` registry, so a push would leave your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
 
