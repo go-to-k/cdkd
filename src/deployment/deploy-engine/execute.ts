@@ -31,7 +31,11 @@ import { cyan, red } from '../../utils/colors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { DagExecutor } from '../dag-executor.js';
-import { buildDeletionDependencies, hasPending } from './dependencies.js';
+import {
+  buildDeletionDependencies,
+  hasPending,
+  nearestMemberDependencies,
+} from './dependencies.js';
 import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
@@ -247,13 +251,15 @@ export async function executeDeployment(
 
       const createUpdateExecutor = new DagExecutor<ResourceChange>(phaseScope);
       const provisionable = new Set(createUpdateIds);
-      const createUpdateDeps = new Map<string, Set<string>>();
-      for (const id of createUpdateIds) {
-        const allDeps = engine.dagBuilder.getDirectDependencies(dag, id);
-        // Only carry deps that are themselves being provisioned in this phase;
-        // NO_CHANGE / DELETE / non-DAG deps are already satisfied.
-        createUpdateDeps.set(id, new Set(allDeps.filter((d) => provisionable.has(d))));
-      }
+      // Only deps that are themselves being provisioned in this phase are
+      // carried, but a NO_CHANGE dep is walked THROUGH to the provisioned ones
+      // behind it (#6244): `MyRes` → unchanged provider function → changed
+      // `onEvent` function still waits for `onEvent`.
+      const createUpdateDeps = nearestMemberDependencies(
+        createUpdateIds,
+        (id) => engine.dagBuilder.getDirectDependencies(dag, id),
+        (id) => provisionable.has(id)
+      );
       // go-to-k/cdkd#4227: rows writing the same inline policy name on the same
       // IAM principal run one after another; every other row is untouched. A
       // lost child enqueued later (below) re-puts only its own names onto a

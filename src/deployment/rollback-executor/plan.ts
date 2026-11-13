@@ -4,6 +4,7 @@ import { type CompletedOperation, type RollbackPlanItem } from './types.js';
 import { effectiveProvisionedBy, rollbackRetainsNewResource } from './messages.js';
 import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import { classifyRollbackOp, isReplacementOp } from './plan/classify.js';
+import { nearestMemberDependencies, recordedDependencies } from '../deploy-engine/dependencies.js';
 
 export {
   resolveReplacementOldType,
@@ -173,12 +174,13 @@ export function sortRollbackCreates(
     if (!dependedBy.has(id)) dependedBy.set(id, new Set());
   }
 
-  for (const id of deleteIds) {
-    const resource = stateResources[id];
-    if (!resource?.dependencies) continue;
-    for (const dep of resource.dependencies) {
-      if (!deleteIds.has(dep)) continue;
-      // id depends on dep → dep must be deleted AFTER id
+  // id depends on dep → dep must be deleted AFTER id. A record that is not
+  // being deleted is walked through to the created ones behind it (#6244).
+  const nearest = nearestMemberDependencies(deleteIds, recordedDependencies(stateResources), (d) =>
+    deleteIds.has(d)
+  );
+  for (const [id, deps] of nearest) {
+    for (const dep of deps) {
       if (!dependedBy.has(dep)) dependedBy.set(dep, new Set());
       dependedBy.get(dep)!.add(id);
     }
