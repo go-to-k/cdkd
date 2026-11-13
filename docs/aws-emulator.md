@@ -381,6 +381,27 @@ In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its
 port into the run files. Do not use the emulator's `-p 0` in a container.
 
+### Calling a deployed API Gateway API
+
+A stack output such as
+`https://<api-id>.execute-api.<region>.amazonaws.com/prod/` names the real
+AWS host, so a request to it leaves your machine. The emulator serves the
+API on its own endpoint and picks the API by the `Host` header. Send the
+request to `127.0.0.1` and put the API's host name in `Host`:
+
+```bash
+curl --cacert ~/.aws/emulator/9297/ca.pem \
+  -H 'Host: <api-id>.execute-api.<region>.amazonaws.com' \
+  https://127.0.0.1:9297/prod/<path>
+```
+
+Do not use `--connect-to` or `--resolve` to send the real host name to
+`127.0.0.1`. The emulator's certificate covers only `localhost` and
+`127.0.0.1`, so TLS verification fails. A browser cannot set `Host`, so a
+web page cannot call the API this way. To serve the API to a browser, run
+it with
+[`cdkd local start-api --aws-emulator`](local-start-api.md) instead.
+
 ## Troubleshooting
 
 ### `no AWS Emulator answers its health check`
