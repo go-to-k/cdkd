@@ -39,9 +39,14 @@ import { createLocalStateProvider } from '../local-state-source.js';
 import type { LocalStateProvider } from '../../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../../local/state-resolver.js';
 import type { LocalRunTaskOptions } from './types.js';
-import { assumeTaskRole, resolvePlaceholderAccount } from './stack-account.js';
+import {
+  assumeTaskRole,
+  resolvePlaceholderAccount,
+  taskRoleNameIsLogicalIdWarning,
+} from './stack-account.js';
 import {
   buildEcsImageResolutionContext,
+  taskRoleRecordIsEmulatorSide,
   pickCandidateStack,
   resolveEcsConsumerRegion,
 } from './image-context.js';
@@ -368,10 +373,12 @@ export async function localRunTaskCommand(
 
     // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the user-supplied
-    // ARN is used. The resolver emits a synth-time placeholder ARN
-    // (`arn:aws:iam::${AWS::AccountId}:role/<LogicalId>`) when TaskRoleArn
-    // references an inline same-stack IAM Role; we fill in the account
-    // segment lazily via STS only when bare `--assume-task-role` is set,
+    // ARN is used. When TaskRoleArn references an inline same-stack IAM Role
+    // the resolver emits the state record's deployed ARN under a state source
+    // (go-to-k/cdkd#6189), else a synth-time placeholder ARN
+    // (`arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<LogicalId>`); we fill
+    // in the partition and account lazily via STS only when bare
+    // `--assume-task-role` is set,
     // so the STS round-trip does not fire on the common pass-through path.
     //
     // Under `--aws-emulator` the role is assumed in the emulator; in mixed
@@ -409,6 +416,22 @@ export async function localRunTaskCommand(
     // At most one STS: the emulator's under `--aws-emulator`, real otherwise.
     if (roleArnTemplate !== undefined && assumes) {
       const realAws = plan.assumeInRealAws;
+      // The deployed name came from no state record (go-to-k/cdkd#6189).
+      if (options.assumeTaskRole === true && task.taskRoleUnresolved !== undefined) {
+        const { logicalId, reason } = task.taskRoleUnresolved;
+        logger.warn(
+          taskRoleNameIsLogicalIdWarning(
+            logicalId,
+            !stateProvider
+              ? 'no-state-source'
+              : taskRoleRecordIsEmulatorSide()
+                ? 'mixed-mode-emulator-iam'
+                : reason === 'no-state'
+                  ? 'state-not-read'
+                  : reason
+          )
+        );
+      }
       // The bare flag's placeholder account is asked of the same STS: the
       // emulator's account and the real one differ.
       resolvedRoleArn =

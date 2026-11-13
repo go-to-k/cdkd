@@ -782,6 +782,47 @@ docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r
 echo "[verify]   the container ran as the task role through the sidecar's /creds route"
 
 # ---------------------------------------------------------------------------
+# Issue #6189: the BARE `--assume-task-role` with `--from-state` assumes the
+# deployed role. RoleTaskDefTaskRole has no roleName, so it is deployed as
+# `<Stack>-RoleTaskDefTaskRole-<suffix>`. Before the fix the bare flag asked
+# STS for `role/RoleTaskDefTaskRole`, which does not exist, and the run failed
+# with AccessDenied before any container started.
+# ---------------------------------------------------------------------------
+echo "[verify] step 9b: bare --assume-task-role --from-state assumes the deployed role (#6189)"
+set +e
+BARE_OUT="$(${CDKD} local run-task "${TASK_PATH_ROLE}" \
+  --from-state \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --assume-task-role \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+BARE_RC=$?
+set -e
+echo "${BARE_OUT}" | tail -5
+[ "${BARE_RC}" -eq 0 ] || { echo "[verify] FAIL: bare --assume-task-role --from-state exited rc=${BARE_RC} (#6189)"; exit 1; }
+if grep -qF "assumes a role named" <<<"${BARE_OUT}"; then
+  echo "[verify] FAIL: bare --assume-task-role warned that it fell back to the logical id under --from-state (#6189)"
+  exit 1
+fi
+BARE_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-role-fixture-identity-" --format '{{.ID}}' | head -n 1)"
+[ -n "${BARE_CONTAINER_ID}" ] || { echo "[verify] FAIL: identity container not found (#6189)"; exit 1; }
+BARE_LOGS=""
+for _ in $(seq 1 30); do
+  BARE_LOGS="$(docker logs "${BARE_CONTAINER_ID}" 2>&1)"
+  grep -q '^CALLER=' <<<"${BARE_LOGS}" && break
+  sleep 2
+done
+echo "${BARE_LOGS}" | sed 's/^/[verify]     /'
+if ! grep -qF "CALLER=arn:aws:sts::${ACCOUNT_ID}:assumed-role/${ROLE_NAME_5763}/" <<<"${BARE_LOGS}"; then
+  echo "[verify] FAIL: the bare --assume-task-role container did not run as the deployed task role (#6189)"
+  exit 1
+fi
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+echo "[verify]   the bare flag read the deployed role from state"
+
+# ---------------------------------------------------------------------------
 # Issue #5768: `--image-override` on `cdkd local run-task`. Without a state
 # source, NginxTaskDefL2's image (ContainerImage.fromEcrRepository on the
 # same-stack MyRepo) has no URI to pull.

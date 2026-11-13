@@ -1,3 +1,4 @@
+import type { TaskRoleUnresolvedReason } from './role-arn.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import type { ImageResolutionContext } from '../intrinsic-image.js';
@@ -36,11 +37,14 @@ export interface ResolvedEcsTask {
   /**
    * Resolved task role ARN. Surfaced as either:
    *   - a flat string ARN passed through verbatim from the template, OR
+   *   - the deployed role's ARN when the `TaskRoleArn` is a `Ref` /
+   *     `Fn::GetAtt` against an `AWS::IAM::Role` in the same stack and the
+   *     state source's record holds that role (go-to-k/cdkd#6189), OR
    *   - a synth-time placeholder of the shape
-   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
-   *     `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against an `AWS::IAM::Role`
-   *     in the same stack. The CLI substitutes the placeholder account
-   *     segment lazily via STS `GetCallerIdentity` when (and only when)
+   *     `arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<RoleLogicalId>`
+   *     for the same reference with no such record ({@link taskRoleUnresolved}
+   *     is then set). The CLI substitutes the placeholder partition and account
+   *     lazily via STS `GetCallerIdentity` when (and only when)
    *     `--assume-task-role` is used in its bare form.
    *   - `undefined` when the template's `TaskRoleArn` is missing OR is an
    *     intrinsic that doesn't reference a same-stack IAM Role (e.g.
@@ -48,6 +52,12 @@ export interface ResolvedEcsTask {
    *     intrinsic shape — see `resolveRoleArn`).
    */
   taskRoleArn?: string;
+  /**
+   * Set when {@link taskRoleArn} is the placeholder built from the role's
+   * LOGICAL id, with why no state record named the deployed role: the ARN is
+   * right only if the role's name is its logical id (go-to-k/cdkd#6189).
+   */
+  taskRoleUnresolved?: { logicalId: string; reason: TaskRoleUnresolvedReason };
   /** Resolved execution role ARN. Follows the same shape as `taskRoleArn`. */
   executionRoleArn?: string;
   containers: ResolvedEcsContainer[];
@@ -201,6 +211,13 @@ export type EcsImageResolutionContext = ImageResolutionContext & {
    * therefore use conventional names the regex already matches).
    */
   cdkAssetContainerRepo?: string;
+  /**
+   * Resolve the task / execution role WITHOUT the record's IAM roles
+   * (go-to-k/cdkd#6189): set in AWS Emulator mixed mode when the record's IAM
+   * resources are the emulator's while the role is assumed in real AWS. The
+   * rest of the record still serves a `Fn::Join` / `Fn::Sub` role ARN.
+   */
+  ignoreStateForRoles?: boolean;
 };
 
 /**
@@ -264,4 +281,11 @@ export interface EcsImageResolutionNeeds {
    * cannot recognize, and only the marker knows the actual name.
    */
   needsAssetRepoMarker: boolean;
+  /**
+   * Any task's `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against a same-stack
+   * `AWS::IAM::Role` (go-to-k/cdkd#6189). Only the state record knows that
+   * role's deployed name, so the CLI loads state for it when the bare
+   * `--assume-task-role` is passed with a state source.
+   */
+  needsTaskRoleState: boolean;
 }

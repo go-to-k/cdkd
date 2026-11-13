@@ -250,9 +250,24 @@ credentials and its aliases work as before. Two things change:
 
 **A `TaskRoleArn` cdkd cannot resolve.** The bare `--assume-task-role` needs
 a `TaskRoleArn` that is a literal ARN or a reference to an `AWS::IAM::Role`
-in the same stack. cdkd turns the reference into
-`arn:aws:iam::<account>:role/<RoleLogicalId>`, using your account ID. For any
-other shape the command stops with an error telling you to pass the ARN.
+in the same stack. For any other shape the command stops with an error telling
+you to pass the ARN.
+
+A role CDK names for you is deployed as `<Stack>-<LogicalId>-<suffix>`, and
+only the deployed stack knows that name. With `--from-state` or
+`--from-cfn-stack`, cdkd reads the role's deployed ARN from there. Under
+`--from-cfn-stack` it builds the ARN from the role name and the template's
+`Path`, so a `Path` that is not a literal string cannot be used.
+
+Otherwise cdkd turns the reference into
+`arn:<partition>:iam::<account>:role/<RoleLogicalId>`, using the partition and
+account ID of your identity. That is the right role only when its name is its
+logical ID, so cdkd prints a warning that says why it could not read the
+deployed name, and AssumeRole fails for a role CDK named. The fix is a state
+source, or the ARN itself. In
+[mixed mode](local-emulation.md#aws-emulator-mixed-mode) the role is assumed in
+real AWS, so cdkd reads it from the state record only when IAM is a
+`"real-aws"` exception under `Parameters`.
 
 **The `--profile` credentials file.** cdkd writes the file to a temporary
 directory with mode `0600` and removes it when the run ends. Under `--detach`
