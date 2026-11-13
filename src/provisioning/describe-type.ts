@@ -35,6 +35,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { awsEndpointOverrideActive } from '../utils/aws-client-defaults.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { verboseAwareText } from '../utils/aws-failure-text.js';
 
 /**
  * Test seam: overriding `sleep` lets unit tests drive the backoff schedule
@@ -266,7 +267,8 @@ export function reportAwsEmulatorRegistryMiss(resourceType: string, fallback: st
   emulatorRegistryMissReported = true;
   logger.info(
     "--aws-emulator: the emulator's CloudFormation registry lacks some resource types, so cdkd " +
-      'uses its offline fallbacks for them instead of the live schema (--verbose names each type).'
+      'uses its offline fallbacks for them instead of the live schema ' +
+      verboseAwareText('(--verbose names each type).', '(each type is logged at debug level).')
   );
 }
 

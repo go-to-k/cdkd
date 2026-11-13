@@ -21,10 +21,7 @@ import {
   recreateViaCcApiOption,
   recreateViaSdkProviderOption,
 } from '../../../src/cli/options/provisioning-route.js';
-import {
-  cliArgParser,
-  parsePositiveIntegerOption,
-} from '../../../src/cli/arg-parser.js';
+import { CliUsageError, cliArgParser } from '../../../src/cli/arg-parser.js';
 
 function quiet(cmd: Command): Command {
   return cmd.exitOverride().configureOutput({ writeErr: () => {}, writeOut: () => {} });
@@ -36,10 +33,10 @@ function withOptions(options: readonly Option[]): Command {
   return cmd.action(() => {});
 }
 
-/** The error a parse throws, or `undefined`. */
+/** The error a parse of the user arguments `args` throws, or `undefined`. */
 function parseError(cmd: Command, args: string[]): unknown {
   try {
-    cmd.parse(args, { from: 'user' });
+    cmd.parse(['node', 'cdkd', ...args]);
   } catch (error) {
     return error;
   }
@@ -133,7 +130,7 @@ describe('option parsers reject a bad value as a usage error (#6251)', () => {
 
   it('valid values still parse', () => {
     const cmd = withOptions(deployOptions);
-    cmd.parse(['--resource-timeout', '5m', '--concurrency', '7'], { from: 'user' });
+    cmd.parse(['node', 'cdkd', '--resource-timeout', '5m', '--concurrency', '7']);
     expect(cmd.opts()['resourceTimeout']).toEqual({ perTypeMs: {}, globalMs: 300000 });
     expect(cmd.opts()['concurrency']).toBe(7);
   });
@@ -146,8 +143,27 @@ describe('cliArgParser', () => {
   });
 
   it('keeps a CommanderError as is', () => {
-    expect(() => cliArgParser(parsePositiveIntegerOption)('x', undefined)).toThrow(
-      /Expected a positive integer/
-    );
+    const inner = new CommanderError(2, 'x.code', 'kept');
+    const parse = cliArgParser((): never => {
+      throw inner;
+    });
+    expect(() => parse('v', undefined)).toThrow(inner);
+  });
+
+  // Commander's InvalidArgumentError rendering echoes the raw argument
+  // (`argument '<raw>' is invalid`), so a value carrying a control byte must
+  // not take that route (#2438).
+  it('a value with a control byte becomes a CliUsageError with a display-safe message', () => {
+    const csi = '\u001b[2K';
+    const error = parseError(withOptions(deployOptions), ['--concurrency', `abc${csi}`]);
+    expect(error).toBeInstanceOf(CliUsageError);
+    expect((error as CommanderError).exitCode).toBe(1);
+    expect((error as Error).message).not.toContain(csi);
+    expect((error as Error).message).toMatch(/^error: Expected a positive integer, got /);
+
+    const gc = parseError(quiet(createGcCommand()), ['--older-than', `1x${csi}`]);
+    expect(gc).toBeInstanceOf(CliUsageError);
+    expect((gc as Error).message).not.toContain(csi);
+    expect((gc as Error).message).toMatch(/^error: Invalid --older-than/);
   });
 });

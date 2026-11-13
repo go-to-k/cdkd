@@ -36,6 +36,9 @@ export const UNSETTLED_COMMAND_MESSAGE =
   'or, once no other cdkd process is working on the stack, ' +
   'release it with: cdkd force-unlock <stack-name>\n';
 
+/** The `code` of `CliUsageError` (`src/cli/arg-parser.ts`). */
+export const CLI_USAGE_ERROR_CODE = 'cdkd.invalidArgument';
+
 export function runCli(main: () => Promise<void>): void {
   let settled = false;
   const onBeforeExit = (): void => {
@@ -54,6 +57,20 @@ export function runCli(main: () => Promise<void>): void {
     },
     (error: unknown) => {
       settled = true;
+      // A usage error raised while commander parses an option value
+      // (`CliUsageError`, go-to-k/cdkd#6251): its message is already
+      // display-safe and complete, so print it like commander's own errors.
+      // Matched by its code: importing the class would load commander before
+      // `index.ts` answers a bare `--version`.
+      const usage = error as { code?: unknown; message?: unknown; exitCode?: unknown } | null;
+      if (
+        usage?.code === CLI_USAGE_ERROR_CODE &&
+        typeof usage.message === 'string' &&
+        typeof usage.exitCode === 'number'
+      ) {
+        process.stderr.write(`${usage.message}\n`);
+        process.exit(usage.exitCode);
+      }
       console.error('Fatal error:', error);
       process.exit(1);
     }
