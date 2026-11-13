@@ -41,8 +41,8 @@ EXERCISES (a code path its run takes, not merely a file it loads; #4683):
 re-run it on the rebased head (#3726). With the marker still set, a commit
 that only MOVES that code is no such change — proven by
 `git show -M --color=always --color-moved=dimmed-zebra <sha>` showing no
-non-dimmed `+`/`-` line beyond import/export plumbing, never by its `refactor(...)` title: merge over
-it (#6019: one 65-min re-run, then merged over #5835 splits). A split of a file
+non-dimmed `+`/`-` line beyond import/export plumbing, never by its
+`refactor(...)` title: merge over it (#6019). A split of a file
 THIS branch changes stales the marker and re-runs (ship.md §9, #5873).
 
 - **DECLARE the tree final to whoever is still editing it.** The one
@@ -157,9 +157,10 @@ BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
 the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
 restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
 name: scan the account by stack prefix and resource family too. Probe each HALF
-of a multi-part fix separately (a pre-fix run stops at its first failing arm:
-remove that phase to prove the next; where the kept half WAITS for the removed
-call's effect, the RED is that wait's timeout, ~30 min per resource, before any
+of a multi-part fix separately (a pre-fix run stops at its first failing check,
+so per-resource checks collect FAILs and exit after the last, #6169; a DEPLOY
+failure: remove that phase to prove the next; where the kept half WAITS for the removed
+call's effect, the RED is that wait's timeout, before any
 fixture assertion — predict and budget it, #5657), and add a NEGATIVE CONTROL. Where the fix
 SKIPS
 something, give the fixture a second, ORDINARY difference — a phase redeploying

@@ -74,7 +74,8 @@ gh issue view <hit> --json body -q .body > "$U" \
 `owner/repo#N`; and state a folded row's severity as PROSE, since the body-wide
 CI scan reads a `Severity:` key as the UMBRELLA's.
 
-On a MISS, file it:
+On a MISS, resolve its PREMISE as `triage.md` §3 does — read the code it calls
+a hole, a reviewer's claim included (#6175) — then file it:
 
 ```bash
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
@@ -103,10 +104,9 @@ external input: `now`, queued behind that PR; say so in the lane report. A
 defect the lane's OWN diff introduced is not filed: it blocks that PR (fix it
 there, or merge a shared fix first; #5092).
 
-The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
-write from filing whatever sat at that path, and heredoc → file → `--body-file`
-in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
-with NO body.
+`<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
+write filing a stale file, and ONE quoted-heredoc call is the shape — the
+two-line form files an issue with NO body.
 
 **The filing bar is AGENTS.md's "File only what a user can hit"** — apply it
 BEFORE the duplicate search. A finding below it (wording, an input no CDK app
