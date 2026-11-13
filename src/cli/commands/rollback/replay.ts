@@ -51,10 +51,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../deployment/inline-policy-claims.js';
-import {
-  dropFailedHint,
-  makeForeignHolderScan,
-} from '../../../deployment/rollback-executor/journaled-orphans.js';
+import { makeForeignHolderScan } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
 import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
@@ -91,9 +88,8 @@ import {
   displacedOpLabel,
   failedOpsToReplay,
   confirm,
-  deployForwardForEmulatorCustomResources,
+  failedRollbackTail,
 } from './render.js';
-import { customResourcesFailedWithoutApp } from '../../../local/custom-resource-runtime-gate.js';
 import type { RollbackOptions } from './options.js';
 import {
   refuseDivergentRecordRegionForRollback,
@@ -946,18 +942,9 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       );
     }
     if (totalFailures > 0) {
-      // go-to-k/cdkd#6247: a custom resource that failed in AWS Emulator's own
-      // runtime for lack of the app fails the same way on a re-run.
-      const emulatorFailures = customResourcesFailedWithoutApp();
       throw new PartialFailureError(
         `Rollback completed with ${totalFailures} failed operation(s). Journal preserved` +
-          (emulatorFailures.length > 0
-            ? `.` +
-              deployForwardForEmulatorCustomResources(stackName, emulatorFailures) +
-              dropFailedHint(stackName, region, failedOrphanIds)
-            : ` — re-run the rollback to retry.` +
-              dropFailedHint(stackName, region, failedOrphanIds) +
-              rerunRollback(stackName))
+          failedRollbackTail(stackName, region, failedOrphanIds)
       );
     }
     if (totalWarnings > 0) {

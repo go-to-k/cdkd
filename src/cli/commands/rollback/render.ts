@@ -30,6 +30,8 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { customResourcesFailedWithoutApp } from '../../../local/custom-resource-runtime-gate.js';
+import { dropFailedHint } from '../../../deployment/rollback-executor/journaled-orphans.js';
 
 /**
  * The `Re-run with: cdkd rollback` line that a warning and two refusals here
@@ -45,6 +47,24 @@ export function rerunRollback(stackName: string): string {
     withheldTargetClause(rerun, 'stack', 'cdkd rollback', "This stack's name") +
     `\nRe-run with: ${rerun.command}`
   );
+}
+
+/**
+ * The tail of `Rollback completed with N failed operation(s). Journal
+ * preserved`: the re-run, or (go-to-k/cdkd#6247) when a custom resource failed
+ * in AWS Emulator's own runtime for lack of the app, a deploy forward, since
+ * a re-run fails the same way. The journaled orphans' drop commands either way.
+ */
+export function failedRollbackTail(
+  stackName: string,
+  region: string,
+  failedOrphanIds: readonly string[]
+): string {
+  const emulatorFailures = customResourcesFailedWithoutApp();
+  const drop = dropFailedHint(stackName, region, failedOrphanIds);
+  return emulatorFailures.length > 0
+    ? '.' + deployForwardForEmulatorCustomResources(stackName, emulatorFailures) + drop
+    : ' — re-run the rollback to retry.' + drop + rerunRollback(stackName);
 }
 
 /**

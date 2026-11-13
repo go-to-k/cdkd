@@ -327,6 +327,7 @@ const DESTROY_RUNNER_ORDER = [
   'types.ts',
   'helpers.ts',
   'preflight.ts',
+  'emulator-custom-resources.ts',
   'run.ts',
   'under-lock.ts',
   'under-lock-steps.ts',
