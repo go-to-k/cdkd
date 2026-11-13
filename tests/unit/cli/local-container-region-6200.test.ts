@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import type { StackStateBundle } from '../../../src/cli/commands/local-start-api/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
 const h = vi.hoisted(() => ({
@@ -241,6 +242,24 @@ describe('cdkd local start-api: container region from the profile / state (go-to
     h.profileRegion = 'us-east-1';
     const out = await spec();
     expect(out.env['AWS_REGION']).toBe('us-east-1');
+  });
+
+  it('a loaded state bundle (--from-state) puts ITS region in the container', async () => {
+    h.profileRegion = 'us-east-1';
+    const bundle = {
+      state: { version: 1, stackName: 'ApiStack', resources: {}, outputs: {}, lastModified: 0 },
+      region: 'eu-west-1',
+    } as unknown as StackStateBundle;
+    const out = await spec({ stateByStack: new Map([['ApiStack', bundle]]) });
+    expect(out.env['AWS_REGION']).toBe('eu-west-1');
+    expect(h.regionSamples).toBe(0);
+  });
+
+  it('--profile dev: the profile region is sampled from profile dev', async () => {
+    h.profileRegion = 'sa-east-1';
+    const out = await spec({ profile: 'dev' });
+    expect(out.env['AWS_REGION']).toBe('sa-east-1');
+    expect(h.configs[0]).toMatchObject({ profile: 'dev' });
   });
 
   it('--assume-role arm: the profile region for the STS client and the container', async () => {
