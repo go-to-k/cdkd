@@ -463,9 +463,9 @@ Lambda runtime image, instead of invoking it in the emulator.
 The emulator's embedded Node.js runtime does not provide every Node built-in
 module. `https` is one of those missing, on `nodejs20.x`, `nodejs22.x` and
 `nodejs24.x` alike, and a function that loads one fails with
-`Runtime.ImportModuleError: Error: Cannot find module 'https'`. See
-[aws/aws-emulator#28](https://github.com/aws/aws-emulator/issues/28) and
-[aws/aws-emulator#325](https://github.com/aws/aws-emulator/issues/325).
+`Runtime.ImportModuleError: Error: Cannot find module 'https'`. This is a
+limit of the emulator's runtime, reported in the
+[AWS Emulator issue tracker](https://github.com/aws/aws-emulator/issues).
 
 This includes the provider functions of CDK's Node.js custom resources, which
 send their response over `https`. One example is
