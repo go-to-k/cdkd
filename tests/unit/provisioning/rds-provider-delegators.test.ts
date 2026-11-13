@@ -268,11 +268,41 @@ describe('RDSProvider delegators hand off to their companion functions', () => {
   );
 
   it('lists every prototype method that delegates', () => {
-    const delegating = Object.getOwnPropertyNames(RDSProvider.prototype).filter((name) => name !== 'constructor' &&
-      /\.call\(this\b/.test(
-        String((RDSProvider.prototype as unknown as Record<string, unknown>)[name])
-      )
-    );
+    // The wait delegators live on `RDSProviderBase` (`rds/provider-base.ts`),
+    // which `RDSProvider` extends: walk the whole chain, stopping at Object.
+    const delegating: string[] = [];
+    for (
+      let proto: object | null = RDSProvider.prototype;
+      proto && proto !== Object.prototype;
+      proto = Object.getPrototypeOf(proto)
+    ) {
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        if (name === 'constructor') continue;
+        if (/\.call\(this\b/.test(String((proto as Record<string, unknown>)[name]))) {
+          delegating.push(name);
+        }
+      }
+    }
+    expect(Object.getPrototypeOf(RDSProvider.prototype)).not.toBe(Object.prototype);
     expect(delegating.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
+  });
+
+  // A moved delegator is inherited, so a spy installed on RDSProvider.prototype
+  // (as per-feature suites do on an instance) must still intercept the call.
+  it('a spy on RDSProvider.prototype intercepts an inherited wait delegator', async () => {
+    const spy = vi
+      .spyOn(RDSProvider.prototype, 'waitForInstanceAvailable')
+      .mockResolvedValue(undefined);
+    try {
+      const provider = new RDSProvider({ region: 'us-east-1' });
+      await provider.waitForInstanceAvailable('L', 'db-1');
+      expect(spy).toHaveBeenCalledWith('L', 'db-1');
+      expect(vi.mocked(waits.waitForInstanceAvailable)).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(Object.getOwnPropertyNames(RDSProvider.prototype)).not.toContain(
+      'waitForInstanceAvailable'
+    );
   });
 });
