@@ -90,8 +90,8 @@ tables (`name-keys.ts`,
 SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
 fall as keys get wired — to just under the NEW measured count, never a round
-number below it (#6093 set 20 against 28) — and which no basename grep finds
-(#5611, #5719), the
+number below it — and which no basename grep finds
+(#5611), the
 type's `sdk-wire-cases-<N>.ts` bag — a basename-grep hit to TAKE, not filter:
 the harness fails until it carries or exempts each newly handled key (#6087) —
 plus
@@ -103,11 +103,13 @@ sent off its CFn path (its own command, a renamed field) adds its
 command is sent more than once per resource (#5630); and the
 type's `docs/cli-deploy.md` wait-table row plus any `docs/cli-deploy-waits.md`
 section or destroy row and `docs/wait-modes.md` `--no-wait` bullet for it, as a
-newly sent member may need a wait (providers.md rule 5; #5719, #5780); a file
+newly sent member may need a wait (providers.md rule 5; #5719, #5780); a
+`StateSchemaVersion` bump adds its `schema-v<N>-to-v<N+1>-migration` fixture, a
+merge gate (#6198); a file
 MOVE or split adds EVERY hit of `grep -rln
 --exclude-dir={node_modules,cdk.out,_generated} '<old path>\|<old basename WITH
 extension>' src tests scripts .claude docs .github` (a comment naming
-the old file is stale even when its symbol resolves; #5947), plus
+the old file is stale; #5947), plus
 every importer when no re-export stays behind — a
 narrower list stops the lane mid-run to ask (#1160).
 
@@ -117,7 +119,7 @@ issue, now and again when the lane merges: what they must do — nothing, rebase
 regenerate generated files rather than hand-merge them, and who resolves a
 conflict in their logic (#5632).
 
-**Correct the classification lines in the same turn as the claim**: rewrite a
+**Fix the classification lines in the claim's turn**: rewrite a
 legacy packed body to the four-line shape (§3), fill a missing `Severity`, fix
 what the evidence contradicts (`Notes` never enters a body).
 
@@ -137,11 +139,11 @@ stand down naming the winning branch and pick another issue, unasked. Escalate
 when timestamps cannot settle it (#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
-Re-read the thread to the END before the tie-break. A missing branch is not
+Read the thread to the END first. A missing branch is not
 absence (signals show LIFE only, §9); no claim has a TTL: escalate a dead-looking one.
 
-**Nothing makes the tie-break's LOSER re-read**: re-read the claims before you
-PUSH; if yours is later, stand down even with code written.
+**Nothing makes a tie-break's LOSER re-read**: re-read before you PUSH;
+if yours is later, stand down even with code written.
 
 **Claim what you FILE**: a self-filed deferral is invisible to ownership probes. For one THIS run means to pick up
 (`Session-fit: now`), claim it in the turn you file it, naming the LANE, not your
