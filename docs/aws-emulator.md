@@ -193,7 +193,7 @@ and writes to real AWS, while every other service stays on the emulator.
 The same table, with the per-command details, is in
 [Where a value comes from, and where a call goes](local-emulation.md#where-a-value-comes-from-and-where-a-call-goes).
 
-## Real credentials are never used
+## Real credentials stay out by default
 
 Under `--aws-emulator`, with no `"real-aws"` exception, the emulator's
 identity is the only one cdkd uses:
@@ -248,8 +248,8 @@ logical ID or CDK path (or an ECS container name) applies to that workload
 only. A service you do not mark stays on the emulator, so a forgotten entry
 fails closed: the call reaches the emulator, never your real account.
 
-Once a workload has an exception, its container holds your real identity for
-the excepted services. Every other call goes through a sidecar that signs it
+Once a workload has an exception, its container holds your real identity.
+Every other call goes through a sidecar that signs it
 again with the emulator's keys, so no real-key signature reaches the emulator.
 
 ### Deploy to both sides first
@@ -264,8 +264,17 @@ cdkd deploy MyStack --aws-emulator    # the emulator copy
 cdkd deploy MyStack                   # the real copy, for the excepted services
 ```
 
-With `--from-cfn-stack`, deploy the real copy with `cdk deploy`. When one side
-has no copy, a warning names the resources whose names could not be resolved.
+With `--from-cfn-stack`, deploy the real copy with `cdk deploy`. When a copy
+is missing, a warning says so:
+
+| Missing copy | What happens |
+| --- | --- |
+| The emulator's | The warning names the resources whose names could not be resolved. |
+| The real one | The warning names the excepted services; their resources keep the emulator's names. |
+
+When the real copy is missing, calls to an excepted service reach real AWS
+with the emulator's names. Deploy the real copy too, or set those names with
+`--env-vars`.
 
 ### One env.json, with and without the flag
 
@@ -276,7 +285,7 @@ drop the flag.
 | `AWS_ENDPOINT_URL*` value in `--env-vars` | What happens |
 | --- | --- |
 | `"real-aws"` on `AWS_ENDPOINT_URL_<SERVICE>` | Under the flag, that service goes to real AWS. Without it, a no-op. |
-| A literal URL on `AWS_ENDPOINT_URL_<SERVICE>` | Passed to the container as it is and never signed again. In a workload with a `"real-aws"` exception, the request carries your real identity's signature. |
+| A literal URL on `AWS_ENDPOINT_URL_<SERVICE>` | Passed as it is and never signed again; with an exception, your real identity signs it. |
 | `"real-aws"` on the bare `AWS_ENDPOINT_URL` | Refused under the flag: to send everything to real AWS, drop `--aws-emulator`. |
 | `"aws-emulator"` | Refused, with how to rewrite it as `"real-aws"` exceptions. |
 | A name the SDKs never read (`AWS_ENDPOINT_URL_SECRETSMANAGER`) | Refused, naming the SDK spelling (`AWS_ENDPOINT_URL_SECRETS_MANAGER`). |
@@ -357,9 +366,17 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | `--auth off` | When the emulator runs without authentication, there is no `emulator_credentials` file. cdkd notices, and containers get fixed placeholder keys. |
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
 | Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set, else the region in the run's `config` (`us-east-1`). Each emulator serves one region. |
-| SQS queue URLs | The emulator returns real-shaped queue URLs, which the AWS SDK for JavaScript v3 sends requests to. With an `https` emulator URL, a sidecar rewrites them in the emulator's answers so SQS calls stay local; on the host network no sidecar runs. A queue URL from an environment variable (`--from-state`, `--env-vars`) is not rewritten: pass `useQueueUrlAsEndpoint: false` to that `SQSClient`. |
+| SQS queue URLs | The emulator's queue URLs are rewritten so SQS calls stay local; see the note below. |
 | Docker image assets | Refused before anything is built. The emulator's ECR returns repository URIs on the real `amazonaws.com` registry, so a push would leave your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
+
+The emulator answers with real-shaped queue URLs, and the AWS SDK for
+JavaScript v3 sends SQS requests to the queue URL's host. A sidecar rewrites
+those URLs in the emulator's answers: with an `https` emulator URL whose run
+wrote `ca.pem`, and always in mixed mode. On the host network no sidecar
+runs. A queue URL that reaches the handler as an environment variable
+(`--from-state`, `--from-cfn-stack`, `--env-vars`) is not rewritten: pass
+`useQueueUrlAsEndpoint: false` to that `SQSClient`.
 
 In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its
