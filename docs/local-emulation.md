@@ -448,9 +448,9 @@ layers, ECS, ALB, CloudFront and AgentCore targets), picks up code edits
 without a redeploy, and offers `--debug-port` and logs in your terminal:
 
 ```bash
-cdkd deploy MyStack --aws-emulator                              # bootstraps the emulator, then resources and file assets
-cdkd local invoke MyStack/Handler --from-state --aws-emulator   # run against what was deployed
-cdkd destroy MyStack --aws-emulator
+cdkd deploy --aws-emulator                                     # bootstraps the emulator, then resources and file assets
+cdkd local invoke MyStack/Handler --from-state --aws-emulator  # run against what was deployed
+cdkd destroy --aws-emulator
 ```
 
 The emulator keeps its state in memory, so each start begins empty.
@@ -575,8 +575,8 @@ excepted services. Deploy the same stack, with the same stack name and CDK
 context, to both sides first:
 
 ```bash
-cdkd deploy MyStack --aws-emulator    # the emulator copy: every service's names
-cdkd deploy MyStack                   # the real copy: the excepted services' names
+cdkd deploy --aws-emulator  # the emulator copy: every service's names
+cdkd deploy                 # the real copy: the excepted services' names
 cdkd local invoke MyStack/Handler --from-state --env-vars env.json --aws-emulator
 ```
 

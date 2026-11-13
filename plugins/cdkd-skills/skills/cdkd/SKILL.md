@@ -295,7 +295,7 @@ With the environment source resolved, a local run is a hybrid: the handler execu
 When the developer runs [AWS Emulator](https://cdkd.dev/aws-emulator/) and wants nothing to reach a real account, add `--aws-emulator` to BOTH the deploy and the local run. cdkd wires the emulator's endpoint, keys, and certificate itself, and bootstraps the emulator on first use (no `cdkd bootstrap`):
 
 ```bash
-cdkd deploy '<stack>' --aws-emulator
+cdkd deploy --aws-emulator
 cdkd local invoke '<function>' --from-state --aws-emulator
 cdkd local start-api --from-state --aws-emulator
 ```
@@ -307,7 +307,7 @@ cdkd local start-api --from-state --aws-emulator
   ```
 
   ```bash
-  cdkd deploy '<stack>' --aws-emulator && cdkd deploy '<stack>'
+  cdkd deploy --aws-emulator && cdkd deploy
   cdkd local invoke '<function>' --from-state --aws-emulator --env-vars routing.json
   ```
 - Under `--aws-emulator`, custom-resource handlers (e.g. `autoDeleteObjects`, `BucketDeployment`, and a `cr.Provider`'s handlers and waiter) run in the official Lambda runtime image via Docker, because the emulator's own runtimes lack parts of the standard library. Without Docker they fall back to the emulator and may fail; `--no-local-custom-resources` opts out.
