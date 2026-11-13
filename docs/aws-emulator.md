@@ -36,8 +36,9 @@ practical details of running the two together. The flag reference is in
 2. Deploy your stack
 
    Resources and file assets go to the emulator. On an emulator with no cdkd
-   state bucket, the deploy bootstraps it first: it creates the state bucket
-   and the asset storage without a prompt and prints one info line. A
+   state bucket, the deploy bootstraps it first: it creates the state bucket,
+   then the asset storage for each stack's region, without a prompt and with
+   an info line for each. A
    restarted emulator starts empty, so the next deploy bootstraps it again.
    An explicit `cdkd bootstrap --aws-emulator` still works, but you do not
    need it.
@@ -419,7 +420,7 @@ Control.
 
 ### A large single upload fails
 
-AWS Emulator refuses a single `PutObject` of 16 MiB or more: the request fails
+AWS Emulator (as of 1.0.322) refuses a single `PutObject` of 16 MiB or more: the request fails
 with HTTP 413 or a reset connection. cdkd uploads a file asset larger than
 5 MiB as a multipart upload, so asset publishing is not affected. A tool or
 handler that sends one large `PutObject` is; use a multipart upload, such as
