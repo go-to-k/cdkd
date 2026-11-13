@@ -73,10 +73,11 @@ the generators and `vp run integ-ledger-normalize`, commit what changed
 (`merge=union` hides the ledger conflict locally), push plainly:
 lossless under the squash merge (#3813).
 
-**Re-run the SUITE after the rebase, after `vp install --frozen-lockfile`
-and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
-Stale `dist/` is the usual cause; a dependency bump the other, which
-`[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
+**Re-run the SUITE after the rebase OR that merge, after `vp install
+--frozen-lockfile` and a rebuild**: a pre-rebase green attests to a tree that no
+longer exists. Stale `dist/` is the usual cause; a dependency bump the other,
+which `[ -d node_modules ]` pre-flights skip (a build straight after `merge
+origin/main` missed cdk-local's new `dockerRegistryEnv` export). **Re-run the generators too**
 (`vp run gen:all-matrices`): `docs/_generated/**` and pages like
 `docs/cli-flag-coverage.md` derive from the TREE.
 
