@@ -1,4 +1,5 @@
 import { nameGenerationOf } from '../../state/name-generation.js';
+import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
@@ -83,7 +84,7 @@ function refuseSameIdParentReversal(s: ReplayOpScope): void {
           `the deploy deleted it and re-created it under the same physical id, so reversing it ` +
           `deletes it again, and with it what AWS stores inside it (${shown}${more}), which this ` +
           `rollback does not re-create. Nothing was deleted. The journal is kept: fix forward ` +
-          `by deploying the previous version of the template with cdkd deploy --replace, which ` +
+          `by deploying the previous version of the template with ${deployReplaceCommand()}, which ` +
           `re-creates both` +
           (remedy.offered
             ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
@@ -118,7 +119,7 @@ function refuseUndecidableSameIdReversal(s: ReplayOpScope): void {
           `properties read the same before and after the deploy and hold a redacted value, which ` +
           `may hide what changed, or the deploy's properties were not journaled). Nothing was deleted. ` +
           `The journal is kept: fix forward by deploying the previous version of the template ` +
-          `with cdkd deploy --replace` +
+          `with ${deployReplaceCommand()}` +
           (remedy.offered
             ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
               `re-running with the command below.`

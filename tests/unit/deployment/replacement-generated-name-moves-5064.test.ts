@@ -195,7 +195,7 @@ describe('planOrphanAdoption on a stack with an instance id', () => {
     expect(outcome.adopted).toEqual({});
     expect(outcome.remaining).toEqual([record]);
     expect(outcome.warnings).toHaveLength(1);
-    expect(outcome.warnings[0]).toMatch(/does not take it back.*'cdkd import'/);
+    expect(outcome.warnings[0]).toMatch(/does not take it back.*adopt it with: cdkd import$/);
     expect(provider.import).not.toHaveBeenCalled();
   });
 

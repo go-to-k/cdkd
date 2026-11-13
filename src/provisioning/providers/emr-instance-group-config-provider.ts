@@ -13,6 +13,7 @@ import {
   type AddInstanceGroupsCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
+import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -541,7 +542,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `AWS EMR InstanceGroupConfig ${key} is immutable on AWS — it is fixed when the instance group is created. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+          `AWS EMR InstanceGroupConfig ${key} is immutable on AWS — it is fixed when the instance group is created. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
         );
       }
     }

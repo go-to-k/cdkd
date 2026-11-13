@@ -3,6 +3,7 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { getLogger, type ConsoleLogger } from '../../../utils/logger.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -446,7 +447,7 @@ export async function runRevert(
 
   if (totalUnsupported > 0) {
     logger.warn(
-      `${totalUnsupported} resource(s) cannot be reverted in place — re-deploy the stack with cdkd deploy --replace, ` +
+      `${totalUnsupported} resource(s) cannot be reverted in place — re-deploy the stack with ${deployReplaceCommand()}, ` +
         `or destroy + redeploy to push the cdkd-state values back into AWS.`
     );
   }

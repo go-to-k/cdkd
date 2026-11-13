@@ -522,7 +522,7 @@ describe('family (b): the advised command must not take a resource id', () => {
     );
     // The feared shape, spelled exactly as the regression emits it.
     expect(message).not.toContain('cdkd deploy --replace Policy');
-    expect(message).toContain('`cdkd deploy --replace`');
+    expect(message).toContain('re-run with cdkd deploy --replace to recreate');
     expect(message).toContain('takes no resource id');
     // The logical id is still reachable — it is in the error head.
     expect(message).toContain('(Policy)');
@@ -539,7 +539,7 @@ describe('family (b): the advised command must not take a resource id', () => {
       )
     );
     expect(message).not.toContain('cdkd deploy --replace Sched');
-    expect(message).toContain('`cdkd deploy --replace`');
+    expect(message).toContain('re-run with cdkd deploy --replace to recreate');
     expect(message).toContain('takes no resource id');
     expect(message).toContain('(Sched)');
   });

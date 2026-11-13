@@ -239,8 +239,11 @@ create the state bucket themselves when the emulator has none, configured the
 same way `cdkd bootstrap` configures it, and print one info line. `deploy`
 then creates the asset storage for each stack's region without a prompt (see
 the table above). So after starting the emulator, `cdkd deploy
---aws-emulator` is enough. `--dry-run` creates nothing. `cdkd bootstrap
---aws-emulator` still works, and is needed for custom asset-storage names.
+--aws-emulator` is enough. `--dry-run` creates nothing, so on an emulator with
+no state bucket it stops and says that a deploy without `--dry-run` creates
+it; so do the commands that only read state, such as `cdkd state list`.
+`cdkd bootstrap --aws-emulator` still works, and is needed for custom
+asset-storage names.
 
 Against real AWS nothing changes: a missing state bucket still stops the
 command with a pointer to `cdkd bootstrap`.

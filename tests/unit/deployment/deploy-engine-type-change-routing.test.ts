@@ -534,7 +534,10 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       expect(hint, 'the --no-rollback arm was not reached').toBeDefined();
       if (parentStackInfo === undefined) {
         expect(hint).toBe(
-          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+          'Partial state has been saved. Resume, revert, or clean up with one of:\n' +
+            '  cdkd deploy MyStack\n' +
+            '  cdkd rollback MyStack\n' +
+            '  cdkd destroy MyStack'
         );
       } else {
         expect(hint).toBe(

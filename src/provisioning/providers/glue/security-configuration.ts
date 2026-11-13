@@ -10,6 +10,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
 import {
   type CreateContext,
@@ -151,7 +152,7 @@ export async function securityConfigurationUpdate(
   throw new ResourceUpdateNotSupportedError(
     resourceType,
     logicalId,
-    'AWS Glue SecurityConfiguration is immutable on AWS — there is no UpdateSecurityConfiguration API; every change requires DeleteSecurityConfiguration + CreateSecurityConfiguration. Use cdkd deploy --replace, or destroy + redeploy with the new EncryptionConfiguration.'
+    `AWS Glue SecurityConfiguration is immutable on AWS — there is no UpdateSecurityConfiguration API; every change requires DeleteSecurityConfiguration + CreateSecurityConfiguration. Use ${deployReplaceCommand()}, or destroy + redeploy with the new EncryptionConfiguration.`
   );
 }
 

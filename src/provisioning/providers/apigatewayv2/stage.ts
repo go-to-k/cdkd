@@ -13,6 +13,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { markNotGone } from '../../not-gone.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import type {
@@ -241,7 +242,7 @@ export async function updateStage(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'ApiId is immutable on AWS::ApiGatewayV2::Stage; re-deploy with cdkd deploy --replace'
+      `ApiId is immutable on AWS::ApiGatewayV2::Stage; re-deploy with ${deployReplaceCommand()}`
     );
   }
   // A `StageName` taken from a secret is recorded as its `{{resolve:...}}`
@@ -263,7 +264,7 @@ export async function updateStage(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'StageName is immutable on AWS::ApiGatewayV2::Stage; re-deploy with cdkd deploy --replace'
+      `StageName is immutable on AWS::ApiGatewayV2::Stage; re-deploy with ${deployReplaceCommand()}`
     );
   }
 

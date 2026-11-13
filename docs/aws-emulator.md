@@ -446,7 +446,7 @@ Before anything else, cdkd checks the emulator's `/__admin/health` endpoint.
 When nothing answers, the command stops with:
 
 ```text
---aws-emulator https://127.0.0.1:9297: no AWS Emulator answers its health check at https://127.0.0.1:9297/__admin/health (...). Check that it is running on port 9297 (`aws-emulator -p 9297`, or its Docker image published with `-p 127.0.0.1:9297:9297`), that the URL's port matches, and that it listens on an address this machine reaches (`-b`).
+CdkdError: --aws-emulator https://127.0.0.1:9297: no AWS Emulator answers its health check at https://127.0.0.1:9297/__admin/health (ECONNREFUSED). Check that it is running on port 9297 (`aws-emulator -p 9297`, or its Docker image published with `-p 127.0.0.1:9297:9297`), that the URL's port matches, and that it listens on an address this machine reaches (`-b`).
 ```
 
 Check, in order:
@@ -456,6 +456,31 @@ Check, in order:
   port. Without a URL, cdkd uses `9297`.
 - In Docker, the port is published on `127.0.0.1`, and the run directory is
   mounted so `~/.aws/emulator/<port>/` exists on your machine.
+- The URL starts with `https://`. AWS Emulator serves HTTPS, so an `http://`
+  URL reaches the port but fails the check, and the message ends with:
+
+  ```text
+  The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): AWS Emulator serves HTTPS, so use --aws-emulator https://127.0.0.1:9297.
+  ```
+
+### `No cdkd state bucket found`
+
+AWS Emulator keeps nothing across restarts. On a new or restarted emulator,
+a command that only reads state (`state list`, `diff`, `drift`, `destroy`)
+and `deploy --dry-run`, which creates nothing, stop with a `StateError` that
+says no cdkd state bucket was found, that AWS Emulator keeps nothing across
+restarts, and that a deploy without `--dry-run` creates the bucket. It ends
+with a bootstrap command that carries your URL:
+
+```bash
+cdkd bootstrap --aws-emulator=https://127.0.0.1:9297
+```
+
+Run `cdkd deploy --aws-emulator` without `--dry-run`, or the printed
+`cdkd bootstrap` command. Remedy commands that cdkd prints during an
+`--aws-emulator` run carry the flag you typed, so a pasted command reaches the
+same emulator rather than real AWS. With `CDKD_AWS_EMULATOR` set instead, the
+pasted command gets it from the same shell.
 
 ### `containers cannot reach port ... on the host`
 

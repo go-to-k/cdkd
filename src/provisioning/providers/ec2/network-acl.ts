@@ -12,6 +12,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   compositeIdFormatMessage,
   compositeIdSkipResult,
@@ -336,7 +337,7 @@ export async function updateNetworkAclEntry(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
+      `NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy`
     );
   }
 

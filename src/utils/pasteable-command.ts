@@ -578,6 +578,37 @@ export function pasteableCommand(
 }
 
 /**
+ * A remedy command spelled only from words cdkd chose — `cdkd import`,
+ * `cdkd deploy --replace` — with the run's typed flags appended as
+ * {@link pasteableCommand} appends them (go-to-k/cdkd#6245). Above all
+ * `--aws-emulator`: a bare `cdkd deploy --replace --force-stateful-recreation`
+ * printed under an emulator run and pasted as shown replaces the resource in
+ * REAL AWS.
+ *
+ * No argument is user-controlled, so the command may sit inside a sentence;
+ * the one appended value that is, the emulator URL, is printed only when
+ * inert unquoted. A remedy naming a stack, a record or any other value uses
+ * {@link pasteableCommand} with that value as a `{ value, hole }` argument.
+ */
+export function cdkdRemedy(verb: string, ...literals: readonly string[]): string {
+  return pasteableCommand(
+    verb,
+    literals.map((literal) => ({ literal }))
+  ).command;
+}
+
+/**
+ * The replacement remedy: `cdkd deploy --replace`, plus
+ * `--force-stateful-recreation` for a type in `STATEFUL_TYPES`, with the run's
+ * flags ({@link cdkdRemedy}).
+ */
+export function deployReplaceCommand(stateful = false): string {
+  return stateful
+    ? cdkdRemedy('cdkd deploy', '--replace', '--force-stateful-recreation')
+    : cdkdRemedy('cdkd deploy', '--replace');
+}
+
+/**
  * The run's explicit account / bucket flags (`pasteable-run-context.ts`,
  * go-to-k/cdkd#4177) that `verb` accepts and the caller did not already pass,
  * in `--profile` / `--state-bucket` / `--state-prefix` / `--role-arn` order.

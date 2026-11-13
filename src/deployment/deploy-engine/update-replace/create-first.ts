@@ -1,4 +1,5 @@
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { guardedReplacementCreate } from '../create.js';
 import { type DeployEngine } from '../../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
@@ -308,7 +309,7 @@ export async function replaceCreateFirst(
           `order (create the new resource before deleting the old) cannot reuse the ` +
           `occupied name — CloudFormation refuses this shape with "cannot update a ` +
           `stack when a custom-named resource requires replacing". ` +
-          safeMsg`${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
+          safeMsg`${nameOrigin.remedy}, or re-run with ${deployReplaceCommand()} to delete ` +
           `the old resource FIRST and recreate it under the same name (the resource ` +
           `is briefly unavailable while it is recreated).`,
         'NAMED_REPLACEMENT_COLLISION'
@@ -389,7 +390,7 @@ export async function replaceCreateFirst(
           `the "old" resource would silently destroy the resource the deploy just ` +
           safeMsg`reported as created. ${idempotentNameOrigin.descriptor}; ` +
           safeMsg`${idempotentNameOrigin.remedy}, or re-run with ` +
-          `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
+          `${deployReplaceCommand()} to delete the old resource FIRST and recreate ` +
           `it under the same name (the resource is briefly unavailable while it is ` +
           `recreated). Note: this branch is also reached when the old resource was ` +
           `deleted out-of-band and the physical id is name-derived — there the ` +

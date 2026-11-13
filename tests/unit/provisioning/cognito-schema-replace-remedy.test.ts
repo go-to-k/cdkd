@@ -47,6 +47,11 @@ import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cog
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import { UNNAMEABLE_ID_CLAUSE } from '../../../src/provisioning/replacement-protection-advice.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 const TYPE = 'AWS::Cognito::UserPool';
 const POOL_ID = 'us-east-1_ABCdef123';
@@ -148,6 +153,20 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     expect(message).toContain(
       'AWS::Cognito::UserPool is a stateful type, so re-run with cdkd deploy --replace --force-stateful-recreation'
     );
+  });
+
+  it("carries the run's --aws-emulator, so a pasted remedy stays off real AWS (go-to-k/cdkd#6245)", async () => {
+    buildProgram();
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+    try {
+      const message = await schemaRefusal({}, {});
+      expect(message).toContain(
+        're-run with cdkd deploy --replace --force-stateful-recreation --aws-emulator=https://127.0.0.1:9493 to recreate it'
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
   });
 
   it('keeps the short advice when nothing declares protection', async () => {

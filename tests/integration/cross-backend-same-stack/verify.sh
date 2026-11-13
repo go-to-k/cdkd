@@ -853,11 +853,11 @@ if [ "${READOPT_RC}" -ne 0 ] || grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}";
 fi
 # The kept-resource warning (deploy-flow.ts, go-to-k/cdkd#5064): the marker
 # carries the count, the sentinel is its independent `cdkd import` clause.
-if ! grep -qF "adopt it with 'cdkd import'" "${RUN_LOG}"; then
+if ! grep -qF "adopt it with: cdkd import" "${RUN_LOG}"; then
   echo "FAIL: the new lifetime's first deploy did not warn that an earlier deployment kept a resource (no 'cdkd import' clause; output above) (go-to-k/cdkd#5064)" >&2
   exit 1
 fi
-if ! grep -F "adopt it with 'cdkd import'" "${RUN_LOG}" | grep -qF "kept 1 resource(s) here"; then
+if ! grep -F "adopt it with: cdkd import" "${RUN_LOG}" | grep -qF "kept 1 resource(s) here"; then
   echo "FAIL: the kept-resource warning does not say exactly 1 resource was kept (wording drifted?) (go-to-k/cdkd#5064)" >&2
   exit 1
 fi

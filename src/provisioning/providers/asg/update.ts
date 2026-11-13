@@ -1,4 +1,5 @@
 import type { ASGProvider } from '../asg-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateAutoScalingGroupCommand,
   type AvailabilityZoneDistribution,
@@ -118,7 +119,7 @@ export async function update(
             evidence:
               "cdkd's recorded properties for this group carry " +
               'DeletionProtection: prevent-all-deletion',
-            replaceFlags: 'cdkd deploy --replace',
+            replaceFlags: deployReplaceCommand(),
             disable: {
               before: 'aws autoscaling update-auto-scaling-group --auto-scaling-group-name',
               identifier: physicalId,
@@ -128,7 +129,7 @@ export async function update(
               maskSecrets: mask,
             },
           })
-        : 'Use cdkd deploy --replace to replace the group.';
+        : `Use ${deployReplaceCommand()} to replace the group.`;
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,

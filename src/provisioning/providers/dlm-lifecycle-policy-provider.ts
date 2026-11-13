@@ -16,6 +16,7 @@ import {
   type Exclusions,
 } from '@aws-sdk/client-dlm';
 import { getLogger } from '../../utils/logger.js';
+import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -532,7 +533,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         // `ResourceUpdateNotSupportedError` head already renders
         // `<type> (<logicalId>) cannot be updated in place: ...`.
         `DefaultPolicy cannot be changed in place; ` +
-          `re-run with \`cdkd deploy --replace\` to recreate the policy ` +
+          `re-run with ${deployReplaceCommand()} to recreate the policy ` +
           `(--replace is a boolean flag and takes no resource id; it applies to every ` +
           `resource in the run whose in-place update is refused)`
       );

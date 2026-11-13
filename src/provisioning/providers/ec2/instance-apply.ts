@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   DescribeInstancesCommand,
   ModifyInstanceAttributeCommand,
@@ -93,7 +94,7 @@ export function planPrivateDnsNameOptions(
       new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'replace the instance (cdkd deploy --replace). CloudFormation creates a new instance when PrivateDnsNameOptions is removed'
+        `replace the instance (${deployReplaceCommand()}). CloudFormation creates a new instance when PrivateDnsNameOptions is removed`
       )
     );
   }
@@ -231,7 +232,7 @@ export async function prepareInstanceMemberUpdates(
           new ResourceUpdateNotSupportedError(
             resourceType,
             logicalId,
-            safeMsg`the template declares Tenancy ${tenancy.value}, the instance has ${live ?? 'a tenancy DescribeInstances did not report'}, and the state record does not say which tenancy it was launched with. Changing it needs a new instance: replace it with cdkd deploy --replace, or declare Tenancy ${live ?? 'as the instance has it'}`
+            safeMsg`the template declares Tenancy ${tenancy.value}, the instance has ${live ?? 'a tenancy DescribeInstances did not report'}, and the state record does not say which tenancy it was launched with. Changing it needs a new instance: replace it with ${deployReplaceCommand()}, or declare Tenancy ${live ?? 'as the instance has it'}`
           )
         );
       }
@@ -244,7 +245,7 @@ export async function prepareInstanceMemberUpdates(
         new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; ${plan.instanceType !== undefined || plan.userData !== undefined ? 'CloudFormation replaces it' : 'it needs a new instance'}. Re-deploy with cdkd deploy --replace.`
+          `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; ${plan.instanceType !== undefined || plan.userData !== undefined ? 'CloudFormation replaces it' : 'it needs a new instance'}. Re-deploy with ${deployReplaceCommand()}.`
         )
       );
     }

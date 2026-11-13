@@ -772,8 +772,8 @@ export GNL_FAIL=0
 deploy_local ok "F4 redeploy"
 fetch_state "F4"
 KEPT_QUEUE_URLS+=("$(physical OrphanQ)")
-assert_log_has "F4" "This deploy does not take it back" "adopt it with 'cdkd import'"
-assert_log_has "F4" "adopt it with 'cdkd import'" "This deploy does not take it back"
+assert_log_has "F4" "This deploy does not take it back" "adopt it with: cdkd import"
+assert_log_has "F4" "adopt it with: cdkd import" "This deploy does not take it back"
 assert_named "F4" OrphanQ 1 queue
 assert_ne "F4: OrphanQ is a new queue" "$(physical OrphanQ)" "${ORPHAN_GEN0_URL}"
 assert_eq "F4: the orphan is untouched" \

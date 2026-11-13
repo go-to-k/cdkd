@@ -14,6 +14,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { withRemovalDefaults } from '../../update-removal.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { markNotGone } from '../../not-gone.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
@@ -321,7 +322,7 @@ export async function updateAuthorizer(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'ApiId is immutable on AWS::ApiGatewayV2::Authorizer; re-deploy with cdkd deploy --replace'
+      `ApiId is immutable on AWS::ApiGatewayV2::Authorizer; re-deploy with ${deployReplaceCommand()}`
     );
   }
 

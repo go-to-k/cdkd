@@ -56,7 +56,9 @@ describe('the verb table is read off the real Commander tree', () => {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) walk(full);
         else if (e.name.endsWith('.ts')) {
-          for (const m of readFileSync(full, 'utf8').matchAll(/pasteableCommand\(\s*'(cdkd [a-z -]+)'/g)) {
+          for (const m of readFileSync(full, 'utf8').matchAll(
+            /(?:pasteableCommand|cdkdRemedy)\(\s*'(cdkd [a-z -]+)'/g
+          )) {
             verbs.add(m[1]!);
           }
         }
@@ -70,6 +72,29 @@ describe('the verb table is read off the real Commander tree', () => {
     expect(verbs.size).toBeGreaterThanOrEqual(16);
     const unknown = [...verbs].filter((v) => pasteableVerbFlags(v) === undefined);
     expect(unknown).toEqual([]);
+  });
+
+  it('spells no replacement remedy as a literal, so none loses --aws-emulator (#6245)', () => {
+    // A `cdkd deploy --replace` the operator is told to RUN goes through
+    // `deployReplaceCommand`, which appends the run's flags. Comment lines and
+    // the descriptive "`cdkd deploy --replace` would ..." clauses are exempt.
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name.endsWith('.ts')) {
+          readFileSync(full, 'utf8')
+            .split('\n')
+            .forEach((line, i) => {
+              if (/^\s*(\*|\/\/|\/\*)/.test(line)) return;
+              if (/cdkd deploy --replace(?!\\?`? would)/.test(line)) offenders.push(`${full}:${i + 1}`);
+            });
+        }
+      }
+    };
+    walk('src');
+    expect(offenders).toEqual([]);
   });
 
   it('records the state flags where the command declares them', () => {
