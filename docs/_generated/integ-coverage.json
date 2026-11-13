@@ -5682,6 +5682,7 @@
         "noecho-parameter-masking",
         "orphan-getatt-takeover",
         "pipes-fix-forward-orphan",
+        "pipes-input-template-removal",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -5992,6 +5993,9 @@
         ],
         "pipes-fix-forward-orphan": [
           "l1"
+        ],
+        "pipes-input-template-removal": [
+          "l2"
         ],
         "propagation-races-2": [
           "l2"
@@ -6552,6 +6556,7 @@
         "multi-stack-deps",
         "nodejs-function",
         "orphan-resource",
+        "pipes-input-template-removal",
         "propagation-races-2",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -6901,6 +6906,9 @@
         "orphan-resource": [
           "l2",
           "literal"
+        ],
+        "pipes-input-template-removal": [
+          "l2"
         ],
         "propagation-races-2": [
           "l2"
@@ -8463,6 +8471,7 @@
         "noecho-restapi-body-mac",
         "perf-cross-backend-check",
         "pipes-fix-forward-orphan",
+        "pipes-input-template-removal",
         "refactor-command",
         "refactor-move",
         "rename-refactor",
@@ -8645,6 +8654,9 @@
         ],
         "pipes-fix-forward-orphan": [
           "l1"
+        ],
+        "pipes-input-template-removal": [
+          "l2"
         ],
         "refactor-command": [
           "l2"

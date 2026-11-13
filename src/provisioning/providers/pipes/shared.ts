@@ -5,6 +5,7 @@ import type {
 } from '@aws-sdk/client-pipes';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { parseCfnTimestamp } from '../../../utils/cfn-timestamp.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { refuseMalformedDesiredTags, tagMapAsList } from '../../tag-list.js';
 
 export const PIPE_TYPE = 'AWS::Pipes::Pipe';
@@ -234,6 +235,72 @@ export function toSdkTargetParameters(value: unknown): PipeTargetParameters | un
 }
 
 /**
+ * go-to-k/cdkd#6233: the `UpdatePipe` value of a `TargetParameters` /
+ * `EnrichmentParameters` block, given the desired and recorded CFn blocks.
+ * `UpdatePipe` keeps a member it is not sent, so an `InputTemplate` the
+ * previous template declared and the desired one drops is sent as `''`, which
+ * clears it (measured us-east-1 2026-11-14: `{}` kept the template, `''`
+ * cleared it, and CloudFormation cleared it on the same removal). `convert`
+ * maps a desired block to its SDK shape. Returns `undefined` when there is
+ * nothing to send; a malformed desired block is converted as it was before.
+ */
+export function toUpdateParameterBlock<T>(
+  desired: unknown,
+  previous: unknown,
+  convert: (value: unknown) => T | undefined
+): T | undefined {
+  const next = asRecord(desired);
+  const converted = desired === undefined ? undefined : convert(desired);
+  const prev = asRecord(previous);
+  const cleared =
+    prev?.['InputTemplate'] !== undefined &&
+    (desired === undefined || (next !== undefined && next['InputTemplate'] === undefined));
+  if (!cleared) return converted;
+  return { ...(converted ?? {}), InputTemplate: '' } as T;
+}
+
+/**
+ * go-to-k/cdkd#6233: the members of a recorded `TargetParameters` /
+ * `EnrichmentParameters` block the desired template drops and
+ * {@link toUpdateParameterBlock} cannot clear, as `<block>.<member>`. What
+ * `UpdatePipe` does with an omitted target block (`SqsQueueParameters`,
+ * `HttpParameters`, ...) is unmeasured, so the update reports each one rather
+ * than claim it. Empty when the desired block is malformed: that is refused or
+ * warned about elsewhere, not read as a removal.
+ */
+export function parameterMembersLeftInPlace(
+  block: 'TargetParameters' | 'EnrichmentParameters',
+  desired: unknown,
+  previous: unknown
+): string[] {
+  const prev = asRecord(previous);
+  if (!prev) return [];
+  const next = asRecord(desired);
+  if (desired !== undefined && !next) return [];
+  return Object.keys(prev)
+    .filter((key) => key !== 'InputTemplate' && prev[key] !== undefined)
+    .filter((key) => next?.[key] === undefined)
+    .map((key) => `${block}.${key}`);
+}
+
+/**
+ * The ONE warning line for {@link parameterMembersLeftInPlace}. Names are
+ * template-borne, so they go through `safeMsg`. A rollback revert restores an
+ * earlier state record, so there the member is one the failed deploy ADDED.
+ */
+export function parameterMembersLeftInPlaceWarning(
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (${PIPE_TYPE}): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdatePipe keeps a member it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (${PIPE_TYPE}): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS value in place (whether CloudFormation resets it is unmeasured). Declare the intended value explicitly to change it.`;
+}
+
+/**
  * CFn `SourceParameters` -> the CreatePipe shape. The only divergence is
  * Kinesis `StartingPositionTimestamp`: CFn carries an ISO string, the SDK
  * types a `Date`; an offset-less string is read as UTC (issue #5311).
@@ -260,12 +327,15 @@ export function toSdkSourceParameters(value: unknown): PipeSourceParameters | un
  *
  * - Each source block keeps only its {@link UPDATABLE_SOURCE_MEMBERS}: the
  *   create-only members are not members of the update shape at all.
- * - AWS replaces a source block ATOMICALLY ("if you don't specify an optional
- *   field ... EventBridge sets that field to its system-default value"), so a
- *   block the previous template declared and the desired one drops is sent
- *   EMPTY, which resets it the way CloudFormation's removal does.
+ * - A block the previous template declared and the desired one drops is sent
+ *   EMPTY. The API reference says an unspecified optional field goes to its
+ *   system default, but that is not what was measured (us-east-1 2026-11-14,
+ *   go-to-k/cdkd#6233): `SqsQueueParameters: {}` kept `BatchSize: 5`. Real
+ *   CloudFormation removing the whole `SourceParameters` kept it too.
  * - A removed `FilterCriteria` is sent as `{ Filters: [] }`, the documented
- *   way to remove a filter; an absent one would keep the live filter.
+ *   way to remove a filter; an absent one would keep the live filter. This is
+ *   deliberately NOT CloudFormation parity: CloudFormation removing the whole
+ *   `SourceParameters` kept the filter (same measurement).
  *
  * Returns `undefined` when neither side declares anything.
  */
