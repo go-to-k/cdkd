@@ -217,6 +217,28 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.reason).toContain("no usable 'TableARN'");
   });
 
+  // go-to-k/cdkd#6243: a GraphQL API / vector bucket's `Ref` is its ARN; a
+  // record with one splices it, one imported before cdkd recorded it refuses.
+  it.each([
+    ['AWS::S3Vectors::VectorBucket', 'my-vb', 'VectorBucketArn', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/my-vb'],
+    ['AWS::AppSync::GraphQLApi', 'abcdefghij', 'Arn', 'arn:aws:appsync:us-east-1:123456789012:apis/abcdefghij'],
+  ])('rewrites a {Ref: orphan} of a %s into its recorded ARN, and refuses without one', async (type, id, key, arn) => {
+    const stateWith = (attributes: Record<string, unknown>) =>
+      baseState({
+        Target: { physicalId: id, resourceType: type, properties: {}, attributes },
+        Other: { physicalId: 'o-phys', resourceType: 'AWS::S3::Bucket', properties: { SomeRef: { Ref: 'Target' } } },
+      });
+
+    const spliced = await rewriteResourceReferences(stateWith({ [key]: arn }), ['Target'], fakeRegistry());
+    expect(spliced.unresolvable).toEqual([]);
+    expect(spliced.state.resources['Other']?.properties).toEqual({ SomeRef: arn });
+
+    const refused = await rewriteResourceReferences(stateWith({}), ['Target'], fakeRegistry());
+    expect(refused.state.resources['Other']?.properties).toEqual({ SomeRef: { Ref: 'Target' } });
+    expect(refused.unresolvable).toHaveLength(1);
+    expect(refused.unresolvable[0]?.reason).toContain(`no usable '${key}'`);
+  });
+
   it('rewrites a {Ref: orphan} of a Cloud Control S3Tables::Table into its physical id, the TableARN', async () => {
     const tableArn = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/5316abcd';
     const state = baseState({

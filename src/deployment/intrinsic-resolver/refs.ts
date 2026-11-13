@@ -14,6 +14,8 @@ import {
   refStateLookupFromResource,
   cfnRefValueFromPhysicalId,
   lacksRecordedTableArn,
+  lacksRecordedRefArn,
+  isPlaceholderArn,
   stringifyParameterForLog,
   isStructured,
 } from './support.js';
@@ -194,6 +196,26 @@ export async function resolveRef(
             `contain. No usable one could be read from AWS either. If the state records none, ` +
             `run 'cdkd deploy' with permission to call s3tables:GetTable so cdkd records it; if ` +
             `it records a value that is not the table's ARN, re-import the table with 'cdkd import'.`
+        )
+      );
+    }
+    // go-to-k/cdkd#6243: a GraphQL API / vector bucket's `Ref` is its ARN
+    // attribute, which a record imported before `cdkd import` recorded it
+    // lacks; its physical id is the bare id / name. Healed and refused as the
+    // table above: `Fn::GetAtt` of the ARN re-reads the record from AWS.
+    const missingArn = lacksRecordedRefArn(resource);
+    if (missingArn !== undefined) {
+      // An unhealed miss is refused inside: an `*Arn` name never takes the
+      // physical-id fallback when that id is not ARN-shaped.
+      const arn = await resolveGetAtt(resolver, [logicalId, missingArn], context);
+      if (typeof arn === 'string' && arn.startsWith('arn:') && !isPlaceholderArn(arn)) {
+        return arn;
+      }
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: CloudFormation's Ref ` +
+            `of this resource is its ${missingArn}, which its physical id is not, and the value ` +
+            `read for it is not a usable ARN. Re-import the resource with 'cdkd import'.`
         )
       );
     }

@@ -1,6 +1,7 @@
 import {
   cfnRefValueFromPhysicalId,
   isImpossibleEmptyStoredAttribute,
+  lacksRecordedRefArn,
   lacksRecordedTableArn,
   refStateLookupFromResource,
 } from '../../deployment/intrinsic-function-resolver.js';
@@ -103,6 +104,17 @@ export class AttributeFetcher {
         reason:
           "state records no usable 'TableARN' for this S3 Tables table, the value CloudFormation's Ref " +
           'returns, and the physical id is NOT that value',
+      };
+    }
+    // go-to-k/cdkd#6243: the same for a GraphQL API / vector bucket imported
+    // before cdkd recorded its ARN; its physical id is the bare id / name.
+    const missingArn = lacksRecordedRefArn(o);
+    if (missingArn !== undefined) {
+      return {
+        ok: false,
+        reason:
+          `state records no usable '${missingArn}' for this resource, the value CloudFormation's ` +
+          'Ref returns, and the physical id is NOT that value',
       };
     }
     let maskedKey: string | undefined;

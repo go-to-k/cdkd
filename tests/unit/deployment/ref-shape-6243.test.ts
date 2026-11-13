@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vite-plus/test';
-import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { describe, it, expect, vi } from 'vite-plus/test';
+import {
+  IntrinsicFunctionResolver,
+  resetAccountInfoCache,
+  type ResolverContext,
+} from '../../../src/deployment/intrinsic-function-resolver.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import { cfnRefValueFromPhysicalId } from '../../../src/deployment/intrinsic-resolver/ref-values.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -11,7 +16,8 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 async function resolveRef(
   resourceType: string,
   physicalId: string,
-  attributes: Record<string, unknown> = {}
+  attributes: Record<string, unknown> = {},
+  extra: Partial<ResolverContext> = {}
 ): Promise<unknown> {
   const template: CloudFormationTemplate = {
     Resources: { R: { Type: resourceType, Properties: {} } },
@@ -23,6 +29,7 @@ async function resolveRef(
       resources: {
         R: { physicalId, resourceType, properties: {}, attributes, dependencies: [] },
       },
+      ...extra,
     }
   );
 }
@@ -39,8 +46,49 @@ describe('Ref of an AWS::S3Vectors::VectorBucket (issue #6243)', () => {
     );
   });
 
-  it('falls back to the physical id when no ARN is recorded, never a built ARN', async () => {
-    expect(await resolveRef('AWS::S3Vectors::VectorBucket', NAME)).toBe(NAME);
+  it('passes a Cloud Control physical id (the ARN itself) through without a heal', async () => {
+    const attributeHealer = vi.fn();
+    expect(await resolveRef('AWS::S3Vectors::VectorBucket', ARN, {}, { attributeHealer })).toBe(ARN);
+    expect(attributeHealer).not.toHaveBeenCalled();
+  });
+
+  // A record imported before `cdkd import` recorded the ARN (#3694).
+  it('re-reads a record with no VectorBucketArn through the healer', async () => {
+    const attributeHealer = vi.fn().mockResolvedValue({
+      kind: 'read',
+      attributes: { VectorBucketArn: ARN },
+    } as const);
+    expect(await resolveRef('AWS::S3Vectors::VectorBucket', NAME, {}, { attributeHealer })).toBe(
+      ARN
+    );
+    expect(attributeHealer).toHaveBeenCalledTimes(1);
+  });
+
+  it('heals over a recorded placeholder ARN instead of serving the bare name', async () => {
+    const attributeHealer = vi.fn().mockResolvedValue({
+      kind: 'read',
+      attributes: { VectorBucketArn: ARN },
+    } as const);
+    const placeholder = `arn:aws:s3vectors:*:*:bucket/${NAME}`;
+    expect(
+      await resolveRef(
+        'AWS::S3Vectors::VectorBucket',
+        NAME,
+        { VectorBucketArn: placeholder },
+        { attributeHealer }
+      )
+    ).toBe(ARN);
+    expect(attributeHealer).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses, never serving the bare name, when no ARN is recorded or re-read', async () => {
+    await expect(resolveRef('AWS::S3Vectors::VectorBucket', NAME)).rejects.toBeInstanceOf(
+      IntrinsicResolutionRefusalError
+    );
+  });
+
+  it('returns the physical id when the caller passes no state lookup', () => {
+    expect(cfnRefValueFromPhysicalId('AWS::S3Vectors::VectorBucket', NAME)).toBe(NAME);
   });
 });
 
@@ -52,9 +100,29 @@ describe('Ref of an AWS::AppSync::GraphQLApi (issue #6243)', () => {
     expect(await resolveRef('AWS::AppSync::GraphQLApi', API, { Arn: ARN, ApiId: API })).toBe(ARN);
   });
 
-  it('does not serve a pre-#1681 placeholder ARN', async () => {
-    const placeholder = `arn:aws:appsync:*:*:apis/${API}`;
-    expect(await resolveRef('AWS::AppSync::GraphQLApi', API, { Arn: placeholder })).toBe(API);
+  it('passes a Cloud Control physical id (the ARN itself) through', async () => {
+    expect(await resolveRef('AWS::AppSync::GraphQLApi', ARN)).toBe(ARN);
+  });
+
+  // A record imported before `cdkd import` recorded the ARN (#3416): served
+  // as `Fn::GetAtt Arn` is, which builds the API ARN from this deploy's
+  // account and region.
+  it('serves Fn::GetAtt Arn for a record with no Arn', async () => {
+    vi.stubEnv('AWS_ACCOUNT_ID', '123456789012');
+    vi.stubEnv('AWS_REGION', 'us-east-1');
+    resetAccountInfoCache();
+    try {
+      expect(await resolveRef('AWS::AppSync::GraphQLApi', API, { ApiId: API })).toBe(ARN);
+    } finally {
+      vi.unstubAllEnvs();
+      resetAccountInfoCache();
+    }
+  });
+
+  it('refuses, never serving the bare API id, when no ARN is recorded or can be built', async () => {
+    await expect(resolveRef('AWS::AppSync::GraphQLApi', API, { ApiId: API })).rejects.toBeInstanceOf(
+      IntrinsicResolutionRefusalError
+    );
   });
 });
 

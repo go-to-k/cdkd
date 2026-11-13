@@ -146,6 +146,12 @@ On such a record, `Ref` returns the composite ID. An `Fn::GetAtt` on the ARN
 makes `cdkd deploy` read the resource from AWS once and record the real ARN.
 The deploy fails if it cannot read the resource.
 
+**A GraphQL API or a vector bucket.** A record that `cdkd import` adopted
+before it recorded the ARN has none. A `Ref` on such a record is read like an
+`Fn::GetAtt` on the ARN, so `cdkd deploy` reads it from AWS and records it. If
+cdkd cannot get the ARN, the deploy fails instead of using the API ID or bucket
+name.
+
 **`cdkd export` blocks a resource and names a missing attribute.**
 [`cdkd export`](cli-export.md) needs the same recorded attribute for the types
 CloudFormation imports by ARN. Deploy the stack once so that cdkd records the
