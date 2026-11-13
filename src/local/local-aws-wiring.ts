@@ -425,11 +425,6 @@ function emulatorIssuedCredentialsIn(
     : undefined;
 }
 
-/** Test seam: forget every recorded emulator-issued triple. */
-export function resetEmulatorIssuedCredentials(): void {
-  emulatorIssued.clear();
-}
-
 /**
  * Whether the state record's IAM roles are the WRONG side for a role flag that
  * assumes in real AWS (go-to-k/cdkd#6189, #6252): in AWS Emulator mixed mode a

@@ -96,6 +96,7 @@ export async function applyLambdaCredentialEnv(
       setContainerRegion(dockerEnv, containerRegion);
       assumeSucceeded = true;
     } catch (err) {
+      // cdkd-raw-beside-safe: the conditional picks between two cdkd LITERALS.
       logger.warn(
         `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${describeLocalAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
           (localAwsEmulatorActive()

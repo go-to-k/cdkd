@@ -59,7 +59,6 @@ import {
   getActiveWorkloadAwsWiring,
   keepEmulatorIssuedCredentials,
   localAwsEmulatorActive,
-  resetEmulatorIssuedCredentials,
   workloadGetsEmulatorKeysOnly,
   localAwsEmulatorCredentials,
   prepareLocalLoopbackForwarder,
@@ -510,18 +509,18 @@ describe('applyLocalAwsWiring', () => {
 });
 
 describe('--assume-role credentials the emulator issued (go-to-k/cdkd#6252)', () => {
-  const ROLE = {
-    accessKeyId: 'emulator-role-key',
-    secretAccessKey: 'role-secret',
-    sessionToken: 'role-token',
-  };
-  const roleEnv = {
-    AWS_ACCESS_KEY_ID: ROLE.accessKeyId,
-    AWS_SECRET_ACCESS_KEY: ROLE.secretAccessKey,
-    AWS_SESSION_TOKEN: ROLE.sessionToken,
-  };
-  afterEach(() => {
-    resetEmulatorIssuedCredentials();
+  // The record is process-wide and has no reset, so each case uses a key of
+  // its own.
+  let seq = 0;
+  let ROLE = { accessKeyId: '', secretAccessKey: 'role-secret', sessionToken: 'role-token' };
+  let roleEnv: Record<string, string> = {};
+  beforeEach(() => {
+    ROLE = { ...ROLE, accessKeyId: `emulator-role-key-${++seq}` };
+    roleEnv = {
+      AWS_ACCESS_KEY_ID: ROLE.accessKeyId,
+      AWS_SECRET_ACCESS_KEY: ROLE.secretAccessKey,
+      AWS_SESSION_TOKEN: ROLE.sessionToken,
+    };
   });
 
   it('replace the emulator keys in the container under --aws-emulator', async () => {

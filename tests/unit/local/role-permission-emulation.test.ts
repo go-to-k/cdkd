@@ -213,7 +213,7 @@ const { assumeAgentCoreExecutionRole, buildContainerEnv } = await import(
   '../../../src/cli/commands/local-invoke-agentcore/env.js'
 );
 const { createLocalCommand } = await import('../../../src/cli/commands/local-invoke.js');
-const { applyLocalAwsWiring, resetEmulatorIssuedCredentials } = await import(
+const { applyLocalAwsWiring } = await import(
   '../../../src/local/local-aws-wiring.js'
 );
 const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
@@ -465,7 +465,6 @@ describe('emulateRoleAfterDeniedAssume against AWS Emulator (go-to-k/cdkd#6252)'
     });
     afterEach(() => {
       setActiveWorkloadAwsWiring(undefined);
-      resetEmulatorIssuedCredentials();
     });
     const wired = async (env: Record<string, string>) =>
       (await applyLocalAwsWiring(wiring, env, [], [])).env;
