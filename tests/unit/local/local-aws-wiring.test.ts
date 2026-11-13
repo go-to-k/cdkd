@@ -364,6 +364,25 @@ describe('runDetached under --aws-emulator (#6132)', () => {
     expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Rename the env var/);
   });
 
+  it('keeps a key the caller sets again in envAfterWiring sensitive (its value is the caller\'s)', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_DISABLE_HOST_PREFIX_INJECTION: 'false' },
+      sensitiveEnvKeys: new Set(['AWS_DISABLE_HOST_PREFIX_INJECTION']),
+      // The same value the wiring forces, so only the envAfterWiring guard
+      // tells this key apart from a wiring-owned one.
+      envAfterWiring: { AWS_DISABLE_HOST_PREFIX_INJECTION: 'true' },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args, env } = lastRun();
+    expect(envFlags(args)).toContain('AWS_DISABLE_HOST_PREFIX_INJECTION');
+    expect(envFlags(args)).not.toContain('AWS_DISABLE_HOST_PREFIX_INJECTION=true');
+    expect(env['AWS_DISABLE_HOST_PREFIX_INJECTION']).toBe('true');
+  });
+
   it('still warns when a sensitive caller value collides and the wiring does not replace it', async () => {
     setActiveWorkloadAwsWiring(emulatorWiring());
     const warn = vi.mocked(getLogger().warn);

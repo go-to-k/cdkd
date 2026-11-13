@@ -4,6 +4,7 @@
  * exported before the split, so importers and tests are unchanged.
  */
 import { Command } from 'commander';
+import { parsePositiveIntegerOption } from '../arg-parser.js';
 import { commonOptions, stateOptions, deprecatedRegionOption } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { UNREADABLE_RESOURCES_MAP_ROW } from '../../state/malformed-resources-bag.js';
@@ -94,7 +95,7 @@ export function createDriftCommand(): Command {
     .option(
       '--concurrency <number>',
       'Maximum concurrent provider.update calls during --revert',
-      (value) => parseInt(value, 10),
+      parsePositiveIntegerOption,
       4
     )
     .addOption(stackRegionOption())

@@ -7,6 +7,7 @@ import { Command, CommanderError, type Option } from 'commander';
 // `InvalidArgumentError`, which renders as a one-line usage error.
 
 import { createGcCommand } from '../../../src/cli/commands/gc.js';
+import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { createEventsPruneCommand } from '../../../src/cli/commands/events.js';
 import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-assets.js';
 import { createLocalInvokeAgentCoreCommand } from '../../../src/cli/commands/local-invoke-agentcore.js';
@@ -89,6 +90,15 @@ describe('option parsers reject a bad value as a usage error (#6251)', () => {
       for (const bad of ['bogus', '0', '-1', '2.5']) {
         expectUsageError(withOptions(deployOptions), [flag, bad], /Expected a positive integer/);
       }
+    }
+    // `.option(flag, desc, fn, default)` form: NaN here made `drift --revert`
+    // start no worker and silently revert nothing.
+    for (const bad of ['bogus', '0']) {
+      expectUsageError(
+        quiet(createDriftCommand()),
+        ['S', '--concurrency', bad],
+        /Expected a positive integer/
+      );
     }
     expectUsageError(
       quiet(createPublishAssetsCommand()),
