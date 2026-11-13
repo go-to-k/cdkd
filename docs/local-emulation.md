@@ -306,7 +306,7 @@ cdkd local start-api --from-cfn-stack --aws-emulator https://127.0.0.1:9297
 | --- | --- |
 | Pre-flight | cdkd checks `/__admin/health`, trusting the run's `ca.pem`, and stops with the fix when nothing answers. |
 | cdkd's own AWS calls | `--from-state`, `--from-cfn-stack`, `{{resolve:...}}`, STS and the `--role-arn` hop go to the emulator, signed with its keys. |
-| Container credentials | The keys in the run's `emulator_credentials` only. Your own are removed, as are `AWS_PROFILE`, the shared-file variables and the `--profile` credentials file. `--profile` is not resolved. |
+| Container credentials | The keys in the run's `emulator_credentials` only. Your own are removed, as are `AWS_PROFILE`, the shared-file variables and the `--profile` credentials file. `--profile` is not resolved. `run-task --assume-task-role` assumes the role in the emulator and gives its credentials instead. |
 | Container trust | The run's `ca.pem`, with the four trust variables above. |
 | Other container variables | `AWS_ENDPOINT_URL`, `AWS_EC2_METADATA_DISABLED=true`, `AWS_DISABLE_HOST_PREFIX_INJECTION=true`. |
 | Reachability | For a loopback URL, the forwarder checks the emulator from inside the container network (its health endpoint when a CA is known, else a TCP connect); a failure stops the command. |
@@ -486,7 +486,7 @@ is refused with the SDK spelling (`AWS_ENDPOINT_URL_SECRETS_MANAGER`).
 
 | What | In mixed mode |
 | --- | --- |
-| A container that keeps an exception | Your real identity: the default chain, `--profile` or `--assume-role` (for `run-task`, `--assume-task-role` too, as env keys). |
+| A container that keeps an exception | Your real identity: the default chain, `--profile` or `--assume-role`, as env keys. For `run-task`, `--assume-task-role` assumes the role in real AWS and gives it only to a container that also excepts STS. |
 | A container that keeps none | The emulator's keys only, as with `--aws-emulator` alone: no real credential and no `--profile` credentials file. |
 | Calls to non-excepted services | Through a re-signing sidecar in the workload's network namespace (`AWS_ENDPOINT_URL=https://127.0.0.1:47297`), which drops the request's signature and signs it again with the emulator's keys. No real-key signature reaches the emulator. |
 | Calls to excepted services | Straight to real AWS: each gets its real regional endpoint in its own `AWS_ENDPOINT_URL_<SERVICE>`. |

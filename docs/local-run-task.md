@@ -217,9 +217,20 @@ cdkd local run-task MyStack/Worker --profile dev
 
 When you pass both, `--assume-task-role` wins over `--profile`.
 
-Under [`--aws-emulator`](local-emulation.md#aws-emulator) the sidecar serves
-the emulator's keys whatever the flags say, no credentials file is mounted, and
-`--profile` adds nothing.
+Under [`--aws-emulator`](local-emulation.md#aws-emulator) no real
+credential reaches the task: no credentials file is mounted, and `--profile`
+adds nothing. The containers get the emulator's keys. With
+`--assume-task-role`, cdkd assumes the role in the emulator (deploy it there
+with `cdkd deploy --aws-emulator`, and let its trust policy allow the
+emulator's own identity), and every container and the sidecar get the role's
+credentials instead, so `sts get-caller-identity` answers with the role's
+emulator ARN. In [mixed mode](local-emulation.md#aws-emulator-mixed-mode),
+calls to the emulator are signed with its keys whatever the container holds,
+so the role is assumed in real AWS, and only for a container that marks STS as
+an exception (`AWS_ENDPOINT_URL_STS` set to `"real-aws"`). That container
+gets the role as its real identity. A container that marks only other
+services gets your own identity, as without the flag. When no container marks
+STS, cdkd warns that the flag has no effect.
 
 With a loopback AWS endpoint (`--aws-emulator`, or a forwarded
 `AWS_ENDPOINT_URL` on `127.0.0.1`), cdkd starts each task container's forwarder

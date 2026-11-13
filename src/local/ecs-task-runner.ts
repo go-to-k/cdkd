@@ -417,6 +417,12 @@ export async function runEcsTask(
       ...(options.mixedModeRealCredentials && {
         mixedModeRealCredentials: options.mixedModeRealCredentials,
       }),
+      ...(options.mixedModeRealTaskCredentials && {
+        mixedModeRealTaskCredentials: options.mixedModeRealTaskCredentials,
+      }),
+      ...(options.emulatorTaskCredentials && {
+        emulatorTaskCredentials: options.emulatorTaskCredentials,
+      }),
     });
     dockerCmds.set(container.name, built.args);
     dockerLoopbackPorts.set(container.name, built.loopbackPorts);

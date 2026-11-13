@@ -373,6 +373,14 @@ function passesRealAws(c: { args: string; above: string }, decision: RegExp): bo
 const routedDecision = (svc: string): RegExp => new RegExp(`realAwsException\\('${svc}'`);
 /** The decision an STS site on the local surface must take: a hop, or an account lookup. */
 const STS_DECISION = /mixedModeActive\(\)|realAwsException\('STS'\)/;
+/**
+ * `local run-task --assume-task-role` (go-to-k/cdkd#6147): the route is decided
+ * PER CONTAINER by the caller (`planTaskRoleCredentials` →
+ * `taskRoleAssumedInRealAws`), so these sites take it as a REQUIRED `route`
+ * parameter — the test below pins that it has no default.
+ */
+const TASK_ROLE_ROUTE_FILE = 'src/cli/commands/local-run-task/stack-account.ts';
+const TASK_ROLE_ROUTE_DECISION = new RegExp(`${STS_DECISION.source}|route\\.realAws\\b`);
 
 describe('population: every AWS SDK client in src/ is accounted for', () => {
   const offenders: string[] = [];
@@ -396,7 +404,8 @@ describe('population: every AWS SDK client in src/ is accounted for', () => {
       }
       if (!onLocalSurface(rel)) continue;
       if (c.cls === 'STSClient') {
-        if (!c.args.startsWith('{') || !passesRealAws(c, STS_DECISION)) {
+        const decision = rel === TASK_ROLE_ROUTE_FILE ? TASK_ROLE_ROUTE_DECISION : STS_DECISION;
+        if (!c.args.startsWith('{') || !passesRealAws(c, decision)) {
           offenders.push(`${where}: an STS site needs realAws: mixedModeActive() (hop) or realAwsException('STS') (lookup)`);
         } else stsSeen++;
         continue;
@@ -404,6 +413,12 @@ describe('population: every AWS SDK client in src/ is accounted for', () => {
       offenders.push(`${where}: no mixed-mode routing decision for this service`);
     }
   }
+
+  it('the task-role STS route is a REQUIRED parameter, so no caller falls back by omission (#6147)', () => {
+    const src = readFileSync(join(ROOT, TASK_ROLE_ROUTE_FILE), 'utf8');
+    expect(src.match(/\broute: \{ realAws: boolean \}\n/g)?.length).toBe(2);
+    expect(src).not.toMatch(/\broute: \{ realAws: boolean \} =/);
+  });
 
   it('finds the population (a floor per shape)', () => {
     expect(seen).toBeGreaterThanOrEqual(40);

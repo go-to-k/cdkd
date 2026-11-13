@@ -113,7 +113,7 @@ function makeTask(image: unknown, extra: Record<string, unknown> = {}): unknown 
     taskDefinitionLogicalId: 'TD',
     resource: { Type: 'AWS::ECS::TaskDefinition', Metadata: { 'aws:cdk:path': 'S/Api/Resource' } },
     family: 'fam',
-    containers: [{ name: 'app', essential: true, image }],
+    containers: [{ name: 'app', essential: true, environment: {}, image }],
     ...extra,
   };
 }

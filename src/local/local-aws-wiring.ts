@@ -349,6 +349,23 @@ export function workloadGetsEmulatorKeysOnly(
   return !Object.entries(env).some(([k, v]) => k !== 'AWS_ENDPOINT_URL' && isRealAwsSentinel(k, v));
 }
 
+/**
+ * Which STS assumes the task role for a container whose env (before
+ * `applyWorkloadAwsWiringToEnv`) is `env` (go-to-k/cdkd#6147): real AWS
+ * without `--aws-emulator`; AWS Emulator under it, unless mixed mode is active
+ * and the container marks STS as an exception
+ * (`AWS_ENDPOINT_URL_STS="real-aws"`). The task role is assumed where the
+ * container's own STS calls go.
+ */
+export function taskRoleAssumedInRealAws(
+  env: Readonly<Record<string, string | undefined>>,
+  wiring: WorkloadAwsWiring | undefined
+): boolean {
+  if (wiring?.mode === 'emulator') return false;
+  if (!wiring?.mixed) return true;
+  return isRealAwsSentinel('AWS_ENDPOINT_URL_STS', env['AWS_ENDPOINT_URL_STS']);
+}
+
 /** True while AWS Emulator mixed mode is active: `--aws-emulator` plus a `"real-aws"` exception. */
 export function mixedModeActive(): boolean {
   return getActiveWorkloadAwsWiring()?.mixed !== undefined;

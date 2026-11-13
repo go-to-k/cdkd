@@ -173,9 +173,11 @@ const resolvers: Array<{
   {
     name: 'local run-task: resolvePlaceholderAccount (bare --assume-task-role)',
     resolve: async (source, profile) => {
-      const arn = await resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
-        ...sourceOptions(source, profile),
-      } as never);
+      const arn = await resolvePlaceholderAccount(
+        'arn:aws:iam::${AWS::AccountId}:role/TaskRole',
+        { ...sourceOptions(source, profile) } as never,
+        { realAws: true }
+      );
       return /^arn:aws:iam::(\d{12}):role\/TaskRole$/.exec(arn)?.[1];
     },
   },
@@ -326,9 +328,11 @@ describe('local run-task: resolvePlaceholderAccount with no Account (go-to-k/cdk
     stsNoAccount.on = true;
     try {
       await expect(
-        resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
-          region: 'us-east-1',
-        } as never)
+        resolvePlaceholderAccount(
+          'arn:aws:iam::${AWS::AccountId}:role/TaskRole',
+          { region: 'us-east-1' } as never,
+          { realAws: true }
+        )
       ).rejects.toThrow("Pass the ARN explicitly: --assume-task-role '<arn>'");
     } finally {
       stsNoAccount.on = false;
@@ -343,7 +347,8 @@ describe('local run-task: resolvePlaceholderAccount with no Account (go-to-k/cdk
       for (const { value } of PASTE_PAYLOADS) {
         const message = await resolvePlaceholderAccount(
           `arn:aws:iam::\${AWS::AccountId}:role/${value}`,
-          { region: 'us-east-1' } as never
+          { region: 'us-east-1' } as never,
+          { realAws: true }
         ).then(
           () => '',
           (e: unknown) => (e as Error).message

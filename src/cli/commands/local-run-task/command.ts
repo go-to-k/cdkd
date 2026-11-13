@@ -46,7 +46,11 @@ import {
   resolveEcsConsumerRegion,
 } from './image-context.js';
 import { readEnvOverridesFile } from './env-overrides.js';
-import { buildRunEcsTaskOptions, resolveTaskCredentialChannels } from './credentials.js';
+import {
+  buildRunEcsTaskOptions,
+  planTaskRoleCredentials,
+  resolveTaskCredentialChannels,
+} from './credentials.js';
 import { resolveRunTaskImageOverride } from './image-override.js';
 
 /**
@@ -369,21 +373,51 @@ export async function localRunTaskCommand(
     // references an inline same-stack IAM Role; we fill in the account
     // segment lazily via STS only when bare `--assume-task-role` is set,
     // so the STS round-trip does not fire on the common pass-through path.
+    //
+    // Under `--aws-emulator` the role is assumed in the emulator; in mixed
+    // mode in real AWS, for the containers that keep an STS exception
+    // (`planTaskRoleCredentials`, go-to-k/cdkd#6147).
+    const envOverrides = readEnvOverridesFile(options.envVars);
+    const roleRequested =
+      options.assumeTaskRole === true || typeof options.assumeTaskRole === 'string';
+    const plan = planTaskRoleCredentials(task.containers, envOverrides, roleRequested);
+    if (plan.ignoredInMixedMode) {
+      logger.warn(
+        '--assume-task-role has no effect in AWS Emulator mixed mode unless a container marks STS ' +
+          'as an exception (AWS_ENDPOINT_URL_STS="real-aws"): calls to the emulator are re-signed ' +
+          "with the emulator's keys, so the role is not assumed."
+      );
+    }
     let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
+    let emulatorTaskCredentials: RunEcsTaskOptions['taskCredentials'];
     let resolvedRoleArn: string | undefined;
-    if (options.assumeTaskRole === true) {
-      if (!task.taskRoleArn) {
-        throw new Error(
-          `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
-            `Either the task definition does not set TaskRoleArn, or it points at a resource cdkd cannot resolve to an IAM Role at synth time. ` +
-            `Pass the ARN explicitly: --assume-task-role '<arn>'`
-        );
-      }
-      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options);
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
-    } else if (typeof options.assumeTaskRole === 'string') {
-      resolvedRoleArn = options.assumeTaskRole;
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+    const assumes = plan.assumeInRealAws || plan.assumeInEmulator;
+    // A flag mixed mode ignores (warned above) needs no TaskRoleArn either.
+    if (options.assumeTaskRole === true && !task.taskRoleArn && assumes) {
+      throw new Error(
+        `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
+          `Either the task definition does not set TaskRoleArn, or it points at a resource cdkd cannot resolve to an IAM Role at synth time. ` +
+          `Pass the ARN explicitly: --assume-task-role '<arn>'`
+      );
+    }
+    const roleArnTemplate =
+      options.assumeTaskRole === true
+        ? task.taskRoleArn
+        : typeof options.assumeTaskRole === 'string'
+          ? options.assumeTaskRole
+          : undefined;
+    // At most one STS: the emulator's under `--aws-emulator`, real otherwise.
+    if (roleArnTemplate !== undefined && assumes) {
+      const realAws = plan.assumeInRealAws;
+      // The bare flag's placeholder account is asked of the same STS: the
+      // emulator's account and the real one differ.
+      resolvedRoleArn =
+        options.assumeTaskRole === true
+          ? await resolvePlaceholderAccount(roleArnTemplate, options, { realAws })
+          : roleArnTemplate;
+      const creds = await assumeTaskRole(resolvedRoleArn, options.region, { realAws });
+      if (realAws) assumedCredentials = creds;
+      else emulatorTaskCredentials = creds;
     }
 
     // Both credential channels this task gets, resolved together — see
@@ -396,9 +430,9 @@ export async function localRunTaskCommand(
       onDirRemoved: () => {
         credsHostPath = undefined;
       },
+      emulatorTaskCredentials,
+      callerIdentityNeeded: plan.callerIdentityNeeded,
     });
-
-    const envOverrides = readEnvOverridesFile(options.envVars);
 
     const runOpts = buildRunEcsTaskOptions(options, channels, {
       ...(envOverrides !== undefined && { envOverrides }),
