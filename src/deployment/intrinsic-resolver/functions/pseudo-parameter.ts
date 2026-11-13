@@ -1,5 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../../utils/aws-partition.js';
+import { LEGACY_STACK_ID_TAIL } from '../../../state/stack-id-tail.js';
+import { markNonRetryable } from '../../retryable-errors.js';
 import {
   AWS_NO_VALUE,
   type ResolverContext,
@@ -52,8 +54,20 @@ export async function resolvePseudoParameter(
       // so it does NOT inherit that method's destructure-level fold — worth
       // stating, because the fold's own comment calls itself exhaustive and
       // that is true only WITHIN `constructAttribute`.
+      //
+      // The tail is a UUID derived from the stack's instance id on a stack
+      // first written with schema v16+, as CloudFormation's is a per-stack
+      // UUID, and `cdkd` on every older record (go-to-k/cdkd#6170).
       const info = await getAccountInfo(resolver.resolverRegion);
-      return `arn:${info.partition}:cloudformation:${canonicalizeRegion(info.region)}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
+      // A refusal over a damaged record (a marker without a well-formed id)
+      // cannot change on a retry (#1889).
+      let tail: string;
+      try {
+        tail = context?.stackIdTail?.() ?? LEGACY_STACK_ID_TAIL;
+      } catch (error) {
+        throw error instanceof Error ? markNonRetryable(error) : error;
+      }
+      return `arn:${info.partition}:cloudformation:${canonicalizeRegion(info.region)}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/${tail}`;
     }
 
     case 'AWS::URLSuffix':

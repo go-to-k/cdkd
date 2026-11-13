@@ -8144,6 +8144,7 @@
         "s3-lifecycle",
         "scheduled-task",
         "schema-v10-to-v11-migration",
+        "schema-v15-to-v16-migration",
         "secret-derived-immutable-names",
         "serverless-api",
         "sns-event-source",
@@ -8153,6 +8154,7 @@
         "sns-subscription-filter",
         "sns-subscription-update",
         "sqs-fifo-unnamed",
+        "stack-id-uuid",
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
@@ -8298,6 +8300,9 @@
         "schema-v10-to-v11-migration": [
           "l1"
         ],
+        "schema-v15-to-v16-migration": [
+          "l2"
+        ],
         "secret-derived-immutable-names": [
           "l1",
           "literal"
@@ -8330,6 +8335,9 @@
         "sqs-fifo-unnamed": [
           "l1",
           "literal"
+        ],
+        "stack-id-uuid": [
+          "l2"
         ],
         "tags-propagation": [
           "l2"
@@ -8870,6 +8878,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v15-to-v16-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -8879,7 +8888,9 @@
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "select-out-of-bounds",
         "shared-stackname-multi-region",
+        "stack-id-uuid",
         "stale-attribute-heal",
         "state-info-command",
         "tags-propagation",
@@ -9238,6 +9249,9 @@
         "schema-v12-to-v13-migration": [
           "l1"
         ],
+        "schema-v15-to-v16-migration": [
+          "l2"
+        ],
         "schema-v5-to-v6-migration": [
           "l2"
         ],
@@ -9271,9 +9285,15 @@
           "l1",
           "l2"
         ],
+        "select-out-of-bounds": [
+          "l2"
+        ],
         "shared-stackname-multi-region": [
           "l2",
           "literal"
+        ],
+        "stack-id-uuid": [
+          "l2"
         ],
         "stale-attribute-heal": [
           "l1",

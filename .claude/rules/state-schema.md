@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v15 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v16 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -12,23 +12,24 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | ... | 15;      // each bump is its fields' `vN+`
+  version: 1 | 2 | ... | 16; // each bump is its fields' `vN+`
   stackName: string;
-  region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
+  region?: string; // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
   outputs: Record<string, unknown>; // see `outputs` below
-  imports?: StateImportEntry[];   // v4+: Fn::ImportValue refs; block the producer's destroy
+  imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs; block the producer's destroy
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs; see below
-  exportNames?: string[];         // v9+: see below
+  exportNames?: string[]; // v9+: see below
   skippedOutputs?: Record<string, string>; // no bump
-  orphans?: StackOrphanRecord[];  // no bump: rollback-orphaned Retain resources (the discarded ResourceState verbatim); re-adopted on legacy stacks only
+  orphans?: StackOrphanRecord[]; // no bump: rollback-orphaned Retain resources (the discarded ResourceState verbatim); re-adopted on legacy stacks only
   supersededResources?: SupersededResourceRecord[]; // no bump: a replacement's old resource whose delete was deferred (its ResourceState verbatim, scrubbed as orphans are); retried by every deploy's cleanup, deleted by destroy, dropped once a record holds its id (#5111)
   conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: see below
-  parentStack?: string;           // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
-  parentLogicalId?: string;       // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
-  parentRegion?: string;          // v6+: = `region`
+  parentStack?: string; // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
+  parentLogicalId?: string; // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
+  parentRegion?: string; // v6+: = `region`
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>; // v12+: key -> token
-  stackInstanceId?: string;       // v13+: this lifetime's id; absent = legacy, forever
+  stackInstanceId?: string; // v13+: this lifetime's id; absent = legacy, forever
+  stackIdFromInstance?: true; // v16+: see stackIdTailOf
   retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
   pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
   terminationProtection?: true; // no bump: each deploy writes it from synth (root only); destroy / state destroy refuse while present (#5238)
@@ -42,28 +43,28 @@ interface StateOutputReadEntry { sourceStack: string /* REDACTED */; sourceRegio
 interface ResourceState {
   physicalId: string;
   resourceType: string;
-  properties: Record<string, unknown>;          // resolved values cdkd SENT (a narrowed or silently dropped property is absent)
+  properties: Record<string, unknown>; // resolved values cdkd SENT (a narrowed or silently dropped property is absent)
   observedProperties?: Record<string, unknown>; // v3+: AWS-current snapshot (drift baseline)
-  attributes?: Record<string, unknown>;         // for Fn::GetAtt resolution
-  dependencies?: string[];                      // for deletion order
+  attributes?: Record<string, unknown>; // for Fn::GetAtt resolution
+  dependencies?: string[]; // for deletion order
   metadata?: Record<string, unknown>;
-  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';      // v5+
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+
-  provisionedBy?: 'sdk' | 'cc-api';         // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
-  observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
+  provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
+  observedBaselineRefused?: true; // v10+: import refused a baseline; no writer may synthesize one from `properties`
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
-  noEchoLeaves?: (string | number)[][];     // v11+: coordinates in `properties` stored `***` for a NoEcho parameter / declared-NoEcho GetAtt
-  noEchoAttributeNames?: string[];          // v11+: own `attributes` declared NoEcho, each stored `***`
+  noEchoLeaves?: (string | number)[][]; // v11+: coordinates in `properties` stored `***` for a NoEcho parameter / declared-NoEcho GetAtt
+  noEchoAttributeNames?: string[]; // v11+: own `attributes` declared NoEcho, each stored `***`
   referenceProvenance?: Record<string, ReferenceProvenance>; // v12+: token -> { region?, versions?, readVersions? }
-  noEchoExactEchoLeaves?: string[][];       // no bump: `noEchoLeaves` echoed exactly (#4656)
-  secretNamedAttributes?: string[];         // no bump: nested-stack row's `Outputs.<Key>` holding a child's secret-derived name (#3869)
-  acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
-  constructPath?: string;                   // no bump: display only; `redactStateForPersist` stamps it (#4607)
+  noEchoExactEchoLeaves?: string[][]; // no bump: `noEchoLeaves` echoed exactly (#4656)
+  secretNamedAttributes?: string[]; // no bump: nested-stack row's `Outputs.<Key>` holding a child's secret-derived name (#3869)
+  acceptedCreateOnlyDrops?: string[]; // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
+  constructPath?: string; // no bump: display only; `redactStateForPersist` stamps it (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
-  nameGeneration?: number;                  // v13+: absent = 0
-  nameGenerationHigh?: number;              // v13+: set by a rollback
-  unsettledProperties?: string[];           // v14+: names a failed update had started changing (#5380)
+  nameGeneration?: number; // v13+: absent = 0
+  nameGenerationHigh?: number; // v13+: set by a rollback
+  unsettledProperties?: string[]; // v14+: names a failed update had started changing (#5380)
   unsettledItems?: Record<string, string[]>; // v15+: item names its ACCEPTED calls added, per path under an unsettled name (#5498)
 }
 ```
@@ -82,7 +83,7 @@ Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/typ
 
 ## `stackInstanceId` and name generations (v13+, #5064)
 
-Minted only at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged.
+Minted only at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged. v16 `stackIdFromInstance` (#6170): a context resolving `AWS::StackId` passes `stackIdTail`, else `cdkd`.
 
 Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. Every path whose record leaves the stack retires its generation (`retiredNameGenerationsAfter` / `retiredAfterRollback`), a rollback's taken-back CREATE included. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed, or a successor past a safe integer = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
 

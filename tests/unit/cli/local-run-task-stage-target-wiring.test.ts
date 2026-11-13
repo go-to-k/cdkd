@@ -116,7 +116,7 @@ describe('cdkd local run-task: the state source follows a Stage target (go-to-k/
     await runTask('MyStage/Api/TD');
 
     expect(createLocalStateProviderMock).toHaveBeenCalledTimes(1);
-    expect(createLocalStateProviderMock.mock.calls[0]?.slice(1)).toEqual([
+    expect(createLocalStateProviderMock.mock.calls[0]?.slice(1, 3)).toEqual([
       'MyStage-Api',
       'eu-west-1',
     ]);
@@ -130,7 +130,7 @@ describe('cdkd local run-task: the state source follows a Stage target (go-to-k/
   it('control: a top-level target reaches its own stack', async () => {
     await runTask('Top/TD');
 
-    expect(createLocalStateProviderMock.mock.calls[0]?.slice(1)).toEqual(['Top', 'us-east-1']);
+    expect(createLocalStateProviderMock.mock.calls[0]?.slice(1, 3)).toEqual(['Top', 'us-east-1']);
   });
 });
 

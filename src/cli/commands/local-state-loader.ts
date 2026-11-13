@@ -95,6 +95,19 @@ export interface LoadStateForStackOptions {
    * run-task caller passes the same string for consistency.
    */
   logPrefix?: string;
+  /**
+   * Where the read's warnings go (default: the logger at warn). AWS Emulator
+   * mixed mode collects the emulator side's, so its one merged warning carries
+   * the reason instead of a second line (go-to-k/cdkd#6150).
+   */
+  warn?: (message: string) => void;
+  /**
+   * The caller runs this read inside its own client scope
+   * (`runWithStackAwsClients`): the read's clients are then not published as
+   * the process-global `AwsClients`, which a concurrent read outside the
+   * scope would otherwise pick up (mixed mode's emulator side).
+   */
+  scopedClients?: boolean;
 }
 
 export async function loadStateForStack(
@@ -116,6 +129,7 @@ export async function loadStateForStack(
 > {
   const logger = getLogger();
   const prefix = opts.logPrefix ?? '--from-state';
+  const warn = opts.warn ?? ((message: string): void => logger.warn(message));
 
   // Issue #1836: fold the WHOLE chain, not just `opts.region`. The two env-var
   // fall-throughs are the sources a command's handler-entry fold cannot reach.
@@ -154,7 +168,7 @@ export async function loadStateForStack(
   } catch (err) {
     // cdkd-raw-beside-safe: `prefix` is a caller literal (`opts.logPrefix`,
     // whose only callers pass '--from-state', or that default).
-    logger.warn(
+    warn(
       `${prefix}: could not resolve state bucket: ${describeLocalAwsFailureForWarn(err, 'state bucket resolution')}. Falling back.`
     );
     return undefined;
@@ -172,7 +186,7 @@ export async function loadStateForStack(
     ...(clientRegion !== undefined && { region: clientRegion }),
     ...(opts.profile !== undefined && { profile: opts.profile }),
   });
-  setAwsClients(awsClients);
+  if (!opts.scopedClients) setAwsClients(awsClients);
 
   try {
     const stateConfig = { bucket: stateBucket, prefix: opts.statePrefix };
@@ -196,7 +210,7 @@ export async function loadStateForStack(
 
     const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
     if (refs.length === 0) {
-      logger.warn(
+      warn(
         `${prefix}: no cdkd state found for stack '${stackName}' in bucket '${stateBucket}'. ` +
           `Was it deployed via 'cdkd deploy'? Falling back.`
       );
@@ -244,7 +258,7 @@ export async function loadStateForStack(
         const how = exact
           ? `matches ${source} '${candidate}' exactly`
           : `no record spells ${source} '${candidate}' exactly, so this is a case-insensitive recovery`;
-        logger.warn(
+        warn(
           `${prefix}: stack '${stackName}' has state under ${folded.length} case-variant spellings of ${source} '${candidate}' ` +
             `(${folded.map((r) => r.region ?? '(legacy)').join(', ')}). ` +
             `Reading '${chosen.region ?? '(legacy)'}' — ${how}.`
@@ -287,7 +301,7 @@ export async function loadStateForStack(
       const found = findByRegion(requestedRegion, '--stack-region');
       if (!found) {
         const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
-        logger.warn(
+        warn(
           `${prefix}: stack '${stackName}' has no state in region '${requestedRegion}' (available: ${seen}). Falling back.`
         );
         return undefined;
@@ -312,7 +326,7 @@ export async function loadStateForStack(
       const seen = refs
         .map((r) => (r.region === undefined ? '(legacy)' : regionShown(r.region)))
         .join(', ');
-      logger.warn(
+      warn(
         // cdkd-raw-beside-safe: `prefix` is the caller's flag label (a literal), and `seen` is already built from `regionShown` per region above.
         `${prefix}: stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions (${seen}). ` +
           `Re-run with --stack-region '<region>'. Falling back.`
@@ -322,7 +336,7 @@ export async function loadStateForStack(
 
     const stateData = await stateBackend.getState(stackName, targetRegion);
     if (!stateData) {
-      logger.warn(
+      warn(
         `${prefix}: state record for '${stackName}' (${targetRegion}) returned empty. Falling back.`
       );
       return undefined;
@@ -334,7 +348,8 @@ export async function loadStateForStack(
     // module-global `globalClients` reference. Bare `awsClients.destroy()`
     // would leave a destroyed instance pointed at by the global, which a
     // later caller of `getAwsClients()` would silently reuse.
-    resetAwsClients();
+    if (opts.scopedClients) awsClients.destroy();
+    else resetAwsClients();
   }
 }
 

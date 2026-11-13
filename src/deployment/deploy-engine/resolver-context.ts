@@ -32,6 +32,7 @@ export interface ResolverContextDeps {
   recordedImports: () => DeployEngine['recordedImports'];
   recordedOutputReads: () => DeployEngine['recordedOutputReads'];
   runProducerRegionEvidence: () => DeployEngine['runProducerRegionEvidence'];
+  runStackIdTail: () => DeployEngine['runStackIdTail'];
 }
 
 /**
@@ -130,6 +131,10 @@ export function buildResolverContext(
       Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
     stateBackend: deps.stateBackend,
     stackName,
+    // go-to-k/cdkd#6170: read at resolution time, so a context built before
+    // the first write marks the record (the diff pass) and one built after it
+    // (provisioning) each see the record as it is when they read it.
+    stackIdTail: () => deps.runStackIdTail()?.(),
     ...(deps.exportIndexStore && { exportIndex: deps.exportIndexStore }),
     recordedImports: deps.recordedImports(),
     recordedOutputReads: deps.recordedOutputReads(),

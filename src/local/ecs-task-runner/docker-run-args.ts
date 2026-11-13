@@ -6,6 +6,7 @@ import {
   getActiveWorkloadAwsWiring,
   type LoopbackForwarderNamespace,
 } from 'cdk-local/internal';
+import { workloadGetsEmulatorKeysOnly } from '../local-aws-wiring.js';
 import { partitionSensitiveEnv } from '../../utils/docker-cmd.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { SENSITIVE_ENV_KEYS } from '../docker-runner.js';
@@ -134,6 +135,17 @@ interface BuildDockerRunArgs {
    * sidecar only.
    */
   profileCredentialsFile?: { hostPath: string; containerPath: string; profileName: string };
+  /**
+   * AWS Emulator mixed mode (go-to-k/cdkd#6150): the REAL identity (an assumed
+   * task role, else the caller's) for a container that keeps a `"real-aws"`
+   * exception, delivered as env keys. The metadata sidecar, reachable by every
+   * container of the task, serves only the emulator's keys then.
+   */
+  mixedModeRealCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
 }
 
 /**
@@ -261,8 +273,17 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // `--aws-emulator` no host credentials file reaches the container, and the
   // CA bundle is mounted read-only unless a MountPoint already owns its path.
   const wiring = getActiveWorkloadAwsWiring();
-  const profileCredentialsFile =
-    wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
+  // A mixed-mode container keeping no "real-aws" exception gets the emulator's
+  // keys only (go-to-k/cdkd#6150), so judge on the env it will end up with:
+  // the template, then the `--env-vars` layers, as assembled below.
+  const previewEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(container.environment)) defineOwnKey(previewEnv, k, v);
+  if (opts.envOverrides) {
+    applyOverrideMap(previewEnv, opts.envOverrides['Parameters']);
+    applyOverrideMap(previewEnv, opts.envOverrides[container.name]);
+  }
+  const emulatorKeysOnly = workloadGetsEmulatorKeysOnly(previewEnv, wiring);
+  const profileCredentialsFile = emulatorKeysOnly ? undefined : opts.profileCredentialsFile;
   if (profileCredentialsFile) {
     both('-v', `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`);
   }
@@ -309,6 +330,21 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     ...(opts.sidecarIp !== undefined && { sidecarIp: opts.sidecarIp }),
   });
   Object.assign(finalEnv, metaEnv);
+  // Mixed mode: the sidecar serves the emulator's keys; the real identity
+  // reaches only a container that keeps an exception, as env keys.
+  if (opts.mixedModeRealCredentials && wiring?.mixed && !emulatorKeysOnly) {
+    delete finalEnv['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    // cdkd-local-env-identity: the identity the sidecar serves without mixed
+    // mode (`resolveTaskCredentialChannels`): --assume-task-role, --profile or
+    // the caller's chain, never a `--role-arn` assumed for cdkd's own calls.
+    finalEnv['AWS_ACCESS_KEY_ID'] = opts.mixedModeRealCredentials.accessKeyId;
+    // cdkd-local-env-identity: as above.
+    finalEnv['AWS_SECRET_ACCESS_KEY'] = opts.mixedModeRealCredentials.secretAccessKey;
+    if (opts.mixedModeRealCredentials.sessionToken) {
+      // cdkd-local-env-identity: as above.
+      finalEnv['AWS_SESSION_TOKEN'] = opts.mixedModeRealCredentials.sessionToken;
+    }
+  }
   // PR #670 follow-up — point the container's SDK chain at the bind-
   // mounted credentials file so `fromIni({ profile })` calls inside
   // the handler resolve to the same creds. `AWS_PROFILE` makes

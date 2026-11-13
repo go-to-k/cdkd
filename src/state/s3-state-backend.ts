@@ -7,7 +7,7 @@ import type {
   RollbackJournalSegment,
 } from '../types/rollback-journal.js';
 import type { CreateTokenLedgerDoc } from './create-token-ledger.js';
-import { STACK_INSTANCE_SIBLING_FILE } from './stack-instance-id.js';
+import { STACK_INSTANCE_SIBLING_FILE, type StackInstanceIdentity } from './stack-instance-id.js';
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
@@ -95,7 +95,9 @@ import {
   stackInstanceIdForFirstWrite,
   stackInstanceSiblingError,
   prefetchStackInstanceSibling,
+  peekStackInstanceSibling,
   readSiblingId,
+  readSiblingIdentity,
   readStackInstanceSibling,
   deleteStackInstanceSibling,
   dropStackInstanceSiblingAfterSave,
@@ -180,7 +182,7 @@ export class S3StateBackend {
   readonly pendingStackInstanceSiblings = new Map<string, string>();
   /** {@link prefetchStackInstanceSibling}'s reads, by sibling key; each taken once. */
   /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
-  readonly siblingPrefetches = new Map<string, Promise<string | null>>();
+  readonly siblingPrefetches = new Map<string, Promise<StackInstanceIdentity | null>>();
   /** The version each sibling this process wrote got, by sibling key (go-to-k/cdkd#5200). */
   /** @internal Not `private` only because `./s3-state-backend/*.ts` reads it (go-to-k/cdkd#5835). */
   readonly siblingVersionsWritten = new Map<string, string>();
@@ -717,7 +719,7 @@ export class S3StateBackend {
   stackInstanceIdForFirstWrite(
     stackName: string,
     region: string,
-    options: { writeAhead: boolean }
+    options: { writeAhead: boolean; candidate?: StackInstanceIdentity }
   ): Promise<string> {
     return stackInstanceIdForFirstWrite.call(this, stackName, region, options);
   }
@@ -736,9 +738,25 @@ export class S3StateBackend {
     return prefetchStackInstanceSibling.call(this, stackName, region);
   }
 
+  peekStackInstanceSibling(
+    stackName: string,
+    region: string
+  ): Promise<StackInstanceIdentity | null> {
+    return peekStackInstanceSibling.call(this, stackName, region);
+  }
+
   /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
   readSiblingId(key: string, stackName: string, region: string): Promise<string | null> {
     return readSiblingId.call(this, key, stackName, region);
+  }
+
+  /** @internal Body in `./s3-state-backend/`. */
+  readSiblingIdentity(
+    key: string,
+    stackName: string,
+    region: string
+  ): Promise<StackInstanceIdentity | null> {
+    return readSiblingIdentity.call(this, key, stackName, region);
   }
 
   readStackInstanceSibling(stackName: string, region: string): Promise<string | undefined> {

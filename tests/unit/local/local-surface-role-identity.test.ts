@@ -189,6 +189,29 @@ function constructionAnnotated(lines: string[], index: number, span: number): bo
   return false;
 }
 
+/**
+ * The `awsClientDefaults(...)` call starting on `lines[index]`, through its
+ * closing parenthesis (a formatter wraps a long options bag over several
+ * lines, go-to-k/cdkd#6150), capped at 10 lines; comments stripped.
+ */
+function helperCallText(lines: string[], index: number): string {
+  const first = stripComments(lines[index] ?? '');
+  const start = first.indexOf('awsClientDefaults(');
+  if (start === -1) return first;
+  let text = '';
+  let depth = 0;
+  for (let i = index; i < lines.length && i < index + 10; i++) {
+    const code = i === index ? first.slice(start) : stripComments(lines[i] ?? '');
+    for (const ch of code) {
+      text += ch;
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) return text;
+    }
+    text += '\n';
+  }
+  return text;
+}
+
 type SiteVerdict = Pick<Site, 'kind' | 'optsOut' | 'annotated'>;
 
 /**
@@ -225,7 +248,7 @@ function classifyLine(lines: string[], index: number): { site?: SiteVerdict; cov
     kind,
     // Only a direct `awsClientDefaults(...)` spread can take the option; the
     // other two shapes never accept it, so the text there opts out of nothing.
-    optsOut: kind === 'awsClientDefaults' && code.includes('ignoreAssumedRole: true'),
+    optsOut: kind === 'awsClientDefaults' && helperCallText(lines, index).includes('ignoreAssumedRole: true'),
     // Issue #3250 item 6: a fixed 4-line window, which FOUR of the sites
     // below sat exactly on. `hasAnnotationAbove` walks the enclosing
     // statement instead, so a rewrapped word cannot drop a decided site to

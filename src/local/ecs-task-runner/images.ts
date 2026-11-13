@@ -77,6 +77,8 @@ async function prepareOneImage(
     }
     case 'ecr': {
       return pullEcrImage(image.uri, {
+        // Mixed mode: real ECR only when THIS container excepts ECR (#6179).
+        workload: { containerName: container.name },
         skipPull: options.skipPull,
         ...(options.region !== undefined && { region: options.region }),
         ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),

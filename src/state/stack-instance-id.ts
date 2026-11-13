@@ -24,6 +24,15 @@
 /** Sibling format version, independent of the state schema. */
 export const STACK_INSTANCE_SIBLING_VERSION = 1;
 
+/**
+ * The sibling version of a first deploy whose `AWS::StackId` takes its tail
+ * from the id (state schema v16, go-to-k/cdkd#6170): the body adds
+ * `stackIdFromInstance: true`. Its own version, so a binary that would ignore
+ * the flag (and re-run the deploy naming resources from `.../cdkd`) refuses
+ * the body instead; a v1 body still reads, as a legacy stack.
+ */
+export const STACK_INSTANCE_SIBLING_VERSION_STACK_ID = 2;
+
 /** The sibling's file name, beside `state.json`. */
 export const STACK_INSTANCE_SIBLING_FILE = 'stack-instance.json';
 
@@ -31,6 +40,14 @@ export const STACK_INSTANCE_SIBLING_FILE = 'stack-instance.json';
 export interface StackInstanceSiblingDoc {
   stackInstanceVersion: number;
   stackInstanceId: string;
+  /** Version 2 only. */
+  stackIdFromInstance?: true;
+}
+
+/** What a sibling records: the id, and whether `AWS::StackId` derives from it. */
+export interface StackInstanceIdentity {
+  stackInstanceId: string;
+  stackIdFromInstance: boolean;
 }
 
 /** What `crypto.randomUUID()` produces (RFC 4122 v4), lowercase. */
@@ -42,12 +59,15 @@ export function isStackInstanceId(value: unknown): value is string {
   return typeof value === 'string' && STACK_INSTANCE_ID_PATTERN.test(value);
 }
 
-/** The sibling body for `id`. */
-export function stackInstanceSiblingBody(id: string): string {
-  const doc: StackInstanceSiblingDoc = {
-    stackInstanceVersion: STACK_INSTANCE_SIBLING_VERSION,
-    stackInstanceId: id,
-  };
+/** The sibling body for `id` (version 2, with the flag, when `stackIdFromInstance`). */
+export function stackInstanceSiblingBody(id: string, stackIdFromInstance = false): string {
+  const doc: StackInstanceSiblingDoc = stackIdFromInstance
+    ? {
+        stackInstanceVersion: STACK_INSTANCE_SIBLING_VERSION_STACK_ID,
+        stackInstanceId: id,
+        stackIdFromInstance: true,
+      }
+    : { stackInstanceVersion: STACK_INSTANCE_SIBLING_VERSION, stackInstanceId: id };
   return JSON.stringify(doc, null, 2);
 }
 
@@ -57,6 +77,14 @@ export function stackInstanceSiblingBody(id: string): string {
  * minting over a body a newer binary may have written.
  */
 export function parseStackInstanceSibling(body: string): string | null {
+  return parseStackInstanceSiblingIdentity(body)?.stackInstanceId ?? null;
+}
+
+/**
+ * {@link parseStackInstanceSibling} with the flag: a version 1 body is a
+ * legacy stack, a version 2 body must carry `stackIdFromInstance: true`.
+ */
+export function parseStackInstanceSiblingIdentity(body: string): StackInstanceIdentity | null {
   let raw: unknown;
   try {
     raw = JSON.parse(body);
@@ -65,8 +93,17 @@ export function parseStackInstanceSibling(body: string): string | null {
   }
   if (typeof raw !== 'object' || raw === null) return null;
   const doc = raw as Record<string, unknown>;
-  if (doc['stackInstanceVersion'] !== STACK_INSTANCE_SIBLING_VERSION) return null;
-  return isStackInstanceId(doc['stackInstanceId']) ? doc['stackInstanceId'] : null;
+  const version = doc['stackInstanceVersion'];
+  let stackIdFromInstance: boolean;
+  if (version === STACK_INSTANCE_SIBLING_VERSION) stackIdFromInstance = false;
+  else if (
+    version === STACK_INSTANCE_SIBLING_VERSION_STACK_ID &&
+    doc['stackIdFromInstance'] === true
+  )
+    stackIdFromInstance = true;
+  else return null;
+  const id = doc['stackInstanceId'];
+  return isStackInstanceId(id) ? { stackInstanceId: id, stackIdFromInstance } : null;
 }
 
 /** A recorded `stackInstanceId` that is not a well-formed id. */

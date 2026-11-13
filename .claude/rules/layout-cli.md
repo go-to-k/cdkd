@@ -82,11 +82,11 @@ Index of every area: [code-layout.md](code-layout.md).
   cdk-local: it splices cdk-local's `--region` out, adds cdkd's hidden
   deprecated option, and folds in a `preAction` hook, which runs BEFORE
   cdk-local builds an SDK client. `cli-region-fold.test.ts` fences it.
-- **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
-  Split from `index.ts`, whose import runs `main()`.
+- **src/cli/program.ts** - `buildProgram()`, the whole Commander tree (apart
+  from `index.ts`, whose import runs `main()`).
 - **src/cli/aws-emulator.ts** - `--aws-emulator` on every `--profile` command
-  (#6138): drops the real identity, points the env at the emulator, activates
-  via `aws-emulator-activation.ts` (not `cdkd local`'s path). A client
+  (#6138): drops real identity (not in local mixed mode, #6150), points
+  the env at the emulator, activates via `aws-emulator-activation.ts`. A client
   setting `credentials` / `endpoint` past `awsClientDefaults` needs a reviewed
   entry in `aws-emulator-client-factories.test.ts`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on

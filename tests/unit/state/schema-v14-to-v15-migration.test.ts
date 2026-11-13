@@ -18,7 +18,6 @@ import {
   withUnsettledItems,
   withoutUnsettledProperties,
 } from '../../../src/state/unsettled-properties.js';
-import { StateError } from '../../../src/utils/error-handler.js';
 
 /**
  * Schema v15 — `ResourceState.unsettledItems` (go-to-k/cdkd#5498): the item
@@ -26,10 +25,10 @@ import { StateError } from '../../../src/utils/error-handler.js';
  * unsettled top-level keys they belong to.
  *
  * Through the REAL `S3StateBackend` read path, over a VERBATIM v14 document:
- * v15 is current and every older version readable, a v14 document is read
- * unchanged (no attempted items), a v15 document round-trips them, and a
- * version past 15 is refused with "Upgrade cdkd" — as a v14 binary refuses
- * 15, which keeps a binary that would drop the items from rewriting the record.
+ * every version through 15 stays readable, a v14 document is read unchanged
+ * (no attempted items), and a v15 document round-trips them. The current
+ * version and the refusal past it are pinned by the latest bump's test
+ * (`schema-v15-to-v16-migration.test.ts`).
  */
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: vi.fn().mockImplementation(() => ({
@@ -108,10 +107,9 @@ describe('State schema v15 — unsettledItems (go-to-k/cdkd#5498)', () => {
     });
   };
 
-  it('v15 is the current version, and every version 1..15 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(15);
+  it('every version 1..15 stays readable (v16, go-to-k/cdkd#6170, is current)', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(15);
     for (let v = 1; v <= 15; v++) expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(16);
   });
 
   it('reads a verbatim v14 document unchanged, with no attempted items, and writes nothing on read', async () => {
@@ -134,17 +132,7 @@ describe('State schema v15 — unsettledItems (go-to-k/cdkd#5498)', () => {
     ]);
   });
 
-  it('refuses version 16 with the "Upgrade cdkd" error, as a v14 binary refuses 15', async () => {
-    const v16 = JSON.parse(V14_DOCUMENT) as StackState;
-    (v16 as { version: number }).version = 16;
-    serve(JSON.stringify(v16));
-    const read = backend.getState('LegacyV14', 'us-east-1');
-    await expect(read).rejects.toThrow(StateError);
-    serve(JSON.stringify(v16));
-    await expect(backend.getState('LegacyV14', 'us-east-1')).rejects.toThrow(/Upgrade cdkd/);
-  });
-
-  it('saves version 15 with the items intact', async () => {
+  it('saves the current version with the items intact', async () => {
     client.send.mockResolvedValue({ ETag: '"new"' });
     const state = JSON.parse(V14_DOCUMENT) as StackState;
     state.resources['Table']!.unsettledItems = { GlobalSecondaryIndexes: ['gsi2'] };
@@ -153,7 +141,7 @@ describe('State schema v15 — unsettledItems (go-to-k/cdkd#5498)', () => {
       .map(([command]) => (command as { input?: { Body?: unknown } }).input?.Body)
       .find((b): b is string => typeof b === 'string');
     const saved = JSON.parse(body!) as StackState;
-    expect(saved.version).toBe(15);
+    expect(saved.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
     expect(saved.resources['Table']!.unsettledItems).toEqual({ GlobalSecondaryIndexes: ['gsi2'] });
   });
 });

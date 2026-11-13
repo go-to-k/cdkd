@@ -1,6 +1,8 @@
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
+import { stackIdTailOf } from '../../../state/stack-id-tail.js';
+import { isSelectOutOfBounds } from '../../../deployment/intrinsic-resolver/string-functions.js';
 import {
   IntrinsicFunctionResolver,
   isUnboundTemplateParameter,
@@ -335,9 +337,10 @@ export async function resolveImportedProperties(
       parameters,
     });
   } catch (err) {
-    logger.debug(
-      `Template condition evaluation failed during import-time property resolution: ${describeAwsFailure(err).detail} — continuing without conditions.`
-    );
+    const message = `Template condition evaluation failed during import-time property resolution: ${describeAwsFailure(err).detail} — continuing without conditions.`;
+    // go-to-k/cdkd#6181: a condition `cdkd deploy` refuses is worth a WARN.
+    if (isSelectOutOfBounds(err)) logger.warn(message);
+    else logger.debug(message);
   }
 
   // The parameters this import could NOT bind, decided by the SAME predicate
@@ -404,6 +407,9 @@ export async function resolveImportedProperties(
     ...(Object.keys(conditions).length > 0 && { conditions }),
     stateBackend,
     stackName: stackState.stackName,
+    // go-to-k/cdkd#6170: the tail the stack's deploys resolve `AWS::StackId`
+    // with, so an imported record holds the value the next deploy compares.
+    stackIdTail: () => stackIdTailOf(stackState, stackState.stackName),
   };
 
   // What the NoEcho positional pass after the loop reads, per record

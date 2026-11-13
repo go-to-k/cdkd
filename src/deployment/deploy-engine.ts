@@ -462,6 +462,14 @@ export class DeployEngine {
    */
   runProducerRegionEvidence: (() => ProducerRegionEvidence) | undefined = undefined;
   /**
+   * This deploy's `AWS::StackId` tail reader (`stackIdTailOf` over the record
+   * it loaded, go-to-k/cdkd#6170), read live so the contexts built before the
+   * first write marks the record see the mark once it lands. Per-deploy, like
+   * `runProducerRegionEvidence`; `undefined` before the state loads.
+   * @internal
+   */
+  runStackIdTail: (() => string | undefined) | undefined = undefined;
+  /**
    * go-to-k/cdkd#4156: this deploy's diff, read by `inlinePolicyClaimedFor` to
    * tell whether a principal's completed update put its `Policies`.
    * Per-deploy, like `healBaseline`.

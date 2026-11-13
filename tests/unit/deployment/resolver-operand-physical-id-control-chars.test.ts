@@ -200,9 +200,9 @@ describe('the Fn::Select index and Fn::Split delimiter are sanitized (#3479)', (
     expectClean(error, 'the index refusal');
     expect(error).toContain('got string "9"');
 
-    // CONTROL: an ordinary out-of-range index still reaches the warn.
-    const control = await resolveValue({ 'Fn::Select': [9, ['a', 'b']] });
-    expect(control).toContain('Fn::Select: index 9 out of bounds (array length: 2)');
+    // CONTROL: an ordinary out-of-range index reaches the out-of-bounds
+    // refusal (go-to-k/cdkd#6181), which renders the index as is.
+    expect(await selectRefusal(9)).toContain('the index 9 is out of bounds (array length: 2)');
   });
 
   it('keeps a hostile index out of the index REFUSAL, reached by an index that is not a number (#3574)', async () => {

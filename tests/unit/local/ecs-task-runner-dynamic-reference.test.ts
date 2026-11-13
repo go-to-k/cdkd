@@ -23,6 +23,14 @@ const h = vi.hoisted(() => ({
   ssmSend: vi.fn(),
   destroy: vi.fn(),
   profiles: [] as Array<string | undefined>,
+  workloads: [] as unknown[],
+}));
+
+// cdk-local's state-source hint (go-to-k/cdkd#6150) is gated once per PROCESS;
+// answer every ask here, so each case reads its own call site.
+vi.mock('cdk-local/internal', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  takeAwsEmulatorStateSourceHint: () => 'AWS-EMULATOR-STATE-SOURCE-HINT',
 }));
 
 vi.mock('node:child_process', async () => {
@@ -156,6 +164,7 @@ describe('runEcsTask resolves Environment dynamic references (#2056)', () => {
     h.smSend.mockReset();
     h.destroy.mockReset();
     h.profiles.length = 0;
+    h.workloads.length = 0;
     h.smSend.mockResolvedValue({ SecretString: JSON.stringify({ password: PLAINTEXT }) });
     net.createTaskNetwork.mockReset();
     net.createTaskNetwork.mockResolvedValue({
@@ -163,6 +172,53 @@ describe('runEcsTask resolves Environment dynamic references (#2056)', () => {
       sidecarContainerId: 'sidecar-fake',
       sidecarIp: '169.254.170.2',
     });
+  });
+
+  it('--aws-emulator with no state source: ONE hint after the dropped-entry warnings, counting only those (go-to-k/cdkd#6150)', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    // Mixed mode with no loopback port: the runner needs no forwarder here.
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      mixed: {},
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => {},
+    } as never);
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      const task = makeTask(makeContainer({ environment: { PLAIN: 'kept' } }));
+      task.warnings.push(
+        "Environment 'TABLE' dropped: Ref Table has no state source",
+        "Container 'web': Secret 'API_KEY' dropped: unresolved intrinsic",
+        "Image 'x' looks like a same-stack repository"
+      );
+      await runEcsTask(task, options(), createEcsRunState());
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      const hints = lines.filter((l) => l === 'AWS-EMULATOR-STATE-SOURCE-HINT');
+      expect(hints).toEqual(['AWS-EMULATOR-STATE-SOURCE-HINT']);
+      expect(lines.indexOf(hints[0]!)).toBe(3);
+
+      // With a state source given, no hint.
+      warn.mockClear();
+      setActiveWorkloadAwsWiring({
+        mode: 'emulator',
+        env: {},
+        scrubEnvKeys: [],
+        mounts: [],
+        loopbackPorts: [],
+        probeHealth: false,
+        dispose: () => {},
+      } as never);
+      await runEcsTask(task, options({ stateSourceGiven: true }), createEcsRunState());
+      expect(warn.mock.calls.map((c) => String(c[0])).filter((l) => l === 'AWS-EMULATOR-STATE-SOURCE-HINT')).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      setActiveWorkloadAwsWiring(undefined);
+    }
   });
 
   it('resolves the token and passes it value-less, off the argv', async () => {
@@ -177,6 +233,8 @@ describe('runEcsTask resolves Environment dynamic references (#2056)', () => {
     expect(envFlag(args, 'PLAIN')).toBe('PLAIN=kept');
     // No --stack-region: the synth region of the task's stack.
     expect(h.smSend.mock.calls.map((x) => x[0])).toEqual(['us-east-1']);
+    // Mixed mode: the lookup is routed for THIS container (go-to-k/cdkd#6150).
+    expect(h.workloads).toEqual([{ containerName: c.name }]);
   });
 
   it('--profile reaches the caller-identity resolver, which is disposed after the lookups', async () => {

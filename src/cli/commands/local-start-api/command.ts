@@ -557,6 +557,7 @@ export async function localStartApiCommand(
           inlineTmpDirs,
           layerTmpDirs,
           stateByStack,
+          stateSourceActive,
           skipPull: options.pull === false,
           ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
           ...(profileCredentials && { profileCredentials }),

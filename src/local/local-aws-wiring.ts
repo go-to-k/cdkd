@@ -19,7 +19,14 @@
  *   chain holds by construction);
  * - under `--aws-emulator`, containers get the emulator's credentials ONLY
  *   (the host's are scrubbed), its CA and the hygiene variables, and every AWS
- *   client cdkd and cdk-local build follows the endpoint.
+ *   client cdkd and cdk-local build follows the endpoint;
+ * - AWS Emulator mixed mode (`--aws-emulator` plus a `"real-aws"` exception
+ *   on an `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars`, go-to-k/cdkd#6150):
+ *   everything still goes to the emulator — through a re-signing sidecar in
+ *   the workload's namespace — except the excepted services, which go to real
+ *   AWS; a container keeping an exception holds the real identity, every
+ *   other one the emulator's keys only. cdkd's own clients default to the
+ *   emulator too, and an excepted call opts out (`realAwsException`).
  *
  * This module is the cdkd side: it activates the wiring for a command, and
  * applies it at cdkd's own docker-run layer (`runDetached` in
@@ -34,11 +41,18 @@ import {
   effectiveLoopbackPorts,
   ensureForwarderImage,
   getActiveWorkloadAwsWiring,
+  getAwsEndpointOverride,
+  isAwsServiceRoutedToEmulator,
+  isRealAwsSentinel,
+  takeAwsEmulatorStateSourceHint,
   resolveAwsEmulatorOption,
   resolveHostDefaultCredentials,
+  type AwsEmulatorWorkload,
+  type AwsEndpointOverride,
   type WorkloadAwsWiring,
 } from 'cdk-local/internal';
 import { CdkdError } from '../utils/error-handler.js';
+import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { applyRoleArnForLocal } from './local-role-arn.js';
 import { CONTAINER_AWS_CREDENTIALS_PATH } from '../cli/commands/local-profile-credentials-file.js';
@@ -53,6 +67,13 @@ export interface LocalAwsWiringOptions {
   profile?: string | undefined;
   /** `--no-pull` as commander parses it (`false`): the forwarder image is not pulled either. */
   pull?: boolean | undefined;
+  /**
+   * `--env-vars <file>`: under `--aws-emulator`, a `"real-aws"` exception in
+   * it selects mixed mode; without the flag the value is a no-op. The old
+   * `"aws-emulator"` value, a bare `AWS_ENDPOINT_URL` exception and a
+   * misspelled variable stop the command.
+   */
+  envVars?: string | undefined;
 }
 
 /**
@@ -74,12 +95,19 @@ export async function activateLocalAwsWiring(options: LocalAwsWiringOptions): Pr
       caBundle: options.caBundle,
       profile: options.profile,
       pull: options.pull,
+      // cdk-local reads it through `readEnvVarsFileText`, so a pipe-backed
+      // path is read once and the command's own `--env-vars` read gets the
+      // same text; the parsed file drives per-workload routing.
+      envVars: options.envVars,
     });
   } catch (err) {
+    // The error's own CAUSE, not the error: chaining the error itself only
+    // printed its text a second time as the `Caused by:` line.
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause : undefined;
     throw new CdkdError(
       err instanceof Error ? err.message : String(err),
       'LOCAL_AWS_WIRING_FAILED',
-      err instanceof Error ? err : undefined
+      cause
     );
   }
 }
@@ -173,8 +201,11 @@ export async function applyLocalAwsWiring(
   // chain per container start nor misses a later `aws sso login` for good.
   const defaults = needsDefaults ? await resolveHostDefaultCredentials() : undefined;
   const wiredEnv = applyWorkloadAwsWiringToEnv(env, wiring, defaults);
+  // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container
+  // keeping no exception): no host credentials file either.
+  const emulatorOnly = workloadGetsEmulatorKeysOnly(env, wiring);
   const mounts = extraMounts.filter(
-    (m) => wiring.mode !== 'emulator' || m.containerPath !== CONTAINER_AWS_CREDENTIALS_PATH
+    (m) => !emulatorOnly || m.containerPath !== CONTAINER_AWS_CREDENTIALS_PATH
   );
   const taken = new Set([...takenContainerPaths, ...mounts.map((m) => m.containerPath)]);
   for (const m of wiring.mounts) {
@@ -192,7 +223,19 @@ export function loopbackPortsFor(
   env: Readonly<Record<string, string>>,
   network: string | undefined
 ): number[] {
-  return network === 'host' ? [] : effectiveLoopbackPorts(env, wiring);
+  if (network !== 'host') return effectiveLoopbackPorts(env, wiring);
+  const mixed = wiring.mixed;
+  if (mixed && effectiveLoopbackPorts(env, wiring).includes(mixed.resignPort)) {
+    // The re-signing sidecar listens on the workload's own loopback; on the
+    // host network that is the host's, shared by every workload of the run.
+    throw new CdkdError(
+      'A run with "real-aws" exceptions (AWS Emulator mixed mode) cannot use the host network: its ' +
+        're-signing sidecar listens on the workload\'s own loopback. Drop the "real-aws" exceptions or the ' +
+        'host network.',
+      'LOCAL_AWS_EMULATOR_FORWARDER_FAILED'
+    );
+  }
+  return [];
 }
 
 /**
@@ -204,7 +247,8 @@ export async function prepareLocalLoopbackForwarder(wiring: WorkloadAwsWiring): 
   try {
     await ensureForwarderImage(wiring.skipPull === true);
   } catch (err) {
-    if (wiring.mode === 'emulator') {
+    // Mixed mode too: a workload routed to the emulator has no other way there.
+    if (wiring.mode === 'emulator' || wiring.mixed) {
       throw new CdkdError(
         `--aws-emulator: the loopback forwarder image could not be pulled: ${(err as Error).message}`,
         'LOCAL_AWS_EMULATOR_FORWARDER_PULL_FAILED'
@@ -243,6 +287,7 @@ export async function attachLocalLoopbackForwarder(
  * The `--profile` credentials a workload container gets, or `undefined`.
  * Under `--aws-emulator` the real profile is never resolved (no SSO / STS hop,
  * no credentials file on the host): the container gets the emulator's keys.
+ * Mixed mode resolves it: the container keeps the real identity there.
  * Call it AFTER {@link activateLocalAwsWiring}.
  */
 export async function profileCredentialsForWorkload<T>(
@@ -266,7 +311,11 @@ export function setContainerRegion(env: Record<string, string>, region: string |
   env['AWS_DEFAULT_REGION'] = folded;
 }
 
-/** True while `--aws-emulator` is active for this command run. */
+/**
+ * True while `--aws-emulator` is active for this command run in full-emulator
+ * mode (no "real-aws" exception): the emulator's keys are then the only identity. False
+ * in mixed mode, where workloads keep the real identity.
+ */
 export function localAwsEmulatorActive(): boolean {
   return getActiveWorkloadAwsWiring()?.mode === 'emulator';
 }
@@ -280,6 +329,69 @@ export function localAwsEmulatorCredentials():
   | undefined {
   const wiring = getActiveWorkloadAwsWiring();
   return wiring?.mode === 'emulator' ? wiring.emulatorCredentials : undefined;
+}
+
+/**
+ * Whether a container whose env (before `applyWorkloadAwsWiringToEnv`) is
+ * `env` gets the emulator's keys only, so no host credential file or real
+ * identity may reach it: always under `--aws-emulator` alone, and in mixed
+ * mode (go-to-k/cdkd#6150) when the env keeps no `"real-aws"` exception on an
+ * `AWS_ENDPOINT_URL_<SERVICE>` — cdk-local's rule, which its env wiring
+ * applies to the same env.
+ */
+export function workloadGetsEmulatorKeysOnly(
+  env: Readonly<Record<string, string | undefined>>,
+  wiring: WorkloadAwsWiring | undefined
+): boolean {
+  if (!wiring) return false;
+  if (wiring.mode === 'emulator') return true;
+  if (!wiring.mixed) return false;
+  return !Object.entries(env).some(([k, v]) => k !== 'AWS_ENDPOINT_URL' && isRealAwsSentinel(k, v));
+}
+
+/** True while AWS Emulator mixed mode is active: `--aws-emulator` plus a `"real-aws"` exception. */
+export function mixedModeActive(): boolean {
+  return getActiveWorkloadAwsWiring()?.mixed !== undefined;
+}
+
+/**
+ * Whether a cdkd call to `service` (an endpoint service id: `SECRETS_MANAGER`,
+ * `SSM`, `STS`) goes to REAL AWS in AWS Emulator mixed mode
+ * (go-to-k/cdkd#6150): a `"real-aws"` exception names it — for `workload`, by
+ * that workload's own exceptions (`Parameters` plus its own sections); with
+ * none, by `Parameters` alone. False outside mixed mode, where the flag
+ * decides alone. Pass it as `realAws` to `awsClientDefaults`: every other cdkd
+ * call stays on the emulator, which in mixed mode is the process-wide default
+ * ({@link mixedModeEmulatorOverride}).
+ *
+ * cdk-local decides (`isAwsServiceRoutedToEmulator`, installed by
+ * `activateWorkloadAwsWiring`), so cdkd's calls and cdk-local's cannot drift.
+ */
+export function realAwsException(service: string, workload?: AwsEmulatorWorkload): boolean {
+  return mixedModeActive() && !isAwsServiceRoutedToEmulator(service, workload);
+}
+
+/**
+ * The process-wide endpoint override for cdkd's own clients: the flag's
+ * (full emulator mode), else in mixed mode the emulator's — every cdkd call
+ * fails closed onto the emulator unless it opts out with `realAws`.
+ */
+export function mixedModeEmulatorOverride(): AwsEndpointOverride | undefined {
+  return getAwsEndpointOverride() ?? getActiveWorkloadAwsWiring()?.mixed?.emulatorClientOverride;
+}
+
+/**
+ * Under `--aws-emulator` with no `--from-state` / `--from-cfn-stack`: after
+ * the per-variable warnings for template env values dropped because they
+ * reference a resource, ONE hint naming the way to read those values. The
+ * text and the once-per-process gate are cdk-local's
+ * (`takeAwsEmulatorStateSourceHint`), shared with its engine commands, so it
+ * never prints twice. A no-op with a state source or when nothing was dropped.
+ */
+export function warnAwsEmulatorStateSourceHint(dropped: number, stateSourceGiven: boolean): void {
+  if (dropped === 0 || stateSourceGiven) return;
+  const hint = takeAwsEmulatorStateSourceHint();
+  if (hint !== undefined) getLogger().warn(hint);
 }
 
 export { getActiveWorkloadAwsWiring };

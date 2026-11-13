@@ -1,9 +1,13 @@
-import { setContainerRegion } from '../../../local/local-aws-wiring.js';
+import {
+  setContainerRegion,
+  warnAwsEmulatorStateSourceHint,
+} from '../../../local/local-aws-wiring.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import {
   firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
+  type AwsEmulatorWorkload,
 } from 'cdk-local/internal';
 import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-reference.js';
 import { tmpdir } from 'node:os';
@@ -39,7 +43,7 @@ import { resolveStartApiAssumeRoleArn } from './assume-role.js';
 import { resolveLambdaByLogicalId, type ResolvedStartApiImageLambda } from './lambda-resolver.js';
 import { materializeInlineCode, getTemplateEnv, forwardAwsEnv } from './env.js';
 import { assumeLambdaExecutionRole } from './credentials.js';
-import type { StackStateBundle } from './state.js';
+import { stateBundleKey, type StackStateBundle } from './state.js';
 
 /**
  * Build the per-Lambda container spec — code dir, env vars (template +
@@ -78,6 +82,8 @@ export async function buildContainerSpec(args: {
    * the env-resolver consults for `Ref AWS::*` / `${AWS::*}` placeholders.
    */
   stateByStack: Map<string, StackStateBundle>;
+  /** `--from-state` / `--from-cfn-stack` was given (the `--aws-emulator` hint stays quiet). */
+  stateSourceActive?: boolean;
   /**
    * `--no-pull` flag, threaded to the IMAGE branch's ECR-pull fallback
    * (`pullEcrImage(... {skipPull})`). ZIP branch ignores this — the
@@ -130,6 +136,7 @@ export async function buildContainerSpec(args: {
     inlineTmpDirs,
     layerTmpDirs,
     stateByStack,
+    stateSourceActive,
     skipPull,
     layerRoleArn,
     profileCredentials,
@@ -174,7 +181,10 @@ export async function buildContainerSpec(args: {
     // `lambda:GetLayerVersion` before the merge step. The per-ARN
     // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
     // dirs so the same shutdown path cleans every one.
-    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
+    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn, {
+      logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    });
 
     // Issue #768: pin `--platform` to the function's declared arch on the
     // ZIP container run too (the IMAGE branch below always has). Without
@@ -204,7 +214,13 @@ export async function buildContainerSpec(args: {
   // state-resolver already warned about are suppressed in the downstream
   // env-resolver's generic warn loop so the user sees one warn per key.
   let templateEnv = getTemplateEnv(lambda.resource);
-  const stateBundle = stateByStack.get(lambda.stack.stackName);
+  // Keyed by stack AND, in mixed mode, this function's routed services.
+  const stateBundle = stateByStack.get(
+    stateBundleKey(lambda.stack.stackName, {
+      logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    })
+  );
   let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
   if (stateBundle) {
     const context: SubstitutionContext = { resources: stateBundle.state.resources };
@@ -244,6 +260,7 @@ export async function buildContainerSpec(args: {
         `or pass --from-state to recover deployed values.`
     );
   }
+  warnAwsEmulatorStateSourceHint(envResult.unresolved.length, stateSourceActive === true);
 
   // CloudFormation dynamic references (`{{resolve:...}}`), resolved ONCE here
   // at server boot against the region of the stack owning the Lambda (issue
@@ -257,6 +274,8 @@ export async function buildContainerSpec(args: {
   let dynamic: Awaited<ReturnType<typeof resolveDynamicReferencesInEnv>>;
   try {
     dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+      // Mixed mode: routed by THIS function's own "real-aws" exceptions (go-to-k/cdkd#6150).
+      workload: { logicalId, cdkPath: lambdaCdkPath },
       region: firstUsableRegion(
         stateBundle?.region,
         stackRegionOverride,
@@ -490,7 +509,11 @@ export async function resolveContainerImageForStartApi(
     // (issue #2536).
     `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (uses your own credentials — this command has no --ecr-role-arn, so a cross-account image needs cross-account ECR permissions)...`
   );
-  const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
+  const imageRef = await pullEcrImage(lambda.imageUri, {
+    skipPull,
+    // Mixed mode: real ECR only when THIS function excepts ECR (#6179).
+    workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
+  });
   return { imageRef };
 }
 
@@ -550,7 +573,9 @@ async function resolveLocalBuildPlan(
 export async function materializeLambdaLayers(
   layers: ResolvedLambdaLayer[],
   layerTmpDirs: Set<string>,
-  layerRoleArn: string | undefined
+  layerRoleArn: string | undefined,
+  /** Mixed mode: a literal layer ARN reads real Lambda only for this function's LAMBDA exception (#6179). */
+  workload?: AwsEmulatorWorkload
 ): Promise<string | undefined> {
   if (layers.length === 0) return undefined;
 
@@ -565,6 +590,7 @@ export async function materializeLambdaLayers(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
+      ...(workload && { workload }),
       // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
       // cdk-local reads `roleArn` by truthiness and would pull as the caller.
       ...(layerRoleArn !== undefined && {

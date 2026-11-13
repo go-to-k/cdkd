@@ -38,15 +38,15 @@ paths:
   SIBLING of `state.json` at `{prefix}/{stack}/{region}/rollback-journal.json`,
   NOT part of the state schema (its own `journalVersion`). It goes through `S3StateBackend.*RollbackJournal`,
   and `deleteState` sweeps the key. `create-tokens.json` is the second
-  sibling (`src/state/create-token-ledger.ts`, [#4438](https://github.com/go-to-k/cdkd/issues/4438)):
+  sibling (`src/state/create-token-ledger.ts`, #4438):
   `deleteState` deletes it FIRST and fails closed: a ledger that outlives its
   record would hand a kept resource back to the next deploy. `saveState` tells
   the bound ledger (`notifyStateSaved`) so it carries `stateRecorded`; a deploy
   that finds no record replaces such a ledger instead of resuming it.
   **stack-instance-id.ts**'s `stack-instance.json` (#5064) is the third: read
   only while `state.json` is absent, deleted by the first save holding its id
-  and, fail-closed, by `deleteState`. **name-generation.ts**:
-  [state-schema.md](state-schema.md).
+  and, fail-closed, by `deleteState`. **name-generation.ts**,
+  **stack-id-tail.ts**: [state-schema.md](state-schema.md).
 
   `parseRollbackJournal` validates the per-operation shape the executor keys on
   and the records it dereferences, refusing by INDEX and TYPE with no value

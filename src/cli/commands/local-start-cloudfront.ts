@@ -58,6 +58,8 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
 export function createLocalStartCloudFrontCommand(): Command {
   const cmd: Command = createCdkLocalStartCloudFrontCommand({
     embedConfig: getEmbedConfig(),
+    // The engine asks for real-AWS names (`behavior.realAwsOnly`) for the S3
+    // origins it reads on the host, and the factory honours it (#6150).
     extraStateProviders: cdkdExtraStateProviders,
     synthesizer: cdkdHostSynthesizer(() =>
       cmd.opts<{ stateBucket?: string; verbose?: boolean; roleArn?: string }>()

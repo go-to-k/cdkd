@@ -26,10 +26,16 @@ import {
   createLocalStateProvider as createLocalStateProviderBase,
   type ExtraStateProviders,
   type LocalStateProvider,
+  type LocalStateProviderBehavior,
   type LocalStateProviderFactory,
   type LocalStateSourceOptions as LocalStateSourceOptionsBase,
 } from 'cdk-local';
-import { S3LocalStateProvider } from '../../local/s3-local-state-provider.js';
+import { awsEmulatorRealServices, getActiveWorkloadAwsWiring } from 'cdk-local/internal';
+import { createMixedModeFromStateProvider } from '../../local/mixed-mode-state.js';
+import {
+  S3LocalStateProvider,
+  type S3LocalStateProviderOptions,
+} from '../../local/s3-local-state-provider.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 
 export {
@@ -109,7 +115,29 @@ export interface LocalStateSourceOptions {
  * cdk-local's dispatcher via `extraStateProviders: { fromState }` so
  * cdk-local can treat it identically to its built-in `--from-cfn-stack`.
  */
-const fromStateFactory: LocalStateProviderFactory = (options) => {
+const fromStateFactory: LocalStateProviderFactory = (options, behavior) => {
+  const providerOpts = s3ProviderOptions(options);
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): `--aws-emulator` makes the
+  // emulator the target, so names resolve from the state `cdkd deploy
+  // --aws-emulator` wrote into it; a `"real-aws"` exception's resources from
+  // the state `cdkd deploy` wrote into real AWS — as cdk-local's
+  // `--from-cfn-stack` does:
+  // - `behavior.workload`: by that ONE workload's own exceptions; `{}`
+  //   (`UNNAMED_WORKLOAD`) is the `Parameters` exceptions alone, the names a
+  //   multi-workload engine command shares;
+  // - a workload with no exception reads every name from the emulator.
+  // Outside mixed mode the plain read follows the flag (the emulator under
+  // `--aws-emulator`, real AWS without it).
+  const mixed = getActiveWorkloadAwsWiring()?.mixed;
+  if (!mixed) return new S3LocalStateProvider(providerOpts);
+  const realServices = awsEmulatorRealServices(behavior.workload) ?? mixed.realServices;
+  return createMixedModeFromStateProvider(providerOpts, realServices);
+};
+
+/** The options bag of cdkd's S3 `--from-state` provider, folded at this boundary. */
+function s3ProviderOptions(
+  options: Parameters<LocalStateProviderFactory>[0]
+): S3LocalStateProviderOptions {
   // Narrow back to the cdkd-augmented shape. Safe because cdk-local
   // only ever invokes this factory with the options bag the shim
   // wrapper passed in, which carries every cdkd field.
@@ -132,7 +160,7 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
   // factory without passing either capture point. Blank counts as absent,
   // matching the `stackRegion` gate above.
   const rawStackRegion = opts.rawStackRegion || opts.stackRegion || undefined;
-  return new S3LocalStateProvider({
+  return {
     statePrefix: opts.statePrefix,
     ...(opts.stateBucket !== undefined && { stateBucket: opts.stateBucket }),
     // Issue #1836: `--region` needs the SAME boundary fold as `--stack-region`
@@ -164,8 +192,8 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
     // one an endpoint needs and the raw one is the only thing that can make
     // "an exactly-spelled region wins over a case-variant record" true.
     ...(rawStackRegion !== undefined && { rawStackRegion }),
-  });
-};
+  };
+}
 
 /**
  * Cdkd's `extraStateProviders` map for cdk-local's engine entry points
@@ -199,7 +227,9 @@ export const cdkdExtraStateProviders: ExtraStateProviders = {
 export function createLocalStateProvider(
   options: LocalStateSourceOptions,
   cdkdStackName: string,
-  synthRegion: string | undefined
+  synthRegion: string | undefined,
+  /** The one workload the names are for (mixed mode), as cdk-local takes it. */
+  behavior: LocalStateProviderBehavior = {}
 ): LocalStateProvider | undefined {
   // Cast at the cdk-local boundary: cdk-local's LocalStateSourceOptions
   // declares `[key: string]: unknown` so hosts can stash extra
@@ -211,6 +241,7 @@ export function createLocalStateProvider(
     options as unknown as LocalStateSourceOptionsBase,
     cdkdStackName,
     synthRegion,
-    cdkdExtraStateProviders
+    cdkdExtraStateProviders,
+    behavior
   );
 }

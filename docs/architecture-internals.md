@@ -424,7 +424,10 @@ the `getatt-construct-*.ts` per-type handlers, `cross-stack.ts`, `cfn-fallback.t
 - `AWS::Partition`: Derived from the region (`aws` / `aws-cn` / `aws-us-gov` /
   `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc`) via
   `derivePartitionAndUrlSuffix` — issues #1730 / #1764
-- `AWS::StackId`: Generated unique identifier (partition-aware)
+- `AWS::StackId`: `arn:<partition>:cloudformation:<region>:<account>:stack/<name>/<tail>`.
+  The tail is a UUID derived from the stack's `stackInstanceId` on a stack
+  first deployed with state schema v16+, and the constant `cdkd` on every
+  older stack, which keeps the value its resources were named from (#6170)
 - `AWS::StackName`: From stack configuration
 - `AWS::URLSuffix`: Derived from the region (`amazonaws.com` /
   `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` / `cloud.adc-e.uk` /

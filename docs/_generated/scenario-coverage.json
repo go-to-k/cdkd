@@ -2603,6 +2603,13 @@
       ]
     },
     {
+      "name": "schema-v15-to-v16-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -2684,6 +2691,11 @@
     },
     {
       "name": "secretsmanager-update-value-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "select-out-of-bounds",
       "annotated": false,
       "scenarios": []
     },
@@ -2776,6 +2788,11 @@
     {
       "name": "stack-copy-create-tokens",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "stack-id-uuid",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -3635,6 +3652,7 @@
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
         "schema-v14-to-v15-migration",
+        "schema-v15-to-v16-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"
@@ -3898,6 +3916,7 @@
     "secrets-rotation-schedule",
     "secretsmanager-replica-rekey",
     "secretsmanager-update-value-source",
+    "select-out-of-bounds",
     "servicediscovery",
     "shared-stackname-multi-region",
     "sns-event-source",
@@ -3906,6 +3925,7 @@
     "sns-subscription-update",
     "sqs-esm-max-concurrency",
     "sqs-fifo-unnamed",
+    "stack-id-uuid",
     "stack-lock-renewal",
     "stage-assets",
     "stepfunctions-s3-definition",

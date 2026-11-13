@@ -20,6 +20,14 @@
  *   off), so a client that ever escaped the override resolves the emulator's
  *   endpoint and keys or none at all: it fails against the emulator and never
  *   signs a request to real AWS.
+ *
+ * AWS Emulator mixed mode is the one exception (go-to-k/cdkd#6150): a
+ * `cdkd local` command whose `--env-vars` file excepts a service to real AWS
+ * (`"AWS_ENDPOINT_URL_<SERVICE>": "real-aws"`) keeps the host's real identity,
+ * for the excepted services' calls alone: every other call — cdkd's own
+ * included — still goes to the emulator, signed with its keys (the process
+ * default, `mixedModeEmulatorOverride`). Every non-local command stays
+ * emulator-only.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -32,6 +40,8 @@ import {
   EMULATOR_SCRUBBED_ENV_KEYS,
   getAwsEndpointOverride,
   parseAwsEndpoint,
+  readAwsEmulatorEnvVarsFile,
+  realAwsServicesOf,
   readEmulatorRunFiles,
   resolveAwsEmulatorOption,
 } from 'cdk-local/internal';
@@ -48,6 +58,7 @@ import {
 } from '../utils/logger.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { setPasteableAwsCaBundle } from '../utils/pasteable-aws-profile.js';
+import { setChildProcessAwsEnv } from '../utils/child-process-aws-env.js';
 
 /** The command whose subtree registers `--aws-emulator` through cdk-local. */
 const LOCAL_COMMAND = 'local';
@@ -128,6 +139,25 @@ export function prepareAwsEmulatorForCommand(
   // runs against the emulator's STS there, and the override outranks the
   // role's keys anyway. Everything else applies to it too.
   const local = underLocalCommand(actionCommand);
+  // Mixed mode: the real identity is kept for the excepted services' calls, so
+  // no credential is dropped and the environment is not pointed at the
+  // emulator (a client that escaped the emulator default would carry a
+  // real-key signature there). The command's activation validates the
+  // exceptions and starts the re-signing wiring.
+  const endpoint = parseAwsEndpoint(
+    value === true ? DEFAULT_AWS_EMULATOR_URL : value,
+    '--aws-emulator'
+  );
+  // cdk-local's spelling: `localhost` becomes `127.0.0.1`, so S3 stays path-style.
+  const url =
+    endpoint.hostname === 'localhost'
+      ? endpoint.url.replace('//localhost', '//127.0.0.1')
+      : endpoint.url;
+  if (local && localCommandIsMixedMode(actionCommand)) {
+    keepHostClientsOnRealAws();
+    pointChildProcessesAtEmulator(url, endpoint.port);
+    return undefined;
+  }
 
   const ignored: string[] = [];
   if (clearOption(actionCommand, 'profile')) ignored.push('--profile');
@@ -158,21 +188,56 @@ export function prepareAwsEmulatorForCommand(
     );
   }
 
-  const endpoint = parseAwsEndpoint(
-    value === true ? DEFAULT_AWS_EMULATOR_URL : value,
-    '--aws-emulator'
-  );
-  // cdk-local's spelling: `localhost` becomes `127.0.0.1`, so S3 stays path-style.
-  const url =
-    endpoint.hostname === 'localhost'
-      ? endpoint.url.replace('//localhost', '//127.0.0.1')
-      : endpoint.url;
   // A typed `--ca-bundle` (the `cdkd local` commands) is the CA the run trusts.
   const caBundle = actionCommand.optsWithGlobals<{ caBundle?: string }>().caBundle;
   pointEnvironmentAtEmulator(url, endpoint.port, caBundle);
   if (local) return undefined;
   setAwsEndpointOverrideSource(getAwsEndpointOverride);
   return () => onStderr(() => activateAwsEmulatorForCommand(flag));
+}
+
+/**
+ * Mixed mode signs the excepted services' cdkd-side calls with the REAL
+ * identity, so they must go to real AWS: a shell `AWS_ENDPOINT_URL*` (or a
+ * profile's `endpoint_url`) aimed at the emulator would carry a real-key
+ * signature to it. The containers never get these (cdk-local's mixed wiring
+ * forwards no host endpoint); the host clients ignore them too, with one
+ * notice. Every emulator-bound client sets its endpoint explicitly, which this
+ * does not touch.
+ */
+function keepHostClientsOnRealAws(): void {
+  const ignored: string[] = [];
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('AWS_ENDPOINT_URL')) {
+      if (process.env[key] !== '') ignored.push(key);
+      delete process.env[key];
+    }
+  }
+  process.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] = 'true';
+  if (ignored.length > 0) {
+    const names = ignored.join(', ');
+    onStderr(() =>
+      getLogger().info(
+        safeMsg`--aws-emulator (mixed mode): ignoring ${names}; the "real-aws" exceptions go to real AWS.`
+      )
+    );
+  }
+}
+
+/**
+ * True when a `cdkd local` command's `--env-vars` file excepts at least one
+ * service to real AWS with `"real-aws"`. One on the bare `AWS_ENDPOINT_URL`
+ * names no service, and the old `"aws-emulator"` value is no exception: such
+ * a run stays full-emulator here (fail closed), and the command's activation
+ * refuses the value.
+ */
+function localCommandIsMixedMode(actionCommand: Command): boolean {
+  const envVars = actionCommand.optsWithGlobals<{ envVars?: unknown }>().envVars;
+  if (typeof envVars !== 'string' || envVars === '') return false;
+  // `readAwsEmulatorEnvVarsFile` reads through cdk-local's
+  // `readEnvVarsFileText`: a pipe-backed path is read once and kept, so the
+  // command's own read still gets the text.
+  return realAwsServicesOf(readAwsEmulatorEnvVarsFile(envVars).exceptions).length > 0;
 }
 
 /**
@@ -207,25 +272,65 @@ function onStderr<T>(fn: () => T): T {
  * default chain finds no real credential.
  */
 function pointEnvironmentAtEmulator(url: string, port: number, caBundle?: string): void {
+  Object.assign(process.env, emulatorEnvironment(url, port, process.env));
+  const run = readEmulatorRunFiles(port);
+  const caPath = join(run.dir, 'ca.pem');
+  const runCa = run.present && existsSync(caPath) ? caPath : devNull;
+  const ca = caBundle !== undefined && caBundle !== '' ? caBundle : runCa;
+  setPasteableAwsCaBundle(url.startsWith('https:') && ca !== devNull ? ca : undefined);
+}
+
+/**
+ * The environment that points an AWS SDK at the emulator: its endpoint, its
+ * run's `config` (region, CA) and `emulator_credentials`, or no file at all,
+ * so the default chain finds no real credential. `env` decides whether the
+ * run's region is added (only when it names none).
+ */
+function emulatorEnvironment(
+  url: string,
+  port: number,
+  env: Readonly<Record<string, string | undefined>>
+): Record<string, string> {
   const run = readEmulatorRunFiles(port);
   const runFile = (name: string): string => {
     const p = join(run.dir, name);
     return run.present && existsSync(p) ? p : devNull;
   };
-  process.env['AWS_ENDPOINT_URL'] = url;
   const config = runFile('config');
-  process.env['AWS_CONFIG_FILE'] = config;
+  const out: Record<string, string> = {
+    AWS_ENDPOINT_URL: url,
+    AWS_CONFIG_FILE: config,
+    AWS_SHARED_CREDENTIALS_FILE: runFile('emulator_credentials'),
+    AWS_EC2_METADATA_DISABLED: 'true',
+  };
   // The run's region when the shell names none, so every reader agrees on it —
   // the SDK chain reads the file, while some `cdkd local` paths read only the
   // environment.
-  if (!process.env['AWS_REGION'] && !process.env['AWS_DEFAULT_REGION'] && config !== devNull) {
+  if (!env['AWS_REGION'] && !env['AWS_DEFAULT_REGION'] && config !== devNull) {
     const region = defaultProfileRegion(readFileSync(config, 'utf8'));
-    if (region !== undefined) process.env['AWS_REGION'] = region;
+    if (region !== undefined) out['AWS_REGION'] = region;
   }
-  process.env['AWS_SHARED_CREDENTIALS_FILE'] = runFile('emulator_credentials');
-  process.env['AWS_EC2_METADATA_DISABLED'] = 'true';
-  const ca = caBundle !== undefined && caBundle !== '' ? caBundle : runFile('ca.pem');
-  setPasteableAwsCaBundle(url.startsWith('https:') && ca !== devNull ? ca : undefined);
+  return out;
+}
+
+/**
+ * Mixed mode: the CDK app's synth runs on the emulator with its keys, as in
+ * full emulator mode — a `"real-aws"` exception applies to the workload and
+ * to cdkd's own pre-start calls, never to synth — while cdkd's own process
+ * keeps the real identity for the excepted calls.
+ */
+function pointChildProcessesAtEmulator(url: string, port: number): void {
+  setChildProcessAwsEnv((env) => {
+    for (const key of ['CDKD_ROLE_ARN', ...EMULATOR_SCRUBBED_ENV_KEYS, ...CREDENTIAL_ENV_KEYS]) {
+      delete env[key];
+    }
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('AWS_ENDPOINT_URL') || key === 'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS') {
+        delete env[key];
+      }
+    }
+    return Object.assign(env, emulatorEnvironment(url, port, env));
+  });
 }
 
 /** The `region` of the `[default]` section of an AWS config file, if any. */

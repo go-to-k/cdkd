@@ -175,6 +175,10 @@ const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 const mockStackInstanceIdForFirstWrite = vi
   .fn<(...args: unknown[]) => Promise<string>>()
   .mockResolvedValue('00000000-0000-4000-8000-000000000000');
+// go-to-k/cdkd#6170: the write-ahead sibling an import reads before resolving.
+const mockPeekStackInstanceSibling = vi.fn<
+  (...args: unknown[]) => Promise<{ stackInstanceId: string; stackIdFromInstance: boolean } | null>
+>();
 // go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 // go-to-k/cdkd#4705: the stack registry the import claims after writing.
@@ -191,6 +195,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     getState: mockGetState,
     saveState: mockSaveState,
     stackInstanceIdForFirstWrite: mockStackInstanceIdForFirstWrite,
+    peekStackInstanceSibling: mockPeekStackInstanceSibling,
     markRollbackJournalImported: mockMarkRollbackJournalImported,
     getRegistryMarker: registry.getRegistryMarker,
     claimRegistryMarker: registry.claimRegistryMarker,
@@ -273,6 +278,7 @@ import { AwsClients } from '../../../src/utils/aws-clients.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { stackIdTailFromInstanceId } from '../../../src/state/stack-id-tail.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 import {
@@ -7055,6 +7061,53 @@ describe('cdkd import', () => {
       // Untouched literal properties survive the resolver pass.
       expect(state.resources['MyPerm']?.properties['Action']).toBe('lambda:InvokeFunction');
       expect(state.resources['MyPerm']?.properties['Principal']).toBe('apigateway.amazonaws.com');
+    });
+
+    describe('AWS::StackId tail over a write-ahead sibling (go-to-k/cdkd#6170)', () => {
+      const SIBLING_ID = '0b5c6a1e-3f2d-4c8b-9a7e-1d2c3b4a5f60';
+      const importWith = async (
+        sibling: { stackInstanceId: string; stackIdFromInstance: boolean }
+      ): Promise<{ stackInstanceId?: string; stackIdFromInstance?: boolean; resources: Record<string, { properties: Record<string, unknown> }> }> => {
+        const tmpl = template({
+          MyBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: {
+              BucketName: {
+                'Fn::Select': [2, { 'Fn::Split': ['/', { Ref: 'AWS::StackId' }] }],
+              },
+            },
+            Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+          },
+        });
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'adopted-bucket', attributes: {} })),
+        });
+        mockPeekStackInstanceSibling.mockResolvedValueOnce(sibling);
+        mockStackInstanceIdForFirstWrite.mockResolvedValueOnce(sibling.stackInstanceId);
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        expect(mockPeekStackInstanceSibling).toHaveBeenCalledWith('S', 'us-east-1');
+        return mockSaveState.mock.calls[0]![2] as Awaited<ReturnType<typeof importWith>>;
+      };
+
+      it('a sibling carrying the flag marks the record BEFORE properties resolve', async () => {
+        const state = await importWith({ stackInstanceId: SIBLING_ID, stackIdFromInstance: true });
+        expect(state.resources['MyBucket']?.properties['BucketName']).toBe(
+          stackIdTailFromInstanceId(SIBLING_ID)
+        );
+        expect(state.stackInstanceId).toBe(SIBLING_ID);
+        expect(state.stackIdFromInstance).toBe(true);
+      });
+
+      it('a legacy sibling (flag false) keeps the cdkd tail and leaves the record unmarked', async () => {
+        const state = await importWith({ stackInstanceId: SIBLING_ID, stackIdFromInstance: false });
+        expect(state.resources['MyBucket']?.properties['BucketName']).toBe('cdkd');
+        expect(state.stackInstanceId).toBe(SIBLING_ID);
+        expect(state.stackIdFromInstance).toBeUndefined();
+      });
     });
 
     it('resolves Ref to a sibling resource\'s physical ID', async () => {

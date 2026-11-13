@@ -72,6 +72,7 @@ export function deploy(
   // serve last deploy's read, nor persist it against today's records.
   this.rebaseline({});
   this.runProducerRegionEvidence = undefined;
+  this.runStackIdTail = undefined;
   this.deployChanges = new Map();
   this.deployStateResources = {};
   this.inlinePolicyWriters = new Map();

@@ -113,6 +113,34 @@ describe('AppExecutor', () => {
       expect(env['CDK_CONTEXT_JSON']).toBe(JSON.stringify({ key: 'value' }));
     });
 
+    it('applies the child-process AWS environment (AWS Emulator mixed mode: synth on the emulator, go-to-k/cdkd#6150)', async () => {
+      const { setChildProcessAwsEnv } = await import('../../../src/utils/child-process-aws-env.js');
+      const saved = process.env['AWS_ACCESS_KEY_ID'];
+      process.env['AWS_ACCESS_KEY_ID'] = 'REALHOSTKEY';
+      setChildProcessAwsEnv((e) => {
+        delete e['AWS_ACCESS_KEY_ID'];
+        e['AWS_ENDPOINT_URL'] = 'https://127.0.0.1:9381';
+        return e;
+      });
+      try {
+        const mockProc = createMockProcess();
+        vi.mocked(spawn).mockReturnValue(mockProc);
+        const promise = executor.execute({ app: 'node bin/app.ts', outputDir: '/tmp/cdk.out', context: {} });
+        mockProc.emit('close', 0);
+        await promise;
+        const env = (vi.mocked(spawn).mock.calls.at(-1)![1] as unknown as { env: Record<string, string> }).env;
+        expect(env['AWS_ACCESS_KEY_ID']).toBeUndefined();
+        expect(env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:9381');
+        expect(env['CDK_OUTDIR']).toBe('/tmp/cdk.out');
+        // cdkd's own process keeps the real identity for the excepted calls.
+        expect(process.env['AWS_ACCESS_KEY_ID']).toBe('REALHOSTKEY');
+      } finally {
+        setChildProcessAwsEnv(undefined);
+        if (saved === undefined) delete process.env['AWS_ACCESS_KEY_ID'];
+        else process.env['AWS_ACCESS_KEY_ID'] = saved;
+      }
+    });
+
     it('should handle large context by writing to temp file', async () => {
       const mockProc = createMockProcess();
       vi.mocked(spawn).mockReturnValue(mockProc);

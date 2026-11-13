@@ -22,7 +22,7 @@ up and secure the bucket. The authority for everything here is
 | [Which region a record belongs to](#which-region-a-record-belongs-to) | The key decides; when a destroy or rollback refuses |
 | [Sidecar objects in the state bucket](#sidecar-objects-in-the-state-bucket) | Response placeholders, the create-token ledger, the rollback journal, the bootstrap marker |
 | [Bucket name and region resolution](#bucket-name-and-region-resolution) | The legacy-name fallback and the `GetBucketLocation` probe |
-| [Schema version history](#schema-version-history) | `version: 1` through `version: 11` |
+| [Schema version history](#schema-version-history) | `version: 1` through `version: 16` |
 | [Fields added without a version bump](#fields-added-without-a-version-bump) | `skippedOutputs`, `conditionVerdicts`, the masked-property fingerprints |
 | [Schema reference](#schema-reference) | `StackState`, `ResourceState`, `LockInfo`, malformed-record handling, physical ids |
 | [Lock implementation](#lock-implementation) | Acquire, release, retry, renewal |
@@ -167,7 +167,11 @@ when it was first sent, written BEFORE the create is sent. It holds no secret.
 
 The write-ahead copy of a first deploy's `stackInstanceId`
 (`{"stackInstanceVersion": 1, "stackInstanceId": "<uuid>"}`), described with
-[schema version 13](#version-13-adds-stackinstanceid). It
+[schema version 13](#version-13-adds-stackinstanceid). A first deploy whose
+`AWS::StackId` derives from the id writes version 2, which adds
+`"stackIdFromInstance": true` ([schema version 16](#version-16-adds-stackidfrominstance-current-writers));
+an older cdkd refuses a version 2 body rather than re-run the deploy with the
+`cdkd` tail. It
 exists only between a first deploy's first create and its first state save,
 or after such a deploy was interrupted. `s3:DeleteObject` on its key is
 required wherever deleting the stack record is: `deleteState` deletes it
@@ -433,6 +437,7 @@ with an "Upgrade cdkd" error.
 | 13 | `stackInstanceId` and `retiredNameGenerations` on the stack, `nameGeneration` / `nameGenerationHigh` on each resource |
 | 14 | `unsettledProperties` on each resource |
 | 15 | `unsettledItems` on each resource |
+| 16 | `stackIdFromInstance` on the stack |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1440,7 +1445,7 @@ names, and a later deploy back to the recorded template would diff empty and
 leave AWS on the other side. A v13 document is read unchanged (nothing
 unsettled).
 
-### `version: 15` adds `unsettledItems` (current writers)
+### `version: 15` adds `unsettledItems`
 
 Schema `version: 15` adds `ResourceState.unsettledItems` (issue
 [#5498](https://github.com/go-to-k/cdkd/issues/5498)): per member path, the
@@ -1481,6 +1486,43 @@ item, so the item it named is kept rather than removed.
 A bump: an older binary rewriting the record would drop the items, and the
 next deploy would keep an index or metric the failed update added. A v14
 document is read unchanged (no items).
+
+### `version: 16` adds `stackIdFromInstance` (current writers)
+
+Schema `version: 16` adds `StackState.stackIdFromInstance` (issue
+[#6170](https://github.com/go-to-k/cdkd/issues/6170)). CloudFormation's stack
+id ends in a per-stack UUID, and CDK apps cut a unique name suffix out of it
+(`Fn.select(2, Fn.split('/', Aws.STACK_ID))`, then a `-` split). cdkd ended it
+in the constant `cdkd`, so that suffix was the same for every stack, or an
+`Fn::Select` index past the end.
+
+A stack marked `true` has an `AWS::StackId` ending in a UUID derived one-way
+from its `stackInstanceId`: the first 16 bytes of
+`sha256("AWS::StackId" NUL id)` with the UUID version and variant bits set. It
+is computed from the record alone, so resolving it costs no AWS call. The id
+itself is still never logged, and the digest does not disclose it.
+
+#### Where the marker comes from
+
+| Situation | Marker |
+| --- | --- |
+| A first deploy | Set. The deploy settles the id before its conditions, diff and approval table run, so each sees the tail its creates are sent with; the write-ahead sibling records the flag (version 2). |
+| A re-run of an interrupted first deploy | Copied from the sibling it reads back: version 2 sets it, a version 1 sibling (an older cdkd's) leaves it unset, so the re-run names resources as the interrupted run did. |
+| `cdkd import` creating a record | Copied from such a sibling the same way; unset when there is none. |
+| Any existing record | Never added: its resources were named from `cdkd`, and changing the value would replace them. |
+
+A marker that is not `true`, or one beside a missing id, refuses rather than
+fall back to `cdkd`. Deploy, `cdkd diff` (its nested rows too), `cdkd import`,
+`cdkd export` and `cdkd scrub` read the tail from the same record through the
+resolver context's `stackIdTail`. `cdkd diff` of a stack with no record yet
+resolves `cdkd`, since the id that names it does not exist until the first
+deploy, and a first `cdkd deploy --dry-run` previews a candidate UUID the real
+deploy does not reuse.
+
+A bump, for v10's reason: an older binary rewriting the record would drop the
+marker, and the next deploy would resolve `AWS::StackId` back to `.../cdkd`.
+Every field-enumerating writer carries it through `stackInstanceIdCarriedFrom`.
+A v15 document is read unchanged.
 
 ## Fields added without a version bump
 

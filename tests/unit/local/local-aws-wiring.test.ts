@@ -57,6 +57,9 @@ import {
   activateLocalAwsWiring,
   applyLocalAwsWiring,
   getActiveWorkloadAwsWiring,
+  localAwsEmulatorActive,
+  workloadGetsEmulatorKeysOnly,
+  localAwsEmulatorCredentials,
   prepareLocalLoopbackForwarder,
   profileCredentialsForWorkload,
 } from '../../../src/local/local-aws-wiring.js';
@@ -124,6 +127,41 @@ function emulatorWiring(): WorkloadAwsWiring {
     emulatorCredentials: EMULATOR_KEYS,
     dispose: () => {},
   };
+}
+
+const RESIGN_CONFIG = '/tmp/cdkd-resign-x/resign.json';
+
+/** AWS Emulator mixed mode (go-to-k/cdkd#6150): `forward`, plus the re-signing sidecar. */
+/**
+ * AWS Emulator mixed mode (go-to-k/cdkd#6150), as cdk-local 0.164 builds it:
+ * `--aws-emulator` sends everything to the emulator through the re-signing
+ * sidecar (the global endpoint), and `realServices` are the `"real-aws"`
+ * exceptions anywhere in `--env-vars`.
+ */
+function mixedWiring(): WorkloadAwsWiring {
+  return forwardWiring({
+    env: {
+      AWS_ENDPOINT_URL: 'https://127.0.0.1:47297',
+      AWS_EC2_METADATA_DISABLED: 'true',
+      AWS_DISABLE_HOST_PREFIX_INJECTION: 'true',
+      AWS_CA_BUNDLE: CA_PATH,
+      NODE_EXTRA_CA_CERTS: CA_PATH,
+      REQUESTS_CA_BUNDLE: CA_PATH,
+      SSL_CERT_FILE: CA_PATH,
+    },
+    loopbackPorts: [9297, 47297],
+    probeHealth: true,
+    mixed: {
+      realServices: ['SECRETS_MANAGER'],
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+      resignPort: 47297,
+      resignEndpoint: 'https://127.0.0.1:47297',
+      emulatorCredentials: EMULATOR_KEYS,
+      region: 'us-east-1',
+      resignConfigHostPath: RESIGN_CONFIG,
+      emulatorClientOverride: { endpoint: 'https://127.0.0.1:9297', credentials: EMULATOR_KEYS },
+    },
+  });
 }
 
 function lastRun(): { args: string[]; env: Record<string, string> } {
@@ -318,6 +356,82 @@ describe('runDetached under --aws-emulator (#6132)', () => {
   });
 });
 
+describe('full --aws-emulator mode with the SQS sidecar (go-to-k/cdk-local#912, cdkd#6178)', () => {
+  const sqsWiring = (): WorkloadAwsWiring => {
+    const w = emulatorWiring();
+    return {
+      ...w,
+      env: { ...w.env, AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:47297' },
+      loopbackPorts: [9297, 47297],
+      sidecar: {
+        port: 47297,
+        endpoint: 'https://127.0.0.1:47297',
+        upstream: w.emulatorEndpoint!,
+        configHostPath: '/tmp/cdkd-sqs-x/resign.json',
+        passthrough: true,
+      },
+    };
+  };
+
+  it('a workload gets the sidecar SQS endpoint, and its forwarder serves the sidecar port', async () => {
+    setActiveWorkloadAwsWiring(sqsWiring());
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 9000 });
+    expect(envFlags(lastRun().args)).toContain('AWS_ENDPOINT_URL_SQS=https://127.0.0.1:47297');
+    expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), [9297, 47297]);
+  });
+
+  it('on the host network no sidecar runs: the SQS endpoint is dropped, so SQS goes straight to the emulator', async () => {
+    setActiveWorkloadAwsWiring(sqsWiring());
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 9000, network: 'host' });
+    const flags = envFlags(lastRun().args);
+    expect(flags.some((f) => f.startsWith('AWS_ENDPOINT_URL_SQS'))).toBe(false);
+    expect(flags).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
+  });
+});
+
+describe('"real-aws" without --aws-emulator is stripped from the container env (go-to-k/cdkd#6150)', () => {
+  it('runDetached: the value never reaches the container', async () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    mocks.hostDefaults.mockResolvedValue(undefined);
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws', KEEP: '1' },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const flags = envFlags(lastRun().args);
+    expect(flags.some((f) => f.startsWith('AWS_ENDPOINT_URL_SECRETS_MANAGER'))).toBe(false);
+    expect(flags).toContain('KEEP=1');
+  });
+
+  it('ECS buildDockerRunArgs: an --env-vars "real-aws" never reaches the container', () => {
+    setActiveWorkloadAwsWiring(forwardWiring());
+    const built = buildDockerRunArgs({
+      task: { family: 'fam', containers: [], volumes: [] } as unknown as ResolvedEcsTask,
+      container: {
+        name: 'app',
+        environment: {},
+        secrets: [],
+        portMappings: [],
+        mountPoints: [],
+        ulimits: [],
+        links: [],
+      } as unknown as ResolvedEcsContainer,
+      image: 'img',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      containerHost: '127.0.0.1',
+      region: 'us-east-1',
+      envOverrides: { Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
+      roleArn: undefined,
+      platformOverride: undefined,
+    } as Parameters<typeof buildDockerRunArgs>[0]);
+    expect(envFlags(built.args).some((f) => f.startsWith('AWS_ENDPOINT_URL_SECRETS_MANAGER'))).toBe(false);
+  });
+});
+
 describe('forward mode tolerates a forwarder image pull failure', () => {
   it('still starts the workload', async () => {
     setActiveWorkloadAwsWiring(forwardWiring());
@@ -351,6 +465,58 @@ describe('applyLocalAwsWiring', () => {
 });
 
 describe('activateLocalAwsWiring', () => {
+  describe('the --env-vars value rules, through cdkd\'s activation (go-to-k/cdkd#6150)', () => {
+    const envFile = (body: unknown): { file: string; done: () => void } => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-rules-'));
+      const file = join(dir, 'env.json');
+      writeFileSync(file, JSON.stringify(body));
+      return { file, done: () => rmSync(dir, { recursive: true, force: true }) };
+    };
+    const activate = async (body: unknown, awsEmulator?: string): Promise<unknown> => {
+      const { file, done } = envFile(body);
+      try {
+        await activateLocalAwsWiring({ ...(awsEmulator && { awsEmulator }), envVars: file });
+        return undefined;
+      } catch (e) {
+        return e;
+      } finally {
+        done();
+      }
+    };
+
+    it.each([
+      ['a misspelled variable, naming the SDK spelling', { AWS_ENDPOINT_URL_SECRETSMANAGER: 'real-aws' }, 'SECRETS_MANAGER'],
+      ['"real-aws" on the bare AWS_ENDPOINT_URL', { AWS_ENDPOINT_URL: 'real-aws' }, 'AWS_ENDPOINT_URL'],
+      ['the old "aws-emulator" value, with its migration', { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' }, 'real-aws'],
+    ])('under --aws-emulator, refuses %s before anything starts', async (_name, params, needle) => {
+      const err = await activate({ Parameters: params }, 'https://127.0.0.1:1');
+      expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe('LOCAL_AWS_WIRING_FAILED');
+      expect((err as Error).message).toContain(needle);
+    });
+
+    it('refuses the old "aws-emulator" value without the flag too', async () => {
+      const err = await activate({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+      expect(err).toBeInstanceOf(CdkdError);
+    });
+
+    it('pins the bare AWS_ENDPOINT_URL refusal text', async () => {
+      const err = await activate({ Parameters: { AWS_ENDPOINT_URL: 'real-aws' } }, 'https://127.0.0.1:1');
+      expect((err as Error).message).toBe(
+        '--env-vars: "AWS_ENDPOINT_URL": "real-aws" would send every AWS call to real AWS, which is what running ' +
+          'without --aws-emulator does. Remove --aws-emulator to run against real AWS, or keep it and mark only ' +
+          'the services that must reach real AWS, e.g. "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws".'
+      );
+    });
+
+    it('"real-aws" without --aws-emulator is a no-op: the run is plain forward mode', async () => {
+      const err = await activate({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+      expect(err).toBeUndefined();
+      expect(getActiveWorkloadAwsWiring()?.mode).toBe('forward');
+      expect(getActiveWorkloadAwsWiring()?.mixed).toBeUndefined();
+    });
+  });
+
   it('reports an unusable --aws-emulator value as a CdkdError naming the flag', async () => {
     const err = await activateLocalAwsWiring({ awsEmulator: 'not a url' }).catch((e) => e);
     expect(err).toBeInstanceOf(CdkdError);
@@ -587,6 +753,132 @@ describe('local invoke-agentcore --sigv4 under --aws-emulator', () => {
       'us-east-1'
     );
     expect(creds).toEqual(EMULATOR_KEYS);
+  });
+});
+
+describe('AWS Emulator mixed mode (go-to-k/cdkd#6150)', () => {
+  it('runDetached: a container keeping a "real-aws" exception gets the REAL identity and that service\'s real endpoint; the rest goes to the sidecar', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    mocks.hostDefaults.mockResolvedValue(HOST_KEYS);
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      env: {
+        AWS_REGION: 'us-east-1',
+        AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws',
+        AWS_ENDPOINT_URL_S3: 'https://127.0.0.1:9297',
+      },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args, env } = lastRun();
+    expect(envFlags(args)).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:47297');
+    expect(envFlags(args)).toContain('AWS_ENDPOINT_URL_SECRETS_MANAGER=https://secretsmanager.us-east-1.amazonaws.com');
+    // A literal URL is passed through as it is: never re-signed.
+    expect(envFlags(args)).toContain('AWS_ENDPOINT_URL_S3=https://127.0.0.1:9297');
+    expect(envFlags(args)).toContain('AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false');
+    expect(env['AWS_ACCESS_KEY_ID']).toBe(HOST_KEYS.accessKeyId);
+    expect(args.join(' ')).not.toContain(EMULATOR_KEYS.secretAccessKey);
+    expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), [9297, 47297]);
+  });
+
+  it('runDetached: a container keeping NO exception gets the emulator keys only, and no --profile credentials file', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    mocks.hostDefaults.mockResolvedValue(HOST_KEYS);
+    const credsMount = { hostPath: '/tmp/creds', containerPath: CONTAINER_AWS_CREDENTIALS_PATH };
+    await runDetached({
+      image: 'img',
+      mounts: [],
+      extraMounts: [credsMount],
+      env: { AWS_ACCESS_KEY_ID: 'PROFILEKEYID00000000', AWS_SECRET_ACCESS_KEY: 'profile-secret' },
+      cmd: [],
+      hostPort: 9000,
+    });
+    const { args, env } = lastRun();
+    expect(env['AWS_ACCESS_KEY_ID']).toBe(EMULATOR_KEYS.accessKeyId);
+    expect(args.join(' ')).not.toContain('/tmp/creds');
+    expect(envFlags(args)).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:47297');
+  });
+
+  it('runDetached: refuses a sidecar workload on the host network, before it starts', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    mocks.hostDefaults.mockResolvedValue(undefined);
+    const err = await runDetached({
+      image: 'img',
+      mounts: [],
+      env: {},
+      cmd: [],
+      hostPort: 9000,
+      network: 'host',
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(CdkdError);
+    expect((err as Error).message).toBe(
+      'A run with "real-aws" exceptions (AWS Emulator mixed mode) cannot use the host network: its ' +
+        "re-signing sidecar listens on the workload's own loopback. Drop the \"real-aws\" exceptions or the " +
+        'host network.'
+    );
+    expect(mocks.execFile.mock.calls.filter((c) => (c[1] as string[])[0] === 'run')).toEqual([]);
+  });
+
+  it('a forwarder image that cannot be pulled stops the run', async () => {
+    mocks.ensureImage.mockRejectedValue(new Error('pull denied'));
+    await expect(prepareLocalLoopbackForwarder(mixedWiring())).rejects.toBeInstanceOf(CdkdError);
+  });
+
+  it('resolves --profile for the workload (an excepting container needs it) and reports no full-emulator run', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    expect(localAwsEmulatorActive()).toBe(false);
+    expect(localAwsEmulatorCredentials()).toBeUndefined();
+    const resolve = vi.fn(async () => HOST_KEYS);
+    await expect(profileCredentialsForWorkload('dev', resolve)).resolves.toBe(HOST_KEYS);
+  });
+
+  it('workloadGetsEmulatorKeysOnly: full emulator always; mixed unless the env keeps an exception', () => {
+    expect(workloadGetsEmulatorKeysOnly({}, emulatorWiring())).toBe(true);
+    expect(workloadGetsEmulatorKeysOnly({}, mixedWiring())).toBe(true);
+    expect(workloadGetsEmulatorKeysOnly({ AWS_ENDPOINT_URL_SSM: 'real-aws' }, mixedWiring())).toBe(false);
+    // The bare variable is no exception.
+    expect(workloadGetsEmulatorKeysOnly({ AWS_ENDPOINT_URL: 'real-aws' }, mixedWiring())).toBe(true);
+    expect(workloadGetsEmulatorKeysOnly({}, forwardWiring())).toBe(false);
+    expect(workloadGetsEmulatorKeysOnly({}, undefined)).toBe(false);
+  });
+
+  it('ECS buildDockerRunArgs: an excepting container gets the real identity as env; the others the emulator keys and no profile file', () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    const container = (name: string) =>
+      ({
+        name,
+        environment: { AWS_REGION: 'us-east-1' },
+        secrets: [],
+        portMappings: [],
+        mountPoints: [],
+        ulimits: [],
+        links: [],
+      }) as unknown as ResolvedEcsContainer;
+    const build = (name: string) =>
+      buildDockerRunArgs({
+        task: { family: 'fam', containers: [], volumes: [] } as unknown as ResolvedEcsTask,
+        container: container(name),
+        image: 'img',
+        network: 'net',
+        volumeByName: new Map(),
+        secrets: [],
+        containerHost: '127.0.0.1',
+        region: 'us-east-1',
+        envOverrides: { web: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
+        roleArn: undefined,
+        platformOverride: undefined,
+        profileCredentialsFile: { hostPath: '/tmp/creds', containerPath: CONTAINER_AWS_CREDENTIALS_PATH, profileName: 'dev' },
+        mixedModeRealCredentials: HOST_KEYS,
+      } as Parameters<typeof buildDockerRunArgs>[0]);
+    const web = build('web');
+    expect(web.sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe(HOST_KEYS.accessKeyId);
+    expect(envFlags(web.args)).toContain('AWS_ENDPOINT_URL_SECRETS_MANAGER=https://secretsmanager.us-east-1.amazonaws.com');
+    expect(envFlags(web.args).some((f) => f.startsWith('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'))).toBe(false);
+    const worker = build('worker');
+    expect(worker.sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe(EMULATOR_KEYS.accessKeyId);
+    expect(worker.args.join(' ')).not.toContain('/tmp/creds');
+    expect(worker.args.join(' ')).not.toContain(HOST_KEYS.secretAccessKey);
   });
 });
 

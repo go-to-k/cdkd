@@ -4,6 +4,7 @@ import {
   resolveCrossAccountStateBucket,
   clearBucketRegionCache,
 } from '../../../src/utils/aws-region-resolver.js';
+import { runWithRealAws, setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 
 // Replace the real S3Client with a controllable mock. Each test reaches
 // into `mockSend` to dictate the GetBucketLocation result.
@@ -77,6 +78,23 @@ describe('resolveBucketRegion', () => {
     const region = await resolveBucketRegion('us-east-bucket-null');
 
     expect(region).toBe('us-east-1');
+  });
+
+  it('keeps one bucket name in real AWS and in an emulator apart (mixed mode, go-to-k/cdkd#6150)', async () => {
+    mockSend.mockResolvedValueOnce({ LocationConstraint: 'ap-northeast-1' });
+    mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' });
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
+    let emulated: string;
+    let real: string;
+    try {
+      emulated = await resolveBucketRegion('shared-name-bucket');
+      real = await runWithRealAws(() => resolveBucketRegion('shared-name-bucket'));
+    } finally {
+      setAwsEndpointOverrideSource(undefined);
+    }
+    expect(emulated).toBe('ap-northeast-1');
+    expect(real).toBe('eu-west-1');
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   it('caches the result for subsequent calls (no new API call)', async () => {

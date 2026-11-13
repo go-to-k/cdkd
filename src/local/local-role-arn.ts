@@ -21,17 +21,24 @@
  * out of the role itself.)
  */
 
-import { recordAssumedRole } from 'cdk-local/internal';
+import { getActiveWorkloadAwsWiring, recordAssumedRole } from 'cdk-local/internal';
 import {
   getAssumedRoleCredentials,
   getPreAssumeEnvCredentials,
 } from '../utils/aws-client-defaults.js';
 import { applyRoleArnIfSet } from '../utils/role-arn.js';
+import { runWithRealAws } from '../utils/aws-client-defaults.js';
 
 export async function applyRoleArnForLocal(
   opts: Parameters<typeof applyRoleArnIfSet>[0]
 ): Promise<void> {
-  await applyRoleArnIfSet(opts);
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the hop establishes the REAL
+  // identity the `"real-aws"` exceptions need, so it stays on real AWS while
+  // every other cdkd call defaults to the emulator. Full emulator mode keeps
+  // it on the emulator, whose STS answers it.
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring?.mixed) await runWithRealAws(() => applyRoleArnIfSet(opts));
+  else await applyRoleArnIfSet(opts);
   const role = getAssumedRoleCredentials();
   if (role === undefined) return;
   recordAssumedRole(getPreAssumeEnvCredentials(), {

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { setActiveWorkloadAwsWiring, setAwsEmulatorServiceRouting } from 'cdk-local/internal';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
+import { mixedModeEmulatorOverride } from '../../../src/local/local-aws-wiring.js';
 import {
   EcsSecretsResolutionError,
   classifySecretArn,
@@ -360,6 +363,13 @@ describe('secret reads run as the CALLER, never as the CLI-wide assumed role', (
     name: 'TOKEN',
     valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo-AbCdEf',
   };
+  // The clients are built lazily, per service (go-to-k/cdkd#6150): an SSM entry
+  // beside it builds the SSM client these cases also read back.
+  const ssmEntry = {
+    containerName: 'web',
+    name: 'PARAM',
+    valueFrom: 'arn:aws:ssm:us-east-1:123456789012:parameter/p',
+  };
   const ROLE_KEY = 'ASIADEPLOYROLEKEY0000';
   // 21 characters, like its sibling: `git-secrets` matches an AWS access key
   // id as EXACTLY 20, so a 20-character placeholder blocks the commit.
@@ -414,8 +424,9 @@ describe('secret reads run as the CALLER, never as the CLI-wide assumed role', (
       sessionToken: 'deploytoken',
     });
     sends.secrets.mockResolvedValueOnce({ SecretString: 'v' });
+    sends.ssm.mockResolvedValueOnce({ Parameter: { Value: 'p' } });
 
-    await resolveEcsSecrets([entry], { region: 'us-east-1' });
+    await resolveEcsSecrets([entry, ssmEntry], { region: 'us-east-1' });
 
     expect(ctorConfigs.secrets).toHaveLength(1);
     expect(ctorConfigs.ssm).toHaveLength(1);
@@ -441,8 +452,9 @@ describe('secret reads run as the CALLER, never as the CLI-wide assumed role', (
       sessionToken: 'deploytoken',
     });
     sends.secrets.mockResolvedValueOnce({ SecretString: 'v' });
+    sends.ssm.mockResolvedValueOnce({ Parameter: { Value: 'p' } });
 
-    await resolveEcsSecrets([entry], { region: 'us-east-1' });
+    await resolveEcsSecrets([entry, ssmEntry], { region: 'us-east-1' });
 
     expect(ctorConfigs.secrets).toHaveLength(1);
     expect(ctorConfigs.ssm).toHaveLength(1);
@@ -456,8 +468,9 @@ describe('secret reads run as the CALLER, never as the CLI-wide assumed role', (
     // The other polarity: the opt-out must not be what makes the config
     // credential-free, or the case above would pass for the wrong reason.
     sends.secrets.mockResolvedValueOnce({ SecretString: 'v' });
+    sends.ssm.mockResolvedValueOnce({ Parameter: { Value: 'p' } });
 
-    await resolveEcsSecrets([entry], { region: 'us-east-1' });
+    await resolveEcsSecrets([entry, ssmEntry], { region: 'us-east-1' });
 
     // Same length floor as above: a walk over an empty array would satisfy
     // the loop vacuously, which is the failure this polarity exists to rule
@@ -527,4 +540,57 @@ describe('every refusal keeps a FORGING container and env name out of cdkd\'s ow
       expect(err.message.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('nothing withheld');
     });
   }
+});
+
+describe('AWS Emulator mixed mode: secrets per container (go-to-k/cdkd#6150)', () => {
+  const EMULATOR = {
+    endpoint: 'https://127.0.0.1:9381',
+    credentials: { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 'e' },
+  };
+  /** Mixed mode as `cdkd local` installs it: the emulator by default, `realServices` excepted. */
+  const mixed = (realServices: string[], envOverrides: Record<string, unknown>) => {
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      mixed: { realServices, emulatorClientOverride: EMULATOR },
+      dispose: () => {},
+    } as never);
+    setAwsEmulatorServiceRouting({ realServices, override: EMULATOR, envOverrides });
+    setAwsEndpointOverrideSource(mixedModeEmulatorOverride);
+  };
+  afterEach(() => {
+    setAwsEmulatorServiceRouting(undefined);
+    setActiveWorkloadAwsWiring(undefined);
+    setAwsEndpointOverrideSource(undefined);
+  });
+
+  it("routes each container's SSM read by ITS exceptions: taskA (real-aws) to real AWS, the rest to the emulator", async () => {
+    mixed(['SSM'], { taskA: { AWS_ENDPOINT_URL_SSM: 'real-aws' } });
+    sends.ssm.mockResolvedValue({ Parameter: { Value: 'v' } });
+    const ssm = (containerName: string) => ({
+      containerName,
+      name: 'P',
+      valueFrom: 'arn:aws:ssm:us-east-1:123456789012:parameter/p',
+    });
+    await resolveEcsSecrets([ssm('taskA'), ssm('taskB'), ssm('taskB2')], { region: 'us-east-1' });
+    // One real client and one emulator one, shared by the containers on each side.
+    expect(ctorConfigs.ssm).toHaveLength(2);
+    const endpoints = ctorConfigs.ssm.map((c) => (c as { endpoint?: string }).endpoint).sort();
+    expect(endpoints).toEqual(['https://127.0.0.1:9381', undefined]);
+    sends.ssm.mockReset();
+  });
+
+  it('the same per container for Secrets Manager: taskA real, taskB on the emulator', async () => {
+    mixed(['SECRETS_MANAGER'], { taskA: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    sends.secrets.mockResolvedValue({ SecretString: 'v' });
+    const sm = (containerName: string) => ({
+      containerName,
+      name: 'S',
+      valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:s-AbCdEf',
+    });
+    await resolveEcsSecrets([sm('taskA'), sm('taskB')], { region: 'us-east-1' });
+    expect(ctorConfigs.secrets).toHaveLength(2);
+    const endpoints = ctorConfigs.secrets.map((c) => (c as { endpoint?: string }).endpoint).sort();
+    expect(endpoints).toEqual(['https://127.0.0.1:9381', undefined]);
+    sends.secrets.mockReset();
+  });
 });

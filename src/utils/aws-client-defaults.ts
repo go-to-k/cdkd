@@ -82,6 +82,7 @@
 
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Agent as HttpsAgent } from 'node:https';
 import { rootCertificates } from 'node:tls';
 // The `.ts` spelling below is REQUIRED, not a slip.
@@ -147,6 +148,14 @@ export interface AwsClientDefaultsOptions {
    * container could receive a role its caller could not assume.
    */
   ignoreAssumedRole?: boolean | undefined;
+  /**
+   * AWS Emulator mixed mode (go-to-k/cdkd#6150): this client is for a call
+   * that goes to REAL AWS — a `"real-aws"` exception, or an STS hop that
+   * establishes the real identity — so the emulator override does not apply
+   * and the identity is the one the other options resolve. False outside
+   * mixed mode; the callers compute it.
+   */
+  realAws?: boolean | undefined;
 }
 
 /**
@@ -435,14 +444,37 @@ export function setAwsEndpointOverrideSource(
   endpointOverrideSource = source;
 }
 
+/**
+ * AWS Emulator mixed mode (go-to-k/cdkd#6150): `--aws-emulator` sends every
+ * call to the emulator, and a `"real-aws"` exception in `--env-vars` sends one
+ * service to real AWS. The process-wide override is the emulator's then too,
+ * so a call fails CLOSED onto the emulator; a call for an excepted service
+ * escapes it — by `realAws` on {@link awsClientDefaults}, or for every client
+ * a whole read builds (the real side of `--from-state`) inside this scope.
+ * Scoped rather than swapped, because the real and the emulator reads may be
+ * in flight at once.
+ */
+const realAwsScope = new AsyncLocalStorage<true>();
+
+/** Run `fn` with every client built through {@link awsClientDefaults} inside it on real AWS. */
+export function runWithRealAws<T>(fn: () => T): T {
+  return realAwsScope.run(true, fn);
+}
+
+/** The override in force for a client built now: none on real AWS, else the process-wide source's. */
+function activeEndpointOverride(realAws?: boolean): AwsEndpointOverrideDefaults | undefined {
+  if (realAws === true || realAwsScope.getStore() === true) return undefined;
+  return endpointOverrideSource?.();
+}
+
 /** True while an endpoint override is active (S3 then forces path-style). */
 export function awsEndpointOverrideActive(): boolean {
-  return endpointOverrideSource?.() !== undefined;
+  return activeEndpointOverride() !== undefined;
 }
 
 /** The active endpoint override's URL, or `undefined` (pasteable `aws` hints). */
 export function awsEndpointOverrideUrl(): string | undefined {
-  return endpointOverrideSource?.()?.endpoint;
+  return activeEndpointOverride()?.endpoint;
 }
 
 /**
@@ -719,7 +751,7 @@ export function awsClientDefaults(options: AwsClientDefaultsOptions = {}): AwsCl
   // go-to-k/cdkd#1981). Spread FIRST so the credential / handler keys below are
   // never shadowed and a site's own explicit `region` still overrides it.
   const scopeRegion = currentStackAwsScope()?.region;
-  const override = endpointOverrideSource?.();
+  const override = activeEndpointOverride(options.realAws);
   const defaults =
     override !== undefined
       ? endpointOverrideDefaults(override)
