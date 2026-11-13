@@ -77,7 +77,11 @@ checks.
   (#4369). A mode behind an env flag `verify.sh` does not set itself
   (`grep -n 'CDKD_INTEG_[A-Z_]*:-' <fixture>/verify.sh`, `RUN_ID` aside) is its
   own run: a PR on its path runs the flag and the ledger NOTE names the mode
-  (#5577).
+  (#5577). A publish / upload path is SKIPPED when the destination already
+  holds the object (the asset bucket persists across runs): take a fixture
+  with a fresh destination and name the evidence the path ran — #6184's
+  multipart proof was `asset-migration`'s ETag ending `-5`, while
+  `bucket-deployment` passed on a HeadObject skip.
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
