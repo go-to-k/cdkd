@@ -1,5 +1,5 @@
 import { LOOPBACK_FORWARDER_IMAGE, noImplicitEcrPullArgs } from 'cdk-local/internal';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import {
@@ -623,6 +623,36 @@ export async function removeContainer(containerId: string): Promise<void> {
     logger.debug(`Removed container ${containerId}`);
   } catch (error) {
     logger.debug(`docker rm -f ${containerId} failed: ${describeDockerFailure(error, args)}`);
+  }
+}
+
+/**
+ * `docker rm -f` for `ids`, SYNCHRONOUSLY: for a `process.on('exit')`
+ * teardown, where no promise settles. Best-effort; errors are logged at debug.
+ */
+export function removeContainersSync(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const args = ['rm', '-f', ...ids];
+  try {
+    execFileSync(getDockerCmd(), args, { stdio: 'ignore', timeout: 10_000 });
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(`docker rm -f failed: ${describeDockerFailure(error, args)}`);
+  }
+}
+
+/** Whether `image` is in the local Docker image cache (`docker image inspect`). */
+export async function imageInLocalCache(image: string): Promise<boolean> {
+  const args = ['image', 'inspect', '--format', '{{.Id}}', image];
+  try {
+    await execFileAsync(getDockerCmd(), args);
+    return true;
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(`${image} is not in the local cache: ${describeDockerFailure(error, args)}`);
+    return false;
   }
 }
 

@@ -125,6 +125,18 @@ describe('chooseServiceTokenFunction', () => {
     expect(choice).toEqual({ reason: 'its function was not found in the local cloud assembly' });
   });
 
+  it('refuses a candidate whose handler alone differs from the deployed function', () => {
+    const s = stack('S', { C: CR(token), H: fn('code', 'other.handler') });
+    const choice = chooseServiceTokenFunction(findServiceTokenFunctions([s], 'C'), DEPLOYED, undefined);
+    expect(choice).toEqual({ reason: 'its function was not found in the local cloud assembly' });
+  });
+
+  it("never borrows another stack's function when the stack being deployed has none", () => {
+    const a = stack('A', { C: CR(token), H: fn('code-a') });
+    const choice = chooseServiceTokenFunction(findServiceTokenFunctions([a], 'C'), DEPLOYED, 'B');
+    expect(choice).toEqual({ reason: 'its function was not found in the stack being deployed' });
+  });
+
   it('narrows candidates in several stacks to the stack being deployed', () => {
     const a = stack('A', { C: CR(token), H: fn('code-a') });
     const b = stack('B', { C: CR(token), H: fn('code-b') });
@@ -160,7 +172,7 @@ describe('responseUrlForContainer', () => {
   });
 
   it('re-signs an emulator URL for the default HTTPS port and names the port to forward', async () => {
-    wiring.active.mockReturnValue({ emulatorEndpoint: { url: 'https://127.0.0.1:9297' } });
+    wiring.active.mockReturnValue({ emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true } });
     const out = await responseUrlForContainer(
       s3,
       'https://127.0.0.1:9297/cdkd-state-1/custom-resource-responses/r-1.json?X-Amz-Signature=old'
@@ -174,10 +186,19 @@ describe('responseUrlForContainer', () => {
   });
 
   it('leaves a URL on another origin, and any URL without an emulator, as it is', async () => {
-    wiring.active.mockReturnValue({ emulatorEndpoint: { url: 'https://127.0.0.1:9297' } });
+    wiring.active.mockReturnValue({ emulatorEndpoint: { url: 'https://127.0.0.1:9297', loopback: true } });
     expect(await responseUrlForContainer(s3, 'https://s3:4566/b/k')).toEqual({});
     wiring.active.mockReturnValue(undefined);
     expect(await responseUrlForContainer(s3, 'https://127.0.0.1:9297/b/k')).toEqual({});
+  });
+
+  it('leaves the URL of an emulator on another host as it is (no 443 there to forward)', async () => {
+    wiring.active.mockReturnValue({
+      emulatorEndpoint: { url: 'https://emu.lan:9297', loopback: false },
+    });
+    expect(await responseUrlForContainer(s3, 'https://emu.lan:9297/b/k?X-Amz-Signature=s')).toEqual(
+      {}
+    );
   });
 });
 

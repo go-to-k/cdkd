@@ -149,10 +149,16 @@ export async function resolveZipImagePlan(
   // downstream code path is identical for asset-backed and ARN-backed
   // layers. The per-ARN unzip tmpdirs are tracked alongside the merged
   // `/opt` tmpdir so the outer cleanup can remove all of them.
-  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
-    logicalId: lambda.logicalId,
-    cdkPath: readCdkPathOrUndefined(lambda.resource),
-  });
+  let layerPlan: Awaited<ReturnType<typeof materializeLambdaLayersIncludingArns>>;
+  try {
+    layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
+      logicalId: lambda.logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    });
+  } catch (error) {
+    if (inlineTmpDir !== undefined) rmSync(inlineTmpDir, { recursive: true, force: true });
+    throw error;
+  }
 
   // provided.al2 / provided.al2023 require the deployment package at
   // /var/runtime (where the base image's hardcoded entrypoint exec's
@@ -205,26 +211,33 @@ export async function materializeLambdaLayersIncludingArns(
 }> {
   const extraTmpDirs: string[] = [];
   const flat: { logicalId: string; assetPath: string }[] = [];
-  for (const layer of layers) {
-    if (layer.kind === 'asset') {
-      const asset = await layerAssetDirectory(layer.assetPath);
-      if (asset.tmpDir !== undefined) extraTmpDirs.push(asset.tmpDir);
-      flat.push({ logicalId: layer.logicalId, assetPath: asset.dir });
-      continue;
+  try {
+    for (const layer of layers) {
+      if (layer.kind === 'asset') {
+        const asset = await layerAssetDirectory(layer.assetPath);
+        if (asset.tmpDir !== undefined) extraTmpDirs.push(asset.tmpDir);
+        flat.push({ logicalId: layer.logicalId, assetPath: asset.dir });
+        continue;
+      }
+      const dir = await materializeLayerFromArn(layer, {
+        ...(workload && { workload }),
+        // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
+        // cdk-local reads `roleArn` by truthiness and would pull as the caller.
+        ...(options.layerRoleArn !== undefined && {
+          roleArn: explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn),
+        }),
+      });
+      extraTmpDirs.push(dir);
+      flat.push({ logicalId: layer.arn, assetPath: dir });
     }
-    const dir = await materializeLayerFromArn(layer, {
-      ...(workload && { workload }),
-      // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
-      // cdk-local reads `roleArn` by truthiness and would pull as the caller.
-      ...(options.layerRoleArn !== undefined && {
-        roleArn: explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn),
-      }),
-    });
-    extraTmpDirs.push(dir);
-    flat.push({ logicalId: layer.arn, assetPath: dir });
+    const plan = materializeLambdaLayers(flat);
+    return { ...plan, extraTmpDirs };
+  } catch (error) {
+    // The caller never receives these dirs on a throw, so nothing else
+    // would remove an extracted `.zip` layer or a downloaded ARN layer.
+    for (const dir of extraTmpDirs) rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
-  const plan = materializeLambdaLayers(flat);
-  return { ...plan, extraTmpDirs };
 }
 
 /**

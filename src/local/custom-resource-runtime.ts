@@ -58,9 +58,12 @@ import { responsePresignClient } from '../provisioning/providers/custom-resource
 import {
   ensureDockerAvailable,
   followContainerLogs,
+  imageInLocalCache,
   killAndDrainContainerLogs,
   pickFreePort,
+  pullImage,
   removeContainer,
+  removeContainersSync,
   runDetached,
   startNamespacePortForwarder,
   type ContainerLogStream,
@@ -68,6 +71,7 @@ import {
 import { resolveHostGatewayExtraHosts } from './docker-version.js';
 import { invokeRie, waitForRieReady } from './rie-client.js';
 import { resolveZipImagePlan, type ImagePlan } from '../cli/commands/local-invoke/image-plan.js';
+import { resolveRuntimeImage } from './runtime-image.js';
 
 /** `CloudWatch`'s `LogType: 'Tail'` cap, which the emulator path's `LogResult` carries. */
 const LOG_TAIL_MAX_BYTES = 4096;
@@ -79,12 +83,17 @@ const RESPONSE_URL_EXPIRES_IN_SECONDS = 7200;
 const CONTAINER_HOST = '127.0.0.1';
 
 let dockerAvailable: Promise<boolean> | undefined;
+const runtimeImages = new Map<string, Promise<boolean>>();
 const warnedOnce = new Set<string>();
+/** The in-flight events' synchronous teardowns, run by ONE `exit` listener. */
+const exitCleanups = new Set<() => void>();
+let exitHookInstalled = false;
 
-/** Test seam: forget the cached Docker probe and the once-only warnings. */
+/** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
   setLocalCustomResourceRuntimeEnabled(true);
   dockerAvailable = undefined;
+  runtimeImages.clear();
   warnedOnce.clear();
 }
 
@@ -198,16 +207,43 @@ export function chooseServiceTokenFunction(
   if (resolved.length === 0) {
     return { reason: 'its function was not found in the local cloud assembly' };
   }
-  const inStack =
+  // A known stack never borrows another stack's function of the same logical id.
+  const pool =
     currentStackName === undefined
       ? resolved
       : resolved.filter((l) => l.stack.stackName === currentStackName);
-  const pool = inStack.length > 0 ? inStack : resolved;
+  if (pool.length === 0) {
+    return { reason: 'its function was not found in the stack being deployed' };
+  }
   const identities = new Set(pool.map(codeIdentity));
   if (identities.size > 1) {
     return { reason: 'several functions in the local cloud assembly match it' };
   }
   return { lambda: pool[0]! };
+}
+
+/**
+ * Whether the runtime image is usable: in the local cache, else pulled ONCE
+ * per image per process (every custom resource event would otherwise pay a
+ * registry round trip). A failed pull is remembered too, so the fallback
+ * warning is printed once.
+ */
+function runtimeImageAvailable(image: string): Promise<boolean> {
+  let ready = runtimeImages.get(image);
+  if (ready === undefined) {
+    ready = (async (): Promise<boolean> => {
+      if (await imageInLocalCache(image)) return true;
+      try {
+        await pullImage(image, false);
+        return true;
+      } catch (err) {
+        getLogger().debug(safeMsg`Pulling ${image} failed: ${describeAwsFailure(err).detail}`);
+        return false;
+      }
+    })();
+    runtimeImages.set(image, ready);
+  }
+  return ready;
 }
 
 async function dockerIsAvailable(): Promise<boolean> {
@@ -268,8 +304,19 @@ export async function invokeCustomResourceFunctionLocally(
     logger.debug(safeMsg`GetFunctionConfiguration failed: ${describeAwsFailure(err).detail}`);
     return undefined;
   }
+  const stacks = synthesizedStacks();
+  if (stacks.length === 0) {
+    // `cdkd state destroy`, `cdkd rollback`, or a destroy run without the app.
+    warnOnce(
+      'no-assembly',
+      `This command did not synthesize the CDK app, so custom resource functions run in AWS ` +
+        `Emulator's own Lambda runtime, which can fail. Run \`cdkd destroy --aws-emulator\` from ` +
+        `the app's directory to run them locally.`
+    );
+    return undefined;
+  }
   const choice = chooseServiceTokenFunction(
-    findServiceTokenFunctions(synthesizedStacks(), customResourceLogicalId),
+    findServiceTokenFunctions(stacks, customResourceLogicalId),
     deployed,
     getCurrentStackName()
   );
@@ -281,6 +328,15 @@ export async function invokeCustomResourceFunctionLocally(
     return undefined;
   }
   const lambda = choice.lambda;
+  const image = resolveRuntimeImage(lambda.runtime);
+  if (!(await runtimeImageAvailable(image))) {
+    warnOnce(
+      `image:${image}`,
+      safeMsg`The Lambda runtime image ${image} is not available locally and could not be pulled, so ` +
+        `${lambda.runtime} custom resource functions run in AWS Emulator's own Lambda runtime instead.`
+    );
+    return undefined;
+  }
   logger.info(
     safeMsg`Running custom resource ${customResourceLogicalId}'s function ${lambda.logicalId} (${lambda.runtime}) in the Lambda runtime image locally`
   );
@@ -312,8 +368,13 @@ export async function responseUrlForContainer(
   s3Client: S3Client,
   responseUrl: unknown
 ): Promise<{ url?: string; forwardPort?: number }> {
-  const emulatorUrl = getActiveWorkloadAwsWiring()?.emulatorEndpoint?.url;
-  if (typeof responseUrl !== 'string' || emulatorUrl === undefined) return {};
+  const endpoint = getActiveWorkloadAwsWiring()?.emulatorEndpoint;
+  // Loopback only: the container reaches a loopback emulator through the
+  // forwarder in its own namespace, which is what makes its `127.0.0.1:443`
+  // forwardable. A remote emulator (`https://emu.lan:9297`) keeps the URL as
+  // signed: Python's `cfnresponse` PUTs it as it is.
+  if (typeof responseUrl !== 'string' || endpoint === undefined || !endpoint.loopback) return {};
+  const emulatorUrl = endpoint.url;
   let url: URL;
   let emulator: URL;
   try {
@@ -356,8 +417,29 @@ async function runInContainer(
   let forwarderId: string | undefined;
   let logStream: ContainerLogStream | undefined;
   const logChunks: Buffer[] = [];
+  const tmpDirs = (): string[] =>
+    [
+      imagePlan?.inlineTmpDir,
+      imagePlan?.layersTmpDir,
+      ...(imagePlan?.layerArnTmpDirs ?? []),
+    ].filter((d): d is string => d !== undefined);
+  // A deploy interrupted for good (a second ^C) leaves through
+  // `process.exit`, which skips the `finally` below: remove what this event
+  // started on the way out.
+  const onExit = (): void => {
+    removeContainersSync([forwarderId, containerId].filter((id): id is string => id !== undefined));
+    for (const dir of tmpDirs()) rmSync(dir, { recursive: true, force: true });
+  };
+  exitCleanups.add(onExit);
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once('exit', () => {
+      for (const cleanup of exitCleanups) cleanup();
+    });
+  }
   try {
-    imagePlan = await resolveZipImagePlan(lambda, { pull: true });
+    // The image was checked (or pulled once) by `runtimeImageAvailable`.
+    imagePlan = await resolveZipImagePlan(lambda, { pull: false });
 
     const functionEnv = deployed.Environment?.Variables ?? {};
     const timeoutSec = deployed.Timeout ?? lambda.timeoutSec;
@@ -422,13 +504,8 @@ async function runInContainer(
         logger.debug(safeMsg`removeContainer(${containerId}) failed: ${String(err)}`);
       });
     }
-    for (const dir of [
-      imagePlan?.inlineTmpDir,
-      imagePlan?.layersTmpDir,
-      ...(imagePlan?.layerArnTmpDirs ?? []),
-    ]) {
-      if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
-    }
+    for (const dir of tmpDirs()) rmSync(dir, { recursive: true, force: true });
+    exitCleanups.delete(onExit);
   }
 }
 

@@ -417,9 +417,10 @@ custom resource event runs on your machine.
 | --- | --- |
 | Requirement | Docker. Without it, cdkd prints one warning and sends the event to the emulator as before. |
 | Code | Read from the synthesized cloud assembly, together with the handler, runtime and layers. A command that does not synthesize (`cdkd state destroy`, `cdkd rollback`, or a destroy without the app) cannot find it and sends the event to the emulator, with a warning. |
-| Configuration | Environment variables, timeout and memory are the deployed function's. |
+| Configuration | Environment variables, timeout and memory are the deployed function's. A destroy or rollback after the app changed runs the code of the app as it is now with the configuration that was deployed. |
+| Runtime image | Used from the local Docker cache, else pulled once per run. When it cannot be pulled, cdkd prints one warning and sends the event to the emulator. |
 | Identity | The container gets the emulator's keys, endpoint and CA only, like a `cdkd local` container. |
-| Response | CDK's Node.js handlers send the response to port 443 whatever the URL says, so the container gets a response URL signed for port 443 and forwards that port to the emulator. |
+| Response | CDK's Node.js handlers send the response to port 443 whatever the URL says, so with an emulator on `127.0.0.1` the container gets a response URL signed for port 443 and forwards that port to the emulator. An emulator on another host keeps the URL as signed. |
 | Provider framework | Only the `ServiceToken` function runs locally. A `cr.Provider` framework function that calls your handler through `lambda:Invoke` still runs that handler in the emulator. |
 | Opt out | `--no-local-custom-resources` sends every event to the emulator's own runtime. |
 
@@ -480,10 +481,18 @@ A custom resource's provider function is not affected: cdkd runs it in the
 official Lambda runtime image (see
 [Custom resources run on your machine](#custom-resources-run-on-your-machine)),
 so `s3deploy.BucketDeployment` (`Custom::CDKBucketDeployment`) deploys. When
-you see this error from a custom resource, check that Docker is running, or
-whether you passed `--no-local-custom-resources`. Run a function of your own
-through `cdkd local invoke`, which uses the same image, instead of invoking it
-in the emulator.
+you see this error from a custom resource, cdkd printed a warning naming why it
+sent the event to the emulator:
+
+- Docker is not running: start it.
+- You passed `--no-local-custom-resources`: drop it.
+- The command did not read the app (`cdkd state destroy`, `cdkd rollback`), or
+  the function is not in it (the `ServiceToken` is not a `Fn::GetAtt` of a
+  function in the same template): run `cdkd destroy --aws-emulator` from the
+  app's directory.
+
+Run a function of your own through `cdkd local invoke`, which uses the same
+image, instead of invoking it in the emulator.
 
 ### A Node.js function fails with `Cannot find module 'https'`
 
@@ -499,9 +508,11 @@ their provider functions in the official Lambda runtime image (see
 [Custom resources run on your machine](#custom-resources-run-on-your-machine)),
 so `new s3.Bucket(..., { autoDeleteObjects: true })`
 (`Custom::S3AutoDeleteObjects`) deploys and empties its bucket on destroy. When
-you see this error from a custom resource, check that Docker is running, or
-whether you passed `--no-local-custom-resources`. Run a function of your own
-through `cdkd local invoke` instead of invoking it in the emulator.
+you see this error from a custom resource, the causes and remedies are the
+three in
+[A Python function fails with `No module named '_signal'`](#a-python-function-fails-with-no-module-named-signal).
+Run a function of your own through `cdkd local invoke` instead of invoking it
+in the emulator.
 
 ### A Docker image asset is refused
 
