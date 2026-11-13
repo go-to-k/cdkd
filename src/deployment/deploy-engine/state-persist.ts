@@ -31,7 +31,8 @@ import {
 import { constructPathOf, withConstructPath } from '../../analyzer/destructive-changes.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { absorbOutputsPassSecrets, allRecordedSecrets, redactOutputs } from './masking.js';
-import { applyNoEchoPersist, withNoEchoExactEchoes } from './noecho.js';
+import { applyNoEchoPersist, noEchoPositionSources, withNoEchoExactEchoes } from './noecho.js';
+import { withNoEchoValueMacs } from '../noecho-value-macs.js';
 import {
   isSupersededHeldBySameType,
   isSupersededResourceRecord,
@@ -200,6 +201,14 @@ function unionCrossStackReads<T>(
 
 export function redactStateForPersist(this: DeployEngine, state: StackState): StackState {
   const resources: Record<string, ResourceState> = {};
+  // go-to-k/cdkd#6146: which `NoEcho` parameters each property reads, for the
+  // MAC stamp. Read whenever the stack has `NoEcho` parameters, even on a run
+  // whose MACs failed, so a key the provider left unsent keeps its entry (a
+  // stack with none reads nothing and stamps nothing).
+  const macSources =
+    this.noEchoRun.noEchoMacs === undefined
+      ? undefined
+      : noEchoPositionSources(this.noEchoRun, state.resources);
   for (const [logicalId, record] of Object.entries(state.resources)) {
     // Redact each record ONLY with the secrets substituted during that
     // resource's own resolution — see the `SecretsRunState.perResourceSecrets` doc.
@@ -250,13 +259,23 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
     );
     resources[logicalId] = withReferenceProvenance(
       withConstructPath(
-        withMaskedPropertyFingerprints(
-          noEchoScrubbed,
+        // go-to-k/cdkd#6146: the `NoEcho` value MACs, rebuilt only for a
+        // record this deploy wrote; a property its provider left unsent keeps
+        // its previous entry.
+        withNoEchoValueMacs(
+          withMaskedPropertyFingerprints(
+            noEchoScrubbed,
+            record.properties,
+            templateProps,
+            secrets,
+            this.secretsRun.fingerprintNoEchoValues,
+            this.secretsRun.perResourceInputFingerprints.get(logicalId)
+          ),
           record.properties,
           templateProps,
-          secrets,
-          this.secretsRun.fingerprintNoEchoValues,
-          this.secretsRun.perResourceInputFingerprints.get(logicalId)
+          macSources,
+          this.noEchoRun.noEchoMacs?.settled(),
+          this.noEchoRun.noEchoMacKept.get(logicalId)
         ),
         constructPathOf(this.noEchoRun.constructPathTemplate, logicalId)
       ),

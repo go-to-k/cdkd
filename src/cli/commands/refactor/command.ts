@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import type { NoEchoMacCache } from '../diff-recursive/noecho-macs.js';
+import type { MacWriteOnlyLookups } from '../../../deployment/deploy-engine/update/noecho-macs.js';
 import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
@@ -269,6 +271,9 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
 
     const plans: StackRefactorPlan[] = [];
     const planStacks = new Map<StackRefactorPlan, StackInfo>();
+    // go-to-k/cdkd#6146: one set of NoEcho value MACs per stack for the run.
+    const noEchoMacCache: NoEchoMacCache = new Map();
+    const macWriteOnlyLookups: MacWriteOnlyLookups = new Map();
     for (const stackInfo of targetStacks) {
       const stackRegion = await regionForStack(stackInfo.stackName, stackInfo.region);
       const stateData = await stateBackend.getState(stackInfo.stackName, stackRegion);
@@ -308,6 +313,8 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
             ...(options.cfnFallback === false && { cfnFallback: false }),
             producerLookup,
             ...(stackInfo.account && { consumerAccount: stackInfo.account }),
+            noEchoMacCache,
+            macWriteOnlyLookups,
             refusalRecovery: recovery,
             inheritSecretBearingTemplate: false,
             previewMaskedInputs: true,

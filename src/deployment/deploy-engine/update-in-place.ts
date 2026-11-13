@@ -63,7 +63,7 @@ import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
-import { noEchoPositionSources } from './noecho.js';
+import { carriedNoEchoMacs, noEchoUpdateContext, noEchoPositionSources } from './noecho-macs.js';
 import { deleteOldIdAfterDeploy } from './replacement/cleanup-old-id.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 import { replaceFallbackFor } from './update-in-place/replace-fallback.js';
@@ -457,7 +457,7 @@ export async function updateInPlace(
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
               changedProperties: changedForProvider,
-              noEchoOnlyChangedProperties: noEchoOnlyForProvider,
+              ...noEchoUpdateContext(engine, logicalId, noEchoOnlyForProvider, changedForProvider),
               // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
               // outlives this call's promise (deadline race, Ctrl-C, retry).
               markUnsettled: (propertyName: string) => {
@@ -896,6 +896,7 @@ export async function updateInPlace(
       currentResource.noEchoExactEchoLeaves !== undefined && {
         noEchoExactEchoLeaves: currentResource.noEchoExactEchoLeaves,
       }),
+    ...carriedNoEchoMacs(engine, logicalId, currentResource, result.wasReplaced),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,

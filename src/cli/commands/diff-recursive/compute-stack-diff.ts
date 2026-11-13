@@ -72,6 +72,7 @@ import { outputChangesAfterResolutionFailure } from './outputs-failure.js';
 import { trustedResourceNames } from './trust.js';
 import { healerUnderRecordPrintingBag } from './child-parameters.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
+import { previewNoEchoMacChanges } from './noecho-macs.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -109,6 +110,8 @@ export async function computeStackDiff(
     cfnFallback,
     producerLookup,
     consumerAccount,
+    noEchoMacCache,
+    macWriteOnlyLookups,
     inheritSecretBearingTemplate,
     inheritedSecrets,
     inheritedSecretTokens,
@@ -503,6 +506,37 @@ export async function computeStackDiff(
       ),
     }
   );
+  // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
+  // value moved is a change, as the deploy sends it. No KMS call unless a
+  // record carries MACs; none in a nested child.
+  const macConditions =
+    conditions === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+        );
+  const macMoved = await previewNoEchoMacChanges({
+    changes,
+    template: effectiveTemplate,
+    resources: stateForDiff.resources,
+    parameterValues: mergedParameters,
+    sources: {
+      parameters: noEchoParametersOf(effectiveTemplate),
+      ...(macConditions !== undefined && { conditions: macConditions }),
+    },
+    nestedChild: inheritedSecrets !== undefined || inheritedNoEchoParameters !== undefined,
+    stackName,
+    region,
+    stackInstanceId: stateForDiff.stackInstanceId,
+    logger,
+    ...(noEchoMacCache !== undefined && { cache: noEchoMacCache }),
+    ...(macWriteOnlyLookups !== undefined && { writeOnlyLookups: macWriteOnlyLookups }),
+  });
+  if (macMoved.length > 0) {
+    logger.info(
+      safeMsg`Stack ${displayStackName(stackName)}: ${macMoved.sort().join(', ')} read a NoEcho parameter whose value changed since the last deploy (its recorded MAC differs): the deploy sends it.`
+    );
+  }
   // The deploy reads back every resource a `NoEcho` parameter feeds, since
   // state holds only `***` there; this preview cannot, so it says so once.
   // Informational: it never counts as a change for `--fail`.

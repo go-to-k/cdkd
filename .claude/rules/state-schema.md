@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v16 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v17 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -12,7 +12,7 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | ... | 16; // each bump is its fields' `vN+`
+  version: 1 | 2 | ... | 17; // each bump is its fields' `vN+`; 17 only with `noEchoValueMacs`
   stackName: string;
   region?: string; // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
@@ -62,6 +62,7 @@ interface ResourceState {
   constructPath?: string; // no bump: display only; `redactStateForPersist` stamps it (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
+  noEchoValueMacs?: Record<string, Record<string, string>>; // v17+: per key, per NoEcho param, KMS HMAC of what was sent (#6146)
   nameGeneration?: number; // v13+: absent = 0
   nameGenerationHigh?: number; // v13+: set by a rollback
   unsettledProperties?: string[]; // v14+: names a failed update had started changing (#5380)
@@ -71,7 +72,7 @@ interface ResourceState {
 
 `acceptedCreateOnlyDrops` is EVIDENCE, read only via `acceptedCreateOnlyDropsOf` (malformed = none): the #2790 refusal fires only for a key it names (an imported or pre-v7 record holds create-only keys AWS holds). A create, replacement or rollback re-create rebuilds it, an in-place update carries what `properties` keeps (`acceptedCreateOnlyDropsEvidence`), CC clears it, other spreading writers keep it.
 
-Neither field hashes a secret-derived value. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
+Neither field hashes a secret-derived value. `noEchoValueMacs`: a KMS keyed MAC, no oracle without `kms:GenerateMac`: `docs/state-schema-internals.md`. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
 
 `secretNamedAttributes` (#3869) is PRINT-ONLY attribute KEYS, read by `secretNameNeedlesOf`, rewritten by each create or update of the row; absent = not known.
 
@@ -93,11 +94,11 @@ A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure r
 
 ## `outputs`
 
-Values are `unknown`, NOT `string`: a LIST `Fn::GetAtt` persists a JSON **array**. Without `--strict-getatt` an unresolvable output is dropped: absence means "not resolved", and a no-change save keeps the old value.
+Values are `unknown`: a LIST `Fn::GetAtt` persists a JSON **array**. Without `--strict-getatt` an unresolvable output is dropped: absence means "not resolved", and a no-change save keeps the old value.
 
 ## `deletionPolicy` / `updateReplacePolicy` (v5+)
 
-Recorded so an attribute-only flip diffs as an UPDATE with no provider call.
+Recorded so an attribute-only flip is an UPDATE with no provider call.
 
 Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy` takes `state.deletionPolicy ?? template...DeletionPolicy`; template-less `cdkd state destroy` reads state only (pre-v5 state there deletes every resource).
 
@@ -105,7 +106,7 @@ Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy
 
 ## `provisionedBy` (v7+)
 
-`'sdk'` (synchronous SDK calls) or `'cc-api'` (Cloud Control). Absent means SDK-managed then, but does NOT pin routing: rule 2 gates on a RECORDED `'cc-api'`, so absent re-enters the matrix.
+`'sdk'` or `'cc-api'`. Absent means SDK-managed then, but does NOT pin routing: rule 2 gates on a RECORDED `'cc-api'`, so absent re-enters the matrix.
 
 Routing matrix (`ProviderRegistry.getProviderFor`):
 
@@ -121,7 +122,7 @@ Routing matrix (`ProviderRegistry.getProviderFor`):
 
 ## `outputReads` (v8+)
 
-The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region included, cross-account `RoleArn` never), omitted when empty. **Informational only** — no destroy refusal. `undefined` = "no consumers known".
+The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region included, cross-account `RoleArn` never), omitted when empty. **Informational** — no destroy refusal. `undefined` = "no consumers known".
 
 ## `observedBaselineRefused` (v10+)
 
@@ -143,14 +144,14 @@ Top-level property NAMES only, read via `unsettledPropertiesOf` (malformed = non
 
 ## `unsettledItems` (v15+, #5498)
 
-Per member path (closed vocabulary: `GlobalSecondaryIndexes`, `Tags`, `DesiredShardLevelMetrics`, `Replicas`, `Replicas[<region>].Tags` with the Region checked against AWS's shape), the item names (index name, tag key, metric) a failed update's calls were ACCEPTED for adding: `UpdateContext.markAttempted(path, items)` right after the send resolves, never before it or for a call that throws. Read via `unsettledItemsOf` only, which keeps a path only under a name in `unsettledProperties` (items ⊆ unsettled) and drops an entry over 255 chars, a path over 100 entries, and any malformed field. Written only by `recordUnsettledMarks` (`execute.ts`, unioned via `withUnsettledItems`); a rebuilt record carries only the still-unsettled names' items (`unsettledItemsField`), `withoutUnsettledProperties` strips both fields. The next deploy hands them as `UpdateContext.unsettledItems` and to `readUnsettled`'s 7th parameter: a live item named here EXACTLY joins the previous side, so the template's omission removes it (live ∩ attempted ∖ template). Secret-derived names are rewritten on persist (`scrubResourceRecord` value scan, the `NoEcho` persist arm by value) and by `cdkd scrub`; a name containing `{{resolve:` or `***` never matches (`isUsableAttemptedName`), so its item is kept.
+Per member path (closed vocabulary: `GlobalSecondaryIndexes`, `Tags`, `DesiredShardLevelMetrics`, `Replicas`, `Replicas[<region>].Tags` with the Region checked against AWS's shape), the item names (index name, tag key, metric) a failed update's calls were ACCEPTED for adding: `UpdateContext.markAttempted(path, items)` right after the send resolves, never before it or for a call that throws. Read via `unsettledItemsOf` only, which keeps a path only under a name in `unsettledProperties` (items ⊆ unsettled) and drops an entry over 255 chars, a path over 100 entries, and any malformed field. Written only by `recordUnsettledMarks` (`execute.ts`, unioned via `withUnsettledItems`); a rebuilt record carries only the still-unsettled names' items (`unsettledItemsField`), `withoutUnsettledProperties` strips both fields. The next deploy hands them as `UpdateContext.unsettledItems` and to `readUnsettled`'s 7th parameter: a live item named here EXACTLY joins the previous side, so the template's omission removes it (live ∩ attempted ∖ template). Secret-derived names: `docs/state-schema-internals.md` (v15); `isUsableAttemptedName` never matches one.
 
 ## `observedProperties` (v3+)
 
-Set on each create / update by a fire-and-forget `readCurrentState`, drained before the final save; `cdkd import` sets it synchronously. Drift compares it, else `properties`.
+Set on each create / update by a fire-and-forget `readCurrentState`, drained by the final save; `cdkd import` sets it at once. Drift compares it, else `properties`.
 
 ## Rollback journal (NOT part of the state schema)
 
-`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix with its own `journalVersion`. Written when a deploy ends without a completed rollback (`--no-rollback` failure, SIGINT, before an automatic rollback): one `segment` per failed attempt, a verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668, and replacements `nameGeneration`) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` consumes it, `--revert-failed` replays `failedOperations`; it is popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion`: error.
+`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix with its own `journalVersion`. Written when a deploy ends without a completed rollback: one `segment` per failed attempt, verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668, and replacements `nameGeneration`) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` consumes it (`--revert-failed`: `failedOperations`); popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion` errors.
 
 **Secret redaction.** Its `properties` / `attemptedProperties` / `previousState` take `state.json`'s redaction (a public `String` / `StringList` ssm value stays resolved). The replay RE-RESOLVES them before `create()` / `update()` and re-redacts the rebuilt record.

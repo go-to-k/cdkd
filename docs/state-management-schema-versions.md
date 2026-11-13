@@ -5,7 +5,9 @@ description: "How cdkd handles state records written by older and newer versions
 
 # Schema versions and upgrades
 
-Every state record carries a schema `version`, and the current one is `16`.
+Every state record carries a schema `version`, and the current one is `17`
+(written only for a record that holds a `NoEcho` value MAC; any other record
+is written as `16`).
 A newer cdkd reads every older version, so upgrading cdkd needs no migration
 step. An older cdkd cannot read a record that a newer one has written.
 
@@ -31,12 +33,17 @@ An older cdkd refuses a record written in a version it does not know, and
 exits:
 
 ```text
-Unsupported state schema version 16 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15. Upgrade cdkd to a version that supports schema 16.
+Unsupported state schema version 17 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16. Upgrade cdkd to a version that supports schema 17.
 ```
 
-cdkd writes the current version on every record it saves. So once a newer
-cdkd has written a stack's record, every older cdkd fails on that stack.
-Upgrade every machine and CI job that deploys a stack at the same time.
+cdkd writes the current version on every record it saves, with one exception:
+version 17 is written only for a record holding a `NoEcho` value MAC, and
+every other record as 16. So once a newer cdkd has written a stack's record,
+an older cdkd fails on that stack (for version 17, only while a record holds
+a MAC). That includes an older cdkd reading the stack as a consumer: a
+`Fn::GetStackOutput` from another stack or account, or a nested stack's
+parent. Upgrade every machine and CI job that deploys a stack, or reads its
+outputs, at the same time.
 
 ## What each version added
 
@@ -58,6 +65,7 @@ Upgrade every machine and CI job that deploys a stack at the same time.
 | 14 | `unsettledProperties`: the properties a failed update had started changing, which the next deploy sends again |
 | 15 | `unsettledItems`: the indexes, tags and metrics a failed update had added, which the next deploy removes when the template no longer names them |
 | 16 | `stackIdFromInstance`: set on a stack first deployed with this version, whose `AWS::StackId` then ends in a per-stack UUID instead of `cdkd`. A stack deployed before keeps `cdkd`, so nothing named from it changes |
+| 17 | `noEchoValueMacs`: a KMS MAC of each `NoEcho` parameter value a property was last sent, so an unchanged value is not re-sent ([Comparing a value AWS does not report](state-management-secrets.md#how-a-deploy-compares-a-masked-value)). Written only for a record that holds one |
 
 [What a state record contains](state-management.md#what-a-state-record-contains)
 says what each field means. The contributor page

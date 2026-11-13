@@ -285,6 +285,13 @@ deploy compares it with AWS, and updates a resource whose value changed.` That
 line is informational and never counts as a change for `--fail`; the deploy
 reads each such resource back and updates the ones whose value moved (see
 [`version: 11` stores `NoEcho` values as `***`](state-management-secrets.md#noecho-parameters)).
+The one exception is a property whose record carries a `noEchoValueMacs` MAC
+(a KMS keyed MAC of the value last sent): on a top-level stack the diff makes
+one `GenerateMac` per `NoEcho` parameter, and a write-only property (by the
+type's schema) that reads nothing but `NoEcho` parameters and literals, whose
+MAC differs, is shown as changed, with one note naming it, as the deploy sends
+it. A diff role without `kms:GenerateMac` logs that at debug and previews as
+before.
 
 A record written before `version: 11` still holds the value it last sent in
 the clear. `cdkd diff` compares that value with the current one: an equal value

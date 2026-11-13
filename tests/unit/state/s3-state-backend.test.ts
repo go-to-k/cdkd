@@ -12,7 +12,7 @@ import {
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
-import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
+import { STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS, type StackState } from '../../../src/types/state.js';
 import { StateError, formatError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
@@ -1206,9 +1206,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(put.input.Key).toBe('cdkd/MyStack/us-west-2/state.json');
       const persisted = JSON.parse(put.input.Body) as StackState;
       // Schema version is bumped to current even when the caller passed a
-      // `version: 1` body — the on-disk format is always current. Compare
-      // against the constant so this stays accurate when the schema grows.
-      expect(persisted.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
+      // `version: 1` body — the on-disk format is always current: for a state
+      // with no NoEcho value MAC that is the v16 layout (v17 is written only
+      // with one, go-to-k/cdkd#6146). Compare against the constant so this
+      // stays accurate when the schema grows.
+      expect(persisted.version).toBe(STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS);
       expect(persisted.region).toBe('us-west-2');
       expect(persisted.stackName).toBe('MyStack');
     });

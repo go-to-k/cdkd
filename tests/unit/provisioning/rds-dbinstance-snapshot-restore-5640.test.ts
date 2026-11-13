@@ -813,14 +813,18 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
     );
 
     it('lets a key named only for an unconfirmed NoEcho value through, sending nothing for it', async () => {
+      // go-to-k/cdkd#6146: the unsent key is reported, so its NoEcho value MAC is kept.
+      const kept: string[] = [];
       await update(
         { ...FROM_SNAPSHOT, BackupRetentionPeriod: '5' },
         { ...FROM_SNAPSHOT, DBSnapshotIdentifier: '***' },
         {
           changedProperties: new Set(['DBSnapshotIdentifier', 'BackupRetentionPeriod']),
           noEchoOnlyChangedProperties: new Set(['DBSnapshotIdentifier']),
+          keptNoEchoOnlyProperty: (key: string) => kept.push(key),
         }
       );
+      expect(kept).toEqual(['DBSnapshotIdentifier']);
       const [modify] = sent('ModifyDBInstanceCommand');
       expect(modify).not.toHaveProperty('DBSnapshotIdentifier');
       expect(modify).toMatchObject({ BackupRetentionPeriod: 5 });

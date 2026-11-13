@@ -700,7 +700,8 @@ export async function updateRestApi(
   previousProperties: Record<string, unknown>,
   log: MaskedLogSinks,
   changedProperties?: ReadonlySet<string>,
-  noEchoOnlyChanged?: ReadonlySet<string>
+  noEchoOnlyChanged?: ReadonlySet<string>,
+  keptNoEchoOnly?: (propertyName: string) => void
 ): Promise<ResourceUpdateResult> {
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
   try {
@@ -723,14 +724,18 @@ export async function updateRestApi(
     // cannot tell. An `overwrite` put would delete every resource the stack
     // declares on the API outside the definition, on every deploy, so it is
     // skipped and the deploy says so (maintainer decision on
-    // go-to-k/cdkd#6140). A salted witness that would let cdkd compare the
-    // value, as CloudFormation does, is go-to-k/cdkd#6146.
+    // go-to-k/cdkd#6140). Since go-to-k/cdkd#6146 the engine compares the
+    // value through a KMS MAC of what it last sent when it has one: a match
+    // leaves the key out of `changedProperties`, a difference leaves it out of
+    // `noEchoOnlyChanged`, so this skip is the NO-MAC case only. The skipped
+    // keys are reported back, so the engine keeps their previous MAC.
     if (bodyChanged && changedProperties !== undefined && noEchoOnlyChanged !== undefined) {
       const named = BODY_KEYS.filter((key) => changedProperties.has(key));
       if (named.length > 0 && named.every((key) => noEchoOnlyChanged.has(key))) {
         bodyChanged = false;
+        for (const key of named) keptNoEchoOnly?.(key);
         log.warn(
-          safeMsg`${logicalId} (${resourceType}): its Body embeds a NoEcho parameter value, which cdkd records only as *** and cannot compare, so the OpenAPI definition is not put again. A change to that value alone is NOT applied. To apply one, change a part of the Body that is not masked (its description or a version field, for example) in the same deploy.`
+          safeMsg`${logicalId} (${resourceType}): its Body embeds a NoEcho parameter value that cdkd could not compare with the value it last sent, so the OpenAPI definition is not put again, and a change to that value alone is NOT applied by this deploy. cdkd compares it once a deploy can call kms:GenerateMac on the key 'cdkd bootstrap' creates, the Body reads nothing but NoEcho parameters and literals, and a put has recorded the value's MAC. To apply a change now, change a part of the Body that is not masked (its description or a version field, for example) in the same deploy.`
         );
       }
     }

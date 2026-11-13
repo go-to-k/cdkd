@@ -173,7 +173,10 @@ export async function finishReverseReplacement(
   // which constructs the record fresh from the create result — including
   // the provider's `effectiveProperties` (issue #1682), which replaces
   // the previous record's `properties` when it reported one.
-  const { observedProperties: _staleObserved, ...prevRecord } = prev;
+  // go-to-k/cdkd#6146: the re-create sends what the replay resolved, not
+  // necessarily the value the deleted copy's `NoEcho` value MACs describe, so
+  // they are dropped: the next deploy finds no MAC and re-sends once.
+  const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
   // Redact resolved secret plaintext back out (GHSA fix): the create
   // result's `effectiveProperties` can echo the value we resolved for the
   // re-CREATE, so scrub the rebuilt record before it is persisted.

@@ -990,6 +990,34 @@ describe('replayRollback', () => {
       expect(record.acceptedCreateOnlyDrops).toEqual(['OutpostArn']);
     });
 
+    it("drops the deleted copy's NoEcho value MACs: the re-create sent what the replay resolved (#6146)", async () => {
+      const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
+      const del = vi.fn().mockResolvedValue(undefined);
+      const { ctx } = makeCtx({ create, delete: del });
+      ctx.providerRegistry = {
+        getProviderFor: () => ({ provider: { create, delete: del }, provisionedBy: 'sdk' }),
+      } as unknown as RollbackExecutorContext['providerRegistry'];
+      const properties = { TableName: 't' };
+      const macs = { TableName: { P: 'kms-hmac-sha256:arn:aws:kms:us-east-1:123456789012:key/k:AAAA' } };
+      const prev = res({
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: 'phys-old',
+        properties,
+        provisionedBy: 'sdk',
+        noEchoValueMacs: macs,
+      });
+      const ops: CompletedOperation[] = [
+        { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3Tables::Table', physicalId: 'phys-new', previousState: prev },
+      ];
+      const state: Record<string, ResourceState> = {
+        B: res({ resourceType: 'AWS::S3Tables::Table', physicalId: 'phys-new', properties, noEchoValueMacs: macs }),
+      };
+      const result = await replayRollback(ops, state, 'S', ctx);
+      expect(result.failures).toBe(0);
+      expect(state.B!.physicalId).toBe('phys-old-2');
+      expect(state.B!.noEchoValueMacs).toBeUndefined();
+    });
+
     it('GAINS it when the old record had none but the SDK re-create still drops a create-only key', async () => {
       const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
       const del = vi.fn().mockResolvedValue(undefined);

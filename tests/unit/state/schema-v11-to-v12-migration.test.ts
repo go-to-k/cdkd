@@ -3,6 +3,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
   STATE_SCHEMA_VERSIONS_READABLE,
   type StackState,
 } from '../../../src/types/state.js';
@@ -230,7 +231,7 @@ describe('State schema v12 — referenceProvenance / outputReferenceProvenance (
     const body = JSON.parse(
       String((put![0] as { input: { Body: string } }).input.Body)
     ) as StackState;
-    expect(body.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
+    expect(body.version).toBe(STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS);
     expect(body.resources['Queue']!.referenceProvenance).toEqual(
       v12.resources['Queue']!.referenceProvenance
     );

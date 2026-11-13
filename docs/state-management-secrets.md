@@ -134,21 +134,67 @@ A resource's physical ID is never masked. See
 ### How a deploy compares a masked value
 
 The record only says `***`, so a deploy cannot compare the new value with the
-stored one. cdkd resolves the parameter again on every deploy and then decides
-for each property that reads it. The decision depends on two things: whether
-the property can be updated in place or is create-only (changing it replaces
-the resource), and whether AWS reports the property's current value.
+stored one directly. cdkd resolves the parameter again on every deploy and then
+decides for each property that reads it. The decision depends on whether the
+property can be updated in place or is create-only (changing it replaces the
+resource), whether AWS reports the property's current value, and, for one it
+does not report, whether the record holds a MAC of the value it was last sent.
 
 | The property | What the deploy does |
 | --- | --- |
 | Updatable, and AWS reports it | Reads the resource; skips an unchanged value, updates a changed one |
-| Updatable, and AWS does not report it | Sends the value on every deploy, with one info line per resource |
+| Updatable, and AWS does not report it | Compares MACs (see below): skips an unchanged value, updates a changed one. Otherwise sends the value on every deploy, with one info line per resource |
 | Create-only, and AWS was seen to report it exactly | Reads the resource; a changed value replaces the resource |
 | Create-only otherwise | Never replaces; warns on every deploy while it cannot confirm the value |
 | Create-only, and the read failed | The resource fails with a message to re-run |
 
 An RDS `MasterUserPassword` is an example of the second row: AWS never returns
 a password.
+
+**Comparing a value AWS does not report.** When the region was bootstrapped
+with `cdkd bootstrap` and the deploying identity may call `kms:GenerateMac` on
+the key `alias/cdkd-noecho-mac`, each deploy computes a KMS HMAC (`HMAC_SHA_256`)
+of every `NoEcho` parameter value, bound to the stack and the parameter, and
+records it for each property that was sent the value. The record holds only
+the MAC, never the value. The next deploy computes the MAC again and compares:
+
+- An equal MAC means the property is not sent again, but only when the
+  property reads nothing except `NoEcho` parameters, literals and the stack's
+  own pseudo parameters (`AWS::Region`, `AWS::AccountId`, ...). A property that
+  also reads a resource attribute, another parameter, a condition, a mapping,
+  a cross-stack value or a `{{resolve:...}}` reference inside the same string
+  could have changed without its MAC changing, so it is sent as without a MAC.
+- A different MAC means the value changed, so the property is sent.
+- No MAC, for example on the first deploy after an upgrade, after the key was
+  replaced, after a failed update or a rollback, or without the key or the
+  permission, means the deploy behaves as without this feature: the property
+  is sent, and the MAC is recorded for the next deploy.
+
+A REST API's `Body` (`AWS::ApiGateway::RestApi`) is the one exception to
+sending without a MAC. Re-putting the definition deletes every resource the
+stack declares on the API outside it, so a `Body` cdkd cannot compare is not
+put, and the deploy warns that a change to the value alone is not applied. A
+`Body` is compared once the key and the permission are in place, a create or a
+put has recorded its MAC, and it reads nothing but `NoEcho` parameters and
+literals; a `Body` that also reads, say, a Lambda function's ARN keeps the
+warning.
+
+A stack with no `NoEcho` parameter makes no KMS call. A stack that has one
+makes one `GenerateMac` call per `NoEcho` parameter per deploy, run in
+parallel, and only when a resource that reads one is created or updated. A
+missing key, a missing permission, a KMS throttle or an AWS Emulator target
+never fails a deploy: it logs one line naming the error and keeps the
+behaviour without a MAC.
+
+To turn it on for an existing account, re-run `cdkd bootstrap` in each region
+and grant the deploying identity `kms:GenerateMac` on the key. A reader of the
+state file cannot test a guess against a MAC: that needs `kms:GenerateMac` on
+the key, which reading the state bucket does not grant. Two things a reader
+does learn, from `state.json` and its older S3 versions: when a value changed
+(its MAC changed), and when a value came back (an earlier MAC reappears). And
+an identity that can both read the state bucket and call `kms:GenerateMac` on
+the key can test guesses, so grant that action to the deploying identity
+only, not through a broad policy such as `kms:*` on every key.
 
 A stack whose only difference is that its resources read a `NoEcho` parameter
 is reported as `No changes`.
@@ -171,6 +217,10 @@ when it reaches the replacement. `--yes` approves it.
 `cdkd diff` cannot read AWS, so it compares the masks. It prints one note per
 stack saying how many unchanged resources read a `NoEcho` parameter. That note
 does not count as a change for `--fail`.
+
+A property whose recorded MAC differs from today's value is shown as changed,
+as the deploy sends it, and a note names it. `cdkd diff` computes MACs only
+when a record holds one, and never for a nested stack.
 
 ### What other commands do with a masked value
 

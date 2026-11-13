@@ -40,6 +40,8 @@ import { resolveUpdateInputs } from './resolve-inputs.js';
 import { compareWithRecord } from './compare-record.js';
 import { finishUpdate } from './finish.js';
 import { unwrittenCreateOnlyRefusal } from './refusal-text.js';
+import { macWriteOnlyKeys, noEchoMacVerdicts } from './noecho-macs.js';
+import { keptNoEchoMacSink } from '../noecho-macs.js';
 
 /** The `UPDATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionUpdate(
@@ -77,6 +79,9 @@ export async function provisionUpdate(
     lostChild,
     lostWithParent,
     staleCoordinates,
+    desiredProps,
+    noEchoSources,
+    parameterCoordinates,
   } = resolved;
   const compared = await compareWithRecord(
     engine,
@@ -324,6 +329,13 @@ export async function provisionUpdate(
       )
       .map((pc) => pc.path)
   );
+  // go-to-k/cdkd#6146: never sent in place, so the save keeps each one's
+  // previous NoEcho value MAC (a replacement's new record starts with none).
+  // Nothing reads a create-only key's MAC today (no verdict for it); it is
+  // kept, rather than restamped with a value never sent, so every entry stays
+  // the MAC of what the resource was last sent.
+  const keepMac = keptNoEchoMacSink(engine, logicalId, parameterCreateOnlyPaths);
+  for (const key of parameterCreateOnlyPaths) keepMac(key);
   if (change.propertyChanges?.some((pc) => pc.requiresReplacement) === true) {
     const lowered: PropertyChange[] = [];
     for (const pc of change.propertyChanges) {
@@ -432,6 +444,13 @@ export async function provisionUpdate(
   // Keys whose every pending leaf AWS confirmed holding (`held`).
   const parameterHeldKeys = new Set<string>();
   const parameterUnreadablePaths: string[] = [];
+  // go-to-k/cdkd#6146: the updatable keys AWS does not report (a readback
+  // showed it, or the schema declares the key write-only), which the NoEcho
+  // value MACs may settle below. Only those: a readable key is AWS's to
+  // decide, read or not, and every replay (an older cdkd's included) refuses
+  // to send an unreadable one, so no revert can leave AWS holding a value its
+  // MAC does not describe.
+  const parameterUnreportedPaths = new Set<string>();
   if (pendingParameterLeaves.size > 0 && !typeChanged) {
     // go-to-k/cdkd#5112: a type whose provider decides from
     // `changedProperties` whether to send a field reads back a `NoEcho` key
@@ -544,9 +563,69 @@ export async function provisionUpdate(
         if (verdict === 'held') {
           parameterSettledPaths.add(key);
           parameterHeldKeys.add(key);
-        } else if (verdict === 'not-readable') parameterUnreadablePaths.push(key);
+        } else if (verdict === 'not-readable') {
+          parameterUnreadablePaths.push(key);
+          parameterUnreportedPaths.add(key);
+        }
+      }
+    } else if (
+      engine.noEchoRun.noEchoMacs?.settled() !== undefined &&
+      currentResource.noEchoValueMacs !== undefined
+    ) {
+      // Not read (something else moved): a key the type's schema declares
+      // write-only is one no readback reports either, so its MAC may decide.
+      // Only a record carrying MACs asks (one cached DescribeType); an
+      // unknown answer is no candidate (re-sent, as before).
+      const writeOnly = await macWriteOnlyKeys(resourceType, engine.noEchoRun.macWriteOnlyLookups);
+      for (const key of pendingParameterLeaves.keys()) {
+        if (parameterCreateOnlyPaths.has(key) || otherFreshAt(key).length > 0) continue;
+        if (writeOnly?.has(key) === true) parameterUnreportedPaths.add(key);
       }
     }
+  }
+
+  // go-to-k/cdkd#6146 (maintainer decision 2): a key AWS gave no word on is
+  // decided by the NoEcho value MACs when the record has them. A match settles
+  // it as AWS-confirmed above would (no re-send, and none of a RestApi
+  // `Body`'s destructive put); a difference sends it as a proven change. No
+  // verdict keeps the re-send (decision 4 on #4043) and #6140's stop-gap.
+  const {
+    confirmed: macConfirmedPaths,
+    changed: macChangedPaths,
+    readsOther: macReadsOther,
+  } = noEchoMacVerdicts({
+    candidates: parameterUnreportedPaths,
+    record: currentResource,
+    templateProperties: desiredProps,
+    sources: noEchoSources,
+    pendingParameterLeaves,
+    parameterCoordinates,
+    staleCoordinates,
+    movedAsWritten,
+    unsettledNames,
+    current: engine.noEchoRun.noEchoMacs?.settled(),
+  });
+  for (const key of macConfirmedPaths) parameterSettledPaths.add(key);
+  if (macConfirmedPaths.size > 0 || macChangedPaths.size > 0) {
+    const decided = parameterUnreadablePaths.filter(
+      (key) => !macConfirmedPaths.has(key) && !macChangedPaths.has(key)
+    );
+    parameterUnreadablePaths.splice(0, parameterUnreadablePaths.length, ...decided);
+  }
+  if (macConfirmedPaths.size > 0) {
+    engine.logger.debug(
+      safeMsg`${logicalId}: ${[...macConfirmedPaths].sort().join(', ')} carry the NoEcho parameter values they were last sent (their MACs match): not re-sent`
+    );
+  }
+  if (macReadsOther.size > 0) {
+    engine.logger.debug(
+      safeMsg`${logicalId}: ${[...macReadsOther].sort().join(', ')} carry the NoEcho values they were last sent, but also read a value their MACs do not cover (a resource attribute, a plain parameter): compared as without a MAC`
+    );
+  }
+  if (macChangedPaths.size > 0) {
+    engine.logger.info(
+      safeMsg`  ${logicalId}: sending ${[...macChangedPaths].sort().join(', ')}: a NoEcho parameter value it reads changed since the last deploy.`
+    );
   }
 
   // The no-change skip above could not trust the mask. Once AWS has
@@ -628,7 +707,8 @@ export async function provisionUpdate(
 
   // Maintainer decision 4 on #4043: an updatable property AWS does not report
   // (write-only, or a type with no readback) is re-sent on every deploy, and
-  // one line per resource says why the update ran.
+  // one line per resource says why the update ran -- unless its NoEcho value
+  // MACs decided it above (go-to-k/cdkd#6146).
   if (recordMatchesDesired && parameterUnreadablePaths.length > 0) {
     engine.logger.info(
       safeMsg`  ${logicalId}: re-sending ${parameterUnreadablePaths.join(', ')}, fed by a NoEcho parameter. AWS does not report the value back, so cdkd cannot tell whether it changed.`
@@ -770,6 +850,7 @@ export async function provisionUpdate(
     unsettledNames,
     movedAsWritten,
     confirmedPaths,
+    macChangedPaths,
     propertyDrivenReplacement,
     recreateViaCcApi,
     recreateViaSdkProvider,

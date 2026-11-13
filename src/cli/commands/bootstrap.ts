@@ -2,6 +2,7 @@ import { Command, Option } from 'commander';
 import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { ECRClient } from '@aws-sdk/client-ecr';
+import { KMSClient } from '@aws-sdk/client-kms';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -28,6 +29,12 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { configureStateBucket, createStateBucket } from './bootstrap-state-bucket.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
+import {
+  ensureNoEchoMacKey,
+  partitionOfArn,
+  type NoEchoMacKeyOutcome,
+} from './bootstrap-noecho-mac-key.js';
+import { NOECHO_MAC_KEY_ALIAS } from '../../deployment/noecho-value-macs.js';
 
 /**
  * Bootstrap command implementation
@@ -122,16 +129,20 @@ async function bootstrapCommand(options: {
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;
   let accountId: string;
+  // go-to-k/cdkd#6146: the partition of the NoEcho value MAC key's policy.
+  let partition: string;
 
   if (options.stateBucket) {
     bucketName = options.stateBucket;
     // Still need accountId for bucket policy
     const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
     accountId = identity.Account!;
+    partition = partitionOfArn(identity.Arn);
   } else {
     logger.info('No --state-bucket specified, resolving default bucket name...');
     const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
     accountId = identity.Account!;
+    partition = partitionOfArn(identity.Arn);
     bucketName = getDefaultStateBucketName(accountId);
     logger.info(`Using default state bucket: ${bucketName}`);
   }
@@ -239,6 +250,28 @@ async function bootstrapCommand(options: {
       }
     }
 
+    // go-to-k/cdkd#6146: the region's HMAC key for NoEcho value MACs. Before
+    // the early return below, so re-running bootstrap on an existing bucket
+    // adds it. Never fails the bootstrap (it warns).
+    const kmsClient = new KMSClient({
+      ...awsClientDefaults({ profile: options.profile }),
+      region,
+      ...(options.profile && { profile: options.profile }),
+    });
+    let noEchoMacKey: NoEchoMacKeyOutcome;
+    try {
+      noEchoMacKey = await ensureNoEchoMacKey({
+        kms: kmsClient,
+        region,
+        accountId,
+        partition,
+        report: (message) => logger.info(message),
+        warn: (message) => logger.warn(message),
+      });
+    } finally {
+      kmsClient.destroy();
+    }
+
     // Skip the state-bucket configuration PUTs (versioning / encryption /
     // policy) when the bucket already exists and --force was not passed.
     // Unlike the pre-#1002 flow this no longer returns early — the asset
@@ -337,6 +370,9 @@ async function bootstrapCommand(options: {
       logger.info(`Asset bucket: ${assetStorage.assetBucket}`);
       logger.info(`Container-asset repository: ${assetStorage.containerRepo}`);
     }
+    if (noEchoMacKey === 'created' || noEchoMacKey === 'exists') {
+      logger.info(`NoEcho value MAC key: ${NOECHO_MAC_KEY_ALIAS}`);
+    }
     logger.info(`Region: ${region}`);
     if (assetStorage) {
       logger.info(
@@ -384,7 +420,8 @@ export function createBootstrapCommand(): Command {
     .description(
       'Bootstrap cdkd by creating the S3 state bucket plus cdkd-owned asset storage ' +
         '(asset bucket + container-asset ECR repo) for the region. With --destroy, ' +
-        "tear down the region's asset storage instead."
+        "tear down the region's asset storage instead. Also creates the region's HMAC KMS key " +
+        'that lets deploys tell whether a NoEcho parameter value changed (alias/cdkd-noecho-mac).'
     )
     .option(
       '--state-bucket <bucket>',

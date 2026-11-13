@@ -13,8 +13,8 @@ import {
   HeadBucketCommand,
 } from '@aws-sdk/client-s3';
 import {
-  STATE_SCHEMA_VERSION_CURRENT,
   stackInstanceIdCarriedFrom,
+  stateSchemaVersionFor,
   type StackState,
 } from '../../types/state.js';
 import { notifyStateSaved } from '../create-token-ledger.js';
@@ -333,7 +333,8 @@ export async function saveState(
   const body: StackState = {
     ...state,
     ...stackInstanceIdCarriedFrom(state),
-    version: STATE_SCHEMA_VERSION_CURRENT,
+    // go-to-k/cdkd#6146: 17 only for a state carrying NoEcho value MACs.
+    version: stateSchemaVersionFor(state),
     stackName,
     region,
   };

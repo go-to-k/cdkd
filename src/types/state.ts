@@ -148,7 +148,10 @@
  *       (and so in `observedProperties`) the mask stands for such a value, the
  *       second WHICH of the record's own `attributes` were declared `NoEcho`.
  *       A comparison that needs the value reads it back from AWS or
- *       re-resolves it; nothing derived from it is stored.
+ *       re-resolves it; nothing a state reader could verify a guess against is
+ *       stored. The one value-derived field, `noEchoValueMacs` (go-to-k/cdkd#6146,
+ *       v17), is a KMS keyed MAC: checking a guess needs `kms:GenerateMac`
+ *       on the cdkd HMAC key, not the state file.
  *       A bump, for v10's reason: a v10 binary would compare its plaintext
  *       desired value with `***`, and on a create-only property that is a
  *       REPLACEMENT every deploy. Failing with "Upgrade cdkd" is the safe
@@ -231,8 +234,23 @@
  *       `.../cdkd`, replacing every resource named from it. A v15 document is
  *       read unchanged (the `cdkd` tail it was deployed with).
  *
- * cdkd readers handle every prior version. Writers always emit
- * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
+ * - 17 — written only when some record carries `ResourceState.noEchoValueMacs`
+ *       (issue [#6146](https://github.com/go-to-k/cdkd/issues/6146)): per
+ *       property, a KMS MAC of each `NoEcho` parameter value it was last sent,
+ *       which lets a later deploy skip re-sending a write-only property whose
+ *       value did not change. A bump because an older binary's FAILED update
+ *       keeps the record verbatim (its failure save writes the pre-update
+ *       record back, unknown fields included) after sending a new value, so
+ *       a stale MAC would survive and this binary would then skip a real
+ *       change. CONDITIONAL, unlike every earlier bump: `stateSchemaVersionFor`
+ *       stamps 17 only for a state holding a MAC and 16 otherwise, so a stack
+ *       with no `NoEcho`-fed property (or no MAC key) stays readable by an
+ *       older binary. A v16 document is read unchanged (no MACs).
+ *
+ * cdkd readers handle every prior version. Writers emit
+ * `stateSchemaVersionFor(state)`: `STATE_SCHEMA_VERSION_CURRENT` (17) for a
+ * state carrying NoEcho value MACs, `STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS`
+ * (16) otherwise. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
@@ -252,9 +270,52 @@ export type StateSchemaVersion =
   | 13
   | 14
   | 15
-  | 16;
+  | 16
+  | 17;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 16;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 17;
+/** The version written for a state no record of which carries `noEchoValueMacs` (go-to-k/cdkd#6146). */
+export const STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS: StateSchemaVersion = 16;
+
+/** Whether a stored record (an entry, an orphan's or a superseded one) carries NoEcho value MACs. */
+function carriesNoEchoValueMacs(record: unknown): boolean {
+  return (
+    record !== null &&
+    typeof record === 'object' &&
+    (record as { noEchoValueMacs?: unknown }).noEchoValueMacs !== undefined
+  );
+}
+
+/**
+ * The schema version a save stamps on `state` (go-to-k/cdkd#6146): 17 when any
+ * record it holds (`resources`, an `orphans` entry's `state`, a
+ * `supersededResources` entry's `state`) carries `noEchoValueMacs`, so an older binary
+ * refuses it with "Upgrade cdkd"; 16 otherwise, readable by older binaries.
+ */
+export function stateSchemaVersionFor(state: {
+  resources?: unknown;
+  orphans?: unknown;
+  supersededResources?: unknown;
+}): StateSchemaVersion {
+  const records: unknown[] = [];
+  if (state.resources !== null && typeof state.resources === 'object') {
+    records.push(...Object.values(state.resources as object));
+  }
+  if (Array.isArray(state.orphans)) {
+    for (const orphan of state.orphans as unknown[]) {
+      records.push((orphan as { state?: unknown } | null)?.state);
+    }
+  }
+  if (Array.isArray(state.supersededResources)) {
+    // Each entry wraps the superseded record (`SupersededResourceRecord.state`).
+    for (const entry of state.supersededResources as unknown[]) {
+      records.push((entry as { state?: unknown } | null)?.state);
+    }
+  }
+  return records.some(carriesNoEchoValueMacs)
+    ? STATE_SCHEMA_VERSION_CURRENT
+    : STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS;
+}
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -263,7 +324,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 16;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
 ];
 
 // The record shapes and their helpers live in the sibling `state/`

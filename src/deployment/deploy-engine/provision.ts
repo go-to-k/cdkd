@@ -50,6 +50,7 @@ import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { orphanedNameCollisionAdvice } from './name-collision.js';
 import { provisionDelete } from './delete.js';
 import { provisionCreate } from './create.js';
+import { awaitNoEchoMacsFor } from './noecho-macs.js';
 import { provisionUpdate } from './update.js';
 
 /** The row type whose provider runs a nested child engine. */
@@ -606,6 +607,12 @@ export async function provisionResourceBody(
     async () => priorAttemptsInJournal(await loadJournal(), logicalId, change.resourceType),
     async () => provenOrphanIdsInJournal(await loadJournal(), logicalId, change.resourceType)
   );
+  // go-to-k/cdkd#6146: a resource reading a `NoEcho` parameter waits for the
+  // run's MACs (made once, on the first such resource; never rejects), which
+  // its UPDATE comparison and its save read synchronously.
+  if (change.changeType === 'CREATE' || change.changeType === 'UPDATE') {
+    await awaitNoEchoMacsFor(engine, logicalId, stateResources, template, conditions);
+  }
   // go-to-k/cdkd#4492: bound for every change type — a DELETE asks which other
   // records of the stack still hold its resource.
   return withStackRecords(

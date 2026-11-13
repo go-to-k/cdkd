@@ -2,6 +2,7 @@ import { type DeployEngine } from '../../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import { type ResourceState } from '../../../types/state.js';
 import { extractTemplateAttributes } from '../record-shape.js';
+import { dropFailedUpdateMacs } from '../noecho-macs.js';
 import type { FailedOperation } from '../../rollback-executor.js';
 import { CreatedResourceSink } from '../../../provisioning/created-resource-sink.js';
 import { ResourceTimeoutError } from '../../../utils/error-handler.js';
@@ -49,6 +50,8 @@ export function recordUnsettledMarks(
   newResources: Record<string, ResourceState>,
   only?: string
 ): void {
+  // go-to-k/cdkd#6146: an unfinished update's handed keys lose their MACs.
+  dropFailedUpdateMacs(engine, newResources, only);
   for (const [logicalId, marks] of engine.unsettledMarks) {
     if (only !== undefined && logicalId !== only) continue;
     if (marks.size === 0 || !Object.hasOwn(newResources, logicalId)) continue;

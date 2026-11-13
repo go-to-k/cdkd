@@ -50,6 +50,7 @@ import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
+import { createNoEchoValueMacs } from '../noecho-value-macs.js';
 
 /**
  * Connections `warmConnections` opens before the tail (#4837): the state
@@ -386,6 +387,19 @@ export async function doDeployWithPrefetch(
       engine,
       template
     );
+    // go-to-k/cdkd#6146: the run's KMS MACs of its `NoEcho` parameter values,
+    // made only when a resource reading one is provisioned (nothing otherwise),
+    // bound to the stack instance id the creates run under (read then, so a
+    // first deploy's write-ahead id is in place).
+    engine.noEchoRun.noEchoMacs = createNoEchoValueMacs({
+      template,
+      parameterValues,
+      inherited: engine.noEchoRun.inheritedNoEchoParameters,
+      stackName,
+      region: engine.stackRegion,
+      stackInstanceId: () => currentState.stackInstanceId,
+      logger: engine.logger,
+    });
     let maskedFingerprintsBackfilled =
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
       0;

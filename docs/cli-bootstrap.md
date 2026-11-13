@@ -61,6 +61,7 @@ rules.
 | Asset bucket | `cdkd-assets-{accountId}-{region}` | One per region |
 | Container-asset ECR repository | `cdkd-container-assets-{accountId}-{region}` | One per region |
 | Bootstrap marker | `s3://{stateBucket}/cdkd-bootstrap/{region}.json` | One per region |
+| `NoEcho` value MAC key | KMS HMAC key `alias/cdkd-noecho-mac` | One per region |
 
 cdkd configures them as follows:
 
@@ -81,6 +82,18 @@ cdkd configures them as follows:
   existing bucket `cdkd bootstrap` adds the rule and keeps every rule already
   there; without the lifecycle permissions it warns and carries on.
 - The ECR repository has immutable tags.
+- The `NoEcho` value MAC key is an `HMAC_256` KMS key. Its key policy lets
+  the account's IAM policies grant `kms:GenerateMac` and the key's
+  administration, and nothing else: no `kms:VerifyMac`, no grants. A deploy calls
+  `kms:GenerateMac` on it to tell whether a `NoEcho` parameter value changed
+  since the last deploy
+  ([Comparing a value AWS does not report](state-management-secrets.md#how-a-deploy-compares-a-masked-value)).
+  Creating it needs `kms:DescribeKey`, `kms:CreateKey`, `kms:PutKeyPolicy` and
+  `kms:CreateAlias`.
+  Without them, or against an AWS Emulator, bootstrap warns and carries on,
+  and deploys keep re-sending such values. A KMS key is billed monthly; to
+  remove it, delete the alias and schedule the key's deletion. Deploys then
+  behave as before.
 
 The **bootstrap marker** is a small file in the state bucket that records the
 names of a region's asset bucket and ECR repository. A region that has a
@@ -284,7 +297,8 @@ from the marker afterwards. Three things follow from that:
 
 Running `cdkd bootstrap` again is safe. Without `--force`, it leaves existing
 resources untouched and creates what is missing. That makes it the way to add
-asset storage for a new region to an account that is already bootstrapped.
+asset storage for a new region to an account that is already bootstrapped,
+and the `NoEcho` value MAC key to a region bootstrapped before it existed.
 
 With `--force`, it reconfigures existing resources: it applies encryption, the
 bucket policy, the lifecycle rule and ECR tag immutability again.

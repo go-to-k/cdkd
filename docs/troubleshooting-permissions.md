@@ -214,8 +214,18 @@ deployment of each `.sync` integration in an account and region reaches it.
 This section and the next are reference for setting up an identity. The policy
 under ["Access Denied" Error](troubleshooting.md#access-denied-error)
 has two sets: Set A, which every deploy needs, and Set B, the actions of the
-services in your template. The three cases below need permissions that neither
+services in your template. The four cases below need permissions that neither
 set shows.
+
+### A `NoEcho` parameter
+
+A stack with a `NoEcho: true` parameter calls `kms:GenerateMac` on the key
+`alias/cdkd-noecho-mac` that `cdkd bootstrap` creates, to tell whether the
+value changed since the last deploy
+([Comparing a value AWS does not report](state-management-secrets.md#how-a-deploy-compares-a-masked-value)).
+It is optional: without it the deploy logs one line naming the error and
+re-sends a property AWS does not report. No other action on the key is
+needed.
 
 ### A CDK context lookup
 

@@ -26,6 +26,7 @@ import { type FreshNoEchoReadback, keyOrderFreeJson } from '../deploy-value-equa
 import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { declaresNoEcho } from '../noecho-declared.js';
+import type { NoEchoValueMacs } from '../noecho-value-macs.js';
 
 /**
  * One deploy's `NoEcho` positional-arm state (go-to-k/cdkd#4043, #2449,
@@ -112,6 +113,28 @@ export class NoEchoRunState {
    * save. `undefined` until the template is pruned; reset per deploy.
    */
   constructPathTemplate: CloudFormationTemplate | undefined = undefined;
+  /**
+   * go-to-k/cdkd#6146: this deploy's KMS MACs of its `NoEcho` parameter
+   * values, made on the first resource that reads one (`undefined` until the
+   * parameters are bound). Read by the UPDATE comparison and the save.
+   */
+  noEchoMacs: NoEchoValueMacs | undefined = undefined;
+  /**
+   * go-to-k/cdkd#6146: per logical id, the properties an update's provider
+   * left UNSENT though the engine named them changed for an unconfirmed
+   * `NoEcho` value (`UpdateContext.keptNoEchoOnlyProperty`, the
+   * go-to-k/cdkd#6140 stop-gap). The save keeps their previous MAC entries.
+   */
+  noEchoMacKept = new Map<string, Set<string>>();
+  /**
+   * go-to-k/cdkd#6146: per logical id, the keys an in-flight update was handed.
+   * A failed update leaves AWS holding either value there, so the failure
+   * save drops their MAC entries (`dropFailedUpdateMacs`); a finished one
+   * clears its entry.
+   */
+  noEchoMacSent = new Map<string, Set<string>>();
+  /** go-to-k/cdkd#6146: this deploy's schema write-only lookups (`macWriteOnlyKeys`). */
+  macWriteOnlyLookups = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 }
 
 /**
