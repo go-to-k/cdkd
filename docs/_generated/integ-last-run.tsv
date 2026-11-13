@@ -263,11 +263,11 @@ local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep
 local-invoke-python	2026-11-12T09:17:14Z	PASS	23	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-ruby	2026-11-05T06:47:04Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
 local-invoke-stage	2026-11-05T07:06:46Z	PASS	24	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-run-task	2026-11-13T06:23:42Z	PASS	27	verify.sh	rc ok, docker sweep clean, #6191
+local-run-task	2026-11-13T08:07:28Z	PASS	17	verify.sh	rc ok, docker sweep clean, #6194
 local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-cdkd-assets	2026-11-04T12:59:43Z	PASS	15	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
-local-run-task-from-state	2026-11-13T06:23:42Z	PASS	240	verify.sh	rc ok, orph clean, DOCKER_HOST set, #6191
-local-run-task-multi-container	2026-11-13T06:23:42Z	PASS	15	verify.sh	rc ok, docker sweep clean, #6191
+local-run-task-from-state	2026-11-13T08:07:28Z	PASS	291	verify.sh	rc ok, orph clean, DOCKER_HOST set, step 9b red pre-fix, #6194
+local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-alb	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-start-alb-from-state	2026-11-12T13:54:58Z	PASS	376	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
