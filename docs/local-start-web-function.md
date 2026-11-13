@@ -97,6 +97,7 @@ Nothing is deployed. The code comes from the asset staged in `cdk.out`.
 | `--no-pull` | off | Skip `docker pull` of the runtime base image. |
 | `--timeout <ms>` | `60000` | How long the server has to answer HTTP. |
 | `--assume-role [arn]` | off | Run the container under an execution role. |
+| `--emulate-role-via <arn>` | — | Role to emulate the execution role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--no-assume-role` | — | Explicitly keep your own credentials. |
 | `--from-state` | off | Resolve the revision's environment from cdkd's S3 state. |
 | `--from-cfn-stack [name]` | off | Resolve it from a deployed CloudFormation stack. |

@@ -84,6 +84,7 @@ requirements.
 | `--watch` | off | Reload the container when the source changes. |
 | `--platform <platform>` | `linux/arm64` | `linux/amd64` or `linux/arm64`. |
 | `--assume-role [arn]` | off | Run the agent under the runtime's execution role. |
+| `--emulate-role-via <arn>` | — | Role to emulate the execution role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--no-assume-role` | — | Explicitly keep your own credentials. |
 | `--no-pull` | off | Skip `docker pull`. |
 | `--no-build` | off | Reuse the image built last time. |

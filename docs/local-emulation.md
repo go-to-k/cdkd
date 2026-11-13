@@ -226,8 +226,10 @@ as the function.
 ### When the role does not trust you
 
 When the role flag's AssumeRole is refused with AccessDenied, `local invoke`,
-`local start-api`, `local run-task` and `local invoke-agentcore` emulate the
-role instead of running with your own credentials. cdkd reads the role's inline
+`local start-api`, `local run-task`, `local invoke-agentcore`,
+`local start-service`, `local start-alb`, `local start-cloudfront`,
+`local start-agentcore`, `local start-web-function` and `local start-microvm`
+emulate the role instead of running with your own credentials. cdkd reads the role's inline
 and attached managed policies, then gets credentials for you with those
 policies as session policies. Only what both you and the role allow is allowed,
 so a permission the role lacks fails locally. No CDK change is needed.
@@ -276,10 +278,6 @@ managed policy ARNs, or STS answering `PackedPolicyTooLarge`. In each case it
 then handles the refusal as before: `local invoke` and
 `local invoke-agentcore` run with your own credentials, and `local start-api`
 and `local run-task` stop with the AssumeRole error.
-
-The engine commands (`local start-service`, `local start-alb`,
-`local start-cloudfront`, `local start-agentcore`, `local start-web-function`,
-`local start-microvm`) do not emulate yet.
 
 `--role-arn` is a different flag. It names the role cdkd assumes for its own
 AWS calls.

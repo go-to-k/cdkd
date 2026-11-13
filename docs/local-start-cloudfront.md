@@ -90,6 +90,7 @@ cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch
 | `--from-cfn-stack [name]` | off | Read the deployed CloudFormation stack. |
 | `--cache-origin` | off | Keep objects read from a deployed S3 origin in memory. |
 | `--assume-role [arn]` | off | Run a Lambda origin under its deployed execution role. |
+| `--emulate-role-via <arn>` | — | Role to emulate the execution role through when its assume is refused. See [When the role does not trust you](local-emulation.md#when-the-role-does-not-trust-you). |
 | `--no-assume-role` | — | Explicitly decline the role assumption. |
 | `--env-vars <file>` | — | Override the environment of Function URL and Web Function origins. |
 | `--watch` | off | Reload the distribution when the source changes. |
