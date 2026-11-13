@@ -1,6 +1,7 @@
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { CDK_ASSET_IMAGE_REPO_RE, extractEcrRepoComponent, extractImageString } from './image.js';
+import { sameStackRoleLogicalId } from './role-arn.js';
 import type { EcsImageResolutionNeeds } from './types.js';
 
 export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
@@ -10,6 +11,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
   let needsEnvOrSecretSubstitution = false;
   let needsCrossStackResolver = false;
   let needsAssetRepoMarker = false;
+  let needsTaskRoleState = false;
 
   for (const res of Object.values(resources)) {
     if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
@@ -59,10 +61,14 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
         }
       }
     }
+    // A same-stack role's deployed name is only in the state record
+    // (go-to-k/cdkd#6189). Its own flag: the CLI loads state for it only on
+    // the bare `--assume-task-role` path, the one reader of the task role.
+    if (sameStackRoleLogicalId(props['TaskRoleArn'], resources) !== undefined) {
+      needsTaskRoleState = true;
+    }
     // TaskRoleArn / ExecutionRoleArn as a Fn::Sub / Fn::Join intrinsic
-    // (Gap 5 of #286). Ref / Fn::GetAtt shapes against AWS::IAM::Role
-    // resolve to a placeholder ARN without state, so they don't trigger
-    // state loading.
+    // (Gap 5 of #286).
     if (
       isFnJoinOrSubIntrinsic(props['TaskRoleArn']) ||
       isFnJoinOrSubIntrinsic(props['ExecutionRoleArn'])
@@ -76,6 +82,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
     needsEnvOrSecretSubstitution,
     needsCrossStackResolver,
     needsAssetRepoMarker,
+    needsTaskRoleState,
   };
 }
 
@@ -131,8 +138,8 @@ function volumeHasIntrinsicSourcePath(v: unknown): boolean {
  * Detect whether a value is an `Fn::Sub` / `Fn::Join` intrinsic. Used by
  * `detectEcsImageResolutionNeeds` to flag role-ARN intrinsic shapes
  * (Gap 5 of #286) that need `--from-state` + pseudo-parameter
- * substitution. `Ref` / `Fn::GetAtt` shapes resolve to a placeholder
- * ARN without state and are intentionally excluded here.
+ * substitution. `Ref` / `Fn::GetAtt` shapes are `needsTaskRoleState`'s
+ * (go-to-k/cdkd#6189) and are intentionally excluded here.
  */
 function isFnJoinOrSubIntrinsic(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;

@@ -7,6 +7,7 @@ import {
   parseEcsTarget,
   resolveEcsTaskTarget,
   TASK_ROLE_ACCOUNT_PLACEHOLDER,
+  TASK_ROLE_PARTITION_PLACEHOLDER,
 } from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
@@ -383,7 +384,7 @@ describe('resolveEcsTaskTarget', () => {
         TD: makeTaskDef({ taskRoleArn: { Ref: 'MyRole' } }),
       });
       const r = resolveEcsTaskTarget('TD', [stack]);
-      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+      expect(r.taskRoleArn).toBe(`arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
     });
 
     it('surfaces a placeholder ARN when TaskRoleArn is {Fn::GetAtt: [<IAM::Role>, "Arn"]}', () => {
@@ -392,7 +393,7 @@ describe('resolveEcsTaskTarget', () => {
         TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['MyRole', 'Arn'] } }),
       });
       const r = resolveEcsTaskTarget('TD', [stack]);
-      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+      expect(r.taskRoleArn).toBe(`arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
     });
 
     it('returns undefined when TaskRoleArn references a non-IAM-Role resource type', () => {
@@ -1683,7 +1684,7 @@ describe('resolveRoleArn Fn::Join / Fn::Sub intrinsics (Gap 5 of #286)', () => {
     expect(needs.needsEnvOrSecretSubstitution).toBe(true);
   });
 
-  it('does NOT flag a Ref/Fn::GetAtt TaskRoleArn (resolves via placeholder shape, no state needed)', () => {
+  it('does NOT flag a Ref/Fn::GetAtt TaskRoleArn as env substitution (needsTaskRoleState carries it)', () => {
     const stack = buildStack('S1', {
       MyRole: {
         Type: 'AWS::IAM::Role',
@@ -1695,6 +1696,182 @@ describe('resolveRoleArn Fn::Join / Fn::Sub intrinsics (Gap 5 of #286)', () => {
     });
     const needs = detectEcsImageResolutionNeeds(stack);
     expect(needs.needsEnvOrSecretSubstitution).toBe(false);
+    expect(needs.needsTaskRoleState).toBe(true);
+  });
+});
+
+// go-to-k/cdkd#6189: a same-stack TaskRoleArn reads the deployed role from the
+// state record; the logical-id placeholder is only the no-record fallback.
+describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', () => {
+  const role = (props: Record<string, unknown> = {}): TemplateResource => ({
+    Type: 'AWS::IAM::Role',
+    Properties: { AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] }, ...props },
+  });
+  const record = (physicalId: string, attributes: Record<string, unknown>): ResourceState =>
+    ({
+      physicalId,
+      resourceType: 'AWS::IAM::Role',
+      properties: {},
+      attributes,
+      dependencies: [],
+    }) as ResourceState;
+  const deployedArn = 'arn:aws:iam::123456789012:role/S1-TaskRole30FC0FBB-abc123';
+
+  it.each([
+    ['Fn::GetAtt', { 'Fn::GetAtt': ['TaskRole30FC0FBB', 'Arn'] }],
+    ['Ref', { Ref: 'TaskRole30FC0FBB' }],
+  ])('%s: returns the recorded Arn attribute (--from-state)', (_label, ref) => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({ taskRoleArn: ref }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', { Arn: deployedArn }),
+      },
+    });
+    expect(r.taskRoleArn).toBe(deployedArn);
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it('builds the ARN from the physical name when the record has no Arn (--from-cfn-stack)', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['TaskRole30FC0FBB', 'Arn'] } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: { TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', {}) },
+    });
+    expect(r.taskRoleArn).toBe(
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/S1-TaskRole30FC0FBB-abc123`
+    );
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it.each([
+    ['/svc/', 'role/svc/Name'],
+    ['/', 'role/Name'],
+    [undefined, 'role/Name'],
+  ])('reads the template Path %j into the name-built ARN', (path, tail) => {
+    const stack = buildStack('S1', {
+      R: role(path === undefined ? {} : { Path: path }),
+      TD: makeTaskDef({ taskRoleArn: { Ref: 'R' } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: { R: record('Name', {}) },
+    });
+    expect(r.taskRoleArn).toBe(
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:${tail}`
+    );
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it.each([['no-slashes'], [{ Ref: 'PathParam' }]])(
+    'refuses to build the ARN from a non-literal Path %j and says so',
+    (path) => {
+      const stack = buildStack('S1', {
+        R: role({ Path: path }),
+        TD: makeTaskDef({ taskRoleArn: { Ref: 'R' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        stateResources: { R: record('Name', {}) },
+      });
+      expect(r.taskRoleArn).toBe(
+        `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/R`
+      );
+      expect(r.taskRoleUnresolved).toEqual({ logicalId: 'R', reason: 'path-not-literal' });
+    }
+  );
+
+  it('a recorded role whose name IS its logical id is not flagged', () => {
+    const stack = buildStack('S1', {
+      TaskRole: role({ RoleName: 'TaskRole' }),
+      TD: makeTaskDef({ taskRoleArn: { Ref: 'TaskRole' } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: { TaskRole: record('TaskRole', {}) },
+    });
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it('ignoreStateForRoles resolves the roles without the record', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['TaskRole30FC0FBB', 'Arn'] } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', { Arn: deployedArn }),
+      },
+      ignoreStateForRoles: true,
+    });
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-record' });
+  });
+
+  it('ignoreStateForRoles keeps resolving a Fn::Sub role ARN over pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({
+        taskRoleArn: { 'Fn::Sub': 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/Fixed' },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', { Arn: deployedArn }),
+      },
+      pseudoParameters: { accountId: '123456789012', partition: 'aws' },
+      ignoreStateForRoles: true,
+    });
+    expect(r.taskRoleArn).toBe('arn:aws:iam::123456789012:role/Fixed');
+  });
+
+  it('keeps the logical-id placeholder and flags it when the record lacks the role', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['TaskRole30FC0FBB', 'Arn'] } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    expect(r.taskRoleArn).toBe(
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/TaskRole30FC0FBB`
+    );
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-record' });
+  });
+
+  it('flags the placeholder with no state source at all', () => {
+    const stack = buildStack('S1', {
+      MyRole: role(),
+      TD: makeTaskDef({ taskRoleArn: { Ref: 'MyRole' } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'MyRole', reason: 'no-state' });
+  });
+
+  it('does not flag a literal TaskRoleArn, and the ExecutionRoleArn reads state too', () => {
+    const stack = buildStack('S1', {
+      Exec: role(),
+      TD: makeTaskDef({
+        taskRoleArn: 'arn:aws:iam::111111111111:role/Literal',
+        executionRoleArn: { 'Fn::GetAtt': ['Exec', 'Arn'] },
+      }),
+    });
+    const execArn = 'arn:aws:iam::123456789012:role/S1-Exec-xyz';
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: { Exec: record('S1-Exec-xyz', { Arn: execArn }) },
+    });
+    expect(r.taskRoleUnresolved).toBeUndefined();
+    expect(r.executionRoleArn).toBe(execArn);
+  });
+
+  it('needsTaskRoleState is false for a literal or non-role TaskRoleArn', () => {
+    const literal = buildStack('S1', {
+      TD: makeTaskDef({ taskRoleArn: 'arn:aws:iam::111111111111:role/Literal' }),
+    });
+    const bucket = buildStack('S2', {
+      B: { Type: 'AWS::S3::Bucket', Properties: {} },
+      TD: makeTaskDef({ taskRoleArn: { Ref: 'B' } }),
+    });
+    expect(detectEcsImageResolutionNeeds(literal).needsTaskRoleState).toBe(false);
+    expect(detectEcsImageResolutionNeeds(bucket).needsTaskRoleState).toBe(false);
   });
 });
 
