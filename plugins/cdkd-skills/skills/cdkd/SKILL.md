@@ -286,7 +286,25 @@ cdkd local invoke '<function>' --from-cfn-stack  # env vars <- the deployed reso
 
 `--from-state` and `--from-cfn-stack` are mutually exclusive — pick the one matching how the stack was deployed. Both make read-only AWS calls, so they need credentials; a plain local run without them does not.
 
-With the environment source resolved, a local run is a hybrid: the handler executes on the developer's machine (edit and re-invoke — no deploy round-trip), while talking to the real deployed dev resources. That removes the usual local-testing overhead — no hand-maintained `.env` files mirroring resource names, and no local emulators to install and seed with test data, because the code reads and writes the actual dev-environment tables, queues, and buckets.
+With the environment source resolved, a local run is a hybrid: the handler executes on the developer's machine (edit and re-invoke — no deploy round-trip), while talking to the real deployed dev resources. That removes the usual local-testing overhead — no hand-maintained `.env` files mirroring resource names, because the code reads and writes the actual dev-environment tables, queues, and buckets.
+
+### Against AWS Emulator instead of a real account
+
+When the developer runs [AWS Emulator](https://cdkd.dev/aws-emulator/) and wants nothing to reach a real account, add `--aws-emulator` to BOTH the deploy and the local run. cdkd wires the emulator's endpoint, keys, and certificate itself, and bootstraps the emulator on first use (no `cdkd bootstrap`):
+
+```bash
+cdkd deploy '<stack>' --aws-emulator
+cdkd local invoke '<function>' --from-state --aws-emulator
+cdkd local start-api --from-state --aws-emulator
+```
+
+- To keep a few services on real AWS (e.g. Secrets Manager, Bedrock), put `"AWS_ENDPOINT_URL_<SERVICE>": "real-aws"` in the `--env-vars` file; that mixed mode needs the stack deployed to both sides.
+- Under `--aws-emulator`, custom-resource handlers (e.g. `autoDeleteObjects`, `BucketDeployment`) run in the official Lambda runtime image via Docker, because the emulator's own runtimes lack parts of the standard library. Without Docker they fall back to the emulator and may fail; `--no-local-custom-resources` opts out.
+- The stack outputs name real AWS hosts. To call an API Gateway API inside the emulator, send the request to the emulator endpoint with the API's host in the `Host` header (see the guide).
+
+### Running as the deployed role
+
+By default the container gets the developer's credentials, which usually allow more than the function's role. `--assume-role` (`--assume-task-role` on `run-task`) runs it as the deployed execution role so a missing IAM permission shows up locally. A role CDK creates trusts only its service (e.g. `lambda.amazonaws.com`), so the real assume is refused; cdkd then emulates the role's permissions with session policies and warns that it is an approximation. A caller that is not an IAM user (IAM Identity Center, role sessions) names a role it can assume with `--emulate-role-via '<arn>'`. A role with a permissions boundary, or with policies over the session-policy limits, is not emulated.
 
 Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://cdkd.dev/local-emulation/) for the full subcommand list (ALB, CloudFront, AgentCore, Web Functions, MicroVMs) and flags.
 
