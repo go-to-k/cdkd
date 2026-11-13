@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 import { addAwsEndpointOptions } from 'cdk-local/internal';
 import { emulateRoleViaOption } from '../options/emulate-role-via.js';
 import {
@@ -119,7 +120,9 @@ export function createLocalStartApiCommand(): Command {
           '(1) `--assume-role <arn>` sets a single global default ARN used for every routed Lambda; ' +
           '(2) `--assume-role <LogicalId>=<arn>` (repeatable) is a per-Lambda override (wins over the global default and over --assume-role-auto for the named Lambda). ' +
           'Pair with --assume-role-auto to auto-resolve every other Lambda. Precedence: per-Lambda > (--assume-role-auto OR global default) > unset (developer creds passed through).'
-      ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+      ).argParser(
+        cliArgParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+      )
     )
     .addOption(
       new Option(

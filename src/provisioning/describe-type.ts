@@ -33,6 +33,8 @@ import {
   type TaskUrgency,
 } from '../utils/concurrency-limiter.js';
 import { getLogger } from '../utils/logger.js';
+import { awsEndpointOverrideActive } from '../utils/aws-client-defaults.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * Test seam: overriding `sleep` lets unit tests drive the backoff schedule
@@ -232,4 +234,43 @@ export function hasNoRegistrySchema(resourceType: string): boolean {
     resourceType === 'AWS::CloudFormation::CustomResource' ||
     resourceType.startsWith('Custom::')
   );
+}
+
+let emulatorRegistryMissReported = false;
+
+/**
+ * A DescribeType failure that is the AWS Emulator's registry not knowing the
+ * type (go-to-k/cdkd#6249): `TypeNotFoundException` while `--aws-emulator`
+ * points the clients at the emulator. Not a permission problem, so the
+ * callers' "Grant cloudformation:DescribeType" warning has no remedy to give,
+ * and the emulator lacks many types, so that warning came once per type.
+ * Against real AWS this is always `false` and the callers warn as before.
+ */
+export function isAwsEmulatorRegistryMiss(error: unknown): boolean {
+  return (
+    awsEndpointOverrideActive() &&
+    (error as { name?: unknown } | null | undefined)?.name === 'TypeNotFoundException'
+  );
+}
+
+/**
+ * Report an {@link isAwsEmulatorRegistryMiss} failure: the type at debug
+ * level, and one info line per run in place of a warning per type.
+ */
+export function reportAwsEmulatorRegistryMiss(resourceType: string, fallback: string): void {
+  const logger = getLogger().child('DescribeType');
+  logger.debug(
+    safeMsg`--aws-emulator: the emulator's CloudFormation registry has no schema for ${resourceType}; ${fallback}.`
+  );
+  if (emulatorRegistryMissReported) return;
+  emulatorRegistryMissReported = true;
+  logger.info(
+    "--aws-emulator: the emulator's CloudFormation registry lacks some resource types, so cdkd " +
+      'uses its offline fallbacks for them instead of the live schema (--verbose names each type).'
+  );
+}
+
+/** Test seam: forget that the one {@link reportAwsEmulatorRegistryMiss} info line was printed. */
+export function resetAwsEmulatorRegistryMissReportForTests(): void {
+  emulatorRegistryMissReported = false;
 }

@@ -5,6 +5,7 @@
  * Split out of `../options.ts`, which re-exports the public names.
  */
 import { Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 
 /**
  * Escape hatch for the pre-flight unsupported-type rejection. Comma-separated
@@ -43,7 +44,7 @@ export const allowUnsupportedTypesOption = new Option(
   'Comma-separated resource types to attempt via Cloud Control even though cdkd reports ' +
     'them unsupported (AWS NON_PROVISIONABLE). Escape hatch — Cloud Control will likely ' +
     'still fail. Example: --allow-unsupported-types AWS::Foo::Bar,AWS::Baz::Qux'
-).argParser(parseAllowUnsupportedTypesToken);
+).argParser(cliArgParser(parseAllowUnsupportedTypesToken));
 
 /**
  * Escape hatch for the property-level SDK-unwired pre-flight reject.
@@ -165,7 +166,7 @@ export const preferSdkRouteOption = new Option(
     'resource that routes to Cloud Control for another reason (a sibling unwired ' +
     'property, or a sticky cc-api state record), where the values are written after all. ' +
     'Example: --prefer-sdk-route AWS::ApiGatewayV2::Api:Body'
-).argParser(parsePreferSdkRouteToken);
+).argParser(cliArgParser(parsePreferSdkRouteToken));
 
 /**
  * The deprecated spelling. HIDDEN from `--help` so new users meet only the
@@ -177,7 +178,7 @@ export const allowUnsupportedPropertiesOption = new Option(
   '--allow-unsupported-properties <entries>',
   'Deprecated alias for --prefer-sdk-route.'
 )
-  .argParser(parseAllowUnsupportedPropertiesToken)
+  .argParser(cliArgParser(parseAllowUnsupportedPropertiesToken))
   .hideHelp();
 
 /**
@@ -226,7 +227,7 @@ export const recreateViaCcApiOption = new Option(
     'is ALSO passed (two-flag protection). Cannot be combined with ' +
     '--prefer-sdk-route on the same resource type and property. Refused, with ' +
     'no bypass, for a type Cloud Control cannot create (NON_PROVISIONABLE).'
-).argParser(parseRecreateViaCcApiToken);
+).argParser(cliArgParser(parseRecreateViaCcApiToken));
 
 /**
  * Issue [#651] — `--recreate-via-sdk-provider <LogicalId>` is the reverse
@@ -299,7 +300,7 @@ export const pinCcApiOption = new Option(
     'recorded as provisionedBy: cc-api. Repeatable — pass the flag once per ' +
     'resource. Has no effect on a resource already on the SDK path, and does not ' +
     'override an exemption admitted because Cloud Control cannot manage the type.'
-).argParser(parsePinCcApiToken);
+).argParser(cliArgParser(parsePinCcApiToken));
 
 export const recreateViaSdkProviderOption = new Option(
   '--recreate-via-sdk-provider <logicalId>',
@@ -310,4 +311,4 @@ export const recreateViaSdkProviderOption = new Option(
     'for (e.g. Lambda LoggingConfig). Repeatable — pass the flag once per resource. ' +
     'Per-resource opt-in. Stateful resource types refuse unless ' +
     '--force-stateful-recreation is ALSO passed.'
-).argParser(parseRecreateViaSdkProviderToken);
+).argParser(cliArgParser(parseRecreateViaSdkProviderToken));

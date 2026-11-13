@@ -35,7 +35,11 @@ import {
   expectV8QuotesLeakToken,
   loggedText,
 } from '../_json-parse-leak.js';
-import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
+import {
+  describeTypeRetryDelays,
+  resetAwsEmulatorRegistryMissReportForTests,
+} from '../../../src/provisioning/describe-type.js';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 
 function throttlingError(): Error {
   const error = new Error('Rate exceeded');
@@ -154,5 +158,41 @@ describe('an unparseable DescribeType schema (issue #5254)', () => {
       warn: mockLoggerWarn,
       error: mockLoggerError,
     });
+  });
+});
+
+// go-to-k/cdkd#6249: under --aws-emulator a TypeNotFoundException is the
+// emulator's registry lacking the type, not a missing permission.
+describe('getTopLevelWriteOnlyProperties under --aws-emulator (#6249)', () => {
+  function typeNotFound(): Error {
+    const error = new Error("The type 'AWS::Lambda::Url' cannot be found.");
+    error.name = 'TypeNotFoundException';
+    return error;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCloudFormationSend.mockReset();
+    clearWriteOnlyPropertiesCache();
+    resetAwsEmulatorRegistryMissReportForTests();
+  });
+  afterEach(() => {
+    setAwsEndpointOverrideSource(undefined);
+  });
+
+  it('a registry miss falls back to an empty set with no Grant warning', async () => {
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9497' }));
+    mockCloudFormationSend.mockRejectedValue(typeNotFound());
+    expect([...(await getTopLevelWriteOnlyProperties('AWS::Lambda::Url'))]).toEqual([]);
+    expect([...(await getTopLevelWriteOnlyProperties('AWS::SNS::Subscription'))]).toEqual([]);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(mockLoggerInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it('against real AWS the same failure still warns with the Grant remedy', async () => {
+    mockCloudFormationSend.mockRejectedValue(typeNotFound());
+    await getTopLevelWriteOnlyProperties('AWS::Lambda::Url');
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(String(mockLoggerWarn.mock.calls[0]![0])).toContain('Grant cloudformation:DescribeType');
   });
 });

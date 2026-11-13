@@ -36,7 +36,12 @@
  */
 
 import type { DescribeTypeCommandOutput } from '@aws-sdk/client-cloudformation';
-import { hasNoRegistrySchema, scheduleDescribeType } from './describe-type.js';
+import {
+  hasNoRegistrySchema,
+  isAwsEmulatorRegistryMiss,
+  reportAwsEmulatorRegistryMiss,
+  scheduleDescribeType,
+} from './describe-type.js';
 import { BackgroundTaskCancelledError, type ScheduledTask } from '../utils/concurrency-limiter.js';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
@@ -258,10 +263,23 @@ function fallBackToSnapshot(
   error: unknown,
   awaited: boolean
 ): ReadonlyArray<readonly string[]> {
+  const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
+  // Under --aws-emulator a type the emulator's registry lacks is no
+  // permission problem: one info line per run, not a warning per type (#6249).
+  if (isAwsEmulatorRegistryMiss(error)) {
+    if (awaited) {
+      reportAwsEmulatorRegistryMiss(
+        resourceType,
+        snapshot
+          ? "create-only properties come from cdkd's bundled schema snapshot"
+          : 'replacement uses the registry-only classification'
+      );
+    }
+    return snapshot ?? [];
+  }
   const message = describeAwsFailure(error).detail;
   const child = getLogger().child('CreateOnlyProperties');
   const report = (line: string): void => (awaited ? child.warn(line) : child.debug(line));
-  const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
   if (snapshot) {
     report(
       `Failed to resolve create-only properties for ${resourceType} via ` +
