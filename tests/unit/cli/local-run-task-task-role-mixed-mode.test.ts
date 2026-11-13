@@ -114,7 +114,7 @@ describe('bare --assume-task-role in AWS Emulator mixed mode (go-to-k/cdkd#6189)
     // ...but the role keeps the placeholder rather than the emulator's ARN.
     const task = resolveEcsTaskTarget('Cdkd6189Stack:TaskDef', [STACK], context);
     expect(task.taskRoleArn).not.toBe(EMULATOR_ARN);
-    expect(task.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-state' });
+    expect(task.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-record' });
   });
 
   it('IAM excepted under Parameters: the record names the role', async () => {

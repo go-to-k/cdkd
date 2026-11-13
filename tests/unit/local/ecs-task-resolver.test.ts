@@ -1805,7 +1805,24 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
       },
       ignoreStateForRoles: true,
     });
-    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-state' });
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-record' });
+  });
+
+  it('ignoreStateForRoles keeps resolving a Fn::Sub role ARN over pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({
+        taskRoleArn: { 'Fn::Sub': 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/Fixed' },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', { Arn: deployedArn }),
+      },
+      pseudoParameters: { accountId: '123456789012', partition: 'aws' },
+      ignoreStateForRoles: true,
+    });
+    expect(r.taskRoleArn).toBe('arn:aws:iam::123456789012:role/Fixed');
   });
 
   it('keeps the logical-id placeholder and flags it when the record lacks the role', () => {

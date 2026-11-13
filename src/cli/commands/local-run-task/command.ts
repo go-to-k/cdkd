@@ -421,13 +421,13 @@ export async function localRunTaskCommand(
         logger.warn(
           taskRoleNameIsLogicalIdWarning(
             logicalId,
-            reason !== 'no-state'
-              ? reason
-              : !stateProvider
-                ? 'no-state-source'
-                : taskRoleRecordIsEmulatorSide()
-                  ? 'mixed-mode-emulator-iam'
-                  : 'state-not-read'
+            !stateProvider
+              ? 'no-state-source'
+              : taskRoleRecordIsEmulatorSide()
+                ? 'mixed-mode-emulator-iam'
+                : reason === 'no-state'
+                  ? 'state-not-read'
+                  : reason
           )
         );
       }

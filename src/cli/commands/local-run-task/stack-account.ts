@@ -168,8 +168,8 @@ export function taskRoleNameIsLogicalIdWarning(
     case 'state-not-read':
       return (
         `--assume-task-role: cdkd read no state record for the task role ${id} ` +
-        `(the target names no single stack, or the record could not be loaded), so cdkd assumes a role named ${id}. ` +
-        `Name the stack in the target ('<Stack>:<LogicalId>' or a display path), or pass the ARN explicitly: --assume-task-role '<arn>'.`
+        `(the target names no single stack, or the stack has no record: it is not deployed), so cdkd assumes a role named ${id}. ` +
+        `Name the stack in the target ('<Stack>:<LogicalId>' or a display path), deploy the stack first, or pass the ARN explicitly: --assume-task-role '<arn>'.`
       );
     case 'mixed-mode-emulator-iam':
       return (

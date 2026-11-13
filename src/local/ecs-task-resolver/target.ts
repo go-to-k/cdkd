@@ -179,8 +179,20 @@ function extractTaskDefinitionProperties(
   const resources = stack.template.Resources ?? {};
 
   const subContext = buildSubstitutionContextFromImageContext(context);
-  // Mixed mode can make the record's roles the wrong side's (go-to-k/cdkd#6189).
-  const roleSubContext = context?.ignoreStateForRoles ? undefined : subContext;
+  // Mixed mode can make the record's roles the wrong side's (go-to-k/cdkd#6189):
+  // drop its IAM roles only, so a `Fn::Join` / `Fn::Sub` role ARN over pseudo
+  // parameters or other records still resolves.
+  const roleSubContext =
+    context?.ignoreStateForRoles && subContext
+      ? {
+          ...subContext,
+          resources: Object.fromEntries(
+            Object.entries(subContext.resources).filter(
+              ([, r]) => r.resourceType !== 'AWS::IAM::Role'
+            )
+          ),
+        }
+      : subContext;
   const taskRole = resolveRoleArn(props['TaskRoleArn'], resources, roleSubContext);
   const taskRoleArn = taskRole.arn;
   const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, roleSubContext).arn;

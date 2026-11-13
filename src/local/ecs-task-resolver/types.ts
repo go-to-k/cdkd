@@ -212,9 +212,10 @@ export type EcsImageResolutionContext = ImageResolutionContext & {
    */
   cdkAssetContainerRepo?: string;
   /**
-   * Resolve a same-stack task / execution role WITHOUT the state record
+   * Resolve the task / execution role WITHOUT the record's IAM roles
    * (go-to-k/cdkd#6189): set in AWS Emulator mixed mode when the record's IAM
-   * resources are the emulator's while the role is assumed in real AWS.
+   * resources are the emulator's while the role is assumed in real AWS. The
+   * rest of the record still serves a `Fn::Join` / `Fn::Sub` role ARN.
    */
   ignoreStateForRoles?: boolean;
 };
