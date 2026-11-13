@@ -147,10 +147,11 @@ makes `cdkd deploy` read the resource from AWS once and record the real ARN.
 The deploy fails if it cannot read the resource.
 
 **A GraphQL API or a vector bucket.** A record that `cdkd import` adopted
-before it recorded the ARN has none. A `Ref` on such a record is read like an
-`Fn::GetAtt` on the ARN, so `cdkd deploy` reads it from AWS and records it. If
-cdkd cannot get the ARN, the deploy fails instead of using the API ID or bucket
-name.
+before it recorded the ARN has none. A `Ref` on such a record is resolved like
+an `Fn::GetAtt` on the ARN. For a vector bucket, `cdkd deploy` reads the ARN
+from AWS and records it. For a GraphQL API, cdkd builds the ARN from the API ID
+and the deploy's account and Region. If cdkd cannot get the ARN, the deploy
+fails instead of using the API ID or bucket name.
 
 **`cdkd export` blocks a resource and names a missing attribute.**
 [`cdkd export`](cli-export.md) needs the same recorded attribute for the types

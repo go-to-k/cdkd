@@ -2676,9 +2676,10 @@ the raw composite id, except for an `AWS::S3Tables::Table` (one created by a
 cdkd older than v0.201.0): its `Ref` is read like `Fn::GetAtt TableARN`, so the
 re-read below applies to it too, and a `Ref` the re-read cannot answer is
 refused rather than served the composite id. A GraphQL API or vector bucket
-imported before `cdkd import` recorded its ARN is read the same way, through
-`Fn::GetAtt Arn` / `Fn::GetAtt VectorBucketArn`, and is refused rather than
-served its bare id or name. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+imported before `cdkd import` recorded its ARN is resolved through `Fn::GetAtt
+VectorBucketArn` (re-read from AWS as below) / `Fn::GetAtt Arn` (built from the
+API id, account and region), and is refused rather than served its bare id or
+name. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
 re-reads the resource from AWS once and records the real ARN; when that read
 cannot supply one it FAILS rather than serving a value CloudFormation would not
 return. The records are:

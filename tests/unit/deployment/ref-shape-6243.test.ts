@@ -81,6 +81,16 @@ describe('Ref of an AWS::S3Vectors::VectorBucket (issue #6243)', () => {
     expect(attributeHealer).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a re-read that returns no usable ARN, naming cdkd import', async () => {
+    const attributeHealer = vi.fn().mockResolvedValue({
+      kind: 'read',
+      attributes: { VectorBucketArn: 'arn:aws:s3vectors:*:*:bucket/x' },
+    } as const);
+    await expect(
+      resolveRef('AWS::S3Vectors::VectorBucket', NAME, {}, { attributeHealer })
+    ).rejects.toThrow(/Cannot resolve Ref R: .*VectorBucketArn.*'cdkd import'/s);
+  });
+
   it('refuses, never serving the bare name, when no ARN is recorded or re-read', async () => {
     await expect(resolveRef('AWS::S3Vectors::VectorBucket', NAME)).rejects.toBeInstanceOf(
       IntrinsicResolutionRefusalError

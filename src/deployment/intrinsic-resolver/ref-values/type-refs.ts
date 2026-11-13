@@ -24,11 +24,11 @@ import type { RefStateLookup } from '../ref-values.js';
  *   #739) does not reach here from the deploy-time resolver: `resolveRef`
  *   reads it as `Fn::GetAtt TableARN`, whose healer re-reads it from AWS.
  * - Otherwise a record with no usable `TableARN` falls back to the raw
- *   composite id, as the {@link REF_RETURNS_ARN_FROM_STATE} types do, never to
+ *   composite id, as the `ref-values.ts`'s `REF_RETURNS_ARN_FROM_STATE` types do, never to
  *   the table name: a name is no value CloudFormation's `Ref` returns, and it
  *   would pass every reader that rejects the composite.
  *
- * A MASKED `TableARN` follows the Glue rule ({@link glueTableRefFromPhysicalId}):
+ * A MASKED `TableARN` follows the Glue rule (`ref-values.ts`'s `glueTableRefFromPhysicalId`):
  * a caller with a redaction bag gets the redacted read reported, one without
  * gets the mask back.
  */
@@ -110,7 +110,7 @@ export function vpcGatewayAttachmentRefFromPhysicalId(physicalId: string): strin
 /**
  * Types whose `Ref` is an ARN recovered from a recorded attribute while their
  * SDK physical id is a bare name or id (issue #6243), with that attribute.
- * Both are {@link REF_RETURNS_ARN_FROM_STATE} entries too; this map is the
+ * Both are `ref-values.ts`'s `REF_RETURNS_ARN_FROM_STATE` entries too; this map is the
  * subset `resolveRef` heals before serving.
  */
 export const REF_ARN_ATTRIBUTE_HEALED: ReadonlyMap<string, string> = new Map([

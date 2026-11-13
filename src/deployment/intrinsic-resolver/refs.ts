@@ -201,8 +201,9 @@ export async function resolveRef(
     }
     // go-to-k/cdkd#6243: a GraphQL API / vector bucket's `Ref` is its ARN
     // attribute, which a record imported before `cdkd import` recorded it
-    // lacks; its physical id is the bare id / name. Healed and refused as the
-    // table above: `Fn::GetAtt` of the ARN re-reads the record from AWS.
+    // lacks; its physical id is the bare id / name. Served as `Fn::GetAtt` of
+    // the ARN is: the healer re-reads a vector bucket's from AWS, a GraphQL
+    // API's is built from the deploy's account and region. Refused otherwise.
     const healedAttribute = lacksRecordedRefArn(resource);
     if (healedAttribute !== undefined) {
       // An unhealed miss is refused inside: an `*Arn` name never takes the
