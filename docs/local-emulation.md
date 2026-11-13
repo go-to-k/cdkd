@@ -288,8 +288,7 @@ container gets none.
 `env.region`, the loaded state record's region, then your AWS profile's
 `region`. A container's own `Environment` or `--env-vars` entry still wins.
 `local start-service` and `local start-alb` still set it only from the
-deprecated `--region` flag
-([#6210](https://github.com/go-to-k/cdkd/issues/6210)).
+deprecated `--region` flag.
 
 ## Local AWS endpoints
 
