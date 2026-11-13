@@ -81,10 +81,12 @@ PARAM_PATH="/cdkd-schema-v15-v16/"
 PARAM_NAME="${PARAM_PATH}cdkd"
 TOPIC_PREFIX="cdkd-schema-v15-v16-"
 
-# The released cdkd on npm when this fixture was written (the latest
-# published). Phase 0 asserts it writes schema 15, so a later pin that writes
-# a different version fails loudly instead of quietly testing nothing.
-RELEASED_CDKD_VERSION="0.322.1"
+# The latest released cdkd (`@cdkd/cli`; the old `@go-to-k/cdkd` name stops
+# at 0.322.x) when this fixture was written: the release users migrate FROM.
+# Phase 0 asserts it writes schema 15, so a later pin that writes a different
+# version fails loudly instead of quietly testing nothing.
+RELEASED_CDKD_PACKAGE="@cdkd/cli"
+RELEASED_CDKD_VERSION="0.346.0"
 RELEASED_TMPDIR=""
 RELEASED_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -315,12 +317,12 @@ physical_ids() { # logical id -> physical id, from the fetched state, sorted
 }
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 0: install the released binary (@go-to-k/cdkd@${RELEASED_CDKD_VERSION})"
+echo "==> Phase 0: install the released binary (${RELEASED_CDKD_PACKAGE}@${RELEASED_CDKD_VERSION})"
 # ---------------------------------------------------------------------------
 RELEASED_TMPDIR="$(mktemp -d)"
-(cd "${RELEASED_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${RELEASED_CDKD_VERSION}" >/dev/null)
-RELEASED_BIN="${RELEASED_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
-RELEASED_DIR="${RELEASED_TMPDIR}/node_modules/@go-to-k/cdkd/dist"
+(cd "${RELEASED_TMPDIR}" && npm init -y >/dev/null && npm install --silent "${RELEASED_CDKD_PACKAGE}@${RELEASED_CDKD_VERSION}" >/dev/null)
+RELEASED_BIN="${RELEASED_TMPDIR}/node_modules/${RELEASED_CDKD_PACKAGE}/dist/cli.js"
+RELEASED_DIR="${RELEASED_TMPDIR}/node_modules/${RELEASED_CDKD_PACKAGE}/dist"
 [ -f "${RELEASED_BIN}" ] || fail "the released binary was not installed at ${RELEASED_BIN}"
 RELEASED_SCHEMA_VERSION="$(schema_version_of_dist "${RELEASED_DIR}")"
 case "${RELEASED_SCHEMA_VERSION}" in
