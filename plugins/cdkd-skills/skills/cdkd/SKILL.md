@@ -310,7 +310,7 @@ cdkd local start-api --from-state --aws-emulator
   cdkd deploy '<stack>' --aws-emulator && cdkd deploy '<stack>'
   cdkd local invoke '<function>' --from-state --aws-emulator --env-vars routing.json
   ```
-- Under `--aws-emulator`, custom-resource handlers (e.g. `autoDeleteObjects`, `BucketDeployment`) run in the official Lambda runtime image via Docker, because the emulator's own runtimes lack parts of the standard library. Without Docker they fall back to the emulator and may fail; `--no-local-custom-resources` opts out.
+- Under `--aws-emulator`, custom-resource handlers (e.g. `autoDeleteObjects`, `BucketDeployment`, and a `cr.Provider`'s handlers and waiter) run in the official Lambda runtime image via Docker, because the emulator's own runtimes lack parts of the standard library. Without Docker they fall back to the emulator and may fail; `--no-local-custom-resources` opts out.
 - The stack outputs name real AWS hosts. To call an API Gateway API inside the emulator, send the request to the emulator endpoint with the API's host in the `Host` header (see the guide).
 
 ### Running as the deployed role
