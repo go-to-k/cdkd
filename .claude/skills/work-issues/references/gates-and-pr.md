@@ -41,8 +41,9 @@ merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
 `Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll.
 A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel (it reads
-every owner's) is the maintainer's: ask, then destroy under
-`CDKD_BUGHUNT_OWNER=<that owner>` (#6227).
+every owner's) is the maintainer's: a LIVE hunt (its session busy) is waited
+out; for a stale one ask, then destroy under `CDKD_BUGHUNT_OWNER=<that owner>`
+(#6227).
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
 replaces the WHOLE body, silently reverting prior edits, and no delta shows in
