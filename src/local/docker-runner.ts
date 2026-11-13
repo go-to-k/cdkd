@@ -1,5 +1,5 @@
-import { noImplicitEcrPullArgs } from 'cdk-local/internal';
-import { execFile, spawn } from 'node:child_process';
+import { LOOPBACK_FORWARDER_IMAGE, noImplicitEcrPullArgs } from 'cdk-local/internal';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import {
@@ -623,6 +623,109 @@ export async function removeContainer(containerId: string): Promise<void> {
     logger.debug(`Removed container ${containerId}`);
   } catch (error) {
     logger.debug(`docker rm -f ${containerId} failed: ${describeDockerFailure(error, args)}`);
+  }
+}
+
+/**
+ * `docker rm -f` for `ids`, SYNCHRONOUSLY: for a `process.on('exit')`
+ * teardown, where no promise settles. Best-effort; errors are logged at debug.
+ */
+export function removeContainersSync(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const args = ['rm', '-f', ...ids];
+  try {
+    execFileSync(getDockerCmd(), args, { stdio: 'ignore', timeout: 10_000 });
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(`docker rm -f failed: ${describeDockerFailure(error, args)}`);
+  }
+}
+
+/** Whether `image` is in the local Docker image cache (`docker image inspect`). */
+export async function imageInLocalCache(image: string): Promise<boolean> {
+  const args = ['image', 'inspect', '--format', '{{.Id}}', image];
+  try {
+    await execFileAsync(getDockerCmd(), args);
+    return true;
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(`${image} is not in the local cache: ${describeDockerFailure(error, args)}`);
+    return false;
+  }
+}
+
+/**
+ * The script of {@link startNamespacePortForwarder}: listen on
+ * `127.0.0.1:<argv[1]>` and pipe each connection to `127.0.0.1:<argv[2]>`.
+ * Bytes pass through untouched, so TLS stays end to end.
+ */
+export const NAMESPACE_PORT_FORWARDER_SCRIPT =
+  "const net=require('net');const [l,t]=process.argv.slice(1).map(Number);" +
+  // Each connection goes on in its own address family: one that came in on
+  // `::1` (an `https://[::1]:<port>` emulator) is piped to `[::1]:<target>`.
+  'const h=(c)=>{const u=net.connect(t,c.localAddress);c.pipe(u);u.pipe(c);' +
+  "u.on('error',()=>c.destroy());c.on('error',()=>u.destroy());};" +
+  // `::1` too, ignoring an error: a namespace without IPv6 still forwards IPv4.
+  "const s6=net.createServer(h);s6.on('error',()=>{});s6.listen(l,'::1');" +
+  "net.createServer(h).listen(l,'127.0.0.1',()=>console.log('ready'));";
+
+/**
+ * Forward `127.0.0.1:<listenPort>` to `127.0.0.1:<targetPort>` inside
+ * `containerId`'s network namespace, from a sidecar on the loopback
+ * forwarder's image, and wait until it listens. Returns the sidecar's id,
+ * which the caller removes ({@link removeContainer}). The `--aws-emulator`
+ * custom-resource runtime uses it to give CDK's Node.js handlers, which PUT
+ * their response to port 443, a way to the emulator's port
+ * (go-to-k/cdkd#6206).
+ */
+export async function startNamespacePortForwarder(
+  containerId: string,
+  listenPort: number,
+  targetPort: number,
+  readyTimeoutMs = 15_000,
+  /** A name the caller can `docker rm -f` before this resolves (an exit mid-start). */
+  name?: string
+): Promise<string> {
+  const args = [
+    'run',
+    '-d',
+    '--rm',
+    ...(name !== undefined ? ['--name', name] : []),
+    '--network',
+    `container:${containerId}`,
+    '--entrypoint',
+    'node',
+    LOOPBACK_FORWARDER_IMAGE,
+    '-e',
+    NAMESPACE_PORT_FORWARDER_SCRIPT,
+    String(listenPort),
+    String(targetPort),
+  ];
+  let sidecarId: string;
+  try {
+    sidecarId = (await execFileAsync(getDockerCmd(), args)).stdout.trim();
+  } catch (error) {
+    throw new Error(`Port forwarder failed to start: ${describeDockerFailure(error, args)}`);
+  }
+  const deadline = Date.now() + readyTimeoutMs;
+  const logArgs = ['logs', sidecarId];
+  for (;;) {
+    try {
+      if ((await execFileAsync(getDockerCmd(), logArgs)).stdout.includes('ready')) return sidecarId;
+    } catch (error) {
+      getLogger()
+        .child('docker')
+        .debug(`docker logs ${sidecarId} failed: ${describeDockerFailure(error, logArgs)}`);
+    }
+    if (Date.now() > deadline) {
+      await removeContainer(sidecarId);
+      throw new Error(
+        `Port forwarder ${listenPort} -> ${targetPort} did not listen within ${readyTimeoutMs}ms`
+      );
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 200));
   }
 }
 

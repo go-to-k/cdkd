@@ -39,6 +39,7 @@ cdkd deploy MyStack --strict
 | `--no-aggressive-vpc-parallel` | relaxation on | Keep CDK's `DependsOn` edges from VPC Lambdas onto private-subnet routes. |
 | `--strict` | `false` | Also fail when a stack carries CDK warning annotations. |
 | `--ignore-errors` | `false` | Print CDK annotations but never fail the run. |
+| `--no-local-custom-resources` | run locally | Under `--aws-emulator`, invoke custom resource functions in the emulator's own runtime instead of the official Lambda runtime image in Docker. See [Custom resources run on your machine](aws-emulator.md#custom-resources-run-on-your-machine). |
 
 Some of these flags work on other commands too:
 
@@ -46,6 +47,7 @@ Some of these flags work on other commands too:
 | --- | --- |
 | `--resource-warn-after`, `--resource-timeout` | `cdkd destroy`, `cdkd state destroy` |
 | `--strict`, `--ignore-errors` | `cdkd synth` |
+| `--no-local-custom-resources` | `cdkd destroy`, `cdkd state destroy`, `cdkd rollback` |
 | The rest | `cdkd deploy` only |
 
 ## Per-resource timeout

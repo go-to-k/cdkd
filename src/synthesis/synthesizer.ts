@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
+import { rememberSynthesizedStacks } from './synthesized-stacks.js';
 import { ContextStore, isTransientContextValue } from './context-store.js';
 import { failedLookupsError, type FailedLookup } from './failed-lookups.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
@@ -211,6 +212,7 @@ export class Synthesizer {
         await this.expandMacrosForStacks(stacks, options);
       }
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
+      rememberSynthesizedStacks(stacks);
       return { manifest, assemblyDir: appPath, stacks, failedLookups: [] };
     }
 
@@ -359,6 +361,7 @@ export class Synthesizer {
         });
       }
       this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
+      rememberSynthesizedStacks(stacks);
 
       return { manifest, assemblyDir: outputDir, stacks, failedLookups };
     }

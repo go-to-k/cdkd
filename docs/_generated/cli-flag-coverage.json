@@ -20,6 +20,7 @@
     "--no-auto-asset-storage",
     "--no-capture-observed-state",
     "--no-cfn-fallback",
+    "--no-local-custom-resources",
     "--no-rollback",
     "--no-wait",
     "--output",
@@ -2480,6 +2481,7 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
+    "--no-local-custom-resources",
     "--strict"
   ],
   "unknownFlagsInIntegs": [

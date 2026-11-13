@@ -105,7 +105,10 @@ export function resolveLambdaLayers(
       );
     }
 
-    const assetPath = resolveAssetCodePath(stack, layerLogicalId, layerResource);
+    // A `.zip` file asset is extracted when the layers are materialized.
+    const assetPath = resolveAssetCodePath(stack, layerLogicalId, layerResource, {
+      acceptZipFile: true,
+    });
     out.push({ kind: 'asset', logicalId: layerLogicalId, assetPath });
   }
   return out;

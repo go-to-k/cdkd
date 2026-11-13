@@ -86,6 +86,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { Synthesizer } from '../../../src/synthesis/synthesizer.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
+import { synthesizedStacks } from '../../../src/synthesis/synthesized-stacks.js';
 
 describe('Synthesizer', () => {
   let synthesizer: Synthesizer;
@@ -348,6 +349,28 @@ describe('Synthesizer', () => {
       expect(mockExecute).not.toHaveBeenCalled();
       expect(mockReadManifest).toHaveBeenCalledTimes(1);
       expect(result.assemblyDir).toMatch(/cdk\.out$/);
+    });
+
+    // go-to-k/cdkd#6206: the `--aws-emulator` custom-resource runtime reads the
+    // function's code from the stacks the run synthesized, on both paths.
+    it('records the stacks it returns for a pre-synthesized assembly (--app cdk.out)', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockStatSync.mockReturnValue({ isDirectory: () => true });
+      const stacks = [{ stackName: 'Pre' }];
+      mockAssemblyStacks.mockReturnValue(stacks);
+
+      await synthesizer.synthesize({ app: 'cdk.out' });
+
+      expect(synthesizedStacks()).toBe(stacks);
+    });
+
+    it('records the stacks it returns after running the app', async () => {
+      const stacks = [{ stackName: 'Synth' }];
+      mockAssemblyStacks.mockReturnValue(stacks);
+
+      await synthesizer.synthesize({ app: 'node app.js' });
+
+      expect(synthesizedStacks()).toBe(stacks);
     });
 
     // Issue go-to-k/cdkd#3507: a Stage that failed to load is fatal. The

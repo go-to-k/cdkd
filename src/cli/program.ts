@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { handleError } from '../utils/error-handler.js';
 import { addAwsEmulatorOptions, prepareAwsEmulatorForCommand } from './aws-emulator.js';
+import { setLocalCustomResourceRuntimeEnabled } from '../local/custom-resource-runtime-gate.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -120,6 +121,17 @@ export function buildProgram(): Command {
         handleError(err);
       }
     }
+    // go-to-k/cdkd#6206: `--no-local-custom-resources` on the commands that
+    // invoke custom resources; only read while `--aws-emulator` is active.
+    setLocalCustomResourceRuntimeEnabled(
+      actionCommand.optsWithGlobals<{ localCustomResources?: boolean }>().localCustomResources !==
+        false,
+      // The command path (`deploy`, `destroy`, `state destroy`, `rollback`),
+      // so a fallback warning names a remedy that fits this command.
+      actionCommand.parent?.parent
+        ? `${actionCommand.parent.name()} ${actionCommand.name()}`
+        : actionCommand.name()
+    );
     // AFTER the mirror above: profile config reaches the SDK only through
     // AWS_PROFILE, and the S3 endpoint override and addressing_style can both
     // come from the profile (go-to-k/cdkd#5745). Once per process, local file

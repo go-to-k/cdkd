@@ -13,7 +13,7 @@ import {
   type ResolvedZipLambda,
 } from '../../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../../local/layer-arn-materializer.js';
-import { copyLayerTreeLastWins } from '../../../local/layer-tree-copy.js';
+import { copyLayerTreeLastWins, layerAssetDirectory } from '../../../local/layer-tree-copy.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -43,6 +43,14 @@ import { type LocalInvokeOptions } from './types.js';
  * code is already in the image). `cmd` / `entryPoint` / `workingDir` come
  * from `ImageConfig`. `platform` is set per `Architectures` (D5.6).
  */
+/**
+ * The two flags the ZIP image plan reads: `--no-pull` and `--layer-role-arn`.
+ * Narrowed from {@link LocalInvokeOptions} so the custom-resource runtime
+ * under `--aws-emulator` (`src/local/custom-resource-runtime.ts`) builds the
+ * same plan without a command's option bag.
+ */
+export type ZipImagePlanOptions = Pick<LocalInvokeOptions, 'pull' | 'layerRoleArn'>;
+
 export interface ImagePlan {
   image: string;
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
@@ -110,7 +118,7 @@ export interface ImagePlan {
  */
 export async function resolveZipImagePlan(
   lambda: ResolvedZipLambda,
-  options: LocalInvokeOptions
+  options: ZipImagePlanOptions
 ): Promise<ImagePlan> {
   let inlineTmpDir: string | undefined;
   let codeDir = lambda.codePath;
@@ -125,9 +133,6 @@ export async function resolveZipImagePlan(
 
   const image = resolveRuntimeImage(lambda.runtime);
 
-  // Commander surfaces `--no-pull` as `pull: false` (default `true`).
-  await pullImage(image, options.pull === false);
-
   // PR 6 (#232): merge every same-stack `AWS::Lambda::LayerVersion`
   // referenced by `Properties.Layers` into a single bind mount at
   // `/opt`. AWS extracts layer ZIPs into `/opt` IN ORDER (later
@@ -141,10 +146,19 @@ export async function resolveZipImagePlan(
   // downstream code path is identical for asset-backed and ARN-backed
   // layers. The per-ARN unzip tmpdirs are tracked alongside the merged
   // `/opt` tmpdir so the outer cleanup can remove all of them.
-  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
-    logicalId: lambda.logicalId,
-    cdkPath: readCdkPathOrUndefined(lambda.resource),
-  });
+  let layerPlan: Awaited<ReturnType<typeof materializeLambdaLayersIncludingArns>>;
+  try {
+    // Commander surfaces `--no-pull` as `pull: false` (default `true`). Inside
+    // the try: a failed pull must not leave the inline-code tmpdir behind.
+    await pullImage(image, options.pull === false);
+    layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
+      logicalId: lambda.logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    });
+  } catch (error) {
+    if (inlineTmpDir !== undefined) rmSync(inlineTmpDir, { recursive: true, force: true });
+    throw error;
+  }
 
   // provided.al2 / provided.al2023 require the deployment package at
   // /var/runtime (where the base image's hardcoded entrypoint exec's
@@ -187,7 +201,7 @@ export async function resolveZipImagePlan(
  */
 export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
-  options: LocalInvokeOptions,
+  options: ZipImagePlanOptions,
   /** Mixed mode: a literal layer ARN reads real Lambda only for this function's LAMBDA exception (#6179). */
   workload?: AwsEmulatorWorkload
 ): Promise<{
@@ -197,24 +211,33 @@ export async function materializeLambdaLayersIncludingArns(
 }> {
   const extraTmpDirs: string[] = [];
   const flat: { logicalId: string; assetPath: string }[] = [];
-  for (const layer of layers) {
-    if (layer.kind === 'asset') {
-      flat.push({ logicalId: layer.logicalId, assetPath: layer.assetPath });
-      continue;
+  try {
+    for (const layer of layers) {
+      if (layer.kind === 'asset') {
+        const asset = await layerAssetDirectory(layer.assetPath);
+        if (asset.tmpDir !== undefined) extraTmpDirs.push(asset.tmpDir);
+        flat.push({ logicalId: layer.logicalId, assetPath: asset.dir });
+        continue;
+      }
+      const dir = await materializeLayerFromArn(layer, {
+        ...(workload && { workload }),
+        // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
+        // cdk-local reads `roleArn` by truthiness and would pull as the caller.
+        ...(options.layerRoleArn !== undefined && {
+          roleArn: explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn),
+        }),
+      });
+      extraTmpDirs.push(dir);
+      flat.push({ logicalId: layer.arn, assetPath: dir });
     }
-    const dir = await materializeLayerFromArn(layer, {
-      ...(workload && { workload }),
-      // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
-      // cdk-local reads `roleArn` by truthiness and would pull as the caller.
-      ...(options.layerRoleArn !== undefined && {
-        roleArn: explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn),
-      }),
-    });
-    extraTmpDirs.push(dir);
-    flat.push({ logicalId: layer.arn, assetPath: dir });
+    const plan = materializeLambdaLayers(flat);
+    return { ...plan, extraTmpDirs };
+  } catch (error) {
+    // The caller never receives these dirs on a throw, so nothing else
+    // would remove an extracted `.zip` layer or a downloaded ARN layer.
+    for (const dir of extraTmpDirs) rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
-  const plan = materializeLambdaLayers(flat);
-  return { ...plan, extraTmpDirs };
 }
 
 /**

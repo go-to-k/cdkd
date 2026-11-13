@@ -8,6 +8,7 @@ import {
   annotationMessageOptions,
   deployOptions,
   skipFinalSnapshotOption,
+  noLocalCustomResourcesOption,
   contextOptions,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -38,6 +39,7 @@ export function createDeployCommand(): Command {
     ...stackOptions,
     ...deployOptions,
     skipFinalSnapshotOption,
+    noLocalCustomResourcesOption,
     requireApprovalOption,
     outputsFileOption,
     ...contextOptions,

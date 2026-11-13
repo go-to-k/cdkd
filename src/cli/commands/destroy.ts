@@ -9,6 +9,7 @@ import {
   destroyOptions,
   resourceTimeoutOptions,
   skipFinalSnapshotOption,
+  noLocalCustomResourcesOption,
   contextOptions,
   exclusivelyOption,
 } from '../options.js';
@@ -92,6 +93,7 @@ export function createDestroyCommand(): Command {
     exclusivelyOption('destroy'),
     ...resourceTimeoutOptions,
     skipFinalSnapshotOption,
+    noLocalCustomResourcesOption,
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 

@@ -198,6 +198,7 @@ listing the bucket's prefixes.
 | `-f`, `--force` | off | Same as `--yes` on `cdkd destroy`. |
 | `--remove-protection` | off | Turn deletion protection off before each delete. |
 | `--skip-final-snapshot` | off | Delete `DeletionPolicy: Snapshot` resources without the final snapshot (data loss). |
+| `--no-local-custom-resources` | run locally | Under `--aws-emulator`, invoke custom resource functions in the emulator's own runtime instead of the official Lambda runtime image in Docker. See [Custom resources run on your machine](aws-emulator.md#custom-resources-run-on-your-machine). |
 | `--purge-events` | off | After a clean destroy, also delete the stack's deployment-event history. |
 | `--allow-unsupported-types <types>` | — | Comma-separated resource types to attempt through Cloud Control although cdkd reports them unsupported. |
 | `--resource-warn-after <duration>` | `5m` | Warn when one resource delete runs long. Repeatable, and accepts `TYPE=DURATION`. |

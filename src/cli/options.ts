@@ -727,3 +727,18 @@ export const skipFinalSnapshotOption = new Option(
     'DeletionPolicy; a reverse-replacement delete of the NEW resource keeps its own ' +
     'bounded UpdateReplacePolicy behavior and is unaffected.'
 ).default(false);
+
+/**
+ * `--no-local-custom-resources` (go-to-k/cdkd#6206). Under `--aws-emulator`, a
+ * custom resource's `ServiceToken` function runs in the official Lambda
+ * runtime image on this machine by default (`src/local/custom-resource-runtime.ts`);
+ * this flag sends the event to the emulator's own runtime instead. A no-op
+ * without `--aws-emulator`. Attached to every command that can invoke a custom
+ * resource: `cdkd deploy`, `cdkd destroy`, `cdkd state destroy`, `cdkd rollback`.
+ */
+export const noLocalCustomResourcesOption = new Option(
+  '--no-local-custom-resources',
+  "Under --aws-emulator, invoke custom resource functions in AWS Emulator's own Lambda runtime " +
+    'instead of running them locally in the official Lambda runtime image (Docker). A no-op ' +
+    'without --aws-emulator.'
+);
