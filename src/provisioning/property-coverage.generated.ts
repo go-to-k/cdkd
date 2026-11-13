@@ -2751,8 +2751,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'DeleteAutomatedBackups',
           'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
-        ['Domain', 'not yet implemented by cdkd'],
-        ['DomainIAMRoleName', 'not yet implemented by cdkd'],
+        [
+          'Domain',
+          'joins the cluster to an AWS Directory Service for Microsoft Active Directory domain (Kerberos authentication); verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5639). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainIAMRoleName',
+          'the IAM role RDS uses to call AWS Directory Service for the Domain join; verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5639). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
         [
           'ScalingConfiguration',
           'Aurora Serverless v1 only (EngineMode serverless), retired by AWS: no aurora-mysql or aurora-postgresql engine version supports the serverless engine mode (DescribeDBEngineVersions, us-east-1, 2026-11-06). Aurora Serverless v2 uses ServerlessV2ScalingConfiguration',
@@ -2848,26 +2854,62 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'ApplyImmediately',
           'cdkd always applies modifications immediately (rds:ModifyDBInstance.ApplyImmediately=true is hardcoded); users wanting maintenance-window deferral should run aws rds modify-db-instance directly',
         ],
-        ['BackupTarget', 'not yet implemented by cdkd'],
-        ['CustomIAMInstanceProfile', 'not yet implemented by cdkd'],
+        [
+          'BackupTarget',
+          'where automated backups and manual snapshots are stored (the Region, an AWS Outposts rack, or a Dedicated Local Zone); verifying it needs RDS on Outposts or a Dedicated Local Zone, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'CustomIAMInstanceProfile',
+          'the instance profile of an RDS Custom instance; verifying it needs an RDS Custom setup (a custom engine version and its IAM and network prerequisites), dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
         [
           'DBSecurityGroups',
           'EC2-Classic-only feature retired by AWS (2022-08-15); new accounts cannot use this — use VPCSecurityGroups instead',
         ],
-        ['DBSystemId', 'not yet implemented by cdkd'],
+        [
+          'DBSystemId',
+          'the Oracle system identifier of an RDS Custom for Oracle instance; verifying it needs an RDS Custom setup, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
         [
           'DeleteAutomatedBackups',
           'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
-        ['Domain', 'not yet implemented by cdkd'],
-        ['DomainAuthSecretArn', 'not yet implemented by cdkd'],
-        ['DomainDnsIps', 'not yet implemented by cdkd'],
-        ['DomainFqdn', 'not yet implemented by cdkd'],
-        ['DomainIAMRoleName', 'not yet implemented by cdkd'],
-        ['DomainOu', 'not yet implemented by cdkd'],
-        ['ReplicaMode', 'not yet implemented by cdkd'],
-        ['TdeCredentialArn', 'not yet implemented by cdkd'],
-        ['TdeCredentialPassword', 'not yet implemented by cdkd'],
+        [
+          'Domain',
+          'joins the instance to an AWS Directory Service for Microsoft Active Directory domain (Kerberos authentication); verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainAuthSecretArn',
+          'the Secrets Manager secret holding the credentials that join the instance to a self-managed Active Directory domain; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainDnsIps',
+          'the DNS servers of the self-managed Active Directory domain the instance joins; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainFqdn',
+          'the fully qualified name of the self-managed Active Directory domain the instance joins; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainIAMRoleName',
+          'the IAM role RDS uses to call AWS Directory Service for the Domain join; verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainOu',
+          'the organizational unit the instance joins in a self-managed Active Directory domain; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'ReplicaMode',
+          'the mounted or open-read-only mode of an Oracle read replica; verifying it needs an Oracle Enterprise Edition (BYOL) source instance, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'TdeCredentialArn',
+          'the key store an Oracle instance uses for Transparent Data Encryption; verifying it needs an Oracle instance with an HSM key store, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'TdeCredentialPassword',
+          'the password of the TdeCredentialArn key store; verifying it needs an Oracle instance with an HSM key store, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
       ]),
       createOnlyDrops: new Set<string>(['BackupTarget', 'CustomIAMInstanceProfile', 'DBSystemId']),
       readOnly: new Set<string>([

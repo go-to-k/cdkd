@@ -25,24 +25,6 @@
   "types": {
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
-    ],
-    "AWS::RDS::DBCluster": [
-      "Domain",
-      "DomainIAMRoleName"
-    ],
-    "AWS::RDS::DBInstance": [
-      "BackupTarget",
-      "CustomIAMInstanceProfile",
-      "DBSystemId",
-      "Domain",
-      "DomainAuthSecretArn",
-      "DomainDnsIps",
-      "DomainFqdn",
-      "DomainIAMRoleName",
-      "DomainOu",
-      "ReplicaMode",
-      "TdeCredentialArn",
-      "TdeCredentialPassword"
     ]
   },
   "bogusTolerated": {

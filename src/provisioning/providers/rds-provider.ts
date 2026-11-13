@@ -1,4 +1,4 @@
-import { RDSClient, type DBCluster, type DBInstance } from '@aws-sdk/client-rds';
+import { RDSClient } from '@aws-sdk/client-rds';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { type ConsoleLogger, getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -61,19 +61,7 @@ import {
   sendHttpEndpointChange,
   attachTags,
 } from './rds/calls.js';
-import {
-  waitForMemberAfterClusterChange,
-  requireClusterWhileWaiting,
-  waitForClusterPortApplied,
-  waitForSecurityGroupsApplied,
-  waitForClusterState,
-  waitForClusterAvailable,
-  waitForClusterDeleted,
-  rebootForPendingParameterGroup,
-  waitForInstanceState,
-  waitForInstanceAvailable,
-  waitForInstanceDeleted,
-} from './rds/waits.js';
+import { RDSProviderBase } from './rds/provider-base.js';
 import { desiredAssociatedRoles, applyAssociatedRoles } from './rds/associated-roles.js';
 import { automatedBackupResourceId, isAutomatedBackupsArn } from './rds/instance-pitr.js';
 import {
@@ -103,7 +91,7 @@ import {
  * WHY: RDS SDK calls are direct and avoid CC API polling overhead; DBCluster and
  * DBInstance creation can take time, so we poll with DescribeDB* until available.
  */
-export class RDSProvider implements ResourceProvider {
+export class RDSProvider extends RDSProviderBase implements ResourceProvider {
   private rdsClient?: RDSClient;
 
   private createClient?: RDSClient;
@@ -351,6 +339,14 @@ export class RDSProvider implements ResourceProvider {
           'DBSystemId',
           'reserved for future use, per the CloudFormation schema (cloudformation:DescribeType, us-east-1, 2026-11-07); no observable behaviour to wire. Kept unhandled so a template declaring it keeps its Cloud Control route',
         ],
+        [
+          'Domain',
+          'joins the cluster to an AWS Directory Service for Microsoft Active Directory domain (Kerberos authentication); verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5639). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainIAMRoleName',
+          'the IAM role RDS uses to call AWS Directory Service for the Domain join; verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5639). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
       ]),
     ],
     [
@@ -368,6 +364,54 @@ export class RDSProvider implements ResourceProvider {
           'DeleteAutomatedBackups',
           'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
+        [
+          'Domain',
+          'joins the instance to an AWS Directory Service for Microsoft Active Directory domain (Kerberos authentication); verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainIAMRoleName',
+          'the IAM role RDS uses to call AWS Directory Service for the Domain join; verifying it needs a provisioned directory, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainAuthSecretArn',
+          'the Secrets Manager secret holding the credentials that join the instance to a self-managed Active Directory domain; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainDnsIps',
+          'the DNS servers of the self-managed Active Directory domain the instance joins; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainFqdn',
+          'the fully qualified name of the self-managed Active Directory domain the instance joins; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DomainOu',
+          'the organizational unit the instance joins in a self-managed Active Directory domain; verifying it needs a reachable self-managed domain, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'TdeCredentialArn',
+          'the key store an Oracle instance uses for Transparent Data Encryption; verifying it needs an Oracle instance with an HSM key store, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'TdeCredentialPassword',
+          'the password of the TdeCredentialArn key store; verifying it needs an Oracle instance with an HSM key store, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'ReplicaMode',
+          'the mounted or open-read-only mode of an Oracle read replica; verifying it needs an Oracle Enterprise Edition (BYOL) source instance, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'CustomIAMInstanceProfile',
+          'the instance profile of an RDS Custom instance; verifying it needs an RDS Custom setup (a custom engine version and its IAM and network prerequisites), dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'DBSystemId',
+          'the Oracle system identifier of an RDS Custom for Oracle instance; verifying it needs an RDS Custom setup, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
+        [
+          'BackupTarget',
+          'where automated backups and manual snapshots are stored (the Region, an AWS Outposts rack, or a Dedicated Local Zone); verifying it needs RDS on Outposts or a Dedicated Local Zone, dedicated infrastructure the backfill campaign leaves out of scope by maintainer decision (go-to-k/cdkd#5640). Kept unhandled so a template declaring it keeps its Cloud Control route',
+        ],
       ]),
     ],
   ]);
@@ -378,6 +422,7 @@ export class RDSProvider implements ResourceProvider {
    * the one its recorded-region pre-flight vetted.
    */
   constructor(options?: { region?: string }) {
+    super();
     this.providerRegion = options?.region ?? ambientRegion();
   }
 
@@ -700,67 +745,6 @@ export class RDSProvider implements ResourceProvider {
   describeDBInstance(dbInstanceIdentifier: string) {
     return describeDBInstance.call(this, dbInstanceIdentifier);
   }
-  waitForMemberAfterClusterChange(
-    dbInstanceIdentifier: string,
-    clusterLogicalId: string,
-    transitional: ReadonlySet<string>,
-    change: string,
-    maxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForMemberAfterClusterChange.call(
-      this,
-      dbInstanceIdentifier,
-      clusterLogicalId,
-      transitional,
-      change,
-      maxWaitMs
-    );
-  }
-  requireClusterWhileWaiting(
-    cluster: DBCluster | undefined,
-    logicalId: string,
-    change: string
-  ): DBCluster {
-    return requireClusterWhileWaiting.call(this, cluster, logicalId, change);
-  }
-  waitForClusterPortApplied(
-    dbClusterIdentifier: string,
-    logicalId: string,
-    port: number,
-    maxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForClusterPortApplied.call(this, dbClusterIdentifier, logicalId, port, maxWaitMs);
-  }
-  waitForSecurityGroupsApplied(
-    dbClusterIdentifier: string,
-    logicalId: string,
-    expected: readonly string[],
-    maxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForSecurityGroupsApplied.call(
-      this,
-      dbClusterIdentifier,
-      logicalId,
-      expected,
-      maxWaitMs
-    );
-  }
-  waitForClusterState(
-    logicalId: string,
-    dbClusterIdentifier: string,
-    done: (cluster: DBCluster) => boolean,
-    change: string,
-    unboundedMaxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForClusterState.call(
-      this,
-      logicalId,
-      dbClusterIdentifier,
-      done,
-      change,
-      unboundedMaxWaitMs
-    );
-  }
   sendHttpEndpointChange(
     logicalId: string,
     physicalId: string,
@@ -833,59 +817,6 @@ export class RDSProvider implements ResourceProvider {
       marks
     );
   }
-  waitForClusterAvailable(
-    logicalId: string,
-    dbClusterIdentifier: string,
-    maxWaitMs = 1_800_000,
-    doing = 'being created'
-  ): Promise<void> {
-    return waitForClusterAvailable.call(this, logicalId, dbClusterIdentifier, maxWaitMs, doing);
-  }
-  waitForClusterDeleted(
-    logicalId: string,
-    dbClusterIdentifier: string,
-    maxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForClusterDeleted.call(this, logicalId, dbClusterIdentifier, maxWaitMs);
-  }
-  rebootForPendingParameterGroup(
-    logicalId: string,
-    physicalId: string,
-    sentGroup: string | undefined,
-    caRotationRestarts: boolean
-  ): Promise<DBInstance> {
-    return rebootForPendingParameterGroup.call(
-      this,
-      logicalId,
-      physicalId,
-      sentGroup,
-      caRotationRestarts
-    );
-  }
-  waitForInstanceState(
-    logicalId: string,
-    dbInstanceIdentifier: string,
-    done: (instance: DBInstance) => boolean,
-    change: string
-  ): Promise<DBInstance> {
-    return waitForInstanceState.call(this, logicalId, dbInstanceIdentifier, done, change);
-  }
-  waitForInstanceAvailable(
-    logicalId: string,
-    dbInstanceIdentifier: string,
-    maxWaitMs = 1_800_000,
-    doing = 'being created'
-  ): Promise<void> {
-    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs, doing);
-  }
-  waitForInstanceDeleted(
-    logicalId: string,
-    dbInstanceIdentifier: string,
-    maxWaitMs = 1_800_000
-  ): Promise<void> {
-    return waitForInstanceDeleted.call(this, logicalId, dbInstanceIdentifier, maxWaitMs);
-  }
-
   sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
