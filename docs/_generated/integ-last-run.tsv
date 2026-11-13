@@ -29,7 +29,7 @@ asset-bootstrap	2026-11-04T10:48:42Z	PASS	166	verify.sh	rc ok, orph clean; eu-we
 asset-migration	2026-11-04T18:21:35Z	PASS	707	verify.sh	rc 0 in eu-west-1, destroy clean, 0 orphans
 aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
-basic	2026-11-13T05:08:51Z	PASS	95	standard	deploy+destroy 0 errors, orph clean, #6160
+basic	2026-11-13T06:34:36Z	PASS	91	standard	PR #6188 fac650053; destroy 0 errors, 0 orphans
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans

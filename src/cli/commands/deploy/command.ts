@@ -12,7 +12,6 @@ import { bold, cyan, gray } from '../../../utils/colors.js';
 import { DeployCancelledError, PartialFailureError } from '../../../utils/error-handler.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
 import { refuseMalformedNestedTemplateTrees } from '../nested-template-preflight.js';
-import { promptYesNo } from '../confirm-prompt.js';
 import { createApprovalPrompter, resolveRequireApproval } from '../require-approval.js';
 import {
   resolveOutputsFile,
@@ -80,7 +79,7 @@ import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
 import { addStacksToWorkGraph } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
-import { forceQuitReleaseCommand } from './helpers.js';
+import { confirmAutoAssetStorageCreate, forceQuitReleaseCommand } from './helpers.js';
 
 /**
  * Deploy command implementation
@@ -644,20 +643,8 @@ export async function deployCommand(
     // dry run must not create resources), and moot under the
     // --use-cdk-bootstrap-assets legacy pin (marker is never read).
     const autoAssetStorage = resolveAutoAssetStorage(options.autoAssetStorage);
-    const confirmAutoAssetStorage = async (assetRegion: string): Promise<boolean> => {
-      if (options.yes || !process.stdin.isTTY) {
-        logger.info(
-          `Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
-            `region; opt out with --no-auto-asset-storage).`
-        );
-        return true;
-      }
-      return promptYesNo(
-        `Region '${assetRegion}' has no cdkd asset storage yet. Create it now ` +
-          `(S3 bucket cdkd-assets-${accountId}-${assetRegion} + container-asset ECR repo, ` +
-          `out of 'cdk gc' reach)?`
-      );
-    };
+    const confirmAutoAssetStorage = (assetRegion: string): Promise<boolean> =>
+      confirmAutoAssetStorageCreate({ assetRegion, accountId, yes: options.yes === true });
     const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
       ...(options.profile && { profile: options.profile }),
       ...(useCdkBootstrapAssets && { useCdkBootstrapAssets: true }),

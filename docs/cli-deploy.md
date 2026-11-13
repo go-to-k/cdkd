@@ -43,6 +43,11 @@ cdkd holds a lock on the stack while it works, so that two runs cannot change
 the same stack at once. If a resource fails, cdkd rolls back what the deploy
 had done to that stack, unless you pass `--no-rollback`.
 
+Under `--aws-emulator`, a deploy into an emulator that has no cdkd state
+bucket creates it first, and creates the asset storage for each stack's
+region without a prompt. See
+[Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
+
 ## Options
 
 Run `cdkd deploy --help` for the same list in the terminal. The flags are
