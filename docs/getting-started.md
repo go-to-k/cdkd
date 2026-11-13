@@ -68,6 +68,10 @@ The command is `cdkd`. To install a specific release, name it:
    [`cdkd bootstrap`](cli-bootstrap.md) covers custom names and existing
    setups.
 
+   Skip this step when you deploy into AWS Emulator: under `--aws-emulator`,
+   `cdkd deploy` bootstraps the emulator itself. See
+   [Develop Locally with AWS Emulator](aws-emulator.md).
+
 2. Preview what a deploy would do
 
    From your CDK app's directory:
