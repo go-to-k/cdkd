@@ -52,6 +52,11 @@ export function buildAbortIncompleteMultipartRule(legacyPrefix: boolean): Lifecy
  * WITHOUT writing), return `present` when the rule ID exists, otherwise write
  * every existing rule back unchanged with cdkd's appended and
  * `TransitionDefaultMinimumObjectSize` passed through.
+ *
+ * Limits, as for the state bucket: in the legacy rule-level `Prefix` form S3
+ * rejects a PUT whose rule overlaps a user rule that already aborts multipart
+ * uploads (reported as `failed`, bucket untouched); and a lifecycle element
+ * newer than the pinned `@aws-sdk/client-s3` is dropped by the read-merge-write.
  */
 export async function applyAbortIncompleteMultipartUpload(
   s3: S3Client,
