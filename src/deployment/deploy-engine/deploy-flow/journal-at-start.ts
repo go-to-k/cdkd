@@ -8,7 +8,7 @@ import type { DeployEngine } from '../../deploy-engine.js';
 import type { StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { StackScope } from '../../../provisioning/resource-name.js';
-import { appliedNothing } from '../rollback/applied-nothing.js';
+import { revertFailedHasNothingToDo } from '../rollback/applied-nothing.js';
 
 /**
  * Steps 1b-pre and 1b of a deploy: the pending Cloud Control requests an
@@ -140,11 +140,12 @@ export async function settleJournalAtStart(
       const failedOnly =
         journal.segments.every((s) => s.operations.length === 0) &&
         journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
-      // go-to-k/cdkd#6118: every kept failed op is a refused update that
-      // applied nothing, so there is nothing to revert and no note to print.
+      // go-to-k/cdkd#6118 / #6204: every kept failed op is a refused update
+      // that applied nothing, or a failed delete or create the revert can only
+      // skip, so `--revert-failed` has nothing to act on and no note is printed.
       const nothingToRevert =
         failedOnly &&
-        journal.segments.every((s) => (s.failedOperations ?? []).every(appliedNothing));
+        journal.segments.every((s) => (s.failedOperations ?? []).every(revertFailedHasNothingToDo));
       if (!nothingToRevert)
         engine.logger.info(
           failedOnly

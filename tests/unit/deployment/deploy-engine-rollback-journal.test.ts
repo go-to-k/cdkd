@@ -358,8 +358,17 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(retained.reason).toBe('auto-rollback-clean');
     expect(retained.operations).toEqual([]);
     expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+    // go-to-k/cdkd#6204: B's failed CREATE recorded no physical id, which the
+    // revert can only skip, so no `--revert-failed` command is printed; the
+    // revert's own manual check is named instead.
     const infos = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(infos.some((m) => m.includes('pre-failure record was kept'))).toBe(true);
+    const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('pre-failure record was kept'))).toBe(false);
+    expect([...infos, ...warns].some((m) => m.includes('Revert it with:'))).toBe(false);
+    expect(warns).toContain(
+      "B (AWS::S3::Bucket): the failed CREATE recorded no physical id, so 'cdkd rollback --revert-failed' " +
+        'cannot address it — if it was partially created in AWS, delete it manually.'
+    );
   });
 
   // go-to-k/cdkd#6106: an UPDATE that failed because its resource was deleted
@@ -440,6 +449,65 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       );
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
       expect(logged('info').some((m) => m.includes('--revert-failed'))).toBe(true);
+    });
+
+    // go-to-k/cdkd#6204: the revert plans a failed DELETE as
+    // `skip-failed-noop`, so a DELETE-only kept set prints no command.
+    it('a failed DELETE keeps its journal record but prints no --revert-failed remedy (#6204)', async () => {
+      const engine = buildEngine({
+        changes: new Map<string, ResourceChange>([
+          ['A', makeChange('A')],
+          ['B', { logicalId: 'B', changeType: 'DELETE', resourceType: 'AWS::SQS::Queue' } as ResourceChange],
+        ]),
+        deps: { A: [], B: [] },
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: { B: record('B') },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.delete.mockImplementation((logicalId: string) =>
+        logicalId === 'B' ? Promise.reject(new Error('B delete failed')) : Promise.resolve(undefined)
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      const retained = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      expect(retained.failedOperations.map((o: { changeType: string }) => o.changeType)).toEqual(['DELETE']);
+      expect([...logged('info'), ...logged('warn')].some((m) => m.includes('--revert-failed'))).toBe(false);
+    });
+
+    // go-to-k/cdkd#6204: a skip-only failed CREATE beside an UPDATE the revert
+    // can act on still gets the command (the revert warns about the CREATE).
+    it('a failed no-id CREATE beside a failed UPDATE still prints the remedy (mixed set, #6204)', async () => {
+      const engine = buildEngine({
+        changes: new Map<string, ResourceChange>([
+          ['A', makeChange('A')],
+          ['B', makeChange('B')],
+          ['C', updateChange('C')],
+        ]),
+        deps: { A: [], B: [], C: [] },
+        failOn: new Set(['B']),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: { C: record('C') },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(new Error('C failed'));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      const retained = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      const failed = retained.failedOperations as Array<{ logicalId: string; attemptedProperties?: unknown }>;
+      expect(failed.map((o) => o.logicalId).sort()).toEqual(['B', 'C']);
+      expect(failed.find((o) => o.logicalId === 'C')!.attemptedProperties).toBeDefined();
+      expect(logged('info').some((m) => m.includes(`Revert it with: cdkd rollback ${stackName} --revert-failed`))).toBe(true);
+      expect(logged('warn').some((m) => m.includes('recorded no physical id'))).toBe(false);
     });
 
     it('control: a non-refused failed UPDATE still prints the --revert-failed remedy', async () => {
@@ -839,7 +907,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     if (nested) {
       expect(hint).toBeUndefined();
     } else {
-      expect(hint).toContain(`Revert it with: cdkd rollback ${stackName} --revert-failed`);
+      // go-to-k/cdkd#6204: B's CREATE recorded no physical id, so the revert
+      // could only skip it; the manual check is named, not the command.
+      expect(warns.some((m) => m.includes('Revert it with:'))).toBe(false);
+      expect(hint).toContain('B (AWS::S3::Bucket): the failed CREATE recorded no physical id');
     }
   });
 
@@ -913,7 +984,14 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
   });
 
-  it('next deploy prints the --revert-failed note for a failed-only journal (issue #1208)', async () => {
+  // go-to-k/cdkd#6204: a failed CREATE that recorded no physical id is only
+  // skipped by `--revert-failed`, so the next deploy names no revert for it.
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ['a failed CREATE that recorded a physical id (issue #1208)', { physicalId: 'phys-B' }, true],
+    ['a failed CREATE that recorded no physical id (#6204)', {}, false],
+    ['a failed CREATE with a name generation but no physical id (#6204)', { nameGeneration: 1 }, false],
+    ['a failed DELETE (#6204)', { changeType: 'DELETE', physicalId: 'phys-B' }, false],
+  ])('next deploy after a failed-only journal of %s', async (_label, extra, expectNote) => {
     const changes = new Map([['A', makeChange('A')]]);
     const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
     journal.loadRollbackJournal.mockResolvedValue({
@@ -926,14 +1004,16 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           reason: 'auto-rollback-clean',
           initialDeploy: false,
           operations: [],
-          failedOperations: [{ logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket' }],
+          failedOperations: [
+            { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', ...extra },
+          ],
         },
       ],
     });
     await engine.deploy(stackName, template);
     const infoCalls = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
-    expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(true);
-    expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(true);
+    expect(infoCalls.some((m) => m.includes('--revert-failed'))).toBe(expectNote);
+    expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(expectNote);
   });
 
   it('next deploy prints no revert note for a failed-only journal of refused UPDATEs (#6118)', async () => {
