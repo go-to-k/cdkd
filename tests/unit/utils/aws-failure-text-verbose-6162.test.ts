@@ -177,4 +177,38 @@ describe('every user-facing pointer goes through the verbose-aware helpers', () 
       'src/utils/aws-failure-text.ts',
     ]);
   });
+
+  it('every hint worded around --verbose sits inside a verbose-aware helper call', async () => {
+    // Wider than the AWS-message pointer: `for the details`, `for the cause of
+    // each`, `to see what ...` (go-to-k/cdkd#6162 parent review). A hint line
+    // must carry, or follow within two lines, a verboseAwareText /
+    // verbosePointerSentence / verbosePointerTail call.
+    const { execFileSync } = await import('node:child_process');
+    const { readFileSync } = await import('node:fs');
+    const hint = /re-?run[^`'"]*--verbose|--verbose (for|to see)/i;
+    const aware = /verboseAwareText\(|verbosePointer(Sentence|Tail)\(\)/;
+    // Not a re-run of THIS command: another command's flag, or a flag list.
+    const exempt = new Set([
+      'src/deployment/recreate-targets/probe.ts', // `cdkd state show` with --verbose
+      'src/utils/error-handler/base-errors.ts', // "--resource-timeout ..., or --verbose to see the"
+      'src/utils/aws-failure-text.ts', // defines VERBOSE_POINTER
+    ]);
+    const files = execFileSync('git', ['ls-files', 'src/**/*.ts', 'src/*.ts'], { encoding: 'utf8' })
+      .split('\n')
+      .filter((f) => f !== '' && !exempt.has(f));
+    const offenders: string[] = [];
+    let hits = 0;
+    for (const file of files) {
+      const lines = readFileSync(file, 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        if (/^\s*(\/\/|\*|\/\*)/.test(line) || !hint.test(line)) return;
+        hits++;
+        const window = lines.slice(Math.max(0, i - 2), i + 1).join('\n');
+        if (!aware.test(window)) offenders.push(`${file}:${i + 1}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+    // Non-vacuity: the sweep's sites are really in the population.
+    expect(hits).toBeGreaterThanOrEqual(9);
+  });
 });

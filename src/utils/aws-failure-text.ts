@@ -237,6 +237,15 @@ export function verbosePointerTail(): string {
   return verboseRun() ? '' : ` ${VERBOSE_POINTER}`;
 }
 
+/**
+ * `quiet` on an ordinary run, `verbose` on a `--verbose` one: for a hint
+ * worded around `--verbose` whose verbose form says where the detail already
+ * is instead of asking for a re-run (go-to-k/cdkd#6162).
+ */
+export function verboseAwareText(quiet: string, verbose: string): string {
+  return verboseRun() ? verbose : quiet;
+}
+
 /** `<lead>.` plus the pointer when the run is not verbose. */
 function withVerbosePointer(lead: string): string {
   return `${lead}. ${verbosePointerSentence()}`.trimEnd();

@@ -4,6 +4,7 @@
  * Part of `src/state/malformed-resources-bag.ts`, which re-exports every public name here.
  */
 import { CdkdError } from '../../utils/error-handler.js';
+import { verboseAwareText } from '../../utils/aws-failure-text.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { STACK_REF_MAX_CODE_POINTS, isPasteableIdent } from '../../utils/display-safe.js';
 import { shellQuote } from '../lock-contention-message.js';
@@ -155,7 +156,10 @@ export function divergentRecordRegionRefusalMessage(
   // puts its commands on lines of their own once any account flag rides on them.
   const listing = withheldListingPointer(recovery);
   const remedy = exact
-    ? `Re-run with --verbose to see what the record's region field holds, then either destroy ` +
+    ? verboseAwareText(
+        "Re-run with --verbose to see what the record's region field holds, then either destroy ",
+        "The debug output shows what the record's region field holds. Either destroy "
+      ) +
       `against the region the resources are really in, or repair that field to match the key it ` +
       `is stored under and re-run. ` +
       withheldAccountClause(recovery, 'the command at the end of this message prints') +

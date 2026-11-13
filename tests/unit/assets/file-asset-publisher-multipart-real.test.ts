@@ -31,6 +31,10 @@ interface Recorded {
 const recorded: Recorded[] = [];
 /** When set, this UploadPart number answers 500 InternalError. */
 let failPartNumber: string | undefined;
+/** When set, AbortMultipartUpload answers 403 AccessDenied. */
+let refuseAbort = false;
+/** When set, every UploadPart waits for this before answering. */
+let partGate: Promise<void> | undefined;
 
 async function bodyLength(body: unknown): Promise<number> {
   if (body === undefined || body === null) return 0;
@@ -82,8 +86,18 @@ const recordingHandler = {
       );
     }
     if (request.method === 'DELETE' && 'uploadId' in query) {
+      if (refuseAbort) {
+        return {
+          response: {
+            statusCode: 403,
+            headers: {},
+            body: xml('<Error><Code>AccessDenied</Code><Message>abort denied</Message></Error>'),
+          },
+        };
+      }
       return { response: { statusCode: 204, headers: {}, body: Readable.from([]) } };
     }
+    if (partGate !== undefined && 'partNumber' in query) await partGate;
     if (failPartNumber !== undefined && query['partNumber'] === failPartNumber) {
       return {
         response: {
@@ -119,7 +133,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   return { ...actual, S3Client: RecordingS3Client };
 });
 
-const { FileAssetPublisher, MULTIPART_UPLOAD_THRESHOLD } =
+const { FileAssetPublisher, MULTIPART_UPLOAD_THRESHOLD, abortOnInterrupt } =
   await import('../../../src/assets/file-asset-publisher.js');
 
 /** S3's own name for each recorded request. */
@@ -139,6 +153,8 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
   beforeEach(() => {
     recorded.length = 0;
     failPartNumber = undefined;
+    refuseAbort = false;
+    partGate = undefined;
     dir = mkdtempSync(join(tmpdir(), 'cdkd-multipart-real-'));
   });
 
@@ -199,5 +215,68 @@ describe('FileAssetPublisher uploads through the real S3 client and lib-storage'
     // `leavePartsOnError` stays false: no billed parts are left in the bucket.
     expect(ops).toContain('AbortMultipartUpload');
     expect(ops).not.toContain('CompleteMultipartUpload');
+  });
+
+  it('keeps the part error when the abort is refused, after trying the abort', async () => {
+    failPartNumber = '2';
+    refuseAbort = true;
+
+    // lib-storage's own abort (awaited before its rethrow) used to surface the
+    // ABORT's AccessDenied here instead of the part's failure.
+    await expect(publishFileOfSize(22_004_168)).rejects.toThrow('part refused');
+    expect(recorded.map(operation)).toContain('AbortMultipartUpload');
+  });
+
+  it('aborts the in-flight multipart upload on an interrupt a command handles', async () => {
+    // deploy owns SIGINT (graceful Ctrl-C); stand in for that listener.
+    const commandHandler = (): void => {};
+    process.on('SIGINT', commandHandler);
+    let open!: () => void;
+    partGate = new Promise((resolve) => (open = resolve));
+    try {
+      const pending = publishFileOfSize(22_004_168);
+      // Wait until the upload is in flight (CreateMultipartUpload answered).
+      for (let i = 0; i < 200 && !recorded.some((r) => operation(r) === 'UploadPart'); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(process.listenerCount('SIGINT')).toBe(2);
+      process.emit('SIGINT', 'SIGINT');
+      open();
+      await expect(pending).rejects.toThrow('Upload aborted.');
+      expect(recorded.map(operation)).toContain('AbortMultipartUpload');
+      expect(recorded.map(operation)).not.toContain('CompleteMultipartUpload');
+      // The publisher's listener is gone again.
+      expect(process.listenerCount('SIGINT')).toBe(1);
+    } finally {
+      open?.();
+      process.removeListener('SIGINT', commandHandler);
+    }
+  });
+});
+
+describe('abortOnInterrupt', () => {
+  it('adds no listener for a signal nothing handles, so Ctrl-C keeps its default exit', () => {
+    const before = process.listenerCount('SIGINT');
+    const sigtermBefore = process.listenerCount('SIGTERM');
+    const release = abortOnInterrupt(new AbortController());
+    expect(process.listenerCount('SIGINT')).toBe(before === 0 ? 0 : before + 1);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermBefore === 0 ? 0 : sigtermBefore + 1);
+    release();
+    expect(process.listenerCount('SIGINT')).toBe(before);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermBefore);
+  });
+
+  it('aborts on SIGTERM when a command handles it', () => {
+    const handler = (): void => {};
+    process.on('SIGTERM', handler);
+    const controller = new AbortController();
+    const release = abortOnInterrupt(controller);
+    try {
+      process.emit('SIGTERM', 'SIGTERM');
+      expect(controller.signal.aborted).toBe(true);
+    } finally {
+      release();
+      process.removeListener('SIGTERM', handler);
+    }
   });
 });

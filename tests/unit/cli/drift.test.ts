@@ -6,6 +6,7 @@ import {
   withPasteDir,
 } from '../utils/paste-harness.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -4551,6 +4552,56 @@ describe('cdkd drift', () => {
       // The raw AWS message names the CALLER's principal + account, so it must
       // not ride the warn line.
       expect(denialWarnings[0]).not.toContain('User is not authorized to perform');
+      expect(denialWarnings[0]).toContain('or re-run with --verbose for the full error.');
+    });
+
+    it('warns without the --verbose re-run hint on a --verbose run (go-to-k/cdkd#6162)', async () => {
+      registerVerboseRunProbe(() => true);
+      try {
+      // A missing `iam:GetRole` otherwise surfaces as unexplained permanent
+      // drift, visible only under --verbose. The classification is on the
+      // error NAME, never the message: IAM's NoSuchEntity text embeds the ROLE
+      // NAME, so `The role with name AccessDeniedHandler cannot be found`
+      // would otherwise be reported as a permission problem.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+            observedProperties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      const denied = Object.assign(new Error('User is not authorized to perform: iam:GetRole'), {
+        name: 'AccessDeniedException',
+      });
+      mockIamSend.mockRejectedValue(denied);
+
+      await runDrift(['TestStack']);
+
+      const denialWarnings = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('Cannot read IAM principals'));
+      expect(denialWarnings).toHaveLength(1);
+      // The raw AWS message names the CALLER's principal + account, so it must
+      // not ride the warn line.
+      expect(denialWarnings[0]).not.toContain('User is not authorized to perform');
+        expect(denialWarnings[0]).toContain('to resolve it (the full error is in the debug output).');
+        expect(denialWarnings[0]).not.toContain('re-run');
+          } finally {
+        registerVerboseRunProbe(() => false);
+      }
     });
 
     it('does not warn about permissions when the role is simply GONE', async () => {

@@ -10,13 +10,23 @@ vi.mock('@aws-sdk/client-s3', () => ({
   })),
   HeadObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadObject' })),
   PutObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'PutObject' })),
+  AbortMultipartUploadCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ ...input, _type: 'AbortMultipartUpload' })),
 }));
 
 // Mock @aws-sdk/lib-storage: the multipart path above MULTIPART_UPLOAD_THRESHOLD.
 // `file-asset-publisher-multipart-real.test.ts` runs the real package.
 const mockUploadDone = vi.fn();
+/** What the mocked Upload reports as its `uploadId` (set per case). */
+const mockUpload = vi.hoisted(() => ({ uploadId: undefined as string | undefined }));
 vi.mock('@aws-sdk/lib-storage', () => ({
-  Upload: vi.fn().mockImplementation(() => ({ done: mockUploadDone })),
+  Upload: vi.fn().mockImplementation(() => ({
+    done: mockUploadDone,
+    get uploadId() {
+      return mockUpload.uploadId;
+    },
+  })),
 }));
 
 // Mock node:fs. The stream is one shared object so a test can assert both
@@ -99,7 +109,12 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { createReadStream, statSync } from 'node:fs';
-import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  AbortMultipartUploadCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { ZipArchive } from 'archiver';
 import {
@@ -234,7 +249,10 @@ describe('FileAssetPublisher', () => {
         ContentLength: size,
       });
       expect(opts.partSize).toBe(MULTIPART_UPLOAD_THRESHOLD);
-      expect(opts.leavePartsOnError).toBeUndefined();
+      // The abort is cdkd's own (so a failed abort cannot replace the part's
+      // error), and an AbortController lets an interrupt stop the upload.
+      expect(opts.leavePartsOnError).toBe(true);
+      expect(opts.abortController).toBeInstanceOf(AbortController);
       expect(mockUploadDone).toHaveBeenCalledTimes(1);
       expect(mockS3Destroy).toHaveBeenCalled();
     });
@@ -246,11 +264,53 @@ describe('FileAssetPublisher', () => {
         isDirectory: () => false,
       } as ReturnType<typeof statSync>);
       mockUploadDone.mockRejectedValueOnce(new Error('part 3 failed'));
+      mockUpload.uploadId = 'upload-9';
 
       await expect(publishFile()).rejects.toThrow('part 3 failed');
       expect(mockS3Destroy).toHaveBeenCalled();
       // The file descriptor is released, not left to the GC.
       expect(mockStream.destroy).toHaveBeenCalledTimes(1);
+      // ...and cdkd aborts the multipart upload it started.
+      expect(AbortMultipartUploadCommand).toHaveBeenCalledWith({
+        Bucket: 'cdk-assets-123456789012-us-east-1',
+        Key: 'assets/abc123.js',
+        UploadId: 'upload-9',
+      });
+      mockUpload.uploadId = undefined;
+    });
+
+    it('keeps the ORIGINAL part error when the abort itself is refused', async () => {
+      mockS3Send.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'AbortMultipartUpload') {
+          throw Object.assign(new Error('not allowed: s3:AbortMultipartUpload'), {
+            name: 'AccessDenied',
+            $metadata: { httpStatusCode: 403 },
+          });
+        }
+        return headNotFound(cmd);
+      });
+      vi.mocked(statSync).mockReturnValue({
+        size: MULTIPART_UPLOAD_THRESHOLD * 4,
+        isDirectory: () => false,
+      } as ReturnType<typeof statSync>);
+      mockUploadDone.mockRejectedValueOnce(new Error('part 3 failed'));
+      mockUpload.uploadId = 'upload-9';
+
+      await expect(publishFile()).rejects.toThrow('part 3 failed');
+      expect(AbortMultipartUploadCommand).toHaveBeenCalledTimes(1);
+      mockUpload.uploadId = undefined;
+    });
+
+    it('sends no abort when the upload failed before it had an id', async () => {
+      mockS3Send.mockImplementation(headNotFound);
+      vi.mocked(statSync).mockReturnValue({
+        size: MULTIPART_UPLOAD_THRESHOLD * 4,
+        isDirectory: () => false,
+      } as ReturnType<typeof statSync>);
+      mockUploadDone.mockRejectedValueOnce(new Error('CreateMultipartUpload refused'));
+
+      await expect(publishFile()).rejects.toThrow('CreateMultipartUpload refused');
+      expect(AbortMultipartUploadCommand).not.toHaveBeenCalled();
     });
 
     it('uploads a zip archive over the threshold as a multipart upload', async () => {

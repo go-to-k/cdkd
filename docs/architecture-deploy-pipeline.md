@@ -217,7 +217,13 @@ it are skipped.
 Each asset node is run by a publisher in `src/assets/`:
 
 - `FileAssetPublisher` checks for the object with `HeadObject` and skips the
-  upload when the object exists.
+  upload when the object exists. An object of 5 MiB or less is one
+  `PutObject`. A larger one is a multipart upload in 5 MiB parts, as
+  cdk-assets does it. A failed upload, or a Ctrl-C / SIGTERM that `deploy`
+  handles, aborts it. If the asset bucket's default encryption is a
+  customer-managed KMS key, an upload over 5 MiB also needs `kms:Decrypt` on
+  that key, not only `kms:GenerateDataKey`. cdk-assets has the same
+  requirement, and the CDK bootstrap roles already grant it.
 - `DockerAssetPublisher` builds the image and pushes it.
 
 A third class, `AssetPublisher`, is the orchestrator behind the standalone

@@ -1,13 +1,18 @@
 import { createReadStream, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { Readable } from 'node:stream';
-import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  AbortMultipartUploadCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+} from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
-import { safeStringify } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../utils/aws-failure-text.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
@@ -18,6 +23,27 @@ import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
  * (go-to-k/cdkd#6162; see `FileAssetPublisher.putObject`).
  */
 export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
+
+/**
+ * Abort `controller` on SIGINT / SIGTERM while a multipart upload is in flight,
+ * so an interrupted deploy aborts the upload instead of leaving its parts.
+ *
+ * Only for a signal some command already HANDLES (deploy's graceful Ctrl-C,
+ * and the SIGTERM it forwards): adding the first listener for a signal would
+ * replace Node's default exit with "abort the upload and carry on", changing
+ * what Ctrl-C does in a command that never asked for graceful handling. There
+ * a killed process leaves the parts to the bucket's lifecycle rule.
+ *
+ * Returns the function that removes the listeners again.
+ */
+export function abortOnInterrupt(controller: AbortController): () => void {
+  const signals = (['SIGINT', 'SIGTERM'] as const).filter((s) => process.listenerCount(s) > 0);
+  const onSignal = (): void => controller.abort();
+  for (const signal of signals) process.on(signal, onSignal);
+  return () => {
+    for (const signal of signals) process.removeListener(signal, onSignal);
+  };
+}
 
 /**
  * Publishes file assets to S3
@@ -227,13 +253,52 @@ export class FileAssetPublisher {
     this.logger.debug(
       safeMsg`Uploading s3://${bucket}/${key} (${contentLength} bytes) as a multipart upload`
     );
-    // `leavePartsOnError` stays at its default `false`: a failed part aborts
-    // the multipart upload, so no orphaned parts are left billed in the bucket.
-    await new Upload({
+    // The abort is OURS, not lib-storage's (`leavePartsOnError: true`): its
+    // own abort is awaited BEFORE it rethrows, so an AbortMultipartUpload that
+    // fails (no `s3:AbortMultipartUpload`) replaced the part's real error and
+    // left the upload behind anyway. Here the original error always wins and
+    // a failed abort is a debug line; the asset bucket's lifecycle rule is the
+    // backstop for what an abort cannot reach (go-to-k/cdkd#6185).
+    const abortController = new AbortController();
+    const upload = new Upload({
       client,
       params: { Bucket: bucket, Key: key, Body: body, ContentLength: contentLength },
       partSize: MULTIPART_UPLOAD_THRESHOLD,
-    }).done();
+      leavePartsOnError: true,
+      abortController,
+    });
+    const releaseSignals = abortOnInterrupt(abortController);
+    try {
+      await upload.done();
+    } catch (error) {
+      await this.abortMultipartUpload(client, bucket, key, upload.uploadId);
+      throw error;
+    } finally {
+      releaseSignals();
+    }
+  }
+
+  /** Best effort: never throws, so the caller's original error is what surfaces. */
+  private async abortMultipartUpload(
+    client: S3Client,
+    bucket: string,
+    key: string,
+    uploadId: string | undefined
+  ): Promise<void> {
+    // No id: the upload failed before CreateMultipartUpload answered, so
+    // there is nothing in the bucket to abort.
+    if (uploadId === undefined) return;
+    try {
+      await client.send(
+        new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId })
+      );
+    } catch (abortError) {
+      this.logger.debug(
+        safeMsg`Could not abort the multipart upload of s3://${bucket}/${key} ` +
+          safeMsg`(${describeAwsFailure(abortError).detail}); its parts stay until the bucket's ` +
+          `lifecycle rule removes them, or until it is aborted by hand.`
+      );
+    }
   }
 
   /**

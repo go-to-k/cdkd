@@ -1,6 +1,6 @@
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verboseAwareText } from '../../../utils/aws-failure-text.js';
 import {
   scrubResourceRecord,
   redactForState,
@@ -197,7 +197,10 @@ export async function scrubStackRewritePass({
       refuse(
         `the Parameters ${shownStack} passes it could not be resolved to the values a deploy ` +
           `would hand it, so what it inherited is unknown`,
-        `Re-run cdkd scrub with --verbose to see which value failed to resolve, and fix that.`
+        verboseAwareText(
+          'Re-run cdkd scrub with --verbose to see which value failed to resolve, and fix that.',
+          'The debug output above shows which value failed to resolve; fix that.'
+        )
       );
       continue;
     }
