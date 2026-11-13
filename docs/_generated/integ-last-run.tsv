@@ -330,7 +330,7 @@ rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph cle
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
-rds-dbinstance-snapshot-restore	2026-11-13T00:53:22Z	PASS	3425	verify.sh	rc ok, orph clean (#5640 snapshot + PITR restore, PR #6174 final head)
+rds-dbinstance-snapshot-restore	2026-11-13T03:32:03Z	PASS	3529	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176)
 rds-express-cluster	2026-11-11T14:15:04Z	PASS	1405	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-11-10T17:28:58Z	PASS	1239	verify.sh	rc ok, orph clean; own bucket
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean
