@@ -33,23 +33,20 @@ practical details of running the two together. The flag reference is in
    aws-emulator
    ```
 
-2. Bootstrap cdkd's storage in it
+2. Deploy your stack
 
-   This creates cdkd's state bucket and asset storage in the emulator.
-
-   ```bash
-   cdkd bootstrap --aws-emulator
-   ```
-
-3. Deploy your stack
-
-   Resources and file assets go to the emulator.
+   Resources and file assets go to the emulator. On an emulator with no cdkd
+   state bucket, the deploy bootstraps it first: it creates the state bucket
+   and the asset storage without a prompt and prints one info line. A
+   restarted emulator starts empty, so the next deploy bootstraps it again.
+   An explicit `cdkd bootstrap --aws-emulator` still works, but you do not
+   need it.
 
    ```bash
    cdkd deploy MyStack --aws-emulator
    ```
 
-4. Run your code locally against what you deployed
+3. Run your code locally against what you deployed
 
    `--from-state` reads the deployed names (table, bucket, queue) from cdkd's
    state in the emulator and passes them to the container as environment
@@ -60,13 +57,13 @@ practical details of running the two together. The flag reference is in
    cdkd local start-api --from-state --aws-emulator --watch --port 3000
    ```
 
-5. Edit, and run again
+4. Edit, and run again
 
    `cdkd local` reads your app's current code each time it runs, and
    `start-api --watch` reloads on a save. You redeploy only when the
    infrastructure changes.
 
-6. Clean up
+5. Clean up
 
    Stopping the emulator also discards everything in it, because it keeps
    its resources in memory.
@@ -419,6 +416,24 @@ that stack and deploy it again once.
 Changed in v0.343.0: cdkd creates REST APIs through the SDK provider. A REST
 API deployed into the emulator by an earlier release went through Cloud
 Control.
+
+### A large single upload fails
+
+AWS Emulator refuses a single `PutObject` of 16 MiB or more: the request fails
+with HTTP 413 or a reset connection. cdkd uploads a file asset larger than
+5 MiB as a multipart upload, so asset publishing is not affected. A tool or
+handler that sends one large `PutObject` is; use a multipart upload, such as
+the SDKs' managed uploaders.
+
+### A Python function fails with `No module named '_signal'`
+
+A Python function that the emulator runs itself, in its embedded runtime, can
+fail with `No module named '_signal'`. The provider function of
+`s3deploy.BucketDeployment` (`Custom::CDKBucketDeployment`) is one example.
+This is a limit of the emulator's runtime, reported in the
+[AWS Emulator issue tracker](https://github.com/aws/aws-emulator/issues). Run
+a function of your own through `cdkd local invoke`, which uses the official
+Lambda runtime image, instead of invoking it in the emulator.
 
 ### A Docker image asset is refused
 
