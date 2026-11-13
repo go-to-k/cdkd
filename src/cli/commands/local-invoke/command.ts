@@ -838,6 +838,7 @@ export async function resolveContainerImagePlan(
       // `docker build` and verify the deterministic tag is already
       // cached. Default `true` (build as usual). Closes #233.
       noBuild: options.build === false,
+      workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
     });
   } else {
     // ECR-pull fallback. Surface a clear error when the URI isn't an

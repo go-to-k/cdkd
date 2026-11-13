@@ -102,6 +102,10 @@ export async function resolveAgentCoreImage(
           assetOutdir: assemblyDir,
           architecture,
           noBuild: options.build === false,
+          workload: {
+            logicalId: resolved.logicalId,
+            cdkPath: readCdkPathOrUndefined(resolved.resource),
+          },
         });
       }
     }

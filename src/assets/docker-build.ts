@@ -1,3 +1,4 @@
+import { dockerRegistryEnv, type AwsEmulatorWorkload } from 'cdk-local/internal';
 import { injectedAwsRegionOverride } from '../utils/injected-aws-region.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import {
@@ -131,6 +132,12 @@ export interface DockerContextResolveOptions {
  */
 
 export interface BuildDockerImageOptions {
+  /**
+   * The workload the image is built for. Under `--aws-emulator` the build's
+   * docker config holds no ECR credential unless a `"real-aws"` exception
+   * names ECR for it (go-to-k/cdkd#6187, mirroring cdk-local#918).
+   */
+  workload?: AwsEmulatorWorkload;
   /**
    * Local image tag (`--tag`) for `directory` mode. The caller chooses a
    * deterministic tag so subsequent runs hit Docker's layer cache (the
@@ -335,7 +342,7 @@ export async function buildDockerImage(
       const regionOverride = injectedAwsRegionOverride();
       result = await spawnStreaming(cmd, args, {
         cwd,
-        ...(regionOverride && { env: regionOverride }),
+        env: { ...dockerRegistryEnv(options.workload), ...regionOverride },
       });
     } catch (err) {
       // `args`, NOT `source.executable`: the composer's spawn-refusal repair
@@ -435,7 +442,7 @@ export async function buildDockerImage(
       // BUILDX_NO_DEFAULT_ATTESTATIONS=1 matches `cdk-assets-lib` — without
       // this, BuildKit/Buildx attaches provenance attestation manifests
       // that ECR's single-arch pull path rejects.
-      env: { BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
+      env: { ...dockerRegistryEnv(options.workload), BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
     });
   } catch (err) {
     // `runDockerStreaming` spawns with exactly `buildArgs`, so the index in a

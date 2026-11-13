@@ -509,7 +509,7 @@ guarantee.
 | `--from-state` / `--from-cfn-stack` names | Per resource type: an excepted service's resources come from the real copy |
 | `${AWS::AccountId}` lookups | `Parameters` excepts `STS` |
 | `--role-arn`, `--assume-role`, `--profile` resolution (STS) | Always: they establish the real identity |
-| The ECR login and pull of a deployed image | That workload excepts `ECR` |
+| The ECR login and pull of a deployed image | That workload excepts `ECR` (otherwise the pull is refused) |
 | An AgentCore `fromS3` code bundle | That runtime excepts `S3` |
 | A literal layer ARN | That function excepts `LAMBDA` |
 
@@ -527,6 +527,18 @@ Names follow each workload's own exceptions: per function (`local invoke`,
 `local start-api`), per runtime (`local invoke-agentcore`) and per container
 (`local run-task`, `local start-service`, `local start-alb`). A read for no
 workload in particular follows the `Parameters` exceptions alone.
+
+Without that exception, a deployed image in ECR is refused before any request
+leaves the machine: its URI always names the real registry host, and AWS
+Emulator serves no registry Docker can pull from. The error names
+`AWS_ENDPOINT_URL_ECR`; a cached image still runs with `--no-pull`. Under the
+same condition every `docker pull` and `docker build` cdkd starts uses a
+per-run Docker client config with no credential for any ECR host (the host's
+`auths`, `credHelpers` and `credsStore` entries for ECR hosts and
+`public.ecr.aws`, and those in `DOCKER_AUTH_CONFIG`, are left out; podman's
+`REGISTRY_AUTH_FILE` points at it too), so the host's credential helper never
+answers a request to real ECR. `docker run` of an ECR image carries
+`--pull never`, since the image was pulled or verified beforehand.
 
 #### Limits
 

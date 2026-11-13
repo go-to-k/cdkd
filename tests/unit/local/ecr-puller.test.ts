@@ -1790,15 +1790,16 @@ describe('pullEcrImage in AWS Emulator mixed mode: per workload (go-to-k/cdkd#61
     expect(endpointOf(stsConstructorMock)).toBeUndefined();
   });
 
-  it('an unmarked workload stays on the emulator: its endpoint and keys', async () => {
-    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' } });
-    expect(endpointOf(ecrConstructorMock)).toBe(OVERRIDE.endpoint);
-    expect(keyOf(ecrConstructorMock)).toBe(OVERRIDE.credentials.accessKeyId);
-  });
-
-  it('the two sides keep separate caller-identity caches', async () => {
-    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' } });
-    await pullEcrImage(URI, { skipPull: false, workload: { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA' } });
-    expect(stsSendMock.mock.calls.filter((c) => c[0]._kind === 'GetCallerIdentity')).toHaveLength(2);
+  it('an unmarked workload is refused before any AWS call or docker spawn (#6187)', async () => {
+    const err = await pullEcrImage(URI, {
+      skipPull: false,
+      workload: { logicalId: 'FnB5678', cdkPath: 'MyStack/FnB' },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('AWS_ENDPOINT_URL_ECR');
+    expect((err as Error).message).toContain('--no-pull');
+    expect(stsConstructorMock).not.toHaveBeenCalled();
+    expect(ecrConstructorMock).not.toHaveBeenCalled();
+    expect(runDockerMock).not.toHaveBeenCalled();
   });
 });

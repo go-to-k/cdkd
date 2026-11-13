@@ -146,6 +146,17 @@ describe('runDetached', () => {
     expect(args.slice(imageIdx + 1)).toEqual(['arg1', 'arg2', 'cmd1', 'cmd2']);
   });
 
+  it('carries --pull never before the image for an ECR image, and not for others (#6187)', async () => {
+    const ecr = '123456789012.dkr.ecr.us-east-1.amazonaws.com/app:1';
+    await runDetached({ image: ecr, mounts: [], env: {}, cmd: [], hostPort: 9000 });
+    const args = lastArgs();
+    const i = args.indexOf(ecr);
+    expect(args.slice(i - 2, i)).toEqual(['--pull', 'never']);
+
+    await runDetached({ image: 'my-image:latest', mounts: [], env: {}, cmd: [], hostPort: 9000 });
+    expect(lastArgs()).not.toContain('--pull');
+  });
+
   it('omits --entrypoint when entryPoint is empty []', async () => {
     await runDetached({
       image: 'my-image:latest',

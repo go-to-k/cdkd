@@ -1,3 +1,4 @@
+import { noImplicitEcrPullArgs } from 'cdk-local/internal';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
@@ -369,7 +370,9 @@ async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
     entryPointTail = opts.entryPoint.slice(1);
   }
 
-  args.push(opts.image, ...entryPointTail, ...opts.cmd);
+  // ECR images are pulled or cache-verified by `pullEcrImage` beforehand; the
+  // daemon must never pull one itself with the host's credentials (#6187).
+  args.push(...noImplicitEcrPullArgs(opts.image), opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
   // ONE verdict about this argv, on both channels. This line used to run a

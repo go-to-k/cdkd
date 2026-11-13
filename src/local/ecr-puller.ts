@@ -13,7 +13,11 @@ import {
 } from '../utils/docker-cmd.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { runWithRealAws } from '../utils/aws-client-defaults.js';
-import type { AwsEmulatorWorkload } from 'cdk-local/internal';
+import {
+  dockerRegistryEnv,
+  isAwsServiceRoutedToEmulator,
+  type AwsEmulatorWorkload,
+} from 'cdk-local/internal';
 import { realAwsException } from './local-aws-wiring.js';
 import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
 
@@ -270,6 +274,14 @@ function isCredentialFresh(creds: TempCredentials): boolean {
   return creds.expiration.getTime() - Date.now() > STS_CREDENTIAL_SAFETY_MARGIN_MS;
 }
 
+/** The refusal for an unmarked ECR pull under `--aws-emulator`. */
+export const ECR_EMULATOR_REFUSAL = (image: string): string =>
+  `--aws-emulator: image ${image} is in a real ECR registry, and ECR is ` +
+  'not excepted to real AWS for this workload, so it is not pulled (AWS Emulator serves no registry ' +
+  'docker can pull from). To pull it from real ECR with your real identity, except ECR for the ' +
+  'workload in the --env-vars file ("AWS_ENDPOINT_URL_ECR": "real-aws", under "Parameters" or the ' +
+  "workload's own section); or pull the image yourself and pass --no-pull.";
+
 /**
  * Pull (or verify locally cached) a container image from ECR.
  *
@@ -331,6 +343,18 @@ async function pullEcrImageOnSide(
     logger.info(`Skipping ECR pull (--no-pull). Verifying ${canonicalUri} is in local cache...`);
     await verifyImageInLocalCache(canonicalUri);
     return canonicalUri;
+  }
+
+  // Under --aws-emulator, unless a "real-aws" exception names ECR for this
+  // workload, refuse before any AWS call or docker spawn (go-to-k/cdkd#6187,
+  // mirroring go-to-k/cdk-local#918). An ECR URI always names the REAL registry
+  // host and AWS Emulator serves no registry docker can reach, so `docker
+  // login` / `docker pull` could only reach real ECR: with the emulator's
+  // token it is refused there, and the host's docker credential helper would
+  // answer the pull with the real identity. A cached image still runs with
+  // `--no-pull` (above).
+  if (side === 'default' && isAwsServiceRoutedToEmulator('ECR', options.workload)) {
+    throw new LocalInvokeBuildError(ECR_EMULATOR_REFUSAL(displayIdent(canonicalUri)));
   }
 
   // Look up the caller's identity (cached per region — invariant for the
@@ -462,8 +486,12 @@ async function pullEcrImageOnSide(
     // explicit credentials: the login must be the role's.
     ...(assumed && { credentials: assumed }),
   });
+  // The host's own docker config for the login and the pull: this workload
+  // excepts ECR (or there is no --aws-emulator), so the default `Parameters`
+  // answer of `runDocker*` must not withhold its credentials.
+  const dockerEnv = dockerRegistryEnv(options.workload);
   try {
-    await ecrLogin(ecr, {
+    await ecrLogin(ecr, dockerEnv, {
       accountId: parsed.accountId,
       region: parsed.region,
       // The host `docker pull` below targets, taken off the SAME string it
@@ -479,7 +507,7 @@ async function pullEcrImageOnSide(
   logger.info(`Pulling ${canonicalUri}...`);
   const pullArgs = ['pull', canonicalUri];
   try {
-    await runDockerForeground(pullArgs);
+    await runDockerForeground(pullArgs, { env: dockerEnv });
   } catch (err) {
     throw new LocalInvokeBuildError(
       `docker pull ${canonicalUri} failed: ${describeDockerFailure(err, pullArgs)}`,
@@ -574,6 +602,7 @@ async function assumeRoleForEcr(
  */
 async function ecrLogin(
   client: ECRClient,
+  dockerEnv: Record<string, string | undefined>,
   target: { accountId: string; region: string; registryHost: string }
 ): Promise<void> {
   const { accountId, region, registryHost } = target;
@@ -611,7 +640,7 @@ async function ecrLogin(
 
   const loginArgs = ['login', '--username', username, '--password-stdin', endpoint];
   try {
-    await runDockerStreaming(loginArgs, { input: password });
+    await runDockerStreaming(loginArgs, { input: password, env: dockerEnv });
   } catch (err) {
     throw new LocalInvokeBuildError(
       `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`,

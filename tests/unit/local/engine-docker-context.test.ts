@@ -264,6 +264,7 @@ const sites: Array<{
       resolveAgentCoreImage(
         {
           logicalId: 'AgentRuntime',
+          resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
           containerUri: IMAGE_URI,
           stack: { stackName: 'StageStack', assetManifestPath: a.manifestPath },
         } as never,
