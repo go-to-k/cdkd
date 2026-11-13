@@ -117,6 +117,35 @@ export async function resolvePlaceholderAccount(
 }
 
 /**
+ * The warning the bare `--assume-task-role` prints when the task role's ARN is
+ * the placeholder built from its LOGICAL id (go-to-k/cdkd#6189): that names
+ * the deployed role only when its name is the logical id, and a role CDK
+ * names itself is deployed as `<Stack>-<LogicalId>-<suffix>`.
+ * `stateSourceGiven` picks the remedy: without a state source, pass one; with
+ * one, its record lacks the role.
+ *
+ * @internal exported for unit tests.
+ */
+export function taskRoleNameIsLogicalIdWarning(
+  logicalId: string,
+  stateSourceGiven: boolean
+): string {
+  const id = displayIdent(logicalId);
+  if (!stateSourceGiven) {
+    return (
+      `--assume-task-role: TaskRoleArn references the same-stack role ${id}, and without --from-state (cdkd-deployed) ` +
+      `or --from-cfn-stack (cdk-deployed) cdkd cannot read the name it was deployed under, so it assumes a role named ${id}. ` +
+      `A role CDK names for you is deployed as '<Stack>-<LogicalId>-<suffix>', where AssumeRole fails: ` +
+      `pass --from-state / --from-cfn-stack, or the ARN explicitly: --assume-task-role '<arn>'.`
+    );
+  }
+  return (
+    `--assume-task-role: the state source has no record of the task role ${id}, so cdkd assumes a role named ${id}. ` +
+    `Deploy the stack first, or pass the ARN explicitly: --assume-task-role '<arn>'.`
+  );
+}
+
+/**
  * Assume `roleArn` and return temp credentials. Mirrors the same flow
  * `cdkd local invoke --assume-role` uses.
  *

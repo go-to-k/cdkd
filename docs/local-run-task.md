@@ -250,9 +250,18 @@ credentials and its aliases work as before. Two things change:
 
 **A `TaskRoleArn` cdkd cannot resolve.** The bare `--assume-task-role` needs
 a `TaskRoleArn` that is a literal ARN or a reference to an `AWS::IAM::Role`
-in the same stack. cdkd turns the reference into
-`arn:aws:iam::<account>:role/<RoleLogicalId>`, using your account ID. For any
-other shape the command stops with an error telling you to pass the ARN.
+in the same stack. For any other shape the command stops with an error telling
+you to pass the ARN.
+
+A role CDK names for you is deployed as `<Stack>-<LogicalId>-<suffix>`, and
+only the deployed stack knows that name. With `--from-state` or
+`--from-cfn-stack`, cdkd reads the role's deployed ARN from there. Without a
+state source, cdkd turns the reference into
+`arn:aws:iam::<account>:role/<RoleLogicalId>`, using your account ID. That is
+the right role only when its name is its logical ID, so cdkd prints a warning,
+and AssumeRole fails for a role CDK named. Pass `--from-state` /
+`--from-cfn-stack`, or the ARN itself. cdkd prints the same warning when the
+state source has no record of the role.
 
 **The `--profile` credentials file.** cdkd writes the file to a temporary
 directory with mode `0600` and removes it when the run ends. Under `--detach`

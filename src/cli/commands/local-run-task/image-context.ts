@@ -99,11 +99,16 @@ export async function buildEcsImageResolutionContext(
   if (!candidate) return {};
 
   const needs = detectEcsImageResolutionNeeds(candidate);
+  // The bare `--assume-task-role` reads the task role's deployed ARN from the
+  // state record (go-to-k/cdkd#6189); no other path reads the task role.
+  const wantsStateForTaskRole =
+    !!stateProvider && needs.needsTaskRoleState && options.assumeTaskRole === true;
   if (
     !needs.needsPseudoParameters &&
     !needs.needsStateResources &&
     !needs.needsEnvOrSecretSubstitution &&
-    !needs.needsAssetRepoMarker
+    !needs.needsAssetRepoMarker &&
+    !wantsStateForTaskRole
   ) {
     return {};
   }
@@ -160,7 +165,8 @@ export async function buildEcsImageResolutionContext(
     };
   }
 
-  const wantsState = needs.needsStateResources || needs.needsEnvOrSecretSubstitution;
+  const wantsState =
+    needs.needsStateResources || needs.needsEnvOrSecretSubstitution || wantsStateForTaskRole;
   if (stateProvider && wantsState) {
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {

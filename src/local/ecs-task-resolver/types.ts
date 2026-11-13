@@ -36,10 +36,13 @@ export interface ResolvedEcsTask {
   /**
    * Resolved task role ARN. Surfaced as either:
    *   - a flat string ARN passed through verbatim from the template, OR
+   *   - the deployed role's ARN when the `TaskRoleArn` is a `Ref` /
+   *     `Fn::GetAtt` against an `AWS::IAM::Role` in the same stack and the
+   *     state source's record holds that role (go-to-k/cdkd#6189), OR
    *   - a synth-time placeholder of the shape
-   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
-   *     `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against an `AWS::IAM::Role`
-   *     in the same stack. The CLI substitutes the placeholder account
+   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` for the same
+   *     reference with no such record ({@link taskRoleNameIsLogicalId} is
+   *     then set). The CLI substitutes the placeholder account
    *     segment lazily via STS `GetCallerIdentity` when (and only when)
    *     `--assume-task-role` is used in its bare form.
    *   - `undefined` when the template's `TaskRoleArn` is missing OR is an
@@ -48,6 +51,12 @@ export interface ResolvedEcsTask {
    *     intrinsic shape — see `resolveRoleArn`).
    */
   taskRoleArn?: string;
+  /**
+   * The role's logical id, set when {@link taskRoleArn} is the placeholder
+   * built FROM it: no state record named the deployed role, so the ARN is
+   * right only if the role's name is its logical id (go-to-k/cdkd#6189).
+   */
+  taskRoleNameIsLogicalId?: string;
   /** Resolved execution role ARN. Follows the same shape as `taskRoleArn`. */
   executionRoleArn?: string;
   containers: ResolvedEcsContainer[];
@@ -264,4 +273,11 @@ export interface EcsImageResolutionNeeds {
    * cannot recognize, and only the marker knows the actual name.
    */
   needsAssetRepoMarker: boolean;
+  /**
+   * Any task's `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against a same-stack
+   * `AWS::IAM::Role` (go-to-k/cdkd#6189). Only the state record knows that
+   * role's deployed name, so the CLI loads state for it when the bare
+   * `--assume-task-role` is passed with a state source.
+   */
+  needsTaskRoleState: boolean;
 }

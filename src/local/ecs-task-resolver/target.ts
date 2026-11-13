@@ -9,7 +9,11 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { parseContainerDefinition, buildSubstitutionContextFromImageContext } from './container.js';
 import { pickString } from './pick.js';
-import { resolveRoleArn } from './role-arn.js';
+import {
+  resolveRoleArn,
+  sameStackRoleLogicalId,
+  TASK_ROLE_ACCOUNT_PLACEHOLDER,
+} from './role-arn.js';
 import type { ResolvedEcsTask, EcsImageResolutionContext, ParsedEcsTarget } from './types.js';
 import { parseVolume } from './volume.js';
 
@@ -228,6 +232,13 @@ function extractTaskDefinitionProperties(
     warnings,
   };
   if (taskRoleArn !== undefined) out.taskRoleArn = taskRoleArn;
+  const taskRoleLogicalId = sameStackRoleLogicalId(props['TaskRoleArn'], resources);
+  if (
+    taskRoleLogicalId !== undefined &&
+    taskRoleArn === `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${taskRoleLogicalId}`
+  ) {
+    out.taskRoleNameIsLogicalId = taskRoleLogicalId;
+  }
   if (executionRoleArn !== undefined) out.executionRoleArn = executionRoleArn;
   if (runtimePlatform !== undefined) out.runtimePlatform = runtimePlatform;
   return out;
