@@ -70,7 +70,11 @@ export { cleanupEcsRun } from './ecs-task-runner/cleanup.js';
 export { buildDependencyGraph, topoSort } from './ecs-task-runner/containers.js';
 export { buildDockerRunArgs } from './ecs-task-runner/docker-run-args.js';
 
-import { getActiveWorkloadAwsWiring, warnAwsEmulatorStateSourceHint } from './local-aws-wiring.js';
+import {
+  getActiveWorkloadAwsWiring,
+  resolveContainerRegion,
+  warnAwsEmulatorStateSourceHint,
+} from './local-aws-wiring.js';
 import {
   removeNamespaceForwarder,
   startNamespaceForwarder,
@@ -364,6 +368,20 @@ export async function runEcsTask(
     options.hostGatewayExtraHosts
   );
 
+  // A deployed ECS task always has `AWS_REGION`, so every container gets the
+  // region cdkd itself resolved: `--region`, the host `AWS_REGION` /
+  // `AWS_DEFAULT_REGION`, `--stack-region` / the stack's own region, the state
+  // record's, then the profile's (go-to-k/cdkd#6203). Only `--region` used to
+  // reach the container, so an environment-agnostic stack whose region lived in
+  // the shell or `~/.aws/config` ran region-less. The value still sits under
+  // the template / `--env-vars` layers (`buildMetadataEnv`).
+  const containerRegion = await resolveContainerRegion({
+    region: options.region,
+    stackRegion: options.stackRegion ?? task.stack.region,
+    stateRegion: options.stateRecordRegion,
+    profile: options.profile,
+  });
+
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
@@ -404,7 +422,7 @@ export async function runEcsTask(
       containerHost: options.containerHost,
       roleArn: options.taskRoleArn,
       platformOverride: options.platformOverride,
-      region: options.region,
+      region: containerRegion,
       sidecarIp: state.network.sidecarIp,
       ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
       ...(mergedAddHostFlags.length > 0 ? { addHostFlags: mergedAddHostFlags } : {}),

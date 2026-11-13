@@ -316,6 +316,27 @@ vi.mock('cdk-local/internal', async () => {
   };
 });
 
+// go-to-k/cdkd#6203: the profile / `~/.aws/config` region the container
+// region chain samples last. Undefined by default so no case reads the host's
+// real config.
+const regionStubs = vi.hoisted(() => ({
+  profileRegion: undefined as string | undefined,
+  /** The profile each sample was made with. */
+  profiles: [] as Array<string | undefined>,
+}));
+vi.mock('../../../src/cli/region-options.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/cli/region-options.js')>(
+    '../../../src/cli/region-options.js'
+  );
+  return {
+    ...actual,
+    resolveSdkDefaultRegion: async (profile?: string) => {
+      regionStubs.profiles.push(profile);
+      return regionStubs.profileRegion;
+    },
+  };
+});
+
 // go-to-k/cdkd#6132 / #6142: the forwarder image pull the start loop runs
 // before a namespace-owning forwarder starts.
 const wiringStubs = vi.hoisted(() => ({
@@ -2682,5 +2703,90 @@ describe('runEcsTask — namespace-owning loopback forwarder (go-to-k/cdkd#6142)
     const [workload] = runs();
     expect(runs()).toHaveLength(1);
     expect(workload![workload!.indexOf('--network') + 1]).toBe('cdkd-local-task-fake');
+  });
+});
+
+// go-to-k/cdkd#6203: a deployed ECS task always has `AWS_REGION`; only
+// `--region` used to reach the container, so a region from the shell or
+// `~/.aws/config` never did and the task's first SDK call failed.
+describe('runEcsTask — container region (go-to-k/cdkd#6203)', () => {
+  const KEYS = ['AWS_REGION', 'AWS_DEFAULT_REGION'] as const;
+  let saved: Record<string, string | undefined>;
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
+    regionStubs.profileRegion = undefined;
+    networkStubs.buildMetadataEnv.mockClear();
+    captured.responder = (_cmd, args) => {
+      if (args[0] === 'run') return { stdout: 'c1\n' };
+      if (args[0] === 'wait') return { stdout: '0\n' };
+      return { stdout: '' };
+    };
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    regionStubs.profileRegion = undefined;
+  });
+
+  async function regionHandedToContainer(
+    over: Partial<RunEcsTaskOptions> = {},
+    stackRegion?: string
+  ): Promise<string | undefined> {
+    networkStubs.buildMetadataEnv.mockClear();
+    captured.calls = [];
+    const task = makeTask();
+    if (stackRegion !== undefined) task.stack = { ...task.stack, region: stackRegion };
+    await runEcsTask(task, baseOptions(over), createEcsRunState());
+    const call = networkStubs.buildMetadataEnv.mock.calls[0]![0] as { region?: string };
+    const run = dockerRunCalls()[0]!.args;
+    if (call.region !== undefined) expect(run).toContain(`AWS_REGION=${call.region}`);
+    return call.region;
+  }
+
+  it('the profile / ~/.aws/config region reaches the container with nothing else set', async () => {
+    regionStubs.profileRegion = 'us-east-1';
+    expect(await regionHandedToContainer()).toBe('us-east-1');
+  });
+
+  it('the host AWS_REGION reaches the container', async () => {
+    process.env['AWS_REGION'] = 'eu-west-1';
+    regionStubs.profileRegion = 'us-east-1';
+    expect(await regionHandedToContainer()).toBe('eu-west-1');
+  });
+
+  it('the host AWS_DEFAULT_REGION reaches the container when AWS_REGION is unset', async () => {
+    process.env['AWS_DEFAULT_REGION'] = 'eu-central-1';
+    expect(await regionHandedToContainer()).toBe('eu-central-1');
+  });
+
+  it('--region wins over the host variables and is folded', async () => {
+    process.env['AWS_REGION'] = 'eu-west-1';
+    expect(await regionHandedToContainer({ region: 'AP-NORTHEAST-1' })).toBe('ap-northeast-1');
+  });
+
+  it("the stack's own region, then the state record's, sit above the profile", async () => {
+    regionStubs.profileRegion = 'us-east-1';
+    expect(await regionHandedToContainer({}, 'us-west-2')).toBe('us-west-2');
+    expect(await regionHandedToContainer({ stateRecordRegion: 'sa-east-1' })).toBe('sa-east-1');
+  });
+
+  it("the stack's own region wins over the state record's", async () => {
+    expect(await regionHandedToContainer({ stateRecordRegion: 'sa-east-1' }, 'us-west-2')).toBe(
+      'us-west-2'
+    );
+  });
+
+  it('samples the --profile region with that profile', async () => {
+    regionStubs.profileRegion = 'us-east-1';
+    regionStubs.profiles.length = 0;
+    expect(await regionHandedToContainer({ profile: 'p' })).toBe('us-east-1');
+    expect(regionStubs.profiles).toEqual(['p']);
+  });
+
+  it('leaves the container region-less when nothing names a region', async () => {
+    expect(await regionHandedToContainer()).toBeUndefined();
   });
 });
