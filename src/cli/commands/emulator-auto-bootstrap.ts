@@ -4,6 +4,7 @@ import { GetCallerIdentityCommand, type STSClient } from '@aws-sdk/client-sts';
 import { awsEndpointOverrideActive } from '../../utils/aws-client-defaults.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
 import { getDefaultStateBucketName, resolveStateBucketWithSource } from '../config-loader.js';
 import { configureStateBucket, createStateBucket } from './bootstrap-state-bucket.js';
 
@@ -62,10 +63,27 @@ export async function ensureAwsEmulatorStateBucket(args: {
     region: args.region,
     report: (message: string) => logger.debug(message),
   };
-  await createStateBucket(setup);
-  await configureStateBucket(setup);
+  try {
+    try {
+      await createStateBucket(setup);
+    } catch (error) {
+      // Two runs against one fresh emulator both see NotFound; the second
+      // CreateBucket loses the race, and the bucket is there all the same.
+      const code = (error as { name?: string }).name;
+      if (code !== 'BucketAlreadyOwnedByYou' && code !== 'BucketAlreadyExists') throw error;
+    }
+    await configureStateBucket(setup);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new CdkdError(
+      safeMsg`AWS Emulator auto-bootstrap of state bucket ${bucketName} failed: ${msg}. ` +
+        'Run `cdkd bootstrap --aws-emulator --force` to retry.',
+      'AWS_EMULATOR_BOOTSTRAP_FAILED',
+      error instanceof Error ? error : undefined
+    );
+  }
   logger.info(
-    safeMsg`AWS Emulator had no cdkd bootstrap; bootstrapped it (state bucket ${bucketName}; asset storage is created per region as stacks deploy).`
+    safeMsg`AWS Emulator had no cdkd bootstrap; bootstrapped it (state bucket ${bucketName}).`
   );
   return bucketName;
 }

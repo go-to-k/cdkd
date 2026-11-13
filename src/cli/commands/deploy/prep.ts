@@ -34,13 +34,16 @@ export async function prepareStateInfra(args: {
 }> {
   const { options, region, effectiveRegion, awsClients, logger } = args;
   // go-to-k/cdkd#6186: under `--aws-emulator` only, create the state bucket
-  // when the emulator has none (a no-op on real AWS).
-  await ensureAwsEmulatorStateBucket({
-    cliBucket: options.stateBucket,
-    region,
-    s3: awsClients.s3,
-    sts: awsClients.sts,
-  });
+  // when the emulator has none (a no-op on real AWS). Never under --dry-run,
+  // which creates nothing.
+  if (!options.dryRun) {
+    await ensureAwsEmulatorStateBucket({
+      cliBucket: options.stateBucket,
+      region,
+      s3: awsClients.s3,
+      sts: awsClients.sts,
+    });
+  }
   // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
   // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback).
   const resolvedStateBucket = await resolveStateBucketWithDefaultAndSource(

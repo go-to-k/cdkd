@@ -93,13 +93,16 @@ export async function importCommand(
   const region = effectiveRegion.region;
 
   // go-to-k/cdkd#6186: under `--aws-emulator` only, create the state bucket
-  // when the emulator has none (a no-op on real AWS).
-  await ensureAwsEmulatorStateBucket({
-    cliBucket: options.stateBucket,
-    region,
-    s3: getAwsClients().s3,
-    sts: getAwsClients().sts,
-  });
+  // when the emulator has none (a no-op on real AWS). Never under --dry-run,
+  // which creates nothing.
+  if (!options.dryRun) {
+    await ensureAwsEmulatorStateBucket({
+      cliBucket: options.stateBucket,
+      region,
+      s3: getAwsClients().s3,
+      sts: getAwsClients().sts,
+    });
+  }
   const stateBucket = await resolveStateBucketWithDefault(
     options.stateBucket,
     region,

@@ -120,7 +120,7 @@ describe('ensureAwsEmulatorStateBucket', () => {
     });
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toContain(
-      'AWS Emulator had no cdkd bootstrap; bootstrapped it (state bucket cdkd-state-000000000000'
+      'AWS Emulator had no cdkd bootstrap; bootstrapped it (state bucket cdkd-state-000000000000).'
     );
   });
 
@@ -149,6 +149,40 @@ describe('ensureAwsEmulatorStateBucket', () => {
     expect(created).toBeUndefined();
     expect(c.s3Send).toHaveBeenCalledTimes(1);
     expect(info).not.toHaveBeenCalled();
+  });
+
+  it('emulator: a lost CreateBucket race (BucketAlreadyOwnedByYou) still configures the bucket', async () => {
+    activateEmulator();
+    const c = fakeClients(notFound);
+    c.s3Send.mockImplementation(async (cmd: unknown) => {
+      c.s3Calls.push(cmd);
+      if (cmd instanceof HeadBucketCommand) throw notFound;
+      if (cmd instanceof CreateBucketCommand) throw { name: 'BucketAlreadyOwnedByYou' };
+      return {};
+    });
+    const created = await ensureAwsEmulatorStateBucket({
+      cliBucket: undefined,
+      region: 'us-east-1',
+      s3: c.s3,
+      sts: c.sts,
+    });
+    expect(created).toBe('cdkd-state-000000000000');
+    expect(c.s3Calls.some((cmd) => cmd instanceof PutBucketVersioningCommand)).toBe(true);
+  });
+
+  it('emulator: a failed create names the bucket and the retry command', async () => {
+    activateEmulator();
+    const c = fakeClients(notFound);
+    c.s3Send.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof HeadBucketCommand) throw notFound;
+      if (cmd instanceof CreateBucketCommand) throw new Error('boom');
+      return {};
+    });
+    await expect(
+      ensureAwsEmulatorStateBucket({ cliBucket: undefined, region: 'us-east-1', s3: c.s3, sts: c.sts })
+    ).rejects.toThrow(
+      /AWS Emulator auto-bootstrap of state bucket cdkd-state-000000000000 failed: boom.*cdkd bootstrap --aws-emulator --force/
+    );
   });
 
   it('emulator: an error other than not-found is left to the preflight (no create)', async () => {
