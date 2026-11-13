@@ -163,6 +163,7 @@ describe('the three call sites hand the shim the APP outdir as the bound', () =>
         resolveAgentCoreImage(
           {
             logicalId: 'AgentRuntime',
+            resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
             containerUri: IMAGE_URI,
             stack: { stackName: 'StageStack', assetManifestPath: a.manifestPath },
           } as never,

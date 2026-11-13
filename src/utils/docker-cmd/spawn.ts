@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { dockerRegistryEnv } from 'cdk-local/internal';
 import { getLogger, isStdoutReservedForPayload } from '../logger.js';
 
 /**
@@ -73,7 +74,7 @@ export async function runDockerStreaming(
   args: string[],
   options: RunDockerOptions = {}
 ): Promise<SpawnResult> {
-  return spawnStreaming(getDockerCmd(), args, options);
+  return spawnStreaming(getDockerCmd(), args, withRegistryEnv(options));
 }
 
 /**
@@ -217,7 +218,7 @@ export async function runDockerForeground(
   args: string[],
   options: ForegroundOptions = {}
 ): Promise<void> {
-  return spawnForeground(getDockerCmd(), args, options);
+  return spawnForeground(getDockerCmd(), args, withRegistryEnv(options));
 }
 
 export interface ForegroundOptions {
@@ -352,4 +353,26 @@ function mergeEnv(overrides: Record<string, string | undefined>): NodeJS.Process
     }
   }
   return merged;
+}
+
+/**
+ * `options` with cdk-local's `dockerRegistryEnv()` answer under the caller's
+ * own `env` (go-to-k/cdkd#6187, mirroring go-to-k/cdk-local#918): under
+ * `--aws-emulator` with ECR not excepted, every docker spawn through
+ * `runDocker*` (each `pull` and `build`) holds no credential for an ECR host.
+ * A caller that knows its workload passes `dockerRegistryEnv(workload)` as
+ * `env` to route by that workload's own exceptions instead.
+ */
+function withRegistryEnv<T extends { env?: Record<string, string | undefined> }>(options: T): T {
+  const registry = dockerRegistryEnv();
+  // Outside --aws-emulator (or with ECR excepted) the answer is the host's own
+  // values: leave the spawn exactly as it was.
+  if (
+    registry['DOCKER_CONFIG'] === process.env['DOCKER_CONFIG'] &&
+    registry['DOCKER_AUTH_CONFIG'] === process.env['DOCKER_AUTH_CONFIG'] &&
+    registry['REGISTRY_AUTH_FILE'] === process.env['REGISTRY_AUTH_FILE']
+  ) {
+    return options;
+  }
+  return { ...options, env: { ...registry, ...options.env } };
 }

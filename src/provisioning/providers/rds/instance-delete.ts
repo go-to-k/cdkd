@@ -16,7 +16,7 @@ import {
 } from '../deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from '../db-instance-modify-retry.js';
 import type { RDSProvider } from '../rds-provider.js';
-import { isLiveReadReplica, replicaSourceOf } from './read-replica.js';
+import { declaredReplicaSource, isLiveReadReplica } from './read-replica.js';
 import { RDS_DELETE_WAIT_MS, deleteAutomatedBackupsInput } from './shared.js';
 
 /** The compensation boundary for a DBInstance; see {@link deleteDBCluster}. */
@@ -147,14 +147,14 @@ export async function deleteDBInstanceOnce(
     // go-to-k/cdkd#5640: likewise a read replica, as CloudFormation's delete
     // handler skips the snapshot for one (RDS refuses FinalDBSnapshotIdentifier
     // there; the source keeps the data). Read live, and only for a record
-    // declaring a source, so a standalone delete pays no extra call. A record
+    // declaring a source (an instance's or a Multi-AZ DB cluster's), so a standalone delete pays no extra call. A record
     // that lacks it over a live replica (a `cdkd import` of a replica whose
     // template omits the source) keeps the snapshot, which RDS refuses: the
     // delete fails closed, no data lost. A replica promoted outside cdkd holds
     // its own data now and keeps the snapshot; an unreadable instance keeps it
     // too, so RDS refuses rather than a standalone instance losing its
     // snapshot.
-    if (finalSnapshotId && replicaSourceOf(properties) !== undefined) {
+    if (finalSnapshotId && declaredReplicaSource(properties) !== undefined) {
       const live = await this.describeDBInstance(physicalId).catch((err: unknown) => {
         this.logger.debug(
           maskerOrIdentity(context?.maskSecrets)(

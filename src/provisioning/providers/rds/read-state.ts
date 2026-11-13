@@ -410,6 +410,23 @@ export async function readCurrentStateDBInstance(
         ? liveSource
         : `${ownArn.slice(0, ownArn.lastIndexOf(':') + 1)}${liveSource}`;
   }
+  // go-to-k/cdkd#5640: a Multi-AZ DB cluster replica's source, as the
+  // handler's read maps `ReadReplicaSourceDBClusterIdentifier`; a bare one
+  // takes the replica's own region and account as a `:cluster:` ARN. Not for
+  // a cluster member, which no template declares a source for.
+  const liveClusterSource = inst.ReadReplicaSourceDBClusterIdentifier;
+  if (
+    liveClusterSource !== undefined &&
+    liveClusterSource !== '' &&
+    inst.DBClusterIdentifier === undefined
+  ) {
+    const ownArn = inst.DBInstanceArn;
+    const prefix = ownArn?.startsWith('arn:') === true ? ownArn.split(':').slice(0, 5) : undefined;
+    result['SourceDBClusterIdentifier'] =
+      liveClusterSource.startsWith('arn:') || prefix === undefined || prefix.length < 5
+        ? liveClusterSource
+        : `${prefix.join(':')}:cluster:${liveClusterSource}`;
+  }
   // go-to-k/cdkd#5640: always a list, so a role lost out of band reads as a
   // change against the recorded list (`Status` is not a template member).
   result['AssociatedRoles'] = associatedRolesReadback(inst.AssociatedRoles);

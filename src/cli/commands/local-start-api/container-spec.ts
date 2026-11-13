@@ -490,6 +490,7 @@ export async function resolveContainerImageForStartApi(
       // The containment bound for `source.directory` (go-to-k/cdkd#3503).
       assetOutdir: localBuild.assetOutdir,
       architecture: lambda.architecture,
+      workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
     });
     return { imageRef };
   }
