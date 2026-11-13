@@ -13,7 +13,7 @@ import { loadBootstrapContainerRepo } from '../local-state-loader.js';
 import type { LocalStateProvider } from '../../../local/local-state-provider.js';
 import type { LocalRunTaskOptions } from './types.js';
 import { resolveStackAccountId } from './stack-account.js';
-import { getActiveWorkloadAwsWiring, realAwsException } from '../../../local/local-aws-wiring.js';
+import { stateRoleRecordIsEmulatorSide } from '../../../local/local-aws-wiring.js';
 
 /**
  * Region the cross-stack resolver is scoped to for `cdkd local run-task`
@@ -241,7 +241,7 @@ export async function buildEcsImageResolutionContext(
  * @internal exported for unit tests.
  */
 export function taskRoleRecordIsEmulatorSide(): boolean {
-  return getActiveWorkloadAwsWiring()?.mixed !== undefined && !realAwsException('IAM');
+  return stateRoleRecordIsEmulatorSide();
 }
 
 /**

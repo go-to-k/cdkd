@@ -1,4 +1,6 @@
 import {
+  keepEmulatorIssuedCredentials,
+  localAwsEmulatorActive,
   mixedModeActive,
   resolveContainerRegion,
   setContainerRegion,
@@ -94,9 +96,12 @@ export async function applyLambdaCredentialEnv(
       setContainerRegion(dockerEnv, containerRegion);
       assumeSucceeded = true;
     } catch (err) {
+      // cdkd-raw-beside-safe: the conditional picks between two cdkd LITERALS.
       logger.warn(
         `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${describeLocalAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
-          "Falling back to the developer's shell credentials."
+          (localAwsEmulatorActive()
+            ? "The function runs with the emulator's own keys."
+            : "Falling back to the developer's shell credentials.")
       );
     }
   }
@@ -174,7 +179,7 @@ async function assumeLambdaExecutionRole(
         flag: '--assume-role',
         sessionNamePrefix: 'cdkd-local-invoke',
       });
-      if (emulated) return emulated;
+      if (emulated) return keepEmulatorIssuedCredentials(emulated);
       throw err;
     }
     const creds = response.Credentials;
@@ -184,11 +189,13 @@ async function assumeLambdaExecutionRole(
         'LOCAL_INVOKE_ASSUMEROLE_NO_CREDS'
       );
     }
-    return {
+    // `--aws-emulator`: the emulator issued these, so they replace its keys in
+    // the container instead of being discarded (go-to-k/cdkd#6252).
+    return keepEmulatorIssuedCredentials({
       accessKeyId: creds.AccessKeyId,
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
-    };
+    });
   } finally {
     sts.destroy();
   }
