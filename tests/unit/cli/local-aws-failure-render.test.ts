@@ -409,15 +409,17 @@ describe.each([
 describe.each([
   {
     name: 'local run-task: assumeTaskRole',
-    run: () => assumeTaskRole(ARN, 'us-east-1'),
+    run: () => assumeTaskRole(ARN, 'us-east-1', { realAws: true }),
     needle: `--assume-task-role: STS AssumeRole(${ARN}) failed: `,
   },
   {
     name: 'local run-task: resolvePlaceholderAccount',
     run: () =>
-      resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
-        region: 'us-east-1',
-      } as never),
+      resolvePlaceholderAccount(
+        'arn:aws:iam::${AWS::AccountId}:role/TaskRole',
+        { region: 'us-east-1' } as never,
+        { realAws: true }
+      ),
     needle: "--assume-task-role: STS GetCallerIdentity failed while resolving the task role's account: ",
   },
   {
@@ -462,15 +464,17 @@ describe.each([
 describe.each([
   {
     name: 'local run-task: assumeTaskRole',
-    run: () => assumeTaskRole(ARN, 'us-east-1'),
+    run: () => assumeTaskRole(ARN, 'us-east-1', { realAws: true }),
     expected: /^CdkdError: AssumeRole\(arn:aws:iam::123456789012:role\/ExecRole\) returned no usable credentials\.$/,
   },
   {
     name: 'local run-task: resolvePlaceholderAccount',
     run: () =>
-      resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
-        region: 'us-east-1',
-      } as never),
+      resolvePlaceholderAccount(
+        'arn:aws:iam::${AWS::AccountId}:role/TaskRole',
+        { region: 'us-east-1' } as never,
+        { realAws: true }
+      ),
     expected: /^CdkdError: --assume-task-role: GetCallerIdentity returned no Account; /,
   },
   {

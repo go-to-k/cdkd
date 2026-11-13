@@ -55,10 +55,10 @@ export async function resolvePlaceholderAccount(
   source: StackAccountSource,
   /**
    * Which STS answers (go-to-k/cdkd#6147): the one the role is then assumed
-   * in, since the emulator's account and the real one differ. Defaults to the
-   * `Parameters`-level STS route.
+   * in, since the emulator's account and the real one differ. Required, so a
+   * call site cannot fall back to another route by omission.
    */
-  route: { realAws: boolean } = { realAws: realAwsException('STS') }
+  route: { realAws: boolean }
 ): Promise<string> {
   const { region, profile } = source;
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
@@ -130,7 +130,7 @@ export async function resolvePlaceholderAccount(
 export async function assumeTaskRole(
   roleArn: string,
   region: string | undefined,
-  route: { realAws: boolean } = { realAws: false }
+  route: { realAws: boolean }
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // Both `--assume-task-role <arn>` and the task definition's `TaskRoleArn`
   // (a template literal, passed through verbatim) arrive here unchecked, so the

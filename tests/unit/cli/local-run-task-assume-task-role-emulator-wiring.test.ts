@@ -253,4 +253,21 @@ describe('local run-task --assume-task-role routing (go-to-k/cdkd#6147)', () => 
     expect(runOpts?.taskRoleArn).toBeUndefined();
     expect(runOpts?.mixedModeRealTaskCredentials).toBeUndefined();
   });
+
+  it('mixed mode with no STS exception: a task without a TaskRoleArn still runs (the ignored flag refuses nothing)', async () => {
+    activeWiring.current = mixedWiring();
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const { resolveEcsTaskTarget } = await import('../../../src/local/ecs-task-resolver.js');
+    const base = vi.mocked(resolveEcsTaskTarget).getMockImplementation()?.(
+      ...([] as unknown as Parameters<typeof resolveEcsTaskTarget>)
+    ) as unknown as Record<string, unknown>;
+    vi.mocked(resolveEcsTaskTarget).mockReturnValueOnce({
+      ...base,
+      taskRoleArn: undefined,
+    } as never);
+    const file = envVarsFile({ web: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    const runOpts = await runTask(['--assume-task-role', '--env-vars', file]);
+    expect(runEcsTaskMock).toHaveBeenCalledTimes(1);
+    expect(runOpts?.taskRoleArn).toBeUndefined();
+  });
 });
