@@ -75,7 +75,11 @@ cdkd configures them as follows:
   leaves behind is deleted one day later. S3 rounds each step up to the next
   midnight UTC.
 - The asset bucket is encrypted with AES-256 and has the same account-only
-  policy. It is not versioned.
+  policy. It is not versioned. It aborts incomplete multipart uploads one day
+  after they start, as the CDK bootstrap bucket does, so the parts of an
+  interrupted upload of a file asset over 5 MiB do not accumulate. On an
+  existing bucket `cdkd bootstrap` adds the rule and keeps every rule already
+  there; without the lifecycle permissions it warns and carries on.
 - The ECR repository has immutable tags.
 
 The **bootstrap marker** is a small file in the state bucket that records the
