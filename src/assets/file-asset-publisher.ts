@@ -27,6 +27,7 @@ export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
  * - Existence check (skip if already uploaded)
  * - ZIP packaging for directory assets
  * - Direct file upload for single files
+ * - Multipart upload above MULTIPART_UPLOAD_THRESHOLD (go-to-k/cdkd#6162)
  */
 export class FileAssetPublisher {
   private logger = getLogger().child('FileAssetPublisher');
