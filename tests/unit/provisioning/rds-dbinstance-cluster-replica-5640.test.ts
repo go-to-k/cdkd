@@ -223,9 +223,9 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       expect(result.physicalId).toBe('db-1');
     });
 
-    it("reads the cluster's engine (by its identifier) when the template declares none", async () => {
+    it("reads the cluster's engine (by the declared ARN, account included) when the template declares none", async () => {
       await provider.create('L', INSTANCE, { ...REPLICA, SourceDBClusterIdentifier: CLUSTER_ARN });
-      expect(sent('DescribeDBClustersCommand')[0]).toEqual({ DBClusterIdentifier: 'maz-1' });
+      expect(sent('DescribeDBClustersCommand')[0]).toEqual({ DBClusterIdentifier: CLUSTER_ARN });
       expect(sent('CreateDBInstanceReadReplicaCommand')[0]).toMatchObject({
         SourceDBClusterIdentifier: CLUSTER_ARN,
       });
@@ -327,6 +327,20 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       expect(sent('CreateDBInstanceReadReplicaCommand')).toEqual([]);
     });
 
+    it('fails before the create when a cross-region cluster cannot be found in its region', async () => {
+      arm({ noCluster: true });
+      const cross = `arn:aws:rds:us-west-2:${ACCOUNT}:cluster:maz-1`;
+      const error = await provider
+        .create('L', INSTANCE, { ...REPLICA, SourceDBClusterIdentifier: cross })
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(/reported no source DB cluster/);
+      expect(calls().find((c) => c.name === 'DescribeDBClustersCommand')).toMatchObject({
+        region: 'us-west-2',
+        input: { DBClusterIdentifier: cross },
+      });
+      expect(sent('CreateDBInstanceReadReplicaCommand')).toEqual([]);
+    });
+
     it('resends a create refused while the cluster is busy, reading the cluster status', async () => {
       let refused = false;
       const statuses = ['modifying', 'available'];
@@ -350,6 +364,31 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       await provider.create('L', INSTANCE, { ...REPLICA, Engine: 'postgres' });
       expect(sent('CreateDBInstanceReadReplicaCommand')).toHaveLength(2);
       expect(sent('DescribeDBClustersCommand').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('names the source DB cluster when it reads a status that does not end on its own', async () => {
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }, region: unknown) => {
+        if (command.constructor.name === 'CreateDBInstanceReadReplicaCommand') {
+          return Promise.reject(
+            Object.assign(new Error('DB instance is not in the available state'), {
+              name: 'InvalidDBInstanceStateFault',
+            })
+          );
+        }
+        if (command.constructor.name === 'DescribeDBClustersCommand') {
+          return Promise.resolve({
+            DBClusters: [{ DBClusterIdentifier: 'maz-1', Engine: 'postgres', Status: 'failed' }],
+          });
+        }
+        return inner(command, region);
+      });
+      const error = await provider
+        .create('L', INSTANCE, { ...REPLICA, Engine: 'postgres' })
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(
+        /refused the create of the read replica because the source DB cluster is not in the 'available' state, and it reads status 'failed'/
+      );
     });
 
     it.each([false, true])(
@@ -459,18 +498,35 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       );
       expect((error as Error).message).not.toMatch(/SourceDBInstanceIdentifier cannot/);
       expect((error as Error).message).toMatch(/"Resource is immutable"/);
+      expect((error as Error).message.includes('here it replaces SourceDBInstanceIdentifier')).toBe(
+        _ === 'switched from an instance source'
+      );
       expect(sent('ModifyDBInstanceCommand')).toEqual([]);
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
     });
 
-    it('refuses an instance source replacing a cluster source, naming the instance key', async () => {
+    it('refuses an instance source replacing a cluster source, naming both keys', async () => {
       pinLiveSource('maz-1');
       const next = { ...withoutSource(REPLICA), SourceDBInstanceIdentifier: SOURCE_ARN };
       const error = await update(next, REPLICA).catch((e: unknown) => e);
       expect((error as Error).message).toMatch(
         /SourceDBInstanceIdentifier cannot be added or changed on an existing DB instance/
       );
+      expect((error as Error).message).toMatch(
+        /Removing it promotes the replica instead \(here it replaces SourceDBClusterIdentifier, so nothing is promoted\)\./
+      );
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
+    });
+
+    it('refuses both keys added at once unless the live instance replicates both, naming both', async () => {
+      // The live instance replicates the cluster only: the added instance key fails the match.
+      const next = { ...REPLICA, SourceDBInstanceIdentifier: SOURCE_ARN };
+      const error = await update(next, withoutSource(REPLICA)).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toMatch(
+        /SourceDBInstanceIdentifier and SourceDBClusterIdentifier cannot be added or changed/
+      );
+      expect(sent('ModifyDBInstanceCommand')).toEqual([]);
     });
 
     it('accepts an added cluster source the live instance already replicates (a record that lacks it)', async () => {
@@ -633,6 +689,13 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
       pinLiveSource(other);
       expect(await provider.readCurrentState('db-1', 'L', INSTANCE)).toMatchObject({
         SourceDBClusterIdentifier: other,
+      });
+    });
+
+    it('keeps a bare source when the instance reports no ARN to scope it by', async () => {
+      arm({ replica: { DBInstanceArn: undefined } });
+      expect(await provider.readCurrentState('db-1', 'L', INSTANCE)).toMatchObject({
+        SourceDBClusterIdentifier: 'maz-1',
       });
     });
 

@@ -321,10 +321,13 @@ export async function describeDBInstanceInRegion(
 }
 
 /**
- * The source Multi-AZ DB cluster, read as the handler's `fetchEngine` reads
- * it: by its identifier (an ARN's last segment), from the ARN's region when it
- * names another. `undefined` when DescribeDBClusters lists none; an AWS
- * failure (a `DBClusterNotFoundFault` among them) propagates.
+ * The source Multi-AZ DB cluster, read from the ARN's region when it names
+ * another, as the handler's `fetchEngine` reads it. By the value as declared
+ * (the handler reads an ARN's last segment): an ARN keeps its account, so a
+ * same-named cluster of the caller's account is never read in its place, as
+ * {@link describeReplicaSource} reads an instance. `undefined` when
+ * DescribeDBClusters lists none; an AWS failure (a `DBClusterNotFoundFault`
+ * among them) propagates.
  */
 export async function describeReplicaSourceCluster(
   this: RDSProvider,
@@ -332,14 +335,13 @@ export async function describeReplicaSourceCluster(
 ): Promise<DBCluster | undefined> {
   const sourceRegion = replicaSourceRegion(source);
   const ownRegion = await this.getClient().config.region();
-  const identifier = replicaSourceName(source);
   if (sourceRegion === undefined || sourceRegion === ownRegion) {
-    return this.describeDBCluster(identifier);
+    return this.describeDBCluster(source);
   }
   const client = new RDSClient({ ...ambientClientDefaults(), region: sourceRegion });
   try {
     const response = await client.send(
-      new DescribeDBClustersCommand({ DBClusterIdentifier: identifier })
+      new DescribeDBClustersCommand({ DBClusterIdentifier: source })
     );
     return response.DBClusters?.[0];
   } finally {
@@ -617,6 +619,8 @@ export interface ReplicaSourceChange {
   readonly kind: 'unchanged' | 'promote' | 'immutable';
   /** `'promote'`: the keys removed. `'immutable'`: the keys added or changed. */
   readonly keys: readonly ReplicaSourceKey[];
+  /** The keys the template removed (on `'immutable'`, a switch's other half). */
+  readonly removed: readonly ReplicaSourceKey[];
 }
 
 /**
@@ -642,11 +646,12 @@ export function replicaSourceChange(
   const changed = REPLICA_SOURCE_KEYS.filter(
     (key) => sourceValue(properties, key) !== sourceValue(previousProperties, key)
   );
-  if (changed.length === 0) return { kind: 'unchanged', keys: [] };
+  if (changed.length === 0) return { kind: 'unchanged', keys: [], removed: [] };
   const added = changed.filter((key) => sourceValue(properties, key) !== undefined);
+  const removed = changed.filter((key) => !added.includes(key));
   return added.length === 0
-    ? { kind: 'promote', keys: changed }
-    : { kind: 'immutable', keys: added };
+    ? { kind: 'promote', keys: changed, removed }
+    : { kind: 'immutable', keys: added, removed };
 }
 
 /** The live source an instance replicates under `key` (`ReadReplicaSource...`). */

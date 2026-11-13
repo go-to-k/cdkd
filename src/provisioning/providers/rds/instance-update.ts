@@ -178,7 +178,7 @@ export async function updateDBInstance(
   // template dropped the keys hands the record over as `properties`.
   const sourceChange =
     declaresPointInTimeRestore(previousProperties) || declaresPointInTimeRestore(properties)
-      ? ({ kind: 'unchanged', keys: [] } as const)
+      ? ({ kind: 'unchanged', keys: [], removed: [] } as const)
       : replicaSourceChange(properties, previousProperties);
   // go-to-k/cdkd#5640: an added or changed restore snapshot or point-in-time
   // key is refused before any change, as CloudFormation fails the update
@@ -338,7 +338,11 @@ export async function updateDBInstance(
           `${sourceKeys} cannot be added or changed on an existing DB instance — ` +
             `an instance becomes a read replica only when it is created, and CloudFormation ` +
             `refuses the same update ("Resource is immutable"). Removing it promotes the ` +
-            `replica instead. Nothing was applied to DB instance ${physicalId}. ` +
+            `replica instead` +
+            (sourceChange.removed.length > 0
+              ? ` (here it replaces ${sourceChange.removed.join(' and ')}, so nothing is promoted)`
+              : '') +
+            `. Nothing was applied to DB instance ${physicalId}. ` +
             (liveSourceRead === 'not-found'
               ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +
                 `record no longer matches AWS. `

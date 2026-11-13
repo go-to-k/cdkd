@@ -219,6 +219,7 @@ export async function canonicalizeDriftPair(
     aws = withDeclaredVolumeMembers(baseline, withDeclaredProcessorFeatures(baseline, aws));
   }
   if (resourceType !== 'AWS::RDS::DBInstance') return { baseline, aws };
+  let region: string | undefined;
   for (const key of REPLICA_SOURCE_KEYS) {
     const recorded = baseline[key];
     const live = aws[key];
@@ -227,7 +228,7 @@ export async function canonicalizeDriftPair(
     // own scope: the readback is an ARN that carries it (`readCurrentState`
     // builds a same-region source from the replica's own ARN), so a record ARN
     // naming another account differs from it there.
-    const region = await this.getClient().config.region();
+    region ??= await this.getClient().config.region();
     if (sameReplicaSource(recorded, live, { region })) aws = { ...aws, [key]: recorded };
   }
   return { baseline, aws };
