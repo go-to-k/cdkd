@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-noecho-restapi-body-mac",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd NoEcho value MACs: a NoEcho-fed RestApi Body is put only when the value changed (go-to-k/cdkd#6146)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -1,4 +1,6 @@
 import type { MovedTo, RefactorSides } from '../../../analyzer/refactor-hints.js';
+import type { NoEchoMacCache } from './noecho-macs.js';
+import type { MacWriteOnlyLookups } from '../../../deployment/deploy-engine/update/noecho-macs.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../types/state.js';
 import type { CanonicalizePropertiesFn } from '../../../analyzer/diff-calculator.js';
@@ -316,6 +318,13 @@ export interface ComputeStackDiffOptions {
   producerLookup?: ProducerLookup;
   /** The stack's synthesized account, named by that reference's refusal. */
   consumerAccount?: string;
+  /**
+   * go-to-k/cdkd#6146: a caller diffing one stack several times in one run
+   * (`cdkd refactor`) shares its NoEcho value MACs here, so they are made once.
+   */
+  noEchoMacCache?: NoEchoMacCache;
+  /** The same caller's schema write-only lookups, one per type per run (go-to-k/cdkd#6146). */
+  macWriteOnlyLookups?: MacWriteOnlyLookups;
   /**
    * Force the issue #1948 "stored key the template cannot account for"
    * withholding ON, regardless of what THIS template proves.

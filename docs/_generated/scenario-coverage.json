@@ -2147,6 +2147,11 @@
       "scenarios": []
     },
     {
+      "name": "noecho-restapi-body-mac",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "opensearch-domain-getatt",
       "annotated": true,
       "scenarios": [
@@ -2604,6 +2609,13 @@
     },
     {
       "name": "schema-v15-to-v16-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "schema-v16-to-v17-migration",
       "annotated": true,
       "scenarios": [
         "state-schema-migration"
@@ -3653,6 +3665,7 @@
         "schema-v12-to-v13-migration",
         "schema-v14-to-v15-migration",
         "schema-v15-to-v16-migration",
+        "schema-v16-to-v17-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"
@@ -3863,6 +3876,7 @@
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",
+    "noecho-restapi-body-mac",
     "orphan-getatt-takeover",
     "partial-create-handback",
     "perf-cross-backend-check",

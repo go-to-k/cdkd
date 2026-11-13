@@ -393,6 +393,15 @@ export interface UpdateContext extends SecretMaskingContext {
   noEchoOnlyChangedProperties?: ReadonlySet<string> | undefined;
 
   /**
+   * go-to-k/cdkd#6146: call with a key of {@link noEchoOnlyChangedProperties}
+   * this `update()` leaves UNSENT (the go-to-k/cdkd#6140 stop-gap), so the
+   * engine keeps that property's previous `NoEcho` value MAC instead of
+   * stamping today's: AWS still holds the value it was last sent. A key not in
+   * that set is ignored. Set alongside it; absent on every other caller.
+   */
+  keptNoEchoOnlyProperty?: ((propertyName: string) => void) | undefined;
+
+  /**
    * go-to-k/cdkd#5380: declare, IMMEDIATELY BEFORE an irreversible call that
    * starts changing a top-level property (a Start / Stop that AWS finishes
    * asynchronously, a second write after a first one landed), that the change

@@ -269,7 +269,8 @@ export async function update(
         previousProperties,
         log,
         context?.changedProperties,
-        context?.noEchoOnlyChangedProperties
+        context?.noEchoOnlyChangedProperties,
+        context?.keptNoEchoOnlyProperty
       );
     default:
       throw new ProvisioningError(

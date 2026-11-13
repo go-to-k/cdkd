@@ -317,6 +317,8 @@
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-rest-api",
         "destroy-nested-cross-region",
+        "noecho-restapi-body-mac",
+        "schema-v16-to-v17-migration",
         "wafv2"
       ],
       "signals": {
@@ -345,6 +347,14 @@
           "literal"
         ],
         "destroy-nested-cross-region": [
+          "l1",
+          "literal"
+        ],
+        "noecho-restapi-body-mac": [
+          "l1",
+          "literal"
+        ],
+        "schema-v16-to-v17-migration": [
           "l1",
           "literal"
         ],
@@ -8879,6 +8889,7 @@
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
         "schema-v15-to-v16-migration",
+        "schema-v16-to-v17-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -9251,6 +9262,10 @@
         ],
         "schema-v15-to-v16-migration": [
           "l2"
+        ],
+        "schema-v16-to-v17-migration": [
+          "l2",
+          "literal"
         ],
         "schema-v5-to-v6-migration": [
           "l2"

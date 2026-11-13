@@ -3,6 +3,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
   STATE_SCHEMA_VERSIONS_READABLE,
   stackInstanceIdCarriedFrom,
   type StackState,
@@ -143,8 +144,8 @@ describe('State schema v13 — stackInstanceId (#5064)', () => {
       .filter((body): body is string => typeof body === 'string')
       .map((body) => JSON.parse(body) as StackState);
     expect(bodies.map((b) => b.version)).toEqual([
-      STATE_SCHEMA_VERSION_CURRENT,
-      STATE_SCHEMA_VERSION_CURRENT,
+      STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
+      STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
     ]);
     expect(Object.hasOwn(bodies[0]!, 'stackInstanceId')).toBe(false);
     expect(bodies[1]!.stackInstanceId).toBe(ID);

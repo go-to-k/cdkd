@@ -148,6 +148,7 @@ const DIFF_RECURSIVE_ORDER = [
   'parameters-conditions.ts',
   'orphan-splice.ts',
   'outputs-failure.ts',
+  'noecho-macs.ts',
   'compute-stack-diff.ts',
   'trust.ts',
   'child-parameters.ts',
@@ -8085,6 +8086,13 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'identity — and injective since go-to-k/cdkd#3496, because the `key` half is ' +
         'now JSON-encoded and JSON escapes a NUL to text, so no component can carry ' +
         'the separator. The memo key on the same file is encoded',
+    ],
+    [
+      'src/deployment/noecho-value-macs.ts',
+      5,
+      'the KMS MAC MESSAGE (go-to-k/cdkd#6146): domain separation inside a MAC input, ' +
+        'never a record key or a lookup. A stack name, region, instance id or parameter ' +
+        'name cannot carry a NUL; the value is the last part, so no part can shift into another',
     ],
   ];
 

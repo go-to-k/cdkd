@@ -22,7 +22,7 @@ up and secure the bucket. The authority for everything here is
 | [Which region a record belongs to](#which-region-a-record-belongs-to) | The key decides; when a destroy or rollback refuses |
 | [Sidecar objects in the state bucket](#sidecar-objects-in-the-state-bucket) | Response placeholders, the create-token ledger, the rollback journal, the bootstrap marker |
 | [Bucket name and region resolution](#bucket-name-and-region-resolution) | The legacy-name fallback and the `GetBucketLocation` probe |
-| [Schema version history](#schema-version-history) | `version: 1` through `version: 16` |
+| [Schema version history](#schema-version-history) | `version: 1` through `version: 17` |
 | [Fields added without a version bump](#fields-added-without-a-version-bump) | `skippedOutputs`, `conditionVerdicts`, the masked-property fingerprints |
 | [Schema reference](#schema-reference) | `StackState`, `ResourceState`, `LockInfo`, malformed-record handling, physical ids |
 | [Lock implementation](#lock-implementation) | Acquire, release, retry, renewal |
@@ -169,7 +169,7 @@ The write-ahead copy of a first deploy's `stackInstanceId`
 (`{"stackInstanceVersion": 1, "stackInstanceId": "<uuid>"}`), described with
 [schema version 13](#version-13-adds-stackinstanceid). A first deploy whose
 `AWS::StackId` derives from the id writes version 2, which adds
-`"stackIdFromInstance": true` ([schema version 16](#version-16-adds-stackidfrominstance-current-writers));
+`"stackIdFromInstance": true` ([schema version 16](#version-16-adds-stackidfrominstance));
 an older cdkd refuses a version 2 body rather than re-run the deploy with the
 `cdkd` tail. It
 exists only between a first deploy's first create and its first state save,
@@ -438,6 +438,7 @@ with an "Upgrade cdkd" error.
 | 14 | `unsettledProperties` on each resource |
 | 15 | `unsettledItems` on each resource |
 | 16 | `stackIdFromInstance` on the stack |
+| 17 | `noEchoValueMacs` on each resource; written only for a state that holds one, else 16 |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -949,8 +950,10 @@ expired keeps the resource and warns, and
 One case the flag cannot catch: a provider whose readback right after a create
 reports exactly what was sent, while AWS normalizes the value later. Each
 rotation-free deploy then reads a different value and replaces the resource.
-cdkd stores nothing derived from the value, so it cannot tell this from a
-change; the stateful-resource guard still stops a stateful type.
+State holds nothing a reader could compare the value with (a `noEchoValueMacs`
+MAC needs the KMS key), and the MAC compares only what cdkd SENT, so it cannot
+tell this from a change; the stateful-resource guard still stops a stateful
+type.
 
 A stack whose resources read a `NoEcho` parameter, with nothing else changed,
 is reported as `No changes`: those resources are compared as above and do not
@@ -1487,7 +1490,7 @@ A bump: an older binary rewriting the record would drop the items, and the
 next deploy would keep an index or metric the failed update added. A v14
 document is read unchanged (no items).
 
-### `version: 16` adds `stackIdFromInstance` (current writers)
+### `version: 16` adds `stackIdFromInstance`
 
 Schema `version: 16` adds `StackState.stackIdFromInstance` (issue
 [#6170](https://github.com/go-to-k/cdkd/issues/6170)). CloudFormation's stack
@@ -1527,6 +1530,34 @@ A v15 document is read unchanged.
 ## Fields added without a version bump
 
 
+
+### `version: 17` adds `noEchoValueMacs` (written only with a MAC)
+
+Schema `version: 17` adds `ResourceState.noEchoValueMacs` (issue
+[#6146](https://github.com/go-to-k/cdkd/issues/6146)), described under
+[`noEchoValueMacs`](#noechovaluemacs-version-17-conditional). Unlike every
+earlier bump it is conditional: a save writes `version: 17` only when some
+record of the state (a resource, an `orphans` entry's record, a
+`supersededResources` entry) carries the field, and `version: 16` otherwise.
+
+A bump, because an older binary mishandles the field. Its failed update
+writes the pre-update record back verbatim (its failure save keeps the record
+it loaded, unknown fields included) after the provider may already have sent
+a new value, so the record would keep the MAC of the old value while AWS holds
+the new one. A later deploy by this binary with the old value would then match
+that MAC on a key AWS does not report and skip a real change. An older binary
+now refuses such a state with "Upgrade cdkd" instead.
+
+The cost is that a stack holding a MAC can no longer be deployed or read by an
+older cdkd until no record holds a MAC (a failed update or a rollback drops
+the MACs it covers, and so does removing the `NoEcho` read; the next save then
+writes 16). An older-binary CONSUMER of such a stack is refused too: a
+cross-stack or cross-account `Fn::GetStackOutput` reading its state, or a
+nested-stack parent of a child holding a MAC, gets "Upgrade cdkd". Because the
+bump is conditional, a
+stack with no `NoEcho`-fed property, or in a region without the key, keeps
+writing `version: 16` and stays readable by older binaries. A v16 document is
+read unchanged (no MACs).
 ### `skippedOutputs` (informational, no version bump)
 
 An Output the deploy could NOT resolve is SKIPPED — warned about when the
@@ -1651,6 +1682,58 @@ the condition's FALSE branch, as before
   record. A writer that carries the loaded record forward (rollback, drift,
   scrub, orphan rewrite, `state refresh-observed`) may carry it, since none of
   them changes a definition or an input the fingerprint covers.
+
+### `noEchoValueMacs` (version 17, conditional)
+
+Per top-level property that reads a `NoEcho` parameter, per such parameter,
+`kms-hmac-sha256:<keyArn>:<base64>`: KMS `GenerateMac` (`HMAC_SHA_256`) under
+`alias/cdkd-noecho-mac` (created by `cdkd bootstrap`, one per region) over
+`cdkd-noecho-mac/v1 \0 <stack binding> \0 <parameter> \0 <s|j> \0 <value>`
+(`s` and a string, `j` and the JSON text of anything else). The stack binding
+is `instance \0 <stackInstanceId>`, or `legacy \0 <stackName> \0 <region>` for a
+stack with no instance id.
+
+- **Written** by every save of a record the deploy wrote (create, in-place
+  update, replacement), from the run's MACs: one `GenerateMac` per `NoEcho`
+  parameter per run, memoized, the first resolving the alias to the key ARN and
+  the rest in parallel (a failed one costs only its parameter), and only once a
+  resource reading one is provisioned. A key the update did not send keeps its
+  previous entry: a REST API `Body` the provider left unsent and an RDS restore
+  key (`UpdateContext.keptNoEchoOnlyProperty`), and a create-only key. A
+  record the deploy did not write carries the field.
+- **Dropped** for the keys an update was handed when that update fails (AWS
+  may hold either value), and wholly by a rollback revert or re-create, which
+  sends AWS's value at a `NoEcho` position rather than the one the MAC
+  describes. `cdkd drift --revert` refuses a masked write-only key and carries
+  the field.
+- **Read** by the UPDATE arm only for a key AWS does not report: a readback
+  found it absent, or, when nothing was read because something else moved, the
+  type's schema declares it write-only. An equal MAC settles it like a
+  confirmed readback, a different one sends it as a change (never a
+  NoEcho-only one, so the REST API `Body` is put). A verdict needs the key's
+  template text unmoved (the record's text fingerprint), every fresh `NoEcho`
+  leaf at a position where the template reads a `NoEcho` parameter, and an
+  entry naming exactly the parameters the key reads under the same key ARN; an
+  equal MAC settles only a key that reads nothing but `NoEcho` parameters,
+  literals and the stack's constant pseudo parameters (a `{{resolve:...}}`
+  token only as a leaf of its own), since anything else can move unseen.
+  Anything else is no verdict: the pre-#6146 behaviour (a re-send; the REST API
+  `Body` stop-gap). `cdkd diff` marks a top-level stack's schema write-only
+  property whose MAC differs as changed under the same guards, and makes no
+  KMS call unless a record carries the field.
+- **Not an oracle**: testing a guess needs `kms:GenerateMac` on the key, which
+  reading `state.json` (a cross-account `Fn::GetStackOutput` consumer, a
+  noncurrent S3 version) does not grant. This is why it is not the salted
+  hash #3729 rejected.
+- **Version 17, written only with a MAC**: see
+  [`version: 17`](#version-17-adds-noechovaluemacs-written-only-with-a-mac). The
+  older-binary path the bump fences is a FAILED update, whose failure save
+  writes the pre-update record back verbatim. Every other older path is safe on
+  its own: a successful create, update or replacement rebuilds the record field
+  by field and drops the field; a rollback revert or re-create refuses to send
+  a key AWS does not report (the only kind a MAC decides); and a writer that
+  spreads a record without sending (a no-change skip, an attribute-only
+  update) leaves the MAC true.
 
 ### `maskedPropertyFingerprints` / `maskedPropertyInputFingerprints` (no version bump)
 
@@ -2259,6 +2342,7 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
+  noEchoValueMacs?: Record<string, Record<string, string>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
   nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none
@@ -2354,8 +2438,9 @@ tell, so:
   the new value with the old one. If AWS already holds exactly the new value
   there, the consumer is not replaced: it is updated in place when something
   else about it changed, and left alone when nothing did. The readback is
-  compared in memory and never stored, so nothing derived from the value lands
-  in state. The consumer is still REPLACED (or, for a stateful type, the deploy
+  compared in memory and never stored; the only value-derived field in state
+  is `noEchoValueMacs`, a KMS keyed MAC of a `NoEcho` PARAMETER value, never of
+  a custom resource's. The consumer is still REPLACED (or, for a stateful type, the deploy
   stops and asks for `--force-stateful-recreation`) whenever the readback cannot
   confirm the value: AWS holds a different one, the resource type has no
   readback, or the read fails. The deploy log says which, as a warning. A

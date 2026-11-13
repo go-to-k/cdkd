@@ -316,13 +316,28 @@ export async function createWithRollbackRetry(
  *
  * Except `unsettledProperties` (go-to-k/cdkd#5380), which every caller's
  * successful `update()` settles: AWS now holds the bag the record describes,
- * so the record carries none.
+ * so the record carries none; and `noEchoValueMacs` (go-to-k/cdkd#6146),
+ * dropped by {@link withoutNoEchoValueMacs}.
  */
 export function recordAfterRollbackUpdate(
   restored: ResourceState,
   result: ResourceUpdateResult | undefined
 ): ResourceState {
-  return withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result));
+  return withoutNoEchoValueMacs(
+    withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result))
+  );
+}
+
+/**
+ * go-to-k/cdkd#6146: a revert sends AWS's value at a `NoEcho` position (or
+ * the record's), never the value the restored record's `noEchoValueMacs`
+ * describe, so they are dropped: the next deploy finds no MAC and re-sends
+ * once rather than trusting a MAC of a value AWS may no longer hold.
+ */
+function withoutNoEchoValueMacs(record: ResourceState): ResourceState {
+  if (record.noEchoValueMacs === undefined) return record;
+  const { noEchoValueMacs: _dropped, ...rest } = record;
+  return rest as ResourceState;
 }
 
 function recordAfterRollbackUpdateUnsettled(

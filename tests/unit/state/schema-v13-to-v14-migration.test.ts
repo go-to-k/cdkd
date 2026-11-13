@@ -3,6 +3,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
   STATE_SCHEMA_VERSIONS_READABLE,
   type ResourceState,
   type StackState,
@@ -137,7 +138,7 @@ describe('State schema v14 — unsettledProperties (go-to-k/cdkd#5380)', () => {
       .map(([command]) => (command as { input?: { Body?: unknown } }).input?.Body)
       .find((b): b is string => typeof b === 'string');
     const saved = JSON.parse(body!) as StackState;
-    expect(saved.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
+    expect(saved.version).toBe(STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS);
     expect(saved.resources['Stream']!.unsettledProperties).toEqual([ENC]);
   });
 });

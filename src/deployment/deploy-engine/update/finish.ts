@@ -63,6 +63,11 @@ export interface FinishUpdateInput
   counts: ProvisionCounts | undefined;
   progress: { current: number; total: number } | undefined;
   confirmedPaths: Set<string>;
+  /**
+   * go-to-k/cdkd#6146: the keys whose NoEcho value MACs prove the value moved,
+   * so they are a change, never a NoEcho-only one.
+   */
+  macChangedPaths: ReadonlySet<string>;
   propertyDrivenReplacement: boolean | undefined;
   recreateViaCcApi: boolean;
   recreateViaSdkProvider: boolean;
@@ -107,6 +112,7 @@ export async function finishUpdate(
     unsettledNames,
     movedAsWritten,
     confirmedPaths,
+    macChangedPaths,
     propertyDrivenReplacement,
     recreateViaCcApi,
     recreateViaSdkProvider,
@@ -296,10 +302,12 @@ export async function finishUpdate(
     )
   );
   // go-to-k/cdkd#6140: the keys above named only for an unconfirmed fresh
-  // `NoEcho` parameter value, with nothing moved as written.
+  // `NoEcho` parameter value, with nothing moved as written. Not a key whose
+  // NoEcho value MACs prove it changed (go-to-k/cdkd#6146).
   const noEchoOnlyChangedProperties = new Set(
     [...changedProperties].filter(
       (key) =>
+        !macChangedPaths.has(key) &&
         !unsettledNames.has(key) &&
         !movedAsWritten(key) &&
         otherFreshAt(key).length === 0 &&

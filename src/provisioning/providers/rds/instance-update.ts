@@ -210,6 +210,8 @@ export async function updateDBInstance(
     previousProperties,
     context?.noEchoOnlyChangedProperties
   );
+  // go-to-k/cdkd#6146: left unsent, so each keeps its previous NoEcho value MAC.
+  for (const key of unconfirmedRestoreKeys) context?.keptNoEchoOnlyProperty?.(key);
   if (unconfirmedRestoreKeys.length > 0) {
     this.logger.warn(
       safeMsg`DBInstance ${logicalId}: ${unconfirmedRestoreKeys.join(', ')} may have changed (a NoEcho value cdkd cannot compare with its record); not applied: an instance is restored only when it is created.`

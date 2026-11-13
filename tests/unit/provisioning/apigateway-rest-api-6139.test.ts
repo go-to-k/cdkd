@@ -630,6 +630,9 @@ describe('ApiGatewayProvider: AWS::ApiGateway::RestApi (#6139)', () => {
     });
 
     it('does not re-put a Body the engine names changed only for a NoEcho value, and warns without the value', async () => {
+      // go-to-k/cdkd#6146: the skipped key is reported, so the engine keeps
+      // its previous NoEcho value MAC.
+      const kept: string[] = [];
       await provider.update(
         'Api',
         'api123',
@@ -643,9 +646,11 @@ describe('ApiGatewayProvider: AWS::ApiGateway::RestApi (#6139)', () => {
         {
           changedProperties: new Set(['Body', 'Description']),
           noEchoOnlyChangedProperties: new Set(['Body']),
+          keptNoEchoOnlyProperty: (key: string) => kept.push(key),
         }
       );
       expect(names()).toEqual(['UpdateRestApiCommand']);
+      expect(kept).toEqual(['Body']);
       const warned = warnSpy.mock.calls.map((c) => String(c[0]));
       expect(warned.some((w) => /NoEcho parameter value.* is NOT applied/.test(w))).toBe(true);
       // The remedy is one a deploy of an SDK-managed record can take: no
@@ -662,15 +667,21 @@ describe('ApiGatewayProvider: AWS::ApiGateway::RestApi (#6139)', () => {
       ['a NoEcho value swapped for a dynamic reference', { key: 'resolved-secret' }, { key: '***' }],
       ['the same swap behind a literal prefix', { key: 'Bearer resolved-secret' }, { key: 'Bearer ***' }],
     ])('re-puts a Body the engine says moved as written: %s', async (_label, desired, previous) => {
+      const kept: string[] = [];
       await provider.update(
         'Api',
         'api123',
         TYPE,
         { Name: 'a', Body: desired },
         { Name: 'a', Body: previous },
-        { changedProperties: new Set(['Body']), noEchoOnlyChangedProperties: new Set() }
+        {
+          changedProperties: new Set(['Body']),
+          noEchoOnlyChangedProperties: new Set(),
+          keptNoEchoOnlyProperty: (key: string) => kept.push(key),
+        }
       );
       expect(names()).toContain('PutRestApiCommand');
+      expect(kept).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
     });
 

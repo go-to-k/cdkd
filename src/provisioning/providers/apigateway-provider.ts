@@ -569,7 +569,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
     changedProperties?: ReadonlySet<string>,
-    noEchoOnlyChanged?: ReadonlySet<string>
+    noEchoOnlyChanged?: ReadonlySet<string>,
+    keptNoEchoOnly?: (propertyName: string) => void
   ): Promise<ResourceUpdateResult> {
     return updateRestApi.call(
       this,
@@ -580,7 +581,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       previousProperties,
       log,
       changedProperties,
-      noEchoOnlyChanged
+      noEchoOnlyChanged,
+      keptNoEchoOnly
     );
   }
 

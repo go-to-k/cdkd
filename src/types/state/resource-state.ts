@@ -470,6 +470,35 @@ export interface ResourceState {
    * Read through `maskedPropertyInputFingerprintsOf`.
    */
   maskedPropertyInputFingerprints?: Record<string, string> | undefined;
+
+  /**
+   * go-to-k/cdkd#6146: per top-level property that reads a `NoEcho` parameter,
+   * per such parameter, `kms-hmac-sha256:<keyArn>:<base64>`: a KMS
+   * `GenerateMac` (`HMAC_SHA_256`) of the value the property was last SENT,
+   * under the HMAC key `cdkd bootstrap` creates (`alias/cdkd-noecho-mac`), its
+   * message bound to the stack and the parameter. Optional; schema v17, which
+   * a save writes only for a state holding one (`stateSchemaVersionFor`).
+   *
+   * It lets a property AWS does not report skip the re-send when the value
+   * did not change (only a property reading nothing but `NoEcho` parameters
+   * and literals), and be sent when it did. It is no oracle for the value:
+   * the key never leaves KMS, so testing a guess against an entry needs
+   * `kms:GenerateMac` on that key, which reading the state file does not grant.
+   *
+   * ABSENT (or malformed, from another key, or naming another parameter set)
+   * is no MAC: the property keeps the re-send, and the deploy that sends it
+   * stamps one. The save rebuilds it for a record this deploy wrote
+   * (`propertiesToRecord`), keeping a key the update did not send at its
+   * previous entry. A failed update drops the entries of the keys it was
+   * handed, and a rollback revert or re-create drops the field (they send
+   * AWS's value, not the MAC'd one); a writer that spreads a record without
+   * sending carries it (`cdkd drift --revert` refuses a masked write-only key),
+   * and an older cdkd's rebuilt record drops it (a re-send). An older cdkd's
+   * FAILED update would keep it verbatim, hence the v17 refusal (reasons in
+   * `docs/state-schema-internals.md`). Helpers:
+   * `src/deployment/noecho-value-macs.ts`.
+   */
+  noEchoValueMacs?: Record<string, Record<string, string>> | undefined;
 }
 
 /**
