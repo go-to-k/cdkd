@@ -1,5 +1,6 @@
 import type { TableDescription } from '@aws-sdk/client-dynamodb';
 import { coerceCfnInteger } from '../../config-shape.js';
+import { verboseAwareText } from '../../../utils/aws-failure-text.js';
 import { INDEX_SETTLE_POLL_INTERVAL_MS } from '../../dynamodb-index-busy-delete.js';
 import { DYNAMODB_DELETE_POLL_COST_MS } from '../dynamodb-delete-budget.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
@@ -500,7 +501,10 @@ export const DELETION_PROTECTION_REFLIP_MS = 16_000;
 export function relayedEncryptionChangeLimit(withheldText: string): string {
   return /Encryption mode changes are limited/i.test(withheldText)
     ? ' AWS limits a table to 4 encryption changes in 24 hours, then one every 6 hours; ' +
-        'retry the change later (--verbose shows when AWS allows the next one).'
+        verboseAwareText(
+          'retry the change later (--verbose shows when AWS allows the next one).',
+          'retry the change later (the debug output shows when AWS allows the next one).'
+        )
     : '';
 }
 

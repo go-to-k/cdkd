@@ -7,7 +7,7 @@ import {
   setBounded,
 } from '../ambiguous-create.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerSentence } from '../../../utils/aws-failure-text.js';
 
 /**
  * SDK Provider for AWS::S3::Bucket
@@ -295,7 +295,7 @@ export function probeFailedCause(errorName: string): UnverifiedIdentityCause {
     // class the same way: class at default verbosity, AWS's own text at debug.
     why: `the GetBucketLocation identity check failed (${errorName})`,
     remedy:
-      `Re-run with --verbose for AWS's own message. Re-run the destroy once the check can ` +
+      `${verbosePointerSentence()}Re-run the destroy once the check can ` +
       `succeed, or grant s3:GetBucketLocation on the bucket (a bucket policy can Deny it), to ` +
       `have the guard verify the target first.`,
   };

@@ -1,4 +1,5 @@
 import { DynamicReferenceRegionAmbiguousError } from '../../../utils/error-handler.js';
+import { verboseAwareText } from '../../../utils/aws-failure-text.js';
 import {
   carriesDynamicReference,
   carriesFetchableDynamicReference,
@@ -326,7 +327,10 @@ export function abandonedScanStackNote(verdict: 'count' | 'warn', scans: number)
   return verdict === 'count'
     ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
         `any secret after it in the same value recorded no needle and could not be rewritten. ` +
-        `Re-run with --verbose for the cause of each.`
+        verboseAwareText(
+          'Re-run with --verbose for the cause of each.',
+          'The cause of each is in the debug output above.'
+        )
     : `${subject}: the scan stopped on something cdkd scrub cannot resolve with template ` +
         `defaults alone — an unresolvable Ref or Fn::GetAtt, a parameter with no Default, or a ` +
         `reference whose own argument still holds an unsubstituted \${...}. These do NOT fail ` +

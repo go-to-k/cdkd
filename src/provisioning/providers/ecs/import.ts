@@ -5,7 +5,7 @@ import {
   type DescribeClustersCommandOutput,
   type DescribeTaskDefinitionCommandOutput,
 } from '@aws-sdk/client-ecs';
-import { VERBOSE_POINTER } from '../../../utils/aws-failure-text.js';
+import { verbosePointerTail } from '../../../utils/aws-failure-text.js';
 import { generatedNameFor } from '../../resource-name.js';
 import { chunks, withApiLimit } from '../../name-lookup.js';
 import { resolveExplicitPhysicalId } from '../../import-helpers.js';
@@ -141,7 +141,7 @@ export async function importCluster(
       throw new Error(
         `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
           `${displaySafe(unanswered.reason ?? 'no reason given')}` +
-          (unanswered.detail !== undefined ? `. ${VERBOSE_POINTER}` : '')
+          (unanswered.detail !== undefined ? `.${verbosePointerTail()}` : '')
       );
     }
     return null;

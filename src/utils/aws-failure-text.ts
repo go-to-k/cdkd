@@ -199,6 +199,59 @@ export interface AwsFailureText {
 export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
 
 /**
+ * Whether this run is already `--verbose` (go-to-k/cdkd#6162). Then
+ * {@link VERBOSE_POINTER} is advice the user has already taken, and printing it
+ * sends them to re-run for output they are looking at; so every summary drops
+ * it. A PROBE rather than an import: this module stays a leaf, and `logger.ts`
+ * registers it (`registerVerboseRunProbe`) when it loads. Unregistered (a test
+ * that never loads the logger), the run counts as not verbose.
+ */
+let verboseRunProbe: () => boolean = () => false;
+
+/** `logger.ts` points this at its own level; tests reset it. */
+export function registerVerboseRunProbe(probe: () => boolean): void {
+  verboseRunProbe = probe;
+}
+
+function verboseRun(): boolean {
+  try {
+    return verboseRunProbe();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * {@link VERBOSE_POINTER} plus a trailing space, or `''` on a `--verbose` run.
+ * For the hand-written messages that spell the pointer mid-sentence.
+ */
+export function verbosePointerSentence(): string {
+  return verboseRun() ? '' : `${VERBOSE_POINTER} `;
+}
+
+/**
+ * A space plus {@link VERBOSE_POINTER}, or `''` on a `--verbose` run: for a
+ * hand-written message that ENDS with the pointer.
+ */
+export function verbosePointerTail(): string {
+  return verboseRun() ? '' : ` ${VERBOSE_POINTER}`;
+}
+
+/**
+ * `quiet` on an ordinary run, `verbose` on a `--verbose` one: for a hint
+ * worded around `--verbose` whose verbose form says where the detail already
+ * is instead of asking for a re-run (go-to-k/cdkd#6162).
+ */
+export function verboseAwareText(quiet: string, verbose: string): string {
+  return verboseRun() ? verbose : quiet;
+}
+
+/** `<lead>.` plus the pointer when the run is not verbose. */
+function withVerbosePointer(lead: string): string {
+  return `${lead}. ${verbosePointerSentence()}`.trimEnd();
+}
+
+/**
  * The summary {@link describeAwsFailure} builds for an `Error` it is reducing.
  *
  * UN-exported by issue [#3297](https://github.com/go-to-k/cdkd/issues/3297).
@@ -219,7 +272,7 @@ function redactedAwsFailureSummary(error: Error): string {
   // clause.
   const raw: unknown = error.name;
   const name = raw ? safeStringify(raw) : '';
-  return `${name || 'Error'}. ${VERBOSE_POINTER}`;
+  return withVerbosePointer(name || 'Error');
 }
 
 /**
@@ -401,7 +454,7 @@ export function describeAwsFailure(error: unknown): AwsFailureText {
     detail = 'a value that could not be converted to text';
   }
   return {
-    summary: `a non-Error value of type ${typeof error}. ${VERBOSE_POINTER}`,
+    summary: withVerbosePointer(`a non-Error value of type ${typeof error}`),
     detail,
     redacted: true,
   };
@@ -430,8 +483,132 @@ export function describeAwsStatusReason(
   }
   const code = reason?.code;
   return {
-    summary: `${code ? `${code}. ` : ''}${VERBOSE_POINTER}`,
+    summary: code
+      ? withVerbosePointer(code)
+      : verbosePointerSentence().trimEnd() || "AWS's reason is in the debug output above.",
     detail: message,
     redacted: true,
   };
+}
+
+/**
+ * Everything an SDK failure carries, for ONE `logger.debug` line
+ * (go-to-k/cdkd#6162).
+ *
+ * {@link describeAwsFailure}'s `detail` is the error's `message`, and for a
+ * response whose body S3 left EMPTY the SDK fills that with the placeholder
+ * `UnknownError` (name `Unknown`). AWS Emulator answers an oversized
+ * `PutObject` that way (`413`, `content-length: 0`), so a `--verbose` run
+ * still showed nothing but the placeholder. This line names the HTTP status,
+ * the request ids, the wire `Code`, the fault side and the `cause` chain, and
+ * says plainly when AWS sent no message at all, or when no response arrived.
+ *
+ * Debug-only: it holds AWS's text unredacted, like `detail`. Never throws.
+ */
+export function describeAwsErrorDiagnostics(error: unknown): string {
+  try {
+    return awsErrorDiagnostics(error);
+  } catch {
+    return 'the failure could not be inspected';
+  }
+}
+
+/** The SDK's own text for a failure whose response carried no error body. */
+const SDK_PLACEHOLDER_MESSAGES = new Set(['', 'UnknownError', 'Unknown']);
+
+interface SdkErrorShape extends Error {
+  Code?: unknown;
+  code?: unknown;
+  cause?: unknown;
+  $fault?: unknown;
+  $metadata?: {
+    httpStatusCode?: unknown;
+    requestId?: unknown;
+    extendedRequestId?: unknown;
+    cfId?: unknown;
+    attempts?: unknown;
+  };
+  $response?: { statusCode?: unknown; headers?: Record<string, unknown> };
+}
+
+/** The HTTP status a layer's RESPONSE carried, if it got one. */
+function responseStatus(e: SdkErrorShape): number | undefined {
+  const status = e.$metadata?.httpStatusCode ?? e.$response?.statusCode;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** `name`, `Code`, `code` and `message` of one layer. */
+function layerFields(e: SdkErrorShape): string[] {
+  const parts = [`name ${safeStringify(e.name)}`];
+  if (e.Code !== undefined && e.Code !== e.name) parts.push(`Code ${safeStringify(e.Code)}`);
+  if (e.code !== undefined) parts.push(`code ${safeStringify(e.code)}`);
+  const message = typeof e.message === 'string' ? e.message : safeStringify(e.message);
+  parts.push(`message ${JSON.stringify(message)}`);
+  return parts;
+}
+
+/** What the SDK recorded about the exchange: status, ids, attempts, body length. */
+function exchangeFields(e: SdkErrorShape): string[] {
+  const parts: string[] = [];
+  const status = responseStatus(e);
+  if (status !== undefined) parts.push(`HTTP ${status}`);
+  if (e.$fault !== undefined) parts.push(`fault ${safeStringify(e.$fault)}`);
+  const meta = e.$metadata;
+  if (meta?.requestId !== undefined) parts.push(`request id ${safeStringify(meta.requestId)}`);
+  if (meta?.extendedRequestId !== undefined) {
+    parts.push(`extended request id ${safeStringify(meta.extendedRequestId)}`);
+  }
+  if (meta?.cfId !== undefined) parts.push(`cf id ${safeStringify(meta.cfId)}`);
+  if (meta?.attempts !== undefined) parts.push(`attempts ${safeStringify(meta.attempts)}`);
+  const length = e.$response?.headers?.['content-length'];
+  if (length !== undefined) parts.push(`response content-length ${safeStringify(length)}`);
+  return parts;
+}
+
+/**
+ * Every layer of the failure, outermost first: a stack node's error is
+ * cdkd's own wrap with the SDK error on its `cause` chain, so the exchange
+ * fields are read from EACH layer, not only the top one. Bounded at four.
+ */
+function awsErrorDiagnostics(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return `a non-Error value of type ${typeof error}: ${safeStringify(error)}`;
+  }
+  const layers: SdkErrorShape[] = [];
+  const segments: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 4; depth++) {
+    if (!(current instanceof Error)) {
+      segments.push(`cause ${safeStringify(current)}`);
+      break;
+    }
+    const layer = current as SdkErrorShape;
+    layers.push(layer);
+    const fields = [...exchangeFields(layer), ...layerFields(layer)].join(', ');
+    segments.push(depth === 0 ? fields : `cause: ${fields}`);
+    current = layer.cause;
+  }
+
+  // The verdict speaks only about an SDK exchange, and only when one is on
+  // the chain: cdkd's own refusal gets none (it is not an AWS failure at all).
+  const answered = layers.find((l) => responseStatus(l) !== undefined || l.$fault !== undefined);
+  let verdict = '';
+  if (answered !== undefined) {
+    const message = typeof answered.message === 'string' ? answered.message : '';
+    if (SDK_PLACEHOLDER_MESSAGES.has(message) && answered.Code === undefined) {
+      const length = answered.$response?.headers?.['content-length'];
+      verdict =
+        ' AWS returned no error message' +
+        (length === '0' || length === 0 ? ' (the response body was empty).' : '.');
+    }
+  } else if (
+    layers.some(
+      (l) => l.$metadata !== undefined || (typeof l.code === 'string' && /^E[A-Z]+$/.test(l.code))
+    )
+  ) {
+    // An SDK attempt record or a socket error code with no response: the
+    // request never got an answer (`EPIPE`, `ECONNRESET`, a timeout).
+    verdict = ' No AWS response was received: the request failed before AWS answered.';
+  }
+  return `${segments.join('; ')}.${verdict}`;
 }

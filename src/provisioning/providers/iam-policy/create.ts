@@ -16,7 +16,11 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../../masked-retry-logger.js';
-import { describeAwsFailure, VERBOSE_POINTER } from '../../../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  VERBOSE_POINTER,
+  verbosePointerSentence,
+} from '../../../utils/aws-failure-text.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import type { CreateContext, ResourceCreateResult } from '../../../types/resource.js';
 import { type AttachedPrincipals, readPolicyTargetLists } from './shared.js';
@@ -243,12 +247,15 @@ export async function detachPartialPolicy(
       }
       // The class alone per step; the --verbose pointer once, after the list.
       withheld ||= failure.redacted;
+      // The summary ends `<Class>.` plus the pointer, or bare `<Class>.` on a
+      // `--verbose` run (go-to-k/cdkd#6162): drop both.
       const tail = ` ${VERBOSE_POINTER}`;
       const reason = !failure.redacted
         ? failure.detail
-        : failure.summary.endsWith(tail)
-          ? failure.summary.slice(0, -tail.length).replace(/\.$/, '')
-          : failure.summary;
+        : (failure.summary.endsWith(tail)
+            ? failure.summary.slice(0, -tail.length)
+            : failure.summary
+          ).replace(/\.$/, '');
       failed.push(`${step.what} (${log.mask(reason)}): ${step.command}`);
     }
   }
@@ -258,7 +265,7 @@ export async function detachPartialPolicy(
         `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
         // The pointer comes before the list: after it, a period would join
         // the last pasteable command.
-        `it is removed by hand${withheld ? ` (${VERBOSE_POINTER.replace(/\.$/, '')})` : ''}: ${failed.join('; ')}`
+        `it is removed by hand${withheld && verbosePointerSentence() ? ` (${VERBOSE_POINTER.replace(/\.$/, '')})` : ''}: ${failed.join('; ')}`
     );
   }
 }

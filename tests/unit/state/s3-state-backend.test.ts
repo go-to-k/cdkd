@@ -10,6 +10,7 @@ import {
   NoSuchKey,
 } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
 import { StateError, formatError } from '../../../src/utils/error-handler.js';
@@ -1713,7 +1714,35 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         expect(line).toMatch(/Could not read the legacy state record for S /);
         expect(line).toContain('AccessDenied');
         expect(line).toMatch(/left in place/);
+        expect(line).toMatch(/left in place\. Re-run with --verbose for the details\.$/);
       });
+
+      it('drops the --verbose re-run hint on a --verbose run (go-to-k/cdkd#6162)', async () => {
+      registerVerboseRunProbe(() => true);
+      try {
+        s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
+        s3Client.send.mockResolvedValueOnce({}); // delete new key
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/deployer/session-42 is not authorized'
+            ),
+            { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+          )
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        expect(line).toMatch(/Could not read the legacy state record for S /);
+        expect(line).toContain('AccessDenied');
+        expect(line).toMatch(/left in place/);
+          expect(line).toMatch(/left in place\. The details are in the debug output\.$/);
+            } finally {
+        registerVerboseRunProbe(() => false);
+      }
+    });
 
       it('keeps AWS\'s own wording out of the warning', async () => {
         // On this warning's headline population S3 words AccessDenied as

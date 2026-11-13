@@ -135,6 +135,7 @@ vi.mock('../../../src/state/malformed-resources-bag.js', async () => {
 });
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 import { readStateSourceWithoutWiring } from './_state-source.js';
 import {
   malformedRenderedContainersWarning,
@@ -372,7 +373,21 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     expect(out).not.toContain('eu-west-1');
     const warned = childWarnSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(warned).toContain("carries a 'region' of its own (a string)");
+    expect(warned).toContain('Re-run with --verbose to see the recorded value');
     expect(warned).not.toContain('eu-west-1');
+  });
+
+  it('on a --verbose run, the region warn points at the debug output (go-to-k/cdkd#6162)', async () => {
+    registerVerboseRunProbe(() => true);
+    try {
+      bucket.state = record({ region: 'eu-west-1' });
+      await runState(['show', 'MyStack']);
+      const warned = childWarnSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+      expect(warned).toContain('The recorded value is in the debug output, where it has one to show.');
+      expect(warned).not.toContain('--verbose');
+    } finally {
+      registerVerboseRunProbe(() => false);
+    }
   });
 
   it('state show --show-nested walks past a null resource ENTRY', async () => {

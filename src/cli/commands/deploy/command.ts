@@ -79,7 +79,7 @@ import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
 import { addStacksToWorkGraph } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
-import { confirmAutoAssetStorageCreate, forceQuitReleaseCommand } from './helpers.js';
+import { confirmAutoAssetStorageCreate, createDeploySigintHandler } from './helpers.js';
 
 /**
  * Deploy command implementation
@@ -274,34 +274,14 @@ export async function deployCommand(
   callerIdentityPromise.catch(() => undefined);
 
   let deployInterrupted = false;
-  const topLevelSigintHandler = () => {
-    if (deployInterrupted) {
-      // Force-exit bypasses every `finally`, so per-stack locks may be left
-      // behind. Print the recovery command (parity with destroy's force-quit
-      // path) — the lock TTL reclaims them automatically otherwise.
-      process.stderr.write(
-        '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run this for EACH stack it names, ' +
-          'in the region-qualified form — see the message that run prints.' +
-          // The holes are QUOTED, and on a labelled line of their own. A bare
-          // `<stackName>` is two shell redirections: `<stackName` reads stdin
-          // from a file and the `>` takes the next word as an output TARGET
-          // and creates it (measured on go-to-k/cdkd#3436). `commandHole`
-          // prints `'<stackName>'`, so this line is inert BY DESIGN and stays
-          // inert if a flag is appended. An earlier version of this comment
-          // described the unquoted text it replaced — "inert by where the
-          // command happens to stop ... one appended flag from being silent" —
-          // which is true of a BARE trailing hole and not of what this prints
-          // (go-to-k/cdkd#3613's M8).
-          // Built through the shared builder so it carries the run's typed
-          // `--profile` / `--state-bucket` / `--state-prefix` (go-to-k/cdkd#4177).
-          `\nRelease with: ${forceQuitReleaseCommand()}\n`
-      );
-      process.exit(130);
-    }
-    process.stderr.write('\nInterrupted — waiting for in-progress operations to complete...\n');
-    deployInterrupted = true;
-  };
+  // go-to-k/cdkd#6162: the first signal lets in-flight work (asset uploads
+  // included) finish; the second aborts the in-flight multipart uploads and
+  // then exits. See `createDeploySigintHandler`.
+  const topLevelSigintHandler = createDeploySigintHandler({
+    onFirst: () => {
+      deployInterrupted = true;
+    },
+  });
   process.on('SIGINT', topLevelSigintHandler);
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
   // through the same graceful path (incl. the engine's partial-state save

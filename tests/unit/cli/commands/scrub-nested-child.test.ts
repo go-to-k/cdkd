@@ -123,6 +123,7 @@ import { resetAccountInfoCache } from '../../../../src/deployment/intrinsic-func
 import { clearRecordedSecretExpressions } from '../../../../src/deployment/secret-redaction.js';
 import { scrubCommand, ScrubNeededError } from '../../../../src/cli/commands/scrub.js';
 import type { StackState } from '../../../../src/types/state.js';
+import { registerVerboseRunProbe } from '../../../../src/utils/aws-failure-text.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 
 const REGION = 'us-east-1';
@@ -1154,7 +1155,26 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
     const log = logLines.join('\n');
     expect(log).toContain(`Scrub of ${CHILD} failed`);
     expect(log).toContain('could not be resolved to the values a deploy would hand it');
+    expect(log).toContain('Re-run cdkd scrub with --verbose to see which value failed to resolve');
     expect(log).not.toContain(`No plaintext secrets found in ${CHILD}`);
+  });
+
+  it('on a --verbose run, points at the debug output instead of a re-run (go-to-k/cdkd#6162)', async () => {
+    registerVerboseRunProbe(() => true);
+    try {
+      standardApp();
+      secretValues.delete('app/db');
+      seed(PARENT, parentRecord());
+      seed(CHILD, leakyChildRecord());
+
+      await run([PARENT], { dryRun: true, fail: true });
+
+      const log = logLines.join('\n');
+      expect(log).toContain('The debug output above shows which value failed to resolve; fix that.');
+      expect(log).not.toContain('Re-run cdkd scrub with --verbose');
+    } finally {
+      registerVerboseRunProbe(() => false);
+    }
   });
 
   it('REFUSES a child whose row the parent record lost, when its record exists', async () => {

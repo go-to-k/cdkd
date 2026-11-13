@@ -1,13 +1,75 @@
 import { createReadStream, statSync } from 'node:fs';
 import { basename } from 'node:path';
-import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import type { Readable } from 'node:stream';
+import {
+  S3Client,
+  AbortMultipartUploadCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+} from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
-import { safeStringify } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../utils/aws-failure-text.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
+
+/**
+ * Largest object sent as ONE `PutObject`, and the part size of a multipart
+ * upload above it: `@aws-sdk/lib-storage`'s default (and S3's minimum) part
+ * size, so the split point is the one the AWS CDK CLI's cdk-assets uses
+ * (go-to-k/cdkd#6162; see `FileAssetPublisher.putObject`).
+ */
+export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
+
+/**
+ * The multipart uploads in flight, each as the function that interrupts it.
+ * See {@link abortInFlightMultipartUploads}.
+ */
+const inFlightUploads = new Map<() => Promise<void>, string>();
+let trackerSeq = 0;
+
+/** What {@link abortInFlightMultipartUploads} started. */
+export interface InFlightAbort {
+  /** `s3://bucket/key` of each upload being aborted, known at once. */
+  readonly destinations: readonly string[];
+  /** Settles once each abort reached S3 (or failed). Never rejects. */
+  readonly done: Promise<void>;
+}
+
+/**
+ * Abort every multipart upload in flight (go-to-k/cdkd#6162).
+ *
+ * For `deploy`'s SECOND Ctrl-C, which force-exits: it awaits `done` (bounded)
+ * before `process.exit`, so a killed deploy does not leave billed parts, and
+ * prints the interruption itself from `destinations`, since the exit races
+ * the uploads' own rejections. The FIRST Ctrl-C does not call this: deploy
+ * promises to wait for operations in progress, and an upload is one.
+ */
+export function abortInFlightMultipartUploads(): InFlightAbort {
+  const entries = [...inFlightUploads];
+  return {
+    destinations: entries.map(([, destination]) => destination),
+    done: Promise.allSettled(entries.map(([interrupt]) => interrupt())).then(() => undefined),
+  };
+}
+
+/**
+ * An upload stopped by {@link abortInFlightMultipartUploads}: an interruption
+ * the user asked for, not a failure: the work graph reports it as
+ * `Interrupted:` rather than `Failed:`.
+ */
+export class AssetUploadInterruptedError extends Error {
+  constructor(destination: string) {
+    super(
+      `Asset upload to ${destination} interrupted by user (Ctrl+C); the multipart upload was aborted.`
+    );
+    // `ASSET_UPLOAD_INTERRUPTED` in `work-graph.ts` matches this name.
+    this.name = 'AssetUploadInterruptedError';
+  }
+}
 
 /**
  * Publishes file assets to S3
@@ -17,6 +79,7 @@ import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
  * - Existence check (skip if already uploaded)
  * - ZIP packaging for directory assets
  * - Direct file upload for single files
+ * - Multipart upload above MULTIPART_UPLOAD_THRESHOLD (go-to-k/cdkd#6162)
  */
 export class FileAssetPublisher {
   private logger = getLogger().child('FileAssetPublisher');
@@ -167,15 +230,132 @@ export class FileAssetPublisher {
   ): Promise<void> {
     const stat = statSync(filePath);
     const stream = createReadStream(filePath);
+    try {
+      await this.putObject(client, bucket, key, stream, stat.size);
+    } catch (error) {
+      // A request that failed before (or while) reading the body leaves the
+      // file open; release the descriptor. A no-op on a consumed stream.
+      stream.destroy();
+      throw error;
+    }
+  }
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: stream,
-        ContentLength: stat.size,
-      })
+  /**
+   * Upload one object: a single `PutObject` up to {@link MULTIPART_UPLOAD_THRESHOLD},
+   * a multipart upload (`@aws-sdk/lib-storage`'s `Upload`) above it.
+   *
+   * WHY MULTIPART (go-to-k/cdkd#6162): a single request body has a size cap
+   * on some S3-compatible endpoints. AWS Emulator 1.0.322 answers a
+   * `PutObject` of 16 MiB or more with `413 Content Too Large` and closes the
+   * connection while the SDK is still writing the body, so the user saw only
+   * `write EPIPE` / `read ECONNRESET` (the 22 MB `AwsCliLayer` asset of
+   * `s3deploy.BucketDeployment` hit it). The AWS CDK CLI never sends that
+   * request: cdk-assets uploads every file asset through `Upload`, whose
+   * default 5 MiB parts stay far below such a cap. Real S3 accepts either
+   * shape, and parallel parts are the faster one for a large object there.
+   *
+   * At or below the threshold `Upload` would send the same single
+   * `PutObject` anyway (after buffering the stream), so that path keeps the
+   * direct, streamed request it always made.
+   */
+  private async putObject(
+    client: S3Client,
+    bucket: string,
+    key: string,
+    body: Readable | Buffer,
+    contentLength: number
+  ): Promise<void> {
+    if (contentLength <= MULTIPART_UPLOAD_THRESHOLD) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentLength: contentLength,
+        })
+      );
+      return;
+    }
+    this.logger.debug(
+      safeMsg`Uploading s3://${bucket}/${key} (${contentLength} bytes) as a multipart upload`
     );
+    // The abort is OURS, not lib-storage's (`leavePartsOnError: true`): its
+    // own abort is awaited BEFORE it rethrows, so an AbortMultipartUpload that
+    // fails (no `s3:AbortMultipartUpload`) replaced the part's real error and
+    // left the upload behind anyway. Here the original error always wins and
+    // a failed abort is a debug line; the asset bucket's lifecycle rule is the
+    // backstop for what an abort cannot reach (go-to-k/cdkd#6185).
+    const abortController = new AbortController();
+    const upload = new Upload({
+      client,
+      params: { Bucket: bucket, Key: key, Body: body, ContentLength: contentLength },
+      partSize: MULTIPART_UPLOAD_THRESHOLD,
+      leavePartsOnError: true,
+      abortController,
+    });
+    // `done()` rejects the moment the controller aborts, which can be while
+    // CreateMultipartUpload is still in flight: `upload.uploadId` is then not
+    // set yet, but the upload WILL exist once S3 answers. So the create's own
+    // answer is captured here, and the abort waits for it.
+    let createAnswer: Promise<string | undefined> | undefined;
+    const trackerName = `cdkdTrackCreateMultipartUpload${++trackerSeq}`;
+    client.middlewareStack?.add(
+      (next, context) => async (args) => {
+        const result = next(args);
+        if (context.commandName === 'CreateMultipartUploadCommand') {
+          createAnswer = result.then(
+            (r) => (r.output as { UploadId?: string }).UploadId,
+            () => undefined
+          );
+        }
+        return result;
+      },
+      { step: 'initialize', name: trackerName }
+    );
+    let interrupted = false;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => (settle = resolve));
+    const interrupt = async (): Promise<void> => {
+      interrupted = true;
+      abortController.abort();
+      await settled;
+    };
+    inFlightUploads.set(interrupt, `s3://${bucket}/${key}`);
+    try {
+      await upload.done();
+    } catch (error) {
+      const uploadId = upload.uploadId ?? (await createAnswer);
+      await this.abortMultipartUpload(client, bucket, key, uploadId);
+      if (interrupted) throw new AssetUploadInterruptedError(`s3://${bucket}/${key}`);
+      throw error;
+    } finally {
+      inFlightUploads.delete(interrupt);
+      client.middlewareStack?.remove(trackerName);
+      settle();
+    }
+  }
+
+  /** Best effort: never throws, so the caller's original error is what surfaces. */
+  private async abortMultipartUpload(
+    client: S3Client,
+    bucket: string,
+    key: string,
+    uploadId: string | undefined
+  ): Promise<void> {
+    // No id: the upload failed before CreateMultipartUpload answered, so
+    // there is nothing in the bucket to abort.
+    if (uploadId === undefined) return;
+    try {
+      await client.send(
+        new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId })
+      );
+    } catch (abortError) {
+      this.logger.debug(
+        safeMsg`Could not abort the multipart upload of s3://${bucket}/${key} ` +
+          safeMsg`(${describeAwsFailure(abortError).detail}); its parts stay until the bucket's ` +
+          `lifecycle rule removes them, or until it is aborted by hand.`
+      );
+    }
   }
 
   /**
@@ -215,14 +395,7 @@ export class FileAssetPublisher {
       archive.finalize().catch(reject);
     });
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: body,
-        ContentLength: body.length,
-      })
-    );
+    await this.putObject(client, bucket, key, body, body.length);
   }
 
   /**

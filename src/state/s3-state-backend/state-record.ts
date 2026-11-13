@@ -25,7 +25,7 @@ import {
   safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, verboseAwareText } from '../../utils/aws-failure-text.js';
 import { UNRENDERABLE } from '../lock-contention-message.js';
 import { keyMayHaveVersions, listVersionedSubdirectories } from '../earlier-state-versions.js';
 import { StateError, normalizeAwsError } from '../../utils/error-handler.js';
@@ -506,8 +506,8 @@ export async function deleteState(
       const safeName = this.displayName(stackName);
       this.logger.warn(
         `Could not read the legacy state record for ${safeName} while cleaning up ` +
-          `(${legacyProbe.reason}). If one exists it was left in place. ` +
-          `Re-run with --verbose for the details.`
+          `(${legacyProbe.reason}). If one exists it was left in place.` +
+          safeMsg`${verboseAwareText(' Re-run with --verbose for the details.', ' The details are in the debug output.')}`
       );
     }
     if (legacyProbeBelongsTo(legacyProbe, region)) {

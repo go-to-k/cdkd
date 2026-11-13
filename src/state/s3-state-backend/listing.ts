@@ -19,7 +19,7 @@ import {
   safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
+import { verbosePointerTail } from '../../utils/aws-failure-text.js';
 import { currentLogLineMasker } from '../../utils/log-line-masker.js';
 import { UNRENDERABLE } from '../lock-contention-message.js';
 // The LEAF directly, not the re-export: this module needs one pure function,
@@ -425,7 +425,7 @@ export async function deleteRawObjects(this: S3StateBackend, keys: string[]): Pr
   if (failures.length > 0) {
     throw new StateError(
       `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ` +
-        `${failures.join('; ')}. ${VERBOSE_POINTER}`
+        `${failures.join('; ')}.${verbosePointerTail()}`
     );
   }
 }

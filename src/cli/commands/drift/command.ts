@@ -11,7 +11,7 @@ import { S3StateBackend, type StackStateRef } from '../../../state/s3-state-back
 import { producerRecordKey } from '../../../state/record-keys.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
 import { AwsClients, setAwsClients, runWithStackAwsClients } from '../../../utils/aws-clients.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verboseAwareText } from '../../../utils/aws-failure-text.js';
 import { resolveStateBucketWithDefault } from '../../config-loader.js';
 import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import {
@@ -813,7 +813,7 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
             `Cannot read IAM principals (${name || 'access denied'}). A resource policy whose ` +
               `principal AWS rendered as a unique id (AROA…/AIDA…) may therefore report drift ` +
               `that is only a spelling difference; grant iam:GetRole / iam:GetUser to resolve ` +
-              `it, or re-run with --verbose for the full error.`
+              safeMsg`it${verboseAwareText(', or re-run with --verbose for the full error', ' (the full error is in the debug output)')}.`
           );
         }
         // BOTH operands, and `message` is the load-bearing half here: the
