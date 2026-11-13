@@ -14,7 +14,11 @@ vi.mock('cdk-local/internal', async (importOriginal) => ({
 }));
 
 const { buildProgram } = await import('../../../src/cli/program.js');
-const { localCustomResourceRuntimeActive, setLocalCustomResourceRuntimeEnabled } =
+const {
+  localCustomResourceCommand,
+  localCustomResourceRuntimeActive,
+  setLocalCustomResourceRuntimeEnabled,
+} =
   await import('../../../src/local/custom-resource-runtime-gate.js');
 
 function find(program: Command, path: string[]): Command {
@@ -55,6 +59,15 @@ describe('--no-local-custom-resources', () => {
     setLocalCustomResourceRuntimeEnabled(false);
     await run(['deploy'], []);
     expect(localCustomResourceRuntimeActive()).toBe(true);
+  });
+
+  it.each([
+    [['rollback'], 'rollback'],
+    [['state', 'destroy'], 'state destroy'],
+    [['destroy'], 'destroy'],
+  ])('records %j as the command a fallback warning speaks for', async (path, expected) => {
+    await run(path, ['MyStack']);
+    expect(localCustomResourceCommand()).toBe(expected);
   });
 
   it('turns the gate off on destroy', async () => {
