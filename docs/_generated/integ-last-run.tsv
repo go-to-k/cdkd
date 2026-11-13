@@ -221,7 +221,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-12T07:20:46Z	PASS	115	verify.sh	rc 0, destroy 0 errors, 0 orphans; #6120 final set, parallel
+lambda	2026-11-13T13:50:09Z	PASS	111	verify.sh	rc 0, destroy 0 errors, 0 orphans; #6146 parallel set
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
@@ -311,6 +311,7 @@ nlb-source-nat	2026-11-04T18:46:30Z	PASS	341	verify.sh	rc ok, destroy 0 errors, 
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
 noecho-parameter-masking	2026-11-07T14:54:28Z	PASS	1412	verify.sh	#6010 deploy-engine masking split head; own bucket; rc ok, orph clean
+noecho-restapi-body-mac	2026-11-13T13:50:09Z	PASS	90	verify.sh	rc 0, destroy 0 errors, 0 orphans; #6146 parallel set
 opensearch-domain-getatt	2026-11-04T07:36:26Z	PASS	1744	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs
 orphan-resource	2026-11-04T05:17:34Z	PASS	99	standard	manual README flow (no verify.sh): deploy, orphan, state/bucket survive, import, destroy 0 errors; orph clean
@@ -392,6 +393,7 @@ schema-v11-to-v12-migration	2026-11-04T19:21:11Z	PASS	125	verify.sh	rc ok, orph 
 schema-v12-to-v13-migration	2026-11-05T10:28:51Z	PASS	135	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 schema-v14-to-v15-migration	2026-10-29T20:43:22Z	PASS	1664	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
 schema-v15-to-v16-migration	2026-11-13T04:44:16Z	PASS	81	verify.sh	released @cdkd/cli@0.346.0 v15 -> local v16, 29 assertions, rc ok, orph clean
+schema-v16-to-v17-migration	2026-11-13T13:50:09Z	PASS	135	verify.sh	rc 0, destroy 0 errors, 0 orphans; #6146 parallel set
 schema-v5-to-v6-migration	2026-11-04T05:36:33Z	PASS	52	verify.sh	batch 4; transparent auto-upgrade verified, own state bucket, 0 err 0 orph
 schema-v6-to-v7-migration	2026-11-04T05:36:33Z	PASS	59	verify.sh	batch 4; transparent auto-upgrade verified, own state bucket, 0 err 0 orph
 schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
