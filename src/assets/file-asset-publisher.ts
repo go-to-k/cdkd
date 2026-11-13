@@ -1,6 +1,8 @@
 import { createReadStream, statSync } from 'node:fs';
 import { basename } from 'node:path';
+import type { Readable } from 'node:stream';
 import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
 import { displaySafe } from '../utils/display-safe.js';
@@ -8,6 +10,14 @@ import { getLogger } from '../utils/logger.js';
 import { safeStringify } from '../utils/aws-failure-text.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
+
+/**
+ * Largest object sent as ONE `PutObject`, and the part size of a multipart
+ * upload above it: `@aws-sdk/lib-storage`'s default (and S3's minimum) part
+ * size, so the split point is the one the AWS CDK CLI's cdk-assets uses
+ * (go-to-k/cdkd#6162; see `FileAssetPublisher.putObject`).
+ */
+export const MULTIPART_UPLOAD_THRESHOLD = 5 * 1024 * 1024;
 
 /**
  * Publishes file assets to S3
@@ -166,16 +176,55 @@ export class FileAssetPublisher {
     key: string
   ): Promise<void> {
     const stat = statSync(filePath);
-    const stream = createReadStream(filePath);
+    await this.putObject(client, bucket, key, createReadStream(filePath), stat.size);
+  }
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: stream,
-        ContentLength: stat.size,
-      })
+  /**
+   * Upload one object: a single `PutObject` up to {@link MULTIPART_UPLOAD_THRESHOLD},
+   * a multipart upload (`@aws-sdk/lib-storage`'s `Upload`) above it.
+   *
+   * WHY MULTIPART (go-to-k/cdkd#6162): a single request body has a size cap
+   * on some S3-compatible endpoints. AWS Emulator 1.0.322 answers a
+   * `PutObject` of 16 MiB or more with `413 Content Too Large` and closes the
+   * connection while the SDK is still writing the body, so the user saw only
+   * `write EPIPE` / `read ECONNRESET` (the 22 MB `AwsCliLayer` asset of
+   * `s3deploy.BucketDeployment` hit it). The AWS CDK CLI never sends that
+   * request: cdk-assets uploads every file asset through `Upload`, whose
+   * default 5 MiB parts stay far below such a cap. Real S3 accepts either
+   * shape, and parallel parts are the faster one for a large object there.
+   *
+   * At or below the threshold `Upload` would send the same single
+   * `PutObject` anyway (after buffering the stream), so that path keeps the
+   * direct, streamed request it always made.
+   */
+  private async putObject(
+    client: S3Client,
+    bucket: string,
+    key: string,
+    body: Readable | Buffer,
+    contentLength: number
+  ): Promise<void> {
+    if (contentLength <= MULTIPART_UPLOAD_THRESHOLD) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentLength: contentLength,
+        })
+      );
+      return;
+    }
+    this.logger.debug(
+      `Uploading s3://${bucket}/${key} (${contentLength} bytes) as a multipart upload`
     );
+    // `leavePartsOnError` stays at its default `false`: a failed part aborts
+    // the multipart upload, so no orphaned parts are left billed in the bucket.
+    await new Upload({
+      client,
+      params: { Bucket: bucket, Key: key, Body: body, ContentLength: contentLength },
+      partSize: MULTIPART_UPLOAD_THRESHOLD,
+    }).done();
   }
 
   /**
@@ -215,14 +264,7 @@ export class FileAssetPublisher {
       archive.finalize().catch(reject);
     });
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: body,
-        ContentLength: body.length,
-      })
-    );
+    await this.putObject(client, bucket, key, body, body.length);
   }
 
   /**
