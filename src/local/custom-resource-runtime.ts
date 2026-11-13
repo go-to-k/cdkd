@@ -28,6 +28,7 @@
  *   one warning.
  */
 
+import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
 
 import {
@@ -51,6 +52,7 @@ import type { ResolvedZipLambda } from './lambda-resolver/types.js';
 import { getActiveWorkloadAwsWiring, setContainerRegion } from './local-aws-wiring.js';
 import {
   NO_LOCAL_CUSTOM_RESOURCES_FLAG,
+  localCustomResourceCommand,
   localCustomResourceRuntimeActive,
   setLocalCustomResourceRuntimeEnabled,
 } from './custom-resource-runtime-gate.js';
@@ -257,6 +259,21 @@ async function dockerIsAvailable(): Promise<boolean> {
   return dockerAvailable;
 }
 
+/**
+ * The warning for a command that read no cloud assembly. Only a DESTROY gets
+ * "run `cdkd destroy` from the app": for `cdkd rollback` (or anything else)
+ * that remedy would delete the stack the user meant to keep.
+ */
+export function noAssemblyWarning(command: string | undefined): string {
+  const head =
+    `This command did not synthesize the CDK app, so custom resource functions run in AWS ` +
+    `Emulator's own Lambda runtime, which can fail.`;
+  if (command === 'destroy' || command === 'state destroy') {
+    return `${head} Run \`cdkd destroy --aws-emulator\` from the app's directory to run them locally.`;
+  }
+  return `${head} Pass ${NO_LOCAL_CUSTOM_RESOURCES_FLAG} to silence this.`;
+}
+
 /** The function's region, from its ARN (`arn:<partition>:lambda:<region>:...`). */
 function regionOfFunctionArn(arn: string): string | undefined {
   const parts = arn.split(':');
@@ -307,12 +324,7 @@ export async function invokeCustomResourceFunctionLocally(
   const stacks = synthesizedStacks();
   if (stacks.length === 0) {
     // `cdkd state destroy`, `cdkd rollback`, or a destroy run without the app.
-    warnOnce(
-      'no-assembly',
-      `This command did not synthesize the CDK app, so custom resource functions run in AWS ` +
-        `Emulator's own Lambda runtime, which can fail. Run \`cdkd destroy --aws-emulator\` from ` +
-        `the app's directory to run them locally.`
-    );
+    warnOnce('no-assembly', noAssemblyWarning(localCustomResourceCommand()));
     return undefined;
   }
   const choice = chooseServiceTokenFunction(
@@ -426,14 +438,19 @@ async function runInContainer(
   // A deploy interrupted for good (a second ^C) leaves through
   // `process.exit`, which skips the `finally` below: remove what this event
   // started on the way out.
+  // Named up front and recorded BEFORE each `docker run`, so an exit while it
+  // is still starting (before its id is known) removes it too.
+  const containerName = `cdkd-cr-${randomBytes(6).toString('hex')}`;
+  const forwarderName = `${containerName}-443`;
+  const starting: string[] = [];
   const onExit = (): void => {
-    removeContainersSync([forwarderId, containerId].filter((id): id is string => id !== undefined));
+    removeContainersSync([...starting].reverse());
     for (const dir of tmpDirs()) rmSync(dir, { recursive: true, force: true });
   };
   exitCleanups.add(onExit);
   if (!exitHookInstalled) {
     exitHookInstalled = true;
-    process.once('exit', () => {
+    process.on('exit', () => {
       for (const cleanup of exitCleanups) cleanup();
     });
   }
@@ -456,7 +473,9 @@ async function runInContainer(
 
     const hostPort = await pickFreePort();
     const extraHosts = await resolveHostGatewayExtraHosts();
+    starting.push(containerName);
     containerId = await runDetached({
+      name: containerName,
       image: imagePlan.image,
       mounts: imagePlan.mounts,
       ...(imagePlan.extraMounts !== undefined && { extraMounts: imagePlan.extraMounts }),
@@ -480,7 +499,14 @@ async function runInContainer(
     });
     if (forwardPort !== undefined) {
       // CDK's Node.js handlers connect to 443 whatever the URL's port.
-      forwarderId = await startNamespacePortForwarder(containerId, 443, forwardPort);
+      starting.push(forwarderName);
+      forwarderId = await startNamespacePortForwarder(
+        containerId,
+        443,
+        forwardPort,
+        undefined,
+        forwarderName
+      );
     }
     await waitForRieReady(CONTAINER_HOST, hostPort, 5000);
     const invokeTimeoutMs = Math.max(30_000, timeoutSec * 2 * 1000);

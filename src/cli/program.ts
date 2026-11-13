@@ -125,7 +125,12 @@ export function buildProgram(): Command {
     // invoke custom resources; only read while `--aws-emulator` is active.
     setLocalCustomResourceRuntimeEnabled(
       actionCommand.optsWithGlobals<{ localCustomResources?: boolean }>().localCustomResources !==
-        false
+        false,
+      // The command path (`deploy`, `destroy`, `state destroy`, `rollback`),
+      // so a fallback warning names a remedy that fits this command.
+      actionCommand.parent?.parent
+        ? `${actionCommand.parent.name()} ${actionCommand.name()}`
+        : actionCommand.name()
     );
     // AFTER the mirror above: profile config reaches the SDK only through
     // AWS_PROFILE, and the S3 endpoint override and addressing_style can both

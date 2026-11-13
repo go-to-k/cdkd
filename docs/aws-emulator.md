@@ -486,10 +486,11 @@ sent the event to the emulator:
 
 - Docker is not running: start it.
 - You passed `--no-local-custom-resources`: drop it.
-- The command did not read the app (`cdkd state destroy`, `cdkd rollback`), or
-  the function is not in it (the `ServiceToken` is not a `Fn::GetAtt` of a
-  function in the same template): run `cdkd destroy --aws-emulator` from the
-  app's directory.
+- The command did not read the app, or the function is not in it (the
+  `ServiceToken` is not a `Fn::GetAtt` of a function in the same template).
+  For `cdkd state destroy` or a destroy without the app, run
+  `cdkd destroy --aws-emulator` from the app's directory instead. `cdkd rollback`
+  never reads the app; its custom resource events stay in the emulator.
 
 Run a function of your own through `cdkd local invoke`, which uses the same
 image, instead of invoking it in the emulator.

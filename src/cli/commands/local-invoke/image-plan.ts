@@ -133,9 +133,6 @@ export async function resolveZipImagePlan(
 
   const image = resolveRuntimeImage(lambda.runtime);
 
-  // Commander surfaces `--no-pull` as `pull: false` (default `true`).
-  await pullImage(image, options.pull === false);
-
   // PR 6 (#232): merge every same-stack `AWS::Lambda::LayerVersion`
   // referenced by `Properties.Layers` into a single bind mount at
   // `/opt`. AWS extracts layer ZIPs into `/opt` IN ORDER (later
@@ -151,6 +148,9 @@ export async function resolveZipImagePlan(
   // `/opt` tmpdir so the outer cleanup can remove all of them.
   let layerPlan: Awaited<ReturnType<typeof materializeLambdaLayersIncludingArns>>;
   try {
+    // Commander surfaces `--no-pull` as `pull: false` (default `true`). Inside
+    // the try: a failed pull must not leave the inline-code tmpdir behind.
+    await pullImage(image, options.pull === false);
     layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
       logicalId: lambda.logicalId,
       cdkPath: readCdkPathOrUndefined(lambda.resource),

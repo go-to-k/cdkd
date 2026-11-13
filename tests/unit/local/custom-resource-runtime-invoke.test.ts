@@ -55,6 +55,8 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
 
 const { invokeCustomResourceFunctionLocally, resetLocalCustomResourceRuntimeForTest } =
   await import('../../../src/local/custom-resource-runtime.js');
+const { setLocalCustomResourceRuntimeEnabled } =
+  await import('../../../src/local/custom-resource-runtime-gate.js');
 
 const TOKEN = 'arn:aws:lambda:eu-west-1:000000000000:function:Handler-abc';
 const RESPONSE_URL =
@@ -151,12 +153,26 @@ describe('declines, so the event goes to the emulator', () => {
     expect(dr.runDetached).not.toHaveBeenCalled();
   });
 
-  it('when the command read no assembly: undefined and a warning naming the remedy', async () => {
+  it.each(['destroy', 'state destroy'])(
+    'under %s with no assembly: undefined and a warning naming destroy from the app',
+    async (command) => {
+      setLocalCustomResourceRuntimeEnabled(true, command);
+      assembly.stacks = [];
+      expect(await invoke()).toBeUndefined();
+      expect(String(log.warn.mock.calls[0]![0])).toMatch(
+        /did not synthesize the CDK app.*cdkd destroy --aws-emulator/
+      );
+    }
+  );
+
+  it('under rollback with no assembly: never suggests a destroy (it would delete the stack)', async () => {
+    setLocalCustomResourceRuntimeEnabled(true, 'rollback');
     assembly.stacks = [];
     expect(await invoke()).toBeUndefined();
-    expect(String(log.warn.mock.calls[0]![0])).toMatch(
-      /did not synthesize the CDK app.*cdkd destroy --aws-emulator/
-    );
+    const warning = String(log.warn.mock.calls[0]![0]);
+    expect(warning).toContain('did not synthesize the CDK app');
+    expect(warning).not.toContain('destroy');
+    expect(warning).toContain('--no-local-custom-resources');
   });
 
   it('when the function is not in the assembly: undefined and a warning', async () => {
@@ -216,7 +232,7 @@ describe('the container', () => {
 
   it('gets the ResponseURL re-signed for 443, with the 443 forwarder to the emulator port', async () => {
     await invoke();
-    expect(dr.startNamespacePortForwarder).toHaveBeenCalledWith('ctr-1', 443, 9297);
+    expect(dr.startNamespacePortForwarder.mock.calls[0]!.slice(0, 3)).toEqual(['ctr-1', 443, 9297]);
     const sent = rie.invokeRie.mock.calls[0]![2] as { ResponseURL: string; RequestType: string };
     const url = new URL(sent.ResponseURL);
     expect(url.origin).toBe('https://127.0.0.1');
@@ -277,9 +293,36 @@ describe('teardown', () => {
     const pending = invoke();
     await vi.waitFor(() => expect(rie.invokeRie).toHaveBeenCalled());
     process.emit('exit', 130);
-    expect(dr.removeContainersSync).toHaveBeenCalledWith(['fwd-1', 'ctr-1']);
+    // By the names given up front: the container's, and its 443 sidecar's.
+    const container = (dr.runDetached.mock.calls[0]![0] as { name: string }).name;
+    expect(container).toMatch(/^cdkd-cr-[0-9a-f]{12}$/);
+    expect(dr.startNamespacePortForwarder.mock.calls[0]![4]).toBe(`${container}-443`);
+    expect(dr.removeContainersSync).toHaveBeenCalledWith([`${container}-443`, container]);
     expect(existsSync(layersTmpDir)).toBe(false);
     release();
     await pending;
+  });
+
+  it('removes a container that is still starting when the process exits', async () => {
+    let started: (id: string) => void = () => undefined;
+    dr.runDetached.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          started = resolve;
+        })
+    );
+    const pending = invoke();
+    await vi.waitFor(() => expect(dr.runDetached).toHaveBeenCalled());
+    process.emit('exit', 130);
+    const container = (dr.runDetached.mock.calls[0]![0] as { name: string }).name;
+    expect(dr.removeContainersSync).toHaveBeenCalledWith([container]);
+    started('ctr-1');
+    await pending;
+  });
+
+  it('drops its exit cleanup once the event finished', async () => {
+    await invoke();
+    process.emit('exit', 0);
+    expect(dr.removeContainersSync).not.toHaveBeenCalled();
   });
 });

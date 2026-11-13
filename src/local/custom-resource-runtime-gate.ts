@@ -18,10 +18,21 @@ function localAwsEmulatorActive(): boolean {
 export const NO_LOCAL_CUSTOM_RESOURCES_FLAG = '--no-local-custom-resources';
 
 let enabled = true;
+let commandPath: string | undefined;
 
-/** `--no-local-custom-resources` as commander parses it (`false`); set from the `preAction` hook. */
-export function setLocalCustomResourceRuntimeEnabled(value: boolean): void {
+/**
+ * `--no-local-custom-resources` as commander parses it (`false`), and the
+ * running command's path (`destroy`, `state destroy`, `rollback`, ...); set
+ * from the `preAction` hook.
+ */
+export function setLocalCustomResourceRuntimeEnabled(value: boolean, command?: string): void {
   enabled = value;
+  commandPath = command;
+}
+
+/** The running command's path, for a fallback warning's remedy. */
+export function localCustomResourceCommand(): string | undefined {
+  return commandPath;
 }
 
 /**

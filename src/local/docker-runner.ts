@@ -661,11 +661,15 @@ export async function imageInLocalCache(image: string): Promise<boolean> {
  * `127.0.0.1:<argv[1]>` and pipe each connection to `127.0.0.1:<argv[2]>`.
  * Bytes pass through untouched, so TLS stays end to end.
  */
-const NAMESPACE_PORT_FORWARDER_SCRIPT =
+export const NAMESPACE_PORT_FORWARDER_SCRIPT =
   "const net=require('net');const [l,t]=process.argv.slice(1).map(Number);" +
-  "net.createServer((c)=>{const u=net.connect(t,'127.0.0.1');c.pipe(u);u.pipe(c);" +
-  "u.on('error',()=>c.destroy());c.on('error',()=>u.destroy());})" +
-  ".listen(l,'127.0.0.1',()=>console.log('ready'));";
+  // Each connection goes on in its own address family: one that came in on
+  // `::1` (an `https://[::1]:<port>` emulator) is piped to `[::1]:<target>`.
+  'const h=(c)=>{const u=net.connect(t,c.localAddress);c.pipe(u);u.pipe(c);' +
+  "u.on('error',()=>c.destroy());c.on('error',()=>u.destroy());};" +
+  // `::1` too, ignoring an error: a namespace without IPv6 still forwards IPv4.
+  "const s6=net.createServer(h);s6.on('error',()=>{});s6.listen(l,'::1');" +
+  "net.createServer(h).listen(l,'127.0.0.1',()=>console.log('ready'));";
 
 /**
  * Forward `127.0.0.1:<listenPort>` to `127.0.0.1:<targetPort>` inside
@@ -680,12 +684,15 @@ export async function startNamespacePortForwarder(
   containerId: string,
   listenPort: number,
   targetPort: number,
-  readyTimeoutMs = 15_000
+  readyTimeoutMs = 15_000,
+  /** A name the caller can `docker rm -f` before this resolves (an exit mid-start). */
+  name?: string
 ): Promise<string> {
   const args = [
     'run',
     '-d',
     '--rm',
+    ...(name !== undefined ? ['--name', name] : []),
     '--network',
     `container:${containerId}`,
     '--entrypoint',

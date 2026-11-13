@@ -20,6 +20,12 @@ vi.mock('../../../src/local/layer-arn-materializer.js', () => ({
   materializeLayerFromArn: arnLayer,
 }));
 
+const pull = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  pullImage: pull,
+}));
+
 const { resolveAssetCodePath } = await import('../../../src/local/lambda-resolver/asset-code.js');
 const { materializeLambdaLayersIncludingArns } =
   await import('../../../src/cli/commands/local-invoke/image-plan.js');
@@ -116,6 +122,40 @@ describe('materializeLambdaLayersIncludingArns (local invoke, custom-resource ru
     ).rejects.toThrow('GetLayerVersion denied');
     expect(extracted).toBeDefined();
     expect(existsSync(extracted!)).toBe(false);
+  });
+});
+
+describe('resolveZipImagePlan: a failed pull', () => {
+  it('removes the inline-code dir it made before the pull', async () => {
+    const { resolveZipImagePlan } = await import('../../../src/cli/commands/local-invoke/image-plan.js');
+    let inlineDir: string | undefined;
+    pull.mockImplementation(() => {
+      inlineDir = readdirSync(tmpdir())
+        .filter((n) => n.startsWith('cdkd-local-invoke-'))
+        .map((n) => join(tmpdir(), n))
+        .find(
+          (d) => existsSync(join(d, 'index.js')) && readFileSync(join(d, 'index.js'), 'utf8') === MARK
+        );
+      return Promise.reject(new Error('pull failed'));
+    });
+    const lambda = {
+      kind: 'zip',
+      logicalId: 'Fn',
+      runtime: 'nodejs22.x',
+      handler: 'index.handler',
+      codePath: null,
+      inlineCode: MARK,
+      layers: [],
+      architecture: 'x86_64',
+      memoryMb: 128,
+      timeoutSec: 3,
+      resource: { Type: 'AWS::Lambda::Function', Properties: {} },
+    };
+    await expect(resolveZipImagePlan(lambda as never, { pull: true })).rejects.toThrow(
+      'pull failed'
+    );
+    expect(inlineDir).toBeDefined();
+    expect(existsSync(inlineDir!)).toBe(false);
   });
 });
 
