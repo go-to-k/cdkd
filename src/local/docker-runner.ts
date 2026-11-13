@@ -259,6 +259,16 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     opts.extraMounts ?? [],
     opts.mounts.map((m) => m.containerPath)
   );
+  // On the host network no sidecar runs (the workload's loopback is the
+  // host's, shared by every workload): full emulator mode then sends SQS
+  // straight to the emulator, as before the SQS sidecar (cdkd#6178).
+  if (
+    opts.network === 'host' &&
+    wiring.sidecar?.passthrough &&
+    wired.env['AWS_ENDPOINT_URL_SQS'] === wiring.sidecar.endpoint
+  ) {
+    delete wired.env['AWS_ENDPOINT_URL_SQS'];
+  }
   const wiredOpts: DockerRunOptions = { ...opts, env: wired.env, extraMounts: wired.extraMounts };
   const ports = loopbackPortsFor(wiring, wired.env, opts.network);
   // Pull the forwarder image BEFORE the workload starts, so the forwarder is

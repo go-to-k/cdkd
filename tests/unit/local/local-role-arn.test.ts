@@ -138,3 +138,41 @@ describe('the four cdkd-owned local commands publish through applyRoleArnForLoca
     expect(lines.filter((l) => /\bapplyRoleArnIfSet\b/.test(l))).toEqual([]);
   });
 });
+
+describe('applyRoleArnForLocal in AWS Emulator mixed mode (go-to-k/cdkd#6150)', () => {
+  const OVERRIDE = { endpoint: 'https://127.0.0.1:9381', credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } };
+  afterEach(async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    const { setAwsEndpointOverrideSource } = await import('../../../src/utils/aws-client-defaults.js');
+    setActiveWorkloadAwsWiring(undefined);
+    setAwsEndpointOverrideSource(undefined);
+    mocks.applyRoleArnIfSet.mockReset();
+  });
+
+  it('runs the --role-arn hop on REAL AWS (it establishes the real identity); under --aws-emulator alone, on the emulator', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+    const { awsClientDefaults, setAwsEndpointOverrideSource } = await import(
+      '../../../src/utils/aws-client-defaults.js'
+    );
+    const { mixedModeEmulatorOverride } = await import('../../../src/local/local-aws-wiring.js');
+    const seen: Array<string | undefined> = [];
+    mocks.applyRoleArnIfSet.mockImplementation(async () => {
+      // The endpoint the hop's STS client would be built with.
+      seen.push(awsClientDefaults({ ignoreAssumedRole: true }).endpoint);
+    });
+    setAwsEndpointOverrideSource(mixedModeEmulatorOverride);
+
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      mixed: { realServices: ['STS'], emulatorClientOverride: OVERRIDE },
+      dispose: () => {},
+    } as never);
+    await applyRoleArnForLocal({ roleArn: 'arn:aws:iam::123456789012:role/Deploy', region: 'us-east-1' });
+
+    setActiveWorkloadAwsWiring(undefined);
+    setAwsEndpointOverrideSource(() => OVERRIDE);
+    await applyRoleArnForLocal({ roleArn: 'arn:aws:iam::123456789012:role/Deploy', region: 'us-east-1' });
+
+    expect(seen).toEqual([undefined, OVERRIDE.endpoint]);
+  });
+});

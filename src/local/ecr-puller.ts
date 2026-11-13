@@ -12,6 +12,9 @@ import {
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { runWithRealAws } from '../utils/aws-client-defaults.js';
+import type { AwsEmulatorWorkload } from 'cdk-local/internal';
+import { realAwsException } from './local-aws-wiring.js';
 import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
 
 export { parseEcrRegistryHost };
@@ -180,6 +183,14 @@ export interface EcrPullOptions {
    * / `ecr:BatchGetImage` on the target repository.
    */
   ecrRoleArn?: string;
+  /**
+   * The workload the image is for (AWS Emulator mixed mode, go-to-k/cdkd#6150
+   * / #6179): under `--aws-emulator` the image's token and pull come from the
+   * emulator, unless THIS workload's own exceptions (`Parameters` plus its own
+   * section) mark `AWS_ENDPOINT_URL_ECR` `"real-aws"` — then from real ECR,
+   * with the real identity.
+   */
+  workload?: AwsEmulatorWorkload | undefined;
 }
 
 /** STS-issued temporary credentials shape used to authenticate the ECR client. */
@@ -271,6 +282,22 @@ function isCredentialFresh(creds: TempCredentials): boolean {
  * (issues #1855 / #3670).
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
+  // AWS Emulator mixed mode: a workload excepting ECR pulls from REAL ECR —
+  // every client this pull builds (the caller identity, the
+  // `--ecr-role-arn` hop, the ECR token) runs on real AWS. Every other pull
+  // keeps the process default (the emulator under `--aws-emulator`).
+  if (realAwsException('ECR', options.workload)) {
+    return runWithRealAws(() => pullEcrImageOnSide(imageUri, options, 'real'));
+  }
+  return pullEcrImageOnSide(imageUri, options, 'default');
+}
+
+/** {@link pullEcrImage} on one side; `side` keeps the two sides' caches apart. */
+async function pullEcrImageOnSide(
+  imageUri: string,
+  options: EcrPullOptions,
+  side: 'real' | 'default'
+): Promise<string> {
   const logger = getLogger().child('ecr-puller');
 
   const parsed = parseEcrUri(imageUri);
@@ -316,7 +343,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // client below builds from it and both caches key on it, so a value is always
   // filed under the identity that obtained it (issue #3588).
   const credentialConfig = ambientCredentialConfig();
-  const identityFingerprint = credentialFingerprint(credentialConfig);
+  // Keyed by the side too: in mixed mode one process pulls from the emulator
+  // and from real ECR with the same configured identity.
+  const identityFingerprint = injectiveKey(side, credentialFingerprint(credentialConfig));
   const callerIdentityKey = injectiveKey(identityFingerprint, callerRegion ?? '_unset');
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {

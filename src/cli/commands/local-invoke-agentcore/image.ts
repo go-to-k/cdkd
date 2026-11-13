@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getLogger } from '../../../utils/logger.js';
+import { readCdkPathOrUndefined } from '../../cdk-path.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { displayAssemblyPath } from '../../../utils/assembly-path.js';
@@ -109,6 +110,11 @@ export async function resolveAgentCoreImage(
   if (parseEcrUri(containerUri)) {
     logger.info(`Pulling agent image from ECR: ${containerUri}`);
     return pullEcrImage(containerUri, {
+      // Mixed mode: real ECR only when THIS runtime excepts ECR (#6179).
+      workload: {
+        logicalId: resolved.logicalId,
+        cdkPath: readCdkPathOrUndefined(resolved.resource),
+      },
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
@@ -275,6 +281,8 @@ export async function resolveAgentCoreCodeImageFromS3(
   }
 
   const bundle = await downloadAndExtractS3Bundle(location, {
+    // Mixed mode: real S3 only when THIS runtime excepts S3 (#6179).
+    workload: { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
     ...(region !== undefined && { region }),
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(credentials !== undefined && { credentials }),

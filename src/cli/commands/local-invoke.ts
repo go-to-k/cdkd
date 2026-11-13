@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
-import { addAwsEndpointOptions, getAwsEndpointOverride } from 'cdk-local/internal';
+import { addAwsEndpointOptions } from 'cdk-local/internal';
+import { mixedModeEmulatorOverride } from '../../local/local-aws-wiring.js';
 import { setAwsEndpointOverrideSource } from '../../utils/aws-client-defaults.js';
 import {
   appOptions,
@@ -138,6 +139,17 @@ const CDKD_EMBED_CONFIG = {
   // workload's inputs as the caller, keeping the role for synth and the ECR
   // pull (go-to-k/cdkd#3240). Carried the same way as `logger` above.
   workloadIdentity: 'caller',
+  // Full `--aws-emulator` mode's SQS sidecar (go-to-k/cdk-local#912, cdkd#6178):
+  // AWS Emulator answers real-shaped queue URLs, which the JS SDK v3 follows
+  // out of the emulator; a sidecar in each workload rewrites them. Safe for
+  // cdkd because every forwarder cdkd starts itself takes its ports and
+  // sidecar config from `loopbackForwarderPlan` (the ECS namespace owner), and
+  // `runDetached` drops the sidecar's SQS endpoint on the host network.
+  awsEmulatorSqsSidecar: true,
+  // The deploy the `--aws-emulator` "no state source" hint names
+  // (go-to-k/cdk-local#915, cdkd#6179): cdkd's deploy is top-level, not
+  // `cdkd local deploy`.
+  deployCommand: 'cdkd deploy',
 } as const;
 
 /**
@@ -154,7 +166,10 @@ export function createLocalCommand(): Command {
   // cdkd's own AWS clients follow the `--aws-emulator` endpoint whichever
   // command activates it: cdkd's four commands through `activateLocalAwsWiring`,
   // the cdk-local engine commands inside cdk-local's own handler.
-  setAwsEndpointOverrideSource(getAwsEndpointOverride);
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the emulator is the default
+  // there too, so a cdkd call fails closed onto it; an excepted call opts out
+  // with `realAws`.
+  setAwsEndpointOverrideSource(mixedModeEmulatorOverride);
 
   const local = new Command('local').description(
     'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'

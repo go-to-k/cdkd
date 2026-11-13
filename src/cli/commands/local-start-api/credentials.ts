@@ -2,6 +2,7 @@ import {
   describeLocalAwsFailureForWarn,
   redactedAwsCause,
 } from '../../../utils/local-aws-failure.js';
+import { mixedModeActive } from '../../../local/local-aws-wiring.js';
 import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
@@ -52,7 +53,8 @@ export async function resolveProfileCredentials(
   // [#3130](https://github.com/go-to-k/cdkd/issues/3130) review). The flag for
   // the function's identity is `--assume-role`, which still wins over this.
   const sts = new STSClient({
-    ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+    // Mixed mode: an STS hop establishing the REAL identity stays on real AWS (#6150).
+    ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws: mixedModeActive() }),
     profile,
   });
   // Issue [#3377](https://github.com/go-to-k/cdkd/issues/3377). The profile
@@ -196,7 +198,8 @@ export async function assumeLambdaExecutionRole(
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
   const sts = new STSClient({
-    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    // Mixed mode: an STS hop establishing the REAL identity stays on real AWS (#6150).
+    ...awsClientDefaults({ ignoreAssumedRole: true, realAws: mixedModeActive() }),
     ...(region && { region }),
   });
   try {

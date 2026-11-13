@@ -1,7 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import type { AwsEmulatorWorkload } from 'cdk-local/internal';
 import { getLogger } from '../../../utils/logger.js';
+import { readCdkPathOrUndefined } from '../../cdk-path.js';
 import { explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import {
   assetPathDirs,
@@ -139,7 +141,10 @@ export async function resolveZipImagePlan(
   // downstream code path is identical for asset-backed and ARN-backed
   // layers. The per-ARN unzip tmpdirs are tracked alongside the merged
   // `/opt` tmpdir so the outer cleanup can remove all of them.
-  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options);
+  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options, {
+    logicalId: lambda.logicalId,
+    cdkPath: readCdkPathOrUndefined(lambda.resource),
+  });
 
   // provided.al2 / provided.al2023 require the deployment package at
   // /var/runtime (where the base image's hardcoded entrypoint exec's
@@ -182,7 +187,9 @@ export async function resolveZipImagePlan(
  */
 export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
-  options: LocalInvokeOptions
+  options: LocalInvokeOptions,
+  /** Mixed mode: a literal layer ARN reads real Lambda only for this function's LAMBDA exception (#6179). */
+  workload?: AwsEmulatorWorkload
 ): Promise<{
   mount?: { hostPath: string; containerPath: string; readOnly: boolean };
   tmpDir?: string;
@@ -196,6 +203,7 @@ export async function materializeLambdaLayersIncludingArns(
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {
+      ...(workload && { workload }),
       // An EMPTY `--layer-role-arn ""` is an explicit value (issue #2348):
       // cdk-local reads `roleArn` by truthiness and would pull as the caller.
       ...(options.layerRoleArn !== undefined && {

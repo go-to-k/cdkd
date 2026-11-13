@@ -1,5 +1,5 @@
 import { firstUsableRegion } from 'cdk-local/internal';
-import { setContainerRegion } from '../../../local/local-aws-wiring.js';
+import { mixedModeActive, setContainerRegion } from '../../../local/local-aws-wiring.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
@@ -141,7 +141,8 @@ async function assumeLambdaExecutionRole(
   // so it must be the caller's own identity, never a `--role-arn` assumed
   // for cdkd's own calls. See that option's JSDoc.
   const sts = new STSClient({
-    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    // Mixed mode: an STS hop establishing the REAL identity stays on real AWS (#6150).
+    ...awsClientDefaults({ ignoreAssumedRole: true, realAws: mixedModeActive() }),
     ...(region && { region }),
   });
   try {

@@ -26,10 +26,18 @@ const h = vi.hoisted(() => ({
   ssmSend: vi.fn(),
   destroy: vi.fn(),
   profiles: [] as Array<string | undefined>,
+  workloads: [] as unknown[],
 }));
 
 // Only the caller-identity helper is doubled: a site that bypassed it would
 // build real SDK clients and trip the AWS fence.
+// cdk-local's state-source hint (go-to-k/cdkd#6150) is gated once per PROCESS;
+// answer every ask here, so each case reads its own call site.
+vi.mock('cdk-local/internal', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  takeAwsEmulatorStateSourceHint: () => 'AWS-EMULATOR-STATE-SOURCE-HINT',
+}));
+
 vi.mock('../../../src/local/dynamic-reference.js', async () =>
   (await import('../_caller-resolver-double.js')).callerResolverModule(h)
 );
@@ -59,12 +67,39 @@ beforeEach(() => {
   h.smSend.mockReset();
   h.smSend.mockResolvedValue({ SecretString: JSON.stringify({ password: PLAINTEXT }) });
   h.profiles.length = 0;
+  h.workloads.length = 0;
   h.destroy.mockReset();
 });
 
 afterEach(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
+
+
+/** Run `fn` under a full `--aws-emulator` wiring, returning the warn lines it logged. */
+async function underEmulator(fn: () => Promise<unknown>): Promise<string[]> {
+  const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+  const { getLogger } = await import('../../../src/utils/logger.js');
+  setActiveWorkloadAwsWiring({
+    mode: 'emulator',
+    env: {},
+    scrubEnvKeys: [],
+    mounts: [],
+    loopbackPorts: [],
+    probeHealth: false,
+    dispose: () => {},
+  } as never);
+  const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+  try {
+    await fn();
+    return warn.mock.calls.map((c) => String(c[0]));
+  } finally {
+    warn.mockRestore();
+    setActiveWorkloadAwsWiring(undefined);
+  }
+}
+
+const HINT = 'AWS-EMULATOR-STATE-SOURCE-HINT';
 
 // ---------------------------------------------------------------------------
 // local invoke-agentcore — buildContainerEnv
@@ -91,6 +126,24 @@ function agentCoreState(storedOutput: string) {
 }
 
 describe('local invoke-agentcore buildContainerEnv resolves dynamic references (#2056)', () => {
+  it('--aws-emulator with no state source: ONE hint after the dropped-variable warnings (go-to-k/cdkd#6150)', async () => {
+    const lines = await underEmulator(() =>
+      buildContainerEnv(
+        agentCoreRuntime({ TABLE: { Ref: 'Table' }, QUEUE: { Ref: 'Queue' } }),
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined
+      )
+    );
+    const hints = lines.filter((l) => l.startsWith(HINT));
+    expect(hints).toHaveLength(1);
+    expect(lines.indexOf(hints[0]!)).toBe(lines.length - 1);
+    expect(lines.filter((l) => l.includes('was dropped. Override it with --env-vars'))).toHaveLength(2);
+  });
+
   it('same stack: resolved, marked sensitive, in the synth region without state', async () => {
     const out = await buildContainerEnv(
       agentCoreRuntime({ DB_PASSWORD: SAME_STACK_REF, GREETING: 'hi' }),
@@ -106,6 +159,15 @@ describe('local invoke-agentcore buildContainerEnv resolves dynamic references (
     expect([...out.sensitiveEnvKeys]).toEqual(['DB_PASSWORD']);
     expect(h.smSend.mock.calls.map((c) => c[0])).toEqual(['us-east-1']);
     expect(h.profiles).toEqual(['dev']);
+  });
+
+  it('mixed mode: the lookup is routed for THIS runtime, by its aws:cdk:path too (go-to-k/cdkd#6150)', async () => {
+    const runtime = agentCoreRuntime({ DB_PASSWORD: SAME_STACK_REF });
+    (runtime.resource as { Metadata?: unknown }).Metadata = {
+      'aws:cdk:path': 'AgentStack/Runtime/Resource',
+    };
+    await buildContainerEnv(runtime, {} as never, undefined, undefined, undefined, undefined, undefined);
+    expect(h.workloads).toEqual([{ logicalId: 'Runtime', cdkPath: 'AgentStack/Runtime/Resource' }]);
   });
 
   it('cross stack: a redacted producer output resolves against the PRODUCER region', async () => {
@@ -279,6 +341,26 @@ async function spec(
 }
 
 describe('local start-api buildContainerSpec resolves dynamic references (#2056)', () => {
+  it('mixed mode: the lookup is routed for THIS function (go-to-k/cdkd#6150)', async () => {
+    const stack = apiStack({ DB_PASSWORD: SAME_STACK_REF });
+    (stack.template.Resources!['Fn'] as { Metadata?: unknown }).Metadata = {
+      'aws:cdk:path': 'ApiStack/Fn/Resource',
+    };
+    await spec({ DB_PASSWORD: SAME_STACK_REF }, { stacks: [stack] });
+    expect(h.workloads).toEqual([{ logicalId: 'Fn', cdkPath: 'ApiStack/Fn/Resource' }]);
+  });
+
+  it('--aws-emulator with no state source: ONE hint after the dropped-variable warnings, and none with a state source (go-to-k/cdkd#6150)', async () => {
+    const env = { TABLE: { Ref: 'Table' }, QUEUE: { Ref: 'Queue' } };
+    const lines = await underEmulator(() => spec(env));
+    const hints = lines.filter((l) => l.startsWith(HINT));
+    expect(hints).toHaveLength(1);
+    expect(lines.indexOf(hints[0]!)).toBe(lines.length - 1);
+    expect(lines.filter((l) => l.includes('contains a CloudFormation intrinsic and was dropped'))).toHaveLength(2);
+    const withState = await underEmulator(() => spec(env, { stateSourceActive: true }));
+    expect(withState.filter((l) => l === 'AWS-EMULATOR-STATE-SOURCE-HINT')).toEqual([]);
+  });
+
   it('resolves a same-stack token at boot and marks it sensitive on the spec', async () => {
     const s = await spec({ DB_PASSWORD: SAME_STACK_REF, GREETING: 'hi' }, { profile: 'dev' });
     expect(s.env['DB_PASSWORD']).toBe(PLAINTEXT);

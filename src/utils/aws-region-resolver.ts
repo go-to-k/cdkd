@@ -1,5 +1,5 @@
 import { GetBucketLocationCommand, S3Client } from '@aws-sdk/client-s3';
-import { awsClientDefaults } from './aws-client-defaults.js';
+import { awsClientDefaults, awsEndpointOverrideUrl } from './aws-client-defaults.js';
 import { s3ClientDefaults } from './s3-client-defaults.js';
 
 /**
@@ -111,7 +111,11 @@ export async function resolveBucketRegion(
   bucketName: string,
   opts: ResolveBucketRegionOptions = {}
 ): Promise<string> {
-  const cached = cache.get(bucketName);
+  // Keyed by the endpoint too: AWS Emulator mixed mode reads one bucket NAME
+  // in real AWS and in the emulator in the same run (go-to-k/cdkd#6150), and
+  // one side's region must not answer for the other.
+  const key = JSON.stringify([awsEndpointOverrideUrl() ?? '', bucketName]);
+  const cached = cache.get(key);
   if (cached) return cached;
 
   // Set by the probe when it degrades to a guess, so the entry can be evicted
@@ -175,11 +179,11 @@ export async function resolveBucketRegion(
     }
   })();
 
-  cache.set(bucketName, promise);
+  cache.set(key, promise);
   const region = await promise;
   // Evict only OUR entry — a concurrent caller may already have installed a
   // fresh probe for the same bucket.
-  if (probeFailed && cache.get(bucketName) === promise) cache.delete(bucketName);
+  if (probeFailed && cache.get(key) === promise) cache.delete(key);
   return region;
 }
 

@@ -50,6 +50,11 @@ apply to every resource.
 
 A `null` value removes the variable from the container environment.
 
+Under `--aws-emulator`, the value `"real-aws"` on an
+`AWS_ENDPOINT_URL_<SERVICE>` variable keeps that service on real AWS while
+everything else goes to the emulator; without the flag it is a no-op, so one
+file serves both runs. See [AWS Emulator mixed mode](local-emulation.md#aws-emulator-mixed-mode).
+
 On `local run-task`, `local start-service` and `local start-alb`, an ECS
 `Secrets` entry whose key the file gives for that container, or under
 `Parameters`, is not fetched from AWS. The run then needs no access to that
@@ -129,6 +134,15 @@ continues. cdkd never substitutes a guess. This happens for:
 - a failed CloudFormation call.
 
 To supply a dropped variable yourself, add it to an `--env-vars` file.
+
+Under `--aws-emulator` with neither state flag, a variable that references a
+resource is dropped the same way, and after those warnings cdkd prints one
+hint: add `--from-state` if the stack was deployed with
+`cdkd deploy --aws-emulator`, or `--from-cfn-stack` if it was deployed with
+`cdk deploy`, to read the values from AWS Emulator; or supply them with
+`--env-vars`. Which name each combination of `--aws-emulator` and a state flag
+produces, and where the call then goes, is tabled in
+[Where a value comes from, and where a call goes](local-emulation.md#where-a-value-comes-from-and-where-a-call-goes).
 
 ### Edge cases for the state flags
 

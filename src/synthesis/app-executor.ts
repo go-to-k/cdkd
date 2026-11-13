@@ -1,5 +1,6 @@
 import { withoutInjectedAwsRegion } from '../utils/injected-aws-region.js';
 import { spawn } from 'node:child_process';
+import { childProcessAwsEnv } from '../utils/child-process-aws-env.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -63,8 +64,10 @@ export class AppExecutor {
     // Minus an `AWS_REGION` cdkd injected for its own SDK clients
     // (go-to-k/cdkd#2100): the app sees the user's environment, as under the
     // AWS CDK CLI, and cannot pin a stack to a region the user never named.
+    // AWS Emulator mixed mode: the app's own AWS calls go to the emulator
+    // with its keys, as under `--aws-emulator` alone (`child-process-aws-env.ts`).
     const env: Record<string, string> = {
-      ...(withoutInjectedAwsRegion({ ...process.env }) as Record<string, string>),
+      ...childProcessAwsEnv(withoutInjectedAwsRegion({ ...process.env }) as Record<string, string>),
       CDK_OUTDIR: outputDir,
     };
 

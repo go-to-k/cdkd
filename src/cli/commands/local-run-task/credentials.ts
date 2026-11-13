@@ -38,6 +38,11 @@ export async function resolveSidecarCredentials(
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
   const wiring = getActiveWorkloadAwsWiring();
   if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the metadata sidecar is
+  // reachable by every container of the task, so it serves the emulator's
+  // keys; the real identity goes, as env, only to the containers that keep a
+  // `"real-aws"` exception (`mixedModeRealCredentials`).
+  if (wiring?.mixed) return wiring.mixed.emulatorCredentials;
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   // cdkd-local-env-identity: the host's default chain, which cdk-local reads
@@ -109,8 +114,32 @@ export async function resolveTaskCredentialChannels(
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined;
   profileCredsFile: ProfileCredentialsFile | undefined;
+  /** AWS Emulator mixed mode: the real identity for the excepting containers (`RunEcsTaskOptions`). */
+  mixedModeRealCredentials?:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined;
 }> {
   const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
+  // AWS Emulator mixed mode (go-to-k/cdkd#6150): the sidecar serves the
+  // emulator's keys (above), and the REAL identity — `--assume-task-role`,
+  // else `--profile`, else the host's default chain, the precedence the
+  // sidecar has without mixed mode — reaches only a container that keeps a
+  // `"real-aws"` exception, as env keys. No credentials file is written: an
+  // excepting container gets the keys, and the others must get none.
+  if (getActiveWorkloadAwsWiring()?.mixed) {
+    // cdkd-local-env-identity: the same precedence as without mixed mode —
+    // the caller's own identity or the task role, never the `--role-arn` role.
+    const real =
+      assumedCredentials ??
+      (options.profile
+        ? await resolveProfileCredentials(options.profile)
+        : await resolveHostDefaultCredentials());
+    return {
+      sidecarCredentials,
+      profileCredsFile: undefined,
+      ...(real && { mixedModeRealCredentials: real }),
+    };
+  }
   // Under `--aws-emulator` the sidecar serves the emulator's keys and no host
   // credentials file reaches a container, so none is written.
   const emulator = getActiveWorkloadAwsWiring()?.mode === 'emulator';
@@ -192,6 +221,9 @@ export function buildRunEcsTaskOptions(
   };
   if (extra.envOverrides) runOpts.envOverrides = extra.envOverrides;
   if (channels.sidecarCredentials) runOpts.taskCredentials = channels.sidecarCredentials;
+  if (channels.mixedModeRealCredentials) {
+    runOpts.mixedModeRealCredentials = channels.mixedModeRealCredentials;
+  }
   if (extra.resolvedRoleArn) runOpts.taskRoleArn = extra.resolvedRoleArn;
   if (options.platform) runOpts.platformOverride = options.platform;
   if (options.region) runOpts.region = options.region;

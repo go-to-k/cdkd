@@ -28,6 +28,10 @@ import {
   setAwsEndpointOverrideSource,
 } from '../../../src/utils/aws-client-defaults.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import {
+  childProcessAwsEnv,
+  setChildProcessAwsEnv,
+} from '../../../src/utils/child-process-aws-env.js';
 
 /**
  * go-to-k/cdkd#6138: `--aws-emulator [url]` / `CDKD_AWS_EMULATOR` on every
@@ -69,6 +73,7 @@ afterEach(() => {
   }
   setAwsEndpointOverrideSource(undefined);
   setPasteableAwsCaBundle(undefined);
+  setChildProcessAwsEnv(undefined);
 });
 
 function find(program: Command, path: string[]): Command {
@@ -395,5 +400,108 @@ describe('under the flag (a `cdkd local` command)', () => {
     expect(process.env['AWS_ACCESS_KEY_ID']).toBeUndefined();
     expect(process.env['AWS_ENDPOINT_URL']).toBe(EMULATOR_URL);
     expect(activateAwsEmulatorForCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('AWS Emulator mixed mode on a `cdkd local` command (go-to-k/cdkd#6150)', () => {
+  function envVarsFile(body: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-mixed-'));
+    const file = join(dir, 'env.json');
+    writeFileSync(file, JSON.stringify(body));
+    return file;
+  }
+
+  it('a "real-aws" exception in --env-vars keeps --profile and the credential env (for the excepted calls), and points nothing at the emulator', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    process.env['AWS_ACCESS_KEY_ID'] = 'HOSTKEYID00000000000';
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    for (const path of [
+      ['local', 'invoke'],
+      ['local', 'start-service'],
+    ]) {
+      const opts = await parse(path, [
+        'Stack/Fn',
+        '--profile',
+        'prod',
+        '--env-vars',
+        file,
+        `--aws-emulator=${EMULATOR_URL}`,
+      ]);
+      expect(opts['profile']).toBe('prod');
+      expect(process.env['AWS_PROFILE']).toBe('prod');
+      expect(process.env['AWS_ACCESS_KEY_ID']).toBe('HOSTKEYID00000000000');
+      expect(process.env['AWS_ENDPOINT_URL']).toBeUndefined();
+      expect(process.env['AWS_SHARED_CREDENTIALS_FILE']).toBeUndefined();
+    }
+    expect(activateAwsEmulatorForCommand).not.toHaveBeenCalled();
+  });
+
+  it("ignores the shell's AWS endpoint settings, so cdkd's real-key calls cannot reach the emulator", async () => {
+    process.env['AWS_ENDPOINT_URL'] = EMULATOR_URL;
+    process.env['AWS_ENDPOINT_URL_S3'] = EMULATOR_URL;
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', file, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_ENDPOINT_URL']).toBeUndefined();
+    expect(process.env['AWS_ENDPOINT_URL_S3']).toBeUndefined();
+    expect(process.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBe('true');
+  });
+
+  it('an unreadable --env-vars (here a directory) selects no mixed mode: full-emulator, fail closed', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-mixed-dir-'));
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', dir, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_PROFILE']).toBeUndefined();
+  });
+
+  it('"real-aws" on the bare AWS_ENDPOINT_URL is no exception: the real identity is dropped (activation refuses it)', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL: 'real-aws' } });
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', file, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_PROFILE']).toBeUndefined();
+    expect(process.env['AWS_ENDPOINT_URL']).toBe(EMULATOR_URL);
+  });
+
+  it('points the CDK app\'s synth at the emulator with its keys, while cdkd\'s own process keeps the real identity', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    process.env['AWS_ACCESS_KEY_ID'] = 'HOSTKEYID00000000000';
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', file, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_ACCESS_KEY_ID']).toBe('HOSTKEYID00000000000');
+    const child = childProcessAwsEnv({
+      AWS_PROFILE: 'prod',
+      AWS_ACCESS_KEY_ID: 'HOSTKEYID00000000000',
+      AWS_SECRET_ACCESS_KEY: 'real-secret',
+      AWS_ENDPOINT_URL_S3: 'https://elsewhere.example',
+      PATH: '/bin',
+    });
+    expect(child['AWS_ACCESS_KEY_ID']).toBeUndefined();
+    expect(child['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+    expect(child['AWS_PROFILE']).toBeUndefined();
+    expect(child['AWS_ENDPOINT_URL_S3']).toBeUndefined();
+    expect(child['AWS_ENDPOINT_URL']).toBe(EMULATOR_URL);
+    // No run directory for this port: no file at all, so no real credential either.
+    expect(child['AWS_SHARED_CREDENTIALS_FILE']).toBe(devNull);
+    expect(child['AWS_EC2_METADATA_DISABLED']).toBe('true');
+    expect(child['PATH']).toBe('/bin');
+  });
+
+  it('full emulator mode registers no child transform (the process env itself is the emulator\'s)', async () => {
+    await parse(['local', 'invoke'], ['Stack/Fn', `--aws-emulator=${EMULATOR_URL}`]);
+    const env = { AWS_ACCESS_KEY_ID: 'X' };
+    expect(childProcessAwsEnv(env)).toBe(env);
+  });
+
+  it('the old "aws-emulator" value is no exception: the real identity is dropped (activation refuses it)', async () => {
+    process.env['AWS_PROFILE'] = 'prod';
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', file, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_PROFILE']).toBeUndefined();
+  });
+
+  it('a literal endpoint URL in --env-vars is no exception: full-emulator mode', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'HOSTKEYID00000000000';
+    const file = envVarsFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: EMULATOR_URL } });
+    await parse(['local', 'invoke'], ['Stack/Fn', '--env-vars', file, `--aws-emulator=${EMULATOR_URL}`]);
+    expect(process.env['AWS_ACCESS_KEY_ID']).toBeUndefined();
   });
 });
