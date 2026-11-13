@@ -248,10 +248,15 @@ cdkd local invoke MyStack/Handler --from-state --assume-role \
 
 cdkd warns once per role in each run, because it is an approximation:
 
-- Resource-based policies, KMS key policies and `aws:PrincipalArn` conditions
-  that name the role see your identity instead, so what they grant or deny
-  the role is not reproduced.
-- The role's session tags are not reproduced.
+- Resource-based policies, KMS key policies, and `aws:PrincipalArn` conditions
+  or `NotPrincipal` elements that name the role see your identity instead, so
+  what they grant or deny the role is not reproduced.
+- The role's own tags are not reproduced. Conditions on `aws:PrincipalTag`,
+  used by ABAC, SCPs and resource-based policies, see your tags instead of the
+  role's. The role's session tags are not reproduced either.
+- SCPs and RCPs apply the same way, because the role is in your account. The
+  exception is their conditions on the principal, such as `aws:PrincipalArn`
+  and `aws:PrincipalTag`.
 - Policy variables such as `${aws:username}` and `${aws:userid}` take the
   emulated session's values, not the role's. A role session has no
   `aws:username`.

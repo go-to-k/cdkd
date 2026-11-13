@@ -411,7 +411,7 @@ export async function readRolePolicies(args: {
       }
       attachedMarker = page.IsTruncated ? page.Marker : undefined;
     } while (attachedMarker);
-    return { inline, managedArns, ...(permissionsBoundaryArn && { permissionsBoundaryArn }) };
+    return { inline, managedArns, ...(permissionsBoundaryArn !== undefined && { permissionsBoundaryArn }) };
   } finally {
     iam.destroy();
   }
