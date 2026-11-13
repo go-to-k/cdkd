@@ -342,12 +342,11 @@ state record (`--from-state` / `--from-cfn-stack`), then your AWS profile's
 region is used for the `--assume-role` STS call. With no region anywhere, the
 container gets none.
 
-`local run-task` gives every task container its region the same way:
-`AWS_REGION`, `AWS_DEFAULT_REGION`, `--stack-region` or the stack's own
-`env.region`, the loaded state record's region, then your AWS profile's
-`region`. A container's own `Environment` or `--env-vars` entry still wins.
-`local start-service` and `local start-alb` still set it only from the
-deprecated `--region` flag.
+`local run-task`, `local start-service` and `local start-alb` give every task
+container its region the same way: `AWS_REGION`, `AWS_DEFAULT_REGION`,
+`--stack-region` or the stack's own `env.region`, the loaded state record's
+region, then your AWS profile's `region`. A container's own `Environment` or
+`--env-vars` entry still wins.
 
 ## Local AWS endpoints
 
