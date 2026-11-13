@@ -29,6 +29,7 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 - `--ignore-errors`
 - `--image-build-concurrency`
 - `--no-aggressive-vpc-parallel`
+- `--no-local-custom-resources`
 - `--strict`
 
 ## Flags exercised by integ verify.sh (37)

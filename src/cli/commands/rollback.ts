@@ -4,6 +4,7 @@ import {
   stateOptions,
   deprecatedRegionOption,
   skipFinalSnapshotOption,
+  noLocalCustomResourcesOption,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
@@ -44,6 +45,7 @@ export function createRollbackCommand(): Command {
       )
     )
     .addOption(skipFinalSnapshotOption)
+    .addOption(noLocalCustomResourcesOption)
     .addOption(
       new Option(
         '--remove-protection',

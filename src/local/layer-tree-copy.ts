@@ -2,12 +2,14 @@ import {
   cpSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -115,4 +117,29 @@ function removeUnless(to: string, kind: 'symlink' | 'directory' | 'file'): void 
   if (kind === 'directory' && st.isDirectory()) return;
   if (kind === 'file' && st.isFile()) return;
   rmSync(to, { recursive: true, force: true });
+}
+
+/**
+ * A layer whose asset is a `.zip` file (CDK ships some pre-packaged, such as
+ * `s3deploy`'s `AwsCliLayer`) extracted into a fresh tmpdir, the way Lambda
+ * extracts it into `/opt`; a directory asset is returned as it is. The
+ * returned `tmpDir` is the caller's to remove (go-to-k/cdkd#6206).
+ */
+export async function layerAssetDirectory(
+  assetPath: string
+): Promise<{ dir: string; tmpDir?: string }> {
+  if (!assetPath.toLowerCase().endsWith('.zip') || !lstatSync(assetPath).isFile()) {
+    return { dir: assetPath };
+  }
+  const tmpDir = mkdtempSync(join(tmpdir(), 'cdkd-layer-zip-'));
+  try {
+    const { default: AdmZip } = await import('adm-zip');
+    // adm-zip refuses an entry that resolves outside the target; the mode
+    // bits are kept, so a layer's executables (`/opt/awscli/aws`) stay `+x`.
+    new AdmZip(assetPath).extractAllTo(tmpDir, true, true);
+  } catch (error) {
+    rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
+  }
+  return { dir: tmpDir, tmpDir };
 }

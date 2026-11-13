@@ -13,7 +13,7 @@ import {
   type ResolvedZipLambda,
 } from '../../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../../local/layer-arn-materializer.js';
-import { copyLayerTreeLastWins } from '../../../local/layer-tree-copy.js';
+import { copyLayerTreeLastWins, layerAssetDirectory } from '../../../local/layer-tree-copy.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -43,6 +43,14 @@ import { type LocalInvokeOptions } from './types.js';
  * code is already in the image). `cmd` / `entryPoint` / `workingDir` come
  * from `ImageConfig`. `platform` is set per `Architectures` (D5.6).
  */
+/**
+ * The two flags the ZIP image plan reads: `--no-pull` and `--layer-role-arn`.
+ * Narrowed from {@link LocalInvokeOptions} so the custom-resource runtime
+ * under `--aws-emulator` (`src/local/custom-resource-runtime.ts`) builds the
+ * same plan without a command's option bag.
+ */
+export type ZipImagePlanOptions = Pick<LocalInvokeOptions, 'pull' | 'layerRoleArn'>;
+
 export interface ImagePlan {
   image: string;
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
@@ -110,7 +118,7 @@ export interface ImagePlan {
  */
 export async function resolveZipImagePlan(
   lambda: ResolvedZipLambda,
-  options: LocalInvokeOptions
+  options: ZipImagePlanOptions
 ): Promise<ImagePlan> {
   let inlineTmpDir: string | undefined;
   let codeDir = lambda.codePath;
@@ -187,7 +195,7 @@ export async function resolveZipImagePlan(
  */
 export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
-  options: LocalInvokeOptions,
+  options: ZipImagePlanOptions,
   /** Mixed mode: a literal layer ARN reads real Lambda only for this function's LAMBDA exception (#6179). */
   workload?: AwsEmulatorWorkload
 ): Promise<{
@@ -199,7 +207,9 @@ export async function materializeLambdaLayersIncludingArns(
   const flat: { logicalId: string; assetPath: string }[] = [];
   for (const layer of layers) {
     if (layer.kind === 'asset') {
-      flat.push({ logicalId: layer.logicalId, assetPath: layer.assetPath });
+      const asset = await layerAssetDirectory(layer.assetPath);
+      if (asset.tmpDir !== undefined) extraTmpDirs.push(asset.tmpDir);
+      flat.push({ logicalId: layer.logicalId, assetPath: asset.dir });
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {

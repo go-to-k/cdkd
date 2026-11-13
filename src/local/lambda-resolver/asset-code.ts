@@ -285,7 +285,12 @@ export function assetPathDirs(stack: Pick<StackInfo, 'assetManifestPath' | 'asse
 export function resolveAssetCodePath(
   stack: StackInfo,
   logicalId: string,
-  resource: TemplateResource
+  resource: TemplateResource,
+  /**
+   * Also accept a `.zip` file asset (a layer CDK ships pre-packaged, such as
+   * `s3deploy`'s `AwsCliLayer`); the caller extracts it (go-to-k/cdkd#6206).
+   */
+  options: { acceptZipFile?: boolean } = {}
 ): string {
   const meta = resource.Metadata;
   const assetPath = meta?.['aws:asset:path'];
@@ -305,6 +310,14 @@ export function resolveAssetCodePath(
     assetOutdir,
     logicalId,
   });
+  if (
+    options.acceptZipFile === true &&
+    abs.toLowerCase().endsWith('.zip') &&
+    existsSync(abs) &&
+    statSync(abs).isFile()
+  ) {
+    return abs;
+  }
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new LocalInvokeResolutionError(
       `Lambda ${displayIdent(logicalId)} asset directory ${displayAssemblyPath(abs)} does not exist ` +

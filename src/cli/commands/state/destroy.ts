@@ -8,6 +8,7 @@ import {
   resourceTimeoutOptions,
   allowUnsupportedTypesOption,
   skipFinalSnapshotOption,
+  noLocalCustomResourcesOption,
   validateResourceTimeouts,
   type ResourceTimeoutOption,
 } from '../../options.js';
@@ -669,6 +670,7 @@ export function createStateDestroyCommand(): Command {
     ...resourceTimeoutOptions,
     allowUnsupportedTypesOption,
     skipFinalSnapshotOption,
+    noLocalCustomResourcesOption,
   ].forEach((opt) => cmd.addOption(opt));
 
   // --region is deprecated on every state subcommand (PR 5). Accepted for

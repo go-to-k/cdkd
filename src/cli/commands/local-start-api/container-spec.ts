@@ -22,7 +22,7 @@ import {
   substituteEnvVarsFromState,
   type SubstitutionContext,
 } from '../../../local/state-resolver.js';
-import { copyLayerTreeLastWins } from '../../../local/layer-tree-copy.js';
+import { copyLayerTreeLastWins, layerAssetDirectory } from '../../../local/layer-tree-copy.js';
 import { resolveRuntimeFileExtension } from '../../../local/runtime-image.js';
 import {
   architectureToPlatform,
@@ -597,7 +597,9 @@ export async function materializeLambdaLayers(
   const flat: { logicalId: string; assetPath: string }[] = [];
   for (const layer of layers) {
     if (layer.kind === 'asset') {
-      flat.push({ logicalId: layer.logicalId, assetPath: layer.assetPath });
+      const asset = await layerAssetDirectory(layer.assetPath);
+      if (asset.tmpDir !== undefined) layerTmpDirs.add(asset.tmpDir);
+      flat.push({ logicalId: layer.logicalId, assetPath: asset.dir });
       continue;
     }
     const dir = await materializeLayerFromArn(layer, {

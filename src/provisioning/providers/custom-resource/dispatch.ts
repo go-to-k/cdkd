@@ -22,6 +22,7 @@ import {
   REFERENCED_LAMBDA_MAX_WAIT_SECONDS,
   collectReferencedLambdaFunctionArns,
 } from './lambda-waiter.js';
+import { localCustomResourceRuntimeActive } from '../../../local/custom-resource-runtime-gate.js';
 
 /**
  * Send custom resource request via the appropriate service (Lambda or SNS)
@@ -335,6 +336,19 @@ export async function invokeLambda(
   serviceToken: string,
   request: Record<string, unknown>
 ): Promise<InvocationResponse> {
+  // go-to-k/cdkd#6206: under `--aws-emulator` only, the function runs in the
+  // official Lambda runtime image on this machine. `undefined` (always, off
+  // the emulator) sends the event exactly as before.
+  if (localCustomResourceRuntimeActive()) {
+    const { invokeCustomResourceFunctionLocally } =
+      await import('../../../local/custom-resource-runtime.js');
+    const local = await invokeCustomResourceFunctionLocally(
+      { lambda: this.lambdaClient, s3: this.s3Client },
+      serviceToken,
+      request
+    );
+    if (local !== undefined) return local;
+  }
   return await this.lambdaClient.send(
     new InvokeCommand({
       FunctionName: serviceToken,

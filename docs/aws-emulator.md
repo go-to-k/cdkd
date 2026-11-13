@@ -402,6 +402,27 @@ web page cannot call the API this way. To serve the API to a browser, run
 it with
 [`cdkd local start-api --aws-emulator`](local-start-api.md) instead.
 
+## Custom resources run on your machine
+
+The emulator's own Lambda runtimes miss parts of the standard library, which
+breaks the provider functions of common constructs such as
+`autoDeleteObjects: true` and `s3deploy.BucketDeployment`. So under
+`--aws-emulator`, `cdkd deploy`, `cdkd destroy`, `cdkd state destroy` and
+`cdkd rollback` run the function a custom resource's `ServiceToken` points at
+in the official AWS Lambda runtime image, in Docker, the way
+`cdkd local invoke` does. The function still exists in the emulator; only the
+custom resource event runs on your machine.
+
+| Topic | What to know |
+| --- | --- |
+| Requirement | Docker. Without it, cdkd prints one warning and sends the event to the emulator as before. |
+| Code | Read from the synthesized cloud assembly, together with the handler, runtime and layers. A command that does not synthesize (`cdkd state destroy`, `cdkd rollback`, or a destroy without the app) cannot find it and sends the event to the emulator, with a warning. |
+| Configuration | Environment variables, timeout and memory are the deployed function's. |
+| Identity | The container gets the emulator's keys, endpoint and CA only, like a `cdkd local` container. |
+| Response | CDK's Node.js handlers send the response to port 443 whatever the URL says, so the container gets a response URL signed for port 443 and forwards that port to the emulator. |
+| Provider framework | Only the `ServiceToken` function runs locally. A `cr.Provider` framework function that calls your handler through `lambda:Invoke` still runs that handler in the emulator. |
+| Opt out | `--no-local-custom-resources` sends every event to the emulator's own runtime. |
+
 ## Troubleshooting
 
 ### `no AWS Emulator answers its health check`
@@ -451,12 +472,18 @@ the SDKs' managed uploaders.
 ### A Python function fails with `No module named '_signal'`
 
 A Python function that the emulator runs itself, in its embedded runtime, can
-fail with `No module named '_signal'`. The provider function of
-`s3deploy.BucketDeployment` (`Custom::CDKBucketDeployment`) is one example.
-This is a limit of the emulator's runtime, reported in the
-[AWS Emulator issue tracker](https://github.com/aws/aws-emulator/issues). Run
-a function of your own through `cdkd local invoke`, which uses the official
-Lambda runtime image, instead of invoking it in the emulator.
+fail with `No module named '_signal'`. This is a limit of the emulator's
+runtime, reported in the
+[AWS Emulator issue tracker](https://github.com/aws/aws-emulator/issues).
+
+A custom resource's provider function is not affected: cdkd runs it in the
+official Lambda runtime image (see
+[Custom resources run on your machine](#custom-resources-run-on-your-machine)),
+so `s3deploy.BucketDeployment` (`Custom::CDKBucketDeployment`) deploys. When
+you see this error from a custom resource, check that Docker is running, or
+whether you passed `--no-local-custom-resources`. Run a function of your own
+through `cdkd local invoke`, which uses the same image, instead of invoking it
+in the emulator.
 
 ### A Node.js function fails with `Cannot find module 'https'`
 
@@ -467,13 +494,14 @@ module. `https` is one of those missing, on `nodejs20.x`, `nodejs22.x` and
 limit of the emulator's runtime, reported in the
 [AWS Emulator issue tracker](https://github.com/aws/aws-emulator/issues).
 
-This includes the provider functions of CDK's Node.js custom resources, which
-send their response over `https`. One example is
-`new s3.Bucket(..., { autoDeleteObjects: true })` (`Custom::S3AutoDeleteObjects`).
-The custom resource's CREATE fails, and the deploy rolls back. Until the
-emulator provides these modules, leave such constructs out of the stack you
-deploy into the emulator. Run a function of your own through
-`cdkd local invoke` instead.
+CDK's Node.js custom resources send their response over `https`, but cdkd runs
+their provider functions in the official Lambda runtime image (see
+[Custom resources run on your machine](#custom-resources-run-on-your-machine)),
+so `new s3.Bucket(..., { autoDeleteObjects: true })`
+(`Custom::S3AutoDeleteObjects`) deploys and empties its bucket on destroy. When
+you see this error from a custom resource, check that Docker is running, or
+whether you passed `--no-local-custom-resources`. Run a function of your own
+through `cdkd local invoke` instead of invoking it in the emulator.
 
 ### A Docker image asset is refused
 
