@@ -1,3 +1,4 @@
+import { noImplicitEcrPullArgs } from 'cdk-local/internal';
 import { randomBytes } from 'node:crypto';
 import {
   applyWorkloadAwsWiringToEnv,
@@ -478,7 +479,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     entryPointTail = container.entryPoint.slice(1);
   }
 
-  both(image, ...entryPointTail, ...(container.command ?? []));
+  both(...noImplicitEcrPullArgs(image), image, ...entryPointTail, ...(container.command ?? []));
   const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
   return {
     args,

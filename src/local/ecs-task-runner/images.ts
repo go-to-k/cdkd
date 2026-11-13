@@ -118,6 +118,7 @@ async function prepareOneImage(
       const tag = `cdkd-local-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
+        workload: { containerName: container.name },
         // `cdkOutDir` is the MANIFEST's directory, which for a stack inside a
         // `cdk.Stage` is `cdk.out/assembly-<Stage>/` while the asset itself is
         // staged in the app root — so the containment bound is the app outdir,
