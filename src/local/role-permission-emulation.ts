@@ -53,6 +53,13 @@ export interface RolePolicies {
   inline: unknown[];
   /** The attached managed policies' ARNs. */
   managedArns: string[];
+  /**
+   * The role's permissions boundary ARN, if any. STS combines the inline and
+   * managed session policies as a UNION, so a boundary cannot be added as one
+   * more session policy: emulating such a role would allow what its boundary
+   * denies, and is refused instead (go-to-k/cdkd#6220).
+   */
+  permissionsBoundaryArn?: string | undefined;
 }
 
 export type SessionPolicyPlan =
@@ -147,7 +154,7 @@ export function isAssumeRoleAccessDenied(err: unknown): boolean {
   return (err as { name?: unknown } | null)?.name === 'AccessDenied';
 }
 
-/** The last path segment of a role ARN: `IAM GetRolePolicy`'s `RoleName`. */
+/** The last path segment of a role ARN: `IAM GetRole` / `GetRolePolicy`'s `RoleName`. */
 function roleNameOf(roleArn: string): string {
   const resource = roleArn.split(':').slice(5).join(':');
   return resource.slice(resource.lastIndexOf('/') + 1);
@@ -256,7 +263,12 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
       policies = await readRolePolicies(args);
     } catch (readErr) {
       return cannot(
-        `reading the role's policies failed (it needs iam:ListRolePolicies, iam:GetRolePolicy and iam:ListAttachedRolePolicies): ${describeLocalAwsFailureForWarn(readErr, 'IAM role policy read')}`
+        `reading the role's policies failed (it needs iam:GetRole, iam:ListRolePolicies, iam:GetRolePolicy and iam:ListAttachedRolePolicies): ${describeLocalAwsFailureForWarn(readErr, 'IAM role policy read')}`
+      );
+    }
+    if (policies.permissionsBoundaryArn !== undefined) {
+      return cannot(
+        `the role has a permissions boundary (${displayIdent(policies.permissionsBoundaryArn)}), which session policies cannot reproduce, so the emulation could allow what the role cannot`
       );
     }
     const plan = buildSessionPolicy(policies);
@@ -323,7 +335,7 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
       // the only user value through `displayIdent`, and the rest are counts
       // and cdkd's literals.
       logger.warn(
-        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's permissions boundary and session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
+        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
       );
     }
     return {
@@ -337,9 +349,9 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
 }
 
 /**
- * The role's inline policy documents and attached managed policy ARNs
- * (`iam:ListRolePolicies` / `iam:GetRolePolicy` / `iam:ListAttachedRolePolicies`,
- * every page).
+ * The role's permissions boundary (`iam:GetRole`), inline policy documents and
+ * attached managed policy ARNs (`iam:ListRolePolicies` / `iam:GetRolePolicy` /
+ * `iam:ListAttachedRolePolicies`, every page).
  */
 export async function readRolePolicies(args: {
   roleArn: string;
@@ -348,6 +360,7 @@ export async function readRolePolicies(args: {
 }): Promise<RolePolicies> {
   const {
     IAMClient,
+    GetRoleCommand,
     ListRolePoliciesCommand,
     GetRolePolicyCommand,
     ListAttachedRolePoliciesCommand,
@@ -359,6 +372,8 @@ export async function readRolePolicies(args: {
   });
   const RoleName = roleNameOf(args.roleArn);
   try {
+    const role = await iam.send(new GetRoleCommand({ RoleName }));
+    const permissionsBoundaryArn = role.Role?.PermissionsBoundary?.PermissionsBoundaryArn;
     const names: string[] = [];
     let marker: string | undefined;
     do {
@@ -372,7 +387,15 @@ export async function readRolePolicies(args: {
     for (const PolicyName of names) {
       const got = await iam.send(new GetRolePolicyCommand({ RoleName, PolicyName }));
       // IAM returns the document URL-encoded.
-      inline.push(JSON.parse(decodeURIComponent(got.PolicyDocument ?? '{}')));
+      let doc: unknown;
+      try {
+        doc = JSON.parse(decodeURIComponent(got.PolicyDocument ?? '{}'));
+      } catch {
+        // Fixed text: a SyntaxError's message quotes part of the document,
+        // which would reach the --verbose debug line.
+        throw new Error('an inline policy document of the role is not valid JSON');
+      }
+      inline.push(doc);
     }
     const managedArns: string[] = [];
     let attachedMarker: string | undefined;
@@ -388,7 +411,7 @@ export async function readRolePolicies(args: {
       }
       attachedMarker = page.IsTruncated ? page.Marker : undefined;
     } while (attachedMarker);
-    return { inline, managedArns };
+    return { inline, managedArns, ...(permissionsBoundaryArn && { permissionsBoundaryArn }) };
   } finally {
     iam.destroy();
   }

@@ -251,20 +251,24 @@ cdkd warns once per role in each run, because it is an approximation:
 - Resource-based policies, KMS key policies and `aws:PrincipalArn` conditions
   that name the role see your identity instead, so what they grant or deny
   the role is not reproduced.
-- The role's permissions boundary and session tags are not reproduced.
+- The role's session tags are not reproduced.
 - Policy variables such as `${aws:username}` and `${aws:userid}` take the
   emulated session's values, not the role's. A role session has no
   `aws:username`.
 - A GetFederationToken session cannot call IAM, and of STS only
   `GetCallerIdentity`.
 
-Reading the role needs `iam:ListRolePolicies`, `iam:GetRolePolicy` and
-`iam:ListAttachedRolePolicies`, and the role must be in your own account.
+Reading the role needs `iam:GetRole`, `iam:ListRolePolicies`,
+`iam:GetRolePolicy` and `iam:ListAttachedRolePolicies`, and the role must be in
+your own account.
 
-cdkd does not emulate, and warns, when the role's policies do not fit in session
-policies: more than 10 managed policies, more than 2,048 characters of inline
-policy JSON plus managed policy ARNs, or STS answering `PackedPolicyTooLarge`.
-It then handles the refusal as before: `local invoke` and
+cdkd does not emulate, and warns, when the role has a permissions boundary.
+STS combines session policies as a union, so a boundary cannot be added as one
+more of them, and the emulation could allow what the boundary denies. cdkd also
+does not emulate when the role's policies do not fit in session policies: more
+than 10 managed policies, more than 2,048 characters of inline policy JSON plus
+managed policy ARNs, or STS answering `PackedPolicyTooLarge`. In each case it
+then handles the refusal as before: `local invoke` and
 `local invoke-agentcore` run with your own credentials, and `local start-api`
 and `local run-task` stop with the AssumeRole error.
 
