@@ -229,6 +229,14 @@ export function verbosePointerSentence(): string {
   return verboseRun() ? '' : `${VERBOSE_POINTER} `;
 }
 
+/**
+ * A space plus {@link VERBOSE_POINTER}, or `''` on a `--verbose` run: for a
+ * hand-written message that ENDS with the pointer.
+ */
+export function verbosePointerTail(): string {
+  return verboseRun() ? '' : ` ${VERBOSE_POINTER}`;
+}
+
 /** `<lead>.` plus the pointer when the run is not verbose. */
 function withVerbosePointer(lead: string): string {
   return `${lead}. ${verbosePointerSentence()}`.trimEnd();

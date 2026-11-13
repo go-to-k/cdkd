@@ -5,7 +5,7 @@ import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s
 import { Upload } from '@aws-sdk/lib-storage';
 import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { safeStringify } from '../utils/aws-failure-text.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
@@ -225,7 +225,7 @@ export class FileAssetPublisher {
       return;
     }
     this.logger.debug(
-      `Uploading s3://${bucket}/${key} (${contentLength} bytes) as a multipart upload`
+      safeMsg`Uploading s3://${bucket}/${key} (${contentLength} bytes) as a multipart upload`
     );
     // `leavePartsOnError` stays at its default `false`: a failed part aborts
     // the multipart upload, so no orphaned parts are left billed in the bucket.

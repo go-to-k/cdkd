@@ -59,7 +59,11 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 import { withRetry } from '../deployment/retry.js';
-import { describeAwsFailure, verbosePointerSentence } from '../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  verbosePointerSentence,
+  verbosePointerTail,
+} from '../utils/aws-failure-text.js';
 import { startInterruptWatch } from './interrupt-watch.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import type { Logger } from '../types/config.js';
@@ -608,7 +612,7 @@ export async function waitForIndexesSettled(opts: {
         );
         logger.warn(
           `DescribeTable failed (${errorName}) while waiting for indexes on ${tableName} ` +
-            `(${logicalId}), so cdkd stopped waiting; ${proceedNote} ${verbosePointerSentence()}`.trimEnd()
+            `(${logicalId}), so cdkd stopped waiting; ${proceedNote}${verbosePointerTail()}`
         );
         return;
       }

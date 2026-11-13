@@ -123,7 +123,7 @@ export class WorkGraph {
                 // `UnknownError` placeholder (an empty error body), which left
                 // a `--verbose` run with nothing more to read than without it.
                 this.logger.debug(
-                  `Failure detail for ${node.id}: ${describeAwsErrorDiagnostics(error)}`
+                  safeMsg`Failure detail for ${node.id}: ${describeAwsErrorDiagnostics(error)}`
                 );
               }
             })
