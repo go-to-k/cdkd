@@ -119,10 +119,20 @@ receives the same value it would receive from `cdk deploy`.
 | `AWS::AppSync::DataSource` | The data source ARN |
 | `AWS::AppSync::Resolver` | The resolver ARN |
 | `AWS::EC2::EIP` | The public IP |
+| `AWS::EC2::VPCGatewayAttachment` | `IGW\|<vpcId>` or `VGW\|<vpcId>` |
 | `AWS::Glue::Table` | The table name |
 | `AWS::Route53::RecordSet` | The record name |
-| `AWS::S3Tables::Namespace` | The namespace name |
+| `AWS::S3Tables::Namespace` | The stored ID, `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | The table ARN |
+
+Two types that do not store a composite ID also get a translated `Ref`.
+cdkd stores the name or ID and reads the ARN from an attribute recorded at
+create time:
+
+| Resource type | Stored `physicalId` | `Ref` returns |
+| --- | --- | --- |
+| `AWS::AppSync::GraphQLApi` | The API ID | The API ARN |
+| `AWS::S3Vectors::VectorBucket` | The bucket name | The bucket ARN |
 
 ### Records with no recorded ARN
 
