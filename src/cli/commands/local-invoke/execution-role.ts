@@ -3,6 +3,7 @@ import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../../utils/
 import { quotedOrDescribed, shellBoundedDisplay } from '../../../utils/pasteable-command.js';
 import { isIamRoleArn } from '../../../utils/role-arn.js';
 import type { StackState } from '../../../types/state.js';
+import { stateRoleRecordIsEmulatorSide } from '../../../local/local-aws-wiring.js';
 
 /**
  * When `--from-state` is set but `--assume-role` was NOT passed (not even
@@ -57,6 +58,9 @@ export function maybeSuggestAssumeRole(
 ): boolean {
   if (options.assumeRole !== undefined) return false;
   if (!options.fromState || !state) return false;
+  // Mixed mode with the emulator's IAM record: the bare flag cannot use the
+  // role it would name (go-to-k/cdkd#6252), so do not suggest it.
+  if (stateRoleRecordIsEmulatorSide()) return false;
   suggestAssumeRoleFromState(state, logicalId);
   return true;
 }
@@ -100,6 +104,23 @@ export function resolveExecutionRoleArnFromState(
 }
 
 /**
+ * The warning a bare `--assume-role` (or `--assume-role-auto`) prints instead
+ * of reading the execution role from the state record in AWS Emulator mixed
+ * mode when IAM is not a `"real-aws"` exception (go-to-k/cdkd#6252): the role
+ * is assumed in real AWS there, and the record's roles are the emulator's.
+ * `pin` is the flag form that names the ARN explicitly. Mirrors `local
+ * run-task`'s `mixed-mode-emulator-iam` warning.
+ */
+export function mixedModeEmulatorRoleWarning(pin: string): string {
+  return (
+    '--assume-role: in AWS Emulator mixed mode the execution role is assumed in real AWS, but the ' +
+    "state record's IAM roles are the emulator's, so cdkd does not read the role from it. Mark IAM " +
+    'as a "real-aws" exception under Parameters (AWS_ENDPOINT_URL_IAM), or pass the ARN explicitly: ' +
+    `${pin}. Falling back to the developer's shell credentials.`
+  );
+}
+
+/**
  * Bare `--assume-role` with cdkd state loaded: resolve the function's execution
  * role from state and say which way it went -- the ARN on success, or a warn
  * and `undefined` (the caller falls back to the developer's shell
@@ -114,6 +135,10 @@ export function resolveBareAssumeRoleFromState(
   logicalId: string
 ): string | undefined {
   const logger = getLogger();
+  if (stateRoleRecordIsEmulatorSide()) {
+    logger.warn(mixedModeEmulatorRoleWarning("--assume-role '<arn>'"));
+    return undefined;
+  }
   const arn = resolveExecutionRoleArnFromState(state, logicalId);
   if (arn) {
     logger.info(

@@ -3,6 +3,8 @@ import { getLogger } from '../../../utils/logger.js';
 import { isIamRoleArn } from '../../../utils/role-arn.js';
 import type { TemplateResource } from '../../../types/resource.js';
 import { classifyExecutionRoleArnFromState } from '../local-invoke.js';
+import { mixedModeEmulatorRoleWarning } from '../local-invoke/execution-role.js';
+import { stateRoleRecordIsEmulatorSide } from '../../../local/local-aws-wiring.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../../utils/display-safe.js';
 import { isPasteableIdent } from '../state-file-keys.js';
 import {
@@ -87,6 +89,12 @@ export function resolveStartApiAssumeRoleArn(args: {
       `the template Role for ${quotedOrDescribed(logicalId, 'logical id')} is not a well-formed IAM role ARN: ` +
         shellBoundedDisplay(displayIdent(roleProp, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))
     );
+  }
+  // Mixed mode: the record's roles are the emulator's, and the role is
+  // assumed in real AWS (go-to-k/cdkd#6252).
+  if (stateBundle && stateRoleRecordIsEmulatorSide()) {
+    getLogger().warn(mixedModeEmulatorRoleWarning(assumeRolePin(logicalId)));
+    return undefined;
   }
   if (stateBundle) {
     const fromState = classifyExecutionRoleArnFromState(stateBundle.state, logicalId);

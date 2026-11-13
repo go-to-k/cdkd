@@ -57,7 +57,9 @@ import {
   activateLocalAwsWiring,
   applyLocalAwsWiring,
   getActiveWorkloadAwsWiring,
+  keepEmulatorIssuedCredentials,
   localAwsEmulatorActive,
+  resetEmulatorIssuedCredentials,
   workloadGetsEmulatorKeysOnly,
   localAwsEmulatorCredentials,
   prepareLocalLoopbackForwarder,
@@ -504,6 +506,55 @@ describe('applyLocalAwsWiring', () => {
     const mount = { hostPath: '/tmp/creds', containerPath: CONTAINER_AWS_CREDENTIALS_PATH };
     const out = await applyLocalAwsWiring(forwardWiring({ mounts: [] }), {}, [mount], []);
     expect(out.extraMounts).toEqual([mount]);
+  });
+});
+
+describe('--assume-role credentials the emulator issued (go-to-k/cdkd#6252)', () => {
+  const ROLE = {
+    accessKeyId: 'emulator-role-key',
+    secretAccessKey: 'role-secret',
+    sessionToken: 'role-token',
+  };
+  const roleEnv = {
+    AWS_ACCESS_KEY_ID: ROLE.accessKeyId,
+    AWS_SECRET_ACCESS_KEY: ROLE.secretAccessKey,
+    AWS_SESSION_TOKEN: ROLE.sessionToken,
+  };
+  afterEach(() => {
+    resetEmulatorIssuedCredentials();
+  });
+
+  it('replace the emulator keys in the container under --aws-emulator', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    keepEmulatorIssuedCredentials(ROLE);
+    const out = await applyLocalAwsWiring(emulatorWiring(), roleEnv, [], []);
+    expect(out.env['AWS_ACCESS_KEY_ID']).toBe(ROLE.accessKeyId);
+    expect(out.env['AWS_SECRET_ACCESS_KEY']).toBe(ROLE.secretAccessKey);
+    expect(out.env['AWS_SESSION_TOKEN']).toBe(ROLE.sessionToken);
+    expect(out.env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:9297');
+  });
+
+  it('an unrecorded triple, or one with any key changed, still gets the emulator keys', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    const unrecorded = await applyLocalAwsWiring(emulatorWiring(), roleEnv, [], []);
+    expect(unrecorded.env['AWS_ACCESS_KEY_ID']).toBe(EMULATOR_KEYS.accessKeyId);
+    keepEmulatorIssuedCredentials(ROLE);
+    const tampered = await applyLocalAwsWiring(
+      emulatorWiring(),
+      { ...roleEnv, AWS_SESSION_TOKEN: 'real-token' },
+      [],
+      []
+    );
+    expect(tampered.env['AWS_ACCESS_KEY_ID']).toBe(EMULATOR_KEYS.accessKeyId);
+    expect(tampered.env['AWS_SESSION_TOKEN']).toBeUndefined();
+  });
+
+  it('records nothing outside full emulator mode (mixed mode assumes in real AWS)', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    keepEmulatorIssuedCredentials(ROLE);
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    const out = await applyLocalAwsWiring(emulatorWiring(), roleEnv, [], []);
+    expect(out.env['AWS_ACCESS_KEY_ID']).toBe(EMULATOR_KEYS.accessKeyId);
   });
 });
 

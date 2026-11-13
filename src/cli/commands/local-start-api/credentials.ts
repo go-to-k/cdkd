@@ -2,7 +2,7 @@ import {
   describeLocalAwsFailureForWarn,
   redactedAwsCause,
 } from '../../../utils/local-aws-failure.js';
-import { mixedModeActive } from '../../../local/local-aws-wiring.js';
+import { keepEmulatorIssuedCredentials, mixedModeActive } from '../../../local/local-aws-wiring.js';
 import { emulateRoleAfterDeniedAssume } from '../../../local/role-permission-emulation.js';
 import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
@@ -219,11 +219,13 @@ export async function assumeLambdaExecutionRole(
         'LOCAL_START_API_ASSUMEROLE_NO_CREDS'
       );
     }
-    return {
+    // `--aws-emulator`: the emulator issued these, so they replace its keys in
+    // the container instead of being discarded (go-to-k/cdkd#6252).
+    return keepEmulatorIssuedCredentials({
       accessKeyId: creds.AccessKeyId,
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
-    };
+    });
   } catch (err) {
     if (err instanceof CdkdError) throw err;
     // The role's trust policy refused the caller: emulate its permissions with
@@ -237,7 +239,7 @@ export async function assumeLambdaExecutionRole(
       flag: '--assume-role',
       sessionNamePrefix: 'cdkd-local-start-api',
     });
-    if (emulated) return emulated;
+    if (emulated) return keepEmulatorIssuedCredentials(emulated);
     // No caller catches this, so the raw SDK error reached `formatError`
     // unsanitized -- a `credential_process` command line included
     // (go-to-k/cdkd#4857).

@@ -1,11 +1,14 @@
 import { getLogger } from '../../../utils/logger.js';
 import {
+  keepEmulatorIssuedCredentials,
   mixedModeActive,
   realAwsException,
   resolveContainerRegion,
   setContainerRegion,
+  stateRoleRecordIsEmulatorSide,
   warnAwsEmulatorStateSourceHint,
 } from '../../../local/local-aws-wiring.js';
+import { mixedModeEmulatorRoleWarning } from '../local-invoke/execution-role.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../../utils/pasteable-command.js';
@@ -466,6 +469,12 @@ function resolveAssumeRoleArnUncached(
           safeMsg`${shellBoundedDisplay(displayIdent(resolved.roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS }))}. Ignoring it.`
       );
     }
+    // Mixed mode: the record's roles are the emulator's, and the role is
+    // assumed in real AWS (go-to-k/cdkd#6252).
+    if (loaded && stateRoleRecordIsEmulatorSide()) {
+      getLogger().warn(mixedModeEmulatorRoleWarning("--assume-role '<arn>'"));
+      return undefined;
+    }
     if (loaded) {
       const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
       if (fromState) {
@@ -571,7 +580,7 @@ export async function assumeAgentCoreExecutionRole(
         flag: '--assume-role',
         sessionNamePrefix: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore`,
       });
-      if (emulated) return emulated;
+      if (emulated) return keepEmulatorIssuedCredentials(emulated);
       throw err;
     }
     const creds = response.Credentials;
@@ -581,11 +590,13 @@ export async function assumeAgentCoreExecutionRole(
         'LOCAL_INVOKE_AGENTCORE_ASSUMEROLE_NO_CREDS'
       );
     }
-    return {
+    // `--aws-emulator`: the emulator issued these, so they replace its keys in
+    // the container instead of being discarded (go-to-k/cdkd#6252).
+    return keepEmulatorIssuedCredentials({
       accessKeyId: creds.AccessKeyId,
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
-    };
+    });
   } finally {
     sts.destroy();
   }

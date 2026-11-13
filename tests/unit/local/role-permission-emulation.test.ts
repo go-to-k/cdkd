@@ -49,6 +49,8 @@ const aws = vi.hoisted(() => ({
   /** Split the List* answers into pages of this size (0: one page). */
   pageSize: 0,
   mixed: false,
+  /** `mixedModeEmulatorOverride()`: set while `--aws-emulator` is active (#6252). */
+  emulatorOverride: undefined as { endpoint: string } | undefined,
 }));
 
 function command(name: string) {
@@ -94,7 +96,11 @@ vi.mock('../../../src/utils/aws-client-defaults.js', async (importOriginal) => {
 
 vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/local/local-aws-wiring.js')>();
-  return { ...actual, mixedModeActive: () => aws.mixed };
+  return {
+    ...actual,
+    mixedModeActive: () => aws.mixed,
+    mixedModeEmulatorOverride: () => aws.emulatorOverride,
+  };
 });
 
 // The fromS3 path downloads the bundle after the credential hop; stop it there.
@@ -207,6 +213,11 @@ const { assumeAgentCoreExecutionRole, buildContainerEnv } = await import(
   '../../../src/cli/commands/local-invoke-agentcore/env.js'
 );
 const { createLocalCommand } = await import('../../../src/cli/commands/local-invoke.js');
+const { applyLocalAwsWiring, resetEmulatorIssuedCredentials } = await import(
+  '../../../src/local/local-aws-wiring.js'
+);
+const { setActiveWorkloadAwsWiring } = await import('cdk-local/internal');
+type WorkloadAwsWiring = import('cdk-local/internal').WorkloadAwsWiring;
 
 describe('--emulate-role-via parses to `emulateRoleVia` on every command that takes it', () => {
   function stubbed() {
@@ -292,6 +303,7 @@ beforeEach(() => {
   aws.managed = [BASIC];
   aws.pageSize = 0;
   aws.mixed = false;
+  aws.emulatorOverride = undefined;
   warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
 });
 
@@ -409,6 +421,94 @@ describe('isAssumeRoleAccessDenied', () => {
       expect(isAssumeRoleAccessDenied({ name, $metadata: { httpStatusCode: 403 } })).toBe(false);
     }
   );
+});
+
+describe('emulateRoleAfterDeniedAssume against AWS Emulator (go-to-k/cdkd#6252)', () => {
+  it('skips GetFederationToken: the emulator user has no policies, so the session would allow nothing', async () => {
+    aws.emulatorOverride = { endpoint: 'https://127.0.0.1:9297' };
+    expect(await emulateRoleAfterDeniedAssume(accessDenied(), args)).toBeUndefined();
+    expect(aws.sent).toEqual([]);
+    const text = warnings();
+    expect(text).toContain('GetFederationToken session is allowed nothing');
+    expect(text).toContain("trust policy allow the emulator's identity");
+    expect(text).not.toContain('APPROXIMATION');
+  });
+
+  it('still emulates through --emulate-role-via, a role the caller can assume there', async () => {
+    aws.emulatorOverride = { endpoint: 'https://127.0.0.1:9297' };
+    const creds = await emulateRoleAfterDeniedAssume(accessDenied(), { ...args, emulateRoleVia: VIA });
+    expect(creds?.accessKeyId).toBe('ASIA-AssumeRole');
+    expect(viaAssumes()).toEqual([VIA]);
+  });
+
+  describe('the role credentials the emulator issued reach the container', () => {
+    const EMU_KEYS = { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 'emulator-secret' };
+    const wiring = {
+      mode: 'emulator',
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+      env: { AWS_ENDPOINT_URL: 'https://127.0.0.1:9297' },
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297],
+      probeHealth: true,
+      emulatorCredentials: EMU_KEYS,
+      dispose: () => {},
+    } as unknown as WorkloadAwsWiring;
+    const ROLE_TRIPLE = {
+      AWS_ACCESS_KEY_ID: 'ASIA-AssumeRole',
+      AWS_SECRET_ACCESS_KEY: SECRET,
+      AWS_SESSION_TOKEN: 'token-AssumeRole',
+    };
+    beforeEach(() => {
+      aws.denyRole = undefined;
+      setActiveWorkloadAwsWiring(wiring);
+    });
+    afterEach(() => {
+      setActiveWorkloadAwsWiring(undefined);
+      resetEmulatorIssuedCredentials();
+    });
+    const wired = async (env: Record<string, string>) =>
+      (await applyLocalAwsWiring(wiring, env, [], [])).env;
+
+    it('local invoke', async () => {
+      const env: Record<string, string> = {};
+      await applyLambdaCredentialEnv(env, { assumeRoleArn: ROLE, region: 'us-east-1' });
+      expect(await wired(env)).toMatchObject(ROLE_TRIPLE);
+    });
+
+    it('local start-api', async () => {
+      const c = await assumeLambdaExecutionRole(ROLE, 'us-east-1');
+      expect(
+        await wired({
+          AWS_ACCESS_KEY_ID: c.accessKeyId,
+          AWS_SECRET_ACCESS_KEY: c.secretAccessKey,
+          AWS_SESSION_TOKEN: c.sessionToken,
+        })
+      ).toMatchObject(ROLE_TRIPLE);
+    });
+
+    it('local invoke-agentcore', async () => {
+      const c = await assumeAgentCoreExecutionRole(ROLE, 'us-east-1');
+      expect(
+        await wired({
+          AWS_ACCESS_KEY_ID: c.accessKeyId,
+          AWS_SECRET_ACCESS_KEY: c.secretAccessKey,
+          AWS_SESSION_TOKEN: c.sessionToken,
+        })
+      ).toMatchObject(ROLE_TRIPLE);
+    });
+
+    it('caller credentials in the env are still replaced by the emulator keys', async () => {
+      const out = await wired({ AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'real' });
+      expect(out['AWS_ACCESS_KEY_ID']).toBe(EMU_KEYS.accessKeyId);
+    });
+  });
+
+  it('mixed mode routes the hop to real AWS, where GetFederationToken still runs', async () => {
+    aws.emulatorOverride = { endpoint: 'https://127.0.0.1:9297' };
+    const creds = await emulateRoleAfterDeniedAssume(accessDenied(), { ...args, realAws: true });
+    expect(creds?.accessKeyId).toBe('ASIA-GetFederationToken');
+  });
 });
 
 describe('emulateRoleAfterDeniedAssume', () => {

@@ -208,7 +208,10 @@ identity is the only one cdkd uses:
   to.
 - Containers started by `cdkd local` get the emulator's keys and nothing else.
   A handler that misses the endpoint fails with a credential error rather than
-  reaching your account.
+  reaching your account. A role flag such as `--assume-role` swaps in the
+  role's credentials, which the emulator's STS issued, so the emulator checks
+  the role's policies
+  ([details](local-emulation.md#credentials-inside-the-container)).
 
 cdkd prints one line naming what it ignored, never the values:
 
