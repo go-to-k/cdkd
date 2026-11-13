@@ -46,6 +46,7 @@ import {
 } from './stack-account.js';
 import {
   buildEcsImageResolutionContext,
+  taskRoleRecordIsEmulatorSide,
   pickCandidateStack,
   resolveEcsConsumerRegion,
 } from './image-context.js';
@@ -415,8 +416,20 @@ export async function localRunTaskCommand(
     if (roleArnTemplate !== undefined && assumes) {
       const realAws = plan.assumeInRealAws;
       // The deployed name came from no state record (go-to-k/cdkd#6189).
-      if (options.assumeTaskRole === true && task.taskRoleNameIsLogicalId !== undefined) {
-        logger.warn(taskRoleNameIsLogicalIdWarning(task.taskRoleNameIsLogicalId, !!stateProvider));
+      if (options.assumeTaskRole === true && task.taskRoleUnresolved !== undefined) {
+        const { logicalId, reason } = task.taskRoleUnresolved;
+        logger.warn(
+          taskRoleNameIsLogicalIdWarning(
+            logicalId,
+            reason !== 'no-state'
+              ? reason
+              : !stateProvider
+                ? 'no-state-source'
+                : taskRoleRecordIsEmulatorSide()
+                  ? 'mixed-mode-emulator-iam'
+                  : 'state-not-read'
+          )
+        );
       }
       // The bare flag's placeholder account is asked of the same STS: the
       // emulator's account and the real one differ.

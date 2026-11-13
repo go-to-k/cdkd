@@ -11,7 +11,10 @@ import {
 import { VALUE_NOT_SHOWN } from '../../../provisioning/import-helpers.js';
 import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../../../utils/role-arn.js';
 import { CdkdError } from '../../../utils/error-handler.js';
-import { TASK_ROLE_ACCOUNT_PLACEHOLDER } from '../../../local/ecs-task-resolver.js';
+import {
+  TASK_ROLE_ACCOUNT_PLACEHOLDER,
+  TASK_ROLE_PARTITION_PLACEHOLDER,
+} from '../../../local/ecs-task-resolver.js';
 import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
 
 /**
@@ -61,7 +64,12 @@ export async function resolvePlaceholderAccount(
   route: { realAws: boolean }
 ): Promise<string> {
   const { region, profile } = source;
-  if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
+  if (
+    !arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER) &&
+    !arn.includes(TASK_ROLE_PARTITION_PLACEHOLDER)
+  ) {
+    return arn;
+  }
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   let sts: InstanceType<typeof STSClient>;
   if (readFromCfnStack(source)) {
@@ -99,7 +107,14 @@ export async function resolvePlaceholderAccount(
         'LOCAL_RUN_TASK_PLACEHOLDER_NO_ACCOUNT'
       );
     }
-    return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+    // The caller's ARN carries the partition the role lives in
+    // (go-to-k/cdkd#6189); `aws` when it is absent, as before.
+    const partition = partitionOfArn(identity.Arn);
+    return arn
+      .split(TASK_ROLE_ACCOUNT_PLACEHOLDER)
+      .join(account)
+      .split(TASK_ROLE_PARTITION_PLACEHOLDER)
+      .join(partition);
   } catch (err) {
     if (err instanceof CdkdError) throw err;
     // The raw SDK error would reach `formatError` unsanitized, and a
@@ -117,32 +132,68 @@ export async function resolvePlaceholderAccount(
 }
 
 /**
+ * Why the bare `--assume-task-role` falls back to the role's LOGICAL id
+ * (go-to-k/cdkd#6189), as the CLI tells it: the resolver's
+ * `TaskRoleUnresolvedReason`, with `no-state` split by what the CLI knows.
+ */
+export type TaskRoleFallbackReason =
+  | 'no-state-source'
+  | 'state-not-read'
+  | 'mixed-mode-emulator-iam'
+  | 'no-record'
+  | 'path-not-literal';
+
+/**
  * The warning the bare `--assume-task-role` prints when the task role's ARN is
  * the placeholder built from its LOGICAL id (go-to-k/cdkd#6189): that names
  * the deployed role only when its name is the logical id, and a role CDK
- * names itself is deployed as `<Stack>-<LogicalId>-<suffix>`.
- * `stateSourceGiven` picks the remedy: without a state source, pass one; with
- * one, its record lacks the role.
+ * names itself is deployed as `<Stack>-<LogicalId>-<suffix>`. Each reason
+ * names its own remedy.
  *
  * @internal exported for unit tests.
  */
 export function taskRoleNameIsLogicalIdWarning(
   logicalId: string,
-  stateSourceGiven: boolean
+  reason: TaskRoleFallbackReason
 ): string {
   const id = displayIdent(logicalId);
-  if (!stateSourceGiven) {
-    return (
-      `--assume-task-role: TaskRoleArn references the same-stack role ${id}, and without --from-state (cdkd-deployed) ` +
-      `or --from-cfn-stack (cdk-deployed) cdkd cannot read the name it was deployed under, so it assumes a role named ${id}. ` +
-      `A role CDK names for you is deployed as '<Stack>-<LogicalId>-<suffix>', where AssumeRole fails: ` +
-      `pass --from-state / --from-cfn-stack, or the ARN explicitly: --assume-task-role '<arn>'.`
-    );
+  switch (reason) {
+    case 'no-state-source':
+      return (
+        `--assume-task-role: TaskRoleArn references the same-stack role ${id}, and without --from-state (cdkd-deployed) ` +
+        `or --from-cfn-stack (cdk-deployed) cdkd cannot read the name it was deployed under, so cdkd assumes a role named ${id}. ` +
+        `A role CDK names for you is deployed as '<Stack>-<LogicalId>-<suffix>', where AssumeRole fails: ` +
+        `pass --from-state / --from-cfn-stack, or pass the ARN explicitly: --assume-task-role '<arn>'.`
+      );
+    case 'state-not-read':
+      return (
+        `--assume-task-role: cdkd read no state record for the task role ${id} ` +
+        `(the target names no single stack, or the record could not be loaded), so cdkd assumes a role named ${id}. ` +
+        `Name the stack in the target ('<Stack>:<LogicalId>' or a display path), or pass the ARN explicitly: --assume-task-role '<arn>'.`
+      );
+    case 'mixed-mode-emulator-iam':
+      return (
+        `--assume-task-role: in AWS Emulator mixed mode the task role is assumed in real AWS, but the state record's ` +
+        `IAM roles are the emulator's, so cdkd does not read ${id} from it and assumes a role named ${id}. ` +
+        `Mark IAM as a "real-aws" exception under Parameters (AWS_ENDPOINT_URL_IAM), or pass the ARN explicitly: --assume-task-role '<arn>'.`
+      );
+    case 'no-record':
+      return (
+        `--assume-task-role: the state source has no record of the task role ${id}, so cdkd assumes a role named ${id}. ` +
+        `Deploy the stack first, or pass the ARN explicitly: --assume-task-role '<arn>'.`
+      );
+    case 'path-not-literal':
+      return (
+        `--assume-task-role: the template's Path for the task role ${id} is not a literal IAM path, so cdkd ` +
+        `cannot build its ARN from the stack's record, so cdkd assumes a role named ${id}. Pass the ARN explicitly: --assume-task-role '<arn>'.`
+      );
   }
-  return (
-    `--assume-task-role: the state source has no record of the task role ${id}, so cdkd assumes a role named ${id}. ` +
-    `Deploy the stack first, or pass the ARN explicitly: --assume-task-role '<arn>'.`
-  );
+}
+
+/** The partition segment of an ARN, `aws` when there is none to read. */
+function partitionOfArn(arn: string | undefined): string {
+  const segment = arn?.split(':')[1];
+  return arn?.startsWith('arn:') && segment ? segment : 'aws';
 }
 
 /**

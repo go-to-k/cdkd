@@ -168,13 +168,47 @@ describe('local run-task bare --assume-task-role reads the deployed role (go-to-
     stateLoadMock.mockResolvedValue({ region: 'us-east-1', resources: {} });
     await runTask(['--from-state', '--assume-task-role']);
     expect(assumedRoleArns()).toEqual(['arn:aws:iam::000000000000:role/TaskRole30FC0FBB']);
-    expect(warnings).toContain(taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', true));
+    expect(warnings).toContain(taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'no-record'));
   });
 
   it('without a state source: keeps role/<LogicalId> and says a state source fixes it', async () => {
     await runTask(['--assume-task-role']);
     expect(assumedRoleArns()).toEqual(['arn:aws:iam::000000000000:role/TaskRole30FC0FBB']);
-    expect(warnings).toContain(taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', false));
+    expect(warnings).toContain(taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'no-state-source'));
+  });
+
+  it('with a state source that loads nothing: says no record was read', async () => {
+    stateSourceGiven.current = true;
+    stateLoadMock.mockResolvedValue(undefined);
+    await runTask(['--from-state', '--assume-task-role']);
+    expect(assumedRoleArns()).toEqual(['arn:aws:iam::000000000000:role/TaskRole30FC0FBB']);
+    expect(warnings).toContain(taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'state-not-read'));
+  });
+
+  it('--from-cfn-stack shape (name only): builds the ARN, partition and account from the caller', async () => {
+    stateSourceGiven.current = true;
+    stateLoadMock.mockResolvedValue({
+      region: 'cn-north-1',
+      resources: {
+        TaskRole30FC0FBB: {
+          physicalId: 'Cdkd6189Stack-TaskRole30FC0FBB-25c3bf832d6a',
+          resourceType: 'AWS::IAM::Role',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
+    stsSendMock.mockImplementation(async (cmd: { kind: string }) =>
+      cmd.kind === 'GetCallerIdentity'
+        ? { Account: '111111111111', Arn: 'arn:aws-cn:iam::111111111111:user/dev' }
+        : { Credentials: { AccessKeyId: 'k', SecretAccessKey: 's', SessionToken: 't' } }
+    );
+    await runTask(['--from-cfn-stack', '--assume-task-role']);
+    expect(assumedRoleArns()).toEqual([
+      'arn:aws-cn:iam::111111111111:role/Cdkd6189Stack-TaskRole30FC0FBB-25c3bf832d6a',
+    ]);
+    expect(warnings.join('\n')).not.toContain('assumes a role named');
   });
 
   it('an explicit ARN reads no state and warns nothing about the role name', async () => {
@@ -195,7 +229,7 @@ describe('local run-task bare --assume-task-role reads the deployed role (go-to-
 
 describe('taskRoleNameIsLogicalIdWarning', () => {
   it('without a state source names both state flags and the explicit-ARN form', () => {
-    const text = taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', false);
+    const text = taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'no-state-source');
     expect(text).toContain('--from-state');
     expect(text).toContain('--from-cfn-stack');
     expect(text).toContain("--assume-task-role '<arn>'");
@@ -203,12 +237,22 @@ describe('taskRoleNameIsLogicalIdWarning', () => {
   });
 
   it('with a state source says the record lacks the role', () => {
-    const text = taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', true);
+    const text = taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', 'no-record');
     expect(text).toContain('the state source has no record of the task role');
     expect(text).toContain("--assume-task-role '<arn>'");
   });
 
+  it.each([
+    ['state-not-read', 'read no state record'],
+    ['mixed-mode-emulator-iam', 'AWS_ENDPOINT_URL_IAM'],
+    ['path-not-literal', 'not a literal IAM path'],
+  ] as const)('%s names its own cause', (reason, needle) => {
+    const text = taskRoleNameIsLogicalIdWarning('TaskRole30FC0FBB', reason);
+    expect(text).toContain(needle);
+    expect(text).toContain("--assume-task-role '<arn>'");
+  });
+
   it('renders a control character in the logical id inert', () => {
-    expect(taskRoleNameIsLogicalIdWarning('Bad\u001bId', false)).not.toContain('\u001b');
+    expect(taskRoleNameIsLogicalIdWarning('Bad\u001bId', 'no-state-source')).not.toContain('\u001b');
   });
 });

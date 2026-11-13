@@ -1,3 +1,4 @@
+import type { TaskRoleUnresolvedReason } from './role-arn.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import type { ImageResolutionContext } from '../intrinsic-image.js';
@@ -40,10 +41,10 @@ export interface ResolvedEcsTask {
    *     `Fn::GetAtt` against an `AWS::IAM::Role` in the same stack and the
    *     state source's record holds that role (go-to-k/cdkd#6189), OR
    *   - a synth-time placeholder of the shape
-   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` for the same
-   *     reference with no such record ({@link taskRoleNameIsLogicalId} is
-   *     then set). The CLI substitutes the placeholder account
-   *     segment lazily via STS `GetCallerIdentity` when (and only when)
+   *     `arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<RoleLogicalId>`
+   *     for the same reference with no such record ({@link taskRoleUnresolved}
+   *     is then set). The CLI substitutes the placeholder partition and account
+   *     lazily via STS `GetCallerIdentity` when (and only when)
    *     `--assume-task-role` is used in its bare form.
    *   - `undefined` when the template's `TaskRoleArn` is missing OR is an
    *     intrinsic that doesn't reference a same-stack IAM Role (e.g.
@@ -52,11 +53,11 @@ export interface ResolvedEcsTask {
    */
   taskRoleArn?: string;
   /**
-   * The role's logical id, set when {@link taskRoleArn} is the placeholder
-   * built FROM it: no state record named the deployed role, so the ARN is
+   * Set when {@link taskRoleArn} is the placeholder built from the role's
+   * LOGICAL id, with why no state record named the deployed role: the ARN is
    * right only if the role's name is its logical id (go-to-k/cdkd#6189).
    */
-  taskRoleNameIsLogicalId?: string;
+  taskRoleUnresolved?: { logicalId: string; reason: TaskRoleUnresolvedReason };
   /** Resolved execution role ARN. Follows the same shape as `taskRoleArn`. */
   executionRoleArn?: string;
   containers: ResolvedEcsContainer[];
@@ -210,6 +211,12 @@ export type EcsImageResolutionContext = ImageResolutionContext & {
    * therefore use conventional names the regex already matches).
    */
   cdkAssetContainerRepo?: string;
+  /**
+   * Resolve a same-stack task / execution role WITHOUT the state record
+   * (go-to-k/cdkd#6189): set in AWS Emulator mixed mode when the record's IAM
+   * resources are the emulator's while the role is assumed in real AWS.
+   */
+  ignoreStateForRoles?: boolean;
 };
 
 /**

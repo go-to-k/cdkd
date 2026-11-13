@@ -13,6 +13,7 @@ import { loadBootstrapContainerRepo } from '../local-state-loader.js';
 import type { LocalStateProvider } from '../../../local/local-state-provider.js';
 import type { LocalRunTaskOptions } from './types.js';
 import { resolveStackAccountId } from './stack-account.js';
+import { getActiveWorkloadAwsWiring, realAwsException } from '../../../local/local-aws-wiring.js';
 
 /**
  * Region the cross-stack resolver is scoped to for `cdkd local run-task`
@@ -101,8 +102,12 @@ export async function buildEcsImageResolutionContext(
   const needs = detectEcsImageResolutionNeeds(candidate);
   // The bare `--assume-task-role` reads the task role's deployed ARN from the
   // state record (go-to-k/cdkd#6189); no other path reads the task role.
+  const roleRecordUsable = !taskRoleRecordIsEmulatorSide();
   const wantsStateForTaskRole =
-    !!stateProvider && needs.needsTaskRoleState && options.assumeTaskRole === true;
+    !!stateProvider &&
+    needs.needsTaskRoleState &&
+    options.assumeTaskRole === true &&
+    roleRecordUsable;
   if (
     !needs.needsPseudoParameters &&
     !needs.needsStateResources &&
@@ -114,6 +119,7 @@ export async function buildEcsImageResolutionContext(
   }
 
   const ctx: EcsImageResolutionContext = {};
+  if (!roleRecordUsable) ctx.ignoreStateForRoles = true;
   // Region of the state record the load below resolved to, if any. Reported
   // separately rather than stashed on `ctx`: `EcsImageResolutionContext` is
   // cdk-local's `ImageResolutionContext` plus one cdkd field, and the region is
@@ -223,6 +229,19 @@ export async function buildEcsImageResolutionContext(
   }
 
   return { context: ctx, ...(stateRecordRegion !== undefined && { stateRecordRegion }) };
+}
+
+/**
+ * Whether the state record's IAM roles are the WRONG side for
+ * `--assume-task-role` (go-to-k/cdkd#6189): in AWS Emulator mixed mode the role
+ * is assumed in real AWS (`planTaskRoleCredentials`), while the record's IAM
+ * resources are the emulator's unless `Parameters` marks IAM as a `"real-aws"`
+ * exception. The record would then name an emulator role to real STS.
+ *
+ * @internal exported for unit tests.
+ */
+export function taskRoleRecordIsEmulatorSide(): boolean {
+  return getActiveWorkloadAwsWiring()?.mixed !== undefined && !realAwsException('IAM');
 }
 
 /**

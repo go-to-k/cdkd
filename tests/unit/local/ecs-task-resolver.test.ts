@@ -7,6 +7,7 @@ import {
   parseEcsTarget,
   resolveEcsTaskTarget,
   TASK_ROLE_ACCOUNT_PLACEHOLDER,
+  TASK_ROLE_PARTITION_PLACEHOLDER,
 } from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
@@ -383,7 +384,7 @@ describe('resolveEcsTaskTarget', () => {
         TD: makeTaskDef({ taskRoleArn: { Ref: 'MyRole' } }),
       });
       const r = resolveEcsTaskTarget('TD', [stack]);
-      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+      expect(r.taskRoleArn).toBe(`arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
     });
 
     it('surfaces a placeholder ARN when TaskRoleArn is {Fn::GetAtt: [<IAM::Role>, "Arn"]}', () => {
@@ -392,7 +393,7 @@ describe('resolveEcsTaskTarget', () => {
         TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['MyRole', 'Arn'] } }),
       });
       const r = resolveEcsTaskTarget('TD', [stack]);
-      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+      expect(r.taskRoleArn).toBe(`arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
     });
 
     it('returns undefined when TaskRoleArn references a non-IAM-Role resource type', () => {
@@ -1730,7 +1731,7 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
       },
     });
     expect(r.taskRoleArn).toBe(deployedArn);
-    expect(r.taskRoleNameIsLogicalId).toBeUndefined();
+    expect(r.taskRoleUnresolved).toBeUndefined();
   });
 
   it('builds the ARN from the physical name when the record has no Arn (--from-cfn-stack)', () => {
@@ -1742,25 +1743,69 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
       stateResources: { TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', {}) },
     });
     expect(r.taskRoleArn).toBe(
-      `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/S1-TaskRole30FC0FBB-abc123`
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/S1-TaskRole30FC0FBB-abc123`
     );
-    expect(r.taskRoleNameIsLogicalId).toBeUndefined();
+    expect(r.taskRoleUnresolved).toBeUndefined();
   });
 
   it.each([
     ['/svc/', 'role/svc/Name'],
     ['/', 'role/Name'],
-    ['no-slashes', 'role/Name'],
-    [{ Ref: 'PathParam' }, 'role/Name'],
+    [undefined, 'role/Name'],
   ])('reads the template Path %j into the name-built ARN', (path, tail) => {
     const stack = buildStack('S1', {
-      R: role({ Path: path }),
+      R: role(path === undefined ? {} : { Path: path }),
       TD: makeTaskDef({ taskRoleArn: { Ref: 'R' } }),
     });
     const r = resolveEcsTaskTarget('TD', [stack], {
       stateResources: { R: record('Name', {}) },
     });
-    expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:${tail}`);
+    expect(r.taskRoleArn).toBe(
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:${tail}`
+    );
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it.each([['no-slashes'], [{ Ref: 'PathParam' }]])(
+    'refuses to build the ARN from a non-literal Path %j and says so',
+    (path) => {
+      const stack = buildStack('S1', {
+        R: role({ Path: path }),
+        TD: makeTaskDef({ taskRoleArn: { Ref: 'R' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        stateResources: { R: record('Name', {}) },
+      });
+      expect(r.taskRoleArn).toBe(
+        `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/R`
+      );
+      expect(r.taskRoleUnresolved).toEqual({ logicalId: 'R', reason: 'path-not-literal' });
+    }
+  );
+
+  it('a recorded role whose name IS its logical id is not flagged', () => {
+    const stack = buildStack('S1', {
+      TaskRole: role({ RoleName: 'TaskRole' }),
+      TD: makeTaskDef({ taskRoleArn: { Ref: 'TaskRole' } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: { TaskRole: record('TaskRole', {}) },
+    });
+    expect(r.taskRoleUnresolved).toBeUndefined();
+  });
+
+  it('ignoreStateForRoles resolves the roles without the record', () => {
+    const stack = buildStack('S1', {
+      TaskRole30FC0FBB: role(),
+      TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['TaskRole30FC0FBB', 'Arn'] } }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        TaskRole30FC0FBB: record('S1-TaskRole30FC0FBB-abc123', { Arn: deployedArn }),
+      },
+      ignoreStateForRoles: true,
+    });
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-state' });
   });
 
   it('keeps the logical-id placeholder and flags it when the record lacks the role', () => {
@@ -1770,9 +1815,9 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
     });
     const r = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
     expect(r.taskRoleArn).toBe(
-      `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/TaskRole30FC0FBB`
+      `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/TaskRole30FC0FBB`
     );
-    expect(r.taskRoleNameIsLogicalId).toBe('TaskRole30FC0FBB');
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'TaskRole30FC0FBB', reason: 'no-record' });
   });
 
   it('flags the placeholder with no state source at all', () => {
@@ -1781,7 +1826,7 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
       TD: makeTaskDef({ taskRoleArn: { Ref: 'MyRole' } }),
     });
     const r = resolveEcsTaskTarget('TD', [stack]);
-    expect(r.taskRoleNameIsLogicalId).toBe('MyRole');
+    expect(r.taskRoleUnresolved).toEqual({ logicalId: 'MyRole', reason: 'no-state' });
   });
 
   it('does not flag a literal TaskRoleArn, and the ExecutionRoleArn reads state too', () => {
@@ -1796,7 +1841,7 @@ describe('same-stack TaskRoleArn against a state record (go-to-k/cdkd#6189)', ()
     const r = resolveEcsTaskTarget('TD', [stack], {
       stateResources: { Exec: record('S1-Exec-xyz', { Arn: execArn }) },
     });
-    expect(r.taskRoleNameIsLogicalId).toBeUndefined();
+    expect(r.taskRoleUnresolved).toBeUndefined();
     expect(r.executionRoleArn).toBe(execArn);
   });
 

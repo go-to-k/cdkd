@@ -9,11 +9,7 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { parseContainerDefinition, buildSubstitutionContextFromImageContext } from './container.js';
 import { pickString } from './pick.js';
-import {
-  resolveRoleArn,
-  sameStackRoleLogicalId,
-  TASK_ROLE_ACCOUNT_PLACEHOLDER,
-} from './role-arn.js';
+import { resolveRoleArn } from './role-arn.js';
 import type { ResolvedEcsTask, EcsImageResolutionContext, ParsedEcsTarget } from './types.js';
 import { parseVolume } from './volume.js';
 
@@ -183,8 +179,11 @@ function extractTaskDefinitionProperties(
   const resources = stack.template.Resources ?? {};
 
   const subContext = buildSubstitutionContextFromImageContext(context);
-  const taskRoleArn = resolveRoleArn(props['TaskRoleArn'], resources, subContext);
-  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, subContext);
+  // Mixed mode can make the record's roles the wrong side's (go-to-k/cdkd#6189).
+  const roleSubContext = context?.ignoreStateForRoles ? undefined : subContext;
+  const taskRole = resolveRoleArn(props['TaskRoleArn'], resources, roleSubContext);
+  const taskRoleArn = taskRole.arn;
+  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, roleSubContext).arn;
 
   const runtimePlatform = parseRuntimePlatform(props['RuntimePlatform']);
 
@@ -232,13 +231,7 @@ function extractTaskDefinitionProperties(
     warnings,
   };
   if (taskRoleArn !== undefined) out.taskRoleArn = taskRoleArn;
-  const taskRoleLogicalId = sameStackRoleLogicalId(props['TaskRoleArn'], resources);
-  if (
-    taskRoleLogicalId !== undefined &&
-    taskRoleArn === `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${taskRoleLogicalId}`
-  ) {
-    out.taskRoleNameIsLogicalId = taskRoleLogicalId;
-  }
+  if (taskRole.unresolved !== undefined) out.taskRoleUnresolved = taskRole.unresolved;
   if (executionRoleArn !== undefined) out.executionRoleArn = executionRoleArn;
   if (runtimePlatform !== undefined) out.runtimePlatform = runtimePlatform;
   return out;

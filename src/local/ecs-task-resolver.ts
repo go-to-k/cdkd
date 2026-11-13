@@ -12,7 +12,11 @@ export type {
 export { detectEcsImageResolutionNeeds } from './ecs-task-resolver/needs.js';
 export { parseEcsTarget, resolveEcsTaskTarget } from './ecs-task-resolver/target.js';
 export { assertEcsTaskImagesResolvable } from './ecs-task-resolver/image.js';
-export { TASK_ROLE_ACCOUNT_PLACEHOLDER } from './ecs-task-resolver/role-arn.js';
+export {
+  TASK_ROLE_ACCOUNT_PLACEHOLDER,
+  TASK_ROLE_PARTITION_PLACEHOLDER,
+  type TaskRoleUnresolvedReason,
+} from './ecs-task-resolver/role-arn.js';
 export { checkVolumeHostPath } from './ecs-task-resolver/volume.js';
 export { applyCrossStackResolverToTask } from './ecs-task-resolver/cross-stack.js';
 
