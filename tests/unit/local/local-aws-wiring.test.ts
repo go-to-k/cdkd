@@ -356,6 +356,39 @@ describe('runDetached under --aws-emulator (#6132)', () => {
   });
 });
 
+describe('full --aws-emulator mode with the SQS sidecar (go-to-k/cdk-local#912, cdkd#6178)', () => {
+  const sqsWiring = (): WorkloadAwsWiring => {
+    const w = emulatorWiring();
+    return {
+      ...w,
+      env: { ...w.env, AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:47297' },
+      loopbackPorts: [9297, 47297],
+      sidecar: {
+        port: 47297,
+        endpoint: 'https://127.0.0.1:47297',
+        upstream: w.emulatorEndpoint!,
+        configHostPath: '/tmp/cdkd-sqs-x/resign.json',
+        passthrough: true,
+      },
+    };
+  };
+
+  it('a workload gets the sidecar SQS endpoint, and its forwarder serves the sidecar port', async () => {
+    setActiveWorkloadAwsWiring(sqsWiring());
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 9000 });
+    expect(envFlags(lastRun().args)).toContain('AWS_ENDPOINT_URL_SQS=https://127.0.0.1:47297');
+    expect(mocks.attach).toHaveBeenCalledWith('container-id', expect.anything(), [9297, 47297]);
+  });
+
+  it('on the host network no sidecar runs: the SQS endpoint is dropped, so SQS goes straight to the emulator', async () => {
+    setActiveWorkloadAwsWiring(sqsWiring());
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 9000, network: 'host' });
+    const flags = envFlags(lastRun().args);
+    expect(flags.some((f) => f.startsWith('AWS_ENDPOINT_URL_SQS'))).toBe(false);
+    expect(flags).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
+  });
+});
+
 describe('forward mode tolerates a forwarder image pull failure', () => {
   it('still starts the workload', async () => {
     setActiveWorkloadAwsWiring(forwardWiring());

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
-import { getEmbedConfig, resetEmbedConfig } from 'cdk-local';
+import { getEmbedConfig, resetEmbedConfig, setEmbedConfig } from 'cdk-local';
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
@@ -41,7 +41,16 @@ describe('cdkd local embed-config branding', () => {
       // go-to-k/cdkd#3240: `--role-arn` is a deploy identity; the emulated
       // workload's inputs resolve as the caller on cdk-local's engine commands.
       workloadIdentity: 'caller',
+      awsEmulatorSqsSidecar: true,
     });
+  });
+
+  it('opts in to the --aws-emulator SQS sidecar (go-to-k/cdk-local#912, cdkd#6178)', () => {
+    // A host that sets an embed config without the option stays off.
+    setEmbedConfig({ cliName: 'some-host' });
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(false);
+    createLocalCommand();
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(true);
   });
 
   it("carries workloadIdentity 'caller' so cdk-local resolves workload inputs as the caller (go-to-k/cdkd#3240)", () => {

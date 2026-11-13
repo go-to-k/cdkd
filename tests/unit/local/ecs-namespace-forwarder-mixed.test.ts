@@ -141,4 +141,30 @@ describe('startNamespaceForwarder in AWS Emulator mixed mode', () => {
     expect(opts.ports).toEqual([9297]);
     expect(opts.resignConfigHostPath).toBeUndefined();
   });
+
+  it('full --aws-emulator mode with the SQS sidecar: the forwarder gets the sidecar config, never a TCP forward of its port (cdkd#6178)', async () => {
+    mocks.status.mockResolvedValue({ ok: true });
+    const wiring = {
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297, 47297],
+      probeHealth: true,
+      caHostPath: '/tmp/cdkd-ca-x/ca-bundle.pem',
+      dispose: () => {},
+      emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+      sidecar: {
+        port: 47297,
+        endpoint: 'https://127.0.0.1:47297',
+        upstream: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+        configHostPath: '/tmp/cdkd-sqs-x/resign.json',
+        passthrough: true,
+      },
+    } as unknown as WorkloadAwsWiring;
+    await startNamespaceForwarder(freshState(), forwarder, 'app', [9297, 47297], wiring);
+    expect(mocks.buildArgs).toHaveBeenCalledWith(
+      expect.objectContaining({ ports: [9297], resignConfigHostPath: '/tmp/cdkd-sqs-x/resign.json' })
+    );
+  });
 });

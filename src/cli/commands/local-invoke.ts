@@ -139,6 +139,13 @@ const CDKD_EMBED_CONFIG = {
   // workload's inputs as the caller, keeping the role for synth and the ECR
   // pull (go-to-k/cdkd#3240). Carried the same way as `logger` above.
   workloadIdentity: 'caller',
+  // Full `--aws-emulator` mode's SQS sidecar (go-to-k/cdk-local#912, cdkd#6178):
+  // AWS Emulator answers real-shaped queue URLs, which the JS SDK v3 follows
+  // out of the emulator; a sidecar in each workload rewrites them. Safe for
+  // cdkd because every forwarder cdkd starts itself takes its ports and
+  // sidecar config from `loopbackForwarderPlan` (the ECS namespace owner), and
+  // `runDetached` drops the sidecar's SQS endpoint on the host network.
+  awsEmulatorSqsSidecar: true,
 } as const;
 
 /**
