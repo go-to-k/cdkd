@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsErrorDiagnostics, describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { DeploymentNotApprovedError, isSoftAbort } from '../utils/error-handler.js';
 
@@ -51,6 +51,19 @@ export interface WorkGraphConcurrency {
  * - Docker assets: asset-build → asset-publish → stack
  * - Inter-stack: stack → stack (CDK dependency order)
  */
+/**
+ * An asset upload the user stopped (deploy's force-quit aborted it,
+ * go-to-k/cdkd#6162), matched by NAME so this module imports nothing from the
+ * asset publisher. Deliberately not the deploy engine's `InterruptedError`,
+ * whose reporting (and its `sibling-failure` cause) is unchanged.
+ */
+/** `AssetUploadInterruptedError.name` (`src/assets/file-asset-publisher.ts`). */
+export const ASSET_UPLOAD_INTERRUPTED = 'AssetUploadInterruptedError';
+
+function isInterruption(error: unknown): boolean {
+  return error instanceof Error && error.name === ASSET_UPLOAD_INTERRUPTED;
+}
+
 export class WorkGraph {
   private nodes = new Map<string, WorkNode>();
   private logger = getLogger().child('WorkGraph');
@@ -117,7 +130,19 @@ export class WorkGraph {
               // go-to-k/cdkd#5136: a declined prompt is not a failure to report
               // twice; the summary below prints it once, softly.
               if (isSoftAbort(error)) this.logger.debug(safeMsg`Not approved: ${node.id}`);
-              else this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
+              else if (isInterruption(error)) {
+                // go-to-k/cdkd#6162: the user stopped it (an asset upload
+                // aborted by deploy's force-quit); not a failure to report.
+                this.logger.warn(safeMsg`Interrupted: ${node.id}: ${(error as Error).message}`);
+              } else {
+                this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
+                // go-to-k/cdkd#6162: the message alone can be the SDK's
+                // `UnknownError` placeholder (an empty error body), which left
+                // a `--verbose` run with nothing more to read than without it.
+                this.logger.debug(
+                  safeMsg`Failure detail for ${node.id}: ${describeAwsErrorDiagnostics(error)}`
+                );
+              }
             })
             .finally(() => {
               active[node.type]--;
@@ -148,6 +173,12 @@ export class WorkGraph {
             // go-to-k/cdkd#5136: only declined prompts, as the AWS CDK CLI
             // reports them: no failure framing, still a rejection (exit 1).
             // A decline beside a genuine failure keeps the failure report.
+            // go-to-k/cdkd#6162: only interruptions -> the interruption itself,
+            // not an "N node(s) failed" report.
+            if (errors.every((e) => isInterruption(e.error))) {
+              reject(errors[0]!.error);
+              return;
+            }
             if (errors.every((e) => isSoftAbort(e.error))) {
               const lines = errors.map((e) => (e.error as Error).message);
               if (skippedCount > 0) {

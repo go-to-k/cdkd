@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 /**
  * go-to-k/cdkd#2319: the work graph's `N node(s) failed` rejection is thrown,
@@ -6,15 +6,20 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * names that failure by its class plus the `--verbose` pointer; the per-node
  * `Failed:` line keeps AWS's text.
  */
-const log = vi.hoisted(() => ({ error: vi.fn(), debug: vi.fn() }));
+const log = vi.hoisted(() => ({ error: vi.fn(), debug: vi.fn(), warn: vi.fn() }));
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    child: () => ({ debug: log.debug, info: vi.fn(), warn: vi.fn(), error: log.error }),
+    child: () => ({ debug: log.debug, info: vi.fn(), warn: log.warn, error: log.error }),
   }),
 }));
 
-import { WorkGraph, type WorkNode } from '../../../src/deployment/work-graph.js';
+import {
+  ASSET_UPLOAD_INTERRUPTED,
+  WorkGraph,
+  type WorkNode,
+} from '../../../src/deployment/work-graph.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 
 const CONCURRENCY = { 'asset-build': 4, 'asset-publish': 8, stack: 4 };
 const CALLER = 'arn:aws:sts::123456789012:assumed-role/Deployer/session';
@@ -53,6 +58,50 @@ describe('WorkGraph failure summary (#2319)', () => {
     );
     expect(log.error.mock.calls.map((c) => String(c[0]))).toEqual([
       `Failed: asset:A: User: ${CALLER} is not authorized to perform: s3:PutObject`,
+    ]);
+  });
+
+  describe('on a --verbose run (go-to-k/cdkd#6162)', () => {
+    afterEach(() => {
+      registerVerboseRunProbe(() => false);
+    });
+
+    it('drops the --verbose pointer and logs every field of the failure at debug', async () => {
+      registerVerboseRunProbe(() => true);
+      log.debug.mockReset();
+      const error = new Error('UnknownError');
+      error.name = 'Unknown';
+      Object.assign(error, {
+        $fault: 'client',
+        $metadata: { httpStatusCode: 413 },
+        $response: { statusCode: 413, headers: { 'content-length': '0' } },
+      });
+
+      const rejection = await failing(error);
+
+      expect(rejection.message).toBe('1 node(s) failed:\n  - asset:A: Unknown.');
+      expect(log.debug.mock.calls.map((c) => String(c[0]))).toContain(
+        'Failure detail for asset:A: HTTP 413, fault client, response content-length 0, ' +
+          'name Unknown, message "UnknownError". ' +
+          'AWS returned no error message (the response body was empty).'
+      );
+    });
+  });
+
+  it('reports an aborted asset upload as an interruption, not a failure (go-to-k/cdkd#6162)', async () => {
+    log.warn.mockReset();
+    const interrupted = new Error(
+      'Asset upload to s3://b/k interrupted by user (Ctrl+C); the multipart upload was aborted.'
+    );
+    interrupted.name = ASSET_UPLOAD_INTERRUPTED;
+
+    const rejection = await failing(interrupted);
+
+    // The interruption itself, not "1 node(s) failed".
+    expect(rejection).toBe(interrupted);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(log.warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      `Interrupted: asset:A: ${interrupted.message}`,
     ]);
   });
 

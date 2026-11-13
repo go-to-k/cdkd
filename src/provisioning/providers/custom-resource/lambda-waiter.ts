@@ -1,5 +1,5 @@
 import { LambdaClient, waitUntilFunctionActiveV2 } from '@aws-sdk/client-lambda';
-import { describeAwsFailure, VERBOSE_POINTER } from '../../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerSentence } from '../../../utils/aws-failure-text.js';
 import { getLogger } from '../../../utils/logger.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -235,7 +235,7 @@ export function describeLambdaWaiterFailure(
     text:
       `${error.name} (waiter ${state}${reason}; ` +
       `${parts.length > 0 ? parts.join(', ') : 'no function status reported'}). ` +
-      (reasons.length > 0 ? `${VERBOSE_POINTER} ` : '') +
+      (reasons.length > 0 ? verbosePointerSentence() : '') +
       `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
       `response, environment variables included; run \`aws lambda get-function\` for the detail.`,
     reasons,

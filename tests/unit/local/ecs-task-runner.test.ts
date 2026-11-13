@@ -76,6 +76,29 @@ describe('buildDependencyGraph', () => {
 });
 
 describe('buildDockerRunArgs', () => {
+  it('carries --pull never before an ECR image only (#6187)', () => {
+    const c = makeContainer({});
+    const run = (image: string): string[] =>
+      buildDockerRunArgs({
+        task: makeTask({ containers: [c] }),
+        container: c,
+        image,
+        network: 'n',
+        volumeByName: new Map(),
+        secrets: [],
+        envOverrides: undefined,
+        containerHost: '127.0.0.1',
+        roleArn: undefined,
+        platformOverride: undefined,
+        region: undefined,
+      }).args;
+    const ecr = '123456789012.dkr.ecr.us-east-1.amazonaws.com/app:1';
+    const withEcr = run(ecr);
+    const i = withEcr.indexOf(ecr);
+    expect(withEcr.slice(i - 2, i)).toEqual(['--pull', 'never']);
+    expect(run('nginx:alpine')).not.toContain('--pull');
+  });
+
   it('emits --network --network-alias and port mapping with default host', () => {
     const c = makeContainer({
       portMappings: [{ containerPort: 80, hostPort: 8080, protocol: 'tcp' }],

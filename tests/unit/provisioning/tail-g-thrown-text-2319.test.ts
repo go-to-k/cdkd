@@ -118,7 +118,9 @@ const {
 const { hasRedactedCause, isNameCollisionErrorFrom, retryClassificationText } = await import(
   '../../../src/deployment/retryable-errors.js'
 );
-const { VERBOSE_POINTER } = await import('../../../src/utils/aws-failure-text.js');
+const { VERBOSE_POINTER, registerVerboseRunProbe } = await import(
+  '../../../src/utils/aws-failure-text.js'
+);
 const { isMarkedNotGone } = await import('../../../src/provisioning/not-gone.js');
 const { allowUnscopedCreateTokensForTests, resetIdempotencyTokensForTests } = await import(
   '../../../src/provisioning/providers/idempotency-token.js'
@@ -973,6 +975,19 @@ describe('the IAM inline policy partial-create detach warn', () => {
     await caught(run());
     expect(detachWarn()).toContain(`${HEAD}${SECRET_CLASS_SHOWN}): `);
     expect(detachWarn()).not.toContain('s3cr3t');
+  });
+
+  it('on a --verbose run: the bare class, and no pointer (go-to-k/cdkd#6162)', async () => {
+    registerVerboseRunProbe(() => true);
+    try {
+      arm(denied);
+      await caught(run());
+      expect(detachWarn()).toContain(`${HEAD}AccessDenied): `);
+      expect(detachWarn()).toContain('removed by hand: role role-a');
+      expect(detachWarn()).not.toContain('--verbose');
+    } finally {
+      registerVerboseRunProbe(() => false);
+    }
   });
 
   it("keeps a cdkd-authored failure's text (polarity)", async () => {

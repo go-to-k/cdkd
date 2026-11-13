@@ -1,5 +1,6 @@
 import { plainOrDescribed } from '../../../utils/pasteable-command.js';
 import { CdkdError } from '../../../utils/error-handler.js';
+import { verboseAwareText } from '../../../utils/aws-failure-text.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { NESTED_PENDING_PARENT_REASON } from '../../../deployment/nested-child-journal.js';
 import {
@@ -82,8 +83,12 @@ export function refuseDivergentRecordRegionForRollback(
         `delete and revert against the key's region; if the record's own region is the honest ` +
         `half, each delete comes back not-found, which the replay reads as ALREADY DELETED — it ` +
         `would report the resource rolled back, drop it from the record, and leave it standing ` +
-        `in the other region. Nothing was changed. Re-run with --verbose to see what the ` +
-        `record's region field holds, repair that field to match the key it is stored under, ` +
+        `in the other region. Nothing was changed. ` +
+        verboseAwareText(
+          "Re-run with --verbose to see what the record's region field holds, ",
+          "The debug output shows what the record's region field holds; "
+        ) +
+        `repair that field to match the key it is stored under, ` +
         `and run the rollback again.`,
       STATE_REGION_DIVERGED
     )

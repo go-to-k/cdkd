@@ -1,4 +1,4 @@
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerSentence } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { displaySafe } from '../../utils/display-safe.js';
@@ -216,7 +216,9 @@ export function describeFailureObserved(
   resolver.logger.debug(
     `${read} failed (${errorClass}): ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
   );
-  return `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`;
+  return verbosePointerSentence()
+    ? `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`
+    : `${read} failed (${errorClass}); the AWS error text is in the debug output above`;
 }
 
 /**

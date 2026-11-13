@@ -12,7 +12,6 @@ import { bold, cyan, gray } from '../../../utils/colors.js';
 import { DeployCancelledError, PartialFailureError } from '../../../utils/error-handler.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
 import { refuseMalformedNestedTemplateTrees } from '../nested-template-preflight.js';
-import { promptYesNo } from '../confirm-prompt.js';
 import { createApprovalPrompter, resolveRequireApproval } from '../require-approval.js';
 import {
   resolveOutputsFile,
@@ -80,7 +79,7 @@ import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
 import { addStacksToWorkGraph } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
-import { forceQuitReleaseCommand } from './helpers.js';
+import { confirmAutoAssetStorageCreate, createDeploySigintHandler } from './helpers.js';
 
 /**
  * Deploy command implementation
@@ -275,34 +274,14 @@ export async function deployCommand(
   callerIdentityPromise.catch(() => undefined);
 
   let deployInterrupted = false;
-  const topLevelSigintHandler = () => {
-    if (deployInterrupted) {
-      // Force-exit bypasses every `finally`, so per-stack locks may be left
-      // behind. Print the recovery command (parity with destroy's force-quit
-      // path) — the lock TTL reclaims them automatically otherwise.
-      process.stderr.write(
-        '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run this for EACH stack it names, ' +
-          'in the region-qualified form — see the message that run prints.' +
-          // The holes are QUOTED, and on a labelled line of their own. A bare
-          // `<stackName>` is two shell redirections: `<stackName` reads stdin
-          // from a file and the `>` takes the next word as an output TARGET
-          // and creates it (measured on go-to-k/cdkd#3436). `commandHole`
-          // prints `'<stackName>'`, so this line is inert BY DESIGN and stays
-          // inert if a flag is appended. An earlier version of this comment
-          // described the unquoted text it replaced — "inert by where the
-          // command happens to stop ... one appended flag from being silent" —
-          // which is true of a BARE trailing hole and not of what this prints
-          // (go-to-k/cdkd#3613's M8).
-          // Built through the shared builder so it carries the run's typed
-          // `--profile` / `--state-bucket` / `--state-prefix` (go-to-k/cdkd#4177).
-          `\nRelease with: ${forceQuitReleaseCommand()}\n`
-      );
-      process.exit(130);
-    }
-    process.stderr.write('\nInterrupted — waiting for in-progress operations to complete...\n');
-    deployInterrupted = true;
-  };
+  // go-to-k/cdkd#6162: the first signal lets in-flight work (asset uploads
+  // included) finish; the second aborts the in-flight multipart uploads and
+  // then exits. See `createDeploySigintHandler`.
+  const topLevelSigintHandler = createDeploySigintHandler({
+    onFirst: () => {
+      deployInterrupted = true;
+    },
+  });
   process.on('SIGINT', topLevelSigintHandler);
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
   // through the same graceful path (incl. the engine's partial-state save
@@ -644,20 +623,8 @@ export async function deployCommand(
     // dry run must not create resources), and moot under the
     // --use-cdk-bootstrap-assets legacy pin (marker is never read).
     const autoAssetStorage = resolveAutoAssetStorage(options.autoAssetStorage);
-    const confirmAutoAssetStorage = async (assetRegion: string): Promise<boolean> => {
-      if (options.yes || !process.stdin.isTTY) {
-        logger.info(
-          `Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
-            `region; opt out with --no-auto-asset-storage).`
-        );
-        return true;
-      }
-      return promptYesNo(
-        `Region '${assetRegion}' has no cdkd asset storage yet. Create it now ` +
-          `(S3 bucket cdkd-assets-${accountId}-${assetRegion} + container-asset ECR repo, ` +
-          `out of 'cdk gc' reach)?`
-      );
-    };
+    const confirmAutoAssetStorage = (assetRegion: string): Promise<boolean> =>
+      confirmAutoAssetStorageCreate({ assetRegion, accountId, yes: options.yes === true });
     const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
       ...(options.profile && { profile: options.profile }),
       ...(useCdkBootstrapAssets && { useCdkBootstrapAssets: true }),

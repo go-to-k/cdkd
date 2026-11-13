@@ -26,17 +26,17 @@ appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3
 appsync	2026-11-06T16:05:56Z	PASS	190	verify.sh	post-hoc on main after #5859/#5867/#5869; state show/resources mask the key; rc ok, orph clean
 asset-auto-create	2026-11-04T07:52:45Z	PASS	195	verify.sh	rc ok, orph clean; eu-north-1 (auto-create + opt-out + skip-assets; storage/marker/log groups cleaned)
 asset-bootstrap	2026-11-04T10:48:42Z	PASS	166	verify.sh	rc ok, orph clean; eu-west-2 (#5745 PR #5752)
-asset-migration	2026-11-04T18:21:35Z	PASS	707	verify.sh	rc 0 in eu-west-1, destroy clean, 0 orphans
+asset-migration	2026-11-13T07:46:30Z	PASS	656	verify.sh	rc 0 in eu-west-1, 22MB layer multipart (5 parts) OK, 0 orphans (#6184)
 aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
-basic	2026-11-13T05:08:51Z	PASS	95	standard	deploy+destroy 0 errors, orph clean, #6160
+basic	2026-11-13T06:34:36Z	PASS	91	standard	PR #6188 fac650053; destroy 0 errors, 0 orphans
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bench-cdk-sample	2026-10-29T18:05:48Z	PASS	456	standard	final head 212db23c8 (#5508); destroy 38 deleted, 2 retained by DeletionPolicy, 0 errors
 bench-sdk	2026-11-05T11:20:09Z	PASS	28	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bootstrap-free-region	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc 0, 0 orphans; ca-central-1 (#2624 PR #4573)
-bucket-deployment	2026-11-04T10:48:42Z	PASS	101	verify.sh	rc ok, orph clean (#5745 PR #5752)
+bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 orphans, no incomplete MPU (#6184)
 budgets	2026-11-06T21:48:30Z	PASS	94	verify.sh	#5919 budgets-budget split head; rc ok, orph clean
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
@@ -252,7 +252,7 @@ local-invoke	2026-11-13T05:08:51Z	PASS	30	verify.sh	rc ok, #6160
 local-invoke-agentcore	2026-11-13T05:08:51Z	PASS	105	verify.sh	rc ok, #6160
 local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-buildkit	2026-11-05T06:49:09Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; BuildKit features all fired
-local-invoke-container	2026-11-07T15:32:43Z	PASS	50	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
+local-invoke-container	2026-11-13T07:02:34Z	PASS	40	verify.sh	rc ok, docker sweep clean (#6192)
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-from-cfn-stack	2026-11-13T05:08:51Z	PASS	115	verify.sh	rc ok, orph clean, #6160
 local-invoke-from-cfn-stack-multi-stack	2026-11-05T06:54:12Z	PASS	112	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
@@ -268,6 +268,11 @@ local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task -
 local-run-task-cdkd-assets	2026-11-04T12:59:43Z	PASS	15	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-from-state	2026-11-13T08:07:28Z	PASS	291	verify.sh	rc ok, orph clean, DOCKER_HOST set, step 9b red pre-fix, #6194
 local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
+local-run-task	2026-11-13T07:02:34Z	PASS	19	verify.sh	rc ok, docker sweep clean (#6192)
+local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
+local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker sweep clean (#6192)
+local-run-task-from-state	2026-11-13T07:07:49Z	PASS	260	verify.sh	rc ok, real ECR dual-stack pull, destroy 0 err, 0 orph (#6192)
+local-run-task-multi-container	2026-11-13T06:23:42Z	PASS	15	verify.sh	rc ok, docker sweep clean, #6191
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-alb	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-start-alb-from-state	2026-11-12T13:54:58Z	PASS	376	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
@@ -330,7 +335,7 @@ rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph cle
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
-rds-dbinstance-snapshot-restore	2026-11-13T00:53:22Z	PASS	3425	verify.sh	rc ok, orph clean (#5640 snapshot + PITR restore, PR #6174 final head)
+rds-dbinstance-snapshot-restore	2026-11-13T06:47:48Z	PASS	3933	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176 merged head)
 rds-express-cluster	2026-11-11T14:15:04Z	PASS	1405	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-11-10T17:28:58Z	PASS	1239	verify.sh	rc ok, orph clean; own bucket
 rds-full-stack	2026-11-07T00:14:04Z	PASS	1067	verify.sh	#5934 rds-dbproxy split head; rc ok, orph clean

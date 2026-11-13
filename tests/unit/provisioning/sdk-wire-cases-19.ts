@@ -782,8 +782,12 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
   const roles = { current: liveRoles(live) };
   // go-to-k/cdkd#5640: a bag declaring a source reads as a PostgreSQL read
   // replica (the engine it inherits) until PromoteReadReplica.
-  const replica = live['SourceDBInstanceIdentifier'] != null;
-  let replicaSource = replica ? INSTANCE_ID_SOURCE : undefined;
+  const replica =
+    live['SourceDBInstanceIdentifier'] != null || live['SourceDBClusterIdentifier'] != null;
+  let replicaSource =
+    live['SourceDBInstanceIdentifier'] != null ? INSTANCE_ID_SOURCE : undefined;
+  // ...or of the Multi-AZ DB cluster `maz-1` (`SourceDBClusterIdentifier`).
+  let clusterSource = live['SourceDBClusterIdentifier'] != null ? 'maz-1' : undefined;
   // go-to-k/cdkd#5640: the features a modify sent apply at once, so the
   // update's processor wait settles.
   let processorFeatures = live['ProcessorFeatures'] as unknown;
@@ -813,8 +817,13 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
     },
     PromoteReadReplicaCommand: () => {
       replicaSource = undefined;
+      clusterSource = undefined;
       return {};
     },
+    // go-to-k/cdkd#5640: the Multi-AZ DB cluster a replica's engine is read from.
+    DescribeDBClustersCommand: () => ({
+      DBClusters: [{ DBClusterIdentifier: 'maz-1', Engine: 'postgres', Status: 'available' }],
+    }),
     // go-to-k/cdkd#5640: the snapshot a restore reads first lists one.
     DescribeDBSnapshotsCommand: () => ({ DBSnapshots: [{ Engine: 'postgres' }] }),
     DescribeDBClusterSnapshotsCommand: () => ({ DBClusterSnapshots: [{ Engine: 'postgres' }] }),
@@ -837,6 +846,9 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
           ...(replica && { Engine: 'postgres' }),
           ...(replicaSource !== undefined && {
             ReadReplicaSourceDBInstanceIdentifier: replicaSource,
+          }),
+          ...(clusterSource !== undefined && {
+            ReadReplicaSourceDBClusterIdentifier: clusterSource,
           }),
           ...(Array.isArray(processorFeatures) && { ProcessorFeatures: processorFeatures }),
           AdditionalStorageVolumes: volumes,
@@ -1161,6 +1173,29 @@ const INSTANCE_CASE: TypeCase = {
             `update-remove:${key}`,
             CFN_DIFF_KEPT(key),
           ])
+        ),
+      },
+    },
+    {
+      name: 'a read replica of a Multi-AZ DB cluster (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t3.micro',
+        SourceDBClusterIdentifier: 'maz-1',
+        AllocatedStorage: '100',
+        StorageType: 'gp3',
+      },
+      expectedRemovalThrows: {
+        'update-add:SourceDBClusterIdentifier': {
+          why: `an instance becomes a read replica only when it is created, and CloudFormation fails an added cluster source as "Resource is immutable" (isSourceDBClusterIdentifierMutable), so update() refuses it before any call (replicaSourceChange in ${SRC}, go-to-k/cdkd#5640)`,
+          says: /SourceDBClusterIdentifier cannot be added or changed on an existing DB instance/,
+        },
+      },
+      expectedSilent: {
+        'update-vary:SourceDBClusterIdentifier': `refused like its addition: a changed cluster source throws before a call (replicaSourceChange in ${SRC}, go-to-k/cdkd#5640)`,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        ...Object.fromEntries(
+          ['AllocatedStorage', 'StorageType'].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
         ),
       },
     },

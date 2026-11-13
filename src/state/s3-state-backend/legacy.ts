@@ -13,7 +13,7 @@ import {
   type StackState,
 } from '../../types/state.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, verboseAwareText } from '../../utils/aws-failure-text.js';
 import { describeJsonParseFailure, utf8ByteLength } from '../../utils/json-parse-failure.js';
 import { UNRENDERABLE } from '../lock-contention-message.js';
 import { StateError } from '../../utils/error-handler.js';
@@ -116,8 +116,8 @@ export function adoptKeyRegion(
     `State record for stack ${shownStackName} carries a 'region' of its own (${kind}) that ` +
       `is not the region of the S3 key it was read from (${shownRegionName}). cdkd stamps ` +
       `the key's region into every record it writes, so this record was not written by cdkd. ` +
-      `Continuing against ${shownRegionName} — the key is authoritative. Re-run with ` +
-      `--verbose to see the recorded value, where it has one to show.`
+      `Continuing against ${shownRegionName} — the key is authoritative. ` +
+      safeMsg`${verboseAwareText('Re-run with --verbose to see the recorded value, where it has one to show.', 'The recorded value is in the debug output, where it has one to show.')}`
   );
   // Sanitized even at debug, for the reason `tryGetLegacy`'s sibling gives:
   // debug is quieter than warn, not a different terminal. CAPPED as well: a

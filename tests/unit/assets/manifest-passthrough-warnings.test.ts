@@ -25,6 +25,7 @@ import {
 } from '../../../src/assets/manifest-passthrough-warnings.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { DockerImageAssetSource } from '../../../src/types/assets.js';
+import { registerVerboseRunProbe } from '../../../src/utils/aws-failure-text.js';
 
 function captureWarn(): { warned: () => string[] } {
   const lines: string[] = [];
@@ -560,6 +561,19 @@ describe('source.executable', () => {
     expect(line).not.toContain('hunter2');
     expect(line).toContain('./build.sh');
     expect(line).toContain('--verbose shows them');
+  });
+
+  it('on a --verbose run, points at the debug line instead (go-to-k/cdkd#6162)', () => {
+    registerVerboseRunProbe(() => true);
+    try {
+      const cap = captureWarn();
+      warnManifestExecutable(['./build.sh', '--flag']);
+      const line = cap.warned()[0];
+      expect(line).toContain('(with 1 argument(s); listed in the debug line above).');
+      expect(line).not.toContain('--verbose');
+    } finally {
+      registerVerboseRunProbe(() => false);
+    }
   });
 
   it('omits the argument count when there are none', () => {

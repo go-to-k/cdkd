@@ -349,6 +349,9 @@ importers:
       '@aws-sdk/credential-provider-node':
         specifier: ^3.972.92
         version: 3.972.94
+      '@aws-sdk/lib-storage':
+        specifier: ^3.1161.0
+        version: 3.1161.0(@aws-sdk/client-s3@3.1164.0)
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1161.0
         version: 3.1164.0
@@ -368,8 +371,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.164.2
-        version: 0.164.2(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
+        specifier: ^0.165.0
+        version: 0.165.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -3255,8 +3258,8 @@ packages:
   cdk-from-cfn@0.338.0:
     resolution: {integrity: sha512-jIrGLU8g2CLkn4fPtaDP0QurSbtnDWiMUTykaohQRldjImhGBWRTIAO8H/yS2mMIKnJu3pN9VD1t39cIgUSbQg==}
 
-  cdk-local@0.164.2:
-    resolution: {integrity: sha512-W5FdYt7puefajCP3JeaeWMFXre2d8du42vDbCZ0sQnP2i9Zfjeu3RX0MAIWCaE+1QHimKJ/ZdzTWgX0vxRpLWA==}
+  cdk-local@0.165.0:
+    resolution: {integrity: sha512-HY1sSeCmXpXGnES9xARGmdI8im7xNHbH3CfCkcFjP6UyebDLLQjylvGoa6sUjKEeCea0LjwDreXN3FHXutNyRg==}
     engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
@@ -7971,7 +7974,7 @@ snapshots:
 
   cdk-from-cfn@0.338.0: {}
 
-  cdk-local@0.164.2(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
+  cdk-local@0.165.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.275.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)
       '@aws-cdk/toolkit-lib': 1.44.0(@aws-cdk/cli-plugin-contract@2.182.2)

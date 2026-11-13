@@ -334,11 +334,17 @@ layers, ECS, ALB, CloudFront and AgentCore targets), picks up code edits
 without a redeploy, and offers `--debug-port` and logs in your terminal:
 
 ```bash
-cdkd bootstrap --aws-emulator                                   # state bucket + asset storage in the emulator
-cdkd deploy MyStack --aws-emulator                              # resources and file assets
+cdkd deploy MyStack --aws-emulator                              # bootstraps the emulator, then resources and file assets
 cdkd local invoke MyStack/Handler --from-state --aws-emulator   # run against what was deployed
 cdkd destroy MyStack --aws-emulator
 ```
+
+The emulator keeps its state in memory, so each start begins empty.
+`cdkd deploy` and `cdkd import` bootstrap it themselves: they create the state
+bucket when it is missing, and `deploy` creates each stack region's asset
+storage without a prompt. An explicit `cdkd bootstrap --aws-emulator` still
+works, for example to use custom asset-storage names. See
+[Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
 
 Under the flag, the emulator's identity is the only one cdkd uses:
 
@@ -509,7 +515,7 @@ guarantee.
 | `--from-state` / `--from-cfn-stack` names | Per resource type: an excepted service's resources come from the real copy |
 | `${AWS::AccountId}` lookups | `Parameters` excepts `STS` |
 | `--role-arn`, `--assume-role`, `--profile` resolution (STS) | Always: they establish the real identity |
-| The ECR login and pull of a deployed image | That workload excepts `ECR` |
+| The ECR login and pull of a deployed image | That workload excepts `ECR` (otherwise the pull is refused) |
 | An AgentCore `fromS3` code bundle | That runtime excepts `S3` |
 | A literal layer ARN | That function excepts `LAMBDA` |
 
@@ -527,6 +533,18 @@ Names follow each workload's own exceptions: per function (`local invoke`,
 `local start-api`), per runtime (`local invoke-agentcore`) and per container
 (`local run-task`, `local start-service`, `local start-alb`). A read for no
 workload in particular follows the `Parameters` exceptions alone.
+
+Without that exception, a deployed image in ECR is refused before any request
+leaves the machine: its URI always names the real registry host, and AWS
+Emulator serves no registry Docker can pull from. The error names
+`AWS_ENDPOINT_URL_ECR`; a cached image still runs with `--no-pull`. Under the
+same condition every `docker pull` and `docker build` cdkd starts uses a
+per-run Docker client config with no credential for any ECR host (the host's
+`auths`, `credHelpers` and `credsStore` entries for ECR hosts and
+`public.ecr.aws`, and those in `DOCKER_AUTH_CONFIG`, are left out; podman's
+`REGISTRY_AUTH_FILE` points at it too), so the host's credential helper never
+answers a request to real ECR. `docker run` of an ECR image carries
+`--pull never`, since the image was pulled or verified beforehand.
 
 #### Limits
 

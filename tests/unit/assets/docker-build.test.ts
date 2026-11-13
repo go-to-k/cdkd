@@ -288,11 +288,13 @@ describe('buildDockerImage (executable source)', () => {
     }
   });
 
-  it('passes no env override when cdkd injected nothing', async () => {
+  it('injects no AWS_REGION, and leaves the docker client env as the host has it, when cdkd injected nothing', async () => {
     mockSpawn.mockResolvedValueOnce({ stdout: 'tag\n', stderr: '' });
     await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', { wrapError });
-    const opts = mockSpawn.mock.calls[0]![2] as Record<string, unknown>;
-    expect(opts).not.toHaveProperty('env');
+    const opts = mockSpawn.mock.calls[0]![2] as { env?: Record<string, string | undefined> };
+    expect(opts.env).not.toHaveProperty('AWS_REGION');
+    // Outside --aws-emulator the docker client env is the host's own (#6187).
+    expect(opts.env?.['DOCKER_CONFIG']).toBe(process.env['DOCKER_CONFIG']);
   });
 
   it('runs cwd in the asset directory when both directory + executable are set', async () => {

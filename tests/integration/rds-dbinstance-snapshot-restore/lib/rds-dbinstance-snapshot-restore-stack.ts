@@ -31,8 +31,14 @@ import type { Construct } from 'constructs';
  *   members only the follow-up carries (the retention, the backup window).
  *   CDKD_TEST_PITR_RESTORE_TIME adds that `RestoreTime` to it (an update
  *   cdkd refuses).
+ * - CDKD_TEST_CLUSTER_REPLICA=true adds `ClusterReplicaInstance`, a DB
+ *   instance read replica of `SourceCluster` (`SourceDBClusterIdentifier`),
+ *   declaring no engine. RDS wants the cluster's allocated storage (100 GiB)
+ *   on it; gp3 keeps it cheap. Its maintenance window rides only the
+ *   follow-up ModifyDBInstance.
  * - CDKD_TEST_UPDATE=true: `SnapInstance`'s `BackupRetentionPeriod` 3 -> 4
- *   and `PitrInstance`'s 2 -> 3, in place.
+ *   and `PitrInstance`'s 2 -> 3, in place, and `ClusterReplicaInstance` drops
+ *   its source (cdkd promotes it to a standalone instance).
  *
  * Fixed names so verify.sh can read them back and sweep them.
  */
@@ -44,6 +50,7 @@ export class RdsDbInstanceSnapshotRestoreStack extends cdk.Stack {
     const clusterSnapshotId = process.env.CDKD_TEST_CLUSTER_SNAPSHOT_ID;
     const pointInTime = process.env.CDKD_TEST_PITR === 'true';
     const restoreTime = process.env.CDKD_TEST_PITR_RESTORE_TIME;
+    const clusterReplica = process.env.CDKD_TEST_CLUSTER_REPLICA === 'true';
 
     cdk.Tags.of(this).add('cdkd-integ-fixture', 'rds-dbinstance-snapshot-restore');
 
@@ -160,6 +167,24 @@ export class RdsDbInstanceSnapshotRestoreStack extends cdk.Stack {
         deletionProtection: false,
       });
       restoredToTime.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
+
+    if (clusterReplica) {
+      const replica = new rds.CfnDBInstance(this, 'ClusterReplicaInstance', {
+        dbInstanceIdentifier: 'cdkd-integ-rds-inst-maz-rr-5640',
+        // A read replica of the Multi-AZ DB cluster; removed on update (a promotion).
+        ...(!isUpdate && { sourceDbClusterIdentifier: sourceCluster.ref }),
+        dbInstanceClass: 'db.t3.micro',
+        dbSubnetGroupName: subnetGroup.ref,
+        // RDS creates the replica with the cluster's allocated storage.
+        allocatedStorage: '100',
+        storageType: 'gp3',
+        // On the follow-up ModifyDBInstance only.
+        preferredMaintenanceWindow: 'sun:11:00-sun:11:30',
+        publiclyAccessible: false,
+        deletionProtection: false,
+      });
+      replica.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     }
   }
 }
