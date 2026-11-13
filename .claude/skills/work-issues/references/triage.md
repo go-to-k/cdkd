@@ -34,9 +34,11 @@ gh issue view <n> --comments    # each one listed
 ```
 
 §4's claim comment goes on that type issue, and `filing.md` §5-f says when to write `Closes`.
-A row no live run can prove (AWS-removed preview, third-party account)
+A row no live run can prove (AWS-removed preview, third-party account, or
+one the maintainer ruled out of scope for its dedicated infrastructure)
 CLOSES via `unhandledByDesign` plus the measured reason: still a silent-drop
-row, so it CC-routes where a CC route exists (#5636).
+row, so it CC-routes where a CC route exists (#5636). A type issue left with
+only such rows is a pick, not "no actionable row" (#6212).
 
 ## 2. Map the collision landscape
 
