@@ -48,6 +48,10 @@ export function nearestMemberDependencies(
 ): Map<string, Set<string>> {
   const through = new Map<string, Set<string>>();
   const visiting = new Set<string>();
+  // Bumped each time the cycle guard cuts a walk short: a node whose walk saw
+  // a bump holds a partial set (the cut ancestor's members are missing), so it
+  // is not memoized and a later caller walks it again in full.
+  let guardHits = 0;
   const collect = (deps: readonly string[], into: Set<string>): void => {
     for (const dep of deps) {
       if (isMember(dep)) {
@@ -61,11 +65,15 @@ export function nearestMemberDependencies(
     const cached = through.get(id);
     if (cached) return cached;
     const reached = new Set<string>();
-    if (visiting.has(id)) return reached;
+    if (visiting.has(id)) {
+      guardHits++;
+      return reached;
+    }
+    const hitsBefore = guardHits;
     visiting.add(id);
     collect(dependenciesOf(id), reached);
     visiting.delete(id);
-    through.set(id, reached);
+    if (guardHits === hitsBefore) through.set(id, reached);
     return reached;
   };
   const result = new Map<string, Set<string>>();
@@ -78,6 +86,16 @@ export function nearestMemberDependencies(
   return result;
 }
 
+/** The string dependencies a state record lists, for `nearestMemberDependencies`. */
+export function recordedDependencies(
+  resources: Record<string, ResourceState>
+): (id: string) => string[] {
+  return (id) => {
+    const deps = Object.hasOwn(resources, id) ? resources[id]?.dependencies : undefined;
+    return Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [];
+  };
+}
+
 export function buildDeletionDependencies(
   deleteIds: Set<string>,
   state: StackState,
@@ -88,14 +106,15 @@ export function buildDeletionDependencies(
     dependedBy.set(id, new Set());
   }
 
-  for (const id of deleteIds) {
-    const resource = state.resources[id];
-    if (!resource?.dependencies) continue;
-    for (const dep of resource.dependencies) {
-      if (!deleteIds.has(dep)) continue;
-      // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's deletion deps)
-      dependedBy.get(dep)!.add(id);
-    }
+  // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's
+  // deletion deps). A kept record between them is walked through (#6244):
+  // `DependsOn` is not diffed, so a NO_CHANGE record can still sit between two
+  // deleted ones in the recorded graph.
+  const nearest = nearestMemberDependencies(deleteIds, recordedDependencies(state.resources), (d) =>
+    deleteIds.has(d)
+  );
+  for (const [id, deps] of nearest) {
+    for (const dep of deps) dependedBy.get(dep)!.add(id);
   }
 
   addImplicitDeleteDependencies(deleteIds, state, dependedBy, logger);

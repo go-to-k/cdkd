@@ -233,6 +233,16 @@ describe('nearestMemberDependencies (go-to-k/cdkd#6244)', () => {
     expect(reads.get('shared')).toBe(1);
   });
 
+  it('does not memoize a set the cycle guard cut short', () => {
+    // u1 <-> u2, u1 -> B, u2 -> A. Walking C first visits u2 while u1 is on the
+    // stack, so u2's own walk misses B; D, read afterwards, must still see B.
+    const deps = graph({ C: ['u1'], D: ['u2'], u1: ['u2', 'B'], u2: ['u1', 'A'] });
+    const members = new Set(['A', 'B', 'C', 'D']);
+    const result = nearestMemberDependencies(['C', 'D'], deps, (id) => members.has(id));
+    expect([...result.get('C')!].sort()).toEqual(['A', 'B']);
+    expect([...result.get('D')!].sort()).toEqual(['A', 'B']);
+  });
+
   it('survives a cycle among non-members', () => {
     const deps = graph({ C: ['u1'], u1: ['u2'], u2: ['u1', 'A'] });
     const result = nearestMemberDependencies(['C'], deps, (id) => id === 'A' || id === 'C');
