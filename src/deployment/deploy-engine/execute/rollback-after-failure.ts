@@ -42,11 +42,6 @@ import { deletedOutsideReadDeps } from '../rollback/deleted-outside-read.js';
 import type { DeployRun } from './run.js';
 
 /**
- * The ways on from a partially-applied deploy, one pasteable command per line
- * with the run's flags, so under `--aws-emulator` a pasted one does not run
- * against real AWS (go-to-k/cdkd#6245).
- */
-/**
  * The interrupted path's recovery. Not `recoveryHint`: a nested child's
  * interrupt reaches the parent wrapped and is not recognised as one there
  * (go-to-k/cdkd#3875), so no parent message can be promised to follow.
@@ -60,6 +55,11 @@ export function interruptedRemedy(parentStack: string | undefined, stackName: st
   );
 }
 
+/**
+ * The ways on from a partially-applied deploy, one pasteable command per line
+ * with the run's flags, so under `--aws-emulator` a pasted one does not run
+ * against real AWS (go-to-k/cdkd#6245).
+ */
 function partialStateRemedy(stackName: string): string {
   const stack = { value: stackName, hole: 'stack' } as const;
   const matched = { ...stack, opts: { patternMatched: true } } as const;
