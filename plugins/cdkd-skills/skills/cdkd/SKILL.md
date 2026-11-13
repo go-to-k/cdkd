@@ -298,7 +298,16 @@ cdkd local invoke '<function>' --from-state --aws-emulator
 cdkd local start-api --from-state --aws-emulator
 ```
 
-- To keep a few services on real AWS (e.g. Secrets Manager, Bedrock), put `"AWS_ENDPOINT_URL_<SERVICE>": "real-aws"` in the `--env-vars` file; that mixed mode needs the stack deployed to both sides.
+- Switch real AWS and the emulator per service by combining `--from-state` with an `--env-vars` file: every service goes to the emulator except those set to `"real-aws"`, and `--from-state` resolves each reference from the matching side — a secret ARN from the real deploy, a table name from the emulator deploy. Deploy the stack to both sides first. Keys go under `Parameters` (all functions) or a function's name (that function only):
+
+  ```json
+  { "Parameters": { "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "real-aws" } }
+  ```
+
+  ```bash
+  cdkd deploy '<stack>' --aws-emulator && cdkd deploy '<stack>'
+  cdkd local invoke '<function>' --from-state --aws-emulator --env-vars routing.json
+  ```
 - Under `--aws-emulator`, custom-resource handlers (e.g. `autoDeleteObjects`, `BucketDeployment`) run in the official Lambda runtime image via Docker, because the emulator's own runtimes lack parts of the standard library. Without Docker they fall back to the emulator and may fail; `--no-local-custom-resources` opts out.
 - The stack outputs name real AWS hosts. To call an API Gateway API inside the emulator, send the request to the emulator endpoint with the API's host in the `Host` header (see the guide).
 
