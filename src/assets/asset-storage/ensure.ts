@@ -13,6 +13,7 @@ import {
   CreateRepositoryCommand,
   PutImageTagMutabilityCommand,
 } from '@aws-sdk/client-ecr';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -333,7 +334,7 @@ export async function ensureAssetStorage(
     logger.warn(abortIncompleteMultipartWarning(assetBucket, lifecycle));
   } else if (lifecycle.status === 'added') {
     logger.info(
-      `✓ Set asset bucket lifecycle rule (abort incomplete multipart uploads after ${ABORT_INCOMPLETE_MULTIPART_DAYS} day)`
+      safeMsg`✓ Set asset bucket lifecycle rule (abort incomplete multipart uploads after ${ABORT_INCOMPLETE_MULTIPART_DAYS} day)`
     );
   }
 
