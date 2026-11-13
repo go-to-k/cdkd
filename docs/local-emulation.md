@@ -334,11 +334,17 @@ layers, ECS, ALB, CloudFront and AgentCore targets), picks up code edits
 without a redeploy, and offers `--debug-port` and logs in your terminal:
 
 ```bash
-cdkd bootstrap --aws-emulator                                   # state bucket + asset storage in the emulator
-cdkd deploy MyStack --aws-emulator                              # resources and file assets
+cdkd deploy MyStack --aws-emulator                              # bootstraps the emulator, then resources and file assets
 cdkd local invoke MyStack/Handler --from-state --aws-emulator   # run against what was deployed
 cdkd destroy MyStack --aws-emulator
 ```
+
+The emulator keeps its state in memory, so each start begins empty.
+`cdkd deploy` and `cdkd import` bootstrap it themselves: they create the state
+bucket when it is missing, and `deploy` creates each stack region's asset
+storage without a prompt. An explicit `cdkd bootstrap --aws-emulator` still
+works, for example to use custom asset-storage names. See
+[Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
 
 Under the flag, the emulator's identity is the only one cdkd uses:
 
