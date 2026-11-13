@@ -28,8 +28,8 @@ gh pr list --state open --limit 200 --json number,files,changedFiles \
 ```
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
-(#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
-needing a clause the issue does not name. On a trip, STATE the call in one line
+(#2514). Tripwires: a SECOND unrequested widening, or a TITLE needing a clause
+the issue lacks. On a trip, STATE the call in one line
 (LOC so far, what the next adds, in-PR versus filed), and `AskUserQuestion`
 when it would more than double the diff. What the fix would leave WRONG if
 omitted is a FORCED parallel change.
@@ -48,7 +48,7 @@ issue only if it takes that type to zero, `Refs` otherwise.
 ISSUE, not a sibling site.
 
 ```bash
-# Search the CONCEPT, not this instance's spelling:
+# The CONCEPT, not this instance's spelling:
 gh issue list --state open --limit 200 --search '<root-cause concept>' \
   --json number,title
 # Then BODIES, where an umbrella names its sites. `(.body // "")` is
@@ -74,7 +74,8 @@ gh issue view <hit> --json body -q .body > "$U" \
 `owner/repo#N`; and state a folded row's severity as PROSE, since the body-wide
 CI scan reads a `Severity:` key as the UMBRELLA's.
 
-On a MISS, file it:
+On a MISS, resolve its PREMISE first (`triage.md` §3: read the code it calls a
+hole, a reviewer's too, #6175), then file it:
 
 ```bash
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
@@ -103,10 +104,9 @@ external input: `now`, queued behind that PR; say so in the lane report. A
 defect the lane's OWN diff introduced is not filed: it blocks that PR (fix it
 there, or merge a shared fix first; #5092).
 
-The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
-write from filing whatever sat at that path, and heredoc → file → `--body-file`
-in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
-with NO body.
+`<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
+write filing a stale file, and ONE quoted-heredoc call is the shape — the
+two-line form files an issue with NO body.
 
 **The filing bar is AGENTS.md's "File only what a user can hit"** — apply it
 BEFORE the duplicate search. A finding below it (wording, an input no CDK app
