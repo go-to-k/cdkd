@@ -45,7 +45,7 @@ practical details of running the two together. The flag reference is in
    [Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
 
    ```bash
-   cdkd deploy MyStack --aws-emulator
+   cdkd deploy --aws-emulator
    ```
 
 3. Run your code locally against what you deployed
@@ -71,7 +71,7 @@ practical details of running the two together. The flag reference is in
    its resources in memory.
 
    ```bash
-   cdkd destroy MyStack --aws-emulator
+   cdkd destroy --aws-emulator
    ```
 :::
 
@@ -87,7 +87,7 @@ Every cdkd command then behaves as if `--aws-emulator` were given:
 
 ```bash
 export CDKD_AWS_EMULATOR=1
-cdkd deploy MyStack
+cdkd deploy
 cdkd local invoke MyStack/Handler --from-state
 ```
 
@@ -180,8 +180,8 @@ await ddb.send(new PutItemCommand({ TableName: process.env.TABLE_NAME, Item: ite
 
 | | Without `--from-state` | With `--from-state` |
 | --- | --- | --- |
-| Without `--aws-emulator` | `TABLE_NAME` is dropped with a warning naming it; PutItem goes to real AWS with no table name and fails. | `TABLE_NAME` is the real table's name (from `cdkd deploy MyStack`); PutItem writes to it in real AWS. |
-| With `--aws-emulator` | `TABLE_NAME` is dropped, and one hint names `--from-state`, `--from-cfn-stack` and `--env-vars`; PutItem goes to the emulator with no table name and fails. | `TABLE_NAME` is the emulator's table name (from `cdkd deploy MyStack --aws-emulator`); PutItem writes to it in the emulator. |
+| Without `--aws-emulator` | `TABLE_NAME` is dropped with a warning naming it; PutItem goes to real AWS with no table name and fails. | `TABLE_NAME` is the real table's name (from `cdkd deploy`); PutItem writes to it in real AWS. |
+| With `--aws-emulator` | `TABLE_NAME` is dropped, and one hint names `--from-state`, `--from-cfn-stack` and `--env-vars`; PutItem goes to the emulator with no table name and fails. | `TABLE_NAME` is the emulator's table name (from `cdkd deploy --aws-emulator`); PutItem writes to it in the emulator. |
 
 `--from-cfn-stack` fills the same table from the CloudFormation stack instead
 of cdkd's state. A value you give `TABLE_NAME` in `--env-vars` wins in every
@@ -259,8 +259,8 @@ from the emulator's. Deploy the same stack, with the same stack name and CDK
 context, to both sides:
 
 ```bash
-cdkd deploy MyStack --aws-emulator    # the emulator copy
-cdkd deploy MyStack                   # the real copy, for the excepted services
+cdkd deploy --aws-emulator  # the emulator copy
+cdkd deploy                 # the real copy, for the excepted services
 ```
 
 With `--from-cfn-stack`, deploy the real copy with `cdk deploy`. When a copy
