@@ -19,6 +19,7 @@ export {
 } from './error-handler/base-errors.js';
 export {
   IntrinsicResolutionRefusalError,
+  SelectOutOfBoundsRefusalError,
   CrossAccountSecretRefusalError,
   MalformedProducerRecordRefusalError,
   DynamicReferenceRegionAmbiguousError,

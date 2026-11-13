@@ -27,6 +27,7 @@ import {
 import { logger } from './logger.js';
 import { STABLE_PSEUDO_PARAMETERS } from './trust.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
+import { isSelectOutOfBounds } from '../../../deployment/intrinsic-resolver/string-functions.js';
 
 /** Every `Ref` target reachable from a value, collected in one walk. */
 export function collectRefTargets(value: unknown, refs: Set<string>): void {
@@ -497,9 +498,15 @@ export async function bindParametersAndConditions({
     effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
     everyConditionKnown = unboundParameterNames.size === 0 && unknownConditions.size === 0;
   } catch (error) {
-    logger.debug(
-      `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${describeAwsFailure(error).detail}`
-    );
+    // go-to-k/cdkd#6181: an out-of-bounds `Fn::Select` in a condition makes
+    // `cdkd deploy` refuse the template, so the preview SAYS so: skipping the
+    // conditions silently would show every condition-gated resource.
+    const message = `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${describeAwsFailure(error).detail}`;
+    if (isSelectOutOfBounds(error)) {
+      logger.warn(`${message}. \`cdkd deploy\` refuses this template.`);
+    } else {
+      logger.debug(message);
+    }
   }
   if (mismatchedRecords.length > 0) {
     // The FALSE fallback can HIDE a change as well as show a phantom one: a

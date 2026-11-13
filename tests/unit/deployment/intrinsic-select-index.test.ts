@@ -20,7 +20,10 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  IntrinsicResolutionRefusalError,
+  SelectOutOfBoundsRefusalError,
+} from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -37,6 +40,18 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
   return { getLogger: () => fns };
 });
+
+// `AWS::StackId` names the account; STS answers a fixed one.
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    sts: {
+      send: vi.fn().mockResolvedValue({
+        Account: '123456789012',
+        Arn: 'arn:aws:iam::123456789012:user/test',
+      }),
+    },
+  }),
+}));
 
 const LIST = ['a', 'b', 'c'];
 
@@ -115,16 +130,29 @@ describe('an index that names an element selects it (#3574)', () => {
   });
 });
 
-describe('an integer past the end keeps the OutOfBounds placeholder', () => {
-  it('a literal and a resolved index both answer the placeholder and warn', async () => {
-    expect(await select(3)).toBe('{{Fn::Select:3:OutOfBounds}}');
-    expect(await select({ 'Fn::FindInMap': ['Idx', 'Env', 'Prod'] }, ['only'])).toBe(
-      '{{Fn::Select:2:OutOfBounds}}'
+describe('an integer past the end is REFUSED, as CloudFormation refuses it (#6181)', () => {
+  it('a literal and a resolved index both refuse, naming the index and the length, and warn nothing', async () => {
+    const literal = (await select(3).then(
+      () => undefined,
+      (e: unknown) => e
+    )) as Error;
+    expect(literal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(literal)).toBe(true);
+    expect(literal.message).toBe(
+      'Fn::Select: the index 3 is out of bounds (array length: 3). CloudFormation refuses this ' +
+        'template too ("Fn::Select cannot select nonexistent value"); select an index inside the list.'
     );
-    expect(logs.warn).toEqual([
-      'Fn::Select: index 3 out of bounds (array length: 3)',
-      'Fn::Select: index 2 out of bounds (array length: 1)',
-    ]);
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const pending = resolver.resolve(
+      { 'Fn::Select': [{ 'Fn::FindInMap': ['Idx', 'Env', 'Prod'] }, ['only']] },
+      context()
+    );
+    await expect(pending).rejects.toThrow('the index 2 is out of bounds (array length: 1)');
+    await pending.catch((e: unknown) => {
+      expect(e).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(isMarkedNonRetryable(e)).toBe(true);
+    });
+    expect(logs.warn).toEqual([]);
   });
 });
 
@@ -182,7 +210,7 @@ describe('a malformed Fn::Select operand is refused, not destructured', () => {
   });
 });
 
-describe('an index resolved from a SECRET never reaches a log line or the placeholder raw', () => {
+describe('an index resolved from a SECRET never reaches a log line or a refusal raw', () => {
   // A nested-stack child holds its parent's resolved secret only in
   // `inheritedSecrets`; the `Ref` line masks it, and so must every later
   // render of the index it becomes.
@@ -202,11 +230,11 @@ describe('an index resolved from a SECRET never reaches a log line or the placeh
   }
 
   it.each(['987654', '42'])(
-    'out of bounds (secret %s): refused, never written into the placeholder',
+    'out of bounds (secret %s): refused with the index masked',
     async (plaintext) => {
       const pending = selectSecret(plaintext, ['a', 'b']);
       await expect(pending).rejects.toThrow(
-        'Fn::Select: the index *** is out of bounds (array length: 2), and it resolves from a secret value'
+        'Fn::Select: the index *** is out of bounds (array length: 2)'
       );
       await pending.catch((e: unknown) => {
         expect(e).toBeInstanceOf(IntrinsicResolutionRefusalError);
@@ -224,12 +252,66 @@ describe('an index resolved from a SECRET never reaches a log line or the placeh
     expect(logs.debug.join('\n')).not.toContain('index 42');
   });
 
-  it('CONTROL: the same index from a NON-secret parameter renders and yields the placeholder', async () => {
-    const plain = await new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false }).resolve(
+  it('CONTROL: the same index from a NON-secret parameter renders in the refusal', async () => {
+    const pending = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false }).resolve(
       { 'Fn::Select': [{ Ref: 'SecretIdx' }, ['a', 'b']] },
       { ...context(), parameters: { SecretIdx: '987654' } } as ResolverContext
     );
-    expect(plain).toBe('{{Fn::Select:987654:OutOfBounds}}');
-    expect(logs.warn).toContain('Fn::Select: index 987654 out of bounds (array length: 2)');
+    await expect(pending).rejects.toThrow('the index 987654 is out of bounds (array length: 2)');
+  });
+});
+
+describe('the two arms #6181 settles beside the refusal', () => {
+  // The CDK unique-suffix idiom: the stack id's last `/` segment, then its
+  // last `-` group.
+  const stackIdGroup = {
+    'Fn::Select': [
+      4,
+      { 'Fn::Split': ['-', { 'Fn::Select': [2, { 'Fn::Split': ['/', { Ref: 'AWS::StackId' }] }] }] },
+    ],
+  };
+
+  it('a list cut from a legacy `cdkd` AWS::StackId keeps the placeholder and warns (#6170)', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const value = await resolver.resolve(stackIdGroup, { ...context(), stackName: 'S' });
+    expect(value).toBe('{{Fn::Select:4:OutOfBounds}}');
+    expect(logs.warn.join('\n')).toContain("over this stack's AWS::StackId, which ends in `cdkd`");
+  });
+
+  it('a stack whose AWS::StackId ends in a UUID selects the group', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const value = await resolver.resolve(stackIdGroup, {
+      ...context(),
+      stackName: 'S',
+      stackIdTail: () => '2d300264-2aa0-4589-ab27-cd6e9a259f23',
+    });
+    expect(value).toBe('cd6e9a259f23');
+  });
+
+  it('a list that does not read AWS::StackId still refuses on a legacy stack', async () => {
+    const pending = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false }).resolve(
+      { 'Fn::Select': [4, { 'Fn::Split': ['-', { Ref: 'AWS::StackName' }] }] },
+      { ...context(), stackName: 'S' }
+    );
+    await expect(pending).rejects.toBeInstanceOf(SelectOutOfBoundsRefusalError);
+  });
+
+  it('a condition selecting out of bounds fails the evaluation instead of assuming false', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const base = context();
+    const pending = resolver.evaluateConditions({
+      ...base,
+      template: {
+        ...base.template,
+        Conditions: {
+          HasSecond: {
+            'Fn::Not': [{ 'Fn::Equals': [{ 'Fn::Select': [1, { 'Fn::Split': [',', 'only'] }] }, ''] }],
+          },
+          Plain: { 'Fn::Equals': ['a', 'a'] },
+        },
+      } as unknown as CloudFormationTemplate,
+    });
+    await expect(pending).rejects.toBeInstanceOf(SelectOutOfBoundsRefusalError);
+    expect(logs.warn.join('\n')).not.toContain('assuming false');
   });
 });

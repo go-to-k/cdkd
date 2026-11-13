@@ -17,7 +17,10 @@ import {
   rememberLogTwin,
   splitLogTwins,
 } from './masking.js';
-import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
+import {
+  IntrinsicResolutionRefusalError,
+  SelectOutOfBoundsRefusalError,
+} from '../../utils/error-handler.js';
 import {
   type LogTwin,
   type ResolverContext,
@@ -336,22 +339,35 @@ export async function resolveSelect(
   // `displayMasked` masks it where the bare integer would not be.
   const loggedPosition = displayMasked(resolver, String(position), context);
   if (position >= resolvedList.length) {
-    if (loggedPosition !== String(position)) {
-      // The placeholder is a PROPERTY VALUE sent to AWS and persisted, so a
-      // masked position cannot go into it.
-      throw markNonRetryable(
-        new IntrinsicResolutionRefusalError(
-          `Fn::Select: the index ${loggedPosition} is out of bounds (array length: ` +
-            `${resolvedList.length}), and it resolves from a secret value, so cdkd will ` +
-            `not write it into the OutOfBounds placeholder.`
-        )
+    // The one exception keeps the old answer: a list cut from `AWS::StackId`
+    // on a stack whose stack id still ends in the legacy `cdkd`
+    // (go-to-k/cdkd#6170). CloudFormation's ends in a UUID, so its template
+    // is valid there, and the stack keeps `cdkd` for life; a refusal would
+    // fail every later deploy of a stack that deployed green before.
+    if (
+      context?.stackIdTail?.() === undefined &&
+      loggedPosition === String(position) &&
+      readsStackId(list)
+    ) {
+      resolver.logger.warn(
+        `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length}) ` +
+          "over this stack's AWS::StackId, which ends in `cdkd` because the stack was first " +
+          'deployed before cdkd derived it from a UUID; the value is a placeholder'
       );
+      return `{{Fn::Select:${position}:OutOfBounds}}`;
     }
-    // Reached only when the position did not mask, so it renders as is.
-    resolver.logger.warn(
-      `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length})`
+    // REFUSED, as CloudFormation refuses the template at CreateStack
+    // ("Fn::Select cannot select nonexistent value at index N", measured
+    // go-to-k/cdkd#6181). It used to warn and answer a
+    // `{{Fn::Select:N:OutOfBounds}}` literal, which a create sent to AWS and
+    // state kept wherever AWS accepts free text (a parameter value, a tag).
+    throw markNonRetryable(
+      new SelectOutOfBoundsRefusalError(
+        `Fn::Select: the index ${loggedPosition} is out of bounds (array length: ` +
+          `${resolvedList.length}). CloudFormation refuses this template too ("Fn::Select ` +
+          'cannot select nonexistent value"); select an index inside the list.'
+      )
     );
-    return `{{Fn::Select:${position}:OutOfBounds}}`;
   }
 
   const result: unknown = resolvedList[position];
@@ -730,4 +746,26 @@ export async function resolveSplit(
     `Resolved Fn::Split: split by ${splitDelimiterRender(resolver, String(delimiter), lineContext)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, pieceTwins, lineContext)), lineContext, { structured: true })}`
   );
   return result;
+}
+
+/** Does a raw template node read `AWS::StackId` (a `Ref`, or `${AWS::StackId}` in an `Fn::Sub`)? */
+function readsStackId(node: unknown): boolean {
+  if (typeof node === 'string') return false;
+  if (Array.isArray(node)) return node.some(readsStackId);
+  if (node === null || typeof node !== 'object') return false;
+  const record = node as Record<string, unknown>;
+  if (record['Ref'] === 'AWS::StackId') return true;
+  const sub = record['Fn::Sub'];
+  const subText = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
+  if (typeof subText === 'string' && subText.includes('${AWS::StackId}')) return true;
+  return Object.values(record).some(readsStackId);
+}
+
+/** Is `error`, or a link of its `cause` chain, {@link SelectOutOfBoundsRefusalError}? */
+export function isSelectOutOfBounds(error: unknown): boolean {
+  for (let link = error, depth = 0; link instanceof Error && depth < 16; depth++) {
+    if (link instanceof SelectOutOfBoundsRefusalError) return true;
+    link = (link as { cause?: unknown }).cause;
+  }
+  return false;
 }

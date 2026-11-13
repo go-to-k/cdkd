@@ -406,6 +406,7 @@ secrets-dynamic-ref	2026-11-04T21:52:37Z	PASS	727	verify.sh	us-east-1; own temp 
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
 secretsmanager-update-value-source	2026-11-07T00:31:21Z	PASS	150	verify.sh	#5940 secretsmanager-secret split head; rc ok, orph clean
+select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-04T20:25:11Z	PASS	54	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 servicediscovery	2026-11-06T20:31:26Z	PASS	261	verify.sh	#5908 servicediscovery split head; rc ok, orph clean
 servicediscovery-namespaces	2026-11-06T20:29:31Z	PASS	146	verify.sh	#5908 servicediscovery split head; rc ok, orph clean
