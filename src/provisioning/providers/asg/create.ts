@@ -250,7 +250,13 @@ export async function create(
 
     const arn = await this.fetchArn(groupName, maskSecrets);
     const attributes: Record<string, unknown> = {};
-    if (arn) attributes['Arn'] = arn;
+    // CloudFormation names the attribute `AutoScalingGroupARN` (uppercase
+    // suffix); a cross-resource `Fn::GetAtt` reads the record under exactly
+    // that key, so `Arn` alone resolved to the group name (issue #6238).
+    if (arn) {
+      attributes['Arn'] = arn;
+      attributes['AutoScalingGroupARN'] = arn;
+    }
     if (launchTemplate?.LaunchTemplateId) {
       attributes['LaunchTemplateID'] = launchTemplate.LaunchTemplateId;
     }

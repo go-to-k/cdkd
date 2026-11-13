@@ -220,7 +220,9 @@ export async function childRefAttributes(
   if (resourceType === 'AWS::AppSync::ApiKey' && parts.length === 2) {
     const [apiId, apiKeyId] = parts as [string, string];
     const apiKeyArn = await arn(`apis/${apiId}/apikeys/${apiKeyId}`);
-    return { ApiKey: apiKeyId, ...(apiKeyArn && { Arn: apiKeyArn }) };
+    // `ApiKeyId` is CloudFormation's own attribute for the same value as
+    // `ApiKey` (issue #6238); both are the key credential.
+    return { ApiKey: apiKeyId, ApiKeyId: apiKeyId, ...(apiKeyArn && { Arn: apiKeyArn }) };
   }
   return undefined;
 }

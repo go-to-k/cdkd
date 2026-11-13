@@ -166,6 +166,10 @@ export async function createApiKey(
     physicalId,
     attributes: {
       ApiKey: apiKeyId,
+      // CloudFormation's `Fn::GetAtt ApiKeyId` is the same value; recorded
+      // under its own name, since the resolver reads the record by the CFn
+      // attribute name (issue #6238).
+      ApiKeyId: apiKeyId,
       // CFn's `Ref` and `Fn::GetAtt Arn` for this type return the API key
       // ARN with the PLURAL segment, `.../apis/<apiId>/apikeys/<keyId>`
       // (measured on a live stack, issue #5540). The CFn docs print the

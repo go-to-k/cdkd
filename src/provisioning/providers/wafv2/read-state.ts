@@ -154,6 +154,7 @@ export async function importImpl(
           Arn: arn,
           Id: resp.WebACL?.Id,
           LabelNamespace: resp.WebACL?.LabelNamespace,
+          Capacity: resp.WebACL?.Capacity,
         }),
       };
     } catch (err) {

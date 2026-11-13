@@ -15,6 +15,8 @@ import {
   type OnSourceDDoSProtectionConfig,
   type MonetizationConfig,
 } from '@aws-sdk/client-wafv2';
+import { definedAttributes } from '../../attribute-map.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch } from '../../region-check.js';
@@ -118,14 +120,30 @@ export async function update(
 
     this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
 
+    // `Capacity` follows the rules, so the pre-update read above is stale
+    // for it: read it again (issue #6238). The update already landed, so a
+    // failed read omits the attribute rather than failing it; the #1852
+    // heal fills it on the next deploy that reads it.
+    let capacity: number | undefined;
+    try {
+      capacity = (
+        await this.getClient().send(new GetWebACLCommand({ Name: name, Scope: scope, Id: id }))
+      ).WebACL?.Capacity;
+    } catch (readError) {
+      this.logger.debug(
+        `Could not read the capacity of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
+      );
+    }
+
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
+      attributes: definedAttributes({
         Arn: physicalId,
         Id: id,
         LabelNamespace: getResponse.WebACL?.LabelNamespace,
-      },
+        Capacity: capacity,
+      }),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;

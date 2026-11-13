@@ -5,7 +5,9 @@ import {
   GetTableCommand,
   ListTableBucketsCommand,
   NotFoundException,
+  type GetTableCommandOutput,
 } from '@aws-sdk/client-s3tables';
+import { definedAttributes } from '../../attribute-map.js';
 import { compositeIdSeparatorRefusal } from '../../composite-id.js';
 import { findSdkUnwiredProperties } from '../../property-coverage.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
@@ -15,6 +17,22 @@ import {
   readStringProperty,
   tableIdentityFromGetTable,
 } from './shared.js';
+
+/**
+ * The attribute map `createTable` records, built from a `GetTable` response:
+ * `TableARN` plus the read-only `WarehouseLocation` / `VersionToken`, which a
+ * cross-resource `Fn::GetAtt` reads under exactly these keys (issue #6238).
+ */
+function tableAttributes(
+  tableARN: string,
+  response: GetTableCommandOutput
+): Record<string, unknown> {
+  return definedAttributes({
+    TableARN: tableARN,
+    WarehouseLocation: response.warehouseLocation,
+    VersionToken: response.versionToken,
+  });
+}
 
 // ─── Import dispatch ──────────────────────────────────────────────
 
@@ -329,7 +347,7 @@ export async function importTable(
       `S3 Tables Table ${input.logicalId}: template carries a Cloud-Control-routing property, ` +
         `recording the bare TableARN (CC's identifier) rather than cdkd's composite.`
     );
-    return { physicalId: tableARN, attributes: { TableARN: tableARN } };
+    return { physicalId: tableARN, attributes: tableAttributes(tableARN, response) };
   }
 
   // Unlike `importNamespace`, this identity is NOT always the product of a
@@ -355,7 +373,9 @@ export async function importTable(
   return {
     physicalId: `${identity.tableBucketARN}|${identity.namespace}|${identity.name}`,
     // Cache the real ARN the same way `createTable` does, so a
-    // `Fn::GetAtt: [Table, TableARN]` resolves for an imported table too.
-    attributes: { TableARN: tableARN },
+    // `Fn::GetAtt: [Table, TableARN]` resolves for an imported table too —
+    // and the read-only attributes beside it, so this is also the #1852
+    // heal for a record written before they were cached (issue #6238).
+    attributes: tableAttributes(tableARN, response),
   };
 }

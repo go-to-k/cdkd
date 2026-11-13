@@ -49,7 +49,8 @@ export function isResolvableOrphanRecord(entry: unknown): boolean {
  * Attributes whose recorded VALUE is a secret although their NAME does not
  * pass `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
  * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
- * `x-api-key` value itself, recorded in plaintext at create.
+ * `x-api-key` value itself, recorded in plaintext at create, and so is
+ * `ApiKeyId`, CloudFormation's other attribute for the same value (#6238).
  * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue` is a
  * credential Cloud Control records in plaintext (`cloud-control-provider.ts`);
  * that type has no `getAttribute`, so every read of it reaches `--force`'s
@@ -57,7 +58,7 @@ export function isResolvableOrphanRecord(entry: unknown): boolean {
  * (Cloud-Control-routed; `docs/_generated/provider-coverage.json` lists it).
  */
 const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
-  ['AWS::AppSync::ApiKey', ['ApiKey']],
+  ['AWS::AppSync::ApiKey', ['ApiKey', 'ApiKeyId']],
   ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
   ['AWS::IVS::StreamKey', ['Value']],
 ]);

@@ -31,7 +31,8 @@
  *      physical id + account + region, etc.),
  *   3. `guardedPhysicalIdFallback` — returns the physical id, EXCEPT it
  *      HARD-THROWS for a `*Arn` name whose fallback is not `arn:`-shaped or a
- *      `*Url` name whose fallback is not `http(s)://`-shaped.
+ *      `*Url` name whose fallback is not `http(s)://`-shaped (either suffix
+ *      also in upper case: `AutoScalingGroupARN`, #6238).
  * So a read-only `*Arn` / `*Url` attribute that is NEITHER cached by the
  * provider NOR handled by `constructAttribute` is a guaranteed deploy break the
  * moment it is `Fn::GetAtt`'d. Non-ARN/URL read-only attributes degrade to a
@@ -390,8 +391,13 @@ export const GAP_REMEDY =
   'the `create()` line that already mints the value and, for a REAL gap, a\n' +
   'tracking issue.';
 
-/** A read-only attribute whose absence would HARD-FAIL the resolver's guard. */
-const isArnOrUrlAttr = (name: string): boolean => name.endsWith('Arn') || name.endsWith('Url');
+/**
+ * A read-only attribute whose absence would HARD-FAIL the resolver's guard.
+ * Both spellings of each suffix count, as in the guard: CloudFormation names
+ * some of them `ARN` (`AWS::AutoScaling::AutoScalingGroup`'s
+ * `AutoScalingGroupARN`), which an `Arn`-only test missed (issue #6238).
+ */
+const isArnOrUrlAttr = (name: string): boolean => /(?:Arn|ARN|Url|URL)$/.test(name);
 
 export type Bucket = 'no-arn-attr' | 'covered' | 'gap';
 

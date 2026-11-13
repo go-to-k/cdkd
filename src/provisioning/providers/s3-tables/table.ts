@@ -12,6 +12,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
 import { markNotGone } from '../../not-gone.js';
+import { definedAttributes } from '../../attribute-map.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { compositeIdFormatMessage, packCompositeId } from '../../composite-id.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
@@ -191,13 +192,34 @@ export async function createTable(
     }
     const tableARN = response.tableARN;
 
+    // `WarehouseLocation` is not in the CreateTable response, so one GetTable
+    // reads it together with the current `VersionToken` (both CloudFormation
+    // `Fn::GetAtt` attributes, issue #6238). The table exists by now, so a
+    // failed read omits them rather than failing the create; the #1852 heal
+    // fills them through `import()`.
+    let warehouseLocation: string | undefined;
+    let versionToken: string | undefined = response.versionToken;
+    try {
+      const read = await this.getClient().send(
+        new GetTableCommand({ tableBucketARN, namespace, name })
+      );
+      warehouseLocation = read.warehouseLocation;
+      versionToken = read.versionToken ?? versionToken;
+    } catch (readError) {
+      this.logger.debug(
+        `Could not read the warehouse location of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
+      );
+    }
+
     this.logger.debug(`Successfully created S3 Tables Table ${logicalId}: ${physicalId}`);
 
     return {
       physicalId,
-      attributes: {
+      attributes: definedAttributes({
         TableARN: tableARN,
-      },
+        WarehouseLocation: warehouseLocation,
+        VersionToken: versionToken,
+      }),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;

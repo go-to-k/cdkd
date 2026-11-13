@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 140,
-    "covered": 67,
-    "noArnAttr": 73,
+    "covered": 72,
+    "noArnAttr": 68,
     "gap": 0,
     "knownGap": 0
   },
@@ -155,8 +155,13 @@
     },
     {
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "AutoScalingGroupARN",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -310,6 +315,10 @@
       "arnAttributes": [
         {
           "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "ProviderURL",
           "status": "cached"
         }
       ],
@@ -623,8 +632,13 @@
     },
     {
       "resourceType": "AWS::FSx::FileSystem",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ResourceARN",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -761,8 +775,13 @@
     },
     {
       "resourceType": "AWS::Kinesis::StreamConsumer",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ConsumerARN",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -1034,6 +1053,10 @@
         {
           "name": "Arn",
           "status": "cached"
+        },
+        {
+          "name": "WebsiteURL",
+          "status": "cached"
         }
       ],
       "gaps": []
@@ -1063,14 +1086,24 @@
     },
     {
       "resourceType": "AWS::S3Tables::Table",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TableARN",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::S3Tables::TableBucket",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TableBucketARN",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {

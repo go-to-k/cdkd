@@ -94,13 +94,18 @@ export async function create(
     // off the summary here before was always absent (issue #3627): read it
     // from `GetWebACL`. The web ACL exists by now, so a failed read omits
     // the attribute rather than failing the create; the #1852 heal fills it.
+    // `Capacity` (the WCUs the rules consume) is read off the same call: it
+    // is a CloudFormation `Fn::GetAtt` attribute (issue #6238).
     let labelNamespace: string | undefined;
+    let capacity: number | undefined;
     try {
-      labelNamespace = (
+      const webAcl = (
         await this.getClient().send(
           new GetWebACLCommand({ Id: summary.Id, Name: name, Scope: scope })
         )
-      ).WebACL?.LabelNamespace;
+      ).WebACL;
+      labelNamespace = webAcl?.LabelNamespace;
+      capacity = webAcl?.Capacity;
     } catch (readError) {
       this.logger.debug(
         `Could not read the label namespace of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
@@ -113,6 +118,7 @@ export async function create(
         Arn: summary.ARN,
         Id: summary.Id,
         LabelNamespace: labelNamespace,
+        Capacity: capacity,
       }),
     };
   } catch (error) {

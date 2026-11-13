@@ -419,7 +419,10 @@ export async function update(
 
     const arn = await this.fetchArn(physicalId, mask);
     const attributes: Record<string, unknown> = {};
-    if (arn) attributes['Arn'] = arn;
+    if (arn) {
+      attributes['Arn'] = arn;
+      attributes['AutoScalingGroupARN'] = arn;
+    }
     if (launchTemplate?.LaunchTemplateId) {
       attributes['LaunchTemplateID'] = launchTemplate.LaunchTemplateId;
     }
