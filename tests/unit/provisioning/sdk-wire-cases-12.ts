@@ -763,6 +763,11 @@ const ECS_VOLUMES = [
   },
 ];
 
+const TEC_UPDATE_REFUSED: Throw = {
+  why: 'a TaskDefinition revision is immutable, so a TrustedExecutionConfiguration change is refused with the --replace hint (go-to-k/cdkd#6301)',
+  says: /ECS TaskDefinition revisions are immutable/,
+};
+
 const TASK_DEFINITION_CASE: TypeCase = {
   resourceType: 'AWS::ECS::TaskDefinition',
   provider: () => new ECSProvider(),
@@ -807,9 +812,30 @@ const TASK_DEFINITION_CASE: TypeCase = {
         IpcMode: 'task',
         EphemeralStorage: { SizeInGiB: 30 },
         EnableFaultInjection: true,
+        TrustedExecutionConfiguration: {
+          IsolationMode: 'CONFIDENTIAL_SANDBOX',
+          AttestationPolicy: 'eyJwb2xpY3kiOiJ4In0=',
+        },
         Tags: fresh(ECS_TAG_LIST),
       },
-      expectedRemovalThrows: TAG_THROWS(ECS_ALL_DIRECTIONS, 2),
+      // TrustedExecutionConfiguration is the one schema-MUTABLE key besides
+      // Tags, but a revision is immutable on AWS, so `update()` refuses any
+      // change to it (go-to-k/cdkd#6301): its update probes are refusals.
+      expectedSilent: {
+        'update-vary:TrustedExecutionConfiguration.AttestationPolicy': TEC_UPDATE_REFUSED.why,
+        'update-vary:TrustedExecutionConfiguration.IsolationMode': TEC_UPDATE_REFUSED.why,
+      },
+      expectedRemovalThrows: {
+        ...TAG_THROWS(ECS_ALL_DIRECTIONS, 2),
+        ...Object.fromEntries(
+          ['update-add', 'update-remove'].flatMap((d) =>
+            ['', '.AttestationPolicy', '.IsolationMode'].map((p) => [
+              `${d}:TrustedExecutionConfiguration${p}`,
+              TEC_UPDATE_REFUSED,
+            ])
+          )
+        ),
+      },
     },
   ],
 };

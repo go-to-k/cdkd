@@ -1,7 +1,7 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1525,
+    "nestedKeyCount": 1527,
     "wholeDeliveredPathCount": 621,
     "shapeClean": 182,
     "shapeHandled": 50,
@@ -710,7 +710,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 146,
+      "nestedKeyCount": 148,
       "wholeDeliveredPaths": [
         "ContainerDefinitions.ExtraHosts.Hostname",
         "ContainerDefinitions.ExtraHosts.IpAddress",
@@ -753,8 +753,7 @@
         "AuthorizationConfig",
         "FSxAuthorizationConfig",
         "RestartPolicy",
-        "SharingStrategy",
-        "TrustedExecutionConfiguration"
+        "SharingStrategy"
       ],
       "usedSegmentRenames": [
         "ProxyConfigurationProperties"

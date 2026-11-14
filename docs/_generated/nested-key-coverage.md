@@ -13,7 +13,7 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1525**
+- Nested CFn key paths under handled top-levels: **1527**
 - Paths delivered whole by a generic hand-off: **621**
 - Bare-array pairs clean: **182**
 - Explicitly handled in provider: **50**
@@ -112,7 +112,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 31 | 27 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 112 | 0 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 138 | 125 | 5 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 146 | 34 | 5 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 148 | 34 | 4 |
 | `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | 76 | 66 | 0 |
 | `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 37 | 25 | 0 |
 | `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 46 | 45 | 1 |

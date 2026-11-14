@@ -26,6 +26,12 @@
 #   4. Destroy; assert the cluster and service are inactive and the state
 #      file is gone.
 #
+# Throughout, `IsolatedTaskDef` carries TrustedExecutionConfiguration
+# {IsolationMode: ISOLATED_SANDBOX} (issue #6301): phase 1 reads it back from
+# AWS and asserts the record's provisionedBy is sdk (before the backfill the
+# property was SDK-unwired, so the resource auto-routed to Cloud Control);
+# phases 2 and 3 assert the unchanged block kept the same revision.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -71,6 +77,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+REPO_ROOT="${PWD}/../../.."
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -116,8 +123,10 @@ read_outputs() {
   CLUSTER_NAME="$(printf '%s' "${state}" | jq -r '.outputs.ClusterName // empty')"
   TASKDEF_ARN="$(printf '%s' "${state}" | jq -r '.outputs.TaskDefArn // empty')"
   SERVICE_ARN="$(printf '%s' "${state}" | jq -r '.outputs.ServiceArn // empty')"
-  if [ -z "${CLUSTER_NAME}" ] || [ -z "${TASKDEF_ARN}" ] || [ -z "${SERVICE_ARN}" ]; then
-    echo "FAIL: ClusterName / TaskDefArn / ServiceArn missing from state outputs" >&2
+  ISOLATED_TASKDEF_ARN="$(printf '%s' "${state}" | jq -r '.outputs.IsolatedTaskDefArn // empty')"
+  ISOLATED_PROVISIONED_BY="$(printf '%s' "${state}" | jq -r '.resources.IsolatedTaskDef.provisionedBy // "<absent>"')"
+  if [ -z "${CLUSTER_NAME}" ] || [ -z "${TASKDEF_ARN}" ] || [ -z "${SERVICE_ARN}" ] || [ -z "${ISOLATED_TASKDEF_ARN}" ]; then
+    echo "FAIL: ClusterName / TaskDefArn / ServiceArn / IsolatedTaskDefArn missing from state outputs" >&2
     printf '%s' "${state}" | jq '.outputs' >&2
     exit 1
   fi
@@ -127,6 +136,20 @@ read_outputs() {
 taskdef_tags() {
   aws ecs list-tags-for-resource --resource-arn "${TASKDEF_ARN}" --region "${REGION}" --output json |
     jq -r '[.tags[] | "\(.key)=\(.value)"] | sort | join(",")'
+}
+
+# The live trustedExecutionConfiguration of the isolated revision, as JSON
+# (`null` when AWS returns none). Read through the SDK, not `aws ecs
+# describe-task-definition`: the CLI's bundled model predates the member and
+# silently drops it from the response (measured on aws-cli 2.38.4), which
+# would make the assertion below fail for the wrong reason.
+isolated_tec_json() {
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" ARN="${ISOLATED_TASKDEF_ARN}" node --input-type=module -e "
+import { ECSClient, DescribeTaskDefinitionCommand } from '@aws-sdk/client-ecs';
+const client = new ECSClient({ region: process.env.REGION });
+const res = await client.send(new DescribeTaskDefinitionCommand({ taskDefinition: process.env.ARN }));
+process.stdout.write(JSON.stringify(res.taskDefinition?.trustedExecutionConfiguration ?? null));
+" ) || return 1
 }
 
 # "<launchType> <status>" of one service ARN. A service missing from the reply
@@ -168,6 +191,24 @@ if [ "${BASE_SHAPE}" != "EC2 ACTIVE" ]; then
   exit 1
 fi
 echo "    OK: base tags and launch type reached AWS"
+
+BASE_ISOLATED_TASKDEF_ARN="${ISOLATED_TASKDEF_ARN}"
+if [ "${ISOLATED_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: IsolatedTaskDef provisionedBy is '${ISOLATED_PROVISIONED_BY}', expected 'sdk' — TrustedExecutionConfiguration routed the resource off the SDK provider (#6301)" >&2
+  exit 1
+fi
+# Captured first: inside `$(... | jq)` a failed read would only end that
+# subshell, and the assertion below would blame the wire for a read failure.
+if ! TEC_JSON="$(isolated_tec_json)" || [ -z "${TEC_JSON}" ]; then
+  echo "FAIL: could not read trustedExecutionConfiguration of ${ISOLATED_TASKDEF_ARN} through the SDK (#6301)" >&2
+  exit 1
+fi
+ISOLATION_MODE="$(printf '%s' "${TEC_JSON}" | jq -r '.isolationMode // "<absent>"')"
+if [ "${ISOLATION_MODE}" != "ISOLATED_SANDBOX" ]; then
+  echo "FAIL: IsolatedTaskDef isolationMode on AWS is '${ISOLATION_MODE}', expected 'ISOLATED_SANDBOX' — the SDK route did not send TrustedExecutionConfiguration (#6301)" >&2
+  exit 1
+fi
+echo "    OK: TrustedExecutionConfiguration reached AWS on the SDK route (isolationMode ISOLATED_SANDBOX, provisionedBy sdk) (#6301)"
 
 # --- Phase 2: Tags change + LaunchType change -------------------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (tags -> v2 with a key removed, LaunchType -> EXTERNAL)"
@@ -228,6 +269,12 @@ if [ "${RM_SHAPE}" != "EXTERNAL ACTIVE" ]; then
 fi
 echo "    OK: LaunchType removal kept the service and its live launch type (#5392)"
 
+if [ "${ISOLATED_TASKDEF_ARN}" != "${BASE_ISOLATED_TASKDEF_ARN}" ]; then
+  echo "FAIL: IsolatedTaskDef moved to '${ISOLATED_TASKDEF_ARN}' (was '${BASE_ISOLATED_TASKDEF_ARN}') though its template never changed (#6301)" >&2
+  exit 1
+fi
+echo "    OK: the unchanged TrustedExecutionConfiguration kept its revision through phases 2 and 3 (#6301)"
+
 # --- Phase 4: destroy --------------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -266,8 +313,19 @@ if ! gone_probe aws ecs describe-task-definition --task-definition "${TASKDEF_AR
       ;;
   esac
 fi
+if ! gone_probe aws ecs describe-task-definition --task-definition "${ISOLATED_TASKDEF_ARN}" --region "${REGION}"; then
+  ISOLATED_STATUS="$(aws ecs describe-task-definition --task-definition "${ISOLATED_TASKDEF_ARN}" --region "${REGION}" --output json |
+    jq -r '.taskDefinition.status // empty')"
+  case "${ISOLATED_STATUS}" in
+    INACTIVE | DELETE_IN_PROGRESS) ;;
+    *)
+      echo "FAIL: the isolated task definition status is '${ISOLATED_STATUS:-<empty>}' after destroy, expected INACTIVE / DELETE_IN_PROGRESS" >&2
+      exit 1
+      ;;
+  esac
+fi
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: service, cluster and task definition are inactive and the state file is gone"
 
 echo ""
-echo "[verify] PASS — ecs-taskdef-tags-launch-type: TaskDefinition Tags updated in place on the same revision; Service LaunchType change replaced the service and its removal kept it (#5392)"
+echo "[verify] PASS — ecs-taskdef-tags-launch-type: TaskDefinition Tags updated in place on the same revision; Service LaunchType change replaced the service and its removal kept it (#5392); TrustedExecutionConfiguration reached AWS on the SDK route (#6301)"

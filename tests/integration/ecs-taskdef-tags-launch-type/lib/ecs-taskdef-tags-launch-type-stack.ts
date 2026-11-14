@@ -25,6 +25,12 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
  *
  * Bridge networking and a desired count of 0: no VPC, no instance, no task
  * ever runs, so only control-plane resources exist.
+ *
+ * `IsolatedTaskDef` carries `TrustedExecutionConfiguration` on the SDK route
+ * (issue #6301), unchanged in every phase. Measured in us-east-1: AWS refuses
+ * the member on EC2 / EXTERNAL and Fargate task definitions, takes it on
+ * MANAGED_INSTANCES with awsvpc, and ISOLATED_SANDBOX also needs task-level
+ * memory. It is set by override: this aws-cdk-lib has no prop for it yet.
  */
 export class EcsTaskdefTagsLaunchTypeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -63,8 +69,26 @@ export class EcsTaskdefTagsLaunchTypeStack extends cdk.Stack {
       ...(!isLaunchTypeRemoved && { launchType: isUpdate ? 'EXTERNAL' : 'EC2' }),
     });
 
+    const isolatedTaskDefinition = new ecs.CfnTaskDefinition(this, 'IsolatedTaskDef', {
+      requiresCompatibilities: ['MANAGED_INSTANCES'],
+      networkMode: 'awsvpc',
+      memory: '512',
+      containerDefinitions: [
+        {
+          name: 'app',
+          image: 'public.ecr.aws/docker/library/busybox:latest',
+          memory: 64,
+          essential: true,
+        },
+      ],
+    });
+    isolatedTaskDefinition.addPropertyOverride('TrustedExecutionConfiguration', {
+      IsolationMode: 'ISOLATED_SANDBOX',
+    });
+
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.ref });
     new cdk.CfnOutput(this, 'TaskDefArn', { value: taskDefinition.ref });
     new cdk.CfnOutput(this, 'ServiceArn', { value: service.ref });
+    new cdk.CfnOutput(this, 'IsolatedTaskDefArn', { value: isolatedTaskDefinition.ref });
   }
 }
