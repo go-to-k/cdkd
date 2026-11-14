@@ -174,11 +174,11 @@ export async function applyCrossStackResolverToTask(
         // The sync pass deferred this element before its secret check, and a
         // nested cross-stack element can read a same-stack secret beside the
         // import (`Fn::Join` of an `Fn::ImportValue` and a `Fn::GetAtt`).
-        const secret =
+        const refusal =
           secretAttributeRead(rawElement, secretContext.resources) ??
           computedAttributeRead(rawElement);
-        if (secret !== undefined) {
-          remaining.push({ ...u, reason: secret });
+        if (refusal !== undefined) {
+          remaining.push({ ...u, reason: refusal });
           continue;
         }
         // A producer value recorded as the mask can be joined into a longer
