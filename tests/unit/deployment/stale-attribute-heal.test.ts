@@ -99,6 +99,15 @@ const accessDenied = (): Error => {
   return err;
 };
 
+/**
+ * go-to-k/cdkd#6242: a DBInstance attribute name in NEITHER the CFn schema's
+ * `readOnlyProperties` nor `PHYSICAL_ID_ATTRIBUTES`, so a miss on it still
+ * takes the warn-and-return physical-id arm (a read-only one such as
+ * `Endpoint.Address` is now refused). Dotted, so the nested-name and
+ * withheld-head paths stay exercised.
+ */
+const WARN_ARM_ATTRIBUTE = 'Unmodeled.Address';
+
 describe('stale attribute heal — resolver (#1852)', () => {
   let resolver: IntrinsicFunctionResolver;
 
@@ -212,44 +221,64 @@ describe('stale attribute heal — resolver (#1852)', () => {
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it('keeps the warn + physical-id fallback while the instance still has no endpoint', async () => {
+    /** The go-to-k/cdkd#6242 refusal: terminal, and never the physical id. */
+    const expectEndpointRefusal = (error: Error): void => {
+      expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(error.message).toContain('Cannot resolve Fn::GetAtt [Db, Endpoint.Address]');
+      expect(error.message).toContain('is not the value CloudFormation returns');
+      expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+      expect(warnSpy).not.toHaveBeenCalled();
+    };
+
+    // go-to-k/cdkd#6242: the physical id is not Endpoint.Address, so serving it was wrong.
+    it('refuses (never the physical id) while the instance still has no endpoint', async () => {
       const healer = vi.fn().mockResolvedValue({ kind: 'read', attributes: {} } as const);
       const ctx = mkContext({ Db: creatingInstance() }, healer);
-      expect(await resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)).toBe(
-        'mydb'
+      const error = await refusalOf(
+        resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)
       );
-      expect(resolver.getPhysicalIdFallbackCount()).toBe(1);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(String(warnSpy.mock.calls[0]![0])).toContain('returning physical ID');
+      expectEndpointRefusal(error);
+      expect(error.message).toContain("the provider's re-read of the resource reports no value for it");
+      expect(healer).toHaveBeenCalledTimes(1);
     });
 
-    it('never serves an EMPTY healed value (a healer that forgot to normalize)', async () => {
+    // go-to-k/cdkd#6242: an empty healed value is "no value", so the same refusal.
+    it('never serves an EMPTY healed value (a healer that forgot to normalize) — refuses', async () => {
       const healer = vi
         .fn()
         .mockResolvedValue({ kind: 'read', attributes: { 'Endpoint.Address': '' } } as const);
       const ctx = mkContext({ Db: creatingInstance() }, healer);
-      expect(await resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)).toBe(
-        'mydb'
+      const error = await refusalOf(
+        resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)
       );
+      expectEndpointRefusal(error);
+      expect(error.message).toContain("the provider's re-read of the resource reports no value for it");
     });
 
-    it('a FAILED read degrades to the same fallback — never a thrown deploy', async () => {
+    // go-to-k/cdkd#6242: a FAILED read now refuses too, worded as a stale record.
+    it('a FAILED read refuses with the stale-record remedy, not the unknown-attribute wording', async () => {
       const healer = vi.fn().mockResolvedValue({ kind: 'failed', error: accessDenied() } as const);
       const ctx = mkContext({ Db: creatingInstance() }, healer);
-      expect(await resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)).toBe(
-        'mydb'
+      const error = await refusalOf(
+        resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)
       );
-      const warned = String(warnSpy.mock.calls[0]![0]);
-      expect(warned).toContain('tried to re-read');
-      expect(warned).not.toContain('Unknown attribute');
+      expectEndpointRefusal(error);
+      expect(error.message).toContain('the state record holds no value for it');
+      expect(error.message).toContain('tried to re-read');
+      expect(error.message).not.toContain('Unknown attribute');
     });
 
-    it('a healer that THROWS is a failed read, not a failed resolution', async () => {
+    // go-to-k/cdkd#6242: the healer's own error never escapes; the verdict is the refusal.
+    it('a healer that THROWS is a failed read: the #6242 refusal, not the raw error', async () => {
       const healer = vi.fn().mockRejectedValue(new Error('boom'));
       const ctx = mkContext({ Db: creatingInstance() }, healer);
-      expect(await resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)).toBe(
-        'mydb'
+      const error = await refusalOf(
+        resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)
       );
+      expectEndpointRefusal(error);
+      expect(error.message).toContain('tried to re-read');
+      expect(error.message).not.toBe('boom');
     });
   });
 
@@ -395,7 +424,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
         warnSpy.mockClear();
         expect(
           await resolver.resolve(
-            { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+            { 'Fn::GetAtt': ['Db', WARN_ARM_ATTRIBUTE] },
             mkContext({ Db: record() }, healerOf(outcome, readOnly))
           )
         ).toBe('mydb');
@@ -557,11 +586,12 @@ describe('stale attribute heal — resolver (#1852)', () => {
       });
 
       it('the warn-and-return fallback', async () => {
-        const outcome = { kind: 'read', attributes: {}, withheldKeys: ['Endpoint'] } as const;
+        const outcome = { kind: 'read', attributes: {}, withheldKeys: ['Unmodeled'] } as const;
         const warned = async (readOnly: boolean): Promise<string> => {
           warnSpy.mockClear();
-          await resolver.resolve(
-            { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+          expect(
+            await resolver.resolve(
+              { 'Fn::GetAtt': ['Db', WARN_ARM_ATTRIBUTE] },
             mkContext(
               {
                 Db: {
@@ -573,7 +603,9 @@ describe('stale attribute heal — resolver (#1852)', () => {
               },
               healerOf(outcome, readOnly)
             )
-          );
+            )
+          ).toBe('mydb');
+          expect(warnSpy).toHaveBeenCalledTimes(1);
           return String(warnSpy.mock.calls.at(-1)![0]);
         };
         const preview = await warned(true);
@@ -897,7 +929,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
         healer
       );
       const slow = resolver.resolve({ 'Fn::GetAtt': ['Slow', 'Arn'] }, ctx);
-      const fast = await resolver.resolve({ 'Fn::GetAtt': ['Fast', 'Endpoint.Address'] }, ctx);
+      const fast = await resolver.resolve({ 'Fn::GetAtt': ['Fast', WARN_ARM_ATTRIBUTE] }, ctx);
       expect(fast).toBe('mydb');
       release();
       expect(await slow).toBe(REAL_ARN);

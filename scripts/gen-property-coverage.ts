@@ -81,6 +81,7 @@ interface SchemaFixture {
   generatedAt: string;
   properties: string[];
   readOnlyProperties: string[];
+  primaryIdentifier?: string[];
   createOnlyProperties?: string[];
   createOnlyPropertyPaths?: string[][];
 }
@@ -414,6 +415,12 @@ interface PerTypeCoverage {
    */
   readOnly: string[];
   /**
+   * The schema's `primaryIdentifier` property names (go-to-k/cdkd#6242): an
+   * attribute among them is the resource's identifier, which the physical id
+   * holds, so the `Fn::GetAtt` physical-id fallback keeps serving it.
+   */
+  primaryIdentifier: string[];
+  /**
    * Cloud Control cannot take an unrecognized property for this type (issue
    * #3713): it is in `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` (#3871), its SDK
    * provider declares `disableCcApiFallback`, or the type is a `'cc-broken'`
@@ -484,6 +491,7 @@ function main(): void {
       sdkUnwired,
       createOnlyDrops,
       readOnly: [...readOnly].sort((a, b) => a.localeCompare(b)),
+      primaryIdentifier: [...(fixture.primaryIdentifier ?? [])].sort((a, b) => a.localeCompare(b)),
       ccRouteUnavailable:
         sdkNonProvisionable.has(type) ||
         combinedCcFallbackDisabled.has(type) ||
@@ -527,6 +535,7 @@ function main(): void {
       sdkUnwired: ${renderSdkUnwired(cov.sdkUnwired)},
       createOnlyDrops: ${renderHandled(cov.createOnlyDrops)},
       readOnly: ${renderHandled(cov.readOnly)},
+      primaryIdentifier: ${renderHandled(cov.primaryIdentifier)},
       ccRouteUnavailable: ${cov.ccRouteUnavailable},
     },
   ],`
@@ -590,6 +599,12 @@ export interface PropertyCoverage {
    * [#3713](https://github.com/go-to-k/cdkd/issues/3713)).
    */
   readonly readOnly: ReadonlySet<string>;
+  /**
+   * The schema's \`primaryIdentifier\` property names (go-to-k/cdkd#6242): the
+   * \`Fn::GetAtt\` physical-id fallback keeps serving one of them, since the
+   * physical id holds the resource's identifier.
+   */
+  readonly primaryIdentifier: ReadonlySet<string>;
   /**
    * Cloud Control cannot take an unrecognized key for this type — AWS reports it
    * NON_PROVISIONABLE (\`SDK_PROVIDER_NON_PROVISIONABLE_TYPES\`), its SDK

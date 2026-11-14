@@ -425,7 +425,8 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       });
     });
 
-    it('the --no-wait DBInstance row: an instance with no endpoint yet caches NOTHING (#3077)', async () => {
+    // go-to-k/cdkd#6242: the instance identifier is not Endpoint.Address, so the output is refused, not served.
+    it('the --no-wait DBInstance row: an instance with no endpoint yet caches NOTHING and refuses the output (#3077)', async () => {
       const db: ResourceState = {
         physicalId: 'mydb',
         resourceType: 'AWS::RDS::DBInstance',
@@ -445,8 +446,16 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
 
       const result = await makeEngine().deploy(STACK, dbTemplate);
 
-      // Today's behaviour, kept: warn + the instance identifier.
-      expect(result.outputs?.['Host']).toBe('mydb');
+      // The output is absent (never the instance identifier), and the warning names the refusal.
+      expect(result.outputs).not.toHaveProperty('Host');
+      expect(Object.values(result.outputs ?? {})).not.toContain('mydb');
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(
+        'Failed to resolve output Host: Cannot resolve Fn::GetAtt [Db, Endpoint.Address]'
+      );
+      expect(warned).toContain("the provider's re-read of the resource reports no value for it");
+      expect(warned).not.toContain('returning physical ID');
+      expect(mockProvider.import).toHaveBeenCalledTimes(1);
       for (const s of savedStates()) {
         expect(s.resources['Db']!.attributes).toEqual(db.attributes);
         expect(Object.hasOwn(s.resources['Db']!.attributes!, 'Endpoint.Address')).toBe(false);

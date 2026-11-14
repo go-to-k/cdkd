@@ -233,6 +233,7 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
 interface SchemaFixture {
   resourceType: string;
   readOnlyProperties: string[];
+  primaryIdentifier?: string[];
 }
 
 const sanitizeFixtureName = (type: string): string => type.replace(/::/g, '-');
@@ -248,6 +249,7 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
     out.push({
       resourceType: parsed.resourceType,
       readOnlyProperties: Array.isArray(parsed.readOnlyProperties) ? parsed.readOnlyProperties : [],
+      primaryIdentifier: Array.isArray(parsed.primaryIdentifier) ? parsed.primaryIdentifier : [],
     });
   }
   return out.sort((a, b) => a.resourceType.localeCompare(b.resourceType));
@@ -453,8 +455,21 @@ export function classifyType(
   return { resourceType, bucket, arnAttributes, gaps };
 }
 
+/**
+ * go-to-k/cdkd#6242: a read-only attribute of an SDK-backed type that no
+ * provider records, no resolver arm names and `PHYSICAL_ID_ATTRIBUTES` does
+ * not list: the resolver REFUSES it (`guardedPhysicalIdFallback`), where
+ * CloudFormation would answer a value. A parity gap, listed so each new one
+ * shows up as a diff of this generated file rather than silently.
+ */
+export interface RefusedAttributes {
+  readonly resourceType: string;
+  readonly attributes: readonly string[];
+}
+
 export interface SdkAttrCoverageReport {
   readonly schemaVersion: 1;
+  readonly refusedAttributes: readonly RefusedAttributes[];
   readonly summary: {
     readonly classifiedCount: number;
     readonly covered: number;
@@ -462,6 +477,8 @@ export interface SdkAttrCoverageReport {
     readonly gap: number;
     /** Allow-listed attributes whose entry is flagged `knownGap` (real, tracked debt). */
     readonly knownGap: number;
+    /** Read-only attributes the resolver refuses (`refusedAttributes`), summed. */
+    readonly refused: number;
   };
   readonly types: readonly TypeClassification[];
 }
@@ -477,7 +494,8 @@ export function buildReport(
   sdkBackedTypes: ReadonlySet<string>,
   cachedKeysByType: ReadonlyMap<string, ReadonlySet<string>>,
   constructAttributeTypes: ReadonlySet<string>,
-  allowList: ReadonlyMap<string, AllowListEntry> = SDK_ATTR_ALLOW_LIST
+  allowList: ReadonlyMap<string, AllowListEntry> = SDK_ATTR_ALLOW_LIST,
+  refusedAttributes: readonly RefusedAttributes[] = []
 ): SdkAttrCoverageReport {
   const types = fixtures
     .filter((f) => sdkBackedTypes.has(f.resourceType))
@@ -493,6 +511,7 @@ export function buildReport(
 
   return {
     schemaVersion: 1,
+    refusedAttributes,
     summary: {
       classifiedCount: types.length,
       covered: types.filter((t) => t.bucket === 'covered').length,
@@ -507,9 +526,61 @@ export function buildReport(
           ).length,
         0
       ),
+      refused: refusedAttributes.reduce((n, r) => n + r.attributes.length, 0),
     },
     types,
   };
+}
+
+/**
+ * The `'AWS::X::Y.Attr'` entries of `PHYSICAL_ID_ATTRIBUTES`, read from the
+ * resolver source (the script cannot import `src/`, whose `.js` specifiers
+ * Node's type stripping does not map). Throws when the set is not found, so a
+ * rename fails loudly instead of emptying the allow-list.
+ */
+export function parsePhysicalIdAttributes(source: string): Set<string> {
+  const block = /PHYSICAL_ID_ATTRIBUTES[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(source);
+  if (!block) throw new Error('PHYSICAL_ID_ATTRIBUTES not found in getatt-refusals.ts');
+  return new Set([...block[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!));
+}
+
+/**
+ * go-to-k/cdkd#6242: per SDK-backed type, the top-level read-only attributes
+ * the resolver refuses: not a key any provider file records, not a literal
+ * any resolver construct file names (a coarse, over-crediting test: a name
+ * appearing for ANOTHER type counts as handled), not allow-listed.
+ */
+export function collectRefusedAttributes(
+  fixtures: readonly SchemaFixture[],
+  sdkBackedTypes: ReadonlySet<string>,
+  cachedKeysByType: ReadonlyMap<string, ReadonlySet<string>>,
+  resolverText: string,
+  physicalIdAttributes: ReadonlySet<string>
+): RefusedAttributes[] {
+  const out: RefusedAttributes[] = [];
+  for (const f of fixtures) {
+    if (!sdkBackedTypes.has(f.resourceType)) continue;
+    const cached = cachedKeysByType.get(f.resourceType) ?? new Set<string>();
+    const attributes = f.readOnlyProperties
+      .filter((p) => !p.includes('/') && !p.includes('.'))
+      .filter((p) => !cached.has(p))
+      .filter((p) => !resolverText.includes(`'${p}'`))
+      .filter((p) => !physicalIdAttributes.has(`${f.resourceType}.${p}`))
+      // The runtime keeps serving a member of the type's identifier (not
+      // CodeCommit's, whose physical id is the name) and its own ARN.
+      .filter(
+        (p) =>
+          f.resourceType === 'AWS::CodeCommit::Repository' || !(f.primaryIdentifier ?? []).includes(p)
+      )
+      .filter((p) => {
+        const typeName = (f.resourceType.split('::').pop() ?? '').toLowerCase();
+        const lower = p.toLowerCase();
+        return lower !== 'arn' && lower !== `${typeName}arn`;
+      })
+      .sort((a, b) => a.localeCompare(b));
+    if (attributes.length > 0) out.push({ resourceType: f.resourceType, attributes });
+  }
+  return out.sort((a, b) => a.resourceType.localeCompare(b.resourceType));
 }
 
 /** The `--check` gate: the types the critic hard-fails on. */
@@ -554,6 +625,25 @@ export function renderMarkdown(report: SdkAttrCoverageReport): string {
   );
   lines.push('');
 
+  lines.push('## Read-only attributes cdkd refuses (CloudFormation parity gaps)');
+  lines.push('');
+  lines.push(
+    `**${report.summary.refused}** read-only attribute(s) of SDK-backed types that no provider records ` +
+      'and no resolver arm builds: `Fn::GetAtt` of one fails the deploy with a clear error, where ' +
+      'CloudFormation would answer a value (go-to-k/cdkd#6242). Closing a row means recording the ' +
+      'value AWS returns, or adding a resolver arm that builds or reads it. Names are top-level: a ' +
+      'recorded dotted member of an object-valued one (`Endpoint.Address`) is still served. The list ' +
+      'is coarse (a name a resolver arm spells for any type counts as handled), so it can omit some.'
+  );
+  lines.push('');
+  if (report.refusedAttributes.length > 0) {
+    lines.push('| Resource type | Refused attributes |');
+    lines.push('| --- | --- |');
+    for (const r of report.refusedAttributes) {
+      lines.push(`| \`${r.resourceType}\` | ${r.attributes.map((a) => `\`${a}\``).join(', ')} |`);
+    }
+    lines.push('');
+  }
   const gapTypes = report.types.filter((t) => t.bucket === 'gap');
   if (gapTypes.length > 0) {
     lines.push('## Latent gaps (UNRESOLVABLE Arn/Url readOnly) — BLOCKS CI');
@@ -634,10 +724,30 @@ function loadReport(): SdkAttrCoverageReport {
   }
 
   const constructAttributeTypes = new Set<string>();
+  let resolverText = '';
   for (const file of constructAttributeFiles()) {
-    for (const t of collectConstructAttributeTypes(readFileSync(file, 'utf8'))) constructAttributeTypes.add(t);
+    const source = readFileSync(file, 'utf8');
+    resolverText += source;
+    for (const t of collectConstructAttributeTypes(source)) constructAttributeTypes.add(t);
   }
-  return buildReport(fixtures, sdkBackedTypes, cachedKeysByType, constructAttributeTypes);
+  const physicalIdAttributes = parsePhysicalIdAttributes(
+    readFileSync(join(RESOLVER_DIR, 'getatt-refusals.ts'), 'utf8')
+  );
+  const refused = collectRefusedAttributes(
+    fixtures,
+    sdkBackedTypes,
+    cachedKeysByType,
+    resolverText,
+    physicalIdAttributes
+  );
+  return buildReport(
+    fixtures,
+    sdkBackedTypes,
+    cachedKeysByType,
+    constructAttributeTypes,
+    SDK_ATTR_ALLOW_LIST,
+    refused
+  );
 }
 
 function main(): void {
