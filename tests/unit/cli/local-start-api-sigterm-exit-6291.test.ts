@@ -236,5 +236,8 @@ describe('local start-api: SIGTERM exit code (go-to-k/cdkd#6291)', () => {
     expect(exitSpy).not.toHaveBeenCalledWith(0);
     expect(h.started[0]!.close).toHaveBeenCalledTimes(1);
     expect(h.pools[0]!.dispose).toHaveBeenCalledTimes(1);
+    const exitOrder = exitSpy.mock.invocationCallOrder[0]!;
+    expect(h.started[0]!.close.mock.invocationCallOrder[0]!).toBeLessThan(exitOrder);
+    expect(h.pools[0]!.dispose.mock.invocationCallOrder[0]!).toBeLessThan(exitOrder);
   });
 });
