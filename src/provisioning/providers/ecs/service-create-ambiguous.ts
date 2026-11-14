@@ -158,7 +158,7 @@ async function settle(
       return undefined;
     }
     log.warn(
-      `CreateService for ${subject} failed without a definite answer, but ECS created the service ${shown(arn)}. It is recorded on the failed create, so the rollback, cdkd rollback or cdkd destroy deletes it.`
+      `CreateService for ${subject} failed without a definite answer, but ECS created the service ${shown(arn)}. It is recorded on the failed create, so the automatic rollback, or a later rollback or destroy of the stack, deletes it.`
     );
     return arn;
   }
