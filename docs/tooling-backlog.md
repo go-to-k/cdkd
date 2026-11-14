@@ -489,3 +489,5 @@ issues they name are to be closed on the tracker.
 | [#3193](https://github.com/go-to-k/cdkd/issues/3193) | test(integ): cdkd diff has no real-AWS arm for a malformed outputs bag |
 | [#3406](https://github.com/go-to-k/cdkd/issues/3406) | test(integ): dynamodb-ondemand does not exercise the per-GSI OnDemandThroughput pre-flight refusal |
 | [#3504](https://github.com/go-to-k/cdkd/issues/3504) | test(state): the repairMalformed* exports have no partition fence, so a sixth can join unclassified (#3379 residual) |
+| — | test(integ): a new fixture's `verify.sh` read an L2 construct's state record by its construct id (`.resources.DbSecret`), but CDK appends a hash (`DbSecret685A0FA5`); select by `resourceType` or the full id. First occurrence: the #6303 fixture, caught on its first run |
+| — | test(integ): a fixture proving "no UPDATE was sent" counted `RESOURCE_STARTED` events, but a resource the plan lists as an update and the engine then skips as unchanged still emits them; read the live resource's version and the summary's `Updated: 0` line instead. First occurrence: the #6303 fixture |
