@@ -563,6 +563,192 @@ describe('ECSProvider read-update round-trip', () => {
     expect(mutatingSends()).toHaveLength(0);
   });
 
+  // go-to-k/cdkd#6301: TrustedExecutionConfiguration on the SDK route.
+  const TEC_TEMPLATE = {
+    Family: 'my-td',
+    Memory: '512',
+    NetworkMode: 'awsvpc',
+    RequiresCompatibilities: ['MANAGED_INSTANCES'],
+    ContainerDefinitions: [{ Name: 'app', Image: 'nginx:latest' }],
+    TrustedExecutionConfiguration: {
+      IsolationMode: 'CONFIDENTIAL_SANDBOX',
+      AttestationPolicy: 'eyJwb2xpY3kiOiJ4In0=',
+    },
+  };
+
+  it('TaskDefinition.create sends TrustedExecutionConfiguration in the SDK camelCase shape', async () => {
+    mockSend.mockResolvedValueOnce({ taskDefinition: { taskDefinitionArn: TD_ARN } });
+
+    await provider.create('L', 'AWS::ECS::TaskDefinition', TEC_TEMPLATE);
+
+    const register = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((cmd) => cmd instanceof RegisterTaskDefinitionCommand);
+    expect(register).toHaveLength(1);
+    expect(register[0].input.trustedExecutionConfiguration).toEqual({
+      isolationMode: 'CONFIDENTIAL_SANDBOX',
+      attestationPolicy: 'eyJwb2xpY3kiOiJ4In0=',
+    });
+  });
+
+  it('TaskDefinition.create omits trustedExecutionConfiguration when the template does not declare it', async () => {
+    mockSend.mockResolvedValueOnce({ taskDefinition: { taskDefinitionArn: TD_ARN } });
+    const { TrustedExecutionConfiguration: _omitted, ...withoutTec } = TEC_TEMPLATE;
+
+    await provider.create('L', 'AWS::ECS::TaskDefinition', withoutTec);
+
+    const register = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((cmd) => cmd instanceof RegisterTaskDefinitionCommand);
+    expect(register).toHaveLength(1);
+    expect(register[0].input.trustedExecutionConfiguration).toBeUndefined();
+  });
+
+  it.each([
+    ['a string', 'ISOLATED_SANDBOX', 'string'],
+    ['an array', [{ IsolationMode: 'SHARED' }], 'an array'],
+  ])(
+    'TaskDefinition.create refuses %s TrustedExecutionConfiguration before any AWS call',
+    async (_label, value, named) => {
+      await expect(
+        provider.create('L', 'AWS::ECS::TaskDefinition', {
+          ...TEC_TEMPLATE,
+          TrustedExecutionConfiguration: value,
+        })
+      ).rejects.toThrow(`TrustedExecutionConfiguration must be an object, got ${named}`);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('TaskDefinition.update refuses a plain IsolationMode change; no mutating call', async () => {
+    const recorded = { ...TEC_TEMPLATE, Tags: [{ Key: 'k', Value: 'v1' }] };
+    await expect(
+      provider.update(
+        'L',
+        TD_ARN,
+        'AWS::ECS::TaskDefinition',
+        {
+          ...recorded,
+          TrustedExecutionConfiguration: {
+            ...TEC_TEMPLATE.TrustedExecutionConfiguration,
+            IsolationMode: 'ISOLATED_SANDBOX',
+          },
+        },
+        recorded
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mutatingSends()).toHaveLength(0);
+  });
+
+  it('TaskDefinition.update with an unchanged TrustedExecutionConfiguration tags in place only', async () => {
+    const recorded = {
+      ...TEC_TEMPLATE,
+      Tags: [
+        { Key: 'k', Value: 'v1' },
+        { Key: 'gone', Value: 'x' },
+      ],
+    };
+    await expect(
+      provider.update(
+        'L',
+        TD_ARN,
+        'AWS::ECS::TaskDefinition',
+        { ...TEC_TEMPLATE, Tags: [{ Key: 'k', Value: 'v2' }] },
+        recorded
+      )
+    ).resolves.toMatchObject({ physicalId: TD_ARN, wasReplaced: false });
+    const sent = mutatingSends();
+    expect(sent.length).toBeGreaterThan(0);
+    expect(
+      sent.every((cmd) => cmd instanceof TagResourceCommand || cmd instanceof UntagResourceCommand)
+    ).toBe(true);
+    expect(sent.some((cmd) => cmd instanceof TagResourceCommand)).toBe(true);
+    expect(sent.some((cmd) => cmd instanceof UntagResourceCommand)).toBe(true);
+  });
+
+  describe('TaskDefinition.update with a secret-derived AttestationPolicy', () => {
+    // The desired side arrives RESOLVED, so a masker comparison cannot tell an
+    // unchanged reference from a move to another one: both are refused.
+    const PLAIN_A = 'eyJwb2xpY3kiOiJhIn0=';
+    const PLAIN_B = 'eyJwb2xpY3kiOiJiIn0=';
+    const recorded = {
+      ...TEC_TEMPLATE,
+      TrustedExecutionConfiguration: {
+        IsolationMode: 'CONFIDENTIAL_SANDBOX',
+        AttestationPolicy: '{{resolve:secretsmanager:policy-a}}',
+      },
+      Tags: [{ Key: 'k', Value: 'v1' }],
+    };
+    const desired = (plain: string) => ({
+      ...TEC_TEMPLATE,
+      TrustedExecutionConfiguration: { IsolationMode: 'CONFIDENTIAL_SANDBOX', AttestationPolicy: plain },
+      Tags: [{ Key: 'k', Value: 'v2' }],
+    });
+    const maskSecrets = (t: string) => t.replaceAll(PLAIN_A, '***').replaceAll(PLAIN_B, '***');
+
+    it.each([
+      ['the same reference (a Tags-only change)', PLAIN_A],
+      ['a move to another reference', PLAIN_B],
+    ])('%s is refused with no mutating call', async (_label, plain) => {
+      await expect(
+        provider.update('L', TD_ARN, 'AWS::ECS::TaskDefinition', desired(plain), recorded, {
+          maskSecrets,
+        })
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mutatingSends()).toHaveLength(0);
+    });
+  });
+
+  it('TaskDefinition readCurrentState: a TrustedExecutionConfiguration AWS returns reads back in the template shape', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        status: 'ACTIVE',
+        memory: '512',
+        networkMode: 'awsvpc',
+        requiresCompatibilities: ['MANAGED_INSTANCES'],
+        containerDefinitions: [{ name: 'app', image: 'nginx:latest' }],
+        trustedExecutionConfiguration: {
+          isolationMode: 'CONFIDENTIAL_SANDBOX',
+          attestationPolicy: 'eyJwb2xpY3kiOiJ4In0=',
+        },
+      },
+      tags: [],
+    });
+
+    const result = (await provider.readCurrentState(
+      TD_ARN,
+      'L',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['TrustedExecutionConfiguration']).toEqual(
+      TEC_TEMPLATE.TrustedExecutionConfiguration
+    );
+  });
+
+  it('TaskDefinition readCurrentState: no TrustedExecutionConfiguration key when AWS returns none', async () => {
+    // Measured: a registration that omits the block reads back without it.
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        status: 'ACTIVE',
+        requiresCompatibilities: ['MANAGED_INSTANCES'],
+        containerDefinitions: [{ name: 'app', image: 'nginx:latest' }],
+      },
+      tags: [],
+    });
+
+    const result = (await provider.readCurrentState(
+      TD_ARN,
+      'L',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result).toBeDefined();
+    expect(Object.keys(result)).not.toContain('TrustedExecutionConfiguration');
+  });
+
   // ─── State == AWS produces zero mutating calls ─────────────────
 
   it('Cluster no-drift round-trip: zero mutating SDK calls', async () => {

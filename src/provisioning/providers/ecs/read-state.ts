@@ -394,6 +394,7 @@ export async function readCurrentStateTaskDefinition(
       ipcMode?: string;
       ephemeralStorage?: { sizeInGiB?: number };
       enableFaultInjection?: boolean;
+      trustedExecutionConfiguration?: { isolationMode?: string; attestationPolicy?: string };
       containerDefinitions?: ContainerDefinition[];
     };
     tags?: Array<{ key?: string; value?: string }>;
@@ -436,6 +437,18 @@ export async function readCurrentStateTaskDefinition(
   }
   if (td.enableFaultInjection !== undefined) {
     result['EnableFaultInjection'] = td.enableFaultInjection;
+  }
+  // go-to-k/cdkd#6301: AWS echoes the block only when the registration sent
+  // it (measured: an omitted one reads back absent, not as the `SHARED`
+  // default), so an undeclared configuration emits no key. A sent
+  // `attestationPolicy` is echoed verbatim (measured), though the CFn schema
+  // marks it write-only.
+  const tec = td.trustedExecutionConfiguration;
+  if (tec) {
+    const block: Record<string, unknown> = {};
+    if (tec.isolationMode !== undefined) block['IsolationMode'] = tec.isolationMode;
+    if (tec.attestationPolicy !== undefined) block['AttestationPolicy'] = tec.attestationPolicy;
+    result['TrustedExecutionConfiguration'] = block;
   }
   // Reverse-map the container definitions from SDK camelCase to CFn
   // PascalCase (issue #1169). The previous raw `td.containerDefinitions`

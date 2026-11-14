@@ -232,6 +232,8 @@ export class ECSProvider implements ResourceProvider {
         'EphemeralStorage',
         'EnableFaultInjection',
         'Tags',
+        // go-to-k/cdkd#6301 backfill.
+        'TrustedExecutionConfiguration',
       ]),
     ],
     [

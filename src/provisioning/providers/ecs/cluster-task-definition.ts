@@ -14,6 +14,8 @@ import {
   type Compatibility,
   type PidMode,
   type IpcMode,
+  type IsolationMode,
+  type TrustedExecutionConfiguration,
 } from '@aws-sdk/client-ecs';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -313,6 +315,35 @@ export async function getClusterAttribute(
 
 // ─── AWS::ECS::TaskDefinition ───────────────────────────────────
 
+/**
+ * CFn `TrustedExecutionConfiguration` -> the RegisterTaskDefinition member
+ * (go-to-k/cdkd#6301). Both members map explicitly: the SDK serializer drops
+ * a PascalCase key, and the value would silently never reach AWS. A declared
+ * non-object is refused before any call rather than dropped: a revision is
+ * immutable, so a drop would register one without the isolation the template
+ * asked for. It fires on a state replay too, as the schema types the property
+ * as an object and CloudFormation refuses the same template.
+ */
+function convertTrustedExecutionConfiguration(
+  config: unknown,
+  resourceType: string,
+  logicalId: string
+): TrustedExecutionConfiguration | undefined {
+  if (config === undefined || config === null) return undefined;
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    throw new ProvisioningError(
+      `ECS task definition ${logicalId}: TrustedExecutionConfiguration must be an object, got ${Array.isArray(config) ? 'an array' : typeof config}`,
+      resourceType,
+      logicalId
+    );
+  }
+  const block = config as Record<string, unknown>;
+  return {
+    isolationMode: block['IsolationMode'] as IsolationMode | undefined,
+    attestationPolicy: block['AttestationPolicy'] as string | undefined,
+  };
+}
+
 export async function createTaskDefinition(
   this: ECSProvider,
   logicalId: string,
@@ -323,6 +354,11 @@ export async function createTaskDefinition(
   log.debug(`Creating ECS task definition ${logicalId}`);
   // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
   const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+  const trustedExecutionConfiguration = convertTrustedExecutionConfiguration(
+    properties['TrustedExecutionConfiguration'],
+    resourceType,
+    logicalId
+  );
   const family =
     (properties['Family'] as string | undefined) ||
     generatedNameFor('AWS::ECS::TaskDefinition', logicalId);
@@ -371,6 +407,7 @@ export async function createTaskDefinition(
             properties['EphemeralStorage'] as Record<string, unknown> | undefined
           ),
           enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
+          trustedExecutionConfiguration,
         })
       );
     } catch (error) {
@@ -448,8 +485,19 @@ export async function updateTaskDefinition(
 ): Promise<ResourceUpdateResult> {
   // A key whose record keeps a secret-derived leaf as its `{{resolve:...}}`
   // reference while the desired side holds the resolved value has not moved
-  // (go-to-k/cdkd#4275); every key here but Tags is create-only, which the
-  // helper's engine gate requires.
+  // (go-to-k/cdkd#4275); the helper's engine gate admits only create-only
+  // keys. Every key here but Tags and TrustedExecutionConfiguration is
+  // create-only. That one is schema-MUTABLE, yet a revision is immutable on
+  // AWS, so a change to it is refused below like any other (go-to-k/cdkd#6301,
+  // measured: CloudFormation's handler answers an `add` patch with SUCCESS and
+  // leaves the live value unchanged, so this refusal is the deliberate
+  // difference — the --replace hint registers a revision that holds the value).
+  // Its gate cannot pass that key, and the masker comparison alone cannot
+  // either: it would also pass a template moving AttestationPolicy from one
+  // `{{resolve:...}}` reference to ANOTHER (the desired side arrives
+  // resolved, so the two references look alike), recording a policy AWS does
+  // not hold. A secret-derived AttestationPolicy therefore refuses a
+  // Tags-only update too — fail-closed, with the same --replace hint.
   let movedOutsideTags = false;
   for (const key of new Set([...Object.keys(properties), ...Object.keys(previousProperties)])) {
     if (key === 'Tags' || isDeepStrictEqual(properties[key], previousProperties[key])) continue;
