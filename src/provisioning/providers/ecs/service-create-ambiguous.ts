@@ -68,7 +68,10 @@ export interface AmbiguousCreateServiceAttempt {
  * which ECS may have handed back) is never this create's. Otherwise the
  * service found under the name is this create's when the pre-create lookup
  * MEASURED the name free, or when its `createdAt` falls inside the attempt's
- * skew-widened window.
+ * skew-widened window. Unlike the report-only orphan lookups of
+ * `orphan-report.ts`, the name is not the evidence here: a service name is
+ * unique per cluster, and either proof ties the service to this create's
+ * attempt; the measured-free one is what the steady-state cleanup deletes on.
  *
  * When the lookup cannot answer, a `CreateService` that answered 2xx with the
  * name measured free has PROVABLY made the service, but its ARN is unknown:
