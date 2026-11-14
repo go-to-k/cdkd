@@ -295,6 +295,18 @@ run_and_curl_task "${TASK_PATH_JOIN}" "${HOST_PORT_JOIN}" "Fn::Join"
 # the token in the operator's keychain, outliving this run. One placeholder
 # `auths` entry (an unresolvable `.invalid` name) keeps it in this file, which
 # cleanup deletes; the check after the run asserts that is where it landed.
+#
+# That fresh config also carries no `currentContext`, so a docker call made
+# under it talks to the `default` context (`/var/run/docker.sock`) while every
+# other call talks to the operator's current one. On a host with no default
+# socket (Docker Desktop's `~/.docker/run/docker.sock`, colima) the arm reds
+# with "docker daemon is not reachable". Pin the daemon once, from the current
+# context, unless the operator already did -- local-start-service does the same.
+if [[ -z "${DOCKER_HOST:-}" ]]; then
+  DOCKER_HOST="$(docker context inspect -f '{{.Endpoints.docker.Host}}')"
+  export DOCKER_HOST
+  echo "[verify] pinned DOCKER_HOST=${DOCKER_HOST} from the current docker context"
+fi
 run_pull_and_curl_task() {
   local task_path="$1"
   local host_port="$2"
