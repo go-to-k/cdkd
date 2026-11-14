@@ -135,7 +135,9 @@ stack.
 A `cdkd local` command exits `130` when you interrupt it with {kbd:ctrl+c} and
 `143` when it is stopped by `SIGTERM`. Both run the same cleanup first.
 
-- `local start-api` exits `0` on `SIGTERM` instead.
+- `local start-api` follows the same rule: `143` on `SIGTERM`. It exited `0`
+  there before; a script that stops it with `SIGTERM` and treats `0` as success
+  must now accept `143`.
 - `cdkd local run-task` exits with the exit code of its essential container.
   A container that exits `70` therefore yields `70`, without the
   internal-error message.

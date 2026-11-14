@@ -73,6 +73,7 @@ import {
   warnUnsupportedRoutes,
   warnSsrfRiskyIntegrations,
 } from './servers.js';
+import { onShutdownSignals, shutdownSignalExitCode } from '../../../utils/shutdown-signals.js';
 import { reloadAllServers } from './reload.js';
 import { loadStateForRoutedStacks, type StackStateBundle } from './state.js';
 import { parseDebugPort, parsePerLambdaConcurrency } from './flags.js';
@@ -929,11 +930,10 @@ export async function localStartApiCommand(
     process.exit(firstExitCode);
   };
 
-  process.on('SIGINT', () => {
-    void shutdown('SIGINT', 130);
-  });
-  process.on('SIGTERM', () => {
-    void shutdown('SIGTERM', 0);
+  // SIGTERM exits 143 (128 + 15) after the same cleanup SIGINT runs, as every
+  // other `cdkd local` command does (go-to-k/cdkd#6291); it used to exit 0.
+  onShutdownSignals((signal) => {
+    void shutdown(signal, shutdownSignalExitCode(signal));
   });
   installFatalShutdownHandlers(logger, shutdown);
 
