@@ -356,7 +356,9 @@ the flags. On this command they resolve the following:
 
 Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see
-below).
+below). The secret-attribute check reads the consumer stack's own state only:
+a value another stack exports, read through `Fn::ImportValue` or
+`Fn::GetStackOutput`, goes on the command line as exported.
 
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.

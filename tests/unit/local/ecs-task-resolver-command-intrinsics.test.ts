@@ -183,6 +183,11 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       ['a credential-named attribute', { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }, 'Key.SecretAccessKey'],
       ['a dotted-string Fn::GetAtt', { 'Fn::GetAtt': 'Key.SecretAccessKey' }, 'Key.SecretAccessKey'],
       ['a secret-valued attribute inside Fn::Sub', { 'Fn::Sub': 'x-api-key: ${ApiKey.ApiKey}' }, 'ApiKey.ApiKey'],
+      [
+        'a secret attribute inside an array-form Fn::Sub (CDK emits it with variables)',
+        { 'Fn::Sub': ['${Key.SecretAccessKey}-${Suffix}', { Suffix: 'x' }] },
+        'Key.SecretAccessKey',
+      ],
       ['an attribute recorded as the mask', { 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
     ])('refuses %s', (_label, element, named) => {
       const task = resolve(['run', element]);
@@ -191,6 +196,14 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
         new RegExp(`Command\\[1\\]: reads the secret attribute ${named.replace('.', '\\.')}`)
       );
+    });
+
+    it('does not treat an escaped ${!Id.Attr} literal as a secret read', () => {
+      // cdk-local's engine refuses the escape on its own; the secret guard
+      // must not be what fires.
+      const task = resolve(['echo', { 'Fn::Sub': 'literal ${!Key.SecretAccessKey}' }]);
+      const [u] = task.containers[0]!.unresolvedCommandElements!;
+      expect(u!.reason).not.toMatch(/reads the secret attribute/);
     });
 
     it('still resolves a non-secret attribute of the same custom resource', () => {
