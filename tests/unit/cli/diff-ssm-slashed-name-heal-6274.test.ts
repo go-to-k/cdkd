@@ -357,4 +357,60 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('names, and does not update, a row of an unchecked parent whose record holds a masked value (go-to-k/cdkd#6282)', async () => {
+    infos.length = 0;
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-6282-masked-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({ Resources: { Param: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'v' } } } })
+      );
+      const parentTemplate = {
+        Resources: {
+          Child: { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+        },
+      } as unknown as CloudFormationTemplate;
+      const record = (stackName: string, resources: Record<string, ResourceState>): StackState => ({
+        stackName,
+        region: 'us-east-1',
+        version: 16,
+        lastModified: 0,
+        outputs: {},
+        resources,
+      });
+      const states: Record<string, StackState> = {
+        S: record('S', {
+          Child: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/x/1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: { Parameters: { In: '***' } },
+            attributes: {},
+            dependencies: [],
+          },
+        }),
+        'S~Child': record('S~Child', {
+          Param: { physicalId: '/S-Child-Param', resourceType: 'AWS::SSM::Parameter', properties: { Type: 'String', Value: 'v' } },
+        }),
+      };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      expect(tree.changes.get('Child')?.nestedChildHeal).toBeUndefined();
+      expect(infos.some((m) => m.includes('Nested stack Child') && m.includes('stores masked'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
