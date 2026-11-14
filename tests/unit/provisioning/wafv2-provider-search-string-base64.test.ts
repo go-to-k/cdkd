@@ -451,7 +451,8 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         baseProperties([])
       );
 
-      const updateCall = mockSend.mock.calls.at(-1)!;
+      // [1]: UpdateWebACL — a Rules change re-reads the web ACL after it (#6242).
+      const updateCall = mockSend.mock.calls[1]!;
       const rules = updateCall[0].input.Rules as Record<string, unknown>[];
       const statement = rules[0]!['Statement'] as Record<string, unknown>;
       const reference = statement['IPSetReferenceStatement'] as Record<string, unknown>;
@@ -487,7 +488,8 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         Rules: { Ref: 'SomeUnresolvedParameter' },
       }, baseProperties([]));
 
-      const updateCall = mockSend.mock.calls.at(-1)!;
+      // [1]: UpdateWebACL — a Rules change re-reads the web ACL after it (#6242).
+      const updateCall = mockSend.mock.calls[1]!;
       expect(updateCall[0].input.Rules).toEqual({ Ref: 'SomeUnresolvedParameter' });
     });
 

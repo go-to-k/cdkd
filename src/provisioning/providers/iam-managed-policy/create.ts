@@ -15,7 +15,12 @@ import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { iamEntityLeftByThisCreate } from '../iam-replay-adopt.js';
-import { managedPolicyAttributes, principalsOf, policyIdentityToken } from './shared.js';
+import {
+  managedPolicyAttributes,
+  policyAfterWiring,
+  principalsOf,
+  policyIdentityToken,
+} from './shared.js';
 
 export async function create(
   this: IAMManagedPolicyProvider,
@@ -197,9 +202,27 @@ export async function create(
       throw markAuxiliaryFailure(innerError, logicalId);
     }
 
+    // go-to-k/cdkd#6242: `AttachmentCount` is recorded as of the END of this
+    // create, so a policy this create attached is re-read; one attached to
+    // nothing keeps the read-back already in hand (no extra call).
+    const attachedAny = [
+      principals.lists.Groups,
+      principals.lists.Roles,
+      principals.lists.Users,
+    ].some((names) => (names?.length ?? 0) > 0);
+    const readBack = attachedAny
+      ? await policyAfterWiring(
+          async (arn) =>
+            (await this.iamClient.send(new GetPolicyCommand({ PolicyArn: arn }))).Policy,
+          policyArn,
+          policy,
+          ['AttachmentCount'],
+          log.debug
+        )
+      : policy;
     return {
       physicalId: policyArn,
-      attributes: managedPolicyAttributes(policyArn, policy),
+      attributes: managedPolicyAttributes(policyArn, readBack),
     };
   } catch (error) {
     // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner

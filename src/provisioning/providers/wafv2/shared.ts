@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { Rule, ApplicationConfig } from '@aws-sdk/client-wafv2';
+import type { Rule, ApplicationConfig, WebACL } from '@aws-sdk/client-wafv2';
+import { definedAttributes } from '../../attribute-map.js';
 
 /**
  * Translate the empty-string placeholder `readCurrentState` emits for an
@@ -432,5 +433,29 @@ export function toCfnRules(rules: unknown, baselineRules: unknown): unknown[] {
         isPlainObject(baseRule) ? baseRule['Statement'] : undefined
       ),
     };
+  });
+}
+
+/**
+ * The `Fn::GetAtt` attributes every WebACL path records (create, update,
+ * import), from ONE `GetWebACL` read-back: `Arn` / `Id`, `LabelNamespace`
+ * (issue #3627) and, go-to-k/cdkd#6242, `Capacity` — the web ACL's WCUs, a
+ * NUMBER as CloudFormation passes it (`0` for a web ACL with no rules,
+ * measured on real CloudFormation 2026-11-14). A member the read did not
+ * carry (or a failed read: `webAcl` undefined) stays ABSENT.
+ */
+export function webAclAttributes(
+  arn: string,
+  id: string | undefined,
+  webAcl: Pick<WebACL, 'LabelNamespace' | 'Capacity'> | undefined
+): Record<string, unknown> {
+  return definedAttributes({
+    Arn: arn,
+    Id: id,
+    LabelNamespace: webAcl?.LabelNamespace,
+    Capacity:
+      typeof webAcl?.Capacity === 'number' && Number.isFinite(webAcl.Capacity)
+        ? webAcl.Capacity
+        : undefined,
   });
 }

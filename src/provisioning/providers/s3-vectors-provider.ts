@@ -13,6 +13,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -28,6 +29,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { isoTimestampAttribute } from '../attribute-timestamp.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -46,6 +48,23 @@ import {
   markRedactedCause,
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
+
+/**
+ * The `Fn::GetAtt` attributes a vector bucket records, on create and import:
+ * `VectorBucketArn` and, go-to-k/cdkd#6242, `CreationTime` — AWS's timestamp
+ * as CloudFormation passes it (`2026-11-14T07:49:04Z`, whole seconds, measured
+ * on real CloudFormation 2026-11-14; the API answers epoch seconds). A value
+ * AWS did not return stays ABSENT.
+ */
+export function vectorBucketAttributes(
+  vectorBucketArn: string | undefined,
+  creationTime: Date | undefined
+): Record<string, unknown> {
+  return definedAttributes({
+    VectorBucketArn: vectorBucketArn,
+    CreationTime: isoTimestampAttribute(creationTime),
+  });
+}
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -401,11 +420,25 @@ export class S3VectorsProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created S3 VectorBucket ${logicalId}: ${vectorBucketName}`);
 
+      // go-to-k/cdkd#6242: `CreateVectorBucket` answers only the ARN, so the
+      // bucket is read back once for its `CreationTime`. The bucket exists by
+      // now: a failed read omits the attribute rather than failing the create
+      // (the resolver's heal re-reads it on a later deploy). `update()`
+      // returns no attributes, so the record keeps this value.
+      let creationTime: Date | undefined;
+      try {
+        creationTime = (
+          await this.getClient().send(new GetVectorBucketCommand({ vectorBucketName }))
+        ).vectorBucket?.creationTime;
+      } catch (readError) {
+        this.logger.debug(
+          safeMsg`Could not read back S3 VectorBucket ${logicalId} after create (CreationTime omitted): ${describeAwsFailure(readError).detail}`
+        );
+      }
+
       return {
         physicalId: vectorBucketName,
-        attributes: definedAttributes({
-          VectorBucketArn: result.vectorBucketArn,
-        }),
+        attributes: vectorBucketAttributes(result.vectorBucketArn, creationTime),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -633,7 +666,10 @@ export class S3VectorsProvider implements ResourceProvider {
         // it the resolver's shape guard refused `VectorBucketArn`.
         return {
           physicalId: name,
-          attributes: definedAttributes({ VectorBucketArn: resp.vectorBucket?.vectorBucketArn }),
+          attributes: vectorBucketAttributes(
+            resp.vectorBucket?.vectorBucketArn,
+            resp.vectorBucket?.creationTime
+          ),
         };
       } catch (err) {
         if (this.isNotFoundError(err)) return null;
