@@ -31,6 +31,20 @@ export function integSecretPlaintext(): string {
   return `itest-2056-${process.env['CDKD_INTEG_RUN_ID'] ?? 'local'}`;
 }
 
+/**
+ * Issue #6307: the SSM parameter the producer creates and the consumer reads
+ * through `ssm.StringParameter.valueForStringParameter`, which synthesizes an
+ * SSM-typed template parameter (`AWS::SSM::Parameter::Value<String>`) and a
+ * `Ref` to it. A literal name, so the consumer's template carries it as the
+ * parameter's `Default`.
+ */
+export const SSM_PARAMETER_NAME = '/cdkd-local-invoke-from-state-6307/param';
+
+/** The parameter's value: unique per run, like {@link integSecretPlaintext}. */
+export function integSsmParameterValue(): string {
+  return `itest-6307-${process.env['CDKD_INTEG_RUN_ID'] ?? 'local'}`;
+}
+
 /** The dynamic reference both stacks spell: the producer output and the same-stack env value. */
 export function secretReference(): string {
   return `{{resolve:secretsmanager:${SECRET_NAME}:SecretString:${SECRET_JSON_FIELD}::}}`;

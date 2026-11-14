@@ -9134,6 +9134,7 @@
         "list-parameters",
         "local-engine-role-identity",
         "local-invoke-from-cfn-stack-multi-stack",
+        "local-invoke-from-state",
         "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
         "macro-expansion",
@@ -9408,6 +9409,10 @@
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
+        ],
+        "local-invoke-from-state": [
+          "l2",
+          "literal"
         ],
         "local-start-microvm-from-state": [
           "l2",

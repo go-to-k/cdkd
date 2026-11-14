@@ -478,5 +478,10 @@ export function buildSubstitutionContextFromImageContext(
   if (context.pseudoParameters) {
     subContext.pseudoParameters = { ...context.pseudoParameters };
   }
+  // SSM-typed template parameters (go-to-k/cdkd#6307).
+  if (context.stateParameters) subContext.parameters = context.stateParameters;
+  if (context.stateSensitiveParameters?.length) {
+    subContext.sensitiveParameters = new Set(context.stateSensitiveParameters);
+  }
   return subContext;
 }

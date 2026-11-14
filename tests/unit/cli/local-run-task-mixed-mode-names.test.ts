@@ -184,6 +184,40 @@ describe('local run-task names per container in mixed mode', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it("SSM-typed template parameters are re-read for the container's own routing, never the base's (go-to-k/cdkd#6307)", async () => {
+    setActiveWorkloadAwsWiring(MIXED);
+    setAwsEmulatorServiceRouting({
+      realServices: ['SSM'],
+      override: { endpoint: 'https://127.0.0.1:9381' },
+      envOverrides: { web: { AWS_ENDPOINT_URL_SSM: 'real-aws' } },
+    });
+    const load = vi.fn(async () => ({ region: 'us-east-1', outputs: {}, resources: {} }));
+    // web's provider (built for web's routing) reads the REAL parameter value.
+    const resolveTemplateSsmParameters = vi.fn(async () => ({
+      values: { P: 'real-value' },
+      secureStringLogicalIds: [],
+    }));
+    mocks.createLocalStateProvider.mockReturnValue({ load, resolveTemplateSsmParameters, dispose: vi.fn() });
+    mocks.resolveEcsTaskTarget.mockReturnValue(task('Real-Table'));
+    const template = { Parameters: { P: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/p' } } };
+
+    await applyPerContainerNames(
+      task('Emu-Table') as never,
+      'Svc/Task',
+      [],
+      { stackName: 'Svc', region: 'us-east-1', template } as never,
+      {} as never,
+      // The base context's values were read for the shared routing (the emulator), one a SecureString.
+      { ...BASE_CONTEXT, stateParameters: { P: 'emulator-value' }, stateSensitiveParameters: ['P'] } as never
+    );
+
+    expect(resolveTemplateSsmParameters).toHaveBeenCalledWith(template);
+    const ctx = mocks.resolveEcsTaskTarget.mock.calls[0]![2];
+    expect(ctx.stateParameters).toEqual({ P: 'real-value' });
+    // The base's SecureString mark does not leak onto web's plain value.
+    expect(ctx.stateSensitiveParameters).toBeUndefined();
+  });
+
   it('nothing to do outside mixed mode, when every container shares the base routing, or with no state context', async () => {
     const base = task('Emu-Table');
     await run(base, BASE_CONTEXT);

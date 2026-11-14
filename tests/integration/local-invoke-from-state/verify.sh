@@ -35,6 +35,11 @@
 #   4i (issue #2056): the same invoke under --role-arn <the step-4e role>, which
 #      cannot read the secret (a negative control proves the denial first): both
 #      values still resolve, as the caller.
+#   3/4/4e (issue #6307): EchoBucketHandler's PARAM_VALUE is
+#      `ssm.StringParameter.valueForStringParameter` of the producer's
+#      parameter, a `Ref` to an SSM-typed template parameter. Dropped without
+#      --from-state; resolved under it (step 4), and under --role-arn too
+#      (step 4e), where the read runs as the caller: the role has no SSM grant.
 #   5. cdkd destroy --force (consumer, then producer; the secret is force-deleted)
 #
 # Run via `/run-integ local-invoke-from-state` (recommended) or directly:
@@ -58,6 +63,9 @@ CDKD_INTEG_RUN_ID="${CDKD_INTEG_RUN_ID:-$(date +%s)-$$}"
 export CDKD_INTEG_RUN_ID
 SECRET_PLAINTEXT="itest-2056-${CDKD_INTEG_RUN_ID}"
 EXPORT_NAME="CdkdLocalInvokeFromStateSecretPassword"
+# Issue #6307's SSM parameter; the name and value match lib/shared.ts.
+SSM_PARAMETER_NAME="/cdkd-local-invoke-from-state-6307/param"
+SSM_PARAMETER_VALUE="itest-6307-${CDKD_INTEG_RUN_ID}"
 SECRET_ERR=""
 OVERRIDE_FILE=""
 IMAGE="public.ecr.aws/lambda/nodejs:20"
@@ -143,6 +151,7 @@ cleanup() {
     # Belt and braces for the #2056 secret: no 7-day recovery window left behind.
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
+    aws ssm delete-parameter --name "${SSM_PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   rm -f "${SECRET_ERR:-}" "${OVERRIDE_FILE:-}"
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
@@ -220,6 +229,10 @@ grep -q '"accountTag":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
   exit 1
 }
+grep -q '"paramValue":"unset"' <<<"${RESULT_PR1}" || {
+  echo "[verify] FAIL: expected PARAM_VALUE to be dropped without --from-state, got: ${RESULT_PR1}"
+  exit 1
+}
 
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
 RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
@@ -234,6 +247,11 @@ grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR2}" || {
 }
 grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
+  exit 1
+}
+# Issue #6307: the `Ref` to the SSM-typed parameter, read from SSM.
+grep -qF "\"paramValue\":\"${SSM_PARAMETER_VALUE}\"" <<<"${RESULT_PR2}" || {
+  echo "[verify] FAIL: expected PARAM_VALUE=${SSM_PARAMETER_VALUE} under --from-state (#6307), got: ${RESULT_PR2}"
   exit 1
 }
 
@@ -328,6 +346,12 @@ grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_ROLE}" || {
 }
 grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state --role-arn, got: ${RESULT_ROLE}"
+  exit 1
+}
+# Issue #6307: the SSM read runs as the CALLER, never the role, whose policy
+# grants nothing on SSM (lib/local-invoke-from-state-stack.ts).
+grep -qF "\"paramValue\":\"${SSM_PARAMETER_VALUE}\"" <<<"${RESULT_ROLE}" || {
+  echo "[verify] FAIL: expected PARAM_VALUE=${SSM_PARAMETER_VALUE} under --from-state --role-arn (#6307), got: ${RESULT_ROLE}"
   exit 1
 }
 
@@ -518,6 +542,10 @@ s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "local-invoke-from-state consumer state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" "local-invoke-from-state producer state teardown"
 
+# Issue #6307's parameter goes with the producer.
+assert_gone "SSM parameter ${SSM_PARAMETER_NAME} survived destroy" \
+  aws ssm get-parameter --name "${SSM_PARAMETER_NAME}" --region "${REGION}"
+
 # The step-4e role can read the state bucket and is assumable account-wide, so
 # a leaked copy is a standing grant: assert it is gone rather than trusting rc.
 assert_gone "LocalReadRole ${READ_ROLE_NAME} survived destroy" \
@@ -527,4 +555,5 @@ echo ""
 echo "[verify] All checks passed: --from-state substituted BUCKET_NAME with the deployed bucket name,"
 echo "[verify] an upper-cased --stack-region still read the ${REGION} state record (#1836),"
 echo "[verify] --from-state --role-arn resolved \${AWS::AccountId} as the state reader (#3230),"
-echo "[verify] and a secret-bearing cross-stack output reached the container resolved, off the argv (#2056)."
+echo "[verify] a secret-bearing cross-stack output reached the container resolved, off the argv (#2056),"
+echo "[verify] and a Ref to an SSM-typed parameter resolved from SSM, as the caller (#6307)."

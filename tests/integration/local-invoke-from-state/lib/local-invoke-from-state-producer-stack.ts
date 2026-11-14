@@ -1,11 +1,14 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import {
   EXPORT_NAME,
   SECRET_JSON_FIELD,
   SECRET_NAME,
+  SSM_PARAMETER_NAME,
   integSecretPlaintext,
+  integSsmParameterValue,
   secretReference,
 } from './shared.ts';
 
@@ -29,6 +32,14 @@ export class LocalInvokeFromStateProducerStack extends cdk.Stack {
         JSON.stringify({ [SECRET_JSON_FIELD]: integSecretPlaintext() })
       ),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Issue #6307: the parameter the consumer's EchoBucketHandler reads through
+    // `valueForStringParameter`. Here, not in the consumer, so it exists before
+    // the consumer's deploy resolves it.
+    new ssm.StringParameter(this, 'FixtureParameter', {
+      parameterName: SSM_PARAMETER_NAME,
+      stringValue: integSsmParameterValue(),
     });
 
     // Spelled by name, the same shape `cross-stack-secret-import` exports.

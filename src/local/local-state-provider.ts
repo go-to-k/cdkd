@@ -39,6 +39,7 @@
  */
 
 import type { ResourceState } from '../types/state.js';
+import type { collectSsmParameterRefs, ResolvedSsmParameters } from 'cdk-local';
 import type { CrossStackResolver } from './state-resolver.js';
 
 /**
@@ -119,6 +120,15 @@ export interface LocalStateProvider {
    * case.
    */
   buildCrossStackResolver(consumerRegion: string): Promise<CrossStackResolver | undefined>;
+  /**
+   * The values of the template's SSM-typed parameters
+   * (`AWS::SSM::Parameter::Value<...>`), by logical id (go-to-k/cdkd#6307).
+   * Optional, as on cdk-local's interface: a provider that cannot read SSM
+   * leaves a `Ref` to one unresolved.
+   */
+  resolveTemplateSsmParameters?(
+    template: NonNullable<Parameters<typeof collectSsmParameterRefs>[0]>
+  ): Promise<ResolvedSsmParameters>;
   /**
    * Release any AWS clients the provider owns. Always called by the
    * CLI layer in the outer `finally`. Idempotent.

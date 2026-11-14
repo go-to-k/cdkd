@@ -115,12 +115,25 @@ Both flags are off by default, and you cannot combine them.
 | `AWS::AccountId`, `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix` | STS `GetCallerIdentity` and the resolved region | Same |
 | `Fn::ImportValue` | The producing stack's state, same account and region | `ListExports` |
 | `Fn::GetStackOutput` | The named stack's outputs, same account | Not resolved |
+| `Ref` to an SSM-typed parameter | SSM `GetParameters` | Same |
 
 `Fn::GetAtt` is where `--from-cfn-stack` falls short. A CloudFormation
 resource listing carries physical IDs but no attribute values, so cdkd can
 resolve an attribute only when the command has another way to read it back.
 Each command page says which attributes it recovers. The same limit applies to
 an `Fn::GetAtt` inside an `Fn::Sub` or `Fn::Join`.
+
+An SSM-typed parameter is a template parameter of type
+`AWS::SSM::Parameter::Value<String>` or
+`AWS::SSM::Parameter::Value<List<String>>`, which
+`ssm.StringParameter.valueForStringParameter` synthesizes. cdkd state records
+no parameter values, so both flags read the parameter named by its `Default`
+from SSM Parameter Store, in the stack's region, so the value is the current
+one, not necessarily the one the last deploy read. Only parameters that `Resources`, `Outputs` or `Conditions`
+reference are read, so CDK's `BootstrapVersion` parameter is skipped. The read
+uses your own credentials, never the `--role-arn` role, as a dynamic reference
+does. Under `--aws-emulator` it goes to the emulator, and in mixed mode it goes
+to real AWS only when the workload excepts `SSM`.
 
 ### When a value cannot be resolved
 
@@ -131,7 +144,8 @@ continues. cdkd never substitutes a guess. This happens for:
 - a missing state record,
 - an attribute that was not recorded,
 - an intrinsic the flag does not support,
-- a failed CloudFormation call.
+- a failed CloudFormation call,
+- an SSM-typed parameter that SSM does not return.
 
 To supply a dropped variable yourself, add it to an `--env-vars` file.
 

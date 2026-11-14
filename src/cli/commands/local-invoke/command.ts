@@ -68,6 +68,7 @@ import {
   withoutKeys,
 } from 'cdk-local/internal';
 import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-reference.js';
+import { templateSsmParameters } from '../../../local/state-ssm-parameters.js';
 import { applyLambdaCredentialEnv } from './credentials.js';
 import { readEvent } from './event.js';
 import { maybeSuggestAssumeRole, resolveBareAssumeRoleFromState } from './execution-role.js';
@@ -731,6 +732,11 @@ async function resolveInvokeTemplateEnvWith(
         if (envHasIntrinsicValue(templateEnv)) {
           const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
           if (pseudo) subContext.pseudoParameters = pseudo;
+          // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307).
+          Object.assign(
+            subContext,
+            await templateSsmParameters(stateProvider, lambda.stack.template)
+          );
         }
         // Issue #454 — build the cross-stack resolver only when the env
         // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.

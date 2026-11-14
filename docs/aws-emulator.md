@@ -301,6 +301,7 @@ exceptions too:
 | --- | --- |
 | `{{resolve:secretsmanager:...}}` | `SECRETS_MANAGER` |
 | `{{resolve:ssm:...}}`, `{{resolve:ssm-secure:...}}` | `SSM` |
+| An SSM-typed template parameter (`valueForStringParameter`) under `--from-state` / `--from-cfn-stack` | `SSM` |
 | ECS task `Secrets` on `local run-task` | The service in the secret's ARN |
 | The ECR login and pull of a deployed image | `ECR` |
 | An AgentCore `fromS3` code bundle | `S3` |

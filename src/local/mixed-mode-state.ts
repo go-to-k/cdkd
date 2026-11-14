@@ -134,6 +134,14 @@ export function createMixedModeFromStateProvider(
     // Cross-stack references resolve from the emulator (cdk-local's merge
     // uses the emulator side only), so the real side builds none.
     buildCrossStackResolver: () => Promise.resolve(undefined),
+    // SSM-typed template parameters (go-to-k/cdkd#6307). cdk-local's merge
+    // takes this method from the REAL side, but the read is not a real-AWS
+    // one: it is the emulator side's, outside `runWithRealAws`, so it goes to
+    // real AWS only when a `"real-aws"` exception names SSM for this workload
+    // (`resolveStateTemplateSsmParameters`) — not for one naming any other
+    // service, which is all that put this provider in mixed mode.
+    resolveTemplateSsmParameters: (template) =>
+      emulatorInner.resolveTemplateSsmParameters(template),
     getLastLoadError: () => lastLoadError,
     dispose: () => realInner.dispose(),
   };

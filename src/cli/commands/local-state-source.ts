@@ -116,7 +116,11 @@ export interface LocalStateSourceOptions {
  * cdk-local can treat it identically to its built-in `--from-cfn-stack`.
  */
 const fromStateFactory: LocalStateProviderFactory = (options, behavior) => {
-  const providerOpts = s3ProviderOptions(options);
+  const providerOpts = {
+    ...s3ProviderOptions(options),
+    // Routes the SSM parameter read by this workload's exceptions (#6307).
+    ...(behavior.workload !== undefined && { workload: behavior.workload }),
+  };
   // AWS Emulator mixed mode (go-to-k/cdkd#6150): `--aws-emulator` makes the
   // emulator the target, so names resolve from the state `cdkd deploy
   // --aws-emulator` wrote into it; a `"real-aws"` exception's resources from

@@ -5,7 +5,8 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import { EXPORT_NAME, secretReference } from './shared.ts';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { EXPORT_NAME, SSM_PARAMETER_NAME, secretReference } from './shared.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -51,6 +52,9 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
         // `${AWS::AccountId}` inside a Fn::Join, substituted only under
         // --from-state from the account the state was read in.
         ACCOUNT_TAG: cdk.Fn.join('', ['acct-', cdk.Aws.ACCOUNT_ID]),
+        // Issue #6307: a `Ref` to an SSM-typed template parameter. cdkd state
+        // records no parameter values, so --from-state reads SSM for it.
+        PARAM_VALUE: ssm.StringParameter.valueForStringParameter(this, SSM_PARAMETER_NAME),
       },
       timeout: cdk.Duration.seconds(10),
     });
