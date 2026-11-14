@@ -1,5 +1,6 @@
 /** The failed-op replay, split out of `rollback-executor.ts` (go-to-k/cdkd#5835). */
 
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   journaledOrphanKeepReason,
   nonEmptyOrUndefined,
@@ -264,7 +265,7 @@ export async function replayFailedOperationsUnbound(
               `Type change (${refusalResourceType(op.previousState?.resourceType)} -> ` +
               `${refusalResourceType(op.resourceType)}), ` +
               `which is a replacement, and its remote state is unknown. Inspect it with ` +
-              `\`cdkd drift\` and re-converge with \`cdkd deploy\`. Skipping.`
+              `${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and re-converge with ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')}. Skipping.`
           );
           recordRollbackSkip(
             skipScope,
@@ -413,7 +414,7 @@ export async function replayFailedOperationsUnbound(
               // (`--drop-failed` drops one that can never be read).
               throw new Error(
                 `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for ` +
-                  `a re-run; \`cdkd rollback --drop-failed\` removes only that record and leaves the ` +
+                  `a re-run; ${proseQuoted(cdkdRemedy('cdkd rollback', '--drop-failed'), '`')} removes only that record and leaves the ` +
                   `resource in AWS`
               );
             }
@@ -620,10 +621,9 @@ export async function replayFailedOperationsUnbound(
               // half-applied resource shows no change and is never
               // re-converged. `cdkd drift` is the command that reads AWS.
               remedy:
-                'Inspect it with `cdkd drift` (this op died mid-flight, so its remote state is ' +
-                'unknown) and re-converge with `cdkd drift --revert` or `cdkd deploy`.',
-              retry:
-                're-running `cdkd rollback --revert-failed` retries this op (a plain `cdkd rollback` replays only the COMPLETED ops and then pops the whole segment, discarding this record)',
+                `Inspect it with ${proseQuoted(cdkdRemedy('cdkd drift'), '`')} (this op died mid-flight, so its remote state is ` +
+                `unknown) and re-converge with ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'), '`')} or ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')}.`,
+              retry: `re-running ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')} retries this op (a plain \`cdkd rollback\` replays only the COMPLETED ops and then pops the whole segment, discarding this record)`,
             })
           ) {
             recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_CAUSE);

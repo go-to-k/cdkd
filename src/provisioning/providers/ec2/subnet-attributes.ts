@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { Subnet } from '@aws-sdk/client-ec2';
 import {
   AssociateSubnetCidrBlockCommand,
@@ -570,7 +571,7 @@ export async function getSubnetAttribute(
       .map((a) => a.Ipv6CidrBlock as string);
     if (blocks.length > 0) return blocks;
     if (associations.some((a) => a.Ipv6CidrBlockState?.State === 'associating')) {
-      throw new Error(SUBNET_IPV6_STILL_ASSOCIATING);
+      throw new Error(subnetIpv6StillAssociating());
     }
     return [];
   }
@@ -583,8 +584,9 @@ export async function getSubnetAttribute(
  * Why `Ipv6CidrBlocks` has no value yet. Names no id: it reaches the
  * rewriter's unresolvable report, which names the reference itself.
  */
-const SUBNET_IPV6_STILL_ASSOCIATING =
-  "the subnet's IPv6 CIDR block is still associating; run cdkd orphan again once it is associated";
+function subnetIpv6StillAssociating(): string {
+  return `the subnet's IPv6 CIDR block is still associating; run ${cdkdRemedy('cdkd orphan')} again once it is associated`;
+}
 
 /** A value the resolver would serve; what it refuses reads as absent. */
 function present(value: unknown): unknown {

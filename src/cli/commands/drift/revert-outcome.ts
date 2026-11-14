@@ -5,6 +5,7 @@
 import type { ConsoleLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { refusedBaselineRemedy } from '../refused-baseline-remedy.js';
 import {
   type RecordedSecretValues,
@@ -306,7 +307,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
           `baseline holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, ` +
           `Ref), which cdkd cannot resolve outside a deploy; writing it would set the ` +
           `live property to the raw intrinsic object instead of its value. Run ` +
-          `'cdkd deploy' for this stack — the deploy resolves the template and records ` +
+          `${proseQuoted(cdkdRemedy('cdkd deploy'))} for this stack — the deploy resolves the template and records ` +
           `a resolvable baseline — then re-run the revert if drift remains.`
       );
       return;

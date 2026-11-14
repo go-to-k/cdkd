@@ -51,7 +51,7 @@ cdkd destroy MyStack
   in that window quits at once, as a second one does.
 - **A forced quit between two stacks.** When the signal arrives between two
   stacks, or before a stack's teardown started, cdkd cannot know which lock to
-  name. It prints `cdkd force-unlock <stack-name>` for you to fill in.
+  name. It prints `cdkd force-unlock '<stack-name>'` for you to fill in.
 - **A signal after the last stack was destroyed.** Nothing is left to re-run,
   so that run exits `0`.
 

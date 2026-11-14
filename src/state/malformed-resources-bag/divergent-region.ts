@@ -14,7 +14,7 @@ import type { StackState } from '../../types/state.js';
 import { safeIdentifier } from './core.js';
 import {
   dropRecordTemplate,
-  WITHHELD_LISTING_POINTER,
+  withheldListingPointerProse,
   withheldListingPointer,
   withheldAccountClause,
   destroyAccountClause,
@@ -170,7 +170,7 @@ export function divergentRecordRegionRefusalMessage(
       `shows is a sanitized form, and another record may render identically — so this message ` +
       `names no target and offers no command against one. List the records with ` +
       (listing.line === undefined
-        ? `${WITHHELD_LISTING_POINTER}. Inspect it with: ${inspectCommand(undefined, undefined)}`
+        ? `${withheldListingPointerProse()}. Inspect it with: ${inspectCommand(undefined, undefined)}`
         : `${listing.pointer}.` +
           destroyAccountClause(recovery) +
           `\n${listing.line}\nInspect it with: ${inspectCommand(undefined, undefined, recovery)}`);

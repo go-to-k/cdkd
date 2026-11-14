@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   S3Client,
   HeadBucketCommand,
@@ -703,7 +703,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': ${stateKeys.length} stack(s) ` +
             `still have state in it:\n${listing}\n` +
-            `Destroy every stack ('cdkd destroy' / 'cdkd state destroy') before ` +
+            `Destroy every stack (${proseQuoted(cdkdRemedy('cdkd destroy'))} / ${proseQuoted(cdkdRemedy('cdkd state destroy'))}) before ` +
             `deleting the state bucket.`,
           'STATE_BUCKET_NOT_EMPTY'
         );
@@ -713,7 +713,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           `Refusing to delete state bucket '${bucketName}': region(s) ` +
             `${markerSiblings.otherRegions.map((r) => displayIdent(r)).join(', ')} are still opted in to cdkd asset ` +
             `storage (their bootstrap markers live in this bucket). Run ` +
-            `'cdkd bootstrap --destroy --region <r>' for each first.`,
+            `${pasteableCommand('cdkd bootstrap', [{ literal: '--destroy' }, { flag: '--region', hole: 'r' }]).command} for each first.`,
           'STATE_BUCKET_HOLDS_MARKERS'
         );
       }

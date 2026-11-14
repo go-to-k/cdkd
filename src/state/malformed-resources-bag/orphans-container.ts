@@ -4,6 +4,7 @@
  * Part of `src/state/malformed-resources-bag.ts`, which re-exports every public name here.
  */
 import { CdkdError } from '../../utils/error-handler.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import type { LockRecoveryContext } from '../lock-contention-message.js';
 import type { StackState } from '../../types/state.js';
@@ -198,7 +199,7 @@ export function malformedDestroyOrphansRefusalMessage(
     `'orphans' list — the record is malformed or truncated.`;
   const remedy = exact
     ? `To drop the record deliberately and ` +
-      `leave every live resource standing, run 'cdkd state orphan' against the stack and the ` +
+      `leave every live resource standing, run ${proseQuoted(cdkdRemedy('cdkd state orphan'))} against the stack and the ` +
       `region THE RECORD'S S3 KEY holds. It is spelled as a template on its own line below ` +
       `rather than handed over ready to run, because that command DELETES a record and a key ` +
       `segment is chosen by anyone who can write this bucket: the key says WHICH record this ` +

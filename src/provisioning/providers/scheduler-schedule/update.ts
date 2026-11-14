@@ -1,5 +1,5 @@
 import type { SchedulerScheduleProvider } from '../scheduler-schedule-provider.js';
-import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
+import { deployReplaceCommand, pasteableCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateScheduleCommand,
   ResourceNotFoundException,
@@ -125,7 +125,7 @@ export async function confirmRecordedSchedule(
       resourceType,
       'holds a schedule of this name that carries the recorded creation date but not the recorded target or role (edited outside cdkd?)',
       false,
-      'restore them, or drop the record with `cdkd orphan <construct path>` and deploy again'
+      `restore them, or drop the record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command} and deploy again`
     );
   }
   if (!sameRecordedIdentity(live, recorded)) {
@@ -225,7 +225,7 @@ export async function update(
         resourceType,
         'cannot be confirmed to hold this schedule: its state record predates the creation date cdkd now records',
         true,
-        'delete the schedule by hand (`aws scheduler delete-schedule`), drop its record with `cdkd orphan <construct path>`, and deploy again, which records the date'
+        `delete the schedule by hand (\`aws scheduler delete-schedule\`), drop its record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command}, and deploy again, which records the date`
       );
     }
     if (
@@ -241,7 +241,7 @@ export async function update(
         resourceType,
         'holds no schedule of this name',
         true,
-        "restore the secret's value to the schedule's group; if the schedule was deleted outside cdkd, drop its record with `cdkd orphan <construct path>` and deploy again"
+        `restore the secret's value to the schedule's group; if the schedule was deleted outside cdkd, drop its record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command} and deploy again`
       );
     }
     // A re-pointed reference falls to the typed refusal: a template change.

@@ -1,4 +1,4 @@
-import { commandHole } from '../../../utils/pasteable-command.js';
+import { commandHole, cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage, isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -295,8 +295,14 @@ export async function buildImportPlan(
           // Every placeholder here is a hole, so nothing untrusted ran; the
           // shape is the point.
           'Repair the record that HOLDS the mask with ' +
-          `cdkd import ${commandHole('stack')} --resource ` +
-          `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
+          `${
+            pasteableCommand('cdkd import', [
+              { hole: 'stack' },
+              { literal: '--resource' },
+              { literal: `${commandHole('logicalId')}=${commandHole('physicalId')}` },
+              { literal: '--force' },
+            ]).command
+          } (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
           'schema), then re-run whichever command wrote this property. (4) Two secret values cdkd ' +
           'resolved overlap inside the value, so no single {{resolve:...}} reference renders it: ' +
@@ -650,7 +656,7 @@ export function sharedImportIdentifierReason(others: readonly string[]): string 
  */
 export function blockedMigrationTail(blocked: readonly BlockedResource[]): string {
   const generic =
-    'destroy them first (cdkd destroy / cdkd state destroy cherry-picked), or remove them ' +
+    `destroy them first (${cdkdRemedy('cdkd destroy')} / ${cdkdRemedy('cdkd state destroy')} cherry-picked), or remove them ` +
     'from the CDK app and re-synthesize.';
   // Per RESOURCE, as the rows are grouped. A resource with ANY manual reason
   // is manual — no command, the generic one included, is safe for it. Of the
@@ -668,7 +674,7 @@ export function blockedMigrationTail(blocked: readonly BlockedResource[]): strin
   );
   const hasManual = manualIds.size > 0;
   if (genericIds.size === 0 && !hasManual) {
-    return "Run each row's 'Repair with:' command, then re-run cdkd export.";
+    return `Run each row's 'Repair with:' command, then re-run ${cdkdRemedy('cdkd export')}.`;
   }
   if (!hasRepair && !hasManual) return `Either ${generic}`;
   const steps: string[] = [];

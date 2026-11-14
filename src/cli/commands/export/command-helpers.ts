@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   type CommandArg,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../../utils/logger.js';
@@ -75,7 +77,7 @@ export async function pickStackRegion(
     if (flag) return flag;
     if (synthRegion) return synthRegion;
     throw new Error(
-      `No state found for stack ${quotedOrNotShown(stackName)}. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack ${quotedOrNotShown(stackName)}. Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   if (flag) {
@@ -193,7 +195,7 @@ export function refuseTransientContextIfUnsafe(options: {
         `Supplied:\n${indented}\n\n` +
         `Choose one:\n` +
         `  (recommended) Move these values into cdk.json's "context": { ... } field, then re-run\n` +
-        `                cdkd export without -c. CDK CLI reads cdk.json on every synth, so they\n` +
+        `                ${cdkdRemedy('cdkd export')} without -c. CDK CLI reads cdk.json on every synth, so they\n` +
         `                will be picked up automatically.\n` +
         `  (escape)      Pass --accept-transient-context to proceed. You will then need to\n` +
         `                pass the SAME -c flags to every future \`cdk deploy\` for this stack.`

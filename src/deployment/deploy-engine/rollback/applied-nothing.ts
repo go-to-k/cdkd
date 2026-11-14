@@ -1,6 +1,7 @@
 import type { FailedOperation } from '../../rollback-executor.js';
 import { failedCreateRecordedNoPhysicalId } from '../../rollback-executor/plan/failed-ops.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * go-to-k/cdkd#6118: an UPDATE that deleted and created nothing (a refused one, or one failing before its first write). Its
@@ -50,6 +51,6 @@ export function revertFailedHasNothingToDo(op: FailedOperation): boolean {
 export function unaddressableFailedCreateMessage(op: FailedOperation): string {
   return (
     safeMsg`${op.logicalId} (${op.resourceType}): the failed CREATE recorded no physical id, ` +
-    `so 'cdkd rollback --revert-failed' cannot address it — if it was partially created in AWS, delete it manually.`
+    `so ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'))} cannot address it — if it was partially created in AWS, delete it manually.`
   );
 }

@@ -1,4 +1,5 @@
 import type { PipesPipeProvider } from '../pipes-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreatePipeCommand,
   DeletePipeCommand,
@@ -178,7 +179,7 @@ export async function retireFailedCreate(
     const command = aws`aws pipes delete-pipe --name ${name}${region}`;
     original.message +=
       ` (cdkd could not delete the pipe it had created: ${why}; outside a rollback's re-create, the failed deploy's rollback ` +
-      `journal records it for \`cdkd rollback --revert-failed\`. ` +
+      `journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}. ` +
       (command.text !== undefined
         ? `Otherwise delete it yourself with: ${command.text})`
         : `Otherwise delete it yourself from the EventBridge Pipes console.)`);

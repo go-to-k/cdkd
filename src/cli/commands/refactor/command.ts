@@ -5,6 +5,7 @@ import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -400,7 +401,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
       throw new CdkdError(
         `cdkd refactor refused ${refused.length} pair(s) the mapping file names; nothing was ` +
           'written. Fix or remove each refused pair in the mapping file (the reasons are ' +
-          'above), then re-run cdkd refactor.',
+          `above), then re-run ${cdkdRemedy('cdkd refactor')}.`,
         'REFACTOR_REFUSED'
       );
     }
@@ -456,7 +457,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
           safeMsg`${toApply.map((p) => `${p.stackName} (${p.region})`).join(', ')}.`
       );
       logger.info(
-        "\nAWS resources were not touched. Run 'cdkd diff' to confirm the refactored resources " +
+        safeMsg`\nAWS resources were not touched. Run ${proseQuoted(cdkdRemedy('cdkd diff'))} to confirm the refactored resources ` +
           'show no change, and deploy the destination stacks before the stacks that import from them.'
       );
       return;
@@ -495,7 +496,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
       );
     }
     logger.info(
-      "\nAWS resources were not touched. Run 'cdkd diff' to confirm the renamed resources show no change."
+      safeMsg`\nAWS resources were not touched. Run ${proseQuoted(cdkdRemedy('cdkd diff'))} to confirm the renamed resources show no change.`
     );
   } finally {
     awsClients.destroy();

@@ -1,3 +1,9 @@
+import {
+  cdkdRemedy,
+  commandHole,
+  pasteableCommand,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { recordedReferenceRegions, referenceProvenanceOf } from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
@@ -382,12 +388,12 @@ export function refuseMaskedReplayBaseline(
     `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
       `five ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
-      `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
+      `there: restore the property with ${proseQuoted(cdkdRemedy('cdkd deploy'))} AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
       `handler does not run and the mask stays. (2) The Fn::Base64 encoding of a secret value ` +
       `(a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 UserData), which ` +
-      `cdkd never records: restore the property with a 'cdkd deploy' that changes this ` +
+      `cdkd never records: restore the property with a ${proseQuoted(cdkdRemedy('cdkd deploy'))} that changes this ` +
       `resource, which sends it the encoded value again — a re-deploy that leaves this ` +
       `resource unchanged sends it nothing. Every rollback to such a baseline refuses, so to ` +
       `end this, stop encoding the secret into the property (have the resource read the ` +
@@ -395,14 +401,21 @@ export function refuseMaskedReplayBaseline(
       `which cdkd would then record in state in the clear). (3) The value was SPLICED from a masked ` +
       `record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
       `an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. Repair the ` +
-      `record that HOLDS the mask ('cdkd import <stack> ` +
-      `--resource <logicalId>=<physicalId> --force', granting cloudformation:DescribeType ` +
+      `record that HOLDS the mask (${
+        pasteableCommand('cdkd import', [
+          { hole: 'stack' },
+          // Each placeholder quoted on its own, as `importRemedyCommand` does: a
+          // bare `<` / `>` would be a redirection that swallows the run's flags.
+          { literal: `--resource ${commandHole('logicalId')}=${commandHole('physicalId')}` },
+          { literal: '--force' },
+        ]).command
+      }, granting cloudformation:DescribeType ` +
       `first if the import warned that it could not read the schema), then re-run whichever ` +
       `command wrote this property. (4) A NoEcho template parameter's value, which cdkd ` +
-      `stores only as the mask: restore the property with 'cdkd deploy', which sends the ` +
+      `stores only as the mask: restore the property with ${proseQuoted(cdkdRemedy('cdkd deploy'))}, which sends the ` +
       `parameter's value again. (5) Two secret values cdkd resolved overlap inside the value, ` +
       `so no single {{resolve:...}} reference renders it and cdkd stored the mask rather than ` +
-      `part of a secret: restore the property with a 'cdkd deploy' that changes this resource, ` +
+      `part of a secret: restore the property with a ${proseQuoted(cdkdRemedy('cdkd deploy'))} that changes this resource, ` +
       `which sends it the value again. Every rollback to such a baseline refuses while the two ` +
       `values still overlap there, so to end this, change the property (or rotate one of the ` +
       `secrets) so that they no longer overlap. See https://github.com/go-to-k/cdkd/issues/2449.`,

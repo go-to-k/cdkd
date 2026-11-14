@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import {
   DescribeDBClustersCommand,
   EnableHttpEndpointCommand,
@@ -525,7 +526,7 @@ export async function applyBackupReplication(
           `cdkd drift --revert cannot restart the automated backup replication of storage-encrypted DB instance ${logicalId}: ` +
             `RDS needs a KMS key in ${plan.start.region} for it, and AutomaticBackupReplicationKmsKeyId is write-only, so the revert has none to send. ` +
             `Nothing was stopped or started. Restore it with aws rds start-db-instance-automated-backups-replication --region ${plan.start.region} ` +
-            `--source-db-instance-arn <the instance ARN> --kms-key-id <a key in that region>, or change the template's replication properties and run cdkd deploy`
+            `--source-db-instance-arn <the instance ARN> --kms-key-id <a key in that region>, or change the template's replication properties and run ${cdkdRemedy('cdkd deploy')}`
         )
       );
     }

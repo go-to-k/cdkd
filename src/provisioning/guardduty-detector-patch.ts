@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import type { JsonPatchOp } from './json-patch-generator.js';
 
@@ -121,7 +122,7 @@ function narrowToChangedFeatures(op: JsonPatchOp, current: unknown): JsonPatchOp
       new Error(
         'cannot revert Features: the live list differs from the recorded baseline only in the ' +
           'order of its entries or in entries GuardDuty added, which UpdateDetector cannot undo, ' +
-          'so nothing on this detector was reverted. cdkd drift --accept would record the live ' +
+          `so nothing on this detector was reverted. ${cdkdRemedy('cdkd drift', '--accept')} would record the live ` +
           'list, but it records the live value of EVERY drifted property of the stack, not only ' +
           'Features: revert any other drift on this detector first (for example with ' +
           'aws guardduty update-detector), then run it.'

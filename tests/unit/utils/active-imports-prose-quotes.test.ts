@@ -64,7 +64,7 @@ describe('StackHasActiveImportsError — no non-plain record value inside cdkd q
         "This matches CloudFormation's strong-reference semantics — exports are\n" +
         'protected as long as a consumer references them.\n\n' +
         'To proceed:\n' +
-        '  1. Destroy the consumer first: cdkd destroy <consumer-stack>\n' +
+        '  1. Destroy the consumer first: cdkd destroy \'<consumer-stack>\'\n' +
         "  2. Or remove the Fn::ImportValue from the consumer's template\n" +
         '     (e.g. inline the value, or refactor) and re-deploy the consumer,\n' +
         '     then retry this destroy.\n\n' +

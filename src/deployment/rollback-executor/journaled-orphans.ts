@@ -21,7 +21,11 @@ import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name
 import { nameScopeOf } from '../../state/name-generation.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  withheldTargetClause,
+} from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -638,7 +642,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
             logger.warn(
               safeMsg`Failed to remove the settled entries from the rollback journal of stack ${stack}: ` +
                 safeMsg`${errorDetail(err)}. A cdkd rollback or cdkd destroy could act on them again; run a ` +
-                'successful cdkd deploy of the stack first, which settles them again.'
+                safeMsg`successful ${cdkdRemedy('cdkd deploy')} of the stack first, which settles them again.`
             );
           }
         };

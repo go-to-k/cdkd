@@ -4,6 +4,7 @@
  * Moved verbatim out of `src/state/s3-state-backend.ts` (go-to-k/cdkd#5835); the
  * `S3StateBackend` class keeps one `f.call(this, ...)` delegator per moved method.
  */
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { S3StateBackend } from '../s3-state-backend.js';
 import { timePhase, timePhaseSync } from '../../utils/phase-timings.js';
 import {
@@ -70,7 +71,7 @@ export async function verifyBucketExists(
         `State bucket '${this.config.bucket}' does not exist. ` +
           (awsEndpointOverrideActive()
             ? missingStateBucketRemedy('it')
-            : `Run 'cdkd bootstrap' to create it, or specify an existing bucket via ` +
+            : `Run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} to create it, or specify an existing bucket via ` +
               `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`),
         error instanceof Error ? error : undefined
       );

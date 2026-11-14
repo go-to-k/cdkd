@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
@@ -831,7 +832,7 @@ async function readSubnetAttributeLive(
   const notFound = (): never =>
     refuse(
       'DescribeSubnets returned no subnet for it',
-      'Check that the subnet still exists in this region, or repair the record with cdkd import.'
+      `Check that the subnet still exists in this region, or repair the record with ${cdkdRemedy('cdkd import')}.`
     );
 
   if (attributeName === 'Ipv6CidrBlocks') {

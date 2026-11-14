@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { commonOptions, stateOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { withErrorHandling } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import {
@@ -391,7 +392,9 @@ async function stateInfoCommand(options: {
     lines.push(`Schema version:  ${schemaVersion}`);
     lines.push(`Stacks:          ${stateFileKeys.length}`);
     if (assetStorage.length === 0) {
-      lines.push('Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in');
+      lines.push(
+        `Asset storage:   legacy (CDK bootstrap) — run ${cdkdRemedy('cdkd bootstrap')} to opt in`
+      );
     } else {
       lines.push(`Asset storage:   cdkd-assets mode in ${assetStorage.length} region(s)`);
       // The region is sliced out of a bootstrap-marker KEY and the two names

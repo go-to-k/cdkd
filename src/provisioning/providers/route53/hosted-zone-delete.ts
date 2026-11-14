@@ -1,4 +1,5 @@
 import type { Route53Provider } from '../route53-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   DeleteHostedZoneCommand,
   GetHostedZoneCommand,
@@ -176,7 +177,7 @@ export async function ensureAcceleratedRecoveryDisabledForDelete(
     // Names `cdkd state destroy` and an `aws` command, so the logical id and
     // the recorded zone id are shown only when plain (go-to-k/cdkd#4226).
     throw new ProvisioningError(
-      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalIdShown(logicalId)} ${isPlainImportValue(physicalId) ? `(${physicalId})` : VALUE_NOT_SHOWN}; re-run \`cdkd state destroy\` or disable manually via ${pasteableAwsCommand()`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery`.render()}`,
+      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalIdShown(logicalId)} ${isPlainImportValue(physicalId) ? `(${physicalId})` : VALUE_NOT_SHOWN}; re-run ${proseQuoted(cdkdRemedy('cdkd state destroy'), '`')} or disable manually via ${pasteableAwsCommand()`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery`.render()}`,
       'AWS::Route53::HostedZone',
       logicalId,
       physicalId

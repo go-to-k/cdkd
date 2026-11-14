@@ -1,4 +1,5 @@
 import type { CustomResourceProvider } from '../custom-resource-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { GetFunctionCommand } from '@aws-sdk/client-lambda';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -185,8 +186,8 @@ export async function deleteImpl(
         `'***' redaction mask, which no NoEcho coordinate of the record names, so cdkd cannot ` +
         `re-resolve it and its handler would receive the mask in ResourceProperties; skipping ` +
         `deletion — the handler is not invoked, so anything this custom resource manages is ` +
-        `LEFT IN PLACE. For a record 'cdkd import' or 'cdkd scrub' wrote, a 'cdkd deploy' of the ` +
-        `app first records which positions hold a NoEcho value, after which 'cdkd destroy' ` +
+        safeMsg`LEFT IN PLACE. For a record 'cdkd import' or 'cdkd scrub' wrote, a ${proseQuoted(cdkdRemedy('cdkd deploy'))} of the ` +
+        safeMsg`app first records which positions hold a NoEcho value, after which ${proseQuoted(cdkdRemedy('cdkd destroy'))} ` +
         `sends the delete. ` +
         safeMsg`${noEchoPropertiesRemedy(context, logicalId)}`
     );

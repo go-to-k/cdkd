@@ -13,6 +13,7 @@ import {
   type GetWebFunctionRevisionResponse,
   type CreateWebFunctionRevisionResponse,
 } from '@aws-sdk/client-lambda-web';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -223,7 +224,7 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
           leftBehindArn = undefined;
         } catch (cleanupError) {
           log.warn(
-            safeMsg`Failed to delete partially-created Lambda web function revision ${logicalId}: ${describeAwsFailure(cleanupError).detail}. The failed deploy records it for \`cdkd rollback --revert-failed\`, or delete it by hand`
+            safeMsg`Failed to delete partially-created Lambda web function revision ${logicalId}: ${describeAwsFailure(cleanupError).detail}. The failed deploy records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}, or delete it by hand`
           );
         }
       }

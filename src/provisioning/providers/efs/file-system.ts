@@ -1,5 +1,5 @@
 import type { EFSProvider } from '../efs-provider.js';
-import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateFileSystemCommand,
   DeleteFileSystemCommand,
@@ -111,7 +111,7 @@ export async function updateFileSystem(
     log.warn(
       `EFS FileSystem ${logicalId}: the desired properties (from cdkd state or an AWS readback, not the template) set ThroughputMode: provisioned without ProvisionedThroughputInMibps, ` +
         `which AWS rejects; leaving the file system's throughput as it is on AWS and applying the rest of the update. ` +
-        `Its throughput may now differ from the record: run cdkd drift to see it.`
+        `Its throughput may now differ from the record: run ${cdkdRemedy('cdkd drift')} to see it.`
     );
   }
   const effectiveThroughputMode =

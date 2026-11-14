@@ -61,7 +61,12 @@ import {
   displayStackName,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
-import { plainOrDescribed } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  plainOrDescribed,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import type { StackState } from '../../types/state.js';
 import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
 import { secretNamedRecordNeedles } from '../../deployment/secret-name-needles.js';
@@ -253,7 +258,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     throw new Error(
       "'cdkd orphan' requires at least one construct path, e.g. 'cdkd orphan MyStack/MyTable'.\n" +
         "       To remove a stack's state record (the previous behavior), use:\n" +
-        '         cdkd state orphan MyStack'
+        `         ${pasteableCommand('cdkd state orphan', [{ value: 'MyStack', hole: 'stack' }]).command}`
     );
   }
 
@@ -267,7 +272,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         `'cdkd orphan' now expects a construct path like 'MyStack/MyTable'.\n` +
           `       Got: '${p}'\n` +
           `       To remove a stack's state record (the previous behavior), use:\n` +
-          `         cdkd state orphan ${p}`
+          `         ${pasteableCommand('cdkd state orphan', [{ value: p, hole: 'stack', opts: { patternMatched: true } }]).command}`
       );
     }
   }
@@ -668,7 +673,7 @@ function resolveConstructPaths(
       throw new Error(
         `All construct paths must reference the same stack. ` +
           `Got ${displayStackName(stack.stackName)} and ${displayStackName(candidate.stackName)}. ` +
-          `Run 'cdkd orphan' once per stack.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd orphan'))} once per stack.`
       );
     }
 
@@ -739,7 +744,7 @@ async function pickStackRegion(
     if (synthRegion) return { region: synthRegion, recordRegion: synthRegion };
     throw new Error(
       `No state found for stack ${displayStackName(stackName)}. ` +
-        `Run 'cdkd state list' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   if (flag) {

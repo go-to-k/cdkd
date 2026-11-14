@@ -15,6 +15,7 @@ import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import type { PropertyDrift } from '../../../analyzer/drift-calculator.js';
 import { hasOwnKey, ownValue, defineOwnKey } from '../../../utils/own-keys.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { refusedBaselineRemedy } from '../refused-baseline-remedy.js';
 import { withPhysicalNameCopies, redactForState } from '../../../deployment/secret-redaction.js';
 import {
@@ -321,7 +322,7 @@ export async function runAccept(
               `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                 `not accepting '${displayDriftPath(outcome, change.path)}' — ${refusal}, so cdkd will not write it to ` +
                 (revert === undefined
-                  ? `state. Run 'cdkd drift --revert' for this stack to push the referenced ` +
+                  ? `state. Run ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))} for this stack to push the referenced ` +
                     `value back to AWS, or re-deploy if the reference changed.`
                   : `state. Push the referenced value back to AWS with the command below, or ` +
                     `re-deploy if the reference changed.` +

@@ -5,6 +5,7 @@ import {
   type SecurityGroupRule,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../../utils/logger.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { canonicalizeIpProtocolValue } from '../../../utils/ip-protocol.js';
 import { withRetry } from '../../../deployment/retry.js';
@@ -103,7 +104,7 @@ export function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
           `returns it only from AuthorizeSecurityGroupIngress itself, so a no-op re-deploy will ` +
           `NOT heal the record either: change any property of the rule (cdkd revokes and ` +
           `re-authorizes, minting a fresh id, with a momentary traffic interruption) or destroy ` +
-          `and re-deploy it, then re-run cdkd export. In both cases you can instead remove ` +
+          `and re-deploy it, then re-run ${cdkdRemedy('cdkd export')}. In both cases you can instead remove ` +
           `${quotedOrNotShown(logicalId)} from the stack before exporting — the rule stays in AWS and can be ` +
           `re-declared in CloudFormation afterwards.`
       );
@@ -372,7 +373,7 @@ function cachedSecurityGroupRules(
  *
  * Carries no row identity, so it can be appended to either message.
  */
-const SG_INGRESS_AMBIGUITY_REMEDY =
+const sgIngressAmbiguityRemedy = (): string =>
   `Two causes, with different remedies. (1) ONE resource declaring MORE THAN ONE source (e.g. ` +
   `both CidrIp and CidrIpv6 on the same resource), for which AWS mints one rule per source: ` +
   `split it into one AWS::EC2::SecurityGroupIngress resource per source, which is also the ` +
@@ -382,7 +383,7 @@ const SG_INGRESS_AMBIGUITY_REMEDY =
   `source, so those two rows carry byte-identical ids and splitting is not their remedy: set ` +
   `the row's attributes.Id to the 'sgr-...' id that belongs to it (cdkd then resolves from ` +
   `state and issues no lookup at all), or remove the row from the stack before exporting. Then ` +
-  `re-run cdkd export.`;
+  `re-run ${cdkdRemedy('cdkd export')}.`;
 
 /** The remedy every refusal below ends with — one place, so they cannot drift. */
 function sgIngressExportEscapeHatch(logicalId: string): string {
@@ -446,7 +447,7 @@ async function backfillSecurityGroupIngressRuleId(
         `'<groupId>|<ipProtocol>|<fromPort>|<toPort>' composite either, so cdkd cannot look the ` +
         `rule up in AWS to recover the id CloudFormation IMPORT needs. Repair the record's ` +
         `physicalId (or its attributes.Id, which may be the 'sgr-...' id verbatim) and re-run ` +
-        `cdkd export. ${sgIngressExportEscapeHatch(logicalId)}`
+        `${cdkdRemedy('cdkd export')}. ${sgIngressExportEscapeHatch(logicalId)}`
     );
   }
 
@@ -470,12 +471,12 @@ async function backfillSecurityGroupIngressRuleId(
     // policy that was never the problem.
     const remedy =
       lookup.kind === 'auth'
-        ? `Grant ec2:DescribeSecurityGroupRules and re-run cdkd export.`
+        ? `Grant ec2:DescribeSecurityGroupRules and re-run ${cdkdRemedy('cdkd export')}.`
         : lookup.kind === 'throttled'
           ? `AWS throttled the lookup and cdkd retried it ${MAX_SG_RULE_THROTTLE_RETRIES} times ` +
-            `before giving up — no permission is missing. Re-run cdkd export once the account's ` +
+            `before giving up — no permission is missing. Re-run ${cdkdRemedy('cdkd export')} once the account's ` +
             `EC2 describe rate has recovered.`
-          : `Re-run cdkd export once that cause is resolved.`;
+          : `Re-run ${cdkdRemedy('cdkd export')} once that cause is resolved.`;
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)} (the rule was ` +
         `deployed by a cdkd older than https://github.com/go-to-k/cdkd/issues/1761), and the ` +
@@ -533,7 +534,7 @@ async function backfillSecurityGroupIngressRuleId(
       matched.length > 1
         ? ` Note that ${matched.length} rules matching one row is an ambiguity in its own ` +
           `right, which cdkd could not resolve even if every id were readable: ` +
-          `${SG_INGRESS_AMBIGUITY_REMEDY}${readableNote}`
+          `${sgIngressAmbiguityRemedy()}${readableNote}`
         : '';
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for ${quotedOrNotShown(logicalId)}, and a live ` +
@@ -557,7 +558,7 @@ async function backfillSecurityGroupIngressRuleId(
         `DescribeSecurityGroupRules lookup found NO ingress rule matching ${tupleNote} — so ` +
         `cdkd has no id to hand CloudFormation IMPORT. Either the rule was revoked outside cdkd, ` +
         `or the group lives in a region other than the one this export is running against. Run ` +
-        `cdkd deploy to reconcile the stack, then re-run cdkd export. ` +
+        `${cdkdRemedy('cdkd deploy')} to reconcile the stack, then re-run ${cdkdRemedy('cdkd export')}. ` +
         `${sgIngressExportEscapeHatch(logicalId)}`
     );
   }
@@ -568,6 +569,6 @@ async function backfillSecurityGroupIngressRuleId(
       `(${ids.join(', ')}). cdkd's physical id identifies a rule only by group, protocol and ` +
       `port range, so it cannot say which of them ${quotedOrNotShown(logicalId)} is, and CloudFormation IMPORT ` +
       `needs exactly one — adopting either would record the wrong rule. ` +
-      `${SG_INGRESS_AMBIGUITY_REMEDY} ${sgIngressExportEscapeHatch(logicalId)}`
+      `${sgIngressAmbiguityRemedy()} ${sgIngressExportEscapeHatch(logicalId)}`
   );
 }

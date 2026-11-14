@@ -33,7 +33,7 @@
  */
 
 import { displayIdent, displaySafe, displayStackName } from '../utils/display-safe.js';
-import { pasteableCommand } from '../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../utils/pasteable-command.js';
 import { CdkdError } from '../utils/error-handler.js';
 import { recoveryCommandFlags, type LockRecoveryContext } from './lock-contention-message.js';
 
@@ -516,12 +516,12 @@ function releaseRemedy(
   }
   if (prefixes.length === 1) {
     return (
-      `drop the other record with \`cdkd state orphan\` (it removes only the record, never a ` +
+      `drop the other record with ${proseQuoted(cdkdRemedy('cdkd state orphan'), '`')} (it removes only the record, never a ` +
       `resource): \`${stateCommand('orphan', s, first)}\`.`
     );
   }
   return (
-    `release each other record with \`cdkd state orphan\` (it removes only the record, never ` +
+    `release each other record with ${proseQuoted(cdkdRemedy('cdkd state orphan'), '`')} (it removes only the record, never ` +
     `a resource; a destroy under one of them is refused while another still records the ` +
     `stack, and the check stops at the first ones it finds, so re-run it until none is ` +
     `named), e.g. \`${stateCommand('orphan', s, first)}\`, then the same with each other prefix.`

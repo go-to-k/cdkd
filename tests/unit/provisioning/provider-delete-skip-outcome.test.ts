@@ -378,7 +378,7 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       // Region-scoped (go-to-k/cdkd#3996), and outside a stack destroy (no
       // context here) the single-record form (go-to-k/cdkd#4602).
       expect(text).toMatch(
-        /'cdkd state orphan <stack> --stack-region <region> --resource My\w+', which drops only this record/
+        /cdkd state orphan '<stack>' --stack-region '<region>' --resource My\w+, which drops only this record/
       );
     }
   );
@@ -393,15 +393,15 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       const destroyText = warnText();
       expect(destroyText).toContain(head);
       expect(destroyText).toMatch(
-        /'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack still has in that region, not just this one \(add '--resource My\w+' to drop only this one\)/
+        /cdkd state orphan '<stack>' --stack-region '<region>', which drops every record the stack still has in that region, not just this one \(add '--resource My\w+' to drop only this one\)/
       );
 
       warnSpy.mockClear();
       await run({ expectedRegion: 'us-east-1' });
       const deployText = warnText();
       expect(deployText).toContain(head);
-      expect(deployText).toMatch(/--stack-region <region> --resource My\w+', which drops only this record/);
-      expect(deployText).not.toContain("'cdkd state orphan <stack> --stack-region <region>',");
+      expect(deployText).toMatch(/--stack-region '<region>' --resource My\w+, which drops only this record/);
+      expect(deployText).not.toContain("cdkd state orphan '<stack>' --stack-region '<region>',");
     }
   );
 
@@ -968,7 +968,7 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
         'state), so do not write the name into state.json: cdkd will keep skipping this record. ' +
         'Remove the inline policy from its principals by hand (a principal this stack also ' +
         'deletes takes its inline policies with it), then drop this record with ' +
-        "'cdkd state orphan <stack> --stack-region <region> --resource MyPolicy', which drops " +
+        "cdkd state orphan '<stack>' --stack-region '<region>' --resource MyPolicy, which drops " +
         'only this record — never run it without --resource on a stack that is still deployed'
     );
     expect(text).not.toContain('in state.json to a list');
@@ -990,7 +990,7 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
         'cdkd will keep skipping this record, whatever is repaired in the recorded Roles. ' +
         'Remove the inline policy from its principals by hand (a principal this stack also ' +
         'deletes takes its inline policies with it), then drop this record with ' +
-        "'cdkd state orphan <stack> --stack-region <region> --resource MyPolicy', which drops " +
+        "cdkd state orphan '<stack>' --stack-region '<region>' --resource MyPolicy, which drops " +
         'only this record — never run it without --resource on a stack that is still deployed, ' +
         "where that drops every resource's record and the next deploy re-creates or collides " +
         'with all of them. NOTE this arm is ALSO reached from cdkd deploy.'

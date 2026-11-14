@@ -1,5 +1,5 @@
 import type { ECSProvider } from '../ecs-provider.js';
-import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdateServiceCommand,
   type PropagateTags,
@@ -95,7 +95,7 @@ export async function updateService(
       desiredFromAwsReadback
         ? // The template and state are unchanged, so `deploy --replace`
           // would plan nothing here.
-          'UpdateService cannot change a service launch type, so drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run cdkd drift --accept to keep the live value'
+          `UpdateService cannot change a service launch type, so drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run ${cdkdRemedy('cdkd drift', '--accept')} to keep the live value`
         : `UpdateService cannot change a service launch type; CloudFormation replaces the service. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack`
     );
   }

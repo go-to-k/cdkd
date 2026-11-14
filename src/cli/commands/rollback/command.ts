@@ -1,5 +1,10 @@
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
-import { plainOrDescribed } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  plainOrDescribed,
+  proseQuoted,
+} from '../../../utils/pasteable-command.js';
 import { warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { AwsClients, runWithStackAwsClients, setAwsClients } from '../../../utils/aws-clients.js';
@@ -7,7 +12,7 @@ import { loadProviderClasses } from '../../../provisioning/register-providers.js
 import { dropFailedJournalEntry, refuseDropFailedConflicts } from '../rollback-drop-failed.js';
 import { setupStateBackend, resolveSingleRegion } from '../state.js';
 import type { StackStateRef } from '../../../state/s3-state-backend.js';
-import { isPasteableIdent } from '../../../utils/display-safe.js';
+import { isPasteableIdent, safeMsg } from '../../../utils/display-safe.js';
 import { type RollbackOptions, findJournalCandidates } from './options.js';
 import { runRollbackReplay } from './replay.js';
 
@@ -58,7 +63,7 @@ export async function rollbackCommand(
       if (scoped.length === 0) {
         logger.info(
           'Nothing to roll back — no stack has a rollback journal. ' +
-            "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
+            safeMsg`Run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to (re)deploy, or ${proseQuoted(cdkdRemedy('cdkd destroy'))} to clean up.`
         );
         return;
       }
@@ -81,12 +86,12 @@ export async function rollbackCommand(
           (c) => !isPasteableIdent(c.stackName) || !isPasteableIdent(c.region ?? '')
         )
           ? `A row whose stack name or region is not a plain identifier is described, not named; ` +
-            `list the records as stored with 'cdkd state list --long'.\n`
+            `list the records as stored with ${proseQuoted(cdkdRemedy('cdkd state list', '--long'))}.\n`
           : '';
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +
             described +
-            `Re-run 'cdkd rollback <stack>' (add --stack-region if the same name spans regions).`
+            `Re-run ${pasteableCommand('cdkd rollback', [{ hole: 'stack' }]).command} (add --stack-region if the same name spans regions).`
         );
       }
       ref = scoped[0]!;

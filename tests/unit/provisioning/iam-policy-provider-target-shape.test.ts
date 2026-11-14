@@ -61,7 +61,7 @@ const orphanRoute = (renamed: boolean): string =>
     ? ', and since this change renames the policy, also remove the OLD-named inline policy ' +
       'from every principal that holds it (the re-created record names only the new one)'
     : '') +
-  ", then drop this record with 'cdkd orphan <constructPath>' so the next deploy re-attaches " +
+  ", then drop this record with cdkd orphan '<constructPath>' so the next deploy re-attaches " +
   'it from the template (an attachment left in place across the orphan is no longer tracked ' +
   'by cdkd). A later update proceeds only while the template spells the same reference and ' +
   'PolicyName, so a changed reference, a rename or a mask is refused this way again';

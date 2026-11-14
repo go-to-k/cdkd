@@ -12,6 +12,7 @@ import { DELETED_RESOURCE_REMEDY } from './deleted-resource-remedy.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import type { FailedOperation } from './rollback-executor/types.js';
 
 /** How long one existence read may take before it counts as unanswered. */
@@ -98,7 +99,7 @@ export function deletedOutsideCdkdMessage(op: FailedOperation, recordDropped: bo
     `(deleted outside cdkd), so its failed update has nothing to revert` +
     (recordDropped
       ? ` and no rollback record is kept for it.`
-      : ` and 'cdkd rollback --revert-failed' drops its record.`) +
+      : ` and ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'))} drops its record.`) +
     safeMsg` ${DELETED_RESOURCE_REMEDY}`
   );
 }

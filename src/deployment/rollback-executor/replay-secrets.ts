@@ -1,4 +1,9 @@
-import { plainOrDescribed, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  plainOrDescribed,
+  proseQuoted,
+  quotedOrDescribed,
+} from '../../utils/pasteable-command.js';
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -147,7 +152,7 @@ function regionAmbiguousReplaySecretError(
       `independent values, so replaying this would write the WRONG secret to a live resource. ` +
       `Refusing instead. Resolve the reference in its own region and set the property ` +
       `directly (or spell it as a full ARN, which names its region and is resolved there), ` +
-      `then re-run ${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
+      `then re-run ${rerunRollbackPhrase(execCtx, proseQuoted(cdkdRemedy('cdkd rollback')))}.`,
     'ROLLBACK_SECRET_REGION_AMBIGUOUS'
   );
   // Marked non-retryable: the journaled bag and the producer regions on record
@@ -218,7 +223,7 @@ function regionUnknownReplaySecretError(
       `run, roll back the top-level stack instead, which supplies its regions. Otherwise resolve ` +
       `the reference in its own region and set the property directly (or spell it as a full ` +
       `ARN, which names its region and is resolved there), then re-run ` +
-      `${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
+      `${rerunRollbackPhrase(execCtx, proseQuoted(cdkdRemedy('cdkd rollback')))}.`,
     'ROLLBACK_SECRET_REGION_AMBIGUOUS'
   );
 }

@@ -8,7 +8,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { compositeIdFormatMessage } from '../../composite-id.js';
 import { planTagDiff, tagPlanWarning, type CfnTagEntry } from '../../tag-list.js';
-import { commandHole } from '../../../utils/pasteable-command.js';
+import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { S3_TABLES_TABLE_ID_FORMAT, sentence } from './shared.js';
 
@@ -166,7 +166,7 @@ export async function applyTableTagsDiff(
         `deleted out-of-band, drop just this resource's record with the command below, ` +
         `filling in the construct path the CDK app gave this resource — its aws:cdk:path ` +
         `Metadata entry in the synthesized template.` +
-        `\nClean up with: cdkd orphan ${commandHole('constructPath')}`,
+        `\nClean up with: ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command}`,
       resourceType,
       logicalId,
       physicalId

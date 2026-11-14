@@ -70,7 +70,7 @@ This matches CloudFormation's strong-reference semantics — exports are
 protected as long as a consumer references them.
 
 To proceed:
-  1. Destroy the consumer first: cdkd destroy <consumer-stack>
+  1. Destroy the consumer first: cdkd destroy '<consumer-stack>'
   2. Or remove the Fn::ImportValue from the consumer's template
      (e.g. inline the value, or refactor) and re-deploy the consumer,
      then retry this destroy.

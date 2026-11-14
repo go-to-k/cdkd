@@ -7,6 +7,11 @@
  * as CloudFormation's create fails with "already exists".
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
@@ -481,6 +486,36 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(lines.at(-1)).toBe(
       "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn'"
     );
+  });
+
+  it('go-to-k/cdkd#6262: the adopt prose and command carry the run\'s --aws-emulator', async () => {
+    buildProgram();
+    const refusal = async (): Promise<string> => {
+      h.importResult = { physicalId: '/aws/lambda/MyStack-Fn' };
+      const err = await create(makeEngine(h), 'AWS::Logs::LogGroup', {
+        LogGroupName: '/aws/lambda/MyStack-Fn',
+      });
+      return err!.message;
+    };
+    try {
+      setPasteableRunFlags({});
+      const plain = await refusal();
+      setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:4599' });
+      const emulated = await refusal();
+      expect(plain).toContain('or adopt it with `cdkd import` using the command below and re-run.');
+      expect(plain.split('\n').at(-1)).toBe(
+        "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn'"
+      );
+      expect(emulated).toContain(
+        'or adopt it with `cdkd import --aws-emulator=https://127.0.0.1:4599` using the command below and re-run.'
+      );
+      expect(emulated.split('\n').at(-1)).toBe(
+        "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn' --aws-emulator=https://127.0.0.1:4599"
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
   });
 
   // go-to-k/cdkd#2676: the per-resource ERROR line — where a user reads the

@@ -15,7 +15,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch } from '../../region-check.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
-import { pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
 import { markNonRetryable, markRedactedCause } from '../../../deployment/retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
@@ -623,7 +623,7 @@ export function wrapNotThisRepositoryError(
         `is not this resource's (its repository id is not the one cdkd holds) — nothing was ` +
         `sent to that repository. Changing RepositoryName does not clear this. Leave that ` +
         `repository alone. If the recorded repository was renamed and you can find it, ` +
-        `re-adopt it under its new name with cdkd import (--resource, --force) instead; ` +
+        `re-adopt it under its new name with ${cdkdRemedy('cdkd import')} (--resource, --force) instead; ` +
         `otherwise drop this resource's record and set RepositoryName to a name no ` +
         `repository holds, so the next deploy creates a new repository (fill in the ` +
         `resource's construct path):\n` +

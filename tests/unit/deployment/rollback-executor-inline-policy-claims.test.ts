@@ -1531,7 +1531,7 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(holding()).toEqual({});
     expect(result.warnings).toBe(1);
     expect(warned()).toContain('recorded by Old, R with different documents');
-    expect(warned()).toContain("'cdkd drift <stack> --revert'");
+    expect(warned()).toContain("cdkd drift '<stack>' --revert");
   });
 
   it('CONTROL: two records holding the name with the SAME document put it back once', async () => {

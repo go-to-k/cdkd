@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getCurrentStackName } from '../resource-name/stack-scope.js';
 import { getStackRecords } from '../../deployment/stack-records-scope.js';
 import { getLogger } from '../../utils/logger.js';
@@ -32,10 +32,11 @@ import {
   isPlainImportValue,
   refusalTypeShown,
   isPlainImportJson,
+  importRemedyCommand,
   remedyLogicalId,
   VALUE_NOT_SHOWN,
 } from '../import-helpers.js';
-import { commandHole } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, commandHole, proseQuoted } from '../../utils/pasteable-command.js';
 
 /**
  * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
@@ -527,7 +528,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
           // `cdkd refactor` works on a top-level stack only, like `cdkd import`.
           (getCurrentStackName()?.includes('~') === true
             ? 'Deploy'
-            : `Move the record with 'cdkd refactor', or deploy`) +
+            : `Move the record with ${proseQuoted(cdkdRemedy('cdkd refactor'))}, or deploy`) +
           ` the removal of ${holder} first. Do not delete or import the existing policy: the ` +
           `removal of ${holder} would then delete it, leaving the bucket with no policy.`
       );
@@ -578,9 +579,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       stackName !== undefined && stackName.includes('~')
         ? ''
         : `, or merge its statements into this resource's PolicyDocument and adopt it into the ` +
-          `stack with 'cdkd import ${
-            stackName !== undefined && isPasteableIdent(stackName) ? stackName : '<stackName>'
-          } --resource ${remedyLogicalId(logicalId)}=${bucketArg}'`;
+          `stack with ${proseQuoted(importRemedyCommand(stackName, `${remedyLogicalId(logicalId)}=${bucketArg}`))}`;
     refuse(
       `cdkd does not overwrite it: PutBucketPolicy replaces the whole policy, so the ` +
         `statements its owner attached (a log-delivery service's grant, for example) would be ` +

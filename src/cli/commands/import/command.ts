@@ -40,8 +40,10 @@ import {
   type CfnStackResourceTree,
 } from '../retire-cfn-stack.js';
 import {
+  cdkdRemedy,
   commandHole,
   plainOrDescribed,
+  proseQuoted,
   quotedOrDescribed,
 } from '../../../utils/pasteable-command.js';
 import { withPasteableAwsProfile } from '../../../utils/pasteable-aws-profile.js';
@@ -315,7 +317,7 @@ export async function importCommand(
       throw new Error(
         '--migrate-from-cloudformation is not compatible with --dry-run: ' +
           'the post-state-write retirement (UpdateStack + DeleteStack) issues real AWS calls. ' +
-          'Use plain `cdkd import --dry-run` to preview the import in isolation.'
+          `Use plain ${proseQuoted(cdkdRemedy('cdkd import', '--dry-run'), '`')} to preview the import in isolation.`
       );
     }
     // Compute the importable-template set up front. We need it both for

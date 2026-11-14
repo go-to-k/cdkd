@@ -4,6 +4,7 @@ import { resourcesNamingDeclaredParameter } from '../../analyzer/parameter-depen
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { parseCfnTemplateWithFormat } from '../yaml-cfn.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -81,7 +82,7 @@ export function judgeAcceptRefused(
       ok: false,
       reason:
         `${id} carries no observed-baseline refusal, so there is nothing to accept. ` +
-        `Run 'cdkd state refresh-observed' without --accept-refused to refresh it.`,
+        `Run ${proseQuoted(cdkdRemedy('cdkd state refresh-observed'))} without --accept-refused to refresh it.`,
     };
   }
   // Read as unknown: the record is unvalidated input, and only the one known

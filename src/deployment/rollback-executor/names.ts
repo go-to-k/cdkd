@@ -30,6 +30,7 @@ import {
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { displayIdent } from '../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   createUnionSecretMasker,
   maskSecretsInText,
@@ -581,8 +582,8 @@ export function requireRestorableBaseline(
       // `--revert-failed` arm that value carries a 20-word parenthetical, and
       // trailing the clause put it between the verb and its own condition.
       `The rollback JOURNAL record is kept: once that record holds a property bag again, ` +
-      `${retry}. Otherwise fix forward with \`cdkd deploy\`, or remove the stack with ` +
-      `\`cdkd destroy\`.`,
+      `${retry}. Otherwise fix forward with ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')}, or remove the stack with ` +
+      `${proseQuoted(cdkdRemedy('cdkd destroy'), '`')}.`,
     'ROLLBACK_UNUSABLE_BASELINE'
   );
 }

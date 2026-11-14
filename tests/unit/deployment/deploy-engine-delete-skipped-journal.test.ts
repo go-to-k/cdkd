@@ -35,6 +35,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { buildProgram } from '../../../src/cli/program.js';
 import {
   setPasteableRunFlags,
   setPasteableVerbFlags,
@@ -397,6 +398,34 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       expect(message.split('\n').at(-1), reason).toBe(
         `Drop the record with: cdkd state orphan '${child}' --stack-region us-east-1`
       );
+    }
+  });
+
+  it("go-to-k/cdkd#6262: the interrupted child's resume deploy carries the run's --aws-emulator", async () => {
+    buildProgram();
+    const child = `${STACK}~${SKIPPED}`;
+    const run = async (): Promise<string> => {
+      vi.mocked(getLogger().warn).mockClear();
+      const reason = `nested stack ${child} was interrupted`;
+      await buildEngine(STACK, 'us-east-1', {
+        logicalId: SKIPPED,
+        type: 'AWS::CloudFormation::Stack',
+        reason,
+      }).deploy(STACK, template);
+      return skipWarning(reason);
+    };
+    try {
+      setPasteableRunFlags({});
+      const plain = await run();
+      setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:4599' });
+      const emulated = await run();
+      expect(plain).toContain("re-run 'cdkd deploy' to resume it");
+      expect(emulated).toContain(
+        "re-run 'cdkd deploy --aws-emulator=https://127.0.0.1:4599' to resume it"
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
     }
   });
 

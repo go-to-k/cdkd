@@ -10,7 +10,8 @@ import {
   setPasteableRunFlags,
   setPasteableVerbFlags,
 } from '../../../src/utils/pasteable-run-context.js';
-import { pasteableCommand } from '../../../src/utils/pasteable-command.js';
+import { pasteableCommand, proseQuoted } from '../../../src/utils/pasteable-command.js';
+import { missingStateBucketRemedy } from '../../../src/utils/missing-state-bucket-remedy.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 import { StackTerminationProtectionError } from '../../../src/utils/error-handler.js';
 import { rerunRollback } from '../../../src/cli/commands/rollback.js';
@@ -35,19 +36,164 @@ afterEach(() => {
 
 const stack = [{ value: 'MyStack', hole: 'stack' }] as const;
 
+/**
+ * `source` with comment lines dropped and literal splits joined, so a split
+ * spelling reads as one: an inlined literal (`${'cdkd deploy'}`), a literal
+ * concatenation across `+` and line breaks, and any run of whitespace. Cheap,
+ * not a parser: it sees literals only, which is the shape a hand-written
+ * remedy takes.
+ */
+function flattenSource(source: string): string {
+  return (
+    source
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+      .join('\n')
+      // `${'cdkd deploy'}` -> cdkd deploy
+      .replace(/\$\{\s*(['"`])([^'"`]*)\1\s*\}/g, '$2')
+      // 'a ' + 'b', across line breaks -> a b
+      .replace(/(['"`])\s*\+\s*(['"`])/g, '')
+      // 'a ' + safeMsg`b` -> a b (a literal joined to a TAGGED template)
+      .replace(/(['"`])\s*\+\s*[A-Za-z_]\w*`/g, '')
+      // an escaped newline inside a literal reads as the break it prints
+      .replace(/\\n/g, ' ')
+      .replace(/\s+/g, ' ')
+  );
+}
+
 /** True when `source` spells a `cdkd deploy --replace` remedy as literals (#6245's fence). */
 function replaceLiteralIn(source: string): boolean {
-  const flat = source
-    .split('\n')
-    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
-    .join('\n')
-    // `${'cdkd deploy'}` -> cdkd deploy
-    .replace(/\$\{\s*(['"`])([^'"`]*)\1\s*\}/g, '$2')
-    // 'a ' + 'b', across line breaks -> a b
-    .replace(/(['"`])\s*\+\s*(['"`])/g, '')
-    .replace(/\s+/g, ' ');
-  return /cdkd deploy --replace(?!\\?`? would)/.test(flat);
+  return /cdkd deploy --replace(?!\\?`? would)/.test(flattenSource(source));
 }
+
+/**
+ * Every Commander verb a remedy can name. A NEW top-level command is added
+ * here by hand; the `knows every verb` case above catches one a converted
+ * remedy names but the CLI does not declare.
+ */
+const REMEDY_VERB =
+  '(?:bootstrap|synth|list|deploy|diff|drift|destroy|rollback|scrub|events|gc|orphan|refactor|' +
+  'import|publish-assets|force-unlock|export|' +
+  // `state` and `local` only with a subcommand: a bare "cdkd state" is the noun.
+  'state (?:info|browse|list|resources|show|orphan|destroy|migrate|refresh-observed)|local [a-z-]+)';
+
+/**
+ * A `cdkd <verb>` spelled as a literal right after a cue (go-to-k/cdkd#6262):
+ * an imperative word in any case (`run`, `re-run`, `retry`, `try`, `use`,
+ * `with`, `via`, `then`, `inspect`, `check`), a list joiner naming a SECOND
+ * command (`or`, `,`, `/`), a `: ` or `? ` (a label, or a ternary arm picking
+ * the literal), or a `- ` bullet, then an optional quote or escaped backtick.
+ * Such a remedy prints without the run's typed `--aws-emulator` /
+ * `--profile` / `--state-bucket`, so a pasted one under `--aws-emulator`
+ * reaches real AWS.
+ */
+const REMEDY_LITERAL = new RegExp(
+  `(?:\\b(?:run|re-run|rerun|retry|try|use|with|via|then|inspect|check|or)|[:?,/]|(?:^|\\s)-)` +
+    `\\s+(?:\\\\?[\`'"])?cdkd ${REMEDY_VERB}\\b` +
+    // A command spelled with a flag or an interpolated argument is one to run
+    // whatever word precedes it (`records it for \`cdkd rollback --revert-failed\``).
+    `|cdkd ${REMEDY_VERB}(?= --[a-z]| \\$\\{)`,
+  // `i` for the cue's case (`RE-RUN`); not the `(?i:)` modifier, which needs Node 23+.
+  'gi'
+);
+
+/**
+ * An object key whose value is a verb the code passes ON, not prose:
+ * `{ command: 'cdkd destroy' }`. A `: ` cue after one of these is no remedy.
+ */
+const VERB_VALUED_KEY = /\b(?:command|rerunCommand|deployCommand)\s*$/;
+
+/** The normalised context of every {@link REMEDY_LITERAL} hit in `source`. */
+function remedyLiteralsIn(source: string): string[] {
+  const flat = flattenSource(source);
+  return [...flat.matchAll(REMEDY_LITERAL)]
+    .filter((m) => !(m[0].startsWith(':') && VERB_VALUED_KEY.test(flat.slice(0, m.index))))
+    .filter((m) => {
+      // A whole-literal verb passed as an ARGUMENT (`withheldTargetClause(b, 'stack',
+      // 'cdkd destroy')`) is a verb a builder receives, not prose.
+      const q = /^,\s+(['"`])cdkd /.exec(m[0]);
+      return !(q && flat[m.index + m[0].length] === q[1]);
+    })
+    .map((m) => flat.slice(Math.max(0, m.index - 80), m.index + m[0].length + 40));
+}
+
+/**
+ * True when `source` wraps a BUILT command in prose quotes or backticks
+ * (`'${cdkdRemedy(...)}'`). A run flag's quoted hole (`--role-arn
+ * '<role-arn>'`) closes such a wrapper; `proseQuoted` decides on the final
+ * string instead (go-to-k/cdkd#6262).
+ */
+function wrappedBuiltCommandIn(source: string): boolean {
+  return /(?:['"]|\\`)\$\{\s*(?:cdkdRemedy|pasteableCommand|deployReplaceCommand|importRemedyCommand)\(/.test(
+    source
+  );
+}
+
+/**
+ * Files whose fence hits are all mentions, not commands to paste: `[file, hits,
+ * why]`. A file's hit count must equal `hits` EXACTLY, so a new literal remedy
+ * added to a listed file fails as surely as one in an unlisted file, and a
+ * stale count fails too. When in doubt, build the command with `cdkdRemedy`.
+ */
+const DESCRIPTIVE_REMEDY_MENTIONS: ReadonlyArray<readonly [string, number, string]> = [
+  // --help / option / `.description` / Usage text: read where no run flag exists.
+  ['src/cli/commands/destroy.ts', 1, '--help text'],
+  ['src/cli/commands/force-unlock.ts', 1, 'a usage line'],
+  ['src/cli/commands/local-invoke.ts', 1, 'option help'],
+  ['src/cli/commands/local-start-api.ts', 4, 'option help'],
+  ['src/cli/commands/local-start-api/command.ts', 1, "an elided '...' example in a hint"],
+  ['src/cli/commands/orphan.ts', 1, '--help text'],
+  ['src/cli/commands/state/destroy.ts', 2, '.description / --help text'],
+  ['src/cli/commands/state/refresh-observed.ts', 2, 'a usage line and .description text'],
+  ['src/cli/options.ts', 2, 'option help'],
+  // A label, a prompt name, or a log line naming the running command.
+  ['src/cli/commands/bootstrap-destroy.ts', 2, "the running command's own log lines"],
+  ['src/cli/commands/bootstrap.ts', 1, 'lead-in to the flag lines below'],
+  ['src/cli/commands/import/nested.ts', 4, 'error-message label naming the running mode'],
+  ['src/cli/commands/rollback-drop-failed.ts', 1, 'names the confirmation prompt'],
+  ['src/cli/commands/state-refresh-observed.ts', 1, 'names the confirmation prompt'],
+  ['src/local/invoke-agentcore-watch-loop.ts', 1, 'log prefix'],
+  ['src/local/mixed-mode-state.ts', 1, 'a regex stripping a question'],
+  ['src/cli/commands/local-state-loader.ts', 1, 'a question'],
+  // A verb a builder receives (`command: x ? 'cdkd state destroy' : 'cdkd destroy'`).
+  ['src/cli/commands/destroy-runner/under-lock-steps.ts', 2, 'ternary verb value for a builder'],
+  // Describes what a command does or did, or forbids running it.
+  ['src/analyzer/refactor-pairing.ts', 1, 'describes refactor'],
+  ['src/cli/commands/export/command.ts', 1, 'a prohibition'],
+  ['src/cli/commands/export/import-plan.ts', 1, 'names what wrote a record'],
+  ['src/cli/commands/export/per-stack-loop.ts', 1, 'subject of a sentence'],
+  ['src/cli/commands/export/per-stack-phases.ts', 1, 'a prohibition'],
+  ['src/cli/commands/import/stack-state.ts', 1, 'describes rollback'],
+  ['src/cli/commands/refactor/plan.ts', 1, 'describes diff and deploy'],
+  ['src/cli/commands/scrub/stack-rewrite.ts', 1, 'describes diff'],
+  ['src/deployment/custom-resource-service-token.ts', 1, 'describes deploy'],
+  ['src/deployment/deploy-engine/name-collision.ts', 1, 'describes destroy'],
+  [
+    'src/deployment/deploy-engine/update-replace/create-first.ts',
+    4,
+    "'`cdkd deploy --replace` would ...' clauses, which #6245's fence exempts too",
+  ],
+  ['src/deployment/deploy-engine/update-in-place.ts', 1, 'names what refused'],
+  ['src/deployment/nested-child-journal.ts', 1, 'a recorded reason'],
+  ['src/deployment/rollback-executor/journaled-orphans.ts', 1, 'describes rollback / destroy'],
+  ['src/deployment/rollback-executor/messages.ts', 1, 'describes rollback --orphan'],
+  ['src/deployment/rollback-executor/replay-props.ts', 1, 'names what wrote a record'],
+  ['src/local/ecs-task-resolver/target.ts', 1, 'states what the commands honor'],
+  ['src/provisioning/composite-id.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/redacted-delete-address.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/providers/rds-dbproxy-targetgroup/delete.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/providers/custom-resource/delete-skip-reasons.ts', 2, 'a prohibition; when cdkd re-resolves'],
+  ['src/provisioning/providers/custom-resource/delete.ts', 1, 'names what wrote a record'],
+  ['src/provisioning/providers/docdb/cluster-update.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/providers/dynamodb-table/index-warnings.ts', 2, 'describes drift --revert'],
+  ['src/provisioning/providers/iam-managed-policy/update.ts', 1, 'describes drift --accept'],
+  ['src/provisioning/providers/iam-policy/update.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/providers/iam-role/update.ts', 1, 'describes drift --accept'],
+  ['src/provisioning/providers/rds/calls.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/region-check.ts', 1, 'describes a run shape'],
+  ['src/state/malformed-resources-bag/orphan-records.ts', 1, 'describes rollback'],
+  ['src/state/malformed-resources-bag/properties.ts', 3, 'a prohibition; describes drift / deploy'],
+];
 
 describe('without a built program or recorded flags', () => {
   it('adds nothing when no verb table is registered', () => {
@@ -129,6 +275,125 @@ describe('the verb table is read off the real Commander tree', () => {
       "const a = cdkdRemedy('cdkd deploy', '--replace');",
     ];
     for (const src of passed) expect(replaceLiteralIn(src), src).toBe(false);
+  });
+
+  it('spells no other cdkd remedy as a literal, so none loses --aws-emulator (#6262)', () => {
+    const unexplained: string[] = [];
+    const used = new Map<number, number>();
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name.endsWith('.ts')) {
+          const file = full.split(path.sep).join('/');
+          const hits = remedyLiteralsIn(readFileSync(full, 'utf8'));
+          const i = DESCRIPTIVE_REMEDY_MENTIONS.findIndex(([f]) => f === file);
+          if (i !== -1) used.set(i, hits.length);
+          else unexplained.push(...hits.map((hit) => `${file}: ${hit}`));
+        }
+      }
+    };
+    walk('src');
+    expect(unexplained).toEqual([]);
+    // Each listed file has exactly its count of hits: a new literal in it, or a
+    // stale count, fails.
+    const misfit = DESCRIPTIVE_REMEDY_MENTIONS.flatMap(([f, n], i) =>
+      used.get(i) === n ? [] : [`${f}: expected ${n} hits, found ${used.get(i) ?? 0}`]
+    );
+    expect(misfit).toEqual([]);
+  });
+
+  it('wraps no built command in prose quotes or backticks (#6262)', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name.endsWith('.ts') && wrappedBuiltCommandIn(readFileSync(full, 'utf8'))) {
+          offenders.push(full);
+        }
+      }
+    };
+    walk('src');
+    expect(offenders).toEqual([]);
+    // probe
+    expect(wrappedBuiltCommandIn("x = `Re-run '${cdkdRemedy('cdkd bootstrap')}' now`;")).toBe(true);
+    expect(wrappedBuiltCommandIn('x = `adopt it with \\`${cdkdRemedy(\'cdkd import\')}\\``;')).toBe(true);
+    expect(wrappedBuiltCommandIn("x = `Re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} now`;")).toBe(
+      false
+    );
+  });
+
+  it('proseQuoted keeps the wrapper only around a command with no quote character', () => {
+    expect(proseQuoted('cdkd bootstrap')).toBe("'cdkd bootstrap'");
+    expect(proseQuoted('cdkd bootstrap', '`')).toBe('`cdkd bootstrap`');
+    expect(proseQuoted("cdkd bootstrap --role-arn '<role-arn>'")).toBe(
+      "cdkd bootstrap --role-arn '<role-arn>'"
+    );
+  });
+
+  it('a prose-quoted remedy stays pasteable with --role-arn typed (#6262 M1)', () => {
+    buildProgram();
+    setPasteableRunFlags({ roleArn: true, profile: 'a b' });
+    expect(missingStateBucketRemedy('it')).toBe(
+      "Run cdkd bootstrap --profile '<profile>' --role-arn '<role-arn>' to create it."
+    );
+    setPasteableRunFlags({});
+    expect(missingStateBucketRemedy('it')).toBe("Run 'cdkd bootstrap' to create it.");
+  });
+
+  it('the remedy fence sees each cue and a split spelling, and skips built commands (probe)', () => {
+    const caught = [
+      "const a = `Re-run 'cdkd bootstrap' for this region.`;",
+      "const a = 'drop it with `cdkd orphan <construct path>` and deploy';",
+      "const a = 'Run cdkd drift ' + '--revert to restore it.';",
+      "const a = 'Clear it with ' +\n  'cdkd force-unlock.';",
+      'const a = `Destroy the consumer first: cdkd destroy x`;',
+      "const a = 'use cdkd state  show to see it';",
+      "const a = 'then re-run cdkd refactor.';",
+      "const a = 'adopt it with cdkd import';",
+      "const a = 'Check it with cdkd drift.';",
+      "const a = `run ${'cdkd rollback'} --revert-failed`;",
+      // an escaped backtick after the cue
+      'const a = `adopt it with \\`cdkd import\\` now`;',
+      // a literal \n before the cue
+      "const a = '\\nRun cdkd diff to confirm';",
+      // an uppercase cue
+      "const a = 'RE-RUN cdkd refactor';",
+      "const a = 'Try cdkd drift first';",
+      // a bullet
+      "const a = '  - cdkd state show x';",
+      // an object key that is prose, not a verb-valued key
+      "const a = { instead: 'cdkd local start-api x' };",
+      // a ternary arm
+      "const c = x ? 'cdkd state destroy' : y;",
+      // a literal joined to a TAGGED template after the cue
+      "const a = `then re-run ` + safeMsg`'cdkd deploy' to resume ${x}`;",
+      // a flag-carrying or interpolated command after any word
+      "const a = 'the journal records it for `cdkd rollback --revert-failed`.';",
+      'const a = `confirm, and cdkd drift ${id} shows it`;',
+    ];
+    for (const src of caught) expect(remedyLiteralsIn(src), src).toHaveLength(1);
+    // the second command of a list is a hit of its own
+    for (const src of [
+      "const a = 'Run cdkd deploy, or cdkd destroy to clean up';",
+      "const a = 're-run cdkd destroy / cdkd state destroy to finish';",
+      "const a = 'Use cdkd deploy, cdkd destroy';",
+    ]) {
+      expect(remedyLiteralsIn(src), src).toHaveLength(2);
+    }
+    const passed = [
+      "// Re-run 'cdkd bootstrap' for this region.",
+      " * run `cdkd drift --revert` in a doc comment",
+      "const a = `Re-run '${cdkdRemedy('cdkd bootstrap')}' for this region.`;",
+      "const a = pasteableCommand('cdkd rollback', [{ value: s, hole: 'stack' }]).command;",
+      "watchCommandInterrupt({ command: 'cdkd destroy' });",
+      "const a = 'the entry cdkd destroy keeps retrying';",
+      // a whole-literal verb handed to a builder, and the noun "cdkd state"
+      "withheldTargetClause(built, 'stack', 'cdkd destroy');",
+      "const a = 'Nothing written: cdkd state and the stack are unchanged';",
+    ];
+    for (const src of passed) expect(remedyLiteralsIn(src), src).toEqual([]);
   });
 
   it('records the state flags where the command declares them', () => {

@@ -12,6 +12,8 @@
  */
 import { CdkdError } from '../../utils/error-handler.js';
 import { displayAwsMessage, safeMsg } from '../../utils/display-safe.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
+const stackArg = (value: string) => ({ value, hole: 'stack', opts: { patternMatched: true } });
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
@@ -442,7 +444,7 @@ export async function applyMoveGroup(input: {
       if (!stateData || stateData.etag !== plan.etag) {
         throw new CdkdError(
           safeMsg`The state of stack ${plan.stackName} (${plan.region}) changed after cdkd ` +
-            'refactor planned it, so nothing was written. Re-run cdkd refactor.',
+            `refactor planned it, so nothing was written. Re-run ${cdkdRemedy('cdkd refactor')}.`,
           'REFACTOR_STATE_CHANGED'
         );
       }
@@ -450,8 +452,8 @@ export async function applyMoveGroup(input: {
       if ((await stateBackend.loadRollbackJournal(plan.stackName, plan.region)) !== null) {
         throw new CdkdError(
           safeMsg`cdkd refactor refused stack ${plan.stackName} (${plan.region}): an earlier ` +
-            safeMsg`deploy left a rollback journal, so nothing was written. Run 'cdkd rollback ` +
-            safeMsg`${plan.stackName}' or a successful 'cdkd deploy' first.`,
+            safeMsg`deploy left a rollback journal, so nothing was written. Run ${proseQuoted(pasteableCommand('cdkd rollback', [stackArg(plan.stackName)]).command)} ` +
+            safeMsg`or a successful ${proseQuoted(cdkdRemedy('cdkd deploy'))} first.`,
           'REFACTOR_REFUSED'
         );
       }
@@ -482,7 +484,7 @@ export async function applyMoveGroup(input: {
             : '') +
           safeMsg`Any move that started is recorded in its source stack (${sources.join(', ')}), ` +
           "whose 'cdkd deploy' and 'cdkd destroy' refuse until it is finished. Re-run " +
-          safeMsg`'cdkd refactor ${sources.join(' ')}' to finish it.`,
+          safeMsg`${proseQuoted(pasteableCommand('cdkd refactor', sources.map(stackArg)).command)} to finish it.`,
         'REFACTOR_PARTIAL'
       );
     };
@@ -579,7 +581,7 @@ export async function applyMoveGroup(input: {
         throw new CdkdError(
           safeMsg`Every record of the refactor was written, but the refactor marker could not ` +
             safeMsg`be cleared: ${(error as Error).message}. Until it is, deploy and destroy of ` +
-            'the moved stacks refuse; re-run cdkd refactor to clear it.',
+            `the moved stacks refuse; re-run ${cdkdRemedy('cdkd refactor')} to clear it.`,
           'REFACTOR_PARTIAL'
         );
       }
@@ -715,7 +717,7 @@ export async function finishPendingMoves(input: {
       throw new CdkdError(
         safeMsg`cdkd refactor cannot finish ${stuck.join(', ')}: ${stackName} (${region}) has ` +
           'no cdkd state any more and the destination does not record the resource. If the ' +
-          'resource is still in AWS, adopt it into the destination with cdkd import; then remove ' +
+          `resource is still in AWS, adopt it into the destination with ${cdkdRemedy('cdkd import')}; then remove ` +
           'the move from the refactor marker in the state bucket.',
         'REFACTOR_REFUSED'
       );
@@ -731,7 +733,7 @@ export async function finishPendingMoves(input: {
     throw new CdkdError(
       safeMsg`Stack ${stackName} (${region}) records an unfinished cdkd refactor move this ` +
         'binary cannot read (its pendingMovesOut field is malformed), so nothing was written. ' +
-        'Inspect the record with cdkd state show and repair it by hand.',
+        `Inspect the record with ${cdkdRemedy('cdkd state show')} and repair it by hand.`,
       'REFACTOR_REFUSED'
     );
   }
@@ -790,7 +792,7 @@ export async function finishPendingMoves(input: {
       } else if (record === undefined) {
         if (held === undefined) {
           refusals.push(
-            safeMsg`${describe}: neither stack records the resource; adopt it into ${m.toStack} with cdkd import`
+            safeMsg`${describe}: neither stack records the resource; adopt it into ${m.toStack} with ${cdkdRemedy('cdkd import')}`
           );
         } else {
           finished.push(finishedOf(m));
@@ -813,7 +815,7 @@ export async function finishPendingMoves(input: {
         refusals.push(
           safeMsg`${describe}: ${m.toStack} already holds a different resource under ${m.to} ` +
             '(created by a deploy before the move finished). Delete or orphan that resource in ' +
-            safeMsg`${m.toStack}, then re-run cdkd refactor`
+            safeMsg`${m.toStack}, then re-run ${cdkdRemedy('cdkd refactor')}`
         );
       } else {
         finished.push(finishedOf(m));

@@ -4,6 +4,7 @@ import {
   UpdateStackCommand,
   waitUntilStackUpdateComplete,
 } from '@aws-sdk/client-cloudformation';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from '../confirm-prompt.js';
@@ -393,7 +394,7 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
     refusal:
       'The CloudFormation stack retirement confirmation prompt cannot run in a ' +
       'non-interactive environment. Pass -y / --yes on ' +
-      'cdkd import --migrate-from-cloudformation. ' +
+      `${cdkdRemedy('cdkd import', '--migrate-from-cloudformation')}. ` +
       'Alternatively, run it from a real terminal. ' +
       'Nothing has been written yet: cdkd state and the CloudFormation stack are ' +
       'unchanged, so re-running with -y / --yes is the whole recovery.',

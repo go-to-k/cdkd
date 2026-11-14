@@ -1,3 +1,4 @@
+import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import type { IAMUserGroupProvider } from '../iam-user-group-provider.js';
 import {
   AddUserToGroupCommand,
@@ -31,7 +32,7 @@ import {
   MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
   MEMBERSHIP_MALFORMED_USERS_SKIP_REASON,
   MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON,
-  MEMBERSHIP_SECRET_DERIVED_REPAIR,
+  membershipSecretDerivedRepair,
   readPrincipalSides,
   DEPLOY_SKIP_CAVEAT,
 } from './shared.js';
@@ -118,7 +119,7 @@ export async function updateUserToGroupAddition(
     subject: 'IAM UserToGroupAddition',
     nothingDone: 'no user was added to or removed from a group',
     names: 'user names',
-    secretDerivedRepair: MEMBERSHIP_SECRET_DERIVED_REPAIR,
+    secretDerivedRepair: membershipSecretDerivedRepair(),
     resourceType,
     logicalId,
     physicalId,
@@ -419,7 +420,7 @@ export async function deleteUserToGroupAddition(
 
     if (secretUserNotMember) {
       this.logger.warn(
-        safeMsg`UserToGroupAddition ${logicalId}: a user the secret's CURRENT value names is not in the group. The value may have rotated since the membership was added, so a user only the OLD value named may still be a member; or an earlier cdkd run already removed it, or that user was deleted first. The record is KEPT rather than read as deleted: remove any old user from the group by hand (the users the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
+        safeMsg`UserToGroupAddition ${logicalId}: a user the secret's CURRENT value names is not in the group. The value may have rotated since the membership was added, so a user only the OLD value named may still be a member; or an earlier cdkd run already removed it, or that user was deleted first. The record is KEPT rather than read as deleted: remove any old user from the group by hand (the users the current value names are done), then drop this record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command}, or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
       );
       return { outcome: 'skipped', reason: MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON };
     }

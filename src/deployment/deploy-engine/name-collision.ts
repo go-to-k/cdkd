@@ -1,4 +1,9 @@
-import { isInertUnquoted, pasteableCommand } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  isInertUnquoted,
+  pasteableCommand,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import {
   getCurrentStackInstanceId,
   getCurrentStackName,
@@ -99,7 +104,7 @@ export function generatedReplacementHolderAdvice(input: {
   if (input.stackName.includes('~')) {
     return (
       lead +
-      `adopt it through the top-level stack with \`cdkd import\` (then delete ${old} by hand)` +
+      `adopt it through the top-level stack with ${proseQuoted(cdkdRemedy('cdkd import'), '`')} (then delete ${old} by hand)` +
       tail
     );
   }
@@ -115,8 +120,8 @@ export function generatedReplacementHolderAdvice(input: {
   return (
     lead +
     (command === undefined
-      ? `adopt it with \`cdkd import\``
-      : `adopt it with \`${command}\` (using its physical id where the type records another)`) +
+      ? `adopt it with ${proseQuoted(cdkdRemedy('cdkd import'), '`')}`
+      : `adopt it with ${proseQuoted(command, '`')} (using its physical id where the type records another)`) +
     ` and then delete ${old} by hand` +
     tail
   );

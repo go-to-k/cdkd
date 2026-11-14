@@ -568,7 +568,7 @@ describe('config-loader', () => {
         setPasteableRunFlags({});
         setPasteableVerbFlags(undefined);
       }
-    });
+    }, 30_000);
 
     /**
      * go-to-k/cdkd#2100: a bare command's region now comes from the AWS

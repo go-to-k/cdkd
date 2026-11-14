@@ -11,6 +11,7 @@ import {
   resolveAssemblyPath,
 } from '../../../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { getLogger } from '../../../utils/logger.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
@@ -172,7 +173,7 @@ export function nestedChildWorkItem(
                   'the synth output names no template file for its row ' +
                     "(Metadata['aws:asset:path']), so scrub has no template to learn its " +
                     'secrets from',
-                  'Re-synthesize with a CDK version that emits it, then re-run cdkd scrub.'
+                  `Re-synthesize with a CDK version that emits it, then re-run ${cdkdRemedy('cdkd scrub')}.`
                 ),
               };
         return {

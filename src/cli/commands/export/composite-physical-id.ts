@@ -1,7 +1,10 @@
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   type CommandArg,
+  proseQuoted,
+  shellQuote,
 } from '../../../utils/pasteable-command.js';
 import { isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
@@ -347,7 +350,7 @@ function maskedIdentifierAttributeReason(field: string, logicalId: string): stri
   // the key JSON-escaped, byte-for-byte.
   const subject = isPasteableIdent(logicalId)
     ? logicalId
-    : `this resource (its logical id is not a plain identifier; read it with 'cdkd state show')`;
+    : `this resource (its logical id is not a plain identifier; read it with ${proseQuoted(cdkdRemedy('cdkd state show'))})`;
   return (
     `cdkd state holds only the redaction mask ('***') at attributes.${field} for ${subject}, ` +
     `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
@@ -401,14 +404,15 @@ export function importRepairCommand(logicalId: string): string {
   // id where `cdkd import` declares `[stack]`). `isPasteableIdent` admits
   // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$`, which has no `=`, so it answers both.
   const named = isPasteableIdent(logicalId);
-  return `${
-    pasteableCommand('cdkd import', [
-      { hole: 'stack' },
-      named
-        ? { flag: '--resource', value: logicalId, hole: 'logicalId' }
-        : { flag: '--resource', hole: 'logicalId' },
-    ]).command
-  }=${commandHole('physicalId')} --force`;
+  // The `<id>=<physicalId>` pair is ONE word, built here, so the run flags
+  // `pasteableCommand` appends land after `--force`, never between the pair's
+  // halves (go-to-k/cdkd#6262).
+  const pair = `${named ? shellQuote(logicalId) : commandHole('logicalId')}=${commandHole('physicalId')}`;
+  return pasteableCommand('cdkd import', [
+    { hole: 'stack' },
+    { literal: `--resource ${pair}` },
+    { literal: '--force' },
+  ]).command;
 }
 
 /**
@@ -528,7 +532,7 @@ function recordedArnIdentifier(options: {
         `cdkd's physical id for ${resourceType} is ${shapeWord} '${physicalIdShape}', but ` +
           `CloudFormation IMPORT identifies the resource by its ${field}, which cdkd state does ` +
           `not record usably for ${quotedOrNotShown(logicalId)} (${recordedNote}). Re-deploy the stack once so ` +
-          `cdkd records ${field}, then re-run cdkd export.`
+          `cdkd records ${field}, then re-run ${cdkdRemedy('cdkd export')}.`
       );
     },
   };

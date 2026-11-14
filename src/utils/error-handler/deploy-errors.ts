@@ -1,9 +1,10 @@
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import {
-  type CommandArg,
+  cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
   quotedOrDescribed,
+  type CommandArg,
   withheldTargetClause,
 } from '../pasteable-command.js';
 import { plainIdentOr } from '../display-safe.js';
@@ -121,7 +122,7 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
   constructor(resourceType: string, logicalId: string, suggestion?: string, cause?: Error) {
     const tail = suggestion
       ? suggestion
-      : 'use cdkd deploy with --replace, or change the resource definition to create a new version';
+      : `use ${cdkdRemedy('cdkd deploy')} with --replace, or change the resource definition to create a new version`;
     super(
       `${resourceType} (${logicalId}) cannot be updated in place: ${tail}.`,
       'RESOURCE_UPDATE_NOT_SUPPORTED',
@@ -438,7 +439,7 @@ export class StackHasActiveImportsError extends CdkdError {
         `This matches CloudFormation's strong-reference semantics — exports are\n` +
         `protected as long as a consumer references them.\n\n` +
         `To proceed:\n` +
-        `  1. Destroy the consumer first: cdkd destroy <consumer-stack>\n` +
+        `  1. Destroy the consumer first: ${pasteableCommand('cdkd destroy', [{ hole: 'consumer-stack' }]).command}\n` +
         `  2. Or remove the Fn::ImportValue from the consumer's template\n` +
         `     (e.g. inline the value, or refactor) and re-deploy the consumer,\n` +
         `     then retry this destroy.\n\n` +
@@ -517,7 +518,7 @@ export class ExportInUseError extends CdkdError {
                 `  - ${plainOrDescribed(u.stackName, 'stack name')} (${plainOrDescribed(u.region, 'region')})`
             )
             .join('\n') +
-          `\nCheck that their records can be read (\`cdkd state show <stack>\`), then retry.\n\n`;
+          `\nCheck that their records can be read (${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command}), then retry.\n\n`;
     super(
       `Cannot deploy stack ${quotedOrDescribed(producerStack, 'stack name')} (${plainOrDescribed(producerRegion, 'region')}): ` +
         `this deploy would change or remove exports that other stacks may still import via Fn::ImportValue.\n` +

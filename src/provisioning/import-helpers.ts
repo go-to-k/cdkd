@@ -26,7 +26,7 @@ import {
   isPlainIdent,
   SECRET_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
-import { commandHole } from '../utils/pasteable-command.js';
+import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
 import { COMPOSITE_ID_SEPARATOR, resourceTypeShown } from './composite-id.js';
 
 /**
@@ -39,6 +39,24 @@ import { COMPOSITE_ID_SEPARATOR, resourceTypeShown } from './composite-id.js';
  */
 export function remedyLogicalId(logicalId: string): string {
   return isPasteableIdent(logicalId) ? logicalId : commandHole('logicalId');
+}
+
+/**
+ * `cdkd import <stack> --resource <assignment>` as the remedy for a refused
+ * create, with the run's typed flags appended (go-to-k/cdkd#6262). The stack
+ * is named only when plain, else the quoted `'<stackName>'` hole; every other
+ * word is cdkd-built or already gated by the caller. A BARE `<name>`
+ * placeholder in `assignment` is quoted too: unquoted it is two redirections,
+ * and the `>` would swallow the `--aws-emulator` appended after it.
+ */
+export function importRemedyCommand(stackName: string | undefined, assignment: string): string {
+  return pasteableCommand('cdkd import', [
+    stackName !== undefined && isPasteableIdent(stackName)
+      ? { literal: stackName }
+      : { hole: 'stackName' },
+    { literal: '--resource' },
+    { literal: assignment.replace(/(?<!')<([A-Za-z]+)>(?!')/g, (_m, n: string) => commandHole(n)) },
+  ]).command;
 }
 
 /**

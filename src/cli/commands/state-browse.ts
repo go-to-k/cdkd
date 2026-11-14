@@ -11,6 +11,7 @@
  */
 import type { StackStateRef } from '../../state/s3-state-backend.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { cdkdRemedy, pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   isInteractiveTerminal,
   selectFromList,
@@ -44,7 +45,7 @@ export interface BrowseDeps {
 export function nonInteractiveBrowseRefusal(): CdkdError {
   return new CdkdError(
     'cdkd state browse needs an interactive terminal. Without one, use ' +
-      'cdkd state list, cdkd state resources <stack> and cdkd state show <stack>.',
+      `${cdkdRemedy('cdkd state list')}, ${pasteableCommand('cdkd state resources', [{ hole: 'stack' }]).command} and ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command}.`,
     'NON_INTERACTIVE'
   );
 }

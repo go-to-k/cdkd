@@ -3,7 +3,12 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { getLogger, type ConsoleLogger } from '../../../utils/logger.js';
-import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  deployReplaceCommand,
+  pasteableCommand,
+  proseQuoted,
+} from '../../../utils/pasteable-command.js';
 import { PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -15,7 +20,6 @@ import { AwsClients, runWithStackAwsClients } from '../../../utils/aws-clients.j
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import { hasOwnKey, defineOwnKey } from '../../../utils/own-keys.js';
-import { commandHole } from '../../../utils/pasteable-command.js';
 import type { ProducerRegionEvidence } from '../../../deployment/producer-regions-scope.js';
 import {
   type ResourceState,
@@ -420,7 +424,7 @@ export async function runRevert(
                 (recordedCount > 0
                   ? ` The next 'cdkd drift' will report the same difference — ` +
                     (revertAgain === undefined
-                      ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
+                      ? `re-run ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))} for this stack once the state write can succeed.`
                       : `re-run the command below once the state write can succeed.` +
                         `\nRevert with: ${revertAgain}`)
                   : '')
@@ -496,8 +500,8 @@ export async function runRevert(
         // has measured inert under a shell, and a reader who types the line
         // verbatim gets the quotes stripped rather than passed. The arity is
         // unchanged; only the bracket kind differs from `--help`.
-        `Re-run cdkd drift ${commandHole('stacks...')} to see the remaining drift, then ` +
-        `cdkd drift ${commandHole('stacks...')} --revert to retry.`
+        `Re-run ${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }]).command} to see the remaining drift, then ` +
+        `${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }, { literal: '--revert' }]).command} to retry.`
     );
   }
 }
