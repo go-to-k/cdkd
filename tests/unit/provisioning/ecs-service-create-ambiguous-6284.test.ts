@@ -307,6 +307,7 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
 
       expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
       expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+      expect(warned()).not.toMatch(/created during the attempt/);
     });
 
     it('only reports when the lookup cannot answer, even after a 2xx (name never measured)', async () => {
