@@ -153,7 +153,8 @@ fi
 BODY=""
 for attempt in 1 2 3 4 5 6 7; do
   STATUS="$(aws lambda invoke --function-name "${FUNCTION_NAME}" --region "${REGION}" \
-    --cli-binary-format raw-in-base64-out "${INVOKE_OUT}" --query 'StatusCode' --output text)"
+    --cli-binary-format raw-in-base64-out "${INVOKE_OUT}" --query 'StatusCode' --output text)" \
+    || { echo "FAIL: aws lambda invoke ${FUNCTION_NAME} failed" >&2; exit 1; }
   if [ "${STATUS}" != "200" ]; then
     echo "FAIL: invoke returned StatusCode ${STATUS}, expected 200" >&2
     exit 1
