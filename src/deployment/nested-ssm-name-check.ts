@@ -21,6 +21,7 @@
 import { childTemplateLoader } from './nested-output-templates.js';
 import { healSlashedSsmParameterNames } from './ssm-slashed-name-heal.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { SECRET_MASK } from './secret-redaction/pairs.js';
 import type { ChildTemplateLoader } from './masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StackState } from '../types/state.js';
@@ -37,12 +38,29 @@ export type NestedRecordReader = (
 export interface NestedSsmNameCheck {
   /** Rows whose child (or a descendant of it) holds a name to re-spell. */
   forcedRows: Set<string>;
+  /**
+   * Rows that would be forced but whose record holds a value cdkd stores
+   * masked: updating one would reach the redacted-read refusal (#2274) and
+   * fail a deploy of a stack nobody changed, so it is left for the next
+   * deploy that changes that nested stack (named, never forced, and the
+   * stack is still marked: the check would only find it again).
+   */
+  deferredRows: Set<string>;
   /** Every recorded child was read and is clean or in `forcedRows`. */
   complete: boolean;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Whether `value` holds the stored mask anywhere (a bounded walk). */
+function holdsMask(value: unknown, depth = 0): boolean {
+  if (depth > 64) return true;
+  if (typeof value === 'string') return value.includes(SECRET_MASK);
+  if (Array.isArray(value)) return value.some((item) => holdsMask(item, depth + 1));
+  if (isObject(value)) return Object.values(value).some((item) => holdsMask(item, depth + 1));
+  return false;
 }
 
 /** The template's nested-stack rows that have a nested-stack record. */
@@ -78,13 +96,20 @@ async function checkLevel(
   readRecord: NestedRecordReader
 ): Promise<NestedSsmNameCheck> {
   const forcedRows = new Set<string>();
+  const deferredRows = new Set<string>();
   let complete = true;
+  const force = (logicalId: string): void => {
+    const properties = records?.[logicalId]?.properties;
+    (holdsMask(properties) ? deferredRows : forcedRows).add(logicalId);
+  };
   await Promise.all(
     recordedNestedRows(template, records).rows.map(async (logicalId) => {
       const child = loader(logicalId);
-      // No template to judge the record by, or a cyclic tree (the deploy
-      // refuses that on its own): not checked.
-      if (child === undefined || chain.has(child.identity)) {
+      // No template in the assembly: no deploy of this child can run either
+      // (the provider refuses the row), so there is nothing to heal by.
+      if (child === undefined) return;
+      // A cyclic tree (the deploy refuses it on its own): not checked.
+      if (chain.has(child.identity)) {
         complete = false;
         return;
       }
@@ -100,7 +125,7 @@ async function checkLevel(
         return;
       }
       if (heals > 0) {
-        forcedRows.add(logicalId);
+        force(logicalId);
         return;
       }
       // A child that checked its own children is clean below.
@@ -114,11 +139,11 @@ async function checkLevel(
         new Set(chain).add(child.identity),
         readRecord
       );
-      if (below.forcedRows.size > 0) forcedRows.add(logicalId);
+      if (below.forcedRows.size > 0) force(logicalId);
       if (!below.complete) complete = false;
     })
   );
-  return { forcedRows, complete };
+  return { forcedRows, deferredRows, complete };
 }
 
 /**
@@ -139,7 +164,8 @@ export async function checkNestedSsmNames(args: {
   const { state, template, stackName, region, nestedTemplates, readRecord } = args;
   if (state.nestedSsmNamesChecked === true || !hasNestedStackRows(template)) return undefined;
   const loader = childTemplateLoader(nestedTemplates);
-  if (loader === undefined) return { forcedRows: new Set(), complete: false };
+  if (loader === undefined)
+    return { forcedRows: new Set(), deferredRows: new Set(), complete: false };
   return checkLevel(
     stackName,
     region,
@@ -189,6 +215,16 @@ export async function forcedChildrenChecked(args: {
     })
   );
   return verdicts.every(Boolean);
+}
+
+/** The line `cdkd deploy` and `cdkd diff` print for a row the check defers. */
+export function nestedSsmNameDeferredNote(logicalId: string): string {
+  return (
+    safeMsg`Nested stack ${logicalId}: a nested stack record below it holds an SSM parameter ` +
+    `name cdkd generated before go-to-k/cdkd#6272, but its Parameters read a value cdkd stores ` +
+    `masked, so it is not updated for that; the name is re-spelled by the next deploy that ` +
+    `changes this nested stack (go-to-k/cdkd#6282)`
+  );
 }
 
 /** The line `cdkd deploy` and `cdkd diff` print for a row the check updates. */

@@ -49,6 +49,7 @@ import { getCurrentNestedStackContext } from '../../provisioning/nested-stack-co
 import {
   checkNestedSsmNames,
   forcedChildrenChecked,
+  nestedSsmNameDeferredNote,
   nestedSsmNameRowNote,
 } from '../nested-ssm-name-check.js';
 import { refuseUnsafePlan } from './deploy-flow/plan-checks.js';
@@ -556,6 +557,8 @@ export async function doDeployWithPrefetch(
     // every recorded child was read (an adopted nested row's was not).
     const nestedCheck = await nestedSsmCheck;
     for (const row of nestedCheck?.forcedRows ?? []) engine.logger.info(nestedSsmNameRowNote(row));
+    for (const row of nestedCheck?.deferredRows ?? [])
+      engine.logger.info(nestedSsmNameDeferredNote(row));
     const marksNestedCheck =
       nestedCheck?.complete === true &&
       !Object.values(orphanPlan.adopted).some(

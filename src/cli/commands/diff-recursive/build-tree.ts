@@ -20,6 +20,7 @@ import {
 import { noEchoParameterNamesOf } from '../../../deployment/deploy-engine/noecho.js';
 import {
   checkNestedSsmNames,
+  nestedSsmNameDeferredNote,
   nestedSsmNameRowNote,
 } from '../../../deployment/nested-ssm-name-check.js';
 import { logger } from './logger.js';
@@ -319,6 +320,7 @@ export async function buildDiffTree(args: {
             (await stateBackend.getState(name, childRegion))?.state,
         });
   for (const row of nestedSsmCheck?.forcedRows ?? []) logger.info(nestedSsmNameRowNote(row));
+  for (const row of nestedSsmCheck?.deferredRows ?? []) logger.info(nestedSsmNameDeferredNote(row));
   let stackDiff: StackDiffResult;
   try {
     stackDiff = await computeStackDiff(

@@ -31,7 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn((m: string) => logged.push(m)),
-    warn: vi.fn(),
+    warn: vi.fn((m: string) => logged.push(m)),
     error: vi.fn(),
     child: () => fns,
   };
@@ -191,7 +191,7 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
     child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
     const readRecord = readerOver({ [CHILD]: child, [GRAND]: grandClean() });
     const result = await check(parentState(), readRecord);
-    expect(result).toEqual({ forcedRows: new Set(['Child']), complete: true });
+    expect(result).toEqual({ forcedRows: new Set(['Child']), deferredRows: new Set(), complete: true });
     // A child that heals itself checks its own children when its engine runs.
     expect(readRecord.mock.calls.map((c) => c[0])).toEqual([CHILD]);
   });
@@ -203,13 +203,14 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
     });
     expect(await check(parentState(), readRecord)).toEqual({
       forcedRows: new Set(['Child']),
+      deferredRows: new Set(),
       complete: true,
     });
   });
 
   it('forces nothing over a clean tree, and is complete', async () => {
     const readRecord = readerOver({ [CHILD]: childClean(), [GRAND]: grandClean() });
-    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), complete: true });
+    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: true });
     expect(readRecord.mock.calls.map((c) => c[0]).sort()).toEqual([CHILD, GRAND]);
   });
 
@@ -218,7 +219,7 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
       [CHILD]: { ...childClean(), nestedSsmNamesChecked: true },
       [GRAND]: stateOf(GRAND, { Param: ssmRecord(`/${generated(GRAND, 'Param')}`) }),
     });
-    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), complete: true });
+    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: true });
     expect(readRecord.mock.calls.map((c) => c[0])).toEqual([CHILD]);
   });
 
@@ -238,13 +239,12 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
     expect(readRecord).not.toHaveBeenCalled();
   });
 
-  it('is incomplete when a read fails, a template is missing, or there is no index', async () => {
+  it('is incomplete when a read fails or there is no index', async () => {
     const failing = readerOver({ [CHILD]: new Error('AccessDenied') });
     expect((await check(parentState(), failing))?.complete).toBe(false);
     const grandFails = readerOver({ [CHILD]: childClean(), [GRAND]: new Error('throttled') });
     expect((await check(parentState(), grandFails))?.complete).toBe(false);
     const clean = readerOver({ [CHILD]: childClean(), [GRAND]: grandClean() });
-    expect((await check(parentState(), clean, {}))?.complete).toBe(false);
     expect(
       await checkNestedSsmNames({
         state: parentState(),
@@ -254,14 +254,38 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
         nestedTemplates: undefined,
         readRecord: clean,
       })
-    ).toEqual({ forcedRows: new Set(), complete: false });
+    ).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: false });
+  });
+
+  it('treats a row whose template the assembly lacks as clean: no deploy of it can run', async () => {
+    const readRecord = readerOver({ [CHILD]: stateOf(CHILD, { Param: ssmRecord(`/${generated(CHILD, 'Param')}`) }) });
+    expect(await check(parentState(), readRecord, {})).toEqual({
+      forcedRows: new Set(),
+      deferredRows: new Set(),
+      complete: true,
+    });
+    expect(readRecord).not.toHaveBeenCalled();
+  });
+
+  it('defers, rather than forces, a row whose record holds a masked value', async () => {
+    const child = childClean();
+    child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
+    const readRecord = readerOver({ [CHILD]: child });
+    const state = stateOf(PARENT, {
+      Child: { ...nestedRecord(), properties: { Parameters: { In: 'prefix-***' } } },
+    });
+    expect(await check(state, readRecord)).toEqual({
+      forcedRows: new Set(),
+      deferredRows: new Set(['Child']),
+      complete: true,
+    });
   });
 
   it('treats a child with no record as clean, and a row with no record as unread', async () => {
     const readRecord = readerOver({});
-    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), complete: true });
+    expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: true });
     const none = readerOver({});
-    expect(await check(stateOf(PARENT, {}), none)).toEqual({ forcedRows: new Set(), complete: true });
+    expect(await check(stateOf(PARENT, {}), none)).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: true });
     expect(none).not.toHaveBeenCalled();
   });
 
@@ -475,9 +499,9 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
   });
 
-  it('skips, and does not mark, a row it would update whose Parameters read a masked value', async () => {
-    // Without the skip, the #2274 refusal would fail a deploy of a stack
-    // nobody changed; CloudFormation deploys it as a no-op.
+  it('defers, names and still marks a row whose Parameters read a masked value', async () => {
+    // Updating it would reach the #2274 redacted-read refusal and fail a
+    // deploy of a stack nobody changed; CloudFormation deploys it as a no-op.
     fs.writeFileSync(path.join(dir, 'other.json'), JSON.stringify(ssmTemplate()));
     nestedTemplates = { ...nestedTemplates, Other: path.join(dir, 'other.json') };
     const child = childClean();
@@ -517,6 +541,26 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     };
     await deploy(template);
     expect(childUpdates()).toHaveLength(0);
+    expect(logged.some((m) => m.includes('Nested stack Child') && m.includes('stores masked'))).toBe(true);
+    // The next deploy would only find it again: the record is marked.
+    expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
+  });
+
+  it.each([
+    ['is gone', () => undefined],
+    ['cannot be read', () => new Error('throttled')],
+  ] as const)('does not mark when the updated child’s record %s afterwards', async (_label, after) => {
+    fs.writeFileSync(path.join(dir, 'child.json'), JSON.stringify(ssmTemplate()));
+    const child = stateOf(CHILD, { Param: ssmRecord(`/${generated(CHILD, 'Param')}`) });
+    records = { [PARENT]: stateOf(PARENT, { Child: nestedRecord() }), [CHILD]: child };
+    runChildEngine = async (physicalId) => {
+      const value = after();
+      if (value === undefined) delete records[CHILD];
+      else records[CHILD] = value;
+      return { physicalId, wasReplaced: false, attributes: {} };
+    };
+    await deploy();
+    expect(childUpdates()).toHaveLength(1);
     expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
   });
 
