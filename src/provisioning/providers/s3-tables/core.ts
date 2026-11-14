@@ -217,8 +217,8 @@ export async function update(
  * Re-read a Table's attributes after an update (issue #6238): `VersionToken`
  * names the table's CURRENT metadata version, so the one recorded at create
  * goes stale. The map is `createTable`'s whole set (an `attributes` result
- * REPLACES the record's), and any failed or partial read returns the result
- * without one, so the recorded attributes carry forward instead.
+ * REPLACES the record's), and a failed read or one without `tableARN` returns
+ * the result without one, so the recorded attributes carry forward instead.
  */
 async function withTableAttributes(
   provider: S3TablesProvider,
