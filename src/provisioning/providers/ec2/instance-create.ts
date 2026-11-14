@@ -449,7 +449,9 @@ export async function createInstance(
         }
       }
 
-      const attributes = describedInstanceAttributes(instanceId, runningInstance);
+      const attributes = describedInstanceAttributes(instanceId, runningInstance, {
+        waited: waitsForRunning,
+      });
 
       this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
 

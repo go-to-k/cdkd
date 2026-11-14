@@ -50,12 +50,16 @@ import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failur
 
 const ACTIVE = {
   StreamDescription: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:describe' },
+  // The ACTIVE wait polls DescribeStreamSummary (go-to-k/cdkd#6242).
+  StreamDescriptionSummary: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:describe' },
 };
 // A DISTINCT ARN from the DescribeStream one on purpose: `UpdateMaxRecordSize`
 // must source its `StreamARN` from `resolveStreamArn` (DescribeStreamSummary).
 // With both fixtures carrying the same string, reading the wrong response field
 // would be undetectable.
-const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:summary', OpenShardCount: 1 } };
+const SUMMARY = {
+  StreamDescriptionSummary: { StreamARN: 'arn:summary', StreamStatus: 'ACTIVE', OpenShardCount: 1 },
+};
 
 /** The seven names AWS expands `ALL` into (measured us-east-1, 2026-08-12). */
 const ALL_SEVEN = [

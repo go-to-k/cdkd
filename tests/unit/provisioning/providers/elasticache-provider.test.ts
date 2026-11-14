@@ -65,7 +65,7 @@ describe('ElastiCacheProvider import', () => {
     expect(result).toEqual({ physicalId: 'adopted-cluster', attributes: {} });
     const call = mockEcSend.mock.calls[0][0];
     expect(call.constructor.name).toBe('DescribeCacheClustersCommand');
-    expect(call.input).toEqual({ CacheClusterId: 'adopted-cluster' });
+    expect(call.input).toEqual({ CacheClusterId: 'adopted-cluster', ShowCacheNodeInfo: true });
   });
 
   // The `aws:cdk:path` tag walk was removed in issue #1134: AWS rejects

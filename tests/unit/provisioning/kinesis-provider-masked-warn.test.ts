@@ -64,7 +64,9 @@ const TYPE = 'AWS::Kinesis::Stream';
 const ACTIVE = {
   StreamDescription: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:describe' },
 };
-const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:summary', OpenShardCount: 1 } };
+const SUMMARY = {
+  StreamDescriptionSummary: { StreamARN: 'arn:summary', StreamStatus: 'ACTIVE', OpenShardCount: 1 },
+};
 
 /** Distinctive, >= 8 chars, and a substring of nothing else in the message. */
 const SECRET_PLAINTEXT = 'kinesis2178-metrics-plaintext';

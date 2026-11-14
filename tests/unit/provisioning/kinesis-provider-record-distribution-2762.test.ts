@@ -50,7 +50,9 @@ const ACTIVE = {
 };
 // A DISTINCT ARN from the DescribeStream one: the strategy update must take
 // its `StreamARN` from `resolveStreamArn` (DescribeStreamSummary).
-const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:summary', OpenShardCount: 1 } };
+const SUMMARY = {
+  StreamDescriptionSummary: { StreamARN: 'arn:summary', StreamStatus: 'ACTIVE', OpenShardCount: 1 },
+};
 const ON_DEMAND = { StreamMode: 'ON_DEMAND' };
 
 function commandsOfType<T>(ctor: new (...args: never[]) => T): T[] {
@@ -278,15 +280,19 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
   });
 
   it('waits for the stream to settle ACTIVE after the strategy update, before the next call', async () => {
-    const statuses = ['ACTIVE', 'UPDATING', 'ACTIVE'];
+    // The ACTIVE wait polls DescribeStreamSummary (go-to-k/cdkd#6242): every
+    // summary after the strategy update answers UPDATING once, then ACTIVE.
+    const statuses = ['UPDATING', 'ACTIVE'];
+    let strategySent = false;
     mockSend.mockImplementation((cmd) => {
-      if (cmd instanceof DescribeStreamCommand) {
+      if (cmd instanceof UpdateStreamRecordDistributionStrategyCommand) strategySent = true;
+      if (cmd instanceof DescribeStreamSummaryCommand && strategySent) {
         const status = statuses.length > 1 ? statuses.shift() : statuses[0];
         return Promise.resolve({
-          StreamDescription: { StreamName: 'mystream', StreamStatus: status, StreamARN: 'arn:d' },
+          StreamDescriptionSummary: { StreamARN: 'arn:summary', StreamStatus: status },
         });
       }
-      return Promise.resolve(SUMMARY);
+      return Promise.resolve(cmd instanceof DescribeStreamCommand ? ACTIVE : SUMMARY);
     });
     vi.useFakeTimers();
     try {
@@ -305,12 +311,14 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
     const strategyAt = names.indexOf('UpdateStreamRecordDistributionStrategyCommand');
     expect(strategyAt).toBeGreaterThanOrEqual(0);
-    // The wait polls past UPDATING: two DescribeStream reads follow the update
-    // before anything else is sent.
-    expect(names.slice(strategyAt + 1, strategyAt + 3)).toEqual([
-      'DescribeStreamCommand',
-      'DescribeStreamCommand',
+    // The wait polls past UPDATING (two polls), then the trailing attribute
+    // read: nothing else is sent between the update and the settle.
+    expect(names.slice(strategyAt + 1)).toEqual([
+      'DescribeStreamSummaryCommand',
+      'DescribeStreamSummaryCommand',
+      'DescribeStreamSummaryCommand',
     ]);
+    expect(statuses).toEqual(['ACTIVE']);
   });
 
   it('reads the strategy back from DescribeStreamSummary when AWS reports one', async () => {

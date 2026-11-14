@@ -38,6 +38,7 @@ import { generatedNameFor } from '../../resource-name.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import type { CreateContext, ResourceCreateResult } from '../../../types/resource.js';
+import { functionAttributes } from './attributes.js';
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
 import {
   functionIdentityToken,
@@ -391,10 +392,7 @@ export async function create(
 
     return {
       physicalId: response.FunctionName || functionName,
-      attributes: {
-        Arn: response.FunctionArn,
-        FunctionName: response.FunctionName,
-      },
+      attributes: functionAttributes(response),
     };
   } catch (error) {
     if (functionCreated) markAuxiliaryFailure(error, logicalId);

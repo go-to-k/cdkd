@@ -40,7 +40,7 @@ import {
   staleRecordRemedy,
   usableHealedAttribute,
 } from './getatt-heal.js';
-import { guardedPhysicalIdFallback } from './getatt-refusals.js';
+import { guardedPhysicalIdFallback, refuseEndpointTheEngineLacks } from './getatt-refusals.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
 import { lookupResourceRecord } from './refs.js';
 import { noteAttributeSecrecy, recordSecretNamedRead } from './getatt/secrecy.js';
@@ -195,6 +195,12 @@ export async function resolveGetAtt(
   // placeholder) is masked too. The served value's leaves are recorded where
   // each branch serves it.
   recordSecretNamedRead(logicalId, undefined, context);
+
+  // go-to-k/cdkd#6242: an ElastiCache endpoint the cluster's engine does not
+  // have is refused BEFORE the flat-member assembly and the heal -- also when
+  // an older record holds a value for it, and with no re-read for a value no
+  // read can produce.
+  refuseEndpointTheEngineLacks(resolver, resource, logicalId, attributeName, context);
 
   // Check if attribute exists in resource.attributes
   // except an always-live attribute, which goes to constructAttribute's live

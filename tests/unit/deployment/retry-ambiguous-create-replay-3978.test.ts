@@ -139,9 +139,10 @@ function stubKinesis(createStreamOutcomes: Outcome[]): string[] {
         if (outcome instanceof Error) throw outcome;
         return {};
       }
-      if (name === 'DescribeStreamCommand') {
+      // The ACTIVE wait polls DescribeStreamSummary (go-to-k/cdkd#6242).
+      if (name === 'DescribeStreamSummaryCommand') {
         return {
-          StreamDescription: {
+          StreamDescriptionSummary: {
             StreamStatus: 'ACTIVE',
             StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/stream',
           },
