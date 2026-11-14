@@ -120,6 +120,7 @@ import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provide
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { LambdaWebFunctionRevisionProvider } from '../../../src/provisioning/providers/lambda-web-function-revision-provider.js';
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
+import { withStackScopeBeforeStateRead } from '../../../src/provisioning/resource-name/stack-scope.js';
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import {
@@ -582,7 +583,7 @@ describe('provider partial-create remedies (cdkd rollback --revert-failed)', () 
 });
 
 describe('provider remedies (other)', () => {
-  it('dynamodb-table/gsi-updates: an adopted index names cdkd drift <table> and drift --accept', async () => {
+  it('dynamodb-table/gsi-updates: an adopted index names cdkd drift <STACK> (not the table) and drift --accept', async () => {
     const KEY_SCHEMA = [{ AttributeName: 'gsipk', KeyType: 'HASH' }];
     const PROJECTION = { ProjectionType: 'ALL' };
     const live = {
@@ -605,31 +606,35 @@ describe('provider remedies (other)', () => {
       h.ddb.mockImplementation(async (cmd: { constructor: { name: string } }) =>
         cmd.constructor.name === 'UpdateTableCommand' ? {} : { Table: live }
       );
-      await new DynamoDBTableProvider().update(
-        'L',
-        'my-table',
-        'AWS::DynamoDB::Table',
-        {
-          BillingMode: 'PROVISIONED',
-          GlobalSecondaryIndexes: [
-            {
-              IndexName: 'gsi1',
-              KeySchema: KEY_SCHEMA,
-              Projection: PROJECTION,
-              ProvisionedThroughput: { ReadCapacityUnits: 25, WriteCapacityUnits: 5 },
-              WarmThroughput: { ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 8000 },
-            },
-          ],
-        },
-        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] }
+      // A nested child's scope: drift is run on the TOP-LEVEL stack.
+      await withStackScopeBeforeStateRead('AppStack~Child', () =>
+        new DynamoDBTableProvider().update(
+          'L',
+          'my-table',
+          'AWS::DynamoDB::Table',
+          {
+            BillingMode: 'PROVISIONED',
+            GlobalSecondaryIndexes: [
+              {
+                IndexName: 'gsi1',
+                KeySchema: KEY_SCHEMA,
+                Projection: PROJECTION,
+                ProvisionedThroughput: { ReadCapacityUnits: 25, WriteCapacityUnits: 5 },
+                WarmThroughput: { ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 8000 },
+              },
+            ],
+          },
+          { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] }
+        )
       );
       return lines(h.warn);
     });
     expect(plain).toContain(
-      'Run `cdkd drift my-table` to confirm, and `cdkd drift --accept` if AWS is the source of truth.'
+      'Run `cdkd drift AppStack` to confirm, and `cdkd drift --accept` if AWS is the source of truth.'
     );
+    expect(plain).not.toContain('cdkd drift my-table');
     expect(emulated).toContain(
-      `Run \`cdkd drift my-table ${WITH}\` to confirm, and \`cdkd drift --accept ${WITH}\` if AWS is the source of truth.`
+      `Run \`cdkd drift AppStack ${WITH}\` to confirm, and \`cdkd drift --accept ${WITH}\` if AWS is the source of truth.`
     );
   });
 

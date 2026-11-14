@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { getCurrentStackName } from '../../resource-name/stack-scope.js';
 import type { SecretMasker } from '../../../types/resource.js';
 import type { VectorIndexPlan } from '../../dynamodb-vector-indexes.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
@@ -313,8 +314,14 @@ export async function applyGsiUpdates(
         // actually tell them apart" trap, and a false positive would refuse
         // a perfectly valid deploy. A visible warning naming `cdkd drift` is
         // the honest answer for the shape half.
+        // `cdkd drift` takes a STACK, not the table name (go-to-k/cdkd#6262):
+        // the top-level stack of the one being deployed, which a nested
+        // child's drift is reported under; a hole outside a stack scope.
+        const stack = getCurrentStackName()?.split('~')[0];
         const driftCommand = pasteableCommand('cdkd drift', [
-          { value: physicalId, hole: 'stack', opts: { patternMatched: true } },
+          stack !== undefined
+            ? { value: stack, hole: 'stack', opts: { patternMatched: true } }
+            : { hole: 'stack' },
         ]).command;
         warn(
           `${this.indexScopeAt(name, physicalId, maskSecrets)} was adopted from AWS rather ` +
