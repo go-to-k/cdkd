@@ -352,6 +352,11 @@ the flags. On this command they resolve the following:
 | `Fn::ImportValue`, `Fn::GetStackOutput` | Resolved from the active state source. With neither flag, a warning names both. |
 | `{{resolve:...}}` in `Environment` | Looked up before any container starts. |
 | `{{resolve:...}}` in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
+| A secret attribute (`AWS::IAM::AccessKey`'s `SecretAccessKey`, a masked custom resource attribute) in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
+
+Where the table says a value is dropped or warned about, an element of
+`Command`, `EntryPoint` or a health-check command is refused instead (see
+below).
 
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.

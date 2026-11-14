@@ -128,6 +128,36 @@ describe('local run-task names per container in mixed mode', () => {
     expect(worker.unresolvedCommandElements).toBeUndefined();
   });
 
+  it("clears a base-record refusal the container's own record resolves (go-to-k/cdkd#6271)", async () => {
+    setActiveWorkloadAwsWiring(MIXED);
+    setAwsEmulatorServiceRouting({
+      realServices: ['DYNAMODB'],
+      override: { endpoint: 'https://127.0.0.1:9381' },
+      envOverrides: { web: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } },
+    });
+    const load = vi.fn(async () => ({ region: 'us-east-1', outputs: {}, resources: {} }));
+    mocks.createLocalStateProvider.mockReturnValue({ load, dispose: vi.fn() });
+    const unresolved = [{ field: 'Command', index: 1, reason: 'not in the emulator record' }];
+    const withArgv = (table: string, u?: unknown[]) => ({
+      containers: task(table).containers.map((c) => ({
+        ...c,
+        command: ['scan', u ? '' : table],
+        ...(u && { unresolvedCommandElements: u }),
+      })),
+    });
+    mocks.resolveEcsTaskTarget.mockReturnValue(withArgv('Real-Table'));
+    const base = withArgv('Emu-Table', unresolved);
+
+    await run(base as never, BASE_CONTEXT);
+
+    const web = base.containers.find((c) => c.name === 'web')!;
+    expect(web.command).toEqual(['scan', 'Real-Table']);
+    expect(web.unresolvedCommandElements).toBeUndefined();
+    expect(base.containers.find((c) => c.name === 'worker')!.unresolvedCommandElements).toEqual(
+      unresolved
+    );
+  });
+
   it('containers sharing a routed set share ONE load (its warnings are not repeated)', async () => {
     setActiveWorkloadAwsWiring(MIXED);
     setAwsEmulatorServiceRouting({

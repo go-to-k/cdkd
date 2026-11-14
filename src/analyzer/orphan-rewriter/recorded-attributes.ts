@@ -6,7 +6,7 @@ import {
 import { isAlwaysLiveAttribute } from '../../deployment/intrinsic-resolver/getatt.js';
 import { carriesSecretMask, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type { ResourceState } from '../../types/state.js';
-import { isSensitiveAttributeName } from '../../utils/stringify.js';
+import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
 import { isCustomResourceType } from '../../provisioning/custom-resource-secure-references.js';
 import { isReadableBag } from '../../types/state.js';
 import { isReadableResourceEntry } from '../../state/malformed-resources-bag.js';
@@ -44,23 +44,6 @@ export function isResolvableOrphanRecord(entry: unknown): boolean {
   const physicalId = (entry as { physicalId?: unknown }).physicalId;
   return typeof physicalId === 'string' && physicalId !== '';
 }
-
-/**
- * Attributes whose recorded VALUE is a secret although their NAME does not
- * pass `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
- * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
- * `x-api-key` value itself, recorded in plaintext at create.
- * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue` is a
- * credential Cloud Control records in plaintext (`cloud-control-provider.ts`);
- * that type has no `getAttribute`, so every read of it reaches `--force`'s
- * cache fallback. `AWS::IVS::StreamKey`'s `Value` is the stream key itself
- * (Cloud-Control-routed; `docs/_generated/provider-coverage.json` lists it).
- */
-const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
-  ['AWS::AppSync::ApiKey', ['ApiKey']],
-  ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
-  ['AWS::IVS::StreamKey', ['Value']],
-]);
 
 /**
  * Whether any OBJECT KEY inside `value`, at any depth, is credential-named: an
@@ -124,7 +107,7 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  *   records `SecretAccessKey` in plaintext, and no mask covers it;
  * - every attribute of a custom resource, whose `Data` names certify nothing
  *   and which a record written before `NoEcho` masking holds in plaintext;
- * - an attribute in {@link SECRET_VALUED_ATTRIBUTES}, a secret the name rule
+ * - an attribute {@link isSecretValuedAttribute} names, a secret the name rule
  *   cannot see, and a value holding a credential-named leaf at any depth.
  * The one reshaping the resolver applies is applied too: a legacy
  * comma-joined Route 53 `NameServers` string becomes the list it stands for.
@@ -139,7 +122,7 @@ export function servableRecordedAttribute(
     isAlwaysLiveAttribute(orphan.resourceType, attribute) ||
     isSensitiveAttributeName(attribute) ||
     isCustomResourceType(orphan.resourceType) ||
-    SECRET_VALUED_ATTRIBUTES.get(orphan.resourceType)?.includes(attribute)
+    isSecretValuedAttribute(orphan.resourceType, attribute)
   ) {
     return { served: false };
   }
@@ -198,7 +181,7 @@ export function unsplicableCachedAttribute(
 ): string | undefined {
   if (isSensitiveAttributeName(attribute)) return 'a credential-named attribute';
   if (isCustomResourceType(resourceType)) return "a custom resource's attribute";
-  if (SECRET_VALUED_ATTRIBUTES.get(resourceType)?.includes(attribute)) {
+  if (isSecretValuedAttribute(resourceType, attribute)) {
     return 'a secret-valued attribute';
   }
   if (carriesSecretMask(cached)) return `the redaction mask ('${SECRET_MASK}')`;

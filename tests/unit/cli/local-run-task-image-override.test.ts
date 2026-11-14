@@ -461,3 +461,66 @@ describe('localRunTaskCommand — unresolved command elements (go-to-k/cdkd#6271
     expect(h.runEcsTask).not.toHaveBeenCalled();
   });
 });
+
+describe('localRunTaskCommand — cross-stack Command elements (go-to-k/cdkd#6271)', () => {
+  it('refuses only AFTER the cross-stack post-pass, so a resolvable Fn::ImportValue element runs', async () => {
+    const actual = await vi.importActual<typeof import('../../../src/local/ecs-task-resolver.js')>(
+      '../../../src/local/ecs-task-resolver.js'
+    );
+    const stack = {
+      stackName: 'S',
+      displayName: 'S',
+      artifactId: 'S',
+      region: 'us-east-1',
+      dependencyNames: [],
+      template: {
+        Resources: {
+          TD: {
+            Type: 'AWS::ECS::TaskDefinition',
+            Properties: {
+              Family: 'fam',
+              NetworkMode: 'bridge',
+              ContainerDefinitions: [
+                {
+                  Name: 'app',
+                  Image: 'public.ecr.aws/docker/library/busybox:1.36',
+                  Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    h.task = actual.resolveEcsTaskTarget('TD', [stack as never]);
+    const resolveImport = vi.fn().mockResolvedValue('producer-bucket');
+    const { createLocalStateProvider } = await import(
+      '../../../src/cli/commands/local-state-source.js'
+    );
+    vi.mocked(createLocalStateProvider).mockReturnValue({
+      load: vi.fn().mockResolvedValue(undefined),
+      buildCrossStackResolver: vi.fn().mockResolvedValue({
+        resolveImport,
+        resolveGetStackOutput: vi.fn().mockResolvedValue(undefined),
+      }),
+      dispose: vi.fn(),
+    } as never);
+    vi.mocked(detectEcsImageResolutionNeeds).mockReturnValue({
+      needsCrossStackResolver: true,
+    } as never);
+
+    try {
+      await run(['--from-state']);
+    } finally {
+      vi.mocked(createLocalStateProvider).mockReturnValue(undefined);
+      vi.mocked(detectEcsImageResolutionNeeds).mockReturnValue({
+        needsCrossStackResolver: false,
+      } as never);
+    }
+
+    expect(resolveImport).toHaveBeenCalledWith('Producer-Bucket');
+    expect(h.runEcsTask).toHaveBeenCalledTimes(1);
+    const ran = h.runEcsTask.mock.calls[0]![0] as { containers: { command?: string[] }[] };
+    expect(ran.containers[0]!.command).toEqual(['--bucket', 'producer-bucket']);
+  });
+});

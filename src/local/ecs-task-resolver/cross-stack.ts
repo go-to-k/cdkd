@@ -1,6 +1,6 @@
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { substituteAgainstStateAsync, type SubstitutionContext } from '../state-resolver.js';
-import { argvLiteral } from './container.js';
+import { argvValue } from './container.js';
 import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
@@ -167,15 +167,12 @@ export async function applyCrossStackResolverToTask(
           continue;
         }
         const sub = await substituteAgainstStateAsync(rawElement, secretContext);
-        const literal = sub.kind === 'literal' ? argvLiteral(sub.value) : undefined;
-        if (literal !== undefined) {
-          target[u.index] = literal;
+        const arg = sub.kind === 'literal' ? argvValue(sub.value) : { reason: sub.reason };
+        if ('value' in arg) {
+          target[u.index] = arg.value;
           continue;
         }
-        remaining.push({
-          ...u,
-          reason: sub.kind === 'literal' ? 'resolved to a non-string value' : sub.reason,
-        });
+        remaining.push({ ...u, reason: arg.reason });
       }
       if (remaining.length > 0) container.unresolvedCommandElements = remaining;
       else delete container.unresolvedCommandElements;
