@@ -487,7 +487,8 @@ export async function deployWithoutChanges(
         [],
         currentState,
         currentState.resources,
-        currentEtag === undefined
+        currentEtag === undefined,
+        effectiveTemplate
       );
   clock.lap('no-change path');
 

@@ -867,6 +867,7 @@
         "created-before-failure-revert",
         "custom-resource-noecho-nested",
         "custom-resource-resolved-secret",
+        "depends-on-flip",
         "destroy-nested-cross-region",
         "export-nested-stack",
         "generated-name-lifecycle",
@@ -894,6 +895,9 @@
           "literal"
         ],
         "custom-resource-resolved-secret": [
+          "literal"
+        ],
+        "depends-on-flip": [
           "literal"
         ],
         "destroy-nested-cross-region": [
@@ -8755,6 +8759,7 @@
         "cross-stack-export-in-use",
         "cross-stack-secret-import",
         "data-pipeline",
+        "depends-on-flip",
         "drift-revert-arrays",
         "dynamodb-globaltable",
         "event-driven",
@@ -8872,6 +8877,10 @@
         ],
         "data-pipeline": [
           "l2"
+        ],
+        "depends-on-flip": [
+          "l1",
+          "literal"
         ],
         "drift-revert-arrays": [
           "l2"

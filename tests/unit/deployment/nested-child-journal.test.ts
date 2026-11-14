@@ -109,6 +109,7 @@ import {
   dropSettledNestedJournals,
   getNestedRevertRun,
   nestedPendingSnapshot,
+  recordChildTemplateDependencies,
   revertNestedChildFromJournal,
   revertedNestedRowIds,
   type NestedRevertRun,
@@ -469,6 +470,72 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.outputs).toEqual({ QueueUrl: 'new-url' });
     expect(h.exportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
+
+  describe('previousDependencies (go-to-k/cdkd#6314)', () => {
+    const q = (dependencies?: string[]) => ({
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'p',
+      ...(dependencies && { dependencies }),
+    });
+    const savedResources = (h: ReturnType<typeof harness>) =>
+      (h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState).resources;
+
+    it('puts back the ids the child success trimmed, the OLDEST segment winning', async () => {
+      const h = harness({
+        state: childState({ U: q(), X: q(), Y: q(['U']) }),
+        segments: [
+          // Older than the run's own: it would win if the run filter let it in.
+          seg('run-other', [], { previousDependencies: { Y: [] } }),
+          seg('run-1', ['U'], { previousDependencies: { X: ['U'], Y: ['U', 'Gone'] } }),
+          seg('run-1', [], { previousDependencies: { X: ['Y'] } }),
+        ],
+      });
+
+      await h.run('run-1');
+
+      const resources = savedResources(h);
+      expect(resources['X']!.dependencies).toEqual(['U']);
+      expect(resources['Y']!.dependencies).toEqual(['U', 'Gone']);
+      expect(resources['U']).toEqual({ reverted: true });
+    });
+
+    it('a record an older segment of the run touched keeps what its replay put back', async () => {
+      const h = harness({
+        state: childState({ U: q(), X: q() }),
+        segments: [
+          seg('run-1', ['X']),
+          seg('run-1', [], { previousDependencies: { X: ['U'] } }),
+        ],
+      });
+
+      await h.run('run-1');
+
+      expect(savedResources(h)['X']).toEqual({ reverted: true });
+    });
+
+    it('restores nothing that would record a cycle', async () => {
+      const h = harness({
+        state: childState({ W: q(['X']), X: q() }),
+        segments: [seg('run-1', [], { previousDependencies: { X: ['W'] } })],
+      });
+
+      await h.run('run-1');
+
+      expect(savedResources(h)['X']!.dependencies).toBeUndefined();
+    });
+
+    it('restores nothing when a replayed op failed', async () => {
+      replay.failuresFor.add('U');
+      const h = harness({
+        state: childState({ U: q(), X: q() }),
+        segments: [seg('run-1', ['U'], { previousDependencies: { X: ['U'] } })],
+      });
+
+      await expect(h.run('run-1')).rejects.toThrow();
+
+      expect(savedResources(h)['X']!.dependencies).toBeUndefined();
+    });
   });
 
   it('an EMPTY segment for the run is a successful no-op, not a refusal', async () => {
@@ -922,6 +989,32 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
   });
 });
 
+describe('recordChildTemplateDependencies (go-to-k/cdkd#6314)', () => {
+  const args = (runId: string | undefined, segments: RollbackJournalSegment[]) => ({
+    stateBackend: { saveState: vi.fn().mockResolvedValue('e2') },
+    child: CHILD,
+    region: REGION,
+    state: childState({ A: { resourceType: 'T', physicalId: 'a' }, B: { resourceType: 'T', physicalId: 'b' } }),
+    etag: 'e1',
+    segments,
+    runId,
+    logger: { debug: vi.fn(), warn: vi.fn() },
+  });
+
+  it('writes the newest run segment lists over the etag', async () => {
+    const a = args('run-1', [seg('run-1', [], { templateDependencies: { A: ['B'] } })]);
+    await recordChildTemplateDependencies(a);
+    expect(a.stateBackend.saveState).toHaveBeenCalledOnce();
+    expect(a.stateBackend.saveState.mock.calls[0]![3]).toEqual({ expectedEtag: 'e1' });
+  });
+
+  it('a deploy with no run id writes nothing, even over a run-less segment', async () => {
+    const a = args(undefined, [seg(undefined, [], { templateDependencies: { A: ['B'] } })]);
+    await recordChildTemplateDependencies(a);
+    expect(a.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+});
+
 describe('nestedPendingSnapshot / revertedNestedRowIds (#3754)', () => {
   it('copies outputs, exportNames, imports and outputReads — and only what the record holds', () => {
     const state = {
@@ -1099,7 +1192,10 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
 
   it('hands beforeDelete the record re-read under the child lock, not the walk snapshot', async () => {
     const t = tree();
-    const fresh = { state: { resources: { Imported: { resourceType: 'AWS::Kinesis::Stream' } } } };
+    const fresh = {
+      state: { resources: { Imported: { resourceType: 'AWS::Kinesis::Stream' } } },
+      etag: 'fresh-etag',
+    };
     let locked = false;
     t.lockManager.acquireLockWithRetry.mockImplementation(async () => {
       locked = true;
@@ -1124,7 +1220,8 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
       beforeDelete,
     });
 
-    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', fresh.state);
+    // go-to-k/cdkd#6314: with the etag of that read, for a save under the lock.
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', fresh.state, 'fresh-etag');
   });
 
   it.each([
@@ -1148,7 +1245,7 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
       beforeDelete,
     });
 
-    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined, undefined);
   });
 
   it('hands beforeDelete no record when the child state cannot be read', async () => {
@@ -1170,7 +1267,7 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
       beforeDelete,
     });
 
-    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined, undefined);
   });
 
   // The backend REPORTS a failed DeleteObject as `false` (#4402): that is a

@@ -328,6 +328,143 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     ]);
   });
 
+  describe('the ROOT success writes the child template dependencies (go-to-k/cdkd#6314)', () => {
+    const child = (resources: Record<string, ResourceState>): StackState => ({
+      version: 8,
+      stackName: `${STACK}~Child`,
+      region: REGION,
+      resources,
+      outputs: {},
+      lastModified: 0,
+    });
+    const childSaves = (backend: Harness['backend']) =>
+      backend.saveState.mock.calls.filter((c) => c[0] === `${STACK}~Child`);
+    const pending = (runId: string, templateDependencies: Record<string, string[]>) => ({
+      runId,
+      reason: 'nested-pending-parent' as const,
+      operations: [],
+      templateDependencies,
+    });
+
+    it.each([
+      ['change path', new Map([['Q', createChange('Q')]]), ['Q']],
+      ['no-change path', new Map<string, ResourceChange>(), []],
+    ])('%s: the newest segment of this run wins, saved over the etag read under the lock', async (_label, changes, ids) => {
+      const { engine, backend } = build({
+        nested: false,
+        changes,
+        resources: { Child: record('Child', NESTED) },
+        childState: child({ A: record('A'), B: record('B') }),
+        childJournal: {
+          segments: [pending(RUN, { A: ['B', 'Old'] }), pending(RUN, { A: ['B'] }), pending('run-other', { B: ['A'] })],
+        },
+      });
+
+      await engine.deploy(STACK, templateOf(ids as string[]));
+
+      const saves = childSaves(backend);
+      expect(saves).toHaveLength(1);
+      const saved = saves[0]![2] as StackState;
+      expect(saved.resources['A']!.dependencies).toEqual(['B']);
+      expect(saved.resources['B']!.dependencies).toEqual([]);
+      expect(saves[0]![3]).toEqual({ expectedEtag: 'c0' });
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toContain(`${STACK}~Child`);
+    });
+
+    it('writes nothing for another run, or for a list that would record a cycle', async () => {
+      const bare = { runId: RUN, reason: 'nested-pending-parent' as const, operations: [] };
+      const cases: Array<[Partial<RollbackJournalSegment>[], Record<string, ResourceState>]> = [
+        [[pending('run-other', { A: ['B'] })], { A: record('A'), B: record('B') }],
+        [[pending(RUN, { A: ['B'] })], { A: record('A'), B: { ...record('B'), dependencies: ['A'] } }],
+        // This run's NEWEST segment decides: it carries no list, so none is written.
+        [[pending(RUN, { A: ['B'] }), bare], { A: record('A'), B: record('B') }],
+      ];
+      for (const [segments, resources] of cases) {
+        const { engine, backend } = build({
+          nested: false,
+          changes: new Map([['Q', createChange('Q')]]),
+          resources: { Child: record('Child', NESTED) },
+          childState: child(resources),
+          childJournal: { segments },
+        });
+
+        await engine.deploy(STACK, templateOf(['Q']));
+
+        expect(childSaves(backend)).toEqual([]);
+      }
+    });
+
+    const base = (extra: Partial<Parameters<typeof build>[0]> = {}) =>
+      build({
+        nested: false,
+        changes: new Map([['Q', createChange('Q')]]),
+        resources: { Child: record('Child', NESTED) },
+        childState: child({ A: record('A'), B: record('B') }),
+        childJournal: { segments: [pending(RUN, { A: ['B'] })] },
+        ...extra,
+      });
+
+    it('a failed child save warns, and the child journal is still deleted', async () => {
+      const { engine, backend } = base();
+      backend.saveState.mockImplementation((name: string) =>
+        name === `${STACK}~Child` ? Promise.reject(new Error('etag conflict')) : Promise.resolve('etag-1')
+      );
+      const { getLogger } = await import('../../../src/utils/logger.js');
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childSaves(backend)).toHaveLength(1);
+      expect(vi.mocked(getLogger().warn)).toHaveBeenCalledWith(
+        expect.stringContaining('Could not record the template')
+      );
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toContain(`${STACK}~Child`);
+    });
+
+    it('writes nothing without an etag from the locked read, or an unreadable orphans container', async () => {
+      const noEtag = base();
+      const read = noEtag.backend.getState.getMockImplementation() as (
+        name: string
+      ) => Promise<{ state: StackState; etag?: string } | null>;
+      noEtag.backend.getState.mockImplementation(async (name: string) => {
+        const data = await read(name);
+        return name === `${STACK}~Child` && data ? { state: data.state } : data;
+      });
+      await noEtag.engine.deploy(STACK, templateOf(['Q']));
+      expect(childSaves(noEtag.backend)).toEqual([]);
+
+      const badOrphans = base({
+        childState: { ...child({ A: record('A'), B: record('B') }), orphans: 'x' as never },
+      });
+      await badOrphans.engine.deploy(STACK, templateOf(['Q']));
+      expect(childSaves(badOrphans.backend)).toEqual([]);
+    });
+
+    it('a grandchild record gains its lists too', async () => {
+      const GRAND = `${STACK}~Child~Grand`;
+      const { engine, backend } = base({
+        childState: child({ Grand: record('Grand', NESTED) }),
+        childJournal: { segments: [] },
+      });
+      const grand: StackState = { ...child({ A: record('A'), B: record('B') }), stackName: GRAND };
+      const read = backend.getState.getMockImplementation() as (
+        name: string
+      ) => Promise<{ state: StackState; etag?: string } | null>;
+      backend.getState.mockImplementation((name: string) =>
+        name === GRAND ? Promise.resolve({ state: grand, etag: 'g0' }) : read(name)
+      );
+      backend.loadRollbackJournal.mockImplementation((name: string) =>
+        Promise.resolve(name === GRAND ? { segments: [pending(RUN, { A: ['B'] })] } : name === STACK ? null : { segments: [] })
+      );
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      const saves = backend.saveState.mock.calls.filter((c) => c[0] === GRAND);
+      expect(saves).toHaveLength(1);
+      expect((saves[0]![2] as StackState).resources['A']!.dependencies).toEqual(['B']);
+      expect(saves[0]![3]).toEqual({ expectedEtag: 'g0' });
+    });
+  });
+
   it('CONTROL: the ROOT no-change path deletes the child journal too', async () => {
     const { engine, backend } = build({
       nested: false,

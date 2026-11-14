@@ -109,7 +109,8 @@ export async function settleSuccessfulDeploy(
       completedOperations,
       currentState,
       newState.resources,
-      currentEtag === undefined
+      currentEtag === undefined,
+      template
     ),
     engine.exportIndexStore
       ? engine.exportIndexStore.updateForStack(

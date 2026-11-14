@@ -115,6 +115,8 @@ export async function loadJournaledOrphans(
     deployRunId?: string;
     /** What then happens to an unreadable journal; destroy's by default. */
     unreadableOutcome?: string;
+    /** Handed the loaded segments (go-to-k/cdkd#6314), so no caller reads the journal twice. */
+    onSegments?: (segments: readonly RollbackJournalSegment[]) => void;
   } = {}
 ): Promise<JournaledOrphans> {
   let segments: RollbackJournalSegment[];
@@ -134,6 +136,7 @@ export async function loadJournaledOrphans(
     );
     return { ...NONE, unreadable: true };
   }
+  options.onSegments?.(segments);
   // Over EVERY segment, as `cdkd rollback` runs it: a newer nested
   // pending-parent segment's completed CREATE is supersede evidence too.
   const physicalIdOnly = (ops: readonly CompletedOperation[]): CompletedOperation[] =>
@@ -476,6 +479,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
   ctx: RollbackExecutorContext;
   isInterrupted?: () => boolean;
   logger: Logger;
+  /** See `loadJournaledOrphans`'s option of the same name. */
+  onSegments?: (segments: readonly RollbackJournalSegment[]) => void;
 }): Promise<SuccessSettleOutcome> {
   const { stateBackend, stackName, region, stateResources, newerOperations, ctx, logger } = args;
   const stack = displayIdent(stackName);
@@ -492,6 +497,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
         newerOperations,
         ...(args.deployRunId !== undefined && { deployRunId: args.deployRunId }),
         unreadableOutcome: 'the successful deploy removes the journal',
+        ...(args.onSegments !== undefined && { onSegments: args.onSegments }),
       }
     );
   } catch (err) {

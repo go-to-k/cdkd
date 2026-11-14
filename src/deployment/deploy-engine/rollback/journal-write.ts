@@ -39,7 +39,10 @@ export async function writeRollbackJournalSegment(
    * nothing to undo, as opposed to having no record at all — and carries the
    * child's pre-deploy outputs.
    */
-  nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'>
+  nestedPending?: Pick<
+    RollbackJournalSegment,
+    'previousOutputs' | 'previousCrossStackReads' | 'previousDependencies' | 'templateDependencies'
+  >
 ): Promise<boolean> {
   // A segment with no operations carries nothing to revert — skip it so a
   // failure before any resource completed does not create an empty journal.
@@ -83,6 +86,13 @@ export async function writeRollbackJournalSegment(
       }),
       ...(nestedPending?.previousCrossStackReads && {
         previousCrossStackReads: nestedPending.previousCrossStackReads,
+      }),
+      // go-to-k/cdkd#6314: logical ids only, nothing to redact.
+      ...(nestedPending?.previousDependencies && {
+        previousDependencies: nestedPending.previousDependencies,
+      }),
+      ...(nestedPending?.templateDependencies && {
+        templateDependencies: nestedPending.templateDependencies,
       }),
     };
     await deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment);
