@@ -59,6 +59,7 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
 });
 
 import { loadStateForStack } from '../../../src/cli/commands/local-state-loader.js';
+import { recordEmulatorDefaultRegion } from '../../../src/utils/emulator-default-region.js';
 import { getAwsClients, resetAwsClients } from '../../../src/utils/aws-clients.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import {
@@ -538,6 +539,24 @@ describe('loadStateForStack — globalClients lifecycle', () => {
        */
       const awsClientsConfig = (): Record<string, unknown> =>
         (mocks.awsClientsCtorMock.mock.calls[0]?.[0] ?? {}) as Record<string, unknown>;
+
+      it('ranks an --aws-emulator run default below the synth region (go-to-k/cdkd#6270)', async () => {
+        primeState([{ stackName: 'MyStack', region: 'us-west-2' }]);
+        await withEnvRegion({ AWS_REGION: 'eu-south-1' }, async () => {
+          recordEmulatorDefaultRegion('eu-south-1');
+          await loadStateForStack('MyStack', 'us-west-2', { statePrefix: 'cdkd' });
+          expect(mocks.resolveStateBucketWithDefaultMock).toHaveBeenLastCalledWith(
+            undefined,
+            'us-west-2'
+          );
+          // No synth region: the run default, not the `us-east-1` literal.
+          await loadStateForStack('MyStack', undefined, { statePrefix: 'cdkd' });
+          expect(mocks.resolveStateBucketWithDefaultMock).toHaveBeenLastCalledWith(
+            undefined,
+            'eu-south-1'
+          );
+        });
+      });
 
       it('hands resolveStateBucketWithDefault the FOLDED region from AWS_REGION', async () => {
         primeState([{ stackName: 'MyStack', region: 'cn-north-1' }]);

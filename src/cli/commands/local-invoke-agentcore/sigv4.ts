@@ -1,6 +1,10 @@
 import { getLogger } from '../../../utils/logger.js';
 import { quotedOrDescribed } from '../../../utils/pasteable-command.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import {
+  emulatorDefaultRegion,
+  namedEnvAwsRegion,
+} from '../../../utils/emulator-default-region.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import type { LocalStateRecord } from 'cdk-local';
 import { type ResolvedAgentCoreRuntime } from '../../../local/agentcore-resolver.js';
@@ -124,9 +128,10 @@ export async function buildSigV4HeadersIfRequested(
   const region = canonicalizeRegion(
     options.region ??
       options.stackRegion ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      resolved.stack.region
+      resolved.stack.region ??
+      emulatorDefaultRegion()
   );
   if (!region) {
     throw new CdkdError(

@@ -10,6 +10,7 @@ import type { StackState } from '../../../types/state.js';
 import type { PseudoParameters } from '../../../local/state-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../../local/ecs-task-resolver.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import { namedEnvAwsRegion } from '../../../utils/emulator-default-region.js';
 import type { DiscoveredRoute } from '../../../local/route-discovery.js';
 import type { RouteWithAuth } from '../../../local/authorizer-resolver.js';
 import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
@@ -242,7 +243,9 @@ export async function resolvePseudoParametersForStartApi(
 ): Promise<PseudoParameters | undefined> {
   const logger = getLogger();
   const region = canonicalizeRegion(
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion
+    // `namedEnvAwsRegion`: an `--aws-emulator` run's default region ranks below
+    // the state record's (go-to-k/cdkd#6270).
+    options.region ?? namedEnvAwsRegion() ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion
   );
   // Both state sources reach this resolver, so its warnings name the one in use.
   const sourceFlag = options.fromState ? '--from-state' : '--from-cfn-stack';

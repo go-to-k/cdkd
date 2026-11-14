@@ -249,9 +249,10 @@ describe('no CLI command resolves a region without folding it', () => {
   // resolves from `opts.region` and `local-invoke*.ts` from `args.region`, and
   // one of those carries a comment saying it "escapes the handler-entry fold
   // entirely". A pattern hardcoding `options` is blind to exactly the sites
-  // most likely to regress.
+  // most likely to regress. `namedEnvAwsRegion()` is the same variable read
+  // past an `--aws-emulator` default (go-to-k/cdkd#6270), so it counts too.
   const SHAPE =
-    /\b(?:options|opts|args)\.region\s*(?:\|\||\?\?)\s*process\.env(?:\['AWS_REGION'\]|\.AWS_REGION)/g;
+    /\b(?:options|opts|args)\.region\s*(?:\|\||\?\?)\s*(?:process\.env(?:\['AWS_REGION'\]|\.AWS_REGION)|namedEnvAwsRegion\(\))/g;
 
   /**
    * Blank out comments and string literals, PRESERVING length and newlines so
@@ -296,6 +297,8 @@ describe('no CLI command resolves a region without folding it', () => {
   interface Scan {
     violations: string[];
     matches: number;
+    /** Matches of the `namedEnvAwsRegion()` arm; the rest read `process.env`. */
+    helperMatches: number;
     exemptByCanonicalize: number;
     exemptByRaw: number;
   }
@@ -311,10 +314,17 @@ describe('no CLI command resolves a region without folding it', () => {
     // passes preserve length.
     const forMatching = stripNonCode(source, false);
     const forWalkBack = stripNonCode(source, true);
-    const result: Scan = { violations: [], matches: 0, exemptByCanonicalize: 0, exemptByRaw: 0 };
+    const result: Scan = {
+      violations: [],
+      matches: 0,
+      helperMatches: 0,
+      exemptByCanonicalize: 0,
+      exemptByRaw: 0,
+    };
     for (const match of forMatching.matchAll(SHAPE)) {
       const at = match.index;
       result.matches++;
+      if (match[0].includes('namedEnvAwsRegion')) result.helperMatches++;
       const start = Math.max(
         forWalkBack.lastIndexOf(';', at),
         forWalkBack.lastIndexOf('{', at),
@@ -342,11 +352,12 @@ describe('no CLI command resolves a region without folding it', () => {
       const r = scan(src);
       return {
         matches: acc.matches + r.matches,
+        helper: acc.helper + r.helperMatches,
         canon: acc.canon + r.exemptByCanonicalize,
         raw: acc.raw + r.exemptByRaw,
       };
     },
-    { matches: 0, canon: 0, raw: 0 }
+    { matches: 0, helper: 0, canon: 0, raw: 0 }
   );
 
   it('still SEES its input - floors on what the scanner consumes', () => {
@@ -362,6 +373,10 @@ describe('no CLI command resolves a region without folding it', () => {
     // synthetic case's job is to prove its logic discriminates.
     expect(files.length).toBeGreaterThan(20);
     expect(totals.matches).toBeGreaterThanOrEqual(3);
+    // A floor per SHAPE: either arm of the pattern could break while the other
+    // alone kept the total up.
+    expect(totals.matches - totals.helper).toBeGreaterThanOrEqual(1);
+    expect(totals.helper).toBeGreaterThanOrEqual(3);
     expect(totals.canon).toBeGreaterThanOrEqual(1);
   });
 
@@ -369,6 +384,8 @@ describe('no CLI command resolves a region without folding it', () => {
     ["  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';", 1],
     ["  const region = options.region ?? process.env['AWS_REGION'] ?? 'us-east-1';", 1],
     ['  const region = options.region ?? process.env.AWS_REGION ?? undefined;', 1],
+    ['  const region = options.region ?? namedEnvAwsRegion() ?? stackRegion;', 1],
+    ['  const region = canonicalizeRegion(options.region ?? namedEnvAwsRegion());', 0],
     [
       "  const clientRegion = canonicalizeRegion(options.region || process.env['AWS_REGION']);",
       0,

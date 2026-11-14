@@ -59,6 +59,7 @@ import {
 import { safeMsg } from '../utils/display-safe.js';
 import { setPasteableAwsCaBundle } from '../utils/pasteable-aws-profile.js';
 import { setChildProcessAwsEnv } from '../utils/child-process-aws-env.js';
+import { recordEmulatorDefaultRegion } from '../utils/emulator-default-region.js';
 
 /** The command whose subtree registers `--aws-emulator` through cdk-local. */
 const LOCAL_COMMAND = 'local';
@@ -272,7 +273,12 @@ function onStderr<T>(fn: () => T): T {
  * default chain finds no real credential.
  */
 function pointEnvironmentAtEmulator(url: string, port: number, caBundle?: string): void {
-  Object.assign(process.env, emulatorEnvironment(url, port, process.env));
+  const pointed = emulatorEnvironment(url, port, process.env);
+  Object.assign(process.env, pointed);
+  // A default, not a region the user named: the region chains that rank the
+  // host `AWS_REGION` above a stack's or state record's region consult it last
+  // (go-to-k/cdkd#6270).
+  if (pointed['AWS_REGION'] !== undefined) recordEmulatorDefaultRegion(pointed['AWS_REGION']);
   const run = readEmulatorRunFiles(port);
   const caPath = join(run.dir, 'ca.pem');
   const runCa = run.present && existsSync(caPath) ? caPath : devNull;
@@ -305,7 +311,8 @@ function emulatorEnvironment(
   };
   // The run's region when the shell names none, so every reader agrees on it —
   // the SDK chain reads the file, while some `cdkd local` paths read only the
-  // environment.
+  // environment. It stays a DEFAULT: a stack's own region and a state record's
+  // outrank it (`src/utils/emulator-default-region.ts`, go-to-k/cdkd#6270).
   if (!env['AWS_REGION'] && !env['AWS_DEFAULT_REGION'] && config !== devNull) {
     const region = defaultProfileRegion(readFileSync(config, 'utf8'));
     if (region !== undefined) out['AWS_REGION'] = region;

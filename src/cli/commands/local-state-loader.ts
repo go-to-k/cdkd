@@ -26,6 +26,7 @@ import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/lo
 import { displayIdent } from '../../utils/display-safe.js';
 import { CdkdError, StateError } from '../../utils/error-handler.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { emulatorDefaultRegion, namedEnvAwsRegion } from '../../utils/emulator-default-region.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -143,9 +144,10 @@ export async function loadStateForStack(
   // and it is the last-resort `targetRegion` for a legacy region-less record.
   const region = canonicalizeRegion(
     opts.region ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
       synthRegion ??
+      emulatorDefaultRegion() ??
       'us-east-1'
   );
   // Issue #1836: `opts.region` is what BUILDS the S3 client + state backend

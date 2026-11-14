@@ -12,6 +12,10 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { type EnvOverrideFile } from '../../../local/env-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../../local/ecs-task-resolver.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import {
+  emulatorDefaultRegion,
+  namedEnvAwsRegion,
+} from '../../../utils/emulator-default-region.js';
 import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
 import { type LocalInvokeOptions } from './types.js';
 
@@ -66,7 +70,9 @@ export function envHasCrossStackIntrinsic(
  * bag still works for env vars that only reference real logical IDs.
  *
  * Region precedence (mirrors `local-run-task`): `--region` > `AWS_REGION`
- * > `AWS_DEFAULT_REGION` > the synth-derived stack region.
+ * > `AWS_DEFAULT_REGION` > the synth-derived stack region > the `--aws-emulator`
+ * run's default region (go-to-k/cdkd#6270: that default is not a region the
+ * user named, so a stack's own region outranks it).
  *
  * The resolved region is CANONICALIZED (issue #1795) before anything consumes
  * it. That covers all four sources — `--region`, both env vars, and the
@@ -89,7 +95,11 @@ export async function resolvePseudoParametersForInvoke(
 > {
   const logger = getLogger();
   const region = canonicalizeRegion(
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion
+    options.region ??
+      namedEnvAwsRegion() ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      stackRegion ??
+      emulatorDefaultRegion()
   );
   // Both state sources reach this resolver, so its warnings name the one in use.
   const sourceFlag = options.fromState ? '--from-state' : '--from-cfn-stack';

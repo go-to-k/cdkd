@@ -58,6 +58,7 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { applyRoleArnForLocal } from './local-role-arn.js';
 import { CONTAINER_AWS_CREDENTIALS_PATH } from '../cli/commands/local-profile-credentials-file.js';
 import { resolveSdkDefaultRegion } from '../cli/region-options.js';
+import { emulatorDefaultRegion, namedEnvAwsRegion } from '../utils/emulator-default-region.js';
 
 /** The options a cdkd-owned `cdkd local` command passes to {@link activateLocalAwsWiring}. */
 export interface LocalAwsWiringOptions {
@@ -342,7 +343,11 @@ export function setContainerRegion(env: Record<string, string>, region: string |
  *   3. the loaded state record's region (`--from-state` / `--from-cfn-stack`),
  *      i.e. where the stack was actually deployed;
  *   4. the selected profile's `region =` line — the same SDK sample
- *      `resolveEffectiveRegion` gives `deploy` (go-to-k/cdkd#2029).
+ *      `resolveEffectiveRegion` gives `deploy` (go-to-k/cdkd#2029). Under
+ *      `--aws-emulator` the run's `config` region that cdkd copied into
+ *      `AWS_REGION` is this tier's counterpart, not step 1's: a stack pinned to
+ *      `us-west-2` deployed into the emulator's `us-west-2` otherwise ran in its
+ *      `us-east-1` (go-to-k/cdkd#6270).
  *
  * Without the last two, an environment-agnostic stack whose region lived only
  * in `~/.aws/config` ran with no region at all, and the handler's first SDK
@@ -361,10 +366,11 @@ export async function resolveContainerRegion(sources: {
 }): Promise<string | undefined> {
   const named = firstUsableRegion(
     sources.region,
-    process.env['AWS_REGION'],
+    namedEnvAwsRegion(),
     process.env['AWS_DEFAULT_REGION'],
     sources.stackRegion,
-    sources.stateRegion
+    sources.stateRegion,
+    emulatorDefaultRegion()
   );
   if (named) return canonicalizeRegion(named);
   const fromProfile = firstUsableRegion(await resolveSdkDefaultRegion(sources.profile));
