@@ -177,6 +177,16 @@ export const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
   'AWS::AppConfig::Deployment',
+  // Issue #6293 (measured against real CloudFormation): each is Cloud-Control
+  // routed with a compound id and its `Ref` is the trailing segment.
+  // (`AWS::Logs::LogStream` / `::SubscriptionFilter` are NOT here: their
+  // names may contain `|`; see the special case in cfnRefValueFromPhysicalId.)
+  // `<WindowId>|<WindowTargetId>` -> the target id.
+  'AWS::SSM::MaintenanceWindowTarget',
+  // `<WindowId>|<WindowTaskId>` -> the task id.
+  'AWS::SSM::MaintenanceWindowTask',
+  // `<ApplicationName>|<DeploymentGroupName>` -> the group name.
+  'AWS::CodeDeploy::DeploymentGroup',
   // `AWS::S3Tables::Namespace` is NOT here, though the 2026-07-03 close-out
   // audit added it on the docs' "Ref returns the namespace name": real
   // CloudFormation returns the whole `<tableBucketARN>|<namespace>` (measured,
@@ -680,6 +690,18 @@ export function cfnRefValueFromPhysicalId(
     if (tableName !== undefined) {
       return tableName;
     }
+  }
+  // Issue #6293: a log STREAM name and a subscription FILTER name may contain
+  // `|` (pattern `[^:*]*`) while a log group name may not, so neither generic
+  // pipe Set is right: `<LogGroupName>|<LogStreamName>` -> everything after the
+  // FIRST pipe, `<FilterName>|<LogGroupName>` -> everything before the LAST.
+  if (resourceType === 'AWS::Logs::LogStream') {
+    const i = physicalId.indexOf('|');
+    if (i >= 0) return physicalId.substring(i + 1);
+  }
+  if (resourceType === 'AWS::Logs::SubscriptionFilter') {
+    const i = physicalId.lastIndexOf('|');
+    if (i >= 0) return physicalId.substring(0, i);
   }
   // AWS::Backup::BackupSelection: CFn's `Ref` returns `BackupSelectionId` (the
   // bare SelectionId; docs-verified), but the Cloud Control primaryIdentifier

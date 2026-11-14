@@ -2364,6 +2364,11 @@
       ]
     },
     {
+      "name": "ref-shape-compound-cc-ids",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ref-shape-vector-namespace-attachment",
       "annotated": false,
       "scenarios": []
@@ -3955,6 +3960,7 @@
     "recreate-target-readers",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "ref-shape-compound-cc-ids",
     "ref-shape-vector-namespace-attachment",
     "refactor-command",
     "refactor-lambda-version",
