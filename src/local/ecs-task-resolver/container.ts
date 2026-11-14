@@ -54,6 +54,9 @@ export function parseContainerDefinition(
   const workingDirectory = pickString(c['WorkingDirectory']);
 
   const environment: Record<string, string> = {};
+  // Keys whose value is a SecureString SSM-typed parameter (go-to-k/cdkd#6307):
+  // plaintext, so the runner passes them value-less (`-e KEY`), off the argv.
+  const plaintextEnvKeys: string[] = [];
   const droppedEnvKeys: { key: string; reason: string }[] = [];
   if (Array.isArray(c['Environment'])) {
     for (const entry of c['Environment'] as unknown[]) {
@@ -74,9 +77,16 @@ export function parseContainerDefinition(
       // value is dropped and a warn is surfaced via the task's
       // `warnings` array (matches PR 1 `cdkd local invoke` semantics).
       if (subContext) {
-        const sub = substituteAgainstState(value, subContext);
+        let sensitive = false;
+        const sub = substituteAgainstState(value, {
+          ...subContext,
+          onSensitiveParameterConsumed: () => {
+            sensitive = true;
+          },
+        });
         if (sub.kind === 'literal') {
           defineOwnKey(environment, key, String(sub.value));
+          if (sensitive) plaintextEnvKeys.push(key);
           continue;
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
@@ -248,6 +258,7 @@ export function parseContainerDefinition(
   if (user !== undefined) out.user = user;
   if (privileged !== undefined) out.privileged = privileged;
   if (readonlyRootFilesystem !== undefined) out.readonlyRootFilesystem = readonlyRootFilesystem;
+  if (plaintextEnvKeys.length > 0) out.resolvedDynamicReferenceKeys = plaintextEnvKeys;
   if (droppedSecretKeys.length > 0) out.droppedSecretNames = droppedSecretKeys.map((d) => d.key);
   if (unresolvedCommandElements.length > 0) {
     out.unresolvedCommandElements = unresolvedCommandElements;

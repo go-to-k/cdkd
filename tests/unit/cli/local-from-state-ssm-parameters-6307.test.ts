@@ -50,6 +50,7 @@ import {
 } from '../../../src/cli/commands/local-start-api.js';
 import { buildEcsImageResolutionContext } from '../../../src/cli/commands/local-run-task/image-context.js';
 import { buildSubstitutionContextFromImageContext } from '../../../src/local/ecs-task-resolver/container.js';
+import { resolveEcsTaskTarget } from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 
@@ -197,6 +198,43 @@ describe('local run-task --from-state (#6307)', () => {
     expect(buildSubstitutionContextFromImageContext(context)?.parameters).toEqual({
       [PARAM]: VALUE,
     });
+  });
+
+  it('an image context with no intrinsic env reads no SSM (as cdk-local gates it)', async () => {
+    const p = provider();
+    const s = taskStack();
+    const task = s.template.Resources!['Task'] as { Properties: { ContainerDefinitions: object[] } };
+    task.Properties.ContainerDefinitions = [
+      {
+        Name: 'app',
+        Image: { 'Fn::Join': ['', [{ Ref: 'AWS::AccountId' }, '.dkr.ecr.us-east-1.amazonaws.com/r:t']] },
+      },
+    ];
+    await buildEcsImageResolutionContext(s, p as never, { fromState: true } as never);
+    expect(p.resolveTemplateSsmParameters).not.toHaveBeenCalled();
+  });
+
+  it('a SecureString value is a plaintext key of its container (value-less -e KEY); a String one is not', () => {
+    const s = taskStack();
+    const task = s.template.Resources!['Task'] as { Properties: { ContainerDefinitions: object[] } };
+    task.Properties.ContainerDefinitions = [
+      {
+        Name: 'app',
+        Image: 'public.ecr.aws/docker/library/busybox:latest',
+        Environment: [
+          { Name: 'SECRET_VALUE', Value: { Ref: PARAM } },
+          { Name: 'PLAIN_VALUE', Value: { Ref: 'Plain' } },
+        ],
+      },
+    ];
+    const resolved = resolveEcsTaskTarget('S:Task', [s], {
+      stateResources: {},
+      stateParameters: { [PARAM]: 's3cret', Plain: 'plain' },
+      stateSensitiveParameters: [PARAM],
+    });
+    const app = resolved.containers[0]!;
+    expect(app.environment).toEqual({ SECRET_VALUE: 's3cret', PLAIN_VALUE: 'plain' });
+    expect(app.resolvedDynamicReferenceKeys).toEqual(['SECRET_VALUE']);
   });
 
   it('a SecureString parameter is marked sensitive on the substitution context', () => {

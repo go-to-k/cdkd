@@ -149,6 +149,15 @@ describe('--from-state resolves SSM-typed template parameters (#6307)', () => {
     ]);
   });
 
+  it('a failed load does not leave an earlier record\'s region behind', async () => {
+    const provider = new S3LocalStateProvider({ statePrefix: 'cdkd' });
+    await provider.load('S', 'us-east-1');
+    loader.load.mockResolvedValueOnce(undefined);
+    await provider.load('S', 'us-east-1');
+    await provider.resolveTemplateSsmParameters(TEMPLATE as never);
+    expect(sent.map((s) => s.region)).toEqual(['us-east-1']);
+  });
+
   it('a template whose only SSM parameter is BootstrapVersion makes no SSM call', async () => {
     const provider = new S3LocalStateProvider({ statePrefix: 'cdkd' });
     const out = await provider.resolveTemplateSsmParameters({

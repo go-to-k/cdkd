@@ -201,8 +201,11 @@ describe('local run-task names per container in mixed mode', () => {
     mocks.resolveEcsTaskTarget.mockReturnValue(task('Real-Table'));
     const template = { Parameters: { P: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/p' } } };
 
+    const base = {
+      containers: task('Emu-Table').containers.map((c) => ({ ...c, resolvedDynamicReferenceKeys: ['TABLE'] })),
+    };
     await applyPerContainerNames(
-      task('Emu-Table') as never,
+      base as never,
       'Svc/Task',
       [],
       { stackName: 'Svc', region: 'us-east-1', template } as never,
@@ -212,6 +215,8 @@ describe('local run-task names per container in mixed mode', () => {
     );
 
     expect(resolveTemplateSsmParameters).toHaveBeenCalledWith(template);
+    // web's own environment, so its own plaintext-key list (none here), not the base's.
+    expect(base.containers.find((c) => c.name === 'web')).not.toHaveProperty('resolvedDynamicReferenceKeys');
     const ctx = mocks.resolveEcsTaskTarget.mock.calls[0]![2];
     expect(ctx.stateParameters).toEqual({ P: 'real-value' });
     // The base's SecureString mark does not leak onto web's plain value.

@@ -129,8 +129,10 @@ An SSM-typed parameter is a template parameter of type
 `ssm.StringParameter.valueForStringParameter` synthesizes. cdkd state records
 no parameter values, so both flags read the parameter named by its `Default`
 from SSM Parameter Store, in the stack's region, so the value is the current
-one, not necessarily the one the last deploy read. Only parameters that `Resources`, `Outputs` or `Conditions`
-reference are read, so CDK's `BootstrapVersion` parameter is skipped. The read
+one, not necessarily the one the last deploy read. Under `--from-state`, only
+parameters that `Resources`, `Outputs` or `Conditions` reference are read, so
+CDK's `BootstrapVersion` parameter is skipped; `--from-cfn-stack` reads every
+SSM-typed parameter. The read
 uses your own credentials, never the `--role-arn` role, as a dynamic reference
 does. Under `--aws-emulator` it goes to the emulator, and in mixed mode it goes
 to real AWS only when the workload excepts `SSM`.

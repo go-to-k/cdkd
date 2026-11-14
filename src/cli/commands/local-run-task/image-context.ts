@@ -202,8 +202,11 @@ export async function buildEcsImageResolutionContext(
     if (loaded) {
       ctx.stateResources = loaded.resources;
       stateRecordRegion = loaded.region;
-      // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307).
-      Object.assign(ctx, await stateSsmParametersForImageContext(stateProvider, candidate));
+      // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
+      // only when an env / secret / command value needs substituting, as cdk-local gates it.
+      if (needs.needsEnvOrSecretSubstitution) {
+        Object.assign(ctx, await stateSsmParametersForImageContext(stateProvider, candidate));
+      }
     }
   } else if (!stateProvider && needs.needsStateResources) {
     // `--image-override` can replace a same-stack ECR image, so the warning is

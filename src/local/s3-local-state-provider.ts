@@ -122,6 +122,8 @@ export class S3LocalStateProvider implements LocalStateProvider {
       ...(this.opts.warn !== undefined && { warn: this.opts.warn }),
       ...(this.opts.scopedClients === true && { scopedClients: true }),
     };
+    // Reset first: a failed load must not leave an earlier record's region behind.
+    this.loadedRegion = undefined;
     const loaded = await loadStateForStack(stackName, synthRegion, loadOpts);
     if (!loaded) return undefined;
     this.loadedRegion = loaded.region;

@@ -650,6 +650,12 @@ export async function applyPerContainerNames(
         if (!mine || !into) continue;
         into.environment = mine.environment;
         into.secrets = mine.secrets;
+        // Its plaintext keys follow its own environment (go-to-k/cdkd#6307).
+        if (mine.resolvedDynamicReferenceKeys) {
+          into.resolvedDynamicReferenceKeys = mine.resolvedDynamicReferenceKeys;
+        } else {
+          delete into.resolvedDynamicReferenceKeys;
+        }
         // An argv element names a deployed resource too (go-to-k/cdkd#6271).
         // Same template, so each field is present on both or on neither.
         if (mine.command) into.command = mine.command;
