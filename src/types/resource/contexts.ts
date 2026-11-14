@@ -457,6 +457,21 @@ export interface UpdateContext extends SecretMaskingContext {
    * Set ONLY by the deploy's in-place UPDATE, and only when non-empty.
    */
   unsettledProperties?: ReadonlySet<string> | undefined;
+
+  /**
+   * go-to-k/cdkd#6309: on a custom resource, the coordinates of the update's
+   * `properties` whose value its handler receives with its own JSON type (an
+   * `Fn::GetAtt` value); every other number and boolean is sent as a string.
+   * ABSENT means not known, and the payload keeps the pre-#6309 rule.
+   */
+  typedPayloadLeaves?: readonly (readonly (string | number)[])[] | undefined;
+
+  /**
+   * go-to-k/cdkd#6309: the same for `previousProperties`, read off the
+   * record's `typedPayloadLeaves`, so `OldResourceProperties` follows the
+   * template that wrote the previous bag.
+   */
+  previousTypedPayloadLeaves?: readonly (readonly (string | number)[])[] | undefined;
 }
 
 /** A principal kind an inline policy is written onto. */
@@ -552,4 +567,12 @@ export interface CreateContext extends SecretMaskingContext {
    * throw-free". See `.claude/rules/providers.md` for the full write-up.
    */
   replayingState?: boolean;
+
+  /**
+   * go-to-k/cdkd#6309: on a custom resource, the coordinates of `properties`
+   * whose value its handler receives with its own JSON type (an
+   * `Fn::GetAtt` value); every other number and boolean is sent as a string.
+   * ABSENT means not known, and the payload keeps the pre-#6309 rule.
+   */
+  typedPayloadLeaves?: readonly (readonly (string | number)[])[] | undefined;
 }

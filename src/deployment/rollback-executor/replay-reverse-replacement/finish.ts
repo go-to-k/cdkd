@@ -319,6 +319,8 @@ export async function finishReverseReplacement(
               recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
               // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
               recordedNoEchoLeaves: current.noEchoLeaves,
+              // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+              recordedTypedPayloadLeaves: current.typedPayloadLeaves,
               // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
               maskSecrets: mask,
             }

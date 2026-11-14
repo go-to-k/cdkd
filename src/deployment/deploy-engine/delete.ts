@@ -238,6 +238,8 @@ Drop the record with: ${dropCommand}`
             recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
             recordedNoEchoLeaves: currentResource.noEchoLeaves,
+            // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+            recordedTypedPayloadLeaves: currentResource.typedPayloadLeaves,
             // go-to-k/cdkd#2007: the record is the persisted, redacted one,
             // so this deploy resolved nothing for it; the masker is its
             // derived-name registry, the printing bag this delete runs under.

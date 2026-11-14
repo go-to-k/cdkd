@@ -268,13 +268,18 @@ describe('recreate targets apply only to the stack they were validated against (
     });
 
     it(`${flag}: the recreate delete carries the record's noEchoLeaves (go-to-k/cdkd#4043)`, async () => {
-      recordExtra = { noEchoLeaves: [['VersioningConfiguration', 'Status']] };
+      recordExtra = {
+        noEchoLeaves: [['VersioningConfiguration', 'Status']],
+        typedPayloadLeaves: [['Count']],
+      };
       try {
         const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
         await invokeInPlaceUpdate(engine, PARENT_STACK, direction);
         expect((provider.delete as ReturnType<typeof vi.fn>).mock.calls[0]?.[4]).toEqual(
           expect.objectContaining({
             recordedNoEchoLeaves: [['VersioningConfiguration', 'Status']],
+            // go-to-k/cdkd#6309: threaded beside it.
+            recordedTypedPayloadLeaves: [['Count']],
           })
         );
       } finally {

@@ -324,6 +324,7 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
         ...record(OLD_TG, TG, { Port: 8080 }),
         attributes: { TargetGroupFullName: 'old-tg' },
         acceptedCreateOnlyDrops: ['Protocol'],
+        typedPayloadLeaves: [['Port']],
       },
     };
     const state = {
@@ -353,6 +354,8 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(vi.mocked(provider.delete).mock.calls[0]![4]).toMatchObject({
       recordedAttributes: { TargetGroupFullName: 'old-tg' },
       recordedCreateOnlyDrops: ['Protocol'],
+      // go-to-k/cdkd#6309.
+      recordedTypedPayloadLeaves: [['Port']],
     });
     expect(supersededResourcesOf(final).map((e) => e.state.physicalId)).toEqual([OLD_TG]);
     expect(

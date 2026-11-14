@@ -529,14 +529,20 @@ describe("a custom resource Update that answers a new physical id (#6117)", () =
 
   it('hands the delete the record NoEcho leaves, and keeps such a record out of state', async () => {
     const masked = { ServiceToken: TOKEN, Name: 'name-1', Secret: '***' };
-    await deploy({ oldRecord: { properties: masked, noEchoLeaves: [['Secret']] } });
+    await deploy({
+      oldRecord: { properties: masked, noEchoLeaves: [['Secret']], typedPayloadLeaves: [['Count']] },
+    });
     expect(oldIdDeletes()).toEqual([
       [
         'Res',
         'name-1',
         CR,
         masked,
-        expect.objectContaining({ recordedNoEchoLeaves: [['Secret']] }),
+        // go-to-k/cdkd#6309: the payload positions travel with them.
+        expect.objectContaining({
+          recordedNoEchoLeaves: [['Secret']],
+          recordedTypedPayloadLeaves: [['Count']],
+        }),
       ],
     ]);
     // Only this run can re-resolve the masked leaf, so no later run is handed it.

@@ -304,6 +304,8 @@ export async function runMovedIdCleanups(
             // go-to-k/cdkd#4043: a custom resource's delete skips, never
             // sends, a payload still holding a NoEcho mask.
             recordedNoEchoLeaves: sent.noEchoLeaves,
+            // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+            recordedTypedPayloadLeaves: sent.typedPayloadLeaves,
             maskSecrets: mask,
           })
       );

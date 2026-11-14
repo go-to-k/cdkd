@@ -65,6 +65,8 @@ export async function createFirstThenDeleteOld(
     deleteProvisionedBy: 'sdk' | 'cc-api' | undefined;
     deleteProperties: Record<string, unknown>;
     secrets: RecordedSecretValues;
+    /** go-to-k/cdkd#6309: a custom resource's `Fn::GetAtt` positions, for its Create. */
+    typedPayloadLeaves?: (string | number)[][] | undefined;
     change: ReplacementNameChange;
     /** An equal physical id on the two halves names the SAME resource. */
     equalIdIsSameResource: boolean;
@@ -128,6 +130,9 @@ export async function createFirstThenDeleteOld(
             withCurrentResourceSecrets(secrets, () =>
               input.createProvider.create(logicalId, resourceType, input.createProps, {
                 maskSecrets: createSecretMasker(secrets),
+                ...(input.typedPayloadLeaves !== undefined && {
+                  typedPayloadLeaves: input.typedPayloadLeaves,
+                }),
               })
             ),
           logicalId,

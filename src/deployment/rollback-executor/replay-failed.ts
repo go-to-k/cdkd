@@ -535,6 +535,7 @@ export async function replayFailedOperationsUnbound(
                     ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
                     ...(failedCreateRecord?.noEchoLeaves ?? []),
                   ]),
+                  recordedTypedPayloadLeaves: failedCreateRecord?.typedPayloadLeaves, // #6309
                   // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
                   // The bag is the journal's, secrets redacted: a provider that
                   // compares it with AWS re-resolves it through this, lazily.
@@ -819,6 +820,7 @@ export async function replayFailedOperationsUnbound(
                   // restored one there, so the provider converges them against
                   // AWS; the record built below clears them only on success.
                   ...revertUnsettled,
+                  typedPayloadLeaves: prev.typedPayloadLeaves, // go-to-k/cdkd#6309
                 },
               ],
               op.logicalId,

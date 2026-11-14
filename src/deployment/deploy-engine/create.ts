@@ -18,6 +18,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
+import { customResourcePayloadLeaves } from './custom-resource-payload-leaves.js';
 import {
   acceptedCreateOnlyDropsField,
   auditResolvedAssetReferences,
@@ -259,6 +260,16 @@ export async function provisionCreate(
     createDecision.provisionedBy === 'cc-api'
       ? preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
       : resolvedProps;
+  // go-to-k/cdkd#6309: a custom resource's `Fn::GetAtt`-served values, sent
+  // with their JSON type and recorded for its later `Update` / `Delete`.
+  const typedPayloadLeaves = customResourcePayloadLeaves(
+    resourceType,
+    desiredProps,
+    resolvedProps,
+    template,
+    conditions,
+    stateResources
+  );
 
   // go-to-k/cdkd#3252: an earlier run's CREATE of this logical id that cdkd
   // stopped waiting for, and that completed in AWS, is TAKEN OVER instead of
@@ -320,6 +331,8 @@ export async function provisionCreate(
               // text and the resolver's debug line). Give it the capability
               // rather than the bag — see `SecretMaskingContext`.
               maskSecrets: createSecretMasker(createSecrets),
+              // go-to-k/cdkd#6309: which values keep their JSON type.
+              ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
             })
           ),
         logicalId,
@@ -388,6 +401,7 @@ export async function provisionCreate(
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...templateAttrs,
     provisionedBy: createDecision.provisionedBy,
+    ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
   };
   // go-to-k/cdkd#5511: state now holds the resource, so no failure after
   // this point journals it as an orphan.
