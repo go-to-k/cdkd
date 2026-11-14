@@ -90,14 +90,16 @@ async function checkLevel(
       }
       const childStackName = `${stackName}~${logicalId}`;
       let state: StackState | null | undefined;
+      let heals: number;
       try {
         state = await readRecord(childStackName, region);
+        if (!isObject(state)) return;
+        heals = healSlashedSsmParameterNames(state, child.template, childStackName).heals.length;
       } catch {
         complete = false;
         return;
       }
-      if (!isObject(state)) return;
-      if (healSlashedSsmParameterNames(state, child.template, childStackName).heals.length > 0) {
+      if (heals > 0) {
         forcedRows.add(logicalId);
         return;
       }
@@ -150,12 +152,13 @@ export async function checkNestedSsmNames(args: {
 }
 
 /**
- * Whether every row this deploy updated for the check left its child checked
- * as a whole: the child's deploy ran its own check over the grandchildren and
- * marked its record, or the child has no nested-stack row. A child whose own
- * check could not finish (a grandchild record it could not read) left no mark,
- * so the parent must not claim its subtree either. One read per updated row,
- * once; a failed read answers `false`.
+ * Whether every row this deploy updated for the check left its child healed
+ * and checked as a whole, read from the child's saved record: it holds no name
+ * to re-spell, and either has no nested-stack row or carries the mark (its own
+ * deploy checked the grandchildren). A row the deploy did not end up sending,
+ * or a child whose own check could not finish (a grandchild record it could
+ * not read), fails it, so the parent's record stays unmarked. One read per
+ * updated row, once; a failed read answers `false`.
  */
 export async function forcedChildrenChecked(args: {
   forcedRows: ReadonlySet<string>;
@@ -172,10 +175,14 @@ export async function forcedChildrenChecked(args: {
     [...forcedRows].map(async (logicalId) => {
       const child = loader(logicalId);
       if (child === undefined) return false;
-      if (!hasNestedStackRows(child.template)) return true;
+      const childStackName = `${stackName}~${logicalId}`;
       try {
-        const state = await readRecord(`${stackName}~${logicalId}`, region);
-        return isObject(state) && state.nestedSsmNamesChecked === true;
+        const state = await readRecord(childStackName, region);
+        if (!isObject(state)) return false;
+        if (healSlashedSsmParameterNames(state, child.template, childStackName).heals.length > 0) {
+          return false;
+        }
+        return !hasNestedStackRows(child.template) || state.nestedSsmNamesChecked === true;
       } catch {
         return false;
       }

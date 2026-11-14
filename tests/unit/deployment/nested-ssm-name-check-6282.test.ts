@@ -306,10 +306,13 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
 
   let childCheckFinishes: boolean;
+  // Set by the depth-2 case: the Child row's update runs a real child engine.
+  let runChildEngine: ((physicalId: string) => Promise<unknown>) | undefined;
 
   beforeEach(() => {
     adoption.fake = undefined;
     childCheckFinishes = true;
+    runChildEngine = undefined;
     records = {};
     provider = {
       create: vi.fn(),
@@ -318,9 +321,22 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
       // Its child's own deploy (not run here) finishes its own check and
       // marks the child record, unless a case says the child's check failed.
       update: vi.fn((logicalId: string, physicalId: string) => {
+        if (logicalId === 'Child' && runChildEngine !== undefined) return runChildEngine(physicalId);
+        const grand = records[GRAND];
+        if (logicalId === 'Grand' && grand && !(grand instanceof Error)) {
+          // The grandchild's own deploy re-spells its record (no nested row).
+          const healed = structuredClone(grand);
+          const param = healed.resources['Param'];
+          if (param) param.physicalId = param.physicalId.replace(/^\//, '');
+          records[GRAND] = healed;
+        }
         const child = records[CHILD];
-        if (logicalId === 'Child' && childCheckFinishes && child && !(child instanceof Error)) {
-          records[CHILD] = { ...child, nestedSsmNamesChecked: true };
+        if (logicalId === 'Child' && child && !(child instanceof Error)) {
+          // The child's own heal (go-to-k/cdkd#6274) re-spells its record.
+          const healed = structuredClone(child);
+          const param = healed.resources['Param'];
+          if (param) param.physicalId = param.physicalId.replace(/^\//, '');
+          records[CHILD] = { ...healed, ...(childCheckFinishes && { nestedSsmNamesChecked: true }) };
         }
         return Promise.resolve(
           logicalId === 'Child'
@@ -338,7 +354,11 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
         if (found instanceof Error) throw found;
         return found === undefined ? null : { state: structuredClone(found), etag: 'etag-old' };
       }),
-      saveState: vi.fn().mockResolvedValue('etag-new'),
+      // A save is what the next read returns, as on S3.
+      saveState: vi.fn(async (stackName: string, _region: string, state: StackState) => {
+        records[stackName] = structuredClone(state);
+        return 'etag-new';
+      }),
     };
   });
 
@@ -410,6 +430,92 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     childCheckFinishes = false;
     await deploy();
     expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
+  });
+
+  it('heals a slashed grandchild under a clean child: the child deploy forces the grandchild row', async () => {
+    records = {
+      [PARENT]: stateOf(PARENT, { Child: nestedRecord() }),
+      [CHILD]: childClean(),
+      [GRAND]: stateOf(GRAND, { Param: ssmRecord(`/${generated(GRAND, 'Param')}`) }),
+    };
+    const childTemplate = JSON.parse(fs.readFileSync(path.join(dir, 'child.json'), 'utf-8'));
+    // What `NestedStackProvider.update` does: the child's own engine, under
+    // the grandchild index; the Grand row's update stands in for its deploy.
+    runChildEngine = async (physicalId) => {
+      await withNestedStackContext({ nestedTemplates: { Grand: path.join(dir, 'grand.json') } } as never, () =>
+        makeEngine().deploy(CHILD, childTemplate)
+      );
+      return { physicalId, wasReplaced: false, attributes: {} };
+    };
+    await deploy();
+    expect(provider.update.mock.calls.map((c) => c[0])).toEqual(['Child', 'Grand']);
+    const saved = stateBackend.saveState.mock.calls.map((c) => [c[0], c[2] as StackState] as const);
+    expect(saved.filter(([name]) => name === CHILD).at(-1)?.[1].nestedSsmNamesChecked).toBe(true);
+    expect(saved.filter(([name]) => name === PARENT).at(-1)?.[1].nestedSsmNamesChecked).toBe(true);
+  });
+
+  it('keeps the mark on a change deploy of a marked record', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { ...parentTemplate.Resources, Param: ssmTemplate().Resources['Param']! },
+    };
+    records = {
+      [PARENT]: stateOf(
+        PARENT,
+        {
+          Child: nestedRecord(),
+          Param: { ...ssmRecord(generated(PARENT, 'Param')), properties: { Type: 'String', Value: 'old' } },
+        },
+        { nestedSsmNamesChecked: true }
+      ),
+    };
+    await deploy(template);
+    expect(provider.update.mock.calls.map((c) => c[0])).toEqual(['Param']);
+    expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
+  });
+
+  it('skips, and does not mark, a row it would update whose Parameters read a masked value', async () => {
+    // Without the skip, the #2274 refusal would fail a deploy of a stack
+    // nobody changed; CloudFormation deploys it as a no-op.
+    fs.writeFileSync(path.join(dir, 'other.json'), JSON.stringify(ssmTemplate()));
+    nestedTemplates = { ...nestedTemplates, Other: path.join(dir, 'other.json') };
+    const child = childClean();
+    child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Other: { Type: NESTED, Properties: { TemplateURL: 'https://s3.amazonaws.com/assets/o.json' } },
+        Child: {
+          Type: NESTED,
+          Properties: {
+            TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
+            Parameters: { In: { 'Fn::GetAtt': ['Other', 'Outputs.Secret'] } },
+          },
+        },
+      },
+    };
+    records = {
+      [PARENT]: stateOf(PARENT, {
+        Other: {
+          ...nestedRecord(),
+          physicalId: `${CHILD_ARN}-other`,
+          properties: { TemplateURL: 'https://s3.amazonaws.com/assets/o.json' },
+          attributes: { 'Outputs.Secret': '***' },
+          noEchoAttributeNames: ['Outputs.Secret'],
+        },
+        Child: {
+          ...nestedRecord(),
+          properties: {
+            TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
+            Parameters: { In: '***' },
+          },
+          dependencies: ['Other'],
+        },
+      }),
+      [CHILD]: child,
+      [GRAND]: grandClean(),
+    };
+    await deploy(template);
+    expect(childUpdates()).toHaveLength(0);
+    expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
   });
 
   it('promotes a parent reader of the forced row’s outputs', async () => {
