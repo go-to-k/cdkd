@@ -341,6 +341,19 @@ describe('cdkd deploy heals the record and updates its dependents (go-to-k/cdkd#
     expect(JSON.stringify(desired)).not.toContain('parameter//');
   });
 
+  it('re-spells a rollback orphan the deploy adopts back', async () => {
+    const state = stateOf({});
+    state.orphans = [
+      { logicalId: 'Param', orphanedAt: 0, state: record(`/${NAME}`, { observedProperties: {} }) },
+    ] as never;
+    stateBackend.getState.mockResolvedValue({ state, etag: 'e' });
+    // The adoption pre-pass's existence read finds it under the recorded id.
+    provider['import'] = vi.fn().mockResolvedValue({ physicalId: `/${NAME}`, attributes: {} });
+    await makeEngine([['Param']]).deploy(STACK, unnamed(['Param']));
+    expect(provider['create']).not.toHaveBeenCalled();
+    expect(savedStates().at(-1)?.resources['Param']?.physicalId).toBe(NAME);
+  });
+
   it('--dry-run names the heal and saves nothing', async () => {
     stateBackend.getState.mockResolvedValue({
       state: stateOf({ Param: record(`/${NAME}`, { observedProperties: {} }) }),
