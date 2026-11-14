@@ -112,7 +112,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 31 | 27 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 112 | 0 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 138 | 125 | 5 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 146 | 34 | 4 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 146 | 34 | 5 |
 | `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | 76 | 66 | 0 |
 | `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 37 | 25 | 0 |
 | `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 46 | 45 | 1 |
