@@ -546,14 +546,14 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
   });
 
-  it.each([
+  it.each<[string, () => Error | undefined]>([
     ['is gone', () => undefined],
     ['cannot be read', () => new Error('throttled')],
-  ] as const)('does not mark when the updated child’s record %s afterwards', async (_label, after) => {
+  ])('does not mark when the updated child’s record %s afterwards', async (_label, after) => {
     fs.writeFileSync(path.join(dir, 'child.json'), JSON.stringify(ssmTemplate()));
     const child = stateOf(CHILD, { Param: ssmRecord(`/${generated(CHILD, 'Param')}`) });
     records = { [PARENT]: stateOf(PARENT, { Child: nestedRecord() }), [CHILD]: child };
-    runChildEngine = async (physicalId) => {
+    runChildEngine = async (physicalId: string): Promise<unknown> => {
       const value = after();
       if (value === undefined) delete records[CHILD];
       else records[CHILD] = value;
