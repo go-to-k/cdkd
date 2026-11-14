@@ -1,6 +1,11 @@
+import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
-import { substituteAgainstStateAsync, type SubstitutionContext } from '../state-resolver.js';
-import { argvValue, secretAttributeRead } from './container.js';
+import {
+  substituteAgainstStateAsync,
+  type CrossStackResolver,
+  type SubstitutionContext,
+} from '../state-resolver.js';
+import { argvValue, computedAttributeRead, secretAttributeRead } from './container.js';
 import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
@@ -169,13 +174,28 @@ export async function applyCrossStackResolverToTask(
         // The sync pass deferred this element before its secret check, and a
         // nested cross-stack element can read a same-stack secret beside the
         // import (`Fn::Join` of an `Fn::ImportValue` and a `Fn::GetAtt`).
-        const secret = secretAttributeRead(rawElement, secretContext.resources);
+        const secret =
+          secretAttributeRead(rawElement, secretContext.resources) ??
+          computedAttributeRead(rawElement);
         if (secret !== undefined) {
           remaining.push({ ...u, reason: secret });
           continue;
         }
-        const sub = await substituteAgainstStateAsync(rawElement, secretContext);
-        const arg = sub.kind === 'literal' ? argvValue(sub.value) : { reason: sub.reason };
+        // A producer value recorded as the mask can be joined into a longer
+        // string (`--token=***`), which `argvValue` cannot see: note it at the
+        // resolver instead.
+        const masked = { hit: false };
+        const sub = await substituteAgainstStateAsync(
+          rawElement,
+          withMaskWatch(secretContext, masked)
+        );
+        const arg = masked.hit
+          ? {
+              reason: `resolved a cross-stack value recorded as the secret mask (${SECRET_MASK}), not the deployed value`,
+            }
+          : sub.kind === 'literal'
+            ? argvValue(sub.value)
+            : { reason: sub.reason };
         if ('value' in arg) {
           target[u.index] = arg.value;
           continue;
@@ -214,4 +234,23 @@ export async function applyCrossStackResolverToTask(
       });
     }
   }
+}
+
+/** `context` with its cross-stack resolver noting any value that is the secret mask. */
+function withMaskWatch(
+  context: SubstitutionContext,
+  masked: { hit: boolean }
+): SubstitutionContext {
+  const inner = context.crossStackResolver;
+  if (!inner) return context;
+  const watch = (v: string | undefined): string | undefined => {
+    if (v === SECRET_MASK) masked.hit = true;
+    return v;
+  };
+  const resolver: CrossStackResolver = {
+    resolveImport: async (exportName) => watch(await inner.resolveImport(exportName)),
+    resolveGetStackOutput: async (stack, region, output) =>
+      watch(await inner.resolveGetStackOutput(stack, region, output)),
+  };
+  return { ...context, crossStackResolver: resolver };
 }

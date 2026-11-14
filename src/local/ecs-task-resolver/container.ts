@@ -337,6 +337,43 @@ export function secretAttributeRead(
 }
 
 /**
+ * Why an argv element must not go through the cross-stack post-pass because a
+ * `Fn::GetAtt` logical ID / attribute name or a `Fn::Sub` template is itself
+ * built from an `Fn::ImportValue` / `Fn::GetStackOutput`, or `undefined`.
+ * cdk-local substitutes a nested cross-stack value BEFORE the sync pass, so
+ * such an element would read whichever same-stack attribute the export names,
+ * past {@link secretAttributeRead}, which sees only literal reads.
+ * CloudFormation refuses both shapes (go-to-k/cdkd#6270).
+ */
+export function computedAttributeRead(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const r = computedAttributeRead(item);
+      if (r !== undefined) return r;
+    }
+    return undefined;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Fn::GetAtt' && isCrossStackIntrinsic(value)) {
+      return (
+        'a Fn::GetAtt whose logical ID or attribute name is a cross-stack reference, ' +
+        'which CloudFormation does not accept'
+      );
+    }
+    if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      if (isCrossStackIntrinsic(template)) {
+        return 'a Fn::Sub whose template is a cross-stack reference, which CloudFormation does not accept';
+      }
+    }
+    const r = computedAttributeRead(value);
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
+/**
  * Every `[logicalId, attribute]` an intrinsic reads through `Fn::GetAtt`
  * (array or dotted-string form) or a `${LogicalId.Attribute}` placeholder of
  * `Fn::Sub`, at any depth.
