@@ -1343,6 +1343,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-appsync-s3express-s3tables",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-asg-arn-rule-name",
       "annotated": false,
       "scenarios": []
@@ -3841,6 +3846,7 @@
     "firehose-iceberg-destination",
     "firehose-msk-source",
     "generated-name-security-group",
+    "getatt-appsync-s3express-s3tables",
     "getatt-asg-arn-rule-name",
     "getatt-fallback-guard",
     "getatt-vpc-managed-policy",

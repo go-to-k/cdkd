@@ -176,6 +176,7 @@ full-stack-demo	2026-11-04T05:17:34Z	PASS	51	standard	deploy 16 res, destroy 16 
 gc-custom-asset-names	2026-11-04T07:51:26Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
 generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
+getatt-appsync-s3express-s3tables	2026-11-14T03:39:08Z	PASS	71	verify.sh	rc ok, orph clean; asserts five (ApiKeyId unit-only: a bearer key) (#6242)
 getatt-asg-arn-rule-name	2026-11-14T02:50:55Z	PASS	90	verify.sh	rc ok, orph clean; CFn A/B measured both values (#6242)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-vpc-managed-policy	2026-11-13T18:14:58Z	PASS	96	verify.sh	rc ok, orph clean; pre-fix build FAILs it (#6232)

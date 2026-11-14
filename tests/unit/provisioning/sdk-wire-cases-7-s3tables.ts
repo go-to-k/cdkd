@@ -392,9 +392,15 @@ export function describeS3tablesExtras(): void {
         });
       });
       expect(outcome).toMatchObject({ threw: false });
+      // The GetTable read after the create (go-to-k/cdkd#6242) adds the
+      // harness's fake WarehouseLocation; `versionToken` reads as a
+      // continuation token there, so the harness answers none.
       expect(created).toEqual({
         physicalId: `${BUCKET_ARN}|ns|tbl`,
-        attributes: { TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN` },
+        attributes: {
+          TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN`,
+          WarehouseLocation: 'fake-warehouseLocation',
+        },
       });
     });
   });

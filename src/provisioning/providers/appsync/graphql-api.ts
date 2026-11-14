@@ -182,6 +182,11 @@ export async function createGraphQLApi(
         ApiId: apiId,
         Arn: arn,
         GraphQLUrl: graphQLUrl,
+        // go-to-k/cdkd#6242: the default host names are NOT derived from the
+        // api id (AppSync serves an endpoint id of its own), so they are
+        // recorded from the response.
+        GraphQLDns: response.graphqlApi?.dns?.['GRAPHQL'],
+        RealtimeDns: response.graphqlApi?.dns?.['REALTIME'],
       }),
       // A state replay that skipped all or part of the map records what was
       // actually put, not the record it could not send.

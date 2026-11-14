@@ -1,4 +1,5 @@
 import type { S3TablesProvider } from '../s3-tables-provider.js';
+import { definedAttributes } from '../../attribute-map.js';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -193,11 +194,29 @@ export async function createTable(
 
     this.logger.debug(`Successfully created S3 Tables Table ${logicalId}: ${physicalId}`);
 
+    // go-to-k/cdkd#6242: `WarehouseLocation` only GetTable reports, and the
+    // resolver's re-read never runs for a record this deploy wrote, so it is
+    // read here. A failed read records it absent (a later deploy's re-read
+    // through `import()` fills it), never `''`.
+    let described:
+      | { warehouseLocation?: string | undefined; versionToken?: string | undefined }
+      | undefined;
+    try {
+      described = await this.getClient().send(new GetTableCommand({ tableArn: tableARN }));
+    } catch (readError) {
+      described = undefined;
+      const errorClass = (readError as { name?: string } | undefined)?.name ?? 'Error';
+      this.logger.debug(
+        safeMsg`GetTable after creating S3 Tables Table ${logicalId} failed (${errorClass}); WarehouseLocation is left to a later re-read`
+      );
+    }
     return {
       physicalId,
-      attributes: {
+      attributes: definedAttributes({
         TableARN: tableARN,
-      },
+        WarehouseLocation: described?.warehouseLocation,
+        VersionToken: described?.versionToken ?? response.versionToken,
+      }),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
