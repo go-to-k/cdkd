@@ -642,6 +642,8 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
             value: { status: 'disabled' },
           },
         ],
+        // go-to-k/cdkd#6242: the WarehouseLocation read after the create.
+        [GetTableCommand.name, { tableArn: TABLE_ARN }],
       ]);
     });
 
@@ -655,6 +657,8 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
           CreateTableCommand.name,
           { tableBucketARN: BUCKET_ARN, namespace: 'ns', name: 'tbl', format: 'ICEBERG' },
         ],
+        // go-to-k/cdkd#6242: the WarehouseLocation read after the create.
+        [GetTableCommand.name, { tableArn: TABLE_ARN }],
       ]);
     });
 

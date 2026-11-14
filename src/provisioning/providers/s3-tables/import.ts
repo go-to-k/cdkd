@@ -1,4 +1,5 @@
 import type { S3TablesProvider } from '../s3-tables-provider.js';
+import { definedAttributes } from '../../attribute-map.js';
 import {
   GetNamespaceCommand,
   GetTableBucketCommand,
@@ -329,7 +330,7 @@ export async function importTable(
       `S3 Tables Table ${input.logicalId}: template carries a Cloud-Control-routing property, ` +
         `recording the bare TableARN (CC's identifier) rather than cdkd's composite.`
     );
-    return { physicalId: tableARN, attributes: { TableARN: tableARN } };
+    return { physicalId: tableARN, attributes: tableAttributes(tableARN, response) };
   }
 
   // Unlike `importNamespace`, this identity is NOT always the product of a
@@ -356,6 +357,21 @@ export async function importTable(
     physicalId: `${identity.tableBucketARN}|${identity.namespace}|${identity.name}`,
     // Cache the real ARN the same way `createTable` does, so a
     // `Fn::GetAtt: [Table, TableARN]` resolves for an imported table too.
-    attributes: { TableARN: tableARN },
+    attributes: tableAttributes(tableARN, response),
   };
+}
+
+/**
+ * go-to-k/cdkd#6242: the attributes `createTable` records, from the GetTable
+ * this import already issues; an unreported one stays absent.
+ */
+function tableAttributes(
+  tableARN: string,
+  response: { warehouseLocation?: string | undefined; versionToken?: string | undefined }
+): Record<string, unknown> {
+  return definedAttributes({
+    TableARN: tableARN,
+    WarehouseLocation: response.warehouseLocation,
+    VersionToken: response.versionToken,
+  });
 }

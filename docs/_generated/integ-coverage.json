@@ -683,6 +683,7 @@
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
         "appsync",
+        "getatt-appsync-s3express-s3tables",
         "import-migrate-appsync",
         "ref-shape-vector-namespace-attachment",
         "secret-derived-immutable-names"
@@ -690,6 +691,10 @@
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
         ],
         "import-migrate-appsync": [
           "l1"
@@ -8169,9 +8174,14 @@
     {
       "resourceType": "AWS::S3Express::DirectoryBucket",
       "integs": [
+        "getatt-appsync-s3express-s3tables",
         "s3-directory-bucket"
       ],
       "signals": {
+        "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
+        ],
         "s3-directory-bucket": [
           "l1"
         ]
@@ -8180,10 +8190,15 @@
     {
       "resourceType": "AWS::S3Tables::Namespace",
       "integs": [
+        "getatt-appsync-s3express-s3tables",
         "ref-shape-vector-namespace-attachment",
         "s3-tables"
       ],
       "signals": {
+        "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
+        ],
         "ref-shape-vector-namespace-attachment": [
           "l1",
           "literal"
@@ -8196,9 +8211,14 @@
     {
       "resourceType": "AWS::S3Tables::Table",
       "integs": [
+        "getatt-appsync-s3express-s3tables",
         "s3-tables"
       ],
       "signals": {
+        "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
+        ],
         "s3-tables": [
           "l1",
           "literal"
@@ -8208,10 +8228,15 @@
     {
       "resourceType": "AWS::S3Tables::TableBucket",
       "integs": [
+        "getatt-appsync-s3express-s3tables",
         "ref-shape-vector-namespace-attachment",
         "s3-tables"
       ],
       "signals": {
+        "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
+        ],
         "ref-shape-vector-namespace-attachment": [
           "l1",
           "literal"

@@ -12,6 +12,8 @@ import {
 import { healBeforeConstructing } from './getatt-heal.js';
 import { noteAttributeSecrecy } from './getatt.js';
 import { graphQLSchemaCfnId } from './ref-values.js';
+import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
+import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 
 /**
  * `constructAttribute`'s per-type handlers for AWS::Events::Rule through AWS::SNS::Topic, moved
@@ -184,6 +186,34 @@ export async function constructAttributeForAppTypes(
         return `arn:${partition}:appsync:${region}:${accountId}:apis/${physicalId}`;
       case 'ApiId':
         return physicalId;
+      case 'GraphQLDns':
+      case 'RealtimeDns': {
+        // go-to-k/cdkd#6242: the provider records both from AWS's `dns` map;
+        // neither is built from the api id (measured: AppSync serves an
+        // endpoint id of its own), which the physical-id fallback served.
+        // A record written before that still holds `GraphQLUrl`, whose host
+        // IS the GraphQL one; otherwise heal, then refuse.
+        if (attributeName === 'GraphQLDns') {
+          const url = resource.attributes?.['GraphQLUrl'];
+          if (typeof url === 'string' && /^https:\/\/[^/]+\//.test(url)) {
+            return noteAttributeSecrecy(
+              resolver,
+              logicalId,
+              attributeName,
+              new URL(url).host,
+              context
+            );
+          }
+        }
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: 'AppSync serves the host under an endpoint id that is not the api id',
+        });
+      }
       default:
         return guardedPhysicalIdFallback(
           resolver,
@@ -194,6 +224,22 @@ export async function constructAttributeForAppTypes(
           context
         );
     }
+  }
+
+  // go-to-k/cdkd#6242: the key id, read out of the physical id; the
+  // fallback served the whole id.
+  if (resourceType === 'AWS::AppSync::ApiKey' && attributeName === 'ApiKeyId') {
+    // Both recorded forms: `<apiId>|<keyId>`, and the key ARN an earlier
+    // record holds. The parser answers the WHOLE id for any other form.
+    const keyId = secretPhysicalIdSegment(resourceType, physicalId);
+    if (keyId !== undefined && keyId !== physicalId) return keyId;
+    refuseUnconstructibleAttribute(resolver, {
+      logicalId,
+      attributeName,
+      resourceType,
+      context,
+      why: 'the physical id is neither the `<apiId>|<keyId>` pair nor the key ARN it is read from',
+    });
   }
 
   // AppSync GraphQLSchema: `Id` is the registry schema's primaryIdentifier,
@@ -465,6 +511,56 @@ export async function constructAttributeForAppTypes(
   }
 
   // S3 Express Directory Bucket
+  // go-to-k/cdkd#6242: the bucket name carries the zone ID
+  // (`<base>--<zone-id>--x-s3`); its NAME is account-specific, so it is read
+  // live. The fallback served the bucket name. The LAST `--<zone-id>--x-s3`
+  // is taken: a base name may itself contain `--`.
+  if (
+    resourceType === 'AWS::S3Express::DirectoryBucket' &&
+    attributeName === 'AvailabilityZoneName'
+  ) {
+    const zoneId = /--([a-z0-9]+(?:-[a-z0-9]+)*)--x-s3$/.exec(physicalId)?.[1];
+    if (zoneId === undefined) {
+      refuseUnservedAttribute(resolver, {
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context,
+        observed: 'the bucket name carries no --<zone-id>--x-s3 suffix',
+        remedy: 'Check the directory bucket in the console.',
+      });
+    }
+    let zoneName: string | undefined;
+    try {
+      const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
+      const resp = await ec2.send(new DescribeAvailabilityZonesCommand({ ZoneIds: [zoneId] }));
+      zoneName = resp.AvailabilityZones?.[0]?.ZoneName;
+    } catch (err) {
+      refuseUnservedAttribute(resolver, {
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context,
+        observed: describeFailureObserved(resolver, 'DescribeAvailabilityZones', err, context),
+        remedy:
+          'Fix the read (the DescribeAvailabilityZones permission, or the region) and deploy again.',
+      });
+    }
+    if (zoneName) return zoneName;
+    refuseUnservedAttribute(resolver, {
+      logicalId,
+      attributeName,
+      resourceType,
+      physicalId,
+      context,
+      observed: 'DescribeAvailabilityZones returned no zone for that zone ID',
+      remedy:
+        'Check the directory bucket in the console, or reference the attribute from a later deploy.',
+    });
+  }
+
   if (resourceType === 'AWS::S3Express::DirectoryBucket') {
     switch (attributeName) {
       case 'Arn':
@@ -479,6 +575,22 @@ export async function constructAttributeForAppTypes(
           context
         );
     }
+  }
+
+  // go-to-k/cdkd#6242: the provider records these from GetTable; a record
+  // written before that lacks them, so heal first. Neither can be built.
+  if (
+    resourceType === 'AWS::S3Tables::Table' &&
+    (attributeName === 'WarehouseLocation' || attributeName === 'VersionToken')
+  ) {
+    healBeforeConstructing(resolver, context);
+    refuseUnconstructibleAttribute(resolver, {
+      logicalId,
+      attributeName,
+      resourceType,
+      context,
+      why: 'only GetTable reports it',
+    });
   }
 
   // Lambda Function

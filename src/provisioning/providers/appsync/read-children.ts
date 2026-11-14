@@ -367,6 +367,8 @@ export async function importImpl(
           ApiId: explicit,
           Arn: response.graphqlApi?.arn,
           GraphQLUrl: response.graphqlApi?.uris?.['GRAPHQL'],
+          GraphQLDns: response.graphqlApi?.dns?.['GRAPHQL'],
+          RealtimeDns: response.graphqlApi?.dns?.['REALTIME'],
         }),
       };
     } catch (err) {
