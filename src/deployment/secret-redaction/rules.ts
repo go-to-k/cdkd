@@ -413,6 +413,14 @@ export interface PathSourceRules {
    * its bag lands must not get the refusal by default.
    */
   failClosedOnUncertifiedPositions?: boolean;
+  /**
+   * Is the source the TEMPLATE (go-to-k/cdkd#6303)? Only then is a plain
+   * source literal known to be public text, so a bag leaf equal to it is kept
+   * out of the value scan. A STATE source cannot tell a template literal from
+   * a plaintext an older cdkd persisted, which the scan still repairs.
+   * ABSENT means "no".
+   */
+  sourceIsTemplate?: boolean;
 }
 
 /**
@@ -428,6 +436,7 @@ export const TEMPLATE_DERIVED_RULES: PathSourceRules = {
   descendArrays: true,
   trustAnyExpression: false,
   sourceIsSameGeneration: false,
+  sourceIsTemplate: true,
 };
 
 /**
@@ -448,6 +457,7 @@ export const TEMPLATE_SOURCED_RULES: PathSourceRules = {
   descendArrays: false,
   trustAnyExpression: false,
   sourceIsSameGeneration: false,
+  sourceIsTemplate: true,
 };
 
 /**

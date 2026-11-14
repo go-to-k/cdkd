@@ -179,6 +179,8 @@ export {
   spelledKeysOf,
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
+  secretRerenderPairs,
+  keepTemplateLiteralLeaves,
 } from './secret-redaction/redact-path.js';
 export { spanNamesResolvableService } from './secret-redaction/anchors.js';
 export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';

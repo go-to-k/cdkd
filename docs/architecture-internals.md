@@ -521,7 +521,11 @@ by design.
   `drainObservedCaptures` baseline hits the persist choke point with an empty
   secrets map; they are tracked as issue
   [#2012](https://github.com/go-to-k/cdkd/issues/2012) and the per-row table
-  lives in `src/deployment/secret-redaction/readback-certification.ts`. A separate floor,
+  lives in `src/deployment/secret-redaction/readback-certification.ts`. A value
+  that is exactly the template's own plain string is stored as written, even
+  when a secret's text occurs inside it (the generated username `postgres` in
+  `Engine: aurora-postgresql`): nothing was substituted into it, and the
+  template already holds that text. A separate floor,
   `MIN_NEEDLE_LENGTH`, bounds the SUBSTRING and derived arms only: an
   expression-bearing needle below it is still substituted on the whole-value
   arm, and masking still replaces an exact whole-value match at any length —

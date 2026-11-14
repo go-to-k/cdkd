@@ -36,6 +36,7 @@ import {
   legacyReferenceLeavesOnly,
   legacyLeavesWithoutMask,
   repairEmbeddedPhysicalNamesTowards,
+  secretRerenderPairs,
   physicalNameCopiesOf,
   noEchoLeavesOf,
   redactForState,
@@ -268,6 +269,29 @@ export async function compareWithRecord(
       for (const key of Object.keys(target)) {
         const repaired = replaceWholeLeaves(target[key], pairs);
         if (repaired !== target[key]) target[key] = repaired;
+      }
+    }
+  }
+  // go-to-k/cdkd#6303: a pre-fix cdkd value-scanned a template's PLAIN literal
+  // and spliced a coinciding secret's expression into it (`aurora-postgresql`
+  // with the generated username `postgres` became `aurora-{{resolve:...}}ql`).
+  // Today's walk keeps the literal, so that record reads as MOVED, and on a
+  // create-only property as a REPLACEMENT with no template change. A leaf whose
+  // secret expressions, spelled back as their plaintext, give today's leaf
+  // exactly is that leaf unchanged: it takes today's spelling with no send. An
+  // edited literal renders to the OLD text and stays a change. The record's
+  // `observedProperties` needs nothing here: the persist walk positions it
+  // against the template, whose literal the same rendering restores.
+  const literalRewrites = secretRerenderPairs(updateSecrets);
+  if (literalRewrites.length > 0) {
+    for (const bag of new Set(repairable)) {
+      for (const key of Object.keys(bag)) {
+        const repaired = repairEmbeddedPhysicalNamesTowards(
+          bag[key],
+          desiredForSkipCheck[key],
+          literalRewrites
+        );
+        if (repaired !== bag[key]) bag[key] = repaired;
       }
     }
   }

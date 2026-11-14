@@ -2737,6 +2737,11 @@
       "scenarios": []
     },
     {
+      "name": "secret-substring-literal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "secrets-array-nested",
       "annotated": true,
       "scenarios": [
@@ -4009,6 +4014,7 @@
     "schema-v7-to-v8-migration",
     "sdk-to-cc-autoroute",
     "secret-derived-immutable-names",
+    "secret-substring-literal",
     "secrets-rotation-schedule",
     "secretsmanager-replica-rekey",
     "secretsmanager-update-value-source",

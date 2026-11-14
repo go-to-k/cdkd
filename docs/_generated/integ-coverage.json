@@ -9234,6 +9234,7 @@
         "scrub-nested-child",
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
+        "secret-substring-literal",
         "secrets-dynamic-ref",
         "select-out-of-bounds",
         "shared-stackname-multi-region",
@@ -9644,6 +9645,10 @@
           "l1",
           "literal"
         ],
+        "secret-substring-literal": [
+          "l1",
+          "literal"
+        ],
         "secrets-dynamic-ref": [
           "l1",
           "l2"
@@ -9739,6 +9744,7 @@
         "local-run-task-from-state",
         "output-never-resolved-diff",
         "replacement-immutable-name",
+        "secret-substring-literal",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
@@ -9789,6 +9795,10 @@
           "literal"
         ],
         "replacement-immutable-name": [
+          "l2",
+          "literal"
+        ],
+        "secret-substring-literal": [
           "l2",
           "literal"
         ],

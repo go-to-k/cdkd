@@ -7,6 +7,15 @@ import { attributeIdCopiesOf, physicalNameCopiesOf } from '../physical-name-copi
 export interface ScrubGenerationClaims {
   readonly properties?: 'same-generation' | 'unproven';
   readonly observed?: 'same-generation' | 'unproven';
+  /**
+   * The caller already POSITIONED `properties` against its source (`cdkd
+   * scrub`, against today's template), so they are kept as handed in. That walk ends in the value scan
+   * wherever it decided nothing, so a second, source-less scan adds no
+   * redaction; it only undoes what the positioning decided — a template's
+   * plain literal holding a secret's text (go-to-k/cdkd#6303) was rewritten
+   * into `aurora-{{resolve:...}}ql` again.
+   */
+  readonly propertiesPositioned?: boolean;
 }
 
 /**
@@ -65,15 +74,17 @@ export function scrubResourceRecord<
   }
   const next = { ...record };
   next.properties =
-    sourceProperties === undefined
-      ? redactForState(record.properties, { provenance: 'value-scan', secrets })
-      : redactAtProvenance(
-          record.properties,
-          secrets,
-          sourceProperties,
-          'template-derived',
-          propertiesClaimed
-        );
+    claims.propertiesPositioned === true
+      ? record.properties
+      : sourceProperties === undefined
+        ? redactForState(record.properties, { provenance: 'value-scan', secrets })
+        : redactAtProvenance(
+            record.properties,
+            secrets,
+            sourceProperties,
+            'template-derived',
+            propertiesClaimed
+          );
   if (record.attributes) {
     // go-to-k/cdkd#4849: a copy of the record's OWN physical id among its
     // attributes (an SNS topic's `TopicArn`, a queue's `QueueUrl`) stays as

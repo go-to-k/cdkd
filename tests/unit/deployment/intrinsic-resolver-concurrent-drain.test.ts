@@ -44,6 +44,8 @@ const FAIL_DEEP_ID = 'cdkd-drain-inner';
 const HANG_IDS = ['cdkd-drain-hang-a', 'cdkd-drain-hang-b', 'cdkd-drain-hang-c'];
 const ref = (id: string): string => `{{resolve:secretsmanager:${id}:SecretString:password}}`;
 const valueOf = (id: string): string => `${id}-plaintext`;
+/** `text` assembled by an `Fn::Join` of literals: resolves nothing, and is no plain literal. */
+const literalJoin = (text: string): unknown => ({ 'Fn::Join': ['', [text.slice(0, 4), text.slice(4)]] });
 
 /**
  * Per-secret-id control over the fake client, mutated by each test body.
@@ -3016,8 +3018,10 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
       Outputs: {
         Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
         // Carries the plaintext by a route that resolves nothing, so only a
-        // needle the late part recorded can redact it.
-        Literal: { Value: literal, Export: { Name: 'lit-export' } },
+        // needle the late part recorded can redact it. An `Fn::Join` of
+        // literals, not a bare literal: a template's plain literal is public
+        // text and stays as written (go-to-k/cdkd#6303).
+        Literal: { Value: literalJoin(literal), Export: { Name: 'lit-export' } },
       },
     };
 
@@ -3092,7 +3096,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
         // releases — this is what makes the fold below a REfold.
         Clean: { Value: ref(CLEAN_ID) },
         Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
-        Literal: { Value: literal, Export: { Name: 'lit-export' } },
+        Literal: { Value: literalJoin(literal), Export: { Name: 'lit-export' } },
       },
     };
 
@@ -3161,7 +3165,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
       Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
       Outputs: {
         Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
-        Literal: { Value: `lit-${valueOf(SLOW_ID)}-tail`, Export: { Name: 'lit-export' } },
+        Literal: { Value: literalJoin(`lit-${valueOf(SLOW_ID)}-tail`), Export: { Name: 'lit-export' } },
       },
     };
 
@@ -3226,7 +3230,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
       Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
       Outputs: {
         Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
-        Literal: { Value: literal },
+        Literal: { Value: literalJoin(literal) },
       },
     };
 
@@ -3263,7 +3267,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     expect(first.outputs['Secret'], 'the first deploy must have RECORDED the secret').toBe(ref(SLOW_ID));
 
     const literal = `lit-${valueOf(SLOW_ID)}-tail`;
-    await engine.deploy(stackName, { Resources: resources, Outputs: { Literal: { Value: literal } } });
+    await engine.deploy(stackName, { Resources: resources, Outputs: { Literal: { Value: literalJoin(literal) } } });
     const second = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(second.outputs['Literal'], 'nothing THIS deploy resolved recorded it').toBe(literal);
   });
