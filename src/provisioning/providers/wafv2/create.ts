@@ -14,8 +14,8 @@ import {
   type OnSourceDDoSProtectionConfig,
   type ApplicationConfig,
   type MonetizationConfig,
+  type WebACL,
 } from '@aws-sdk/client-wafv2';
-import { definedAttributes } from '../../attribute-map.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { replayWarn, requireConfigString } from '../../config-shape.js';
@@ -23,7 +23,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult, CreateContext } from '../../../types/resource.js';
-import { sanitizeDescription, toSdkRules } from './shared.js';
+import { sanitizeDescription, toSdkRules, webAclAttributes } from './shared.js';
 
 /**
  * Create a WAFv2 WebACL
@@ -94,26 +94,23 @@ export async function create(
     // off the summary here before was always absent (issue #3627): read it
     // from `GetWebACL`. The web ACL exists by now, so a failed read omits
     // the attribute rather than failing the create; the #1852 heal fills it.
-    let labelNamespace: string | undefined;
+    // go-to-k/cdkd#6242: the same read supplies `Capacity`.
+    let webAcl: WebACL | undefined;
     try {
-      labelNamespace = (
+      webAcl = (
         await this.getClient().send(
           new GetWebACLCommand({ Id: summary.Id, Name: name, Scope: scope })
         )
-      ).WebACL?.LabelNamespace;
+      ).WebACL;
     } catch (readError) {
       this.logger.debug(
-        `Could not read the label namespace of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
+        `Could not read back ${logicalId} after create (LabelNamespace / Capacity omitted): ${describeAwsFailure(readError).detail}`
       );
     }
 
     return {
       physicalId: summary.ARN,
-      attributes: definedAttributes({
-        Arn: summary.ARN,
-        Id: summary.Id,
-        LabelNamespace: labelNamespace,
-      }),
+      attributes: webAclAttributes(summary.ARN, summary.Id, webAcl),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;

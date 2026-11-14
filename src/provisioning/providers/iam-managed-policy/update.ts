@@ -1,5 +1,5 @@
 import type { IAMManagedPolicyProvider } from '../iam-managed-policy-provider.js';
-import { CreatePolicyVersionCommand } from '@aws-sdk/client-iam';
+import { CreatePolicyVersionCommand, GetPolicyCommand } from '@aws-sdk/client-iam';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import {
@@ -17,7 +17,14 @@ import {
   recordedPrincipalsRepair,
   SECRET_DERIVED_READ_LIVE,
 } from '../../iam-policy-targets.js';
-import { managedPolicyAttributes, principalsOf, PRINCIPAL_NAMES } from './shared.js';
+import {
+  MANAGED_POLICY_READ_BACK_KEYS,
+  managedPolicyAttributes,
+  policyAfterWiring,
+  principalsOf,
+  PRINCIPAL_NAMES,
+  type ManagedPolicyReadBack,
+} from './shared.js';
 
 export async function update(
   this: IAMManagedPolicyProvider,
@@ -331,7 +338,11 @@ export async function update(
     // go-to-k/cdkd#6232: `attributes` REPLACES the record. The PolicyId never
     // changes for this ARN, so the record's is carried; the DefaultVersionId
     // is the new version's when this update created one, else the record's.
-    // Anything not in hand stays absent and the resolver re-reads it.
+    // go-to-k/cdkd#6242: so are the counts / dates / `IsAttachable`, unless
+    // this update changed what they report — a new default version
+    // (`UpdateDate`) or an attachment (`AttachmentCount`) — or the record
+    // lacks one (written before it was recorded): then IAM is re-read once.
+    // A tag-only update makes no extra call.
     const recorded = context?.recordedAttributes;
     const recordedString = (key: string): string | undefined => {
       const value = recorded?.[key];
@@ -341,13 +352,51 @@ export async function update(
         ? value
         : undefined;
     };
+    const recordedNumber = (key: string): number | undefined => {
+      const value = recorded?.[key];
+      return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    };
+    const recordedDate = (key: string): Date | undefined => {
+      const value = recordedString(key);
+      if (value === undefined || !ISO_TIMESTAMP.test(value)) return undefined;
+      return new Date(value);
+    };
+    const carried: ManagedPolicyReadBack = {
+      PolicyId: recordedString('PolicyId'),
+      DefaultVersionId: createdVersionId ?? recordedString('DefaultVersionId'),
+      AttachmentCount: recordedNumber('AttachmentCount'),
+      PermissionsBoundaryUsageCount: recordedNumber('PermissionsBoundaryUsageCount'),
+      IsAttachable:
+        typeof recorded?.['IsAttachable'] === 'boolean' ? recorded['IsAttachable'] : undefined,
+      CreateDate: recordedDate('CreateDate'),
+      UpdateDate: recordedDate('UpdateDate'),
+    };
+    // A caller handing no record at all (a drift revert) gets the carried
+    // set without a read, as before.
+    const versionMoved = createdVersionId !== undefined;
+    const attachmentsMoved = principalListsDiffer(newPrincipals.lists, oldLists);
+    const reRead =
+      versionMoved ||
+      attachmentsMoved ||
+      (recorded !== undefined &&
+        MANAGED_POLICY_READ_BACK_KEYS.some((key) => carried[key] === undefined));
+    const readBack = reRead
+      ? await policyAfterWiring(
+          async (arn) =>
+            (await this.iamClient.send(new GetPolicyCommand({ PolicyArn: arn }))).Policy,
+          physicalId,
+          carried,
+          [
+            ...(attachmentsMoved ? (['AttachmentCount'] as const) : []),
+            ...(versionMoved ? (['UpdateDate'] as const) : []),
+          ],
+          log.debug
+        )
+      : carried;
     return {
       physicalId,
       wasReplaced: false,
-      attributes: managedPolicyAttributes(physicalId, {
-        PolicyId: recordedString('PolicyId'),
-        DefaultVersionId: createdVersionId ?? recordedString('DefaultVersionId'),
-      }),
+      attributes: managedPolicyAttributes(physicalId, readBack),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
@@ -402,4 +451,23 @@ function derivePolicyPathFromArn(arn: string): string | undefined {
 function recordedNonRootPath(arn: string): string | undefined {
   const path = derivePolicyPathFromArn(arn);
   return path === '/' ? undefined : path;
+}
+
+/** The text `managedPolicyAttributes` records for a date (seconds, optional fraction, UTC). */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
+/**
+ * Whether this update attaches or detaches anything: the desired and the
+ * (live-corrected) recorded lists differ as sets for some kind. The same
+ * comparison `updatePrincipals` acts on, so `false` means it made no call.
+ */
+function principalListsDiffer(
+  desired: Partial<Record<'Groups' | 'Roles' | 'Users', string[] | undefined>>,
+  previous: Partial<Record<'Groups' | 'Roles' | 'Users', string[] | undefined>>
+): boolean {
+  return (['Groups', 'Roles', 'Users'] as const).some((kind) => {
+    const a = new Set(desired[kind] ?? []);
+    const b = new Set(previous[kind] ?? []);
+    return a.size !== b.size || [...a].some((name) => !b.has(name));
+  });
 }

@@ -114,6 +114,12 @@ interface TypeCase {
   attributes: Record<string, unknown>;
   /** Writes an adopted replay must never send. */
   destructive: unknown[];
+  /**
+   * `readCommand` calls a FINISHED create makes after its wiring, to record
+   * attributes the wiring moved (ManagedPolicy's `AttachmentCount`,
+   * go-to-k/cdkd#6242). Not an adoption read.
+   */
+  attributeReads?: number;
 }
 
 const USER_ARN = `arn:aws:iam::1:user/${NAME}`;
@@ -202,6 +208,7 @@ const TYPES: TypeCase[] = [
     live: (PolicyId) => ({ Policy: { Arn: CUSTOMER_ARN, PolicyId } }),
     attributes: { PolicyArn: CUSTOMER_ARN, PolicyId: MINE },
     destructive: [DeletePolicyCommand, CreatePolicyVersionCommand],
+    attributeReads: 1,
   },
 ];
 
@@ -269,7 +276,9 @@ describe.each(TYPES)('$label: a replay colliding with its own leftover (#5660)',
         attributes: t.attributes,
       });
     });
-    expect(calls(t.readCommand)).toEqual([t.readInput]);
+    expect(calls(t.readCommand)).toEqual(
+      Array.from({ length: 1 + (t.attributeReads ?? 0) }, () => t.readInput)
+    );
     expect(calls(t.wiring)).toHaveLength(1);
     // An adopted entity is not reported again: a report means this attempt made it.
     expect((sink as unknown as { reports: unknown[] }).reports).toHaveLength(1);
@@ -400,7 +409,7 @@ describe.each(TYPES)('$label: a replay colliding with its own leftover (#5660)',
       await expect(create()).resolves.toMatchObject({ physicalId: t.physicalId });
     });
     for (const command of t.destructive) expect(calls(command)).toEqual([]);
-    expect(calls(t.readCommand)).toHaveLength(2);
+    expect(calls(t.readCommand)).toHaveLength(2 + (t.attributeReads ?? 0));
   });
 });
 
@@ -787,7 +796,8 @@ describe('the per-type wiring on an adopted entity (#5660)', () => {
       };
       failedAttempt(rooted);
       await replay(rooted);
-      expect(calls(GetPolicyCommand)).toEqual([{ PolicyArn: arn }]);
+      // The adoption read, then the #6242 attribute read after the attach.
+      expect(calls(GetPolicyCommand)).toEqual([{ PolicyArn: arn }, { PolicyArn: arn }]);
     });
   });
 });

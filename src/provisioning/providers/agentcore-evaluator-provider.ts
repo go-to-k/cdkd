@@ -38,9 +38,11 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
+  type GetEvaluatorCommandOutput,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markNotGone } from '../not-gone.js';
 import {
@@ -82,6 +84,47 @@ export function evaluatorIdFromArn(arnOrId: string): string {
   const marker = ':evaluator/';
   const idx = arnOrId.indexOf(marker);
   return idx >= 0 ? arnOrId.slice(idx + marker.length) : arnOrId;
+}
+
+/**
+ * go-to-k/cdkd#6242: the attribute map every path records, built from ONE
+ * evaluator read-back. `EvaluatorType` / `Provider` come only from
+ * `GetEvaluator` (`CreateEvaluator` / `UpdateEvaluator` answer neither), so
+ * create and update read the evaluator back once; a member AWS did not return
+ * stays ABSENT. Measured on real CloudFormation (us-east-1, 2026-11-14): a
+ * code-based evaluator answers `EvaluatorType: "CustomCode"`,
+ * `Provider: "Custom"`, AWS's own strings, served verbatim.
+ */
+export function evaluatorAttributes(
+  evaluatorArn: string,
+  read: {
+    evaluatorId?: string | undefined;
+    status?: string | undefined;
+    createdAt?: Date | undefined;
+    updatedAt?: Date | undefined;
+    evaluatorType?: string | undefined;
+    provider?: string | undefined;
+  }
+): Record<string, unknown> {
+  return definedAttributes({
+    EvaluatorArn: evaluatorArn,
+    EvaluatorId: read.evaluatorId ?? evaluatorIdFromArn(evaluatorArn),
+    Status: read.status,
+    CreatedAt: read.createdAt?.toISOString(),
+    UpdatedAt: read.updatedAt?.toISOString(),
+    EvaluatorType: nonEmptyString(read.evaluatorType),
+    Provider: nonEmptyString(read.provider),
+  });
+}
+
+const nonEmptyString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value !== '' ? value : undefined;
+
+/** A recorded `CreatedAt` back as a `Date`, or `undefined` for anything else (a mask, a non-string). */
+function recordedDate(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value)) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 /** SDK `Record<string, string>` tag map → CFn `[{Key, Value}]` list. */
@@ -231,14 +274,12 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
 
       this.logger.debug(`Created BedrockAgentCore Evaluator: ${evaluatorId} (${evaluatorArn})`);
 
+      // go-to-k/cdkd#6242: one read-back for the members the create
+      // response lacks; the create's own answer when that read fails.
+      const read = (await this.readBackEvaluator(evaluatorId)) ?? response;
       return {
         physicalId: evaluatorArn,
-        attributes: definedAttributes({
-          EvaluatorArn: evaluatorArn,
-          EvaluatorId: evaluatorId,
-          Status: response.status,
-          CreatedAt: response.createdAt?.toISOString(),
-        }),
+        attributes: evaluatorAttributes(evaluatorArn, { ...read, evaluatorId }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -328,15 +369,40 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated BedrockAgentCore Evaluator ${logicalId}`);
 
+      // go-to-k/cdkd#6242: `attributes` REPLACES the record, so it carries the
+      // full set. The update answers `Status` / `UpdatedAt`; `CreatedAt` never
+      // changes and `EvaluatorType` / `Provider` follow the `EvaluatorConfig`,
+      // so the record's are carried, and the evaluator is read back once only
+      // when the config changed or the record lacks one (written before they
+      // were recorded — a record updated before this also lost `CreatedAt`).
+      const recorded = context?.recordedAttributes;
+      const carried = {
+        ...response,
+        createdAt: recordedDate(recorded?.['CreatedAt']),
+        evaluatorType: nonEmptyString(recorded?.['EvaluatorType']),
+        provider: nonEmptyString(recorded?.['Provider']),
+      };
+      const configChanged =
+        JSON.stringify(properties['EvaluatorConfig']) !==
+        JSON.stringify(previousProperties['EvaluatorConfig']);
+      // A caller handing no record at all (a drift revert) reads only on a
+      // config change.
+      const reRead =
+        configChanged ||
+        (recorded !== undefined &&
+          (carried.createdAt === undefined ||
+            carried.evaluatorType === undefined ||
+            carried.provider === undefined));
+      // A failed read after a config change drops the carried type / provider,
+      // which may be stale; the resolver's heal re-reads them later.
+      const read = reRead
+        ? ((await this.readBackEvaluator(evaluatorIdFromArn(evaluatorArn))) ??
+          (configChanged ? { ...carried, evaluatorType: undefined, provider: undefined } : carried))
+        : carried;
       return {
         physicalId: evaluatorArn,
         wasReplaced: false,
-        attributes: definedAttributes({
-          EvaluatorArn: evaluatorArn,
-          EvaluatorId: response.evaluatorId ?? evaluatorIdFromArn(evaluatorArn),
-          Status: response.status,
-          UpdatedAt: response.updatedAt?.toISOString(),
-        }),
+        attributes: evaluatorAttributes(evaluatorArn, read),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -439,9 +505,28 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#6242: `GetEvaluator` after a create / update, or `undefined`
+   * when it fails: the operation itself succeeded, so a failed read omits the
+   * members only it supplies rather than failing the deploy (the resolver's
+   * heal re-reads them on a later one).
+   */
+  private async readBackEvaluator(
+    evaluatorId: string
+  ): Promise<GetEvaluatorCommandOutput | undefined> {
+    try {
+      return await this.client.send(new GetEvaluatorCommand({ evaluatorId }));
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not read the evaluator back after the operation: ${describeAwsFailure(error).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * Get resource attribute (for Fn::GetAtt resolution). The CFn read-only
    * attribute set is EvaluatorArn / EvaluatorId / Status / CreatedAt /
-   * UpdatedAt.
+   * UpdatedAt / EvaluatorType / Provider.
    */
   async getAttribute(
     physicalId: string,
@@ -465,6 +550,12 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       if (attributeName === 'Status') return response.status;
       if (attributeName === 'CreatedAt') return response.createdAt?.toISOString();
       return response.updatedAt?.toISOString();
+    }
+    if (attributeName === 'EvaluatorType' || attributeName === 'Provider') {
+      const response = await this.client.send(
+        new GetEvaluatorCommand({ evaluatorId: evaluatorIdFromArn(physicalId) })
+      );
+      return evaluatorAttributes(physicalId, response)[attributeName];
     }
 
     throw new Error(`Unsupported attribute: ${attributeName} for AWS::BedrockAgentCore::Evaluator`);
@@ -548,11 +639,9 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     if (!evaluatorArn) return null;
     return {
       physicalId: evaluatorArn,
-      attributes: definedAttributes({
-        EvaluatorArn: evaluatorArn,
-        EvaluatorId: response.evaluatorId ?? evaluatorIdFromArn(input.knownPhysicalId),
-        Status: response.status,
-        CreatedAt: response.createdAt?.toISOString(),
+      attributes: evaluatorAttributes(evaluatorArn, {
+        ...response,
+        evaluatorId: response.evaluatorId ?? evaluatorIdFromArn(input.knownPhysicalId),
       }),
     };
   }

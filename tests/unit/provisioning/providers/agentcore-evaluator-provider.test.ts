@@ -108,7 +108,10 @@ describe('AgentCoreEvaluatorProvider', () => {
         Status: 'ACTIVE',
         CreatedAt: '2026-07-17T00:00:00.000Z',
       });
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // go-to-k/cdkd#6242: the create reads the evaluator back once (here
+      // the mock answers nothing, so the create's own answer is recorded).
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[1][0].constructor.name).toBe('GetEvaluatorCommand');
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateEvaluatorCommand');

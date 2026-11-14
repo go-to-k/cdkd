@@ -2,13 +2,6 @@
   "schemaVersion": 1,
   "refusedAttributes": [
     {
-      "resourceType": "AWS::BedrockAgentCore::Evaluator",
-      "attributes": [
-        "EvaluatorType",
-        "Provider"
-      ]
-    },
-    {
       "resourceType": "AWS::BedrockAgentCore::Runtime",
       "attributes": [
         "FailureReason",
@@ -32,16 +25,6 @@
       "attributes": [
         "ConfigurationEndpoint",
         "RedisEndpoint"
-      ]
-    },
-    {
-      "resourceType": "AWS::IAM::ManagedPolicy",
-      "attributes": [
-        "AttachmentCount",
-        "CreateDate",
-        "IsAttachable",
-        "PermissionsBoundaryUsageCount",
-        "UpdateDate"
       ]
     },
     {
@@ -84,18 +67,6 @@
         "StorageOperationPercentProgress",
         "StorageOperationStatus"
       ]
-    },
-    {
-      "resourceType": "AWS::S3Vectors::VectorBucket",
-      "attributes": [
-        "CreationTime"
-      ]
-    },
-    {
-      "resourceType": "AWS::WAFv2::WebACL",
-      "attributes": [
-        "Capacity"
-      ]
     }
   ],
   "summary": {
@@ -104,7 +75,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 36
+    "refused": 27
   },
   "types": [
     {

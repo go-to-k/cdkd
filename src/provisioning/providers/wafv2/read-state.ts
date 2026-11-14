@@ -5,7 +5,6 @@ import {
   WAFNonexistentItemException,
   type Scope,
 } from '@aws-sdk/client-wafv2';
-import { definedAttributes } from '../../attribute-map.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type {
@@ -15,7 +14,7 @@ import type {
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { parseWebACLArn } from '../wafv2-arn.js';
-import { toCfnDataProtectionConfig, toCfnRules } from './shared.js';
+import { toCfnDataProtectionConfig, toCfnRules, webAclAttributes } from './shared.js';
 
 /**
  * Read the AWS-current WAFv2 WebACL configuration in CFn-property shape.
@@ -150,11 +149,7 @@ export async function importImpl(
       // map `create()` / `update()` record.
       return {
         physicalId: arn,
-        attributes: definedAttributes({
-          Arn: arn,
-          Id: resp.WebACL?.Id,
-          LabelNamespace: resp.WebACL?.LabelNamespace,
-        }),
+        attributes: webAclAttributes(arn, resp.WebACL?.Id, resp.WebACL),
       };
     } catch (err) {
       if (err instanceof WAFNonexistentItemException) return null;

@@ -21,7 +21,15 @@ import { assertRegionMatch } from '../../region-check.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { parseWebACLArn } from '../wafv2-arn.js';
-import { sanitizeDescription, applicationConfigForUpdate, toSdkRules } from './shared.js';
+import {
+  sanitizeDescription,
+  applicationConfigForUpdate,
+  toSdkRules,
+  webAclAttributes,
+} from './shared.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { safeMsg } from '../../../utils/display-safe.js';
+import { isDeepStrictEqual } from 'node:util';
 
 /**
  * Update a WAFv2 WebACL
@@ -118,14 +126,28 @@ export async function update(
 
     this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
 
+    // go-to-k/cdkd#6242: `Capacity` is the rules' WCUs, so the pre-update
+    // read answers it unless this update changed `Rules`; then the web ACL is
+    // read once more (a failed read omits it, and the resolver's heal re-reads
+    // it on a later deploy — the update itself succeeded).
+    let webAcl = getResponse.WebACL;
+    if (!isDeepStrictEqual(properties['Rules'], previousProperties['Rules'])) {
+      try {
+        webAcl = (
+          await this.getClient().send(new GetWebACLCommand({ Name: name, Scope: scope, Id: id }))
+        ).WebACL;
+      } catch (readError) {
+        this.logger.debug(
+          safeMsg`Could not read back ${logicalId} after update (Capacity omitted): ${describeAwsFailure(readError).detail}`
+        );
+        webAcl = { ...webAcl, Capacity: undefined } as typeof webAcl;
+      }
+    }
+
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
-        Arn: physicalId,
-        Id: id,
-        LabelNamespace: getResponse.WebACL?.LabelNamespace,
-      },
+      attributes: webAclAttributes(physicalId, id, webAcl),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;

@@ -209,6 +209,8 @@ describe('IAMManagedPolicyProvider (go-to-k/cdkd#3906)', () => {
         expect(calls()).toEqual([
           ['ListEntitiesForPolicyCommand', { PolicyArn: ARN }],
           [`Attach${singular}PolicyCommand`, { [`${singular}Name`]: 'real', PolicyArn: ARN }],
+          // go-to-k/cdkd#6242: an attachment change re-reads AttachmentCount.
+          ['GetPolicyCommand', { PolicyArn: ARN }],
         ]);
         expect(String(warnSpy.mock.calls[0]?.[0])).toContain('cdkd detaches none of them');
       }
@@ -234,6 +236,7 @@ describe('IAMManagedPolicyProvider (go-to-k/cdkd#3906)', () => {
       ['ListEntitiesForPolicyCommand', { PolicyArn: ARN }],
       ['AttachGroupPolicyCommand', { GroupName: 'g1', PolicyArn: ARN }],
       ['DetachRolePolicyCommand', { RoleName: 'dropped', PolicyArn: ARN }],
+      ['GetPolicyCommand', { PolicyArn: ARN }], // #6242: the AttachmentCount re-read
     ]);
   });
 
@@ -397,6 +400,9 @@ describe('IAMManagedPolicyProvider (go-to-k/cdkd#3906)', () => {
       ['AttachRolePolicyCommand', { RoleName: 'added', PolicyArn: ARN }],
       ['DetachRolePolicyCommand', { RoleName: 'removed', PolicyArn: ARN }],
       ['DetachUserPolicyCommand', { UserName: 'gone', PolicyArn: ARN }],
+      // go-to-k/cdkd#6242: the attribute read-back AFTER the wiring, not a
+      // live read of the principals.
+      ['GetPolicyCommand', { PolicyArn: ARN }],
     ]);
   });
 });

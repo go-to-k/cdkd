@@ -61,6 +61,9 @@ describe('IAMManagedPolicyProvider attributes (#6232)', () => {
       IsTruncated: false,
     }); // ListPolicyVersions (capacity)
     mockSend.mockResolvedValueOnce({ PolicyVersion: { VersionId: 'v2' } }); // CreatePolicyVersion
+    // go-to-k/cdkd#6242: a new default version re-reads the policy (its
+    // `UpdateDate` moved); this read fails, so the response and record serve.
+    mockSend.mockRejectedValueOnce(new Error('throttled')); // GetPolicy
     const result = await provider.update(
       'MyManagedPolicy',
       ARN,
@@ -74,8 +77,11 @@ describe('IAMManagedPolicyProvider attributes (#6232)', () => {
       PolicyId: 'ANPAEXAMPLE',
       DefaultVersionId: 'v2',
     });
-    // No extra read: the values come from the response and the record.
-    expect(commandsSent()).toStrictEqual(['ListPolicyVersionsCommand', 'CreatePolicyVersionCommand']);
+    expect(commandsSent()).toStrictEqual([
+      'ListPolicyVersionsCommand',
+      'CreatePolicyVersionCommand',
+      'GetPolicyCommand',
+    ]);
   });
 
   it('update with no document change keeps the recorded DefaultVersionId', async () => {
