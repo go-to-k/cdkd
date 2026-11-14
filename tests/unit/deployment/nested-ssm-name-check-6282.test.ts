@@ -281,6 +281,25 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
     });
   });
 
+  it('defers the row above a clean child whose only deferred row is the grandchild’s', async () => {
+    // The grandchild holds the slashed name, but the child's Grand row holds
+    // a masked value: the child row is deferred (and named), not dropped.
+    const child = childClean();
+    child.resources['Grand'] = {
+      ...child.resources['Grand']!,
+      properties: { Parameters: { In: '***' } },
+    };
+    const readRecord = readerOver({
+      [CHILD]: child,
+      [GRAND]: stateOf(GRAND, { Param: ssmRecord(`/${generated(GRAND, 'Param')}`) }),
+    });
+    expect(await check(parentState(), readRecord)).toEqual({
+      forcedRows: new Set(),
+      deferredRows: new Set(['Child']),
+      complete: true,
+    });
+  });
+
   it('treats a child with no record as clean, and a row with no record as unread', async () => {
     const readRecord = readerOver({});
     expect(await check(parentState(), readRecord)).toEqual({ forcedRows: new Set(), deferredRows: new Set(), complete: true });

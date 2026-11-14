@@ -140,6 +140,9 @@ async function checkLevel(
         readRecord
       );
       if (below.forcedRows.size > 0) force(logicalId);
+      // Only a deferred row below: this row is deferred too, so the name the
+      // grandchild keeps is still named (the stack is marked either way).
+      else if (below.deferredRows.size > 0) deferredRows.add(logicalId);
       if (!below.complete) complete = false;
     })
   );
