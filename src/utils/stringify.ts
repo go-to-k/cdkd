@@ -28,6 +28,35 @@ export function isSensitiveAttributeName(attributeName: string): boolean {
 }
 
 /**
+ * Attributes whose recorded VALUE is a secret although their NAME does not
+ * pass `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
+ * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
+ * `x-api-key` value itself, recorded in plaintext at create.
+ * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue` is a
+ * credential Cloud Control records in plaintext (`cloud-control-provider.ts`);
+ * that type has no `getAttribute`, so every read of it reaches `--force`'s
+ * cache fallback. `AWS::IVS::StreamKey`'s `Value` is the stream key itself
+ * (Cloud-Control-routed; `docs/_generated/provider-coverage.json` lists it).
+ */
+const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['AWS::AppSync::ApiKey', ['ApiKey']],
+  ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
+  ['AWS::IVS::StreamKey', ['Value']],
+]);
+
+/**
+ * Whether `attribute` of `resourceType` records a secret VALUE under a name
+ * {@link isSensitiveAttributeName} cannot see (see the map above).
+ */
+export function isSecretValuedAttribute(
+  resourceType: string | undefined,
+  attribute: string
+): boolean {
+  if (resourceType === undefined) return false;
+  return SECRET_VALUED_ATTRIBUTES.get(resourceType)?.includes(attribute) === true;
+}
+
+/**
  * Render an attribute value for a debug log line, redacting values whose
  * attribute name looks credential-bearing (see
  * {@link SENSITIVE_ATTRIBUTE_NAME}).

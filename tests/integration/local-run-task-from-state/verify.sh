@@ -435,6 +435,9 @@ assert_in_logs "TABLE_NAME=${DEPLOYED_TABLE}"
 assert_in_logs "TABLE_ARN=arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${DEPLOYED_TABLE}"
 assert_in_logs "ENDPOINT=local-${REGION}-${DEPLOYED_TABLE}"
 assert_in_logs "JOINED=${DEPLOYED_TABLE}|literal"
+# Issue #6271: a Command element `Ref: MyTable` resolves against state. The
+# pre-fix resolver dropped it, so the container printed an empty `CMD_ARG=`.
+assert_in_logs "CMD_ARG=${DEPLOYED_TABLE}"
 # The generated secret is JSON like {"user":"cdkd","password":"<16char>"}
 # (~38-45 chars); assert a non-trivial DB_SECRET_LEN was injected. Cheap
 # regex: at least two digits, i.e. >= 10 chars resolved.
@@ -464,6 +467,37 @@ if [[ "${LEFTOVER_NETWORKS}" -ne 0 ]]; then
   exit 1
 fi
 echo "[verify]   teardown clean: 0 containers (incl. exited), 0 task networks"
+
+# ─── Issue #6271: an unresolvable Command element refuses the run ─────
+#
+# Without a state source the `Ref: MyTable` element cannot resolve. cdkd used
+# to drop it and run a different command; it must now refuse BEFORE any
+# container starts, naming the container and the element index.
+echo "[verify] step 4c-cmd: Issue #6271 — EnvTaskDef without --from-state refuses"
+set +e
+CMD_REFUSE_OUT="$(${CDKD} local run-task "${TASK_PATH_ENV}" \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 2>&1)"
+CMD_REFUSE_RC=$?
+set -e
+echo "${CMD_REFUSE_OUT}" | tail -8 | sed 's/^/[verify]     /'
+if [ "${CMD_REFUSE_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: run-task without --from-state exited 0 with an unresolvable Command element"
+  exit 1
+fi
+if ! grep -qF "Container 'printer' Command[4]" <<<"${CMD_REFUSE_OUT}"; then
+  echo "[verify] FAIL: refusal did not name Container 'printer' Command[4]"
+  exit 1
+fi
+CMD_REFUSE_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-env-fixture-printer-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${CMD_REFUSE_CONTAINERS}" -ne 0 ]]; then
+  echo "[verify] FAIL: the refused run still started ${CMD_REFUSE_CONTAINERS} container(s)"
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  exit 1
+fi
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+echo "[verify]   refused before any container started"
 
 # ─── Issue #3622: upper-cased AWS_REGION with NO --region ─────────────
 #

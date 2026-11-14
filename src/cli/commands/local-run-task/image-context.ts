@@ -198,8 +198,8 @@ export async function buildEcsImageResolutionContext(
     }
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
     logger.warn(
-      'Container Environment / Secrets entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
-        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state. Without a state source these entries are dropped (per-key warnings will follow).'
+      'Container Environment / Secrets / Command entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
+        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state. Without a state source Environment / Secrets entries are dropped (per-key warnings will follow) and an intrinsic Command / EntryPoint / HealthCheck.Command element refuses the run.'
     );
   }
 

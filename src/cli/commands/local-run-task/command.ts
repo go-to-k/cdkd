@@ -23,6 +23,7 @@ import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { foldRegionOption } from '../../region-options.js';
 import {
   applyCrossStackResolverToTask,
+  assertEcsTaskCommandsResolved,
   assertEcsTaskImagesResolvable,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
@@ -329,10 +330,14 @@ export async function localRunTaskCommand(
       }
     } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
       logger.warn(
-        'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
+        'Container Environment / Secrets / Command entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
           'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state.'
       );
     }
+    // A Command / EntryPoint / HealthCheck.Command element still unresolved
+    // refuses here, before any credential or container work: running without
+    // it runs a different command (go-to-k/cdkd#6271).
+    assertEcsTaskCommandsResolved(task);
 
     // Double-^C exits 130 immediately (matches `cdkd local start-api`).
     sigintHandler = (): void => {
@@ -628,6 +633,16 @@ export async function applyPerContainerNames(
         if (!mine || !into) continue;
         into.environment = mine.environment;
         into.secrets = mine.secrets;
+        // An argv element names a deployed resource too (go-to-k/cdkd#6271).
+        // Same template, so each field is present on both or on neither.
+        if (mine.command) into.command = mine.command;
+        if (mine.entryPoint) into.entryPoint = mine.entryPoint;
+        if (mine.healthCheck) into.healthCheck = mine.healthCheck;
+        if (mine.unresolvedCommandElements) {
+          into.unresolvedCommandElements = mine.unresolvedCommandElements;
+        } else {
+          delete into.unresolvedCommandElements;
+        }
       }
     } finally {
       provider.dispose();

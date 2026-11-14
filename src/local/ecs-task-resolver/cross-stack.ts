@@ -1,8 +1,34 @@
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { substituteAgainstStateAsync, type SubstitutionContext } from '../state-resolver.js';
+import { argvValue } from './container.js';
 import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
-import type { ResolvedEcsTask } from './types.js';
+import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
+
+/** The resolved argv array an unresolved element's placeholder lives in. */
+function argvTarget(
+  container: ResolvedEcsContainer,
+  field: UnresolvedCommandElement['field']
+): string[] | undefined {
+  if (field === 'Command') return container.command;
+  if (field === 'EntryPoint') return container.entryPoint;
+  return container.healthCheck?.command;
+}
+
+/** The template's raw argv array for `field`. */
+function rawArgv(
+  c: Record<string, unknown>,
+  field: UnresolvedCommandElement['field']
+): unknown[] | undefined {
+  let raw: unknown;
+  if (field === 'Command') raw = c['Command'];
+  else if (field === 'EntryPoint') raw = c['EntryPoint'];
+  else {
+    const h = c['HealthCheck'];
+    raw = h && typeof h === 'object' ? (h as Record<string, unknown>)['Command'] : undefined;
+  }
+  return Array.isArray(raw) ? (raw as unknown[]) : undefined;
+}
 
 /**
  * Async post-pass that walks the resolved task's container Environment +
@@ -125,6 +151,31 @@ export async function applyCrossStackResolverToTask(
           }
         }
       }
+    }
+
+    // Command / EntryPoint / HealthCheck.Command elements the sync pass left
+    // unresolved (go-to-k/cdkd#6271). No dynamic-reference hook, as for
+    // Secrets: a plaintext must not land on the `docker run` argv, so an
+    // element resolving to a `{{resolve:...}}` token stays unresolved.
+    if (container.unresolvedCommandElements?.length) {
+      const remaining: typeof container.unresolvedCommandElements = [];
+      for (const u of container.unresolvedCommandElements) {
+        const target = argvTarget(container, u.field);
+        const rawElement = rawArgv(c, u.field)?.[u.index];
+        if (!target || !isCrossStackIntrinsic(rawElement)) {
+          remaining.push(u);
+          continue;
+        }
+        const sub = await substituteAgainstStateAsync(rawElement, secretContext);
+        const arg = sub.kind === 'literal' ? argvValue(sub.value) : { reason: sub.reason };
+        if ('value' in arg) {
+          target[u.index] = arg.value;
+          continue;
+        }
+        remaining.push({ ...u, reason: arg.reason });
+      }
+      if (remaining.length > 0) container.unresolvedCommandElements = remaining;
+      else delete container.unresolvedCommandElements;
     }
 
     if (resolvedEnvKeys.size > 0 || resolvedSecretNames.size > 0) {
