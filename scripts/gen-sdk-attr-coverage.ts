@@ -31,8 +31,7 @@
  *      physical id + account + region, etc.),
  *   3. `guardedPhysicalIdFallback` — returns the physical id, EXCEPT it
  *      HARD-THROWS for a `*Arn` name whose fallback is not `arn:`-shaped or a
- *      `*Url` name whose fallback is not `http(s)://`-shaped (either suffix
- *      also in upper case: `AutoScalingGroupARN`, #6238).
+ *      `*Url` name whose fallback is not `http(s)://`-shaped.
  * So a read-only `*Arn` / `*Url` attribute that is NEITHER cached by the
  * provider NOR handled by `constructAttribute` is a guaranteed deploy break the
  * moment it is `Fn::GetAtt`'d. Non-ARN/URL read-only attributes degrade to a
@@ -392,10 +391,13 @@ export const GAP_REMEDY =
   'tracking issue.';
 
 /**
- * A read-only attribute whose absence would HARD-FAIL the resolver's guard.
- * Both spellings of each suffix count, as in the guard: CloudFormation names
- * some of them `ARN` (`AWS::AutoScaling::AutoScalingGroup`'s
- * `AutoScalingGroupARN`), which an `Arn`-only test missed (issue #6238).
+ * A read-only attribute whose absence would HARD-FAIL the resolver's guard —
+ * or, spelled `ARN` / `URL`, resolve SILENTLY to a wrong value: the guard
+ * tests `Arn` / `Url` only, so `AWS::AutoScaling::AutoScalingGroup`'s
+ * `AutoScalingGroupARN` fell back to the group name with a warning (issue
+ * #6238). The guard stays as it is because a record an older cdkd wrote
+ * without the key, on a type with no `import()` to heal it (the ASG), would
+ * turn from a warning into a refused deploy.
  */
 const isArnOrUrlAttr = (name: string): boolean => /(?:Arn|ARN|Url|URL)$/.test(name);
 

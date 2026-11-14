@@ -228,9 +228,8 @@ export function describeFailureObserved(
  * `constructAttribute` and every per-type handler's
  * `default:`-for-an-unknown-attribute branch:
  *
- * - An attribute name ending in `Arn` / `ARN` whose fallback value is not
- *   ARN-shaped (or ending in `Url` / `URL` whose fallback is not an http(s)
- *   URL)
+ * - An attribute name ending in `Arn` whose fallback value is not
+ *   ARN-shaped (or ending in `Url` whose fallback is not an http(s) URL)
  *   cannot be what CloudFormation would return — hard-fail. The #1103
  *   incident shipped four resource NAMES into stack Outputs where ARNs
  *   were requested, with a green deploy. A physicalId that already IS an
@@ -282,11 +281,8 @@ export function guardedPhysicalIdFallback(
   // `constructAttribute`), so it is arbitrary template text: through the
   // builder once, for all four renders (issue #3441).
   const loggedType = displayMasked(resolver, resourceType, context);
-  // Both spellings of each suffix: CloudFormation names some ARN attributes
-  // `...ARN` (`AWS::AutoScaling::AutoScalingGroup.AutoScalingGroupARN`), and
-  // an `Arn`-only test let the group NAME through silently (issue #6238).
-  const expectsArnShape = /(?:Arn|ARN)$/.test(attributeName) && !physicalId.startsWith('arn:');
-  const expectsUrlShape = /(?:Url|URL)$/.test(attributeName) && !/^https?:\/\//.test(physicalId);
+  const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
+  const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
   if (expectsArnShape || expectsUrlShape) {
     const expectedShape = expectsArnShape ? 'an ARN (arn:...)' : 'a URL (http(s)://...)';
     // Terminal (issue #1838 / #1874 review): the verdict is a function of the

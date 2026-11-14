@@ -265,7 +265,8 @@ describe('S3TablesProvider', () => {
       const result = await provider.update('MyTbl', physicalId, 'AWS::S3Tables::Table', {}, {});
 
       expect(result).toEqual({ physicalId, wasReplaced: false });
-      expect(mockSend).not.toHaveBeenCalled();
+      // Only the post-update attribute re-read (issue #6238).
+      expect(mockSend.mock.calls.map(([c]) => c.constructor)).toEqual([GetTableCommand]);
     });
   });
 
@@ -301,7 +302,8 @@ describe('S3TablesProvider', () => {
       expect(renameInputs()).toEqual([
         { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newName: 'tbl_b' },
       ]);
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // RenameTable + the post-update attribute re-read (issue #6238).
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(result).toEqual({ physicalId: `${BUCKET}|ns_a|tbl_b`, wasReplaced: false });
     });
 
@@ -343,6 +345,67 @@ describe('S3TablesProvider', () => {
       expect(result).toEqual({ physicalId: `${BUCKET}|ns_b|tbl_b`, wasReplaced: false });
     });
 
+    // Issue #6238: VersionToken follows the table's metadata version, so the
+    // update re-reads the attributes (an `attributes` result REPLACES the record's).
+    it('a no-rename update records the re-read VersionToken', async () => {
+      mockSend.mockResolvedValueOnce({
+        tableARN: TABLE_ARN,
+        warehouseLocation: 's3://wh-s3alias--table-s3',
+        versionToken: 'vt-after',
+      });
+      const props = { ...base, Namespace: 'ns_a', TableName: 'tbl_a' };
+      const result = await provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', props, props);
+      expect(result).toEqual({
+        physicalId: OLD_ID,
+        wasReplaced: false,
+        attributes: {
+          TableARN: TABLE_ARN,
+          WarehouseLocation: 's3://wh-s3alias--table-s3',
+          VersionToken: 'vt-after',
+        },
+      });
+      expect((mockSend.mock.calls[0][0] as GetTableCommand).input).toEqual({
+        tableBucketARN: BUCKET,
+        namespace: 'ns_a',
+        name: 'tbl_a',
+      });
+    });
+
+    it('a rename update reads the NEW name table and records its attributes', async () => {
+      mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({
+        tableARN: TABLE_ARN,
+        versionToken: 'vt-renamed',
+      });
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_b', TableName: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+      const commands = mockSend.mock.calls.map(([c]) => c);
+      expect(commands[0]).toBeInstanceOf(RenameTableCommand);
+      expect(commands[1]).toBeInstanceOf(GetTableCommand);
+      expect((commands[1] as GetTableCommand).input).toEqual({
+        tableBucketARN: BUCKET,
+        namespace: 'ns_b',
+        name: 'tbl_b',
+      });
+      expect(result.attributes).toStrictEqual({ TableARN: TABLE_ARN, VersionToken: 'vt-renamed' });
+    });
+
+    it('a failed or tableARN-less GetTable returns the result without an attributes key', async () => {
+      const props = { ...base, Namespace: 'ns_a', TableName: 'tbl_a' };
+      mockSend.mockRejectedValueOnce(new Error('InternalServerError'));
+      const failed = await provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', props, props);
+      expect(failed).toStrictEqual({ physicalId: OLD_ID, wasReplaced: false });
+      expect(failed).not.toHaveProperty('attributes');
+
+      mockSend.mockResolvedValueOnce({ versionToken: 'vt-only' });
+      const partial = await provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', props, props);
+      expect(partial).toStrictEqual({ physicalId: OLD_ID, wasReplaced: false });
+    });
+
     it('reads the legacy `Name` alias when TableName is absent', async () => {
       mockSend.mockResolvedValueOnce({});
       const result = await provider.update(
@@ -368,7 +431,8 @@ describe('S3TablesProvider', () => {
         { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
       );
 
-      expect(mockSend).not.toHaveBeenCalled();
+      // No mutation; only the post-update attribute re-read (issue #6238).
+      expect(mockSend.mock.calls.map(([c]) => c.constructor)).toEqual([GetTableCommand]);
       expect(result).toEqual({ physicalId: OLD_ID, wasReplaced: false });
     });
 
@@ -408,6 +472,7 @@ describe('S3TablesProvider', () => {
         GetTableCommand,
         TagResourceCommand,
         RenameTableCommand,
+        GetTableCommand, // post-update attribute re-read (issue #6238)
       ]);
       expect((commands[0] as GetTableCommand).input).toEqual({
         tableBucketARN: BUCKET,
@@ -500,7 +565,11 @@ describe('S3TablesProvider', () => {
       const ok = await provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', desired, previous, {
         recordedAttributes: { TableARN: TABLE_ARN },
       });
-      expect(ok).toEqual({ physicalId: `${BUCKET}|ns_a|tbl_b`, wasReplaced: false });
+      expect(ok).toEqual({
+        physicalId: `${BUCKET}|ns_a|tbl_b`,
+        wasReplaced: false,
+        attributes: { TableARN: TABLE_ARN },
+      });
       const lookup = mockSend.mock.calls
         .map(([command]) => command)
         .find((command) => command instanceof GetTableCommand) as GetTableCommand;

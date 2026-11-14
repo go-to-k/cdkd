@@ -570,6 +570,13 @@ describe('rewriteResourceReferences', () => {
       'a secret-valued attribute',
     ],
     [
+      'a secret-valued attribute (AppSync ApiKeyId)',
+      'AWS::AppSync::ApiKey',
+      'ApiKeyId',
+      'da2-plaintextapikey',
+      'a secret-valued attribute',
+    ],
+    [
       'a secret-valued attribute (IVS StreamKey Value)',
       'AWS::IVS::StreamKey',
       'Value',

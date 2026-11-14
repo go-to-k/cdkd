@@ -1,5 +1,6 @@
 import type { S3TablesProvider } from '../s3-tables-provider.js';
-import { S3TablesClient, NotFoundException } from '@aws-sdk/client-s3tables';
+import { S3TablesClient, NotFoundException, GetTableCommand } from '@aws-sdk/client-s3tables';
+import { definedAttributes } from '../../attribute-map.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../../utils/error-handler.js';
@@ -22,6 +23,7 @@ import {
   metricsEnabled,
   INTEGER_BEARING_CONFIGS,
   refuseMalformedLogging,
+  parseTableCompositeId,
 } from './shared.js';
 
 /**
@@ -211,6 +213,39 @@ export async function update(
   }
 }
 
+/**
+ * Re-read a Table's attributes after an update (issue #6238): `VersionToken`
+ * names the table's CURRENT metadata version, so the one recorded at create
+ * goes stale. The map is `createTable`'s whole set (an `attributes` result
+ * REPLACES the record's), and any failed or partial read returns the result
+ * without one, so the recorded attributes carry forward instead.
+ */
+async function withTableAttributes(
+  provider: S3TablesProvider,
+  logicalId: string,
+  result: ResourceUpdateResult
+): Promise<ResourceUpdateResult> {
+  const parts = parseTableCompositeId(result.physicalId);
+  if (parts === undefined) return result;
+  try {
+    const read = await provider.getClient().send(new GetTableCommand(parts));
+    if (!read.tableARN) return result;
+    return {
+      ...result,
+      attributes: definedAttributes({
+        TableARN: read.tableARN,
+        WarehouseLocation: read.warehouseLocation,
+        VersionToken: read.versionToken,
+      }),
+    };
+  } catch (readError) {
+    provider.logger.debug(
+      `Could not re-read the attributes of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
+    );
+    return result;
+  }
+}
+
 export async function applyUpdate(
   this: S3TablesProvider,
   logicalId: string,
@@ -258,7 +293,9 @@ export async function applyUpdate(
       previousProperties,
       markUnsettled
     );
-    if (rename === undefined) return { physicalId, wasReplaced: false };
+    if (rename === undefined) {
+      return withTableAttributes(this, logicalId, { physicalId, wasReplaced: false });
+    }
     try {
       await this.getClient().send(rename.command);
     } catch (error) {
@@ -276,7 +313,10 @@ export async function applyUpdate(
     // recorded `TableARN` attribute carries forward (measured against
     // CloudFormation 2026-10-26: TableName and Namespace changes are both
     // `Replacement: False`, and `Fn::GetAtt TableARN` is unchanged).
-    return { physicalId: rename.physicalId, wasReplaced: false };
+    return withTableAttributes(this, logicalId, {
+      physicalId: rename.physicalId,
+      wasReplaced: false,
+    });
   } else if (resourceType === 'AWS::S3Tables::TableBucket') {
     // TableBucket's physicalId IS the bucket ARN, so the tag-diff path
     // can use it directly (no GetTableBucket lookup hop needed — unlike

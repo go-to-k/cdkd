@@ -214,6 +214,12 @@ describe('classifyType', () => {
     expect(c.gaps).toEqual(['AutoScalingGroupARN']);
   });
 
+  it('flags an upper-case *URL readOnly that is not cached', () => {
+    const c = classifyType('AWS::Foo::Bar', ['QueueURL'], new Set(), new Set(), EMPTY);
+    expect(c.bucket).toBe('gap');
+    expect(c.gaps).toEqual(['QueueURL']);
+  });
+
   it('marks an upper-case *ARN readOnly covered once the provider caches it', () => {
     const c = classifyType(
       'AWS::AutoScaling::AutoScalingGroup',

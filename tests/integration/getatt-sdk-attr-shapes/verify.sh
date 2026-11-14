@@ -147,7 +147,8 @@ IDS="$(physical_ids)"
 
 echo "==> 2. UPDATE (second web ACL rule, ASG MaxSize 0 -> 1)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --strict-getatt --yes
-[ "$(physical_ids)" = "${IDS}" ] || { echo "FAIL: physical ids changed (replacement): ${IDS} -> $(physical_ids)" >&2; exit 1; }
+# Names only: the API key's physical id is the credential.
+[ "$(physical_ids)" = "${IDS}" ] || { echo "FAIL: physical ids changed (replacement) for: $(jq -rn --argjson a "${IDS}" --argjson b "$(physical_ids)" '[$a | keys[] | select($a[.] != $b[.])] | join(", ")')" >&2; exit 1; }
 CAPACITY_2="$(assert_shapes)"
 [ "${CAPACITY_2}" -gt "${CAPACITY_1}" ] || { echo "FAIL: AclCapacity ${CAPACITY_2} did not grow past ${CAPACITY_1} after adding a rule (stale pre-update read)" >&2; exit 1; }
 MAX="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
