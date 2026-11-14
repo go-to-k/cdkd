@@ -684,6 +684,7 @@
       "integs": [
         "appsync",
         "getatt-appsync-s3express-s3tables",
+        "getatt-cloudtrail-appsync",
         "import-migrate-appsync",
         "ref-shape-vector-namespace-attachment",
         "secret-derived-immutable-names"
@@ -693,6 +694,10 @@
           "l1"
         ],
         "getatt-appsync-s3express-s3tables": [
+          "l1",
+          "literal"
+        ],
+        "getatt-cloudtrail-appsync": [
           "l1",
           "literal"
         ],
@@ -1020,11 +1025,16 @@
       "resourceType": "AWS::CloudTrail::Trail",
       "integs": [
         "cloudtrail-trail",
+        "getatt-cloudtrail-appsync",
         "infra-security"
       ],
       "signals": {
         "cloudtrail-trail": [
           "l1",
+          "literal"
+        ],
+        "getatt-cloudtrail-appsync": [
+          "l2",
           "literal"
         ],
         "infra-security": [
@@ -7872,6 +7882,7 @@
         "firehose-msk-source",
         "full-stack-demo",
         "generated-name-lifecycle",
+        "getatt-cloudtrail-appsync",
         "glue-update-hardening",
         "import-value-strong-ref",
         "infra-security",
@@ -8001,6 +8012,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-cloudtrail-appsync": [
+          "l2"
         ],
         "glue-update-hardening": [
           "l2"
@@ -8344,6 +8358,7 @@
         "export",
         "full-stack-demo",
         "generated-name-lifecycle",
+        "getatt-cloudtrail-appsync",
         "iam-propagation-stress",
         "import-attribute-readback",
         "importvalue-chain",
@@ -8448,6 +8463,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-cloudtrail-appsync": [
+          "l2"
         ],
         "iam-propagation-stress": [
           "l2"

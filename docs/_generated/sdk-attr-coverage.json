@@ -2,13 +2,6 @@
   "schemaVersion": 1,
   "refusedAttributes": [
     {
-      "resourceType": "AWS::AppSync::GraphQLApi",
-      "attributes": [
-        "GraphQLEndpointArn",
-        "RealtimeUrl"
-      ]
-    },
-    {
       "resourceType": "AWS::BedrockAgentCore::Evaluator",
       "attributes": [
         "EvaluatorType",
@@ -32,12 +25,6 @@
         "ParentId",
         "RootId",
         "StackStatus"
-      ]
-    },
-    {
-      "resourceType": "AWS::CloudTrail::Trail",
-      "attributes": [
-        "SnsTopicArn"
       ]
     },
     {
@@ -129,7 +116,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 46
+    "refused": 43
   },
   "types": [
     {
@@ -255,7 +242,7 @@
         },
         {
           "name": "RealtimeUrl",
-          "status": "construct-attribute"
+          "status": "cached"
         }
       ],
       "gaps": []
@@ -384,7 +371,7 @@
         },
         {
           "name": "SnsTopicArn",
-          "status": "construct-attribute"
+          "status": "cached"
         }
       ],
       "gaps": []

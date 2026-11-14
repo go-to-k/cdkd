@@ -33,6 +33,7 @@ import {
   retainPreviousLists,
   eventSelectorRequest,
   trailBoolean,
+  trailAttributes,
 } from './shared.js';
 
 /**
@@ -239,9 +240,7 @@ export async function create(
 
     return {
       physicalId: trailArn,
-      attributes: {
-        Arn: trailArn,
-      },
+      attributes: trailAttributes(trailArn, result.SnsTopicARN),
       ...(skippedOnReplay.length > 0 && {
         effectiveProperties: retainPreviousLists(properties, {}, skippedOnReplay),
       }),

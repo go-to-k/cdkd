@@ -187,6 +187,7 @@ export async function createGraphQLApi(
         // recorded from the response.
         GraphQLDns: response.graphqlApi?.dns?.['GRAPHQL'],
         RealtimeDns: response.graphqlApi?.dns?.['REALTIME'],
+        RealtimeUrl: response.graphqlApi?.uris?.['REALTIME'],
       }),
       // A state replay that skipped all or part of the map records what was
       // actually put, not the record it could not send.

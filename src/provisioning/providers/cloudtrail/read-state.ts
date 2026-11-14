@@ -17,7 +17,7 @@ import {
   type ResourceNotFound,
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
-import { advancedSelectorsToCfn } from './shared.js';
+import { advancedSelectorsToCfn, trailAttributes } from './shared.js';
 
 /**
  * Adopt an existing CloudTrail trail into cdkd state.
@@ -238,8 +238,11 @@ export async function importImpl(
   const explicit = resolveExplicitPhysicalId(input, 'TrailName');
   if (explicit) {
     try {
-      await this.getClient().send(new GetTrailCommand({ Name: explicit }));
-      return { physicalId: explicit, attributes: {} };
+      const resp = await this.getClient().send(new GetTrailCommand({ Name: explicit }));
+      return {
+        physicalId: explicit,
+        attributes: trailAttributes(resp.Trail?.TrailARN, resp.Trail?.SnsTopicARN),
+      };
     } catch (err) {
       if (err instanceof TrailNotFoundException) return null;
       throw err;

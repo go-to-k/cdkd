@@ -1353,6 +1353,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-cloudtrail-appsync",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-fallback-guard",
       "annotated": false,
       "scenarios": []
@@ -3853,6 +3858,7 @@
     "generated-name-security-group",
     "getatt-appsync-s3express-s3tables",
     "getatt-asg-arn-rule-name",
+    "getatt-cloudtrail-appsync",
     "getatt-fallback-guard",
     "getatt-vpc-managed-policy",
     "globaltable-fix-forward-orphan",

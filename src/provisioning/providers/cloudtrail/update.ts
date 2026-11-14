@@ -35,6 +35,7 @@ import {
   withoutTrailIdentifiers,
   removalsLeftInPlace,
   leftInPlaceWarning,
+  trailAttributes,
 } from './shared.js';
 
 export async function update(
@@ -220,8 +221,11 @@ export async function update(
   // one that already landed.
   const appliedBeforeFailure: string[] = [];
 
+  // go-to-k/cdkd#6242: `attributes` REPLACES the record, so both keys are
+  // returned from UpdateTrail's answer (a changed or removed topic included).
+  let attributes: Record<string, unknown> | undefined;
   try {
-    await this.getClient().send(
+    const updated = await this.getClient().send(
       new UpdateTrailCommand({
         Name: physicalId,
         S3BucketName: s3BucketName,
@@ -237,6 +241,11 @@ export async function update(
         RecursiveLogging: recursiveLogging,
       })
     );
+    // An answer with no TrailARN is no answer: leave `attributes` undefined so
+    // the engine keeps the record rather than replacing it with `{}`.
+    attributes = updated?.TrailARN
+      ? trailAttributes(updated.TrailARN, updated.SnsTopicARN)
+      : undefined;
 
     // Issue #5541: name what UpdateTrail kept as soon as it has applied, so
     // a later selector or tag failure cannot drop the line.
@@ -508,7 +517,8 @@ export async function update(
       ...(selectorsUnusable ? ['EventSelectors', 'AdvancedEventSelectors'] : []),
       ...(aggregationRead.kind === 'unusable' ? ['AggregationConfigurations'] : []),
     ];
-    if (skipped.length === 0) return { physicalId, wasReplaced: false };
+    if (skipped.length === 0)
+      return { physicalId, wasReplaced: false, ...(attributes && { attributes }) };
     // Only a present-but-unusable previous value needs the live reading,
     // so the read runs on that malformed path alone.
     const needsLive = skipped.some(
@@ -518,6 +528,7 @@ export async function update(
     return {
       physicalId,
       wasReplaced: false,
+      ...(attributes && { attributes }),
       effectiveProperties: retainPreviousLists(
         desiredProperties,
         previousProperties,

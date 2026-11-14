@@ -2,6 +2,7 @@ import type { AdvancedEventSelector, EventSelector } from '@aws-sdk/client-cloud
 import { safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { coerceCfnBoolean, requireConfigArray } from '../../config-shape.js';
+import { definedAttributes } from '../../attribute-map.js';
 import type { UpdateContext } from '../../../types/resource.js';
 
 /**
@@ -376,4 +377,20 @@ export function leftInPlaceWarning(
   return caller === 'rollback'
     ? safeMsg`${logicalId} (AWS::CloudTrail::Trail): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateTrail keeps a field it is not sent, so the rollback leaves the value the failed deploy applied in place.`
     : safeMsg`${logicalId} (AWS::CloudTrail::Trail): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS value in place (whether CloudFormation resets it is unmeasured). Declare the intended value explicitly to change it.`;
+}
+
+/**
+ * go-to-k/cdkd#6242: the `Fn::GetAtt` attributes a trail records, from a
+ * CreateTrail / UpdateTrail / GetTrail answer: its own `Arn` and the
+ * `SnsTopicArn` of the topic it notifies (CDK's `trailSnsTopicArn`), which the
+ * physical id (the trail ARN) is not. No topic records no key.
+ */
+export function trailAttributes(
+  trailArn: string | undefined,
+  snsTopicArn: string | undefined
+): Record<string, unknown> {
+  // Only what AWS answered: never an id cdkd was handed (an imported name
+  // recorded as the `Arn` would turn the resolver's own ARN arm into a
+  // silent wrong value).
+  return definedAttributes({ Arn: trailArn || undefined, SnsTopicArn: snsTopicArn || undefined });
 }
