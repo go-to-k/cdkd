@@ -218,7 +218,7 @@ export async function resolveRef(
           `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: the Ref value ` +
             `CloudFormation returns for this resource is its ${healedAttribute}, which its physical ` +
             `id is not, and the value read for it is not a usable ARN. Re-import the resource ` +
-            `with 'cdkd import'.`
+            `with ${proseQuoted(cdkdRemedy('cdkd import'))}.`
         )
       );
     }
