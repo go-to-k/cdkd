@@ -372,19 +372,17 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     });
 
     it('writes nothing for another run, or for a list that would record a cycle', async () => {
-      for (const [childJournal, resources] of [
-        [{ segments: [pending('run-other', { A: ['B'] })] }, { A: record('A'), B: record('B') }],
-        [
-          { segments: [pending(RUN, { A: ['B'] })] },
-          { A: record('A'), B: { ...record('B'), dependencies: ['A'] } },
-        ],
-      ] as const) {
+      const cases: Array<[string, Record<string, ResourceState>]> = [
+        ['run-other', { A: record('A'), B: record('B') }],
+        [RUN, { A: record('A'), B: { ...record('B'), dependencies: ['A'] } }],
+      ];
+      for (const [runId, resources] of cases) {
         const { engine, backend } = build({
           nested: false,
           changes: new Map([['Q', createChange('Q')]]),
           resources: { Child: record('Child', NESTED) },
-          childState: child({ ...resources }),
-          childJournal: { segments: [...childJournal.segments] },
+          childState: child(resources),
+          childJournal: { segments: [pending(runId, { A: ['B'] })] },
         });
 
         await engine.deploy(STACK, templateOf(['Q']));
