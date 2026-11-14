@@ -123,9 +123,7 @@ export function withTemplateDependencies(
     const derived = extractAllDependencies(template, logicalId) ?? [];
     const have = Array.isArray(record.dependencies) ? record.dependencies : [];
     const haveSet = new Set(have);
-    const want = removalsOnly
-      ? [...haveSet].filter((id) => derived.includes(id))
-      : derived;
+    const want = removalsOnly ? [...haveSet].filter((id) => derived.includes(id)) : derived;
     if (want.length === haveSet.size && want.every((id) => haveSet.has(id))) continue;
     refreshed ??= { ...resources };
     const { dependencies: _stale, ...rest } = record;
