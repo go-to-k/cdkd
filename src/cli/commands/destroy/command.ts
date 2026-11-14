@@ -3,10 +3,12 @@
  */
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import {
+  cdkdRemedy,
   pasteableCommand,
   plainOrDescribed,
   quotedOrDescribed,
   withheldTargetClause,
+  proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import {
   warnIfDeprecatedRegion,
@@ -56,6 +58,7 @@ import { skippedDestroyMessage } from '../destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../../deployment/noecho-delete-reresolution.js';
 import { selectDestroyTargets, orderDestroyTargets, type DestroyTarget } from './select-targets.js';
 import { plannedDestroyRegion, protectionNotNamed, purgeEventsAfterDestroy } from './helpers.js';
+import { refuseDestroyTargetsWithoutApp } from '../destroy-runner/emulator-custom-resources.js';
 
 /**
  * Destroy command implementation
@@ -365,7 +368,7 @@ export async function destroyCommand(
         if (totalErrors > 0) {
           throw new PartialFailureError(
             `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-              `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
+              `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run ${proseQuoted(cdkdRemedy('cdkd destroy'))} to retry.`
           );
         }
         if (notInApp.length > 0) logger.warn(renderNotInAppWarning(notInApp));
@@ -464,6 +467,7 @@ export async function destroyCommand(
         fallbackRegionByName.get(target.stackName) ?? region
       );
     };
+    const customResourceTargets: Array<{ stackName: string; region: string }> = [];
     for (const target of targets) {
       if (
         target.synth?.terminationProtection === true &&
@@ -474,8 +478,11 @@ export async function destroyCommand(
       const planned = plannedRegionFor(target);
       if (planned !== undefined) {
         void crossPrefixCheck.cache.full(target.stackName, planned, 'prestart');
+        customResourceTargets.push({ stackName: target.stackName, region: planned });
       }
     }
+    // go-to-k/cdkd#6246: every target and its nested stacks, before any is touched.
+    await refuseDestroyTargetsWithoutApp(customResourceTargets, stateBackend, awsClients);
     for (const [stackIndex, target] of targets.entries()) {
       const stackName = target.stackName;
       logger.info(`\nPreparing to destroy stack: ${describeTarget(target)}`);
@@ -944,8 +951,8 @@ export async function destroyCommand(
       // failures → exit 1).
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-          `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
+          `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run ${proseQuoted(cdkdRemedy('cdkd destroy'))} to retry. ` +
+          `If the same resource keeps failing, ${pasteableCommand('cdkd state orphan', [{ hole: 'stack' }, { flag: '--stack-region', hole: 'region' }]).command} removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -959,7 +966,7 @@ export async function destroyCommand(
       // reaches here with the command-level flag set and nothing left to
       // finish, and the message would then be false in both halves.
       throw new PartialFailureError(
-        `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd destroy' to finish.`
+        `Destroy interrupted by Ctrl-C. State preserved — re-run ${proseQuoted(cdkdRemedy('cdkd destroy'))} to finish.`
       );
     }
     if (totalSkipped > 0) {

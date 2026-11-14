@@ -70,12 +70,12 @@ const DEPLOY: DeleteContext = { expectedRegion: 'us-east-1' };
 
 /** The whole-stack remedy a stack destroy names. */
 const wholeStack = (id: string): string =>
-  "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack " +
+  "cdkd state orphan '<stack>' --stack-region '<region>', which drops every record the stack " +
   `still has in that region, not just this one (add '--resource ${id}' to drop only this one)`;
 /** The single-record remedy every other delete names. */
 const single = (id: string): string =>
-  `'cdkd state orphan <stack> --stack-region <region> --resource ${id}', which drops only this record`;
-const BARE = "'cdkd state orphan <stack> --stack-region <region>',";
+  `cdkd state orphan '<stack>' --stack-region '<region>' --resource ${id}, which drops only this record`;
+const BARE = "cdkd state orphan '<stack>' --stack-region '<region>',";
 
 const warnText = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
 
@@ -104,9 +104,9 @@ describe('stateOrphanRecordRemedy', () => {
   });
 
   it('keeps a placeholder for a logical id that is not a plain identifier', () => {
-    expect(stateOrphanRecordRemedy(DEPLOY, '-rf $(x)')).toContain('--resource <logicalId>');
+    expect(stateOrphanRecordRemedy(DEPLOY, '-rf $(x)')).toContain("--resource '<logicalId>'");
     expect(stateOrphanRecordRemedy(DEPLOY, '-rf $(x)')).not.toContain('$(x)');
-    expect(stateOrphanRecordRemedy(DESTROY, 'a b')).toContain("add '--resource <logicalId>'");
+    expect(stateOrphanRecordRemedy(DESTROY, 'a b')).toContain("add --resource '<logicalId>' to");
   });
 });
 

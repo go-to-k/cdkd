@@ -27,6 +27,7 @@
  * nor the template holds cannot be named (the attempted bag is not persisted)
  * and is left in place, which the caller warns about.
  */
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { calculateResourceDrift } from '../analyzer/drift-calculator.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { ProvisioningError } from '../utils/error-handler.js';
@@ -90,7 +91,7 @@ function refusal(args: Identity, names: Iterable<string>, why: string): Provisio
       // resource through `readCurrentState`, and its --accept records what AWS
       // holds (clearing the names) once nothing is still changing.
       (args.provider.readCurrentState !== undefined
-        ? ", or, to keep what AWS holds instead, run 'cdkd drift --accept' once it has."
+        ? `, or, to keep what AWS holds instead, run ${proseQuoted(cdkdRemedy('cdkd drift', '--accept'))} once it has.`
         : '.'),
     args.resourceType,
     args.logicalId,

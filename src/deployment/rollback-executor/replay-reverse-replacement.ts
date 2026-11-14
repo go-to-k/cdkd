@@ -1,4 +1,5 @@
 import { nameGenerationOf } from '../../state/name-generation.js';
+import { cdkdRemedy, deployReplaceCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
@@ -83,7 +84,7 @@ function refuseSameIdParentReversal(s: ReplayOpScope): void {
           `the deploy deleted it and re-created it under the same physical id, so reversing it ` +
           `deletes it again, and with it what AWS stores inside it (${shown}${more}), which this ` +
           `rollback does not re-create. Nothing was deleted. The journal is kept: fix forward ` +
-          `by deploying the previous version of the template with cdkd deploy --replace, which ` +
+          `by deploying the previous version of the template with ${deployReplaceCommand()}, which ` +
           `re-creates both` +
           (remedy.offered
             ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
@@ -118,7 +119,7 @@ function refuseUndecidableSameIdReversal(s: ReplayOpScope): void {
           `properties read the same before and after the deploy and hold a redacted value, which ` +
           `may hide what changed, or the deploy's properties were not journaled). Nothing was deleted. ` +
           `The journal is kept: fix forward by deploying the previous version of the template ` +
-          `with cdkd deploy --replace` +
+          `with ${deployReplaceCommand()}` +
           (remedy.offered
             ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
               `re-running with the command below.`
@@ -186,14 +187,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         safeMsg`  ⚠ Rollback: the old resource of ${shownLogicalId(op.logicalId)} (${oldShown}) still ` +
           `exists — the deploy's delete of it was not confirmed — so it is re-adopted instead of ` +
           `re-created. Part of it may have been removed before that delete failed: check it ` +
-          safeMsg`with cdkd drift after the rollback.${describedPhysicalIdPointer(oldShown)}`
+          safeMsg`with ${cdkdRemedy('cdkd drift')} after the rollback.${describedPhysicalIdPointer(oldShown)}`
       );
       result.warnings++;
       return replayReadopt(s, {
         reason:
           `the old resource survived a delete that was refused or never sent during the ` +
           `deploy and was re-adopted instead of re-created; the provider may have run part of ` +
-          `that delete, so check it with cdkd drift`,
+          `that delete, so check it with ${cdkdRemedy('cdkd drift')}`,
       });
     }
     if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
@@ -209,8 +210,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     !requireRestorableBaseline(prev.properties, logger, {
       logicalId: op.logicalId,
       consequence: 'create a default-configured resource and then delete the live one',
-      remedy: 'Re-run `cdkd deploy` to re-converge it.',
-      retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
+      remedy: `Re-run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to re-converge it.`,
+      retry: `re-running ${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))} retries this op`,
     })
   ) {
     recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
@@ -596,7 +597,7 @@ function survivorUnprovenRefusal(
   const oldShown = hasAddressablePhysicalId({ physicalId: oldId })
     ? refusalPhysicalId(mask(String(oldId)))
     : 'no recorded id';
-  const rerun = rerunRollbackPhrase(ctx, 'cdkd rollback');
+  const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   const why =
     verdict === 'unreadable'
       ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +

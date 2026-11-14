@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { withErrorHandling } from '../../../utils/error-handler.js';
 import { displayIdent, stringifyJsonPayload } from '../../../utils/display-safe.js';
 import {
@@ -98,7 +99,7 @@ export async function printStackResources(
   if (!stateResult) {
     throw new Error(
       `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
-        `Run 'cdkd state list' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
 

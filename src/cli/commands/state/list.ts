@@ -14,10 +14,10 @@ import {
 import type { StackState } from '../../../types/state.js';
 import {
   type StackDetail,
-  LOCK_READ_FAILED_REASON,
+  lockReadFailedReason,
   LEGACY_LOCK_READ_FAILED_REASON,
   type StateReadErrorKind,
-  STATE_READ_REASONS,
+  stateReadReasons,
   resourceCountOrNull,
   readOrFailure,
   isoTimestampOrNull,
@@ -167,12 +167,12 @@ async function stateListCommand(options: {
           lastModified: state ? isoTimestampOrNull(state.lastModified) : null,
           locked: lockRead.ok ? lockRead.value : null,
           stateReadError:
-            stateReadErrorKind === null ? null : STATE_READ_REASONS[stateReadErrorKind],
+            stateReadErrorKind === null ? null : stateReadReasons()[stateReadErrorKind],
           stateReadErrorKind,
           lockReadError: lockRead.ok
             ? null
             : ref.region
-              ? LOCK_READ_FAILED_REASON
+              ? lockReadFailedReason()
               : LEGACY_LOCK_READ_FAILED_REASON,
         };
       })

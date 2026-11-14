@@ -76,6 +76,13 @@ export interface LocalAwsWiringOptions {
    * misspelled variable stop the command.
    */
   envVars?: string | undefined;
+  /**
+   * The command runs ONE workload (`invoke`, `invoke-agentcore`): the
+   * mixed-mode startup line is left to `logMixedModeForWorkload`, called once
+   * the target is resolved, so it names that workload's exceptions only
+   * (go-to-k/cdkd#6257).
+   */
+  singleWorkload?: boolean | undefined;
 }
 
 /**
@@ -101,6 +108,7 @@ export async function activateLocalAwsWiring(options: LocalAwsWiringOptions): Pr
       // path is read once and the command's own `--env-vars` read gets the
       // same text; the parsed file drives per-workload routing.
       envVars: options.envVars,
+      singleWorkload: options.singleWorkload,
     });
   } catch (err) {
     // The error's own CAUSE, not the error: chaining the error itself only
@@ -180,7 +188,8 @@ export interface WiredMount {
  *   env holds no `AWS_ACCESS_KEY_ID`, the host's default chain fills the
  *   credential triple (go-to-k/cdkd#6129).
  * - `emulator`: the scrubbed keys go, the wiring entries are forced, the
- *   triple is REPLACED by the emulator's, and the `--profile` credentials-file
+ *   triple is REPLACED by the emulator's (or by a role's credentials the
+ *   emulator issued, {@link keepEmulatorIssuedCredentials}), and the `--profile` credentials-file
  *   mount is dropped, so no real credential reaches the container.
  *
  * `takenContainerPaths` are the container paths the caller already mounts:
@@ -202,7 +211,17 @@ export async function applyLocalAwsWiring(
   // remembers a miss for 60 s, so a long-running server neither re-walks the
   // chain per container start nor misses a later `aws sso login` for good.
   const defaults = needsDefaults ? await resolveHostDefaultCredentials() : undefined;
-  const wiredEnv = applyWorkloadAwsWiringToEnv(env, wiring, defaults);
+  // cdkd-local-env-identity: `--assume-role` under `--aws-emulator`
+  // (go-to-k/cdkd#6252): the execution role's credentials the EMULATOR's STS
+  // issued take the emulator keys' place, as `--assume-task-role`'s do
+  // (#6147). Only a triple cdkd itself recorded from the emulator qualifies,
+  // so no other credential survives the replacement.
+  const roleCreds = wiring.mode === 'emulator' ? emulatorIssuedCredentialsIn(env) : undefined;
+  const wiredEnv = applyWorkloadAwsWiringToEnv(
+    env,
+    roleCreds ? { ...wiring, emulatorCredentials: roleCreds } : wiring,
+    defaults
+  );
   // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container
   // keeping no exception): no host credentials file either.
   const emulatorOnly = workloadGetsEmulatorKeysOnly(env, wiring);
@@ -370,6 +389,59 @@ export function localAwsEmulatorCredentials():
   | undefined {
   const wiring = getActiveWorkloadAwsWiring();
   return wiring?.mode === 'emulator' ? wiring.emulatorCredentials : undefined;
+}
+
+interface EmulatorIssuedCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+}
+
+/** Credentials the emulator's STS issued for a role flag, by access key id. */
+const emulatorIssued = new Map<string, EmulatorIssuedCredentials>();
+
+/**
+ * Record `creds` as issued by AWS Emulator's STS for a role flag
+ * (`--assume-role`), so {@link applyLocalAwsWiring} lets them replace the
+ * emulator's own keys in the container (go-to-k/cdkd#6252). A no-op outside
+ * full emulator mode: in mixed mode the role is assumed in real AWS, and
+ * without `--aws-emulator` nothing replaces the credentials. Returns `creds`.
+ */
+export function keepEmulatorIssuedCredentials<T extends EmulatorIssuedCredentials>(creds: T): T {
+  if (localAwsEmulatorActive()) {
+    emulatorIssued.set(creds.accessKeyId, {
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secretAccessKey,
+      sessionToken: creds.sessionToken,
+    });
+  }
+  return creds;
+}
+
+/** The recorded emulator-issued triple `env` carries verbatim, if any. */
+function emulatorIssuedCredentialsIn(
+  env: Readonly<Record<string, string | undefined>>
+): EmulatorIssuedCredentials | undefined {
+  // cdkd-local-env-identity: only COMPARED with a triple the emulator's STS
+  // issued for a role flag (`--assume-role`); nothing is copied out of `env`.
+  const id = env['AWS_ACCESS_KEY_ID'];
+  const secret = env['AWS_SECRET_ACCESS_KEY'];
+  const token = env['AWS_SESSION_TOKEN'];
+  const creds = id === undefined ? undefined : emulatorIssued.get(id);
+  return creds && creds.secretAccessKey === secret && creds.sessionToken === token
+    ? creds
+    : undefined;
+}
+
+/**
+ * Whether the state record's IAM roles are the WRONG side for a role flag that
+ * assumes in real AWS (go-to-k/cdkd#6189, #6252): in AWS Emulator mixed mode a
+ * role is assumed in real AWS, while the record's IAM resources are the
+ * emulator's unless `Parameters` marks IAM as a `"real-aws"` exception. The
+ * record would then name an emulator role (account 000000000000) to real STS.
+ */
+export function stateRoleRecordIsEmulatorSide(): boolean {
+  return mixedModeActive() && !realAwsException('IAM');
 }
 
 /**

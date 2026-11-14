@@ -44,6 +44,7 @@ import {
   displaySafe,
   safeMsg,
 } from '../utils/display-safe.js';
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { carriesSecretMask } from './secret-redaction.js';
 
@@ -238,7 +239,8 @@ export async function planOrphanAdoption(params: {
           `left in AWS by an earlier rollback as ${displaySafe(record.state.physicalId)} ` +
           '(DeletionPolicy: Retain). This deploy does not take it back: it creates a new ' +
           'resource under a new name, as CloudFormation does. To manage the kept resource ' +
-          "again, adopt it with 'cdkd import'."
+          // With the run's flags, `--aws-emulator` included (go-to-k/cdkd#6245).
+          `again, adopt it with: ${cdkdRemedy('cdkd import')}`
       );
     }
     return outcome;

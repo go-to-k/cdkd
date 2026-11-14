@@ -28,6 +28,74 @@ export function hasPending<T>(executor: DagExecutor<T>): boolean {
   return false;
 }
 
+/**
+ * go-to-k/cdkd#6244: for each of `ids`, the NEAREST dependencies that are
+ * members of the phase being executed, walking THROUGH every non-member
+ * (a `NO_CHANGE` row) instead of dropping it. An unchanged resource is
+ * already satisfied only for itself: when it reads a changed resource and a
+ * changed resource reads it (`MyRes` → a `cr.Provider` framework function →
+ * the `onEvent` function), the reader must still wait for the changed one
+ * behind it, as CloudFormation orders them.
+ *
+ * Memoized per non-member node, so a large template walks each unchanged node
+ * once; a cycle guard keeps a malformed graph from recursing forever (the
+ * executor reports the deadlock itself).
+ */
+export function nearestMemberDependencies(
+  ids: Iterable<string>,
+  dependenciesOf: (id: string) => readonly string[],
+  isMember: (id: string) => boolean
+): Map<string, Set<string>> {
+  const through = new Map<string, Set<string>>();
+  const visiting = new Set<string>();
+  // Bumped each time the cycle guard cuts a walk short: a node whose walk saw
+  // a bump holds a partial set (the cut ancestor's members are missing), so it
+  // is not memoized and a later caller walks it again in full.
+  let guardHits = 0;
+  const collect = (deps: readonly string[], into: Set<string>): void => {
+    for (const dep of deps) {
+      if (isMember(dep)) {
+        into.add(dep);
+        continue;
+      }
+      for (const reached of membersBehind(dep)) into.add(reached);
+    }
+  };
+  const membersBehind = (id: string): Set<string> => {
+    const cached = through.get(id);
+    if (cached) return cached;
+    const reached = new Set<string>();
+    if (visiting.has(id)) {
+      guardHits++;
+      return reached;
+    }
+    const hitsBefore = guardHits;
+    visiting.add(id);
+    collect(dependenciesOf(id), reached);
+    visiting.delete(id);
+    if (guardHits === hitsBefore) through.set(id, reached);
+    return reached;
+  };
+  const result = new Map<string, Set<string>>();
+  for (const id of ids) {
+    const reached = new Set<string>();
+    collect(dependenciesOf(id), reached);
+    reached.delete(id);
+    result.set(id, reached);
+  }
+  return result;
+}
+
+/** The string dependencies a state record lists, for `nearestMemberDependencies`. */
+export function recordedDependencies(
+  resources: Record<string, ResourceState>
+): (id: string) => string[] {
+  return (id) => {
+    const deps = Object.hasOwn(resources, id) ? resources[id]?.dependencies : undefined;
+    return Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [];
+  };
+}
+
 export function buildDeletionDependencies(
   deleteIds: Set<string>,
   state: StackState,
@@ -38,14 +106,15 @@ export function buildDeletionDependencies(
     dependedBy.set(id, new Set());
   }
 
-  for (const id of deleteIds) {
-    const resource = state.resources[id];
-    if (!resource?.dependencies) continue;
-    for (const dep of resource.dependencies) {
-      if (!deleteIds.has(dep)) continue;
-      // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's deletion deps)
-      dependedBy.get(dep)!.add(id);
-    }
+  // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's
+  // deletion deps). A kept record between them is walked through (#6244):
+  // `DependsOn` is not diffed, so a NO_CHANGE record can still sit between two
+  // deleted ones in the recorded graph.
+  const nearest = nearestMemberDependencies(deleteIds, recordedDependencies(state.resources), (d) =>
+    deleteIds.has(d)
+  );
+  for (const [id, deps] of nearest) {
+    for (const dep of deps) dependedBy.get(dep)!.add(id);
   }
 
   addImplicitDeleteDependencies(deleteIds, state, dependedBy, logger);

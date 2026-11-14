@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 import {
   pasteableCommand,
   plainOrDescribed,
@@ -900,17 +901,19 @@ export function createEventsPruneCommand(): Command {
     )
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .addOption(
-      new Option('--keep <N>', 'Retain only the newest N runs').argParser((v) => {
-        const n = parseInt(v, 10);
-        if (!Number.isInteger(n) || n < 0) {
-          // An empty value is spelled `""`, not `<unrenderable>`: nothing was
-          // lost in rendering it, there was simply nothing in it.
-          throw new Error(
-            `Invalid --keep value ${v === '' ? '""' : displayIdent(v)}: expected a non-negative integer.`
-          );
-        }
-        return n;
-      })
+      new Option('--keep <N>', 'Retain only the newest N runs').argParser(
+        cliArgParser((v: string) => {
+          const n = parseInt(v, 10);
+          if (!Number.isInteger(n) || n < 0) {
+            // An empty value is spelled `""`, not `<unrenderable>`: nothing was
+            // lost in rendering it, there was simply nothing in it.
+            throw new Error(
+              `Invalid --keep value ${v === '' ? '""' : displayIdent(v)}: expected a non-negative integer.`
+            );
+          }
+          return n;
+        })
+      )
     )
     .option('--older-than <duration>', 'Delete runs older than this duration (e.g. 24h, 90m)')
     .option(

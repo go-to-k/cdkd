@@ -55,6 +55,11 @@ import {
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import { UNNAMEABLE_ID_CLAUSE } from '../../../src/provisioning/replacement-protection-advice.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 const TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE = 'MyGlobalTable';
@@ -151,6 +156,20 @@ describe('DynamoDB GlobalTable immutable-property refusals (sites 5-7)', () => {
       );
       expect(message).not.toContain('--remove-protection');
       expect(message).not.toContain('update-table');
+    });
+
+    it(`${label}: the remedy carries the run's --aws-emulator, so a paste stays off real AWS (go-to-k/cdkd#6245)`, async () => {
+      buildProgram();
+      setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+      try {
+        const message = await refusal(next, prev);
+        expect(message).toContain(
+          '(deploy with cdkd deploy --replace --force-stateful-recreation --aws-emulator=https://127.0.0.1:9493, or destroy + redeploy)'
+        );
+      } finally {
+        setPasteableRunFlags({});
+        setPasteableVerbFlags(undefined);
+      }
     });
 
     it(`${label}: names a protected cross-region replica (go-to-k/cdkd#5355)`, async () => {

@@ -1,4 +1,5 @@
 import type { ASGProvider } from '../asg-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreateAutoScalingGroupCommand,
   UpdateAutoScalingGroupCommand,
@@ -386,7 +387,7 @@ export async function retireFailedCreate(
     return maskSecrets(
       `The group was created, and ${outcome} (` +
         `${cleanupFailure.summary}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
-        `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
+        `it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself before the next deploy: ` +
         pasteableAwsCommand(
           maskSecrets
         )`aws autoscaling delete-auto-scaling-group --auto-scaling-group-name ${groupName} --force-delete`.render()

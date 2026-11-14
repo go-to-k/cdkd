@@ -2,6 +2,7 @@ import { noImplicitEcrPullArgs } from 'cdk-local/internal';
 import { randomBytes } from 'node:crypto';
 import {
   applyWorkloadAwsWiringToEnv,
+  awsEmulatorSqsHostBlocks,
   containsDynamicReference,
   effectiveLoopbackPorts,
   getActiveWorkloadAwsWiring,
@@ -414,6 +415,15 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
           : wiring
         : { ...wiring, env: {} }
     );
+    // Under --aws-emulator, the real SQS hosts are unreachable from a
+    // container whose SQS goes to the emulator (go-to-k/cdkd#6257,
+    // go-to-k/cdk-local#947). On a joiner the entries go to the namespace
+    // owner, whose `/etc/hosts` it shares.
+    for (const h of awsEmulatorSqsHostBlocks(finalEnv, wiring)) {
+      const mapping = `${h.host}:${h.ip}`;
+      args.push('--add-host', mapping);
+      ownerAddHosts.push(mapping);
+    }
   }
 
   // Split the resolved env into `-e` flags plus the values that must travel

@@ -534,7 +534,10 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       expect(hint, 'the --no-rollback arm was not reached').toBeDefined();
       if (parentStackInfo === undefined) {
         expect(hint).toBe(
-          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+          'Partial state has been saved. Resume, revert, or clean up with one of:\n' +
+            '  cdkd deploy MyStack\n' +
+            '  cdkd rollback MyStack\n' +
+            '  cdkd destroy MyStack'
         );
       } else {
         expect(hint).toBe(
@@ -543,6 +546,53 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
         );
         expect(hint).not.toContain('cdkd rollback');
       }
+    }
+  );
+
+  it.each([
+    ['a top-level engine', undefined, 'MyStack', ''],
+    [
+      'a grandchild engine',
+      { parentStack: 'Top~Child', parentLogicalId: 'Grand', parentRegion: 'us-east-1' },
+      'Top',
+      'This is a nested stack: recover it through its top-level stack. ',
+    ],
+  ] as const)(
+    'interrupted: %s names the commands itself, promising no parent message (go-to-k/cdkd#3875, #6245)',
+    async (_label, parentStackInfo, named, prefix) => {
+      const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+      arrangedChanges.set('Boom', {
+        logicalId: 'Boom',
+        changeType: 'CREATE',
+        resourceType: 'AWS::Test::Boom',
+        desiredProperties: {},
+      });
+      (template.Resources as Record<string, unknown>)['Boom'] = { Type: 'AWS::Test::Boom', Properties: {} };
+      const engine = makeEngine({ ...(parentStackInfo && { parentStackInfo }) });
+      const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+      providerFor('AWS::Test::Boom').create.mockImplementation(async () => {
+        fields.interrupted = true;
+        fields.interruptCause = 'user';
+        const inner = new Error('Deployment interrupted by user (Ctrl+C)');
+        inner.name = 'InterruptedError';
+        throw inner;
+      });
+      Object.assign(mockStateBackend, { appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined) });
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const info = getLogger().info as ReturnType<typeof vi.fn>;
+      info.mockClear();
+
+      await deployAndCatch(engine, template);
+
+      const hint = info.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Partial state saved'));
+      expect(hint, 'the interrupted arm was not reached').toBeDefined();
+      expect(hint!.replace(/^Partial state saved \(\d+ resources\)\. /, '')).toBe(
+        `${prefix}Resume, revert, or clean up with one of:\n` +
+          `  cdkd deploy ${named}\n` +
+          `  cdkd rollback ${named}\n` +
+          `  cdkd destroy ${named}`
+      );
+      expect(hint).not.toContain('whose own message follows');
     }
   );
 

@@ -208,7 +208,10 @@ identity is the only one cdkd uses:
   to.
 - Containers started by `cdkd local` get the emulator's keys and nothing else.
   A handler that misses the endpoint fails with a credential error rather than
-  reaching your account.
+  reaching your account. A role flag such as `--assume-role` swaps in the
+  role's credentials, which the emulator's STS issued, so the emulator checks
+  the role's policies
+  ([details](local-emulation.md#credentials-inside-the-container)).
 
 cdkd prints one line naming what it ignored, never the values:
 
@@ -373,9 +376,15 @@ The emulator answers with real-shaped queue URLs, and the AWS SDK for
 JavaScript v3 sends SQS requests to the queue URL's host. A sidecar rewrites
 those URLs in the emulator's answers: with an `https` emulator URL whose run
 wrote `ca.pem`, and always in mixed mode. On the host network no sidecar
-runs. A queue URL that reaches the handler as an environment variable
-(`--from-state`, `--from-cfn-stack`, `--env-vars`) is not rewritten: pass
-`useQueueUrlAsEndpoint: false` to that `SQSClient`.
+runs. A container environment variable that is exactly a real queue URL
+(from `--from-state`, `--from-cfn-stack` or `--env-vars`) is rewritten to the
+same queue on the container's SQS endpoint, so a `SendMessage` to it lands in
+the emulator. Any other real queue URL, such as one the handler reads at run
+time from SSM Parameter Store, Secrets Manager or its event, fails closed: the
+container's `/etc/hosts` maps the real SQS host names to `127.0.0.1`, so the
+connection is refused before a signed request leaves the machine. A container
+whose SQS is excepted to real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode))
+gets neither.
 
 In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its
@@ -418,7 +427,9 @@ resource events run on your machine.
 | Topic | What to know |
 | --- | --- |
 | Requirement | Docker. Without it, cdkd prints one warning and sends the event to the emulator as before. |
-| Code | Read from the synthesized cloud assembly, together with the handler, runtime and layers. A command that does not synthesize (`cdkd state destroy`, `cdkd rollback`, or a destroy without the app) cannot find it and sends the event to the emulator, with a warning. |
+| Code | Read from the synthesized cloud assembly, together with the handler, runtime and layers. A custom resource inside a nested stack is resolved in that nested stack's template, at any depth. A command that does not synthesize (`cdkd state destroy`, `cdkd rollback`, or a destroy without the app) cannot find it and sends the event to the emulator, with a warning. |
+| Destroy without the app | `cdkd state destroy`, or a `cdkd destroy` that did not read the app, refuses the run before it asks for confirmation or deletes anything (with `--yes` too) when a target stack, or a nested stack under it, holds custom resources backed by a Lambda function in your account. Every target is checked before the first one is destroyed, and the refusal names the top-level stacks. A custom resource backed by an SNS topic is not affected. Their Delete handlers would run in the emulator's own runtime, and the same run would delete the handler functions, so nothing could delete what the custom resources manage afterwards. Run `cdkd destroy <stack> --aws-emulator` from the app's directory, or pass `--no-local-custom-resources` to send the events to the emulator's runtime anyway. |
+| Rollback | `cdkd rollback` never reads the app. When a custom resource's handler fails in the emulator's runtime, the failed rollback does not tell you to re-run it, because a re-run fails the same way. It prints `cdkd deploy <stack>` instead: deploy forward from the app's directory, with the version you want to keep. |
 | Configuration | Environment variables, timeout and memory are the deployed function's. A destroy or rollback after the app changed runs the code of the app as it is now with the configuration that was deployed. |
 | Runtime image | Used from the local Docker cache, else pulled once per run. When it cannot be pulled, cdkd prints one warning and sends the event to the emulator. |
 | Identity | The container gets the emulator's keys, endpoint and CA only, like a `cdkd local` container. |
@@ -435,7 +446,7 @@ Before anything else, cdkd checks the emulator's `/__admin/health` endpoint.
 When nothing answers, the command stops with:
 
 ```text
---aws-emulator https://127.0.0.1:9297: no AWS Emulator answers its health check at https://127.0.0.1:9297/__admin/health (...). Check that it is running on port 9297 (`aws-emulator -p 9297`, or its Docker image published with `-p 127.0.0.1:9297:9297`), that the URL's port matches, and that it listens on an address this machine reaches (`-b`).
+CdkdError: --aws-emulator https://127.0.0.1:9297: no AWS Emulator answers its health check at https://127.0.0.1:9297/__admin/health (ECONNREFUSED). Check that it is running on port 9297 (`aws-emulator -p 9297`, or its Docker image published with `-p 127.0.0.1:9297:9297`), that the URL's port matches, and that it listens on an address this machine reaches (`-b`).
 ```
 
 Check, in order:
@@ -445,6 +456,31 @@ Check, in order:
   port. Without a URL, cdkd uses `9297`.
 - In Docker, the port is published on `127.0.0.1`, and the run directory is
   mounted so `~/.aws/emulator/<port>/` exists on your machine.
+- The URL starts with `https://`. AWS Emulator serves HTTPS, so an `http://`
+  URL reaches the port but fails the check, and the message ends with:
+
+  ```text
+  The port answered, but not in plain HTTP (HPE_INVALID_CONSTANT): if this port is AWS Emulator, it serves HTTPS, so use --aws-emulator https://127.0.0.1:9297.
+  ```
+
+### `No cdkd state bucket found`
+
+AWS Emulator keeps nothing across restarts. On a new or restarted emulator,
+a command that only reads state (`state list`, `diff`, `drift`, `destroy`)
+and `deploy --dry-run`, which creates nothing, stop with a `StateError` that
+says no cdkd state bucket was found, that AWS Emulator keeps nothing across
+restarts, and that a deploy without `--dry-run` creates the bucket. It ends
+with a bootstrap command that carries your URL:
+
+```bash
+cdkd bootstrap --aws-emulator=https://127.0.0.1:9297
+```
+
+Run `cdkd deploy --aws-emulator` without `--dry-run`, or the printed
+`cdkd bootstrap` command. Remedy commands that cdkd prints during an
+`--aws-emulator` run carry the flag you typed, so a pasted command reaches the
+same emulator rather than real AWS. With `CDKD_AWS_EMULATOR` set instead, the
+pasted command gets it from the same shell.
 
 ### `containers cannot reach port ... on the host`
 
@@ -493,7 +529,9 @@ sent the event to the emulator:
   `ServiceToken` is not a `Fn::GetAtt` of a function in the same template).
   For `cdkd state destroy` or a destroy without the app, run
   `cdkd destroy --aws-emulator` from the app's directory instead. `cdkd rollback`
-  never reads the app; its custom resource events stay in the emulator.
+  never reads the app; its custom resource events stay in the emulator, so when
+  one fails, deploy forward from the app with `cdkd deploy --aws-emulator`
+  rather than re-running the rollback.
 
 Run a function of your own through `cdkd local invoke`, which uses the same
 image, instead of invoking it in the emulator.

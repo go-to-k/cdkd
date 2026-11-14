@@ -1,4 +1,5 @@
 import type { FSxFileSystemProvider } from '../fsx-filesystem-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import type {
   UpdateFileSystemLustreConfiguration,
   UpdateFileSystemWindowsConfiguration,
@@ -88,7 +89,7 @@ export function computeVariantConfigDiff(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace --force-stateful-recreation (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
+        `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with ${deployReplaceCommand(true)} (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
       );
     }
     if (nextVal === undefined && key !== 'RouteTableIds') {

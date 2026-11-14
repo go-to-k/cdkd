@@ -1,4 +1,10 @@
-import { LOOPBACK_FORWARDER_IMAGE, noImplicitEcrPullArgs } from 'cdk-local/internal';
+import {
+  LOOPBACK_FORWARDER_IMAGE,
+  awsEmulatorSqsHostBlocks,
+  noImplicitEcrPullArgs,
+  repointLocalSqsQueueUrlsInEnv,
+  sqsEmulatorOriginOf,
+} from 'cdk-local/internal';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
@@ -288,11 +294,26 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     wired.env['AWS_ENDPOINT_URL_SQS'] === wiring.sidecar.endpoint
   ) {
     delete wired.env['AWS_ENDPOINT_URL_SQS'];
+    // The env's queue URLs were pointed at the sidecar (go-to-k/cdk-local#947):
+    // point them at the emulator, where SQS now goes.
+    const emulator = sqsEmulatorOriginOf(wired.env);
+    if (emulator) repointLocalSqsQueueUrlsInEnv(wired.env, wiring.sidecar.endpoint, emulator);
   }
+  const finalEnv = { ...wired.env, ...opts.envAfterWiring };
+  // Under --aws-emulator, the real SQS hosts are unreachable from a container
+  // whose SQS goes to the emulator, so a queue URL the workload reads at run
+  // time (SSM, Secrets Manager, an event) fails closed instead of reaching
+  // real SQS (go-to-k/cdkd#6257, go-to-k/cdk-local#947). Empty for a container
+  // whose SQS is excepted to real AWS.
+  const sqsBlocks = awsEmulatorSqsHostBlocks(finalEnv, wiring);
   const wiredOpts: DockerRunOptions = {
     ...opts,
-    env: { ...wired.env, ...opts.envAfterWiring },
+    env: finalEnv,
     extraMounts: wired.extraMounts,
+    ...(opts.sensitiveEnvKeys !== undefined && {
+      sensitiveEnvKeys: callerSecretKeysAfterWiring(opts, wiring.env, wired.env),
+    }),
+    ...(sqsBlocks.length > 0 && { extraHosts: [...(opts.extraHosts ?? []), ...sqsBlocks] }),
   };
   // The extra ports go LAST: under `--aws-emulator` the forwarder's health
   // probe goes to the first port, which must be the emulator's.
@@ -311,6 +332,35 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   // reaches the endpoint on its first call.
   await attachLocalLoopbackForwarder(id, ports);
   return id;
+}
+
+/**
+ * The caller's sensitive keys that still carry the CALLER's value once the
+ * wiring has run (go-to-k/cdkd#6248). Under `--aws-emulator` the wiring forces
+ * its own entries (the CA trust variables, the endpoints) over the caller's:
+ * a key whose final value is the wiring's own, replacing a different caller
+ * value, holds no caller secret any more, so it goes on the argv like any
+ * wiring entry. Kept sensitive, a docker-client name among them (CDK's
+ * BucketDeployment handler sets `AWS_CA_BUNDLE`) was dropped with a "Rename
+ * the env var" warning the user cannot act on. A key the wiring leaves alone
+ * keeps its mark, so a caller value that collides still warns; the
+ * always-sensitive credential set is re-added by `runDetachedContainer`.
+ */
+function callerSecretKeysAfterWiring(
+  opts: DockerRunOptions,
+  wiringEnv: Readonly<Record<string, string>>,
+  wiredEnv: Readonly<Record<string, string>>
+): Set<string> {
+  const keys = new Set<string>();
+  for (const k of opts.sensitiveEnvKeys ?? []) {
+    const wiringOwned =
+      Object.hasOwn(wiringEnv, k) &&
+      wiredEnv[k] === wiringEnv[k] &&
+      opts.env[k] !== wiredEnv[k] &&
+      opts.envAfterWiring?.[k] === undefined;
+    if (!wiringOwned) keys.add(k);
+  }
+  return keys;
 }
 
 async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {

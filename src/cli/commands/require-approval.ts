@@ -16,6 +16,7 @@ import { displayIdent } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { loadCdkJson } from '../config-loader.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse, serializePrompt } from './confirm-prompt.js';
 
 export const REQUIRE_APPROVAL_VALUES = [
@@ -74,7 +75,7 @@ export function createApprovalPrompter(options: { yes: boolean }): DeploymentApp
           refusal:
             `Deployment of stack ${displayIdent(request.stackName)} requires approval ` +
             `(--require-approval=${request.level}), but stdin is not interactive. ` +
-            `Re-run with --yes to deploy without asking, or review the changes with 'cdkd diff'.`,
+            `Re-run with --yes to deploy without asking, or review the changes with ${proseQuoted(cdkdRemedy('cdkd diff'))}.`,
           suffix: ' (y/n) ',
         });
       })

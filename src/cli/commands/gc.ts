@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { cliArgParser } from '../arg-parser.js';
 import { commonOptions } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { gcCommand, type GcOptions } from './gc/command.js';
@@ -105,7 +106,7 @@ export function createGcCommand(): Command {
           '(protects in-flight publishes and recent rollback targets). Accepts <n>d / <n>h.'
       )
         .default(DEFAULT_OLDER_THAN_MS, '30d')
-        .argParser(parseOlderThan)
+        .argParser(cliArgParser(parseOlderThan))
     )
     .option('--dry-run', 'Print the reclaim plan (per-item list + totals) without deleting', false)
     .addOption(

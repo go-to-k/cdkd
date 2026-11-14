@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-ref-shape-vector-namespace-attachment",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd Ref of S3Vectors VectorBucket / AppSync GraphQLApi / S3Tables Namespace / EC2 VPCGatewayAttachment integ probe (#6243)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

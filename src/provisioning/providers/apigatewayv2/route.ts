@@ -13,6 +13,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { markNotGone } from '../../not-gone.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import type {
@@ -245,7 +246,7 @@ export async function updateRoute(
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'ApiId is immutable on AWS::ApiGatewayV2::Route; re-deploy with cdkd deploy --replace'
+      `ApiId is immutable on AWS::ApiGatewayV2::Route; re-deploy with ${deployReplaceCommand()}`
     );
   }
 

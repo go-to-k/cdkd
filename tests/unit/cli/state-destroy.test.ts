@@ -120,7 +120,15 @@ vi.mock('node:readline/promises', () => ({
   })),
 }));
 
+// go-to-k/cdkd#6246: the `--aws-emulator` wiring, off unless a case sets it.
+const emulatorWiring = vi.hoisted(() => ({ value: undefined as unknown }));
+vi.mock('cdk-local/internal', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getActiveWorkloadAwsWiring: () => emulatorWiring.value,
+}));
+
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { setLocalCustomResourceRuntimeEnabled } from '../../../src/local/custom-resource-runtime-gate.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
 
@@ -268,6 +276,37 @@ describe('cdkd state destroy', () => {
     // candidate or as cdkd's own sentence (go-to-k/cdkd#3027).
     expect(message).toContain('us-east-1, "eu-west-1 Forged: all clear".\nUse --stack-region');
     expect(message).not.toContain('\nForged');
+  });
+
+  // go-to-k/cdkd#6246: under `--aws-emulator` without the app, a later
+  // target's custom resources refuse the run before the FIRST stack is touched.
+  it('refuses every target before destroying any when one holds custom resources (#6246)', async () => {
+    emulatorWiring.value = { mode: 'emulator' };
+    setLocalCustomResourceRuntimeEnabled(true, 'state destroy');
+    try {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'A', region: 'us-east-1' },
+        { stackName: 'B', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) => {
+        const state = makeStackState(name, 'us-east-1');
+        if (name === 'B') {
+          state.resources['Cr'] = {
+            physicalId: 'cr',
+            resourceType: 'Custom::AWS',
+            properties: { ServiceToken: 'arn:aws:lambda:us-east-1:000000000000:function:H' },
+          } as StackState['resources'][string];
+        }
+        return { state, etag: '"abc"' };
+      });
+
+      await expect(runStateDestroy(['destroy', 'A', 'B', '--yes'])).rejects.toThrow();
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      expect(String(errorSpy.mock.calls.at(-1)?.[0] ?? '')).toContain('stack B (Cr)');
+    } finally {
+      emulatorWiring.value = undefined;
+      setLocalCustomResourceRuntimeEnabled(true);
+    }
   });
 
   it('passes --yes through to the runner so per-stack prompt is skipped', async () => {
@@ -723,7 +762,7 @@ describe('cdkd state destroy', () => {
     expect(message).toMatch(/2 resource error\(s\).*State preserved/);
     // Region-scoped (go-to-k/cdkd#3996).
     expect(message).toContain(
-      "'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record)"
+      "cdkd state orphan '<stack>' --stack-region '<region>' removes the stack's state in that region (every resource's record)"
     );
   });
 
@@ -771,7 +810,7 @@ describe('cdkd state destroy', () => {
         'FAILED), delete the resources by hand'
     );
     expect(message).toContain(
-      "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
+      "drop the records with cdkd state orphan '<stack>' --stack-region '<region>'."
     );
   });
 

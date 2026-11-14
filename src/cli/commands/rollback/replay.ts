@@ -7,7 +7,12 @@ import { recordRetainedForReadoption } from '../../../deployment/retained-readop
 import { applyCrossPrefixScan } from '../../../state/cross-prefix-stack-scan.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import { isIamRoleArn } from '../../../utils/role-arn.js';
-import { plainOrDescribed, quotedOrDescribed } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  plainOrDescribed,
+  quotedOrDescribed,
+  proseQuoted,
+} from '../../../utils/pasteable-command.js';
 import { resolvePendingCloudControlRequests } from '../../../deployment/cc-pending-requests.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { forwardSigtermToSigint } from '../../../utils/interrupt-signals.js';
@@ -51,10 +56,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../deployment/inline-policy-claims.js';
-import {
-  dropFailedHint,
-  makeForeignHolderScan,
-} from '../../../deployment/rollback-executor/journaled-orphans.js';
+import { makeForeignHolderScan } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
 import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
@@ -84,13 +86,14 @@ import {
   backendErrorText,
   stackRegionShown,
   stackRegionIsPlain,
-  STACK_REGION_DESCRIBED_NOTE,
+  stackRegionDescribedNote,
   safe,
   safeStack,
   safeRoleArn,
   displacedOpLabel,
   failedOpsToReplay,
   confirm,
+  failedRollbackTail,
 } from './render.js';
 import type { RollbackOptions } from './options.js';
 import {
@@ -236,7 +239,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
         // `cdkd deploy` / `cdkd destroy` remedy (go-to-k/cdkd#3950's S1 rule).
         `Nothing to roll back for ${plainOrDescribed(stackName, 'stack name')} ` +
           `(${plainOrDescribed(region, 'region')}). ` +
-          "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
+          `Run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to (re)deploy, or ${proseQuoted(cdkdRemedy('cdkd destroy'))} to clean up.`
       );
     }
     applyCrossPrefixScan(
@@ -434,7 +437,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
 
     // 5. Plan — newest-first, one block per segment.
     logger.info(`\nRollback plan for ${stackRegionShown(stackName, region)}:`);
-    if (!stackRegionIsPlain(stackName, region)) logger.info(STACK_REGION_DESCRIBED_NOTE);
+    if (!stackRegionIsPlain(stackName, region)) logger.info(stackRegionDescribedNote());
     if (orphanedPending > 0) {
       logger.info(
         safeMsg`\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
@@ -945,10 +948,8 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
     }
     if (totalFailures > 0) {
       throw new PartialFailureError(
-        `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-          `re-run the rollback to retry.` +
-          dropFailedHint(stackName, region, failedOrphanIds) +
-          rerunRollback(stackName)
+        `Rollback completed with ${totalFailures} failed operation(s). Journal preserved` +
+          failedRollbackTail(stackName, region, failedOrphanIds)
       );
     }
     if (totalWarnings > 0) {

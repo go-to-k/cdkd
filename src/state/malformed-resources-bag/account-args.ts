@@ -5,7 +5,9 @@
  */
 import { isPasteableIdent } from '../../utils/display-safe.js';
 import {
+  cdkdRemedy,
   pasteableCommand,
+  proseQuoted,
   type CommandArg,
   type WithheldValue,
   SHELL_ACTIVE_WHY,
@@ -77,17 +79,23 @@ export const JSON_LISTING_HOLE_VALUE = 'the value decoded from its JSON string, 
 /**
  * Where a withheld identity is taken from, and why there: `cdkd state list
  * --json` prints each name JSON-encoded but never trimmed or sanitized. ONE
- * spelling, shared by {@link WITHHELD_LISTING_POINTER} and
+ * spelling, shared by {@link withheldListingPointerProse} and
  * {@link inspectClause}, so the two cannot drift (M3 of the go-to-k/cdkd#4011
  * review).
  */
 const LISTING_SOURCE_TAIL =
   `which prints each name as a JSON string, escaped but never trimmed or sanitized, and act ` +
   `on the one whose stackName and region match (a legacy record that names no region lists it as null)`;
-const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
+/** The listing command named in prose, with the run's typed flags (go-to-k/cdkd#6262). */
+function listingCommand(): string {
+  return proseQuoted(cdkdRemedy('cdkd state list', '--json'));
+}
+function listingSourceUnflagged(): string {
+  return `${listingCommand()}, ${LISTING_SOURCE_TAIL}`;
+}
 
 /**
- * {@link LISTING_SOURCE} for a caller whose command carries account flags
+ * {@link listingSourceUnflagged} for a caller whose command carries account flags
  * (go-to-k/cdkd#3909). The listing is still NAMED in prose, never printed with
  * a value in it — a value inside English is only as safe as the apostrophes
  * before it — so it says to run it with the flags the command beside it
@@ -96,9 +104,9 @@ const LISTING_SOURCE = `'cdkd state list --json', ${LISTING_SOURCE_TAIL}`;
  */
 export function listingSource(flagged: boolean): string {
   return flagged
-    ? `'cdkd state list --json' run with the same account flags as the command at the end of ` +
+    ? `${listingCommand()} run with the same account flags as the command at the end of ` +
         `this line, ${LISTING_SOURCE_TAIL}`
-    : LISTING_SOURCE;
+    : listingSourceUnflagged();
 }
 
 /**
@@ -127,12 +135,15 @@ export function listingSource(flagged: boolean): string {
  * (go-to-k/cdkd#3909). Without one, this text is unchanged and neither command
  * carries a flag, so the two still agree.
  */
-export const WITHHELD_LISTING_POINTER =
-  `${LISTING_SOURCE}, filling the Inspect command's holes from it — replacing each quoted ` +
-  `hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}`;
+export function withheldListingPointerProse(): string {
+  return (
+    `${listingSourceUnflagged()}, filling the Inspect command's holes from it — replacing each quoted ` +
+    `hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}`
+  );
+}
 
 /**
- * {@link WITHHELD_LISTING_POINTER}, or — when `recovery` carries an account flag —
+ * {@link withheldListingPointerProse}, or — when `recovery` carries an account flag —
  * the same sentence pointing at the `Find the exact name:` line below, plus
  * that line. `line` is `undefined` exactly when the pointer is the prose form.
  */
@@ -141,7 +152,7 @@ export function withheldListingPointer(recovery: LockRecoveryContext | undefined
   readonly line: string | undefined;
 } {
   const args = accountArgs(recovery);
-  if (args.length === 0) return { pointer: WITHHELD_LISTING_POINTER, line: undefined };
+  if (args.length === 0) return { pointer: withheldListingPointerProse(), line: undefined };
   return {
     pointer:
       `the 'Find the exact name' command below, ${LISTING_SOURCE_TAIL}, filling the Inspect ` +
@@ -315,8 +326,8 @@ function withheldAccountValues(
  */
 export function confirmKeyListing(recovery: LockRecoveryContext | undefined): string {
   return accountArgs(recovery).length === 0
-    ? `'cdkd state list --long'`
-    : `'cdkd state list --long' run with the same account flags as the command lines below`;
+    ? proseQuoted(cdkdRemedy('cdkd state list', '--long'))
+    : `${proseQuoted(cdkdRemedy('cdkd state list', '--long'))} run with the same account flags as the command lines below`;
 }
 
 /**

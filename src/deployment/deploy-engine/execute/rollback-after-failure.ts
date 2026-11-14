@@ -42,6 +42,36 @@ import { deletedOutsideReadDeps } from '../rollback/deleted-outside-read.js';
 import type { DeployRun } from './run.js';
 
 /**
+ * The interrupted path's recovery. Not `recoveryHint`: a nested child's
+ * interrupt reaches the parent wrapped and is not recognised as one there
+ * (go-to-k/cdkd#3875), so no parent message can be promised to follow.
+ * A nested child therefore names the TOP-LEVEL stack's commands itself.
+ */
+export function interruptedRemedy(parentStack: string | undefined, stackName: string): string {
+  if (parentStack === undefined) return partialStateRemedy(stackName);
+  return (
+    'This is a nested stack: recover it through its top-level stack. ' +
+    partialStateRemedy(parentStack.split('~')[0]!)
+  );
+}
+
+/**
+ * The ways on from a partially-applied deploy, one pasteable command per line
+ * with the run's flags, so under `--aws-emulator` a pasted one does not run
+ * against real AWS (go-to-k/cdkd#6245).
+ */
+function partialStateRemedy(stackName: string): string {
+  const stack = { value: stackName, hole: 'stack' } as const;
+  const matched = { ...stack, opts: { patternMatched: true } } as const;
+  return (
+    'Resume, revert, or clean up with one of:\n' +
+    `  ${pasteableCommand('cdkd deploy', [matched]).command}\n` +
+    `  ${pasteableCommand('cdkd rollback', [stack]).command}\n` +
+    `  ${pasteableCommand('cdkd destroy', [matched]).command}`
+  );
+}
+
+/**
  * The failed deploy's journal segment, automatic rollback and post-rollback
  * save (go-to-k/cdkd#5835: moved out of `executeDeployment`'s catch, which
  * rethrows `error` after it). `currentEtag` is the ETag the pre-rollback
@@ -117,8 +147,11 @@ export async function rollbackFailedDeploy(
       initialDeploy
     );
     engine.logger.info(
-      safeMsg`Partial state saved (${Object.keys(newResources).length} resources). ` +
-        "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
+      // asIsMessage: the remedy's line breaks are cdkd's own, and its stack
+      // name is gated by `pasteableCommand`.
+      safeMsg`Partial state saved (${Object.keys(newResources).length} resources). ${asIsMessage(
+        interruptedRemedy(engine.rollbackDeps().options.parentStackInfo?.parentStack, stackName)
+      )}`
     );
     throw error;
   }
@@ -137,9 +170,8 @@ export async function rollbackFailedDeploy(
     );
     engine.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
     engine.logger.warn(
-      safeMsg`Partial state has been saved. ${recoveryHint(
-        engine.rollbackDeps(),
-        "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
+      safeMsg`Partial state has been saved. ${asIsMessage(
+        recoveryHint(engine.rollbackDeps(), partialStateRemedy(stackName))
       )}`
     );
   } else {

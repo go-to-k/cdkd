@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
@@ -53,10 +54,10 @@ export function staleRecordRemedy(
 ): string {
   const touch =
     `change any property of the resource so its next update re-records the attributes, ` +
-    `or re-import it with 'cdkd import'`;
+    `or re-import it with ${proseQuoted(cdkdRemedy('cdkd import'))}`;
   if (outcome === undefined) {
     return (
-      `Run 'cdkd deploy': it re-reads a stale record's attributes from AWS and heals the ` +
+      `Run ${proseQuoted(cdkdRemedy('cdkd deploy'))}: it re-reads a stale record's attributes from AWS and heals the ` +
       `record. Otherwise ${touch}.`
     );
   }
@@ -82,7 +83,7 @@ export function staleRecordRemedy(
       return (
         `${attempted}, but AWS reports no ` +
         `resource behind the recorded physical id — it was probably deleted outside cdkd. ` +
-        `Check it with 'cdkd drift', then re-create it (change the resource so it is replaced) ` +
+        `Check it with ${proseQuoted(cdkdRemedy('cdkd drift'))}, then re-create it (change the resource so it is replaced) ` +
         `or remove it from state.`
       );
     case 'read':

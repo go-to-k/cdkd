@@ -9,6 +9,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 import { DEFAULT_TIMING, GeneratedNameGuard, GeneratedNameMismatchError } from '../../../src/deployment/generated-name-guard.js';
 import {
   InterruptedWaitError,
@@ -248,6 +253,45 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     expect(all).toMatch(
       /cdkd import App --resource 'Q1=https:\/\/sqs\.us-east-1\.amazonaws\.com\/123456789012\/App-Q1' --profile dev --state-bucket my-bucket --state-prefix team-a/
     );
+  });
+
+  it("go-to-k/cdkd#6262: the held-name refusals' adopt prose and command carry the run's --aws-emulator", async () => {
+    buildProgram();
+    const refusal = async (ownIntent?: 'abandoned'): Promise<string> => {
+      const { engine } = buildEngine({ holders: { 'App-Q1': urlOf('App-Q1') } });
+      const admit =
+        ownIntent === undefined
+          ? undefined
+          : vi
+              .spyOn(GeneratedNameGuard.prototype, 'admit')
+              .mockResolvedValue({ kind: 'held', holder: urlOf('App-Q1'), ownIntent });
+      try {
+        const error = await engine.deploy(STACK, template).catch((e: unknown) => e);
+        const text: string[] = [];
+        for (let e: unknown = error; e instanceof Error && text.length < 6; e = (e as { cause?: unknown }).cause) {
+          text.push(e.message);
+        }
+        return text.join('\n');
+      } finally {
+        admit?.mockRestore();
+      }
+    };
+    const WITH = '--aws-emulator=https://127.0.0.1:4599';
+    try {
+      for (const ownIntent of [undefined, 'abandoned'] as const) {
+        setPasteableRunFlags({});
+        const plain = await refusal(ownIntent);
+        setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:4599' });
+        const emulated = await refusal(ownIntent);
+        expect(plain).toMatch(/adopt it with cdkd import App --resource 'Q1=[^']+' and re-run/);
+        expect(emulated).toMatch(
+          new RegExp(`adopt it with cdkd import App --resource 'Q1=[^']+' ${WITH} and re-run`)
+        );
+      }
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
   });
 
   it.each([
@@ -854,7 +898,27 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .slice(before)
         .filter((w) => w.includes('kept 1 resource(s)'));
       expect(notes).toHaveLength(1);
-      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+      expect(notes[0]).toContain("adopt it with: cdkd import");
+    });
+
+    it("under --aws-emulator the kept-resource import remedy carries the run's flag (go-to-k/cdkd#6245)", async () => {
+      buildProgram();
+      setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+      try {
+        const kept = { logicalId: 'KeptRole', resourceType: 'AWS::IAM::Role', physicalId: 'App-KeptRole' };
+        const { engine, provider } = buildEngine({ retained: [kept] });
+        deriving(provider);
+        const before = warned().length;
+        await engine.deploy(STACK, template);
+        const notes = warned()
+          .slice(before)
+          .filter((w) => w.includes('kept 1 resource(s)'));
+        expect(notes).toHaveLength(1);
+        expect(notes[0]).toMatch(/adopt it with: cdkd import --aws-emulator=https:\/\/127\.0\.0\.1:9493$/);
+      } finally {
+        setPasteableRunFlags({});
+        setPasteableVerbFlags(undefined);
+      }
     });
 
     it('names cdkd import for a kept resource of a type no create adopts (an IAM role)', async () => {
@@ -867,7 +931,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .slice(before)
         .filter((w) => w.includes('kept 1 resource(s)'));
       expect(notes).toHaveLength(1);
-      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+      expect(notes[0]).toContain("adopt it with: cdkd import");
     });
 
     it('with no retained.json (an older destroy), warns from what the earlier records kept (#5760)', async () => {
@@ -891,7 +955,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .filter((w) => w.includes('resource(s) here'));
       expect(notes).toHaveLength(1);
       expect(notes[0]).toContain('kept 1 resource(s)');
-      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+      expect(notes[0]).toContain("adopt it with: cdkd import");
     });
 
     it('an empty retained.json (this cdkd kept nothing) reads no history and warns nothing (#5760)', async () => {

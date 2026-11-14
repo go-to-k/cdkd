@@ -618,14 +618,14 @@ CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
 # The warning: the sentinel is its `cdkd import` remedy clause, the markers
 # are the "does not take it back" statement and the orphan's name, all on the
 # warning's one line.
-if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
+if ! grep -qF "adopt it with: cdkd import" "${ADOPT_LOG}"; then
   echo "FAIL: the redeploy did not warn that the rollback's orphan is not taken back (no 'cdkd import' remedy line)"
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-if ! grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | grep -F "This deploy does not take it back" | grep -qF "${ADOPT_ORPHAN_NAME}"; then
+if ! grep -F "adopt it with: cdkd import" "${ADOPT_LOG}" | grep -F "This deploy does not take it back" | grep -qF "${ADOPT_ORPHAN_NAME}"; then
   echo "FAIL: a 'cdkd import' remedy line is present but is not the orphan warning naming ${ADOPT_ORPHAN_NAME} (wording drifted?):"
-  grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | sed 's/^/  /'
+  grep -F "adopt it with: cdkd import" "${ADOPT_LOG}" | sed 's/^/  /'
   exit 1
 fi
 if grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then
@@ -714,15 +714,15 @@ CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
 }
 # Sentinel + marker on the same warning: the marker carries the count, the
 # sentinel is the independent `cdkd import` remedy clause.
-if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
+if ! grep -qF "adopt it with: cdkd import" "${ADOPT_LOG}"; then
   echo "FAIL: the first deploy of a new lifetime did not warn about the kept topic (no 'cdkd import' remedy line)"
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-WARN_LINES="$(grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}")"
+WARN_LINES="$(grep -F "adopt it with: cdkd import" "${ADOPT_LOG}")"
 if ! grep -qF "kept ${KEPT_COUNT} resource(s) here" <<<"${WARN_LINES}"; then
   echo "FAIL: the kept-resources warning is present but does not say exactly ${KEPT_COUNT} resource(s) were kept (wording drifted?):"
-  grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | sed 's/^/  /'
+  grep -F "adopt it with: cdkd import" "${ADOPT_LOG}" | sed 's/^/  /'
   exit 1
 fi
 if grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then

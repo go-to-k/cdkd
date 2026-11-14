@@ -2,6 +2,7 @@ import type { PendingMoveOut, StackState } from '../types/state.js';
 import { CdkdError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { pasteableCommand, proseQuoted } from '../utils/pasteable-command.js';
 
 /**
  * `StackState.pendingMovesOut` (go-to-k/cdkd#5212): the resources an
@@ -57,11 +58,14 @@ export function pendingMovesRefusalMessage(
     moves.length > 0
       ? moves.map((m) => `${m.from} -> ${m.toStack}.${m.to}`).join(', ')
       : 'a move this binary cannot read';
+  const refactorCommand = pasteableCommand('cdkd refactor', [
+    { value: stackName, hole: 'stack', opts: { patternMatched: true } },
+  ]).command;
   return (
     safeMsg`${command} refused stack ${stackName} (${region}): a cdkd refactor that moved ` +
     safeMsg`resources out of it did not finish (${listed}). The destination may already hold ` +
     `them, so acting on this stack now could delete a resource another stack owns. Run ` +
-    safeMsg`'cdkd refactor ${stackName}' to finish the move, then re-run.`
+    `${proseQuoted(refactorCommand)} to finish the move, then re-run.`
   );
 }
 

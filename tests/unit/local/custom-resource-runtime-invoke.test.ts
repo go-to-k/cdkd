@@ -1,10 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -57,11 +61,14 @@ vi.mock('../../../src/synthesis/synthesized-stacks.js', () => ({
 }));
 
 const {
+  chooseCallerStackFunction,
   invokeCustomResourceFunctionLocally,
   lambdaClientForRegion,
   resetLocalCustomResourceRuntimeForTest,
 } =
   await import('../../../src/local/custom-resource-runtime.js');
+const { withNestedStacks } = await import('../../../src/local/custom-resource-nested-stacks.js');
+const { withStackScopeBeforeStateRead } = await import('../../../src/provisioning/resource-name.js');
 const { setLocalCustomResourceRuntimeEnabled, withCustomResourceStack } =
   await import('../../../src/local/custom-resource-runtime-gate.js');
 
@@ -144,6 +151,23 @@ beforeEach(() => {
 
 const invoke = () => invokeCustomResourceFunctionLocally(clients, TOKEN, request);
 
+/** Run `fn` with the typed `--aws-emulator` a pasteable hint carries (go-to-k/cdkd#6138). */
+async function withPasteFlags<T>(fn: () => Promise<T>): Promise<T> {
+  setPasteableVerbFlags(
+    new Map([
+      ['cdkd destroy', new Set(['--aws-emulator'])],
+      ['cdkd deploy', new Set(['--aws-emulator'])],
+    ])
+  );
+  setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9495' });
+  try {
+    return await fn();
+  } finally {
+    setPasteableRunFlags({});
+    setPasteableVerbFlags(undefined);
+  }
+}
+
 describe('declines, so the event goes to the emulator', () => {
   it('without Docker: undefined and ONE warning across events', async () => {
     dr.ensureDockerAvailable.mockRejectedValue(new Error('no daemon'));
@@ -165,9 +189,13 @@ describe('declines, so the event goes to the emulator', () => {
     async (command) => {
       setLocalCustomResourceRuntimeEnabled(true, command);
       assembly.stacks = [];
-      expect(await invoke()).toBeUndefined();
-      expect(String(log.warn.mock.calls[0]![0])).toMatch(
-        /did not synthesize the CDK app.*cdkd destroy --aws-emulator/
+      // go-to-k/cdkd#6246: a pasteable command, the stack and the typed
+      // `--aws-emulator` URL included, on its own labelled line.
+      expect(await withPasteFlags(() => withCustomResourceStack('MineStack', invoke))).toBeUndefined();
+      const warning = String(log.warn.mock.calls[0]![0]);
+      expect(warning).toContain('did not synthesize the CDK app');
+      expect(warning.split('\n').at(-1)).toBe(
+        "Run from the app's directory: cdkd destroy MineStack --aws-emulator=https://127.0.0.1:9495"
       );
     }
   );
@@ -175,11 +203,28 @@ describe('declines, so the event goes to the emulator', () => {
   it('under rollback with no assembly: never suggests a destroy (it would delete the stack)', async () => {
     setLocalCustomResourceRuntimeEnabled(true, 'rollback');
     assembly.stacks = [];
-    expect(await invoke()).toBeUndefined();
+    // A nested child's event names the TOP-LEVEL stack, the one the app has.
+    expect(
+      await withPasteFlags(() => withCustomResourceStack('Parent~Nested', invoke))
+    ).toBeUndefined();
     const warning = String(log.warn.mock.calls[0]![0]);
     expect(warning).toContain('did not synthesize the CDK app');
     expect(warning).not.toContain('destroy');
-    expect(warning).toContain('--no-local-custom-resources');
+    // go-to-k/cdkd#6247: a re-run of the rollback fails the same way, and the
+    // silence flag only sends the event to the same runtime: the remedy is a
+    // deploy forward from the app.
+    expect(warning).toContain('fails the same way on every re-run');
+    expect(warning).not.toContain('--no-local-custom-resources');
+    expect(warning.split('\n').at(-1)).toBe(
+      'Deploy forward with: cdkd deploy Parent --aws-emulator=https://127.0.0.1:9495'
+    );
+  });
+
+  it('under another command with no assembly: the silence flag', async () => {
+    setLocalCustomResourceRuntimeEnabled(true, 'import');
+    assembly.stacks = [];
+    expect(await invoke()).toBeUndefined();
+    expect(String(log.warn.mock.calls[0]![0])).toContain('--no-local-custom-resources');
   });
 
   it('when the function is not in the assembly: undefined and a warning', async () => {
@@ -466,5 +511,78 @@ describe('a destroy resolves the function in the stack it destroys', () => {
     await withCustomResourceStack('Mine', () => invoke());
     const lambda = plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo };
     expect(lambda.stack.stackName).toBe('Mine');
+  });
+});
+
+describe('a custom resource inside a nested stack (go-to-k/cdkd#6261)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-cr-nested-invoke-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const nestedRow = (assetPath: string) => ({
+    Type: 'AWS::CloudFormation::Stack',
+    Metadata: { 'aws:asset:path': assetPath },
+  });
+
+  /** `App` whose `Inner` row names a template holding `Cr` -> `Fn`, and `Inner2` below it the same. */
+  function nestedApp(parentAlsoHasCr = false): StackInfo {
+    writeFileSync(join(dir, 'Inner2.json'), JSON.stringify(appStack().template));
+    const innerTemplate = appStack().template;
+    innerTemplate.Resources!['Inner2'] = nestedRow('Inner2.json') as never;
+    writeFileSync(join(dir, 'Inner.json'), JSON.stringify(innerTemplate));
+    const parent = appStack('App');
+    if (!parentAlsoHasCr) parent.template.Resources = {};
+    parent.template.Resources!['Inner'] = nestedRow('Inner.json') as never;
+    return { ...parent, nestedTemplates: { Inner: join(dir, 'Inner.json') } };
+  }
+
+  const stackOfPlan = () =>
+    (plan.resolveZipImagePlan.mock.calls[0]![0] as { stack: StackInfo }).stack.stackName;
+
+  it('runs locally on a deploy, resolved in the nested template', async () => {
+    assembly.stacks = [nestedApp()];
+    const answer = await withStackScopeBeforeStateRead('App~Inner', () => invoke());
+    expect(answer).toBeDefined();
+    expect(dr.runDetached).toHaveBeenCalledTimes(1);
+    expect(stackOfPlan()).toBe('App~Inner');
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('runs locally on a destroy of a grandchild', async () => {
+    assembly.stacks = [nestedApp()];
+    await withCustomResourceStack('App~Inner~Inner2', () => invoke());
+    expect(stackOfPlan()).toBe('App~Inner~Inner2');
+  });
+
+  it("never borrows the parent's same-named function, nor the parent the child's", async () => {
+    assembly.stacks = [nestedApp(true)];
+    await withCustomResourceStack('App~Inner', () => invoke());
+    expect(stackOfPlan()).toBe('App~Inner');
+    plan.resolveZipImagePlan.mockClear();
+    await withCustomResourceStack('App', () => invoke());
+    expect(stackOfPlan()).toBe('App');
+  });
+
+  it('still declines a nested stack the assembly does not hold', async () => {
+    assembly.stacks = [nestedApp()];
+    expect(await withCustomResourceStack('App~Gone', () => invoke())).toBeUndefined();
+    expect(String(log.warn.mock.calls[0]![0])).toContain('not found in the stack being deployed');
+    expect(dr.runDetached).not.toHaveBeenCalled();
+  });
+
+  it("resolves a cr.Provider's second hop in the nested template", () => {
+    const [, child] = withNestedStacks([nestedApp()]);
+    const callerFn = { lambda: { stack: child }, deployed: {} } as unknown as Parameters<
+      typeof chooseCallerStackFunction
+    >[0];
+    const choice = chooseCallerStackFunction(callerFn, 'Fn', DEPLOYED);
+    expect('lambda' in choice && choice.lambda.stack.stackName).toBe('App~Inner');
+    expect(chooseCallerStackFunction(callerFn, 'Missing', DEPLOYED)).toEqual({
+      reason: 'its function was not found in the stack being deployed',
+    });
   });
 });

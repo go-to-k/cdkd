@@ -543,6 +543,33 @@ describe('config-loader', () => {
       await expect(fn(undefined, 'us-east-1')).rejects.toBeInstanceOf(StateError);
     });
 
+    it('under --aws-emulator, explains the restart and keeps the flag on bootstrap (go-to-k/cdkd#6245)', async () => {
+      planS3({ newHead: '404', legacyHead: '404' });
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const { buildProgram } = await import('../../../src/cli/program.js');
+      const { resetAwsClientDefaults, setAwsEndpointOverrideSource } = await import(
+        '../../../src/utils/aws-client-defaults.js'
+      );
+      const { setPasteableRunFlags, setPasteableVerbFlags } = await import(
+        '../../../src/utils/pasteable-run-context.js'
+      );
+      buildProgram();
+      setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9493' }) as never);
+      setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+      try {
+        const err = (await fn(undefined, 'us-east-1').catch((e: unknown) => e)) as Error;
+        expect(err.message).toContain('AWS Emulator keeps nothing across restarts');
+        expect(err.message).not.toContain("Run 'cdkd bootstrap'");
+        expect(err.message).toMatch(/\ncdkd bootstrap --aws-emulator=https:\/\/127\.0\.0\.1:9493$/);
+      } finally {
+        resetAwsClientDefaults();
+        setPasteableRunFlags({});
+        setPasteableVerbFlags(undefined);
+      }
+    }, 30_000);
+
     /**
      * go-to-k/cdkd#2100: a bare command's region now comes from the AWS
      * profile, so the legacy name it builds moved from

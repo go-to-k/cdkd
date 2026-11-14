@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   type Affinity,
   DescribeInstancesCommand,
@@ -469,7 +470,7 @@ export function planInstanceMemberUpdates(
       new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `replace the instance (cdkd deploy --replace). ${createOnlyChanged.join(', ')} can be set only when the instance is launched, and CloudFormation creates a new instance for this change`
+        `replace the instance (${deployReplaceCommand()}). ${createOnlyChanged.join(', ')} can be set only when the instance is launched, and CloudFormation creates a new instance for this change`
       )
     );
   }
@@ -515,7 +516,7 @@ export function planInstanceMemberUpdates(
           new ResourceUpdateNotSupportedError(
             resourceType,
             logicalId,
-            safeMsg`cdkd does not change Tenancy ${before} -> ${after}. How CloudFormation applies a change between two non-default tenancies has not been measured (it may stop the instance and move it rather than replace it), so cdkd neither replaces the instance nor applies the change. Keep the current tenancy, or replace the instance explicitly with cdkd deploy --replace`
+            safeMsg`cdkd does not change Tenancy ${before} -> ${after}. How CloudFormation applies a change between two non-default tenancies has not been measured (it may stop the instance and move it rather than replace it), so cdkd neither replaces the instance nor applies the change. Keep the current tenancy, or replace the instance explicitly with ${deployReplaceCommand()}`
           )
         );
       }
@@ -535,7 +536,7 @@ export function planInstanceMemberUpdates(
         new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          'replace the instance (cdkd deploy --replace). CloudFormation creates a new instance for a Tenancy change to or from default'
+          `replace the instance (${deployReplaceCommand()}). CloudFormation creates a new instance for a Tenancy change to or from default`
         )
       );
     }
@@ -791,7 +792,7 @@ export function planInstanceStoppedMembers(
       }
       throw refusedBeforeApplying(
         new ProvisioningError(
-          safeMsg`${logicalId} (${resourceType}): ${key} was removed from the template. EC2 has no call that clears it on an existing instance, and CloudFormation does not document what a removal does, so cdkd does not guess a value. Keep it declared (its current value leaves the instance unchanged), or replace the instance with cdkd deploy --replace. The instance was not updated.`,
+          safeMsg`${logicalId} (${resourceType}): ${key} was removed from the template. EC2 has no call that clears it on an existing instance, and CloudFormation does not document what a removal does, so cdkd does not guess a value. Keep it declared (its current value leaves the instance unchanged), or replace the instance with ${deployReplaceCommand()}. The instance was not updated.`,
           resourceType,
           logicalId,
           physicalId

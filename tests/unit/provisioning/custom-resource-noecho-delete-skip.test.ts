@@ -99,7 +99,7 @@ describe('CustomResourceProvider.delete: a NoEcho mask in the recorded propertie
     const text = warnText();
     expect(text).toContain('KEEPING the state record and the run exits non-zero');
     expect(text).toContain('Tear down what the handler manages by hand');
-    expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(text).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     expect(send).not.toHaveBeenCalled();
   });
 

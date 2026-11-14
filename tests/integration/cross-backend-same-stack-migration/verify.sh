@@ -573,7 +573,7 @@ if ! grep -qF "kept 1 resource(s) here (DeletionPolicy: Retain)" "${RUN_LOG}"; t
   fi
   exit 1
 fi
-grep -qF "adopt it with 'cdkd import'" "${RUN_LOG}" || { echo "FAIL: the kept-resource warning does not name cdkd import" >&2; exit 1; }
+grep -qF "adopt it with: cdkd import" "${RUN_LOG}" || { echo "FAIL: the kept-resource warning does not name cdkd import" >&2; exit 1; }
 echo "    OK: (c)3 a new lifetime: ${LOG_GROUP_R2} created, ${LOG_GROUP_R} kept and named in the warning"
 run_logged "(c)4 this build destroys ${RETAIN}: retained.json lists the log group" "${LOCAL_DIST}" destroy "${RETAIN}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force

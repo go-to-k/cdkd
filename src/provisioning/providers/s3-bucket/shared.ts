@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return */
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { type MaskerFn, maskDeep } from '../../masked-retry-logger.js';
 import { displayIdent, displaySafe } from '../../../utils/display-safe.js';
 import { renderDisableCommand } from '../../replacement-protection-advice.js';
@@ -47,7 +48,7 @@ export function manualBucketDeletionClause(
   // `journaled`: create() marked the bucket (go-to-k/cdkd#4583), so the failed
   // deploy's rollback journal names it; the manual command is the fallback.
   const lead = journaled
-    ? "Outside a rollback's re-create, the failed deploy's rollback journal records the bucket for `cdkd rollback --revert-failed`; " +
+    ? `Outside a rollback's re-create, the failed deploy's rollback journal records the bucket for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; ` +
       'otherwise delete it yourself before the next deploy'
     : 'Manual deletion may be required before the next deploy';
   return command

@@ -11,6 +11,7 @@ import {
   type SseType,
 } from '@aws-sdk/client-s3vectors';
 import { getLogger } from '../../utils/logger.js';
+import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -243,7 +244,7 @@ export class S3VectorsProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `'${createOnly}' is immutable (create-only) on VectorBucket '${mask(physicalId)}'; a change requires replacement (cdkd deploy --replace --force-stateful-recreation — the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED)`
+          `'${createOnly}' is immutable (create-only) on VectorBucket '${mask(physicalId)}'; a change requires replacement (${deployReplaceCommand(true)} — the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED)`
         );
       }
     }

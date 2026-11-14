@@ -11,6 +11,7 @@
  * that look the same are reported AMBIGUOUS and left to the user.
  */
 import type { CloudFormationTemplate } from '../types/resource.js';
+import { cdkdRemedy } from '../utils/pasteable-command.js';
 
 /** Types `cdkd refactor` never pairs. */
 const UNPAIRABLE_TYPES: ReadonlySet<string> = new Set([
@@ -273,9 +274,9 @@ export function differingRemedy(paths: readonly string[]): string {
   return paths.some((p) => p.startsWith(REFERENCE_PATH_PREFIX))
     ? 'As cdk refactor does, cdkd treats it as a new resource (a Lambda version or an API ' +
         'Gateway deployment after a change is one). If it was renamed, revert that change, run ' +
-        'cdkd refactor, then deploy the change.'
-    : 'cdkd refactor keeps only an unchanged resource: revert the property change, run cdkd ' +
-        'refactor, then deploy the change.';
+        `${cdkdRemedy('cdkd refactor')}, then deploy the change.`
+    : 'cdkd refactor keeps only an unchanged resource: revert the property change, run ' +
+        `${cdkdRemedy('cdkd refactor')}, then deploy the change.`;
 }
 
 /** Why a mapping-file pair {@link changedReferenceInDiff} names is refused. */
@@ -283,8 +284,8 @@ export function changedReferenceReason(reference: string): string {
   return (
     `it references ${reference}, which the next deploy changes, so cdkd treats it as a new ` +
     `resource, as cdk refactor does (a Lambda version or an API Gateway deployment after a ` +
-    `change is one). If it is a renamed one, revert the change to ${reference}, run cdkd ` +
-    `refactor, then deploy the change`
+    `change is one). If it is a renamed one, revert the change to ${reference}, run ` +
+    `${cdkdRemedy('cdkd refactor')}, then deploy the change`
   );
 }
 
@@ -292,7 +293,7 @@ export function changedReferenceReason(reference: string): string {
 export function propertiesChangedReason(paths: readonly string[]): string {
   return (
     `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
-    'unchanged resource. Revert the property change, run cdkd refactor, then deploy the change'
+    `unchanged resource. Revert the property change, run ${cdkdRemedy('cdkd refactor')}, then deploy the change`
   );
 }
 

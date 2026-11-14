@@ -1,4 +1,5 @@
 import type { LogsLogGroupProvider } from '../logs-loggroup-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreateLogGroupCommand,
   DeleteLogGroupCommand,
@@ -262,8 +263,8 @@ export async function create(
             maskSecrets: mask,
           });
           const manualStep = deleteCommand
-            ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
-            : "Outside a rollback's re-create, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
+            ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself before the next deploy: ${deleteCommand}`
+            : `Outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself before the next deploy, via the console: the log ` +
               'group name cannot be reproduced safely on a command line.';
           // An AWS-authored failure is named by its class at warn, and AWS's
           // text (a denied `DeleteLogGroup` names the caller) goes to `debug`

@@ -1,3 +1,4 @@
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { ResourceState } from '../../../types/state.js';
 import { equalIdNamesDifferentResources } from '../../type-change-guard.js';
 import { effectiveDeletionPolicy } from '../../../provisioning/final-snapshot.js';
@@ -108,7 +109,7 @@ export function unroutableReplacementError(
         `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
           `(${refusalResourceType(op.resourceType)}): ` +
           `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
-          `was changed. The journal is kept: fix forward with cdkd deploy` +
+          `was changed. The journal is kept: fix forward with ${cdkdRemedy('cdkd deploy')}` +
           (remedy.offered
             ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
               `re-running with the command below.`

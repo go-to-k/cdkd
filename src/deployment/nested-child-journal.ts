@@ -36,6 +36,7 @@
  * that failed and rolled itself back leaves a segment the parent never reverts,
  * so "the newest child segment" is not the one a given parent segment means.
  */
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { withPrintingSecrets } from './resource-secrets-scope.js';
 import {
   completedReplayEntries,
@@ -615,7 +616,7 @@ export async function revertNestedChildFromJournal(args: {
       new Error(
         `Cannot revert nested stack ${shownChild} (row ${displayIdent(logicalId)}): ${detail} ` +
           `The child was NOT (fully) reverted and may still hold the failed deploy's configuration. ` +
-          `Inspect it with 'cdkd state show'; re-run the rollback once the cause is fixed (its ` +
+          `Inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'))}; re-run the rollback once the cause is fixed (its ` +
           `journal is kept), or re-deploy the parent to converge.`
       )
     );

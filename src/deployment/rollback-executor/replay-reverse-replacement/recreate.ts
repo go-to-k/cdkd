@@ -6,6 +6,7 @@ import { applyDefaultNameForFallback } from '../../../provisioning/resource-name
 import { replacementDeletePolicy } from '../../../provisioning/final-snapshot.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { maskSecretsInError } from '../../secret-redaction.js';
 import {
   isNameCollisionErrorFrom,
@@ -401,7 +402,7 @@ export async function recreateOldResource(
                 // The re-run COMMAND stays outside the mask too, like the
                 // `--orphan` line below (review of #4099): a short id
                 // needle would otherwise cut into it.
-                rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback')) +
                 mask(
                   `, which proceeds: the journal is kept, so the revert resumes from here.` +
                     (remedy.offered
@@ -484,7 +485,7 @@ export async function recreateOldResource(
                   `remove UpdateReplacePolicy: Retain, then re-run `
               ) +
                 // Outside the mask, like the `--orphan` line (#4099 review).
-                rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback')) +
                 mask(
                   ` — the journal is kept, so the revert resumes from here.` +
                     (remedy.offered
@@ -538,7 +539,7 @@ export async function recreateOldResource(
                   `be able to restore, so cdkd will not delete the new resource to free the ` +
                   `name. Nothing was deleted. Re-deploy to fix forward, or re-run `
               ) +
-                rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback')) +
                 mask(
                   ` once the old resource can be re-created — the journal is kept.` +
                     (remedy.offered

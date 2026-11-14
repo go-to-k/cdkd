@@ -343,14 +343,14 @@ CDKD_TEST_SECRET_ORPHAN=fixed node "${LOCAL_DIST}" deploy "${STACK}" \
 # The warning: the sentinel is its `cdkd import` remedy clause, the markers are
 # the "does not take it back" statement and the orphan's name, all on the
 # warning's one line.
-if ! grep -qF "adopt it with 'cdkd import'" "${LOG}"; then
+if ! grep -qF "adopt it with: cdkd import" "${LOG}"; then
   echo "FAIL: the redeploy did not warn that the rollback's orphan is not taken back (no 'cdkd import' remedy line)"
   tail -40 "${LOG}"
   exit 1
 fi
-if ! grep -F "adopt it with 'cdkd import'" "${LOG}" | grep -F "This deploy does not take it back" | grep -qF "${PARAM_NAME}"; then
+if ! grep -F "adopt it with: cdkd import" "${LOG}" | grep -F "This deploy does not take it back" | grep -qF "${PARAM_NAME}"; then
   echo "FAIL: a 'cdkd import' remedy line is present but is not the orphan warning naming ${PARAM_NAME} (wording drifted?):"
-  grep -F "adopt it with 'cdkd import'" "${LOG}" | sed 's/^/  /'
+  grep -F "adopt it with: cdkd import" "${LOG}" | sed 's/^/  /'
   exit 1
 fi
 if grep -q "Adopting " "${LOG}"; then

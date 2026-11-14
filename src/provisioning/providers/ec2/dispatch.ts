@@ -11,6 +11,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import type { UpdateContext, ResourceUpdateResult } from '../../../types/resource.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   EIP_ALLOCATION_NOT_FOUND_NAMES,
   INSTANCE_NOT_FOUND_NAMES,
@@ -154,7 +155,7 @@ export async function applyUpdate(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
+        `AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy`
       );
     default:
       throw new ProvisioningError(

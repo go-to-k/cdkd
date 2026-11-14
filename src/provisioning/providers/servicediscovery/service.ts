@@ -18,6 +18,7 @@ import {
   type Tag,
   type ServiceTypeOption,
 } from '@aws-sdk/client-servicediscovery';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { withRetry } from '../../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../../interrupt-watch.js';
@@ -201,7 +202,7 @@ export async function createService(
               `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
               `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
               `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-              `delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
+              `delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise remove it yourself: ` +
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
           )
         );
@@ -234,7 +235,7 @@ export async function createService(
           // beside masked ones is what a later author copies.
           `${cleanupHead}` +
             `${cleanupFailure.redacted ? `${maskerOrIdentity(maskSecrets)(cleanupFailure.summary)} ` : `${this.maskErrorMessage(cleanupError, maskSecrets)}. `}Outside a rollback's re-create, the failed deploy's rollback ` +
-            `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
+            `journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself ` +
             `before the next deploy: ` +
             `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
         );

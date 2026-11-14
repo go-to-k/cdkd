@@ -8,6 +8,7 @@ import {
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { displayIdent, safeMsg, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { ASSET_SUPPORT_VERSION, BOOTSTRAP_MARKER_PREFIX } from './names.js';
 
 /**
@@ -306,7 +307,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     );
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is not valid JSON. ` +
-        `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
+        `Re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER',
       jsonParseFailureStandIn(error, utf8ByteLength(body))
     );
@@ -341,7 +342,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is malformed ` +
         `(missing assetBucket / containerRepo / assetSupportVersion). ` +
-        `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
+        `Re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
     );
   }
@@ -358,7 +359,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is malformed ` +
         `(its asset bucket or container repository name is not a valid name). ` +
-        `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
+        `Re-run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
     );
   }

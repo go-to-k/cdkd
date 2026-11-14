@@ -127,14 +127,14 @@ const DEPLOY_CONTEXTS: Array<[string, DeleteContext | undefined]> = [
 // single-record alternative; every other phase names only the single-record
 // form, whose own sentence warns off the bare one.
 const DESTROY_REMEDY =
-  "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack " +
+  "cdkd state orphan '<stack>' --stack-region '<region>', which drops every record the stack " +
   "still has in that region, not just this one (add '--resource CrResource' to drop only this one)";
 const DEPLOY_REMEDY =
   'For a resource removed from the template, to give up on the delete and stop tracking it, ' +
-  "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
-  "CrResource', which drops only this record — never run it without --resource on a stack that " +
+  "drop the record with cdkd state orphan '<stack>' --stack-region '<region>' --resource " +
+  "CrResource, which drops only this record — never run it without --resource on a stack that " +
   'is still deployed';
-const BARE_FORM = "'cdkd state orphan <stack> --stack-region <region>',";
+const BARE_FORM = "cdkd state orphan '<stack>' --stack-region '<region>',";
 
 const warnings = (): string => warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
 const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;

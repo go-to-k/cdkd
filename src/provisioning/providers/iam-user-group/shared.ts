@@ -1,3 +1,4 @@
+import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../../resource-name.js';
 import {
@@ -106,11 +107,14 @@ export const MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON =
  * idempotent). An unchanged reference never reaches this: the engine drops
  * it from the previous side (go-to-k/cdkd#4064).
  */
-export const MEMBERSHIP_SECRET_DERIVED_REPAIR =
-  'cdkd cannot diff it, so make the membership change by hand, then drop this record with ' +
-  "'cdkd orphan <constructPath>' so the next deploy re-creates it from the template. A " +
-  'later update proceeds only while the template spells the same reference and GroupName, so ' +
-  'a changed reference, another group or a mask is refused this way again';
+export function membershipSecretDerivedRepair(): string {
+  return (
+    'cdkd cannot diff it, so make the membership change by hand, then drop this record with ' +
+    `${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command} so the next deploy re-creates it from the template. A ` +
+    'later update proceeds only while the template spells the same reference and GroupName, so ' +
+    'a changed reference, another group or a mask is refused this way again'
+  );
+}
 
 /**
  * Read a desired and a recorded principal list, refusing either when it is not

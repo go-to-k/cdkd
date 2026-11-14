@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { CloudFrontDistributionProvider } from '../cloudfront-distribution-provider.js';
 import {
   CreateDistributionCommand,
@@ -229,7 +230,7 @@ export async function create(
               `return CallerReference from ListDistributions, so find it with ` +
               `'aws cloudfront list-distributions' and match on ` +
               `${this.orphanSearchHint(properties, maskSecrets)}; then disable and delete it ` +
-              `(or import it with 'cdkd import') before re-running. The AWS error is on this ` +
+              `(or import it with ${proseQuoted(cdkdRemedy('cdkd import'))}) before re-running. The AWS error is on this ` +
               `error's cause.`
           ),
           resourceType,

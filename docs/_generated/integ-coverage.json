@@ -684,6 +684,7 @@
       "integs": [
         "appsync",
         "import-migrate-appsync",
+        "ref-shape-vector-namespace-attachment",
         "secret-derived-immutable-names"
       ],
       "signals": {
@@ -692,6 +693,10 @@
         ],
         "import-migrate-appsync": [
           "l1"
+        ],
+        "ref-shape-vector-namespace-attachment": [
+          "l1",
+          "literal"
         ],
         "secret-derived-immutable-names": [
           "l1",
@@ -1615,6 +1620,7 @@
         "rds-full-stack",
         "rds-multiaz-cluster",
         "redshift-cluster-getatt",
+        "ref-shape-vector-namespace-attachment",
         "remove-protection",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -1833,6 +1839,9 @@
         ],
         "redshift-cluster-getatt": [
           "l2"
+        ],
+        "ref-shape-vector-namespace-attachment": [
+          "l1"
         ],
         "remove-protection": [
           "l2"
@@ -3867,6 +3876,7 @@
         "rds-full-stack",
         "rds-multiaz-cluster",
         "redshift-cluster-getatt",
+        "ref-shape-vector-namespace-attachment",
         "remove-protection",
         "remove-protection-journaled-orphan",
         "replacement-rename-onto-holder",
@@ -4135,6 +4145,9 @@
         "redshift-cluster-getatt": [
           "l2"
         ],
+        "ref-shape-vector-namespace-attachment": [
+          "l1"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -4250,6 +4263,7 @@
         "rds-full-stack",
         "rds-multiaz-cluster",
         "redshift-cluster-getatt",
+        "ref-shape-vector-namespace-attachment",
         "remove-protection",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -4469,6 +4483,10 @@
         ],
         "redshift-cluster-getatt": [
           "l2"
+        ],
+        "ref-shape-vector-namespace-attachment": [
+          "l1",
+          "literal"
         ],
         "remove-protection": [
           "l2"
@@ -8116,9 +8134,14 @@
     {
       "resourceType": "AWS::S3Tables::Namespace",
       "integs": [
+        "ref-shape-vector-namespace-attachment",
         "s3-tables"
       ],
       "signals": {
+        "ref-shape-vector-namespace-attachment": [
+          "l1",
+          "literal"
+        ],
         "s3-tables": [
           "l1"
         ]
@@ -8139,9 +8162,14 @@
     {
       "resourceType": "AWS::S3Tables::TableBucket",
       "integs": [
+        "ref-shape-vector-namespace-attachment",
         "s3-tables"
       ],
       "signals": {
+        "ref-shape-vector-namespace-attachment": [
+          "l1",
+          "literal"
+        ],
         "s3-tables": [
           "l1",
           "literal"
@@ -8152,10 +8180,15 @@
       "resourceType": "AWS::S3Vectors::VectorBucket",
       "integs": [
         "import-attribute-readback-final",
+        "ref-shape-vector-namespace-attachment",
         "s3-vectors"
       ],
       "signals": {
         "import-attribute-readback-final": [
+          "literal"
+        ],
+        "ref-shape-vector-namespace-attachment": [
+          "l1",
           "literal"
         ],
         "s3-vectors": [
@@ -8977,6 +9010,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
         "redshift-cluster-getatt",
+        "ref-shape-vector-namespace-attachment",
         "refactor-command",
         "refactor-move",
         "remove-protection-journaled-orphan",
@@ -9300,6 +9334,9 @@
           "literal"
         ],
         "redshift-cluster-getatt": [
+          "l1"
+        ],
+        "ref-shape-vector-namespace-attachment": [
           "l1"
         ],
         "refactor-command": [

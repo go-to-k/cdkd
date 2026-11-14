@@ -37,7 +37,12 @@ import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  pasteableCommand,
+  quotedOrDescribed,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
@@ -552,8 +557,8 @@ async function refuseUnlicensedGeneratedName(
       const nested = input.stackName.includes('~');
       const top = input.stackName.split('~')[0]!;
       const importLine = nested
-        ? `adopt it through the top-level stack ${quotedOrDescribed(top, 'stack name')} with \`cdkd import\``
-        : `adopt it with \`${
+        ? `adopt it through the top-level stack ${quotedOrDescribed(top, 'stack name')} with ${proseQuoted(cdkdRemedy('cdkd import'), '`')}`
+        : `adopt it with ${proseQuoted(
             pasteableCommand(
               'cdkd import',
               [
@@ -565,8 +570,9 @@ async function refuseUnlicensedGeneratedName(
                 },
               ],
               recoveryCommandFlags(engine.options.refusalRecovery).flags
-            ).command
-          }\``;
+            ).command,
+            '`'
+          )}`;
       if (verdict.ownIntent !== undefined) {
         // Review D1 (the maintainer's decision): this stack's ledger names the
         // name, but cannot prove this holder is what its create made.
@@ -790,8 +796,8 @@ async function refuseTakenCreateName(
   const ownRemedy = input.stackName.includes('~')
     ? `${ownCase}, delete it and re-run.`
     : adopt !== undefined
-      ? `${ownCase}, delete it, or adopt it with \`cdkd import\` using the command below and re-run.`
-      : `${ownCase}, delete it or adopt it with \`cdkd import\` and re-run.`;
+      ? `${ownCase}, delete it, or adopt it with ${proseQuoted(cdkdRemedy('cdkd import'), '`')} using the command below and re-run.`
+      : `${ownCase}, delete it or adopt it with ${proseQuoted(cdkdRemedy('cdkd import'), '`')} and re-run.`;
   const holeNote =
     adopt === undefined || adopt.withheld.length === 0
       ? ''

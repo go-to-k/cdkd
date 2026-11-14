@@ -119,10 +119,20 @@ receives the same value it would receive from `cdk deploy`.
 | `AWS::AppSync::DataSource` | The data source ARN |
 | `AWS::AppSync::Resolver` | The resolver ARN |
 | `AWS::EC2::EIP` | The public IP |
+| `AWS::EC2::VPCGatewayAttachment` | `IGW\|<vpcId>` or `VGW\|<vpcId>` |
 | `AWS::Glue::Table` | The table name |
 | `AWS::Route53::RecordSet` | The record name |
-| `AWS::S3Tables::Namespace` | The namespace name |
+| `AWS::S3Tables::Namespace` | The stored ID, `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | The table ARN |
+
+Two types that do not store a composite ID also get a translated `Ref`.
+cdkd stores the name or ID and reads the ARN from an attribute recorded at
+create time:
+
+| Resource type | Stored `physicalId` | `Ref` returns |
+| --- | --- | --- |
+| `AWS::AppSync::GraphQLApi` | The API ID | The API ARN |
+| `AWS::S3Vectors::VectorBucket` | The bucket name | The bucket ARN |
 
 ### Records with no recorded ARN
 
@@ -135,6 +145,13 @@ ARN, in which case it warned at import time.
 On such a record, `Ref` returns the composite ID. An `Fn::GetAtt` on the ARN
 makes `cdkd deploy` read the resource from AWS once and record the real ARN.
 The deploy fails if it cannot read the resource.
+
+**A GraphQL API or a vector bucket.** A record that `cdkd import` adopted
+before it recorded the ARN has none. A `Ref` on such a record is resolved like
+an `Fn::GetAtt` on the ARN. For a vector bucket, `cdkd deploy` reads the ARN
+from AWS and records it. For a GraphQL API, cdkd builds the ARN from the API ID
+and the deploy's account and Region. If cdkd cannot get the ARN, the deploy
+fails instead of using the API ID or bucket name.
 
 **`cdkd export` blocks a resource and names a missing attribute.**
 [`cdkd export`](cli-export.md) needs the same recorded attribute for the types

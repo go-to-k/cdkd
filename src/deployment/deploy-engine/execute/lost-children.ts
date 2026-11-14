@@ -5,6 +5,7 @@ import {
 import { type ResourceChange } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { DagExecutor } from '../../dag-executor.js';
+import { nearestMemberDependencies } from '../dependencies.js';
 import type { DeployRun } from './run.js';
 
 // go-to-k/cdkd#4444: a resource re-created under the same id by the
@@ -43,20 +44,31 @@ export function enqueueLostChildren(run: DeployRun, executor: DagExecutor<Resour
     );
   }
   if (progress) progress.total += lostIds.length;
+  // A NO_CHANGE dep is walked through to the executor's nodes behind it
+  // (#6244), for a lost child's own deps and for a pending reader of one.
+  const lost = new Set(lostIds);
+  const isMember = (id: string): boolean => executor.has(id) || lost.has(id);
+  const dependenciesOf = (id: string): string[] => engine.dagBuilder.getDirectDependencies(dag, id);
+  const lostDeps = nearestMemberDependencies(lostIds, dependenciesOf, isMember);
   for (const id of lostIds) {
     executor.add({
       id,
-      dependencies: new Set(
-        engine.dagBuilder.getDirectDependencies(dag, id).filter((d) => executor.has(d))
-      ),
+      dependencies: lostDeps.get(id)!,
       state: 'pending',
       data: changes.get(id)!,
     });
   }
-  for (const node of executor.values()) {
-    if (node.state !== 'pending') continue;
-    for (const dep of engine.dagBuilder.getDirectDependencies(dag, node.id)) {
-      if (lostIds.includes(dep)) node.dependencies.add(dep);
+  const pending = [...executor.values()].filter(
+    (node) => node.state === 'pending' && !lost.has(node.id)
+  );
+  const pendingDeps = nearestMemberDependencies(
+    pending.map((node) => node.id),
+    dependenciesOf,
+    isMember
+  );
+  for (const node of pending) {
+    for (const dep of pendingDeps.get(node.id)!) {
+      if (lost.has(dep)) node.dependencies.add(dep);
     }
   }
 }

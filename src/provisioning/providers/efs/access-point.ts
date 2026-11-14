@@ -1,4 +1,5 @@
 import type { EFSProvider } from '../efs-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
@@ -132,7 +133,7 @@ export async function updateAccessPoint(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `AWS EFS AccessPoint ${key} changed or was removed, and it is immutable on AWS — there is no UpdateAccessPoint command, and only AccessPointTags can change in place; any other property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        `AWS EFS AccessPoint ${key} changed or was removed, and it is immutable on AWS — there is no UpdateAccessPoint command, and only AccessPointTags can change in place; any other property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy the stack.`
       );
     }
   }

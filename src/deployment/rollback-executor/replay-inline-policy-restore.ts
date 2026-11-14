@@ -1,5 +1,6 @@
 import { isRedactedRecordedValue } from '../../provisioning/redacted-delete-address.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import { carryLogOnlyValues, type RecordedSecretValues } from '../secret-redaction.js';
 import type { ResourceState } from '../../types/state.js';
 import {
@@ -66,7 +67,9 @@ async function restoreOne(
   const ids = [...new Set(holders.map((h) => h.logicalId))].map((id) => safe(id)).join(', ');
   const lost =
     safeMsg`the ${kind} it is on lacks that inline policy until the resource is next updated, or ` +
-    `'cdkd drift <stack> --revert' restores it`;
+    safeMsg`${proseQuoted(
+      pasteableCommand('cdkd drift', [{ hole: 'stack' }, { literal: '--revert' }]).command
+    )} restores it`;
   if (refuseAll || unsettled.length > 0) {
     const pending = refuseAll ? ids : unsettled.map((id) => safe(id)).join(', ');
     logger.warn(

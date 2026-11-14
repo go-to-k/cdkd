@@ -1,4 +1,5 @@
 import { CloudFormationClient, GetTemplateCommand } from '@aws-sdk/client-cloudformation';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { uploadCfnTemplate, type CfnUploadS3ClientOpts } from '../../upload-cfn-template.js';
 import {
@@ -327,7 +328,7 @@ async function injectRetainPoliciesRecursiveInternal(
         `Template for '${cfnStackName}' has nested-stack '${logicalId}' (Type: ` +
           `${NESTED_STACK_RESOURCE_TYPE}) but the CloudFormation resource tree has no ` +
           `matching child entry. AWS may have removed the child since DescribeStackResources ` +
-          `ran, or the template was hand-edited mid-flight — re-run \`cdkd import --migrate-from-cloudformation\` ` +
+          `ran, or the template was hand-edited mid-flight — re-run ${proseQuoted(cdkdRemedy('cdkd import', '--migrate-from-cloudformation'), '`')} ` +
           `to refresh.`
       );
     }

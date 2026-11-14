@@ -22,7 +22,10 @@ import {
   REFERENCED_LAMBDA_MAX_WAIT_SECONDS,
   collectReferencedLambdaFunctionArns,
 } from './lambda-waiter.js';
-import { localCustomResourceRuntimeActive } from '../../../local/custom-resource-runtime-gate.js';
+import {
+  localCustomResourceRuntimeActive,
+  noteSentToEmulatorRuntime,
+} from '../../../local/custom-resource-runtime-gate.js';
 
 /**
  * Send custom resource request via the appropriate service (Lambda or SNS)
@@ -348,6 +351,10 @@ export async function invokeLambda(
       request
     );
     if (local !== undefined) return local;
+    // go-to-k/cdkd#6247: the event goes to the emulator's own runtime.
+    if (typeof request['LogicalResourceId'] === 'string') {
+      noteSentToEmulatorRuntime(request['LogicalResourceId']);
+    }
   }
   return await this.lambdaClient.send(
     new InvokeCommand({

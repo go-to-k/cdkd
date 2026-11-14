@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { DeleteContext } from '../../region-check.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
@@ -316,7 +317,7 @@ export function crDeployNoStateOrphan(logicalId: string): string {
 
 export function crDeploySkipTail(logicalId: string): string {
   return (
-    `Meanwhile 'cdkd deploy --allow-unaddressed' exits 0 (a deploy-only flag; 'cdkd rollback' has none); ` +
+    `Meanwhile ${proseQuoted(cdkdRemedy('cdkd deploy', '--allow-unaddressed'))} exits 0 (a deploy-only flag; 'cdkd rollback' has none); ` +
     `the record stays and each deploy re-attempts the delete. ` +
     `A delete-first REPLACEMENT or a rollback delete usually FAILS the resource and keeps the record ` +
     `(https://github.com/go-to-k/cdkd/issues/1762). Where the other copy already exists (a replacement that ` +
@@ -405,7 +406,7 @@ export function unresolvedTokenDeleteRemedy(
   logicalId: string
 ): string {
   return context?.stackDestroy === true
-    ? `re-run 'cdkd import', or drop the record with ${stateOrphanRecordRemedy(context, logicalId)}, to recover.`
+    ? `re-run ${proseQuoted(cdkdRemedy('cdkd import'))}, or drop the record with ${stateOrphanRecordRemedy(context, logicalId)}, to recover.`
     : `put the provider's Lambda function or SNS topic ARN back as ServiceToken in state.json and ` +
         `re-run to recover. ${crDeployNoStateOrphan(logicalId)}`;
 }

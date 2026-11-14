@@ -1,4 +1,5 @@
 import { rmSync } from 'node:fs';
+import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { createWatchPredicates, resolveWatchConfig } from 'cdk-local/internal';
 import {
   parseContextOptions,
@@ -171,7 +172,7 @@ export async function localStartApiCommand(
       );
     }
     logger.warn(
-      "[deprecated] --api '<id>' will be removed in a future major release. Use the positional argument instead: 'cdkd local start-api <id>'."
+      safeMsg`[deprecated] --api '<id>' will be removed in a future major release. Use the positional argument instead: ${proseQuoted(pasteableCommand('cdkd local start-api', [{ hole: 'id' }]).command)}.`
     );
     apiFilter = options.api;
   }

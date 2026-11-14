@@ -1,4 +1,5 @@
 import type { PipesPipeProvider } from '../pipes-provider.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   UpdatePipeCommand,
   TagResourceCommand,
@@ -70,7 +71,7 @@ export async function update(
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        `${key} is create-only; re-run with \`cdkd deploy --replace\` to recreate the pipe ` +
+        `${key} is create-only; re-run with ${deployReplaceCommand()} to recreate the pipe ` +
           `(--replace is a boolean flag and takes no resource id; it applies to every ` +
           `resource in the run whose in-place update is refused)`
       );

@@ -24,6 +24,11 @@ import {
   setAwsEndpointOverrideSource,
 } from '../../../src/utils/aws-client-defaults.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 /**
  * go-to-k/cdkd#6186: under `--aws-emulator` only, a state-writing command
@@ -181,8 +186,29 @@ describe('ensureAwsEmulatorStateBucket', () => {
     await expect(
       ensureAwsEmulatorStateBucket({ cliBucket: undefined, region: 'us-east-1', s3: c.s3, sts: c.sts })
     ).rejects.toThrow(
-      /AWS Emulator auto-bootstrap of state bucket cdkd-state-000000000000 failed: boom.*cdkd bootstrap --aws-emulator --force/
+      /AWS Emulator auto-bootstrap of state bucket cdkd-state-000000000000 failed: boom.*Retry with: cdkd bootstrap --force$/
     );
+  });
+
+  it("emulator: the retry command carries the run's typed --aws-emulator URL (#6245)", async () => {
+    // The program first: building it resets the endpoint override.
+    buildProgram();
+    activateEmulator();
+    setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:9493' });
+    try {
+      const c = fakeClients(notFound);
+      c.s3Send.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof HeadBucketCommand) throw notFound;
+        if (cmd instanceof CreateBucketCommand) throw new Error('boom');
+        return {};
+      });
+      await expect(
+        ensureAwsEmulatorStateBucket({ cliBucket: undefined, region: 'us-east-1', s3: c.s3, sts: c.sts })
+      ).rejects.toThrow(/Retry with: cdkd bootstrap --force --aws-emulator=https:\/\/127\.0\.0\.1:9493$/);
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
   });
 
   it('emulator: an error other than not-found is left to the preflight (no create)', async () => {

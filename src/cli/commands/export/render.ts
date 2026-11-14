@@ -1,5 +1,7 @@
 import {
+  cdkdRemedy,
   pasteableCommand,
+  proseQuoted,
   type CommandArg,
   type PasteableCommand,
   SHELL_ACTIVE_WHY,
@@ -388,8 +390,8 @@ export function orphanCommandFor(
       // The listing reads the run's bucket only with the same flags
       // (go-to-k/cdkd#4648).
       (account.length > 0
-        ? `'cdkd state list --json' run with the same account flags as the next line's command, and `
-        : `'cdkd state list --json' and `) +
+        ? `${proseQuoted(cdkdRemedy('cdkd state list', '--json'))} run with the same account flags as the next line's command, and `
+        : `${proseQuoted(cdkdRemedy('cdkd state list', '--json'))} and `) +
       (dashName
         ? `repair or remove the one whose stackName and region match by hand — this stack ` +
           `name begins with a '-' and could parse as an option in that position, so do not ` +

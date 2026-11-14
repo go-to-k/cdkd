@@ -4,6 +4,7 @@ import {
   DescribeGlobalClustersCommand,
   RemoveFromGlobalClusterCommand,
 } from '@aws-sdk/client-rds';
+import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -426,7 +427,7 @@ export async function detachFromGlobalCluster(
   if (cluster === undefined) return false;
   if (beforeDelete && cluster.DeletionProtection === true) {
     throw new GlobalClusterDetachError(
-      safeMsg`${physicalId} has deletion protection on, so cdkd did not detach it from global cluster ${globalClusterId}; turn it off (cdkd destroy --remove-protection does) and re-run`
+      safeMsg`${physicalId} has deletion protection on, so cdkd did not detach it from global cluster ${globalClusterId}; turn it off (${cdkdRemedy('cdkd destroy', '--remove-protection')} does) and re-run`
     );
   }
   const clusterArn = cluster.DBClusterArn;

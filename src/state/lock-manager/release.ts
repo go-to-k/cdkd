@@ -4,6 +4,7 @@
  * Moved verbatim out of `src/state/lock-manager.ts` (go-to-k/cdkd#5835); the
  * `LockManager` class keeps one `f.call(this, ...)` delegator per moved method.
  */
+import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import type { LockManager } from '../lock-manager.js';
 import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import type { LockInfo } from '../../types/state.js';
@@ -56,7 +57,7 @@ export async function doReleaseLock(
     this.logger.warn(
       `Not releasing the lock for stack ${stackRef(stackName, region)}: this process never learned which ` +
         `version of the lock it wrote, and could not confirm the one present is its own. It expires ` +
-        `on its own, or clear it with cdkd force-unlock.`
+        `on its own, or clear it with ${cdkdRemedy('cdkd force-unlock')}.`
     );
     return;
   }
@@ -74,7 +75,7 @@ export async function doReleaseLock(
           ? `Not releasing the lock for stack ${stackRef(stackName, region)}: this process could not ` +
               `confirm which version of the lock it last wrote, so it will not delete one it may not ` +
               `own. The lock clears on its own at ${new Date(held.info.expiresAt).toISOString()}, or ` +
-              `immediately with cdkd force-unlock.`
+              `immediately with ${cdkdRemedy('cdkd force-unlock')}.`
           : `Not releasing the lock for stack ${stackRef(stackName, region)}: it has been replaced since ` +
               `this process acquired it, so another cdkd process now holds it. Leaving it in place.`
       );
@@ -100,7 +101,7 @@ export async function doReleaseLock(
           `Not releasing the lock for stack ${stackRef(stackName, region)}: the conditional delete could ` +
             `not be evaluated here, and this process could not confirm the lock is still its own. ` +
             `Leaving it in place rather than risk deleting another process's lock. It expires on its ` +
-            `own, or clear it with cdkd force-unlock. If this repeats, grant s3:GetObject on the lock ` +
+            `own, or clear it with ${cdkdRemedy('cdkd force-unlock')}. If this repeats, grant s3:GetObject on the lock ` +
             `key -- a delete conditioned on an ETag requires it.`
         );
         return;

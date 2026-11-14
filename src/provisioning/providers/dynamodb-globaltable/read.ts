@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   DescribeTableCommand,
   DescribeTimeToLiveCommand,
@@ -226,7 +227,7 @@ export async function readUnsettled(
   }
   for (const entry of unnamed.filter((e) => e.ambiguous === true)) {
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS has entries cdkd cannot key by an identity, so convergence keeps the recorded ${entry.path} rather than risk removing an entry neither the record nor the template declares. Check it with 'cdkd drift'.`
+      safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS has entries cdkd cannot key by an identity, so convergence keeps the recorded ${entry.path} rather than risk removing an entry neither the record nor the template declares. Check it with ${proseQuoted(cdkdRemedy('cdkd drift'))}.`
     );
   }
   for (const entry of unnamed.filter((e) => e.ambiguous !== true)) {

@@ -21,7 +21,7 @@ import {
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { reportDeleteGuards } from '../delete-guard-scope.js';
@@ -365,7 +365,7 @@ Drop the record with: ${dropCommand}`
         `hand and drop the record.` +
         (interrupted
           ? ` The commands name the child stack record. Its destroy was interrupted: re-run ` +
-            `'cdkd deploy' to resume it, and drop the child record only if that cannot finish, ` +
+            safeMsg`${proseQuoted(cdkdRemedy('cdkd deploy'))} to resume it, and drop the child record only if that cannot finish, ` +
             `after deleting by hand what the child still holds (the inspect command with ` +
             `--show-nested lists every level; a child with nested stacks of its own has records ` +
             `under '<child>~<logicalId>' too, each needing the same drop).`

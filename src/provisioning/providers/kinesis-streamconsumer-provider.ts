@@ -9,6 +9,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
+import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   CdkdError,
@@ -379,7 +380,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AWS::Kinesis::StreamConsumer ConsumerName / StreamARN are immutable on AWS — there is no UpdateStreamConsumer API; every change registers a new consumer (RegisterStreamConsumer). Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+        `AWS::Kinesis::StreamConsumer ConsumerName / StreamARN are immutable on AWS — there is no UpdateStreamConsumer API; every change registers a new consumer (RegisterStreamConsumer). Re-deploy with ${deployReplaceCommand()}, or destroy + redeploy.`
       );
     }
 

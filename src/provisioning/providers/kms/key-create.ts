@@ -1,4 +1,5 @@
 import type { KMSProvider } from '../kms-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   createKeyLatch,
   keysCreatedByThisProcess,
@@ -193,7 +194,7 @@ export async function createKey(
       const aws = pasteableAwsCommand();
       const region = await this.regionArg(aws);
       this.logger.warn(
-        safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. If the deploy then FAILS (outside a rollback's re-create), its rollback journal records the key for \`cdkd rollback --revert-failed\` to schedule its deletion; otherwise schedule it yourself with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId}${region} --pending-window-in-days 7`.render()}`
+        safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. If the deploy then FAILS (outside a rollback's re-create), its rollback journal records the key for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')} to schedule its deletion; otherwise schedule it yourself with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId}${region} --pending-window-in-days 7`.render()}`
       );
     }
     const cause = error instanceof Error ? error : undefined;

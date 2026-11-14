@@ -26,6 +26,7 @@ const runtime = vi.hoisted(() => ({
 }));
 vi.mock('../../../src/local/custom-resource-runtime-gate.js', () => ({
   localCustomResourceRuntimeActive: runtime.active,
+  noteSentToEmulatorRuntime: vi.fn(),
 }));
 vi.mock('../../../src/local/custom-resource-runtime.js', () => ({
   invokeCustomResourceFunctionLocally: runtime.invoke,

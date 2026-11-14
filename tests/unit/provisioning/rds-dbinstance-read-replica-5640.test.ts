@@ -751,6 +751,23 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
         update({ ...REPLICA, SourceDBInstanceIdentifier: 'source-1' }, REPLICA)
       ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     });
+
+    it('a protected replica names the stateful replace flags in its deletion-protection advice (go-to-k/cdkd#6245)', async () => {
+      replicaSource = 'other-1';
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: unknown, region: unknown) => {
+        replicaSource = 'other-1';
+        return inner(command, region);
+      });
+      const error = await update(
+        { ...REPLICA, SourceDBInstanceIdentifier: 'source-1', DeletionProtection: true },
+        { ...REPLICA, DeletionProtection: true }
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(String((error as Error).message)).toContain(
+        'so cdkd deploy --replace --force-stateful-recreation alone will NOT succeed'
+      );
+    });
     it('refuses a source that is not a string before any call', async () => {
       await expect(
         update({ ...REPLICA, SourceDBInstanceIdentifier: { Ref: 'Db' } }, REPLICA)

@@ -175,7 +175,13 @@ code makes reach real AWS as you. They come from, in order:
 | Your default credential chain | Neither flag is given: `AWS_ACCESS_KEY_ID` and its pair, `AWS_PROFILE`, the shared credentials and config files, IAM Identity Center. |
 
 Under [`--aws-emulator`](#aws-emulator) the container gets the emulator's
-credentials and nothing else.
+credentials and nothing else. With a role flag from the table below, cdkd
+assumes the role in the emulator, and the container gets the role's emulator
+credentials instead, so the emulator checks the role's policies. The role's
+trust policy must allow the emulator's identity (see
+[Trusting yourself in the role](#trusting-yourself-in-the-role)). When it does
+not, cdkd warns and the container keeps the emulator's keys (`local run-task`
+and `local start-api` stop instead).
 
 Your credentials usually allow more than the
 deployed role does, which means a missing IAM permission goes unnoticed. To see
@@ -223,6 +229,10 @@ trust policy.
 Keep this change out of production stacks, because it lets that principal act
 as the function.
 
+The same statement works in [AWS Emulator](#aws-emulator): deployed there with
+`cdkd deploy --aws-emulator`, it trusts the emulator's own user, which signs
+cdkd's AssumeRole.
+
 ### When the role does not trust you
 
 When the role flag's AssumeRole is refused with AccessDenied, `local invoke`,
@@ -242,6 +252,13 @@ so a permission the role lacks fails locally. No CDK change is needed.
 
 `--emulate-role-via` names a role you can already assume, such as your
 developer role. It also takes precedence for an IAM user.
+
+Under [`--aws-emulator`](#aws-emulator), `local invoke`, `local start-api`,
+`local run-task` and `local invoke-agentcore` do not use
+`sts:GetFederationToken`. The emulator's own user has no IAM policies, so a
+session made from it would be allowed nothing. Let the role trust the emulator's
+identity instead, such as the account root
+(`arn:aws:iam::000000000000:root`), or pass `--emulate-role-via`.
 
 ```bash
 cdkd local invoke MyStack/Handler --from-state --assume-role \
@@ -431,7 +448,16 @@ It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
 | Case | What to do |
 | --- | --- |
 | The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
-| A queue URL from an environment variable (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Not rewritten; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+| A container env value that is exactly a real queue URL (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Rewritten to the same queue on the container's SQS endpoint, so the call lands in the emulator. |
+| Any other real queue URL (read at run time from SSM Parameter Store, Secrets Manager or the event, or inside a larger value) | Fails closed: the container's `/etc/hosts` maps the real SQS host names (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com`, `queue.amazonaws.com`) to `127.0.0.1`, so the connection is refused before a signed request leaves the machine. The hosts of every Region of the `aws`, `aws-cn` and `aws-us-gov` partitions are blocked, plus the container's `AWS_REGION` / `AWS_DEFAULT_REGION` and any Region a queue URL in its env names. |
+
+A container whose SQS is excepted to real AWS (mixed mode, `"real-aws"`) gets
+neither: its queue URLs reach real SQS. Not covered: the FIPS and dual-stack
+SQS hosts, which AWS does not return as queue URLs, a client given an explicit
+real `endpoint` in code, a literal real `AWS_ENDPOINT_URL_SQS` in the
+container's env, and a queue in a Region AWS opens after the cdk-local release
+in use (neither the container's own nor named by a queue URL in its env) whose
+URL the handler reads only at run time: its host is not blocked.
 
 To keep some services on real AWS while the rest goes to the emulator, see
 [AWS Emulator mixed mode](#aws-emulator-mixed-mode).
@@ -512,6 +538,15 @@ workload only:
 
 Every service you do not mark stays on the emulator, so a forgotten entry
 fails closed: the call reaches the emulator, never a shared real environment.
+For SQS, whose queue URL names the host the AWS SDK for JavaScript v3 sends
+to, a queue URL in the container's env is rewritten to the emulator's and
+every other real SQS host is unreachable from the container (see the SQS
+queue URL cases above).
+
+The startup line names where each exception is marked, by service and
+section (`DYNAMODB under Parameters (every workload); S3 under
+MyStack/PyFn`). `local invoke` and `local invoke-agentcore`, which run one
+workload, print that workload's exceptions only, once the target is resolved.
 
 #### What it is for
 
@@ -607,6 +642,7 @@ is refused with the SDK spelling (`AWS_ENDPOINT_URL_SECRETS_MANAGER`).
 | What | In mixed mode |
 | --- | --- |
 | A container that keeps an exception | Your real identity: the default chain, `--profile` or `--assume-role`, as env keys. For `run-task`, `--assume-task-role` assumes the role in real AWS and gives it only to a container that also excepts STS. |
+| A bare role flag (`--assume-role`, `--assume-role-auto`, `--assume-task-role`) | The role is assumed in real AWS, so cdkd reads it from the state record only when `Parameters` excepts IAM (`AWS_ENDPOINT_URL_IAM`). Otherwise the record's roles are the emulator's, and cdkd warns and does not assume one: pass the role's real ARN to the flag. |
 | A container that keeps none | The emulator's keys only, as with `--aws-emulator` alone: no real credential and no `--profile` credentials file. |
 | Calls to non-excepted services | Through a re-signing sidecar in the workload's network namespace (`AWS_ENDPOINT_URL=https://127.0.0.1:47297`), which drops the request's signature and signs it again with the emulator's keys. No real-key signature reaches the emulator. |
 | Calls to excepted services | Straight to real AWS: each gets its real regional endpoint in its own `AWS_ENDPOINT_URL_<SERVICE>`. |

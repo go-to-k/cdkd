@@ -1098,7 +1098,7 @@ describe('CustomResourceProvider', () => {
         () => '',
         (e: unknown) => String((e as Error).message)
       );
-      expect(message).not.toContain("'cdkd state orphan <stack> --stack-region <region>',");
+      expect(message).not.toContain("cdkd state orphan '<stack>' --stack-region '<region>',");
       if (label === 'create') {
         // A create reads the template (or, on a rollback, the journal's
         // recorded value): no record to repair, and on a first deploy no
@@ -1132,8 +1132,8 @@ describe('CustomResourceProvider', () => {
         // template removal, never the bare form.
         expect(message).toContain(
           'For a resource removed from the template, to give up on the delete and stop tracking ' +
-            "it, drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
-            "MyCustomResource', which drops only this record — never run it without --resource"
+            "it, drop the record with cdkd state orphan '<stack>' --stack-region '<region>' --resource " +
+            "MyCustomResource, which drops only this record — never run it without --resource"
         );
       }
     });
@@ -1150,8 +1150,8 @@ describe('CustomResourceProvider', () => {
       ).rejects.toThrow(
         // Region-scoped (go-to-k/cdkd#3996), and quoted rather than
         // backticked, which would run the command when pasted.
-        "re-run 'cdkd import', or drop the record with 'cdkd state orphan <stack> --stack-region " +
-          "<region>', which drops every record the stack still has in that region, not just this " +
+        "re-run 'cdkd import', or drop the record with cdkd state orphan '<stack>' --stack-region " +
+          "'<region>', which drops every record the stack still has in that region, not just this " +
           "one (add '--resource MyCustomResource' to drop only this one), to recover."
       );
     });

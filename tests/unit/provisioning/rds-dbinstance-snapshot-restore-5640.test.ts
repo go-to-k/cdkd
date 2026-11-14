@@ -866,6 +866,10 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
         DeletionProtection: true,
       }).catch((e: unknown) => e);
       expect(String((error as Error).message)).toMatch(/--no-deletion-protection/);
+      // A stateful type: the replacement needs --force-stateful-recreation (go-to-k/cdkd#6245).
+      expect(String((error as Error).message)).toContain(
+        'so cdkd deploy --replace --force-stateful-recreation alone will NOT succeed'
+      );
     });
 
     it('updates in place under an unchanged snapshot', async () => {

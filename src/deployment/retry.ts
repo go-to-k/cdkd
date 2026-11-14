@@ -22,6 +22,7 @@ import {
   retryClassificationText,
 } from './retryable-errors.js';
 import { displaySafe, safeMsg, UNRENDERABLE } from '../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import {
   carryCreatedBeforeFailure,
   hasCreatedBeforeFailure,
@@ -491,7 +492,7 @@ export async function withRetry<T>(
       if (replayMadeAnother) {
         try {
           opts.logger?.warn?.(
-            safeMsg`${shownId}: not retrying - a retried create made another resource instead of resuming the one an earlier attempt left behind, and only the latest is recorded for \`cdkd rollback --revert-failed\`. Find the earlier one and delete it by hand`
+            safeMsg`${shownId}: not retrying - a retried create made another resource instead of resuming the one an earlier attempt left behind, and only the latest is recorded for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}. Find the earlier one and delete it by hand`
           );
         } catch {
           // ignore -- the error below is what matters

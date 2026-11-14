@@ -16,7 +16,8 @@
  *   Step Functions endpoint, which runs the user's handlers and the waiter
  *   state machine locally too and forwards every other call to the emulator.
  * - Code: the function's code from the local cloud assembly
- *   ({@link synthesizedStacks}). Handler, runtime, layers come from the
+ *   ({@link synthesizedStacks}, and the nested templates below them,
+ *   go-to-k/cdkd#6261). Handler, runtime, layers come from the
  *   template; the environment, timeout and memory from the deployed function
  *   (`GetFunctionConfiguration` on the emulator), i.e. the resolved values.
  * - Container: `runDetached` applies the active `--aws-emulator` wiring — the
@@ -45,8 +46,10 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { pasteableCommand, withheldTargetClause } from '../utils/pasteable-command.js';
 import { getLogger } from '../utils/logger.js';
 import { synthesizedStacks } from '../synthesis/synthesized-stacks.js';
+import { withNestedStacks } from './custom-resource-nested-stacks.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { getCurrentStackName } from '../provisioning/resource-name.js';
@@ -58,6 +61,7 @@ import {
   customResourceStackName,
   localCustomResourceCommand,
   localCustomResourceRuntimeActive,
+  resetCustomResourceFailuresForTest,
   setLocalCustomResourceRuntimeEnabled,
 } from './custom-resource-runtime-gate.js';
 import { responsePresignClient } from '../provisioning/providers/custom-resource-response-endpoint.js';
@@ -109,6 +113,7 @@ let secondHopDisabled = false;
 /** Test seam: forget the cached Docker probe, the image checks and the once-only warnings. */
 export function resetLocalCustomResourceRuntimeForTest(): void {
   setLocalCustomResourceRuntimeEnabled(true);
+  resetCustomResourceFailuresForTest();
   dockerAvailable = undefined;
   runtimeImages.clear();
   warnedOnce.clear();
@@ -281,14 +286,46 @@ async function dockerIsAvailable(): Promise<boolean> {
 /**
  * The warning for a command that read no cloud assembly. Only a DESTROY gets
  * "run `cdkd destroy` from the app": for `cdkd rollback` (or anything else)
- * that remedy would delete the stack the user meant to keep.
+ * that remedy would delete the stack the user meant to keep. A destroy whose
+ * record holds custom resources is refused before it deletes anything
+ * (`destroy-runner/emulator-custom-resources.ts`, go-to-k/cdkd#6246), so the
+ * destroy wording is left for an entry the refusal does not read (a journaled
+ * orphan). `cdkd rollback` never reads the app,
+ * so its remedy is a deploy forward (go-to-k/cdkd#6247).
  */
-export function noAssemblyWarning(command: string | undefined): string {
+export function noAssemblyWarning(command: string | undefined, stackName?: string): string {
   const head =
     `This command did not synthesize the CDK app, so custom resource functions run in AWS ` +
     `Emulator's own Lambda runtime, which can fail.`;
+  // The top-level stack: a nested child's record is `<parent>~<logicalId>`,
+  // and only the parent is a stack of the app.
+  const topLevel = stackName?.split('~')[0];
+  const remedy = (verb: string): { clause: string; command: string } => {
+    const built = pasteableCommand(verb, [
+      topLevel === undefined || topLevel === ''
+        ? { hole: 'stack' }
+        : { value: topLevel, hole: 'stack', opts: { plainIdent: true } },
+    ]);
+    return {
+      clause: withheldTargetClause(built, 'stack', verb, "This stack's name"),
+      command: built.command,
+    };
+  };
   if (command === 'destroy' || command === 'state destroy') {
-    return `${head} Run \`cdkd destroy --aws-emulator\` from the app's directory to run them locally.`;
+    const destroy = remedy('cdkd destroy');
+    return (
+      `${head} Run the destroy from the app's directory to run them locally.${destroy.clause}` +
+      `\nRun from the app's directory: ${destroy.command}`
+    );
+  }
+  if (command === 'rollback') {
+    const deploy = remedy('cdkd deploy');
+    return (
+      `${head} cdkd rollback never reads the app, so a custom resource that fails here fails the ` +
+      `same way on every re-run: deploy forward instead, from the app's directory (Docker ` +
+      `running), which runs them locally.${deploy.clause}` +
+      `\nDeploy forward with: ${deploy.command}`
+    );
   }
   return `${head} Pass ${NO_LOCAL_CUSTOM_RESOURCES_FLAG} to silence this.`;
 }
@@ -343,11 +380,19 @@ export async function invokeCustomResourceFunctionLocally(
   const stacks = synthesizedStacks();
   if (stacks.length === 0) {
     // `cdkd state destroy`, `cdkd rollback`, or a destroy run without the app.
-    warnOnce('no-assembly', noAssemblyWarning(localCustomResourceCommand()));
+    warnOnce(
+      'no-assembly',
+      noAssemblyWarning(
+        localCustomResourceCommand(),
+        customResourceStackName() ?? getCurrentStackName()
+      )
+    );
     return undefined;
   }
   const choice = chooseServiceTokenFunction(
-    findServiceTokenFunctions(stacks, customResourceLogicalId),
+    // Nested stacks too (go-to-k/cdkd#6261): a child deploys and destroys as
+    // `<parent>~<logicalId>`, which is the name the scope below carries.
+    findServiceTokenFunctions(withNestedStacks(stacks), customResourceLogicalId),
     deployed,
     getCurrentStackName() ?? customResourceStackName()
   );
@@ -405,6 +450,29 @@ export function lambdaClientForRegion(
 }
 
 /**
+ * The function a `cr.Provider` framework container calls (#6213), resolved in
+ * the caller's OWN stack: its template entry is the one the first hop chose,
+ * so for a framework inside a nested stack this is the nested template, named
+ * `<parent>~<logicalId>` (go-to-k/cdkd#6261).
+ */
+export function chooseCallerStackFunction(
+  caller: LocalFunction,
+  logicalId: string,
+  deployed: { Handler?: string | undefined; Runtime?: string | undefined }
+): { lambda: ResolvedZipLambda } | { reason: string } {
+  const resources = caller.lambda.stack.template.Resources ?? {};
+  const resource = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+  if (resource === undefined) {
+    return { reason: 'its function was not found in the stack being deployed' };
+  }
+  return chooseServiceTokenFunction(
+    [{ stack: caller.lambda.stack, logicalId, resource }],
+    deployed,
+    caller.lambda.stack.stackName
+  );
+}
+
+/**
  * The `cr.Provider` second-hop endpoint (#6213), started once per process
  * with the first local event; `undefined` (calls go to the emulator as
  * before) unless the wiring is full emulator mode with its own keys, which a
@@ -447,18 +515,7 @@ function secondHopEndpoint(lambdaClient: LambdaClient): Promise<SecondHopEndpoin
             return undefined;
           }
         },
-        chooseFunction: (caller, logicalId, deployed) =>
-          chooseServiceTokenFunction(
-            [
-              {
-                stack: caller.lambda.stack,
-                logicalId,
-                resource: caller.lambda.stack.template.Resources![logicalId]!,
-              },
-            ],
-            deployed,
-            caller.lambda.stack.stackName
-          ),
+        chooseFunction: chooseCallerStackFunction,
         imageAvailable: (lambda) => runtimeImageAvailable(resolveRuntimeImage(lambda.runtime)),
         runLocally: async (target, event) =>
           runInContainer(

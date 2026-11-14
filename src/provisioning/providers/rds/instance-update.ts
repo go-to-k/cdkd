@@ -4,6 +4,7 @@ import {
   type DBInstance,
 } from '@aws-sdk/client-rds';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -254,7 +255,7 @@ export async function updateDBInstance(
           (String(previousProperties['DeletionProtection']) === 'true'
             ? protectedReplacementAdvice({
                 evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
-                replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                replaceFlags: deployReplaceCommand(true),
                 disable: {
                   before: 'aws rds modify-db-instance --db-instance-identifier',
                   identifier: physicalId,
@@ -263,7 +264,7 @@ export async function updateDBInstance(
                 },
               })
             : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
-              'cdkd deploy --replace --force-stateful-recreation (this deletes the instance ' +
+              `${deployReplaceCommand(true)} (this deletes the instance ` +
               'and its data). The replace flags apply to the WHOLE deploy, so run them with ' +
               'nothing else pending')
       )
@@ -358,7 +359,7 @@ export async function updateDBInstance(
             (String(previousProperties['DeletionProtection']) === 'true'
               ? protectedReplacementAdvice({
                   evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
-                  replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                  replaceFlags: deployReplaceCommand(true),
                   disable: {
                     before: 'aws rds modify-db-instance --db-instance-identifier',
                     identifier: physicalId,
@@ -367,7 +368,7 @@ export async function updateDBInstance(
                   },
                 })
               : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
-                'cdkd deploy --replace --force-stateful-recreation (this deletes the instance ' +
+                `${deployReplaceCommand(true)} (this deletes the instance ` +
                 'and its data). The replace flags apply to the WHOLE deploy, so run them with ' +
                 'nothing else pending')
         )
@@ -465,7 +466,7 @@ export async function updateDBInstance(
             (String(previousProperties['DeletionProtection']) === 'true'
               ? protectedReplacementAdvice({
                   evidence: "cdkd's properties for this DB instance carry DeletionProtection: true",
-                  replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                  replaceFlags: deployReplaceCommand(true),
                   disable: {
                     before: 'aws rds modify-db-instance --db-instance-identifier',
                     identifier: physicalId,
@@ -474,7 +475,7 @@ export async function updateDBInstance(
                   },
                 })
               : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
-                'cdkd deploy --replace --force-stateful-recreation to recreate it in the new zone ' +
+                `${deployReplaceCommand(true)} to recreate it in the new zone ` +
                 '(this deletes the instance and its data)')
         )
       );

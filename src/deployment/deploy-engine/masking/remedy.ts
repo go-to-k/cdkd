@@ -1,7 +1,13 @@
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
 type RedactedAttributeRead = import('../../intrinsic-function-resolver.js').RedactedAttributeRead;
 import { displayIdent, isPasteableIdent } from '../../../utils/display-safe.js';
-import { commandHole, pasteableCommand, shellQuote } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  commandHole,
+  pasteableCommand,
+  proseQuoted,
+  shellQuote,
+} from '../../../utils/pasteable-command.js';
 
 /**
  * The remedy clause of `refuseRedactedAttributeReads`'s import arm,
@@ -275,9 +281,14 @@ export function maskedRecordRemedyFor(
           `HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
           `the command is withheld: that is not a plain CloudFormation logical id, so a ` +
           `pasted cdkd import line could be reshaped by the shell or name a different ` +
-          `resource. Read the id from 'cdkd state show' and quote it yourself, in ` +
-          `cdkd import ${commandHole('stack')} --resource ` +
-          `${commandHole('id')}=${commandHole('physicalId')} --force.`
+          `resource. Read the id from ${proseQuoted(cdkdRemedy('cdkd state show'))} and quote it yourself, in ` +
+          `${
+            pasteableCommand('cdkd import', [
+              { hole: 'stack' },
+              { literal: `--resource ${commandHole('id')}=${commandHole('physicalId')}` },
+              { literal: '--force' },
+            ]).command
+          }.`
       );
     }
   }

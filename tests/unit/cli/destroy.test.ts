@@ -620,7 +620,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('Destroy completed with 1 resource error(s)');
     expect(message).toContain(
-      "'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record)"
+      "cdkd state orphan '<stack>' --stack-region '<region>' removes the stack's state in that region (every resource's record)"
     );
   });
 
@@ -673,7 +673,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // Region-scoped: a bare `cdkd state orphan <stack>` drops that name's
     // record in EVERY region (go-to-k/cdkd#3996).
     expect(message).toContain(
-      "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
+      "drop the records with cdkd state orphan '<stack>' --stack-region '<region>'."
     );
 
     // The run-level record must agree with the exit code — a skip-only run is

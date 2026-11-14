@@ -34,7 +34,12 @@
  * each update simply re-warns and re-falls-back.
  */
 
-import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import {
+  describeTypeWithThrottleRetry,
+  hasNoRegistrySchema,
+  isAwsEmulatorRegistryMiss,
+  reportAwsEmulatorRegistryMiss,
+} from './describe-type.js';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
@@ -106,6 +111,12 @@ export function getTopLevelWriteOnlyProperties(resourceType: string): Promise<Re
       // The lookup failed: drop the in-flight entry so a later call retries,
       // warn (once per failure), and fall back to an empty set for this call.
       writeOnlyPropertiesCache.delete(resourceType);
+      // Under --aws-emulator a type the emulator's registry lacks is no
+      // permission problem: one info line per run, not a warning per type (#6249).
+      if (isAwsEmulatorRegistryMiss(error)) {
+        reportAwsEmulatorRegistryMiss(resourceType, 'updates use a minimal patch');
+        return new Set<string>();
+      }
       const message = describeAwsFailure(error).detail;
       getLogger()
         .child('WriteOnlyProperties')

@@ -135,6 +135,8 @@
  * `Error` loses `instanceof` under this repo's compile target, which would make
  * {@link isInterruptedWaitError} silently answer `false`.
  */
+import { pasteableCommand } from '../utils/pasteable-command.js';
+
 export class InterruptedWaitError extends Error {
   constructor(what: string) {
     super(`${what} interrupted by user (SIGINT)`);
@@ -289,7 +291,7 @@ function armSharedSigintHandler(): void {
       // wider window than the one #2118 closed, and a different defect.
       process.stderr.write(
         '\nInterrupted.\n' +
-          'If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n'
+          `If the next run reports a stack lock, release it with: ${pasteableCommand('cdkd force-unlock', [{ hole: 'stack-name' }]).command}\n`
       );
       (interruptWatchTestSeam.forceQuit ?? ((code: number) => process.exit(code)))(130);
     }

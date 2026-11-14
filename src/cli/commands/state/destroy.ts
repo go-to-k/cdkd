@@ -1,4 +1,10 @@
-import { commandHole, plainOrDescribed } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  commandHole,
+  pasteableCommand,
+  plainOrDescribed,
+  proseQuoted,
+} from '../../../utils/pasteable-command.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import { Command, Option } from 'commander';
 import {
@@ -49,6 +55,7 @@ import {
   multipleRegionsError,
 } from './refs.js';
 import { setupStateBackend, renderRecovery, stackRegionOption } from './setup.js';
+import { refuseDestroyTargetsWithoutApp } from '../destroy-runner/emulator-custom-resources.js';
 
 /**
  * The stack whose recorded `terminationProtection` covers `stackName`
@@ -154,8 +161,8 @@ async function stateDestroyCommand(
       'cdkd state destroy no longer accepts --all: it destroyed every stack in the state ' +
         'bucket, which every CDK app deployed to this account shares, so one command ' +
         'reached across apps. Name each stack to destroy: ' +
-        `cdkd state destroy ${commandHole('stacks...')} (cdkd state list shows them), ` +
-        "or run cdkd destroy --all from the CDK app, which destroys only that app's top-level " +
+        `${pasteableCommand('cdkd state destroy', [{ hole: 'stacks...' }]).command} (${cdkdRemedy('cdkd state list')} shows them), ` +
+        `or run ${cdkdRemedy('cdkd destroy', '--all')} from the CDK app, which destroys only that app's top-level ` +
         "stacks (cdkd destroy '**' destroys its CDK Stage stacks too).",
       'STATE_DESTROY_ALL_REMOVED'
     );
@@ -183,7 +190,7 @@ async function stateDestroyCommand(
 
   if (stackArgs.length === 0) {
     throw new Error(
-      `Stack name is required. Usage: cdkd state destroy ${commandHole('stacks...')}`
+      `Stack name is required. Usage: ${pasteableCommand('cdkd state destroy', [{ hole: 'stacks...' }]).command}`
     );
   }
 
@@ -241,7 +248,7 @@ async function stateDestroyCommand(
       // cannot read as two entries of this list (go-to-k/cdkd#3179).
       throw new Error(
         `No state found for stack(s): ${missing.map(listedStackName).join(', ')}.\n` +
-          `Run 'cdkd state list' to see available stacks.`
+          `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
       );
     }
     const stackNames = stackArgs;
@@ -308,16 +315,22 @@ async function stateDestroyCommand(
     // Only for the records the loop below destroys (`stateDestroyTargets`).
     const crossPrefixCheck = { cache: new CrossPrefixGuard(setup.stateBackend) };
     if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
+    const customResourceTargets: Array<{ stackName: string; region: string }> = [];
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
-        void crossPrefixCheck.cache.full(
-          name,
-          ref.region ?? (await setup.regionFor(name)),
-          'prestart'
-        );
+        const targetRegion = ref.region ?? (await setup.regionFor(name));
+        void crossPrefixCheck.cache.full(name, targetRegion, 'prestart');
+        customResourceTargets.push({ stackName: name, region: targetRegion });
       }
     }
+    // go-to-k/cdkd#6246: under `--aws-emulator`, every target (and its nested
+    // stacks) is checked before the first one is touched.
+    await refuseDestroyTargetsWithoutApp(
+      customResourceTargets,
+      setup.stateBackend,
+      setup.awsClients
+    );
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
@@ -592,8 +605,8 @@ async function stateDestroyCommand(
       // from "command crashed" via PartialFailureError → exit code 2.
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-          `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry. ` +
-          `If the same resource keeps failing, 'cdkd state orphan <stack> --stack-region <region>' removes the stack's state in that region (every resource's record) without deleting AWS resources.`
+          `inspect ${pasteableCommand('cdkd state show', [{ hole: 'stack' }]).command} and re-run ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to retry. ` +
+          `If the same resource keeps failing, ${pasteableCommand('cdkd state orphan', [{ hole: 'stack' }, { flag: '--stack-region', hole: 'region' }]).command} removes the stack's state in that region (every resource's record) without deleting AWS resources.`
       );
     }
     if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
@@ -605,7 +618,7 @@ async function stateDestroyCommand(
       // tail of a run that destroyed every target must not report unfinished
       // work there is none of.
       throw new PartialFailureError(
-        `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd state destroy' to finish.`
+        `Destroy interrupted by Ctrl-C. State preserved — re-run ${proseQuoted(cdkdRemedy('cdkd state destroy'))} to finish.`
       );
     }
     if (totalSkipped > 0) {

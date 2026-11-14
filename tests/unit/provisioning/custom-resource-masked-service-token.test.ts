@@ -113,7 +113,7 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
       "ServiceToken for custom resource MaskedDependent is recorded in state as the redaction mask '***'"
     );
     expect(text).toContain('LEFT IN PLACE');
-    expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(text).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     // The restore remedy is bounded: a destroy deletes the backing Lambda in
     // the same run, after which the issue-#804 pre-check can only skip again.
     expect(text).toContain('helps only while that handler still exists');
@@ -242,7 +242,7 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
     );
     expect(text).toContain('LEFT IN PLACE');
     // Region-scoped, and scoped to that region's records (go-to-k/cdkd#3996).
-    expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(text).toContain("cdkd state orphan '<stack>' --stack-region '<region>'");
     expect(text).toContain('drops every record the stack still has in that region');
     expect(text).toContain('helps only while that handler still exists');
     expect(text).not.toContain('never run it without --resource');

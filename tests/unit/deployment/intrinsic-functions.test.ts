@@ -5369,9 +5369,10 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
   //  - ECS::Service `[ServiceArn, Cluster]`: Ref is the service ARN (FIRST
   //    segment). The SDK provider stores the bare ARN (pass-through); only a
   //    #614-routed instance stores the compound.
-  //  - S3Tables Namespace: its SDK provider ITSELF stores the compound, so
-  //    the trailing-segment extraction is load-bearing (Ref = namespace name).
-  //    Its sibling Table's Ref is the TableARN (issue #5316), pinned below.
+  //  - S3Tables Namespace: its SDK provider ITSELF stores the compound, and
+  //    CFn's Ref is that whole compound (measured, issue #6243 — not the
+  //    namespace name the docs state). Its sibling Table's Ref is the TableARN
+  //    (issue #5316), pinned below.
   it.each([
     [
       'AWS::ECS::Service',
@@ -5387,7 +5388,7 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     [
       'AWS::S3Tables::Namespace',
       'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics',
-      'analytics',
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics',
     ],
   ])(
     'Ref to %s returns the CFn Ref component of the compound physical id',

@@ -83,6 +83,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
   'src/deployment/intrinsic-resolver/support.ts',
   'src/deployment/intrinsic-resolver/ref-values.ts',
+  'src/deployment/intrinsic-resolver/ref-values/type-refs.ts',
   'src/deployment/intrinsic-resolver/context.ts',
   'src/deployment/intrinsic-resolver/context/log-twins.ts',
   'src/deployment/intrinsic-resolver/context/refusals.ts',

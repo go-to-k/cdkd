@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import {
@@ -14,6 +15,8 @@ import {
   refStateLookupFromResource,
   cfnRefValueFromPhysicalId,
   lacksRecordedTableArn,
+  lacksRecordedRefArn,
+  isPlaceholderArn,
   stringifyParameterForLog,
   isStructured,
 } from './support.js';
@@ -192,8 +195,30 @@ export async function resolveRef(
             `usable TableARN for this S3 Tables table (a cdkd older than v0.201.0 recorded none), ` +
             `and CloudFormation's Ref of a table is its TableARN, which its physical id does not ` +
             `contain. No usable one could be read from AWS either. If the state records none, ` +
-            `run 'cdkd deploy' with permission to call s3tables:GetTable so cdkd records it; if ` +
-            `it records a value that is not the table's ARN, re-import the table with 'cdkd import'.`
+            `run ${proseQuoted(cdkdRemedy('cdkd deploy'))} with permission to call s3tables:GetTable so cdkd records it; if ` +
+            `it records a value that is not the table's ARN, re-import the table with ${proseQuoted(cdkdRemedy('cdkd import'))}.`
+        )
+      );
+    }
+    // go-to-k/cdkd#6243: a GraphQL API / vector bucket's `Ref` is its ARN
+    // attribute, which a record imported before `cdkd import` recorded it
+    // lacks; its physical id is the bare id / name. Served as `Fn::GetAtt` of
+    // the ARN is: the healer re-reads a vector bucket's from AWS, a GraphQL
+    // API's is built from the deploy's account and region. Refused otherwise.
+    const healedAttribute = lacksRecordedRefArn(resource);
+    if (healedAttribute !== undefined) {
+      // An unhealed miss is refused inside: an `*Arn` name never takes the
+      // physical-id fallback when that id is not ARN-shaped.
+      const arn = await resolveGetAtt(resolver, [logicalId, healedAttribute], context);
+      if (typeof arn === 'string' && arn.startsWith('arn:') && !isPlaceholderArn(arn)) {
+        return arn;
+      }
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: the Ref value ` +
+            `CloudFormation returns for this resource is its ${healedAttribute}, which its physical ` +
+            `id is not, and the value read for it is not a usable ARN. Re-import the resource ` +
+            `with 'cdkd import'.`
         )
       );
     }
@@ -382,11 +407,12 @@ export async function resolveRef(
  *
  * The `REF_RETURNS_SEGMENT_AFTER_PIPE` types store a COMPOUND physical
  * id `<parentId>|<ref>` while CFn's `Ref` returns only the trailing `<ref>`
- * segment. Most are compound because Cloud Control provisions them (either
+ * segment. They are compound because Cloud Control provisions them (either
  * they have no SDK provider, or the #614 SDK-unwired routing sent an
- * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
- * — `AWS::S3Tables::Namespace` — are compound because their own SDK provider
- * packs the segments. (`AWS::Glue::Table` builds one too, but
+ * SDK-backed type through CC) and its primaryIdentifier is compound.
+ * (`AWS::S3Tables::Namespace`, whose own SDK provider packs the segments, was
+ * one until issue #6243 measured its `Ref` as the whole composite.
+ * `AWS::Glue::Table` builds one too, but
  * takes `glueTableRefFromPhysicalId`: either of its segments may
  * contain `|`.) The Set's header records the split per type; examples:
  *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is

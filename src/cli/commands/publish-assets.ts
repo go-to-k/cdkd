@@ -1,4 +1,5 @@
 import { Option, Command } from 'commander';
+import { parsePositiveIntegerOption } from '../arg-parser.js';
 import {
   appOptions,
   commonOptions,
@@ -47,6 +48,8 @@ import {
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { safeStringify } from '../../utils/aws-failure-text.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 interface PublishAssetsOptions {
   app?: string;
@@ -208,7 +211,7 @@ async function publishAssetsCommand(
     } catch {
       logger.info(
         'No cdkd state bucket found — publishing to the asset-manifest destinations ' +
-          "(CDK bootstrap storage) verbatim. Run 'cdkd bootstrap' to opt into cdkd-owned " +
+          safeMsg`(CDK bootstrap storage) verbatim. Run ${proseQuoted(cdkdRemedy('cdkd bootstrap'))} to opt into cdkd-owned ` +
           "asset storage that 'cdk gc' never touches."
       );
       markerAccess = null;
@@ -439,12 +442,12 @@ export function createPublishAssetsCommand(): Command {
         'Maximum concurrent asset publish operations'
       )
         .default(8)
-        .argParser((value) => parseInt(value, 10))
+        .argParser(parsePositiveIntegerOption)
     )
     .addOption(
       new Option('--image-build-concurrency <number>', 'Maximum concurrent Docker image builds')
         .default(4)
-        .argParser((value) => parseInt(value, 10))
+        .argParser(parsePositiveIntegerOption)
     )
     .addOption(useCdkBootstrapAssetsOption)
     .action(withErrorHandling(publishAssetsCommand));

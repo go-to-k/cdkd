@@ -7,6 +7,22 @@ import {
   canonicalizeRoute53QueryName,
   segmentAfterAnchor,
 } from '../../provisioning/composite-id.js';
+import {
+  s3TablesTableRefFromPhysicalId,
+  s3TablesNamespaceRefFromPhysicalId,
+  vpcGatewayAttachmentRefFromPhysicalId,
+  isPlaceholderArn,
+} from './ref-values/type-refs.js';
+
+export {
+  s3TablesTableRefFromPhysicalId,
+  lacksRecordedTableArn,
+  s3TablesNamespaceRefFromPhysicalId,
+  vpcGatewayAttachmentRefFromPhysicalId,
+  lacksRecordedRefArn,
+  REF_ARN_ATTRIBUTE_HEALED,
+  isPlaceholderArn,
+} from './ref-values/type-refs.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -35,9 +51,11 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *    packs the segments because its CRUD calls need all of them while
  *    `ResourceProvider`'s read-side methods receive a single string. Here the
  *    extraction is load-bearing on the ORDINARY deploy path and there is no
- *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` is one.
- *    (`::Table` was too, until issue #5316 measured its `Ref` as the
- *    TableARN; it now takes {@link s3TablesTableRefFromPhysicalId}.) `AWS::Glue::Table` was too (issue #1667) until its table name was
+ *    pipe-free variant to fall through. No type is in this group today.
+ *    `AWS::S3Tables::Namespace` was, until issue #6243 measured its `Ref` as
+ *    the whole composite ({@link s3TablesNamespaceRefFromPhysicalId}), and
+ *    `::Table` until issue #5316 measured its `Ref` as the TableARN
+ *    ({@link s3TablesTableRefFromPhysicalId}). `AWS::Glue::Table` was too (issue #1667) until its table name was
  *    allowed to contain `|` (issue #1672); it now takes
  *    {@link glueTableRefFromPhysicalId}.
  *
@@ -92,11 +110,13 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *      contract to honor, the raw physical id is the least-surprising value.
  *      The 2026-07-03 cross-family audit of every SDK-registered compound-id
  *      type also excluded EC2::Route ("the ID of the route") /
- *      EC2::VPCGatewayAttachment ("the ID of the VPC gateway attachment") /
- *      Lambda::EventInvokeConfig ("a unique identifier") — all synthetic CFn
- *      ids with no bare-segment contract and no consuming API — and
- *      confirmed WAFv2::WebACL's `Ref` IS the pipe-joined compound (see the
- *      special case in {@link cfnRefValueFromPhysicalId}).
+ *      Lambda::EventInvokeConfig ("a unique identifier") — both measured
+ *      (issue #6243) to return cdkd's own composite, `<routeTableId>|<cidr>`
+ *      and `<functionName>|<qualifier>` — and confirmed WAFv2::WebACL's `Ref`
+ *      IS the pipe-joined compound (see the special case in
+ *      {@link cfnRefValueFromPhysicalId}). It excluded
+ *      EC2::VPCGatewayAttachment too, as a synthetic id; measured, it is
+ *      `<IGW|VGW>|<vpcId>` ({@link vpcGatewayAttachmentRefFromPhysicalId}).
  *   4. Types whose primaryIdentifier puts the `Ref` component FIRST
  *      (`[<refId>, <parentId>]` — e.g. ApiGateway::Deployment /
  *      ::DocumentationPart) belong in
@@ -110,10 +130,12 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * producing one. `AWS::Glue::Table` was the one this Set could fix and was
  * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue
  * #1672), because its table name may contain `|`. The types deliberately NOT in either Set, with the reason:
- *   - correct to exclude, `Ref` is a synthetic / AWS-generated id no segment
- *     reconstructs: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of the
- *     network ACL entry"), EC2::Route, EC2::VPCGatewayAttachment,
- *     Lambda::EventInvokeConfig;
+ *   - correct to exclude: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of
+ *     the network ACL entry"), EC2::Route, Lambda::EventInvokeConfig — for
+ *     Method / Route / EventInvokeConfig the measured `Ref` IS cdkd's
+ *     composite (issue #6243). EC2::VPCGatewayAttachment was listed here
+ *     too; its measured `Ref` is `<IGW|VGW>|<vpcId>`, built by
+ *     {@link vpcGatewayAttachmentRefFromPhysicalId} (issue #6243);
  *   - correct to exclude, the docs page documents NO `Ref` return value at all:
  *     EC2::SecurityGroupIngress (and its Egress sibling, same id shape), and
  *     Lambda::Permission — cdkd stores the bare statement id, but state written
@@ -121,8 +143,6 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *     and with no documented contract the raw id is the least-surprising value
  *     (the same call the maintenance note above already records for it);
  *   - already correct, no change needed: EC2::EIP (before-first-pipe),
- *     S3Tables::Namespace (added by the 2026-07-03 close-out audit; its
- *     sibling ::Table was later measured to return the TableARN, issue #5316),
  *     ECS::Service (before-first-pipe; stores the bare ARN on the SDK path);
  *   - was KNOWN WRONG and not fixable by a Set entry; FIXED by issue #1681,
  *     each with a mechanism of its own rather than an entry here:
@@ -157,15 +177,12 @@ export const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
   'AWS::AppConfig::Deployment',
-  // S3Tables Namespace (cross-family close-out audit, 2026-07-03): its SDK
-  // provider ITSELF stores the compound `<tableBucketARN>|<namespace>`, and
-  // its CC primaryIdentifier is the same pair, so the extraction is
-  // load-bearing on both routes. The TableBucketARN contains no pipes, so
-  // after-LAST-pipe is safe. Docs: Namespace `Ref` returns the namespace name.
-  // `AWS::S3Tables::Table` is NOT here: its `Ref` is the TableARN, which no
-  // segment of the composite holds (issue #5316, measured against
-  // CloudFormation) — {@link s3TablesTableRefFromPhysicalId}.
-  'AWS::S3Tables::Namespace',
+  // `AWS::S3Tables::Namespace` is NOT here, though the 2026-07-03 close-out
+  // audit added it on the docs' "Ref returns the namespace name": real
+  // CloudFormation returns the whole `<tableBucketARN>|<namespace>` (measured,
+  // issue #6243) — {@link s3TablesNamespaceRefFromPhysicalId}. Nor is
+  // `AWS::S3Tables::Table`: its `Ref` is the TableARN, which no segment of the
+  // composite holds (issue #5316) — {@link s3TablesTableRefFromPhysicalId}.
   // AWS::Glue::Table is NOT here, though its id is `<databaseName>|<tableName>`
   // and its `Ref` is the table name: a table name may itself contain `|`, so
   // after-LAST-pipe would return only its tail. It takes
@@ -268,7 +285,7 @@ export const REF_RETURNS_SEGMENT_AT_INDEX = new Map<string, { arity: number; ind
 ]);
 
 /**
- * Compound-id types whose CFn `Ref` is the resource ARN, recovered from an ARN
+ * Types whose CFn `Ref` is the resource ARN, recovered from an ARN
  * ATTRIBUTE the provider recorded at create time (issue #1681).
  *
  * The three `AWS::AppSync::*` child types pack a compound physical id
@@ -296,6 +313,12 @@ export const REF_RETURNS_ARN_FROM_STATE = new Map<string, readonly string[]>([
   ['AWS::AppSync::ApiKey', ['Arn']],
   ['AWS::AppSync::DataSource', ['DataSourceArn']],
   ['AWS::AppSync::Resolver', ['ResolverArn']],
+  // Not compound, but the same recovery (issue #6243, measured against
+  // CloudFormation): the SDK provider's physical id is the API id / the bucket
+  // name, while `Ref` returns the ARN each provider records at create and
+  // import.
+  ['AWS::AppSync::GraphQLApi', ['Arn']],
+  ['AWS::S3Vectors::VectorBucket', ['VectorBucketArn']],
 ]);
 
 /**
@@ -615,73 +638,6 @@ export function recordSetRefFromPhysicalId(
 }
 
 /**
- * The `Ref` value of an `AWS::S3Tables::Table` — its TableARN, the value
- * CloudFormation returns (measured with a CloudFormation stack, us-east-1,
- * 2026-10-26: `Ref` equals `Fn::GetAtt TableARN` and stays unchanged across a
- * `TableName` and a `Namespace` change; issue #5316).
- *
- * - A pipe-free physical id IS the TableARN: Cloud Control's primaryIdentifier
- *   for the type is the bare `TableARN`, so a #614-routed table (IcebergMetadata
- *   and friends) records it, as does `S3TablesProvider.importTable` for one.
- *   Returned as is, without reading state.
- * - cdkd's SDK composite `<tableBucketARN>|<namespace>|<tableName>` holds no
- *   segment of the ARN (it ends in a table id AWS mints), so the ARN comes from
- *   the `TableARN` attribute every SDK create (since go-to-k/cdkd#739) and
- *   every import records. A recorded value that is not an ARN, or carries a
- *   `|`, is not used. A record with NO `TableARN` (a table created before
- *   #739) does not reach here from the deploy-time resolver: `resolveRef`
- *   reads it as `Fn::GetAtt TableARN`, whose healer re-reads it from AWS.
- * - Otherwise a record with no usable `TableARN` falls back to the raw
- *   composite id, as the {@link REF_RETURNS_ARN_FROM_STATE} types do, never to
- *   the table name: a name is no value CloudFormation's `Ref` returns, and it
- *   would pass every reader that rejects the composite.
- *
- * A MASKED `TableARN` follows the Glue rule ({@link glueTableRefFromPhysicalId}):
- * a caller with a redaction bag gets the redacted read reported, one without
- * gets the mask back.
- */
-export function s3TablesTableRefFromPhysicalId(
-  physicalId: string,
-  stateLookup?: RefStateLookup
-): string {
-  if (!physicalId.includes(COMPOSITE_ID_SEPARATOR) || !stateLookup) return physicalId;
-  const tableArn = stateLookup(['TableARN']);
-  if (tableArn === undefined) return physicalId;
-  if (carriesSecretMask(tableArn)) return tableArn;
-  return tableArn.startsWith('arn:') && !tableArn.includes(COMPOSITE_ID_SEPARATOR)
-    ? tableArn
-    : physicalId;
-}
-
-/**
- * Is `resource` an SDK-routed `AWS::S3Tables::Table` (its physical id the
- * `<tableBucketARN>|<namespace>|<name>` composite) with no USABLE `TableARN`
- * recorded in either bag (go-to-k/cdkd#5316)? Usable is what
- * {@link s3TablesTableRefFromPhysicalId} would serve: a pipe-free `arn:`
- * string. A masked value counts as recorded, so it keeps that helper's
- * redaction handling.
- */
-export function lacksRecordedTableArn(resource: {
-  resourceType: string;
-  physicalId: string;
-  properties?: Record<string, unknown>;
-  attributes?: Record<string, unknown>;
-}): boolean {
-  if (resource.resourceType !== 'AWS::S3Tables::Table') return false;
-  if (!resource.physicalId.includes(COMPOSITE_ID_SEPARATOR)) return false;
-  const recorded = (bag: Record<string, unknown> | undefined): boolean => {
-    if (bag === undefined || !Object.hasOwn(bag, 'TableARN')) return false;
-    const value = bag['TableARN'];
-    return (
-      typeof value === 'string' &&
-      (carriesSecretMask(value) ||
-        (value.startsWith('arn:') && !value.includes(COMPOSITE_ID_SEPARATOR)))
-    );
-  };
-  return !recorded(resource.properties) && !recorded(resource.attributes);
-}
-
-/**
  * Resolve the value CloudFormation's `Ref` returns for a resource, given its
  * type and cdkd-stored physical id. Pure function shared by the deploy-time
  * resolver (`resolveRefValue` in `refs.ts`) and the
@@ -707,6 +663,12 @@ export function cfnRefValueFromPhysicalId(
   // the helper for the two routes' physical ids.
   if (resourceType === 'AWS::S3Tables::Table') {
     return s3TablesTableRefFromPhysicalId(physicalId, stateLookup);
+  }
+  if (resourceType === 'AWS::S3Tables::Namespace') {
+    return s3TablesNamespaceRefFromPhysicalId(physicalId);
+  }
+  if (resourceType === 'AWS::EC2::VPCGatewayAttachment') {
+    return vpcGatewayAttachmentRefFromPhysicalId(physicalId);
   }
   if (resourceType === 'AWS::AppSync::GraphQLSchema') {
     return graphQLSchemaCfnId(physicalId);
@@ -836,7 +798,8 @@ export function cfnRefValueFromPhysicalId(
   const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resourceType);
   if (arnAttributeKeys && stateLookup) {
     // The AppSync child types, whose `Ref` is an ARN no segment of the compound
-    // id reconstructs. Falls through to the raw id when the attribute is absent
+    // id reconstructs, and the two non-compound types whose id is a bare name
+    // or id (issue #6243; `resolveRef` heals a record lacking the ARN first). Falls through to the raw id when the attribute is absent
     // (an imported child), same as the recoveries above.
     const arn = stateLookup(arnAttributeKeys);
     // ...and when the recorded value is a PLACEHOLDER rather than an ARN. Every
@@ -853,18 +816,6 @@ export function cfnRefValueFromPhysicalId(
     }
   }
   return physicalId;
-}
-
-/**
- * True for an ARN carrying a wildcard in its region or account position — the
- * shape cdkd's AppSync provider recorded before issue #1681. Matched
- * positionally (fields 3 and 4 of `arn:<partition>:<service>:<region>:<account>`)
- * rather than by substring, so a legitimate ARN whose RESOURCE segment contains
- * `*` (an IAM policy resource pattern, an S3 key prefix) is never rejected.
- */
-export function isPlaceholderArn(arn: string): boolean {
-  const fields = arn.split(':');
-  return fields.length >= 5 && (fields[3] === '*' || fields[4] === '*');
 }
 
 /**
