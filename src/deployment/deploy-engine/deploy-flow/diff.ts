@@ -23,6 +23,7 @@ export async function calculateDeployDiff(
     parameterValues,
     conditions,
     clock,
+    forcedNestedChildRuns,
   }: {
     stackName: string;
     currentState: StackState;
@@ -30,6 +31,8 @@ export async function calculateDeployDiff(
     parameterValues: Record<string, unknown>;
     conditions: Record<string, boolean>;
     clock: PhaseClock;
+    /** go-to-k/cdkd#6282: see `DiffCalculator.calculateDiff`'s parameter. */
+    forcedNestedChildRuns?: ReadonlySet<string> | undefined;
   }
 ) {
   // 5. Calculate diff
@@ -188,7 +191,8 @@ export async function calculateDeployDiff(
         engine.recordedImports,
         engine.stateBackend
       ),
-    }
+    },
+    forcedNestedChildRuns
   );
   return { diffResolverContext, maskedInputs, changes };
 }

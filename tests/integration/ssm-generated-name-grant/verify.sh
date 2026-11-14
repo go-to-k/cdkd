@@ -11,14 +11,21 @@
 # deploy re-spells it `<name>` (SSM stores a one-level `/x` as `x`, so it is
 # the same parameter) and updates every dependent holding the old Ref.
 #
+# go-to-k/cdkd#6282: the same pair inside a nested stack whose template the
+# redeploy leaves unchanged. The parent's first deploy by this build reads its
+# nested children's records once, updates the nested stack so the child
+# re-spells its record, and marks the parent record (`nestedSsmNamesChecked`).
+#
 # Phases:
 #   0. Deploy with the previous release (@cdkd/cli@${OLD_CDKD_VERSION}), which
 #      still generates `/<name>`: the pre-fix record.
 #   1. Redeploy with this build. The record is re-spelled `<name>`, and the
-#      function's PARAM_NAME and the Ref output follow it.
-#   2. Functional: invoking the function reads the value (not AccessDenied),
-#      and the parameter name has no leading slash.
-#   3. Destroy + assert the parameter, the function and the state are gone.
+#      function's PARAM_NAME and the Ref output follow it; the nested child's
+#      record, grant and PARAM_NAME too, and the parent record is marked.
+#   1b. Redeploy again: no change, nothing re-spelled, no nested update.
+#   2. Functional: invoking each function reads its value (not AccessDenied),
+#      and the parameter names have no leading slash.
+#   3. Destroy + assert the parameters, the functions and the states are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -64,6 +71,7 @@ STACK="CdkdSsmGeneratedNameGrantExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_VALUE="cdkd-6272-value"
+EXPECTED_CHILD_VALUE="cdkd-6282-value"
 # The last release that generates `/<name>` (go-to-k/cdkd#6272 shipped after it).
 OLD_CDKD_VERSION="0.350.2"
 OLD_TMPDIR=""
@@ -76,6 +84,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 FUNCTION_NAME=""
 PARAM_NAME=""
+CHILD_STACK=""
+CHILD_KEY=""
+CHILD_FUNCTION_NAME=""
+CHILD_PARAM_NAME=""
 INVOKE_OUT="$(mktemp)"
 
 sweep_log_groups() {
@@ -101,6 +113,14 @@ cleanup() {
         --query 'Parameters[].Name' --output text 2>/dev/null); do
         aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1 || true
       done
+      # The nested pair's names, when a deploy recorded them (go-to-k/cdkd#6282).
+      if [ -n "${CHILD_PARAM_NAME:-}" ]; then
+        aws ssm delete-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+      fi
+      if [ -n "${CHILD_FUNCTION_NAME:-}" ]; then
+        aws logs delete-log-group --log-group-name "/aws/lambda/${CHILD_FUNCTION_NAME}" \
+          --region "${REGION}" >/dev/null 2>&1 || true
+      fi
       sweep_log_groups
       ;;
     *) echo "    WARN: teardown sweep refused a stack scope outside CdkdSsmGeneratedNameGrant*: '${STACK:-<empty>}'" >&2 ;;
@@ -108,6 +128,13 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # The nested child's record and lock (go-to-k/cdkd#6282), under `<stack>~<id>`.
+    case "${STACK}" in
+      CdkdSsmGeneratedNameGrant?*)
+        aws s3 rm "s3://${STATE_BUCKET}/cdkd/" --recursive --exclude '*' \
+          --include "${STACK}~*" >/dev/null 2>&1 || true
+        ;;
+    esac
   fi
   rm -f "${INVOKE_OUT}"
   if [ -n "${DEPLOY_LOG:-}" ]; then
@@ -194,6 +221,38 @@ if ! grant_names_double_slash "${STATE}"; then
 fi
 echo "    OK: premise: the previous release's grant names parameter//<name>"
 
+# The nested child's pre-fix record (go-to-k/cdkd#6282).
+NESTED_ID="$(jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::CloudFormation::Stack") | .key' <<<"${STATE}")"
+if [ -z "${NESTED_ID}" ]; then
+  echo "FAIL: premise: the parent record holds no nested stack row" >&2
+  exit 1
+fi
+CHILD_STACK="${STACK}~${NESTED_ID}"
+CHILD_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
+child_param_of() {
+  jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .value.physicalId // empty' <<<"$1"
+}
+CHILD_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" -)"
+OLD_CHILD_PARAM_NAME="$(child_param_of "${CHILD_STATE}")"
+case "${OLD_CHILD_PARAM_NAME}" in
+  /*/*|"")
+    echo "FAIL: premise: the previous release recorded the nested '${OLD_CHILD_PARAM_NAME}', not a one-level /<name>" >&2
+    exit 1
+    ;;
+  /*) echo "    OK: premise: the previous release recorded the nested ${OLD_CHILD_PARAM_NAME}" ;;
+  *)
+    echo "FAIL: premise: the previous release recorded the nested '${OLD_CHILD_PARAM_NAME}' without a leading slash" >&2
+    exit 1
+    ;;
+esac
+CHILD_PARAM_NAME="${OLD_CHILD_PARAM_NAME}"
+CHILD_FUNCTION_NAME="$(jq -r '.outputs.FunctionName // empty' <<<"${CHILD_STATE}")"
+if ! grant_names_double_slash "${CHILD_STATE}"; then
+  echo "FAIL: premise: the previous release's nested grant policy does not name parameter//<name>" >&2
+  exit 1
+fi
+echo "    OK: premise: the previous release's nested grant names parameter//<name>"
+
 # --- Phase 1: redeploy with this build ---------------------------------
 echo "==> Phase 1: redeploy with this build (re-spells the record, #6274)"
 DEPLOY_LOG="$(mktemp)"
@@ -229,12 +288,49 @@ if grant_names_double_slash "${STATE}"; then
 fi
 echo "    OK: the record, the grant policy and the function's PARAM_NAME now read ${PARAM_NAME}"
 
+# go-to-k/cdkd#6282: the nested template is unchanged, so only the parent's
+# one-time check of its children updates the nested stack.
+if ! grep -q 'go-to-k/cdkd#6282' "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy did not report updating the nested stack to re-spell its record (#6282)" >&2
+  exit 1
+fi
+if [ "$(jq -r '.nestedSsmNamesChecked // empty' <<<"${STATE}")" != "true" ]; then
+  echo "FAIL: the parent record does not carry nestedSsmNamesChecked after the redeploy (#6282)" >&2
+  exit 1
+fi
+CHILD_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" -)"
+CHILD_PARAM_NAME="$(child_param_of "${CHILD_STATE}")"
+CHILD_FUNCTION_NAME="$(jq -r '.outputs.FunctionName // empty' <<<"${CHILD_STATE}")"
+if [ "${CHILD_PARAM_NAME}" != "${OLD_CHILD_PARAM_NAME#/}" ]; then
+  echo "FAIL: the nested record holds '${CHILD_PARAM_NAME}', not ${OLD_CHILD_PARAM_NAME} re-spelled without its slash (#6282)" >&2
+  exit 1
+fi
+CHILD_ENV_NAME="$(aws lambda get-function-configuration --function-name "${CHILD_FUNCTION_NAME}" --region "${REGION}" \
+  --query 'Environment.Variables.PARAM_NAME' --output text)"
+if [ "${CHILD_ENV_NAME}" != "${CHILD_PARAM_NAME}" ]; then
+  echo "FAIL: the nested function's PARAM_NAME '${CHILD_ENV_NAME}' did not follow '${CHILD_PARAM_NAME}' (#6282)" >&2
+  exit 1
+fi
+if grant_names_double_slash "${CHILD_STATE}"; then
+  echo "FAIL: the nested grant policy still names parameter//<name> after the redeploy (#6282)" >&2
+  exit 1
+fi
+echo "    OK: the nested record, grant and PARAM_NAME now read ${CHILD_PARAM_NAME}; the parent is marked"
+
 echo "==> Phase 1b: redeploy again: the record is settled, nothing to re-spell"
 : > "${DEPLOY_LOG}"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 if grep -q 'go-to-k/cdkd#6274' "${DEPLOY_LOG}"; then
   echo "FAIL: the settled record was re-spelled again (#6274)" >&2
+  exit 1
+fi
+if grep -q 'go-to-k/cdkd#6282' "${DEPLOY_LOG}"; then
+  echo "FAIL: the marked parent updated its nested stack again (#6282)" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.nestedSsmNamesChecked // empty')" != "true" ]; then
+  echo "FAIL: the parent record lost nestedSsmNamesChecked on the next deploy (#6282)" >&2
   exit 1
 fi
 if ! grep -q 'No changes detected' "${DEPLOY_LOG}"; then
@@ -253,34 +349,38 @@ fi
 
 # A new role's inline policy can take a few seconds to apply: retry an
 # AccessDenied for about a minute before calling it the #6272 grant.
-BODY=""
-for attempt in 1 2 3 4 5 6 7; do
-  STATUS="$(aws lambda invoke --function-name "${FUNCTION_NAME}" --region "${REGION}" \
-    --cli-binary-format raw-in-base64-out "${INVOKE_OUT}" --query 'StatusCode' --output text)" \
-    || { echo "FAIL: aws lambda invoke ${FUNCTION_NAME} failed" >&2; exit 1; }
-  if [ "${STATUS}" != "200" ]; then
-    echo "FAIL: invoke returned StatusCode ${STATUS}, expected 200" >&2
+assert_reads() { # usage: assert_reads <function> <expected value> <parameter name> <issue>
+  local body="" status attempt
+  for attempt in 1 2 3 4 5 6 7; do
+    status="$(aws lambda invoke --function-name "$1" --region "${REGION}" \
+      --cli-binary-format raw-in-base64-out "${INVOKE_OUT}" --query 'StatusCode' --output text)" \
+      || { echo "FAIL: aws lambda invoke $1 failed" >&2; exit 1; }
+    if [ "${status}" != "200" ]; then
+      echo "FAIL: invoke of $1 returned StatusCode ${status}, expected 200" >&2
+      exit 1
+    fi
+    body="$(cat "${INVOKE_OUT}")"
+    if ! grep -q 'AccessDenied' <<<"${body}"; then
+      break
+    fi
+    echo "    attempt ${attempt}: AccessDenied, retrying in 10s"
+    sleep 10
+  done
+  if [ "$(jq -r '.ok // empty' <<<"${body}")" != "$2" ]; then
+    echo "FAIL: $1 did not read its parameter through grantRead ($4); got: ${body}" >&2
     exit 1
   fi
-  BODY="$(cat "${INVOKE_OUT}")"
-  if ! grep -q 'AccessDenied' <<<"${BODY}"; then
-    break
-  fi
-  echo "    attempt ${attempt}: AccessDenied, retrying in 10s"
-  sleep 10
-done
-if [ "$(jq -r '.ok // empty' <<<"${BODY}")" != "${EXPECTED_VALUE}" ]; then
-  echo "FAIL: the function did not read its parameter through grantRead (#6272); got: ${BODY}" >&2
-  exit 1
-fi
-echo "    OK: the function read '${EXPECTED_VALUE}'"
-case "${PARAM_NAME}" in
-  /*)
-    echo "FAIL: the generated parameter name '${PARAM_NAME}' starts with '/' (#6272): CDK grants parameter//<name>" >&2
-    exit 1
-    ;;
-esac
-echo "    OK: the generated name has no leading slash"
+  echo "    OK: $1 read '$2'"
+  case "$3" in
+    /*)
+      echo "FAIL: the generated parameter name '$3' starts with '/' ($4): CDK grants parameter//<name>" >&2
+      exit 1
+      ;;
+  esac
+  echo "    OK: the generated name $3 has no leading slash"
+}
+assert_reads "${FUNCTION_NAME}" "${EXPECTED_VALUE}" "${PARAM_NAME}" "#6272"
+assert_reads "${CHILD_FUNCTION_NAME}" "${EXPECTED_CHILD_VALUE}" "${CHILD_PARAM_NAME}" "#6282"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -296,7 +396,12 @@ echo "    OK: function is gone"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: cdkd state removed"
 
+assert_gone "nested parameter ${CHILD_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}"
+assert_gone "nested function ${CHILD_FUNCTION_NAME} still exists after destroy" aws lambda get-function --function-name "${CHILD_FUNCTION_NAME}" --region "${REGION}"
+assert_gone "nested state file ${CHILD_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_KEY}"
+echo "    OK: the nested parameter, function and state are gone"
+
 sweep_log_groups
 echo "    OK: lambda log groups swept"
 
-echo "[verify] PASS — an auto-named SSM parameter the previous release named /<name> is re-spelled <name> on redeploy, and its grantRead lets the function read it, all 4 phases passed"
+echo "[verify] PASS — an auto-named SSM parameter the previous release named /<name> is re-spelled <name> on redeploy, and its grantRead lets the function read it, and so is the same pair in an unchanged nested stack (#6282), all phases passed"

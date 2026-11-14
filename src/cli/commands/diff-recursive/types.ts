@@ -298,6 +298,11 @@ export interface ComputeStackDiffOptions {
    * deploy leaves unchanged (so no child engine runs), only names it.
    */
   ssmNameHeal?: 'apply' | 'pending';
+  /**
+   * go-to-k/cdkd#6282: the nested-stack rows the deploy updates so their
+   * child's engine re-spells such a name (`checkNestedSsmNames`).
+   */
+  forcedNestedChildRuns?: ReadonlySet<string>;
   parameters?: Record<string, unknown>;
   /**
    * Same per-type normalization the deploy engine applies (issue #1591).

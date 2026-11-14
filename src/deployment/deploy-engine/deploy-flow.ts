@@ -45,6 +45,8 @@ import { resolveDeployParameters } from './deploy-flow/parameters.js';
 import { evaluateDeployConditions } from './deploy-flow/conditions.js';
 import { validateAndBuildGraph } from './deploy-flow/validate.js';
 import { calculateDeployDiff } from './deploy-flow/diff.js';
+import { getCurrentNestedStackContext } from '../../provisioning/nested-stack-context.js';
+import { checkNestedSsmNames, nestedSsmNameRowNote } from '../nested-ssm-name-check.js';
 import { refuseUnsafePlan } from './deploy-flow/plan-checks.js';
 import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
@@ -248,9 +250,7 @@ export async function doDeployWithPrefetch(
     // is re-spelled `<name>` (the same parameter) before anything reads the
     // records, so the diff updates each dependent holding the old Ref and
     // every save below records the new spelling. A nested child heals when
-    // its engine runs, i.e. when its parent's row changes: detecting a
-    // candidate in an unchanged child would cost the parent a read of every
-    // child's record on every deploy.
+    // its engine runs, i.e. when its parent's row is provisioned.
     const ssmNameHeals: SlashedSsmNameHeal[] = [];
     const healSsmNames = (): void => {
       const healed = healSlashedSsmParameterNames(currentState, template, stackName);
@@ -260,6 +260,18 @@ export async function doDeployWithPrefetch(
       ssmNameHeals.push(...healed.heals);
     };
     healSsmNames();
+    // go-to-k/cdkd#6282: ... and once per record, the nested children are read
+    // for such a name, overlapping the work up to the diff. A marked record or
+    // a stack with no nested-stack row reads nothing.
+    const nestedSsmCheck = checkNestedSsmNames({
+      state: currentState,
+      template,
+      stackName,
+      region: engine.stackRegion,
+      nestedTemplates: getCurrentNestedStackContext()?.nestedTemplates,
+      readRecord: async (name, region) => (await engine.stateBackend.getState(name, region))?.state,
+    });
+    nestedSsmCheck.catch(() => undefined);
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
@@ -535,6 +547,16 @@ export async function doDeployWithPrefetch(
       effectiveTemplate,
     });
 
+    // Each row whose child holds such a name updates, so its child's engine
+    // runs. The mark is written by this deploy's successful save only when
+    // every recorded child was read (an adopted nested row's was not).
+    const nestedCheck = await nestedSsmCheck;
+    for (const row of nestedCheck?.forcedRows ?? []) engine.logger.info(nestedSsmNameRowNote(row));
+    const marksNestedCheck =
+      nestedCheck?.complete === true &&
+      !Object.values(orphanPlan.adopted).some(
+        (r) => r.resourceType === 'AWS::CloudFormation::Stack'
+      );
     const { diffResolverContext, maskedInputs, changes } = await calculateDeployDiff(engine, {
       stackName,
       currentState,
@@ -542,6 +564,7 @@ export async function doDeployWithPrefetch(
       parameterValues,
       conditions,
       clock,
+      forcedNestedChildRuns: nestedCheck?.forcedRows,
     });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
@@ -636,6 +659,7 @@ export async function doDeployWithPrefetch(
 
     clock.lap('post-diff checks');
     if (!hasChanges) {
+      if (marksNestedCheck) currentState.nestedSsmNamesChecked = true;
       return await deployWithoutChanges(engine, {
         stackName,
         template,
@@ -651,6 +675,7 @@ export async function doDeployWithPrefetch(
         orphansChanged,
         terminationProtectionChanged,
         ssmNamesHealed: ssmNameHeals.length > 0,
+        nestedSsmNamesMarked: marksNestedCheck,
         resolveStackInstanceId,
         startProvenanceCapture,
         startTime,
@@ -752,6 +777,7 @@ export async function doDeployWithPrefetch(
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
     clock.lap('observed-state drain');
+    if (marksNestedCheck) newState.nestedSsmNamesChecked = true;
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is

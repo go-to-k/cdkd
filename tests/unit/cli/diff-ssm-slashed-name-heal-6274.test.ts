@@ -48,7 +48,12 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
+import {
+  buildDiffTree,
+  computeStackDiff,
+  diffTreeToJson,
+  renderChangeLines,
+} from '../../../src/cli/commands/diff-recursive.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -152,12 +157,17 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
     expect(notes[0]).toContain('this preview does not show those updates');
   });
 
+  // `marked`: the parent's record says its children were checked
+  // (go-to-k/cdkd#6282), so the deploy updates no row for the heal.
   it.each([
-    ['an unchanged row: named, not healed', 'same-input', 'NO_CHANGE', 'NO_CHANGE', false],
-    ['a changed row: healed', 'new-input', 'UPDATE', 'UPDATE', false],
+    ['an unchanged row: named, not healed', 'same-input', 'NO_CHANGE', 'NO_CHANGE', false, true],
+    ['a changed row: healed', 'new-input', 'UPDATE', 'UPDATE', false, true],
     // An UPDATE moving only the policy calls no provider, so no child engine.
-    ['a row moving only DeletionPolicy: named, not healed', 'same-input', 'NO_CHANGE', 'UPDATE', true],
-  ] as const)('a nested child under %s', async (_label, input, readerChange, rowChange, retain) => {
+    ['a row moving only DeletionPolicy: named, not healed', 'same-input', 'NO_CHANGE', 'UPDATE', true, true],
+    // go-to-k/cdkd#6282: an unmarked parent updates the row so the child heals.
+    ['an unchanged row of an unchecked parent: healed', 'same-input', 'UPDATE', 'UPDATE', false, false],
+    ['a DeletionPolicy-only row of an unchecked parent: healed', 'same-input', 'UPDATE', 'UPDATE', true, false],
+  ] as const)('a nested child under %s', async (_label, input, readerChange, rowChange, retain, marked) => {
     infos.length = 0;
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-6274-child-'));
     try {
@@ -188,6 +198,7 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
         version: 16,
         lastModified: 0,
         outputs: {},
+        ...(marked && { nestedSsmNamesChecked: true }),
         resources: {
           Child: {
             physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
@@ -236,6 +247,14 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
       });
       // Premise: the parent's row is diffed as the case says.
       expect(tree.changes.get('Child')?.changeType).toBe(rowChange);
+      expect(tree.changes.get('Child')?.nestedChildHeal === true).toBe(!marked);
+      expect(infos.some((m) => m.includes('go-to-k/cdkd#6282'))).toBe(!marked);
+      // The text and JSON forms name why the row updates.
+      const lines: string[] = [];
+      renderChangeLines(tree.changes, (m) => lines.push(m));
+      expect(lines.some((m) => m.includes('go-to-k/cdkd#6282'))).toBe(!marked);
+      const row = diffTreeToJson(tree).changes.find((c) => c.logicalId === 'Child');
+      expect(row?.nestedChildHeal).toBe(marked ? undefined : true);
       const childNode = tree.children.find((c) => c.stackName === 'S~Child');
       expect(childNode?.changes.get('Reader')?.changeType).toBe(readerChange);
       expect(infos.some((m) => m.includes('go-to-k/cdkd#6274'))).toBe(true);
@@ -244,7 +263,10 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
     }
   });
 
-  it('a grandchild under a child no engine runs for is only named, whatever its own row', async () => {
+  it.each([
+    ['is only named under a checked parent, whatever its own row', true],
+    ['is healed under an unchecked parent: the child is updated, and its own check reaches it', false],
+  ] as const)('a grandchild under an unchanged child %s', async (_label, marked) => {
     infos.length = 0;
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-6274-grandchild-'));
     try {
@@ -292,7 +314,7 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
       });
       const old = '/S-Child-Grand-Param';
       const states: Record<string, StackState> = {
-        S: record({ Child: stackRow(undefined) }, 'S'),
+        S: { ...record({ Child: stackRow(undefined) }, 'S'), ...(marked && { nestedSsmNamesChecked: true }) },
         'S~Child': record({ Grand: stackRow({ In: 'old-input' }) }, 'S~Child'),
         'S~Child~Grand': record(
           {
@@ -320,14 +342,14 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
       });
-      expect(tree.changes.get('Child')?.changeType).toBe('NO_CHANGE');
+      expect(tree.changes.get('Child')?.changeType).toBe(marked ? 'NO_CHANGE' : 'UPDATE');
       const child = tree.children.find((c) => c.stackName === 'S~Child');
       // Premise: the child's preview diffs its grandchild row as an UPDATE.
       expect(child?.changes.get('Grand')?.changeType).toBe('UPDATE');
       const grand = child?.children.find((c) => c.stackName === 'S~Child~Grand');
-      expect(grand?.changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+      expect(grand?.changes.get('Reader')?.changeType).toBe(marked ? 'NO_CHANGE' : 'UPDATE');
       expect(infos.some((m) => m.includes('on the next deploy that updates this nested stack'))).toBe(
-        true
+        marked
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

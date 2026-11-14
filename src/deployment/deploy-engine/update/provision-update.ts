@@ -188,14 +188,16 @@ export async function provisionUpdate(
   ) {
     await readOnce();
   }
-  if (
+  // What both no-change skips below require. go-to-k/cdkd#6282: a nested-stack
+  // row updated for its child's engine to run is never skipped.
+  const mayTakeNoChangeSkip =
     !typeChanged &&
-    !suppliesFreshMaskOnlyValue &&
     lostChild === undefined &&
+    change.nestedChildHeal !== true &&
     recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
-    unsettledNames.size === 0
-  ) {
+    unsettledNames.size === 0;
+  if (mayTakeNoChangeSkip && !suppliesFreshMaskOnlyValue) {
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
     // value now records the versions it was served (the save persists it).
     if (provenanceUnchanged.length > 0) {
@@ -647,11 +649,7 @@ export async function provisionUpdate(
   const confirmedPaths = new Set([...noEchoHeldPaths, ...parameterSettledPaths]);
   if (
     confirmedPaths.size > 0 &&
-    !typeChanged &&
-    lostChild === undefined &&
-    recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
-    recordMatchesDesired &&
-    unsettledNames.size === 0 &&
+    mayTakeNoChangeSkip &&
     Object.keys(resolvedProps).every(
       (key) =>
         confirmedPaths.has(key) ||

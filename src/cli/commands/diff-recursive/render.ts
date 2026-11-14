@@ -278,6 +278,11 @@ export function renderChangeLines(
             logFn(`          new: ${attrChange.newValue ?? '(unset)'}`);
           }
         }
+        if (change.nestedChildHeal === true) {
+          logFn(
+            '      - [nested stack deployed to re-spell an SSM parameter name; go-to-k/cdkd#6282]'
+          );
+        }
         break;
       }
       case 'DELETE':

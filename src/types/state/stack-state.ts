@@ -450,6 +450,21 @@ export interface StackState {
    */
   terminationProtection?: true;
 
+  /**
+   * This stack's nested children were checked for an SSM parameter name cdkd
+   * generated before go-to-k/cdkd#6272 (`/<name>`), and each one holding such a
+   * name was deployed and re-spelled (go-to-k/cdkd#6282,
+   * `src/deployment/nested-ssm-name-check.ts`). Written by a successful deploy
+   * of a stack with a nested-stack row; while it is set the deploy reads no
+   * child record for that check.
+   *
+   * Additive, NO schema bump (the `terminationProtection` precedent): an older
+   * binary ignores it and drops it on its next save, so the next deploy by
+   * this one checks the children once more. Carried by every non-deploy
+   * writer through `stackInstanceIdCarriedFrom`.
+   */
+  nestedSsmNamesChecked?: true;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }
