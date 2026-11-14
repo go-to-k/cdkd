@@ -76,6 +76,21 @@ const CASES: ReadonlyArray<{
     healed: 'v2',
     fallback: REFUSED,
   },
+  // go-to-k/cdkd#6242: these fell back to the DB instance identifier.
+  {
+    type: 'AWS::RDS::DBInstance',
+    physicalId: 'mydb',
+    attribute: 'DbiResourceId',
+    healed: 'db-ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    fallback: REFUSED,
+  },
+  {
+    type: 'AWS::RDS::DBInstance',
+    physicalId: 'mydb',
+    attribute: 'CertificateDetails.ValidTill',
+    healed: '2027-11-14T12:34:56Z',
+    fallback: REFUSED,
+  },
   {
     type: 'AWS::IAM::Role',
     physicalId: 'app-role',
@@ -157,7 +172,9 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
       expect((error as Error).message).toMatch(
         c.attribute === 'StreamArn'
           ? /the state record holds no value for it .*add a StreamSpecification to the table/
-          : /the state record holds no value for it .*nothing to heal the record with/
+          : c.type === 'AWS::RDS::DBInstance'
+            ? /the state record holds no value for it .*RDS does not report it for the instance yet/
+            : /the state record holds no value for it .*nothing to heal the record with/
       );
       // Terminal: the heal's outcome is memoized per deploy (#1874 hazard).
       expect(isMarkedNonRetryable(error)).toBe(true);
@@ -208,5 +225,38 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
       return;
     }
     await expect(resolveWith(c)).resolves.toBe(c.fallback);
+  });
+});
+
+describe('RDS DBInstance listener endpoint with none (go-to-k/cdkd#6242)', () => {
+  beforeEach(() => resetAccountInfoCache());
+
+  it('says the instance has no listener endpoint when the completed heal reports none', async () => {
+    const healer = vi.fn(
+      async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'read', attributes: {} })
+    );
+    const error = await resolveWith(
+      {
+        type: 'AWS::RDS::DBInstance',
+        physicalId: 'mydb',
+        attribute: 'ListenerEndpoint.Address',
+        healed: undefined,
+        fallback: REFUSED,
+      },
+      healer
+    ).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect((error as Error).message).toMatch(/This DB instance has no listener endpoint/);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('leaves a DocDB / Neptune instance on the physical-id fallback (their schemas lack these)', async () => {
+    for (const type of ['AWS::DocDB::DBInstance', 'AWS::Neptune::DBInstance']) {
+      await expect(
+        resolveWith({ type, physicalId: 'mydb', attribute: 'DbiResourceId', healed: undefined, fallback: 'mydb' })
+      ).resolves.toBe('mydb');
+    }
   });
 });

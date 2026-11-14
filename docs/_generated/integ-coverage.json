@@ -1613,6 +1613,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -1818,6 +1819,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -1931,6 +1935,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -2126,6 +2131,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2269,6 +2277,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -2474,6 +2483,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -2583,6 +2595,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -2785,6 +2798,9 @@
           "l2"
         ],
         "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -3172,6 +3188,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -3407,6 +3424,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3533,6 +3553,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -3729,6 +3750,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -3845,6 +3869,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -4099,6 +4124,9 @@
         "rds-dbinstance-charset-timezone": [
           "l2"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2"
+        ],
         "rds-dbinstance-processor-features": [
           "l2"
         ],
@@ -4228,6 +4256,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -4432,6 +4461,9 @@
           "l2"
         ],
         "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [
@@ -5746,6 +5778,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-dbinstance-getatt-attributes",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
         "recreate-parent-child-permission",
@@ -6064,6 +6097,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2"
         ],
         "recreate-mixed-direction": [
@@ -7584,6 +7620,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -7607,6 +7644,10 @@
         ],
         "rds-dbinstance-charset-timezone": [
           "l1",
+          "literal"
+        ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2",
           "literal"
         ],
         "rds-dbinstance-processor-features": [
@@ -7648,6 +7689,7 @@
         "rds-dbinstance-backfill",
         "rds-dbinstance-backup-replication",
         "rds-dbinstance-charset-timezone",
+        "rds-dbinstance-getatt-attributes",
         "rds-dbinstance-processor-features",
         "rds-dbinstance-snapshot-restore",
         "rds-fix-forward-orphan",
@@ -7681,6 +7723,9 @@
           "l2"
         ],
         "rds-dbinstance-charset-timezone": [
+          "l2"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2"
         ],
         "rds-dbinstance-processor-features": [

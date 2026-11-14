@@ -5,9 +5,11 @@ import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
 import {
   describeFailureObserved,
   guardedPhysicalIdFallback,
+  refuseUnconstructibleAttribute,
   refuseUndefinedAttribute,
   refuseUnservedAttribute,
 } from './getatt-refusals.js';
+import { healBeforeConstructing } from './getatt-heal.js';
 import { noteAttributeSecrecy } from './getatt.js';
 import { graphQLSchemaCfnId } from './ref-values.js';
 
@@ -372,16 +374,43 @@ export async function constructAttributeForAppTypes(
       case 'DBInstanceArn':
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
-      default:
-        return guardedPhysicalIdFallback(
-          resolver,
+      case 'DbiResourceId':
+      case 'Endpoint.HostedZoneId':
+      case 'ListenerEndpoint.Address':
+      case 'ListenerEndpoint.Port':
+      case 'ListenerEndpoint.HostedZoneId':
+      case 'CertificateDetails.CAIdentifier':
+      case 'CertificateDetails.ValidTill':
+        // go-to-k/cdkd#6242: the RDS provider records these from the
+        // instance it describes (`dbInstanceAttributes`); a record written
+        // before that lacks them, so heal first. None can be built from the
+        // instance identifier, which the physical-id fallback used to serve —
+        // for `DbiResourceId` that put the identifier into `grantConnect`'s
+        // `rds-db:connect` ARN.
+        if (resourceType !== 'AWS::RDS::DBInstance') break;
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
-          physicalId,
-          context
-        );
+          context,
+          why: 'cdkd cannot build it from the DB instance identifier',
+          // A completed read that reports none: for a listener endpoint the
+          // instance has none (only some configurations, such as SQL Server
+          // Multi-AZ, do); otherwise it is not available yet.
+          remedyWhenHealCompleted: attributeName.startsWith('ListenerEndpoint.')
+            ? 'This DB instance has no listener endpoint, and CloudFormation cannot return one for it either: remove the reference, or use Endpoint.Address.'
+            : 'RDS does not report it for the instance yet (it may still be creating): deploy again once the instance is available.',
+        });
     }
+    return guardedPhysicalIdFallback(
+      resolver,
+      logicalId,
+      attributeName,
+      resourceType,
+      physicalId,
+      context
+    );
   }
 
   // RDS DBCluster (DocDB and Neptune share the same rds: service prefix and cluster: separator)
