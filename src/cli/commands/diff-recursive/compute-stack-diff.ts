@@ -53,6 +53,10 @@ import {
 import type { CrossStackRead } from '../../../deployment/intrinsic-resolver/context.js';
 import { crossStackOutputProvenanceSource } from '../../../deployment/read-provenance-sources.js';
 import { logger } from './logger.js';
+import {
+  healSlashedSsmParameterNames,
+  slashedSsmNameHealNote,
+} from '../../../deployment/ssm-slashed-name-heal.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
   nestedStackTypeChangeReason,
@@ -89,7 +93,7 @@ import { previewNoEchoMacChanges } from './noecho-macs.js';
  * may read producer state for `Fn::ImportValue` / `Fn::GetStackOutput`).
  */
 export async function computeStackDiff(
-  currentState: StackState,
+  loadedState: StackState,
   template: CloudFormationTemplate,
   region: string,
   stackName: string,
@@ -121,6 +125,15 @@ export async function computeStackDiff(
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
   } = options;
+  // go-to-k/cdkd#6274: the deploy re-spells a pre-#6272 generated SSM
+  // parameter name `/<name>` as `<name>` before its diff; so does the preview,
+  // so each dependent holding the old Ref shows the update the deploy makes.
+  const ssmNameHeal = healSlashedSsmParameterNames(loadedState, template, stackName);
+  for (const heal of ssmNameHeal.heals) logger.info(slashedSsmNameHealNote(heal));
+  const currentState: StackState =
+    ssmNameHeal.heals.length > 0
+      ? { ...loadedState, resources: ssmNameHeal.resources }
+      : loadedState;
   // go-to-k/cdkd#3869: every heal of this node binds the healed record's
   // printing bag, judged over the records the diff reads at that moment
   // (`healResources`, which takes the adopted records once they are spliced).

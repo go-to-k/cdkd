@@ -382,6 +382,18 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     ).not.toContain('Nothing was changed.');
   });
 
+  it('names an SSM parameter the deploy re-spells as the cause (go-to-k/cdkd#6274)', async () => {
+    const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    const healed = await refuseUnsafePlan(engine, {
+      ...plan(new Map([['Q', replacingChange]])),
+      ssmNameHeals: [{ logicalId: 'Param', from: '/S-Param', to: 'S-Param' }],
+    }).catch((e: unknown) => e as Error);
+    expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Param');
+    expect(healed?.message).toContain('deploy them\ntogether with this stack');
+    const plain = await refusal(engine, new Map([['Q', replacingChange]]));
+    expect(plain?.message).not.toContain('re-spells');
+  });
+
   it('matches an in-run consumer whatever the case of its region', async () => {
     const { engine } = engineDouble({
       consumers: [{ name: 'Consumer', imports: [EXPORT] }],

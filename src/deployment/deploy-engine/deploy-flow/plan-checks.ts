@@ -18,6 +18,7 @@ import { scanActiveConsumers } from '../../../state/active-import-consumers.js';
 import { ExportInUseError } from '../../../utils/error-handler.js';
 import type { InUseExportChange } from '../../../utils/error-handler.js';
 import type { DeployEngine } from '../../deploy-engine.js';
+import type { SlashedSsmNameHeal } from '../../ssm-slashed-name-heal.js';
 import type { StackState, ResourceChange } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResolverContext } from '../../intrinsic-resolver/context.js';
@@ -30,6 +31,7 @@ export async function refuseUnsafePlan(
   engine: DeployEngine,
   {
     stackName,
+    ssmNameHeals = [],
     currentState,
     effectiveTemplate,
     parameterValues,
@@ -38,6 +40,8 @@ export async function refuseUnsafePlan(
     diffResolverContext,
   }: {
     stackName: string;
+    /** go-to-k/cdkd#6274: the records this deploy re-spelled, named in an export refusal. */
+    ssmNameHeals?: readonly SlashedSsmNameHeal[];
     currentState: StackState;
     effectiveTemplate: CloudFormationTemplate;
     parameterValues: Record<string, unknown>;
@@ -101,6 +105,7 @@ export async function refuseUnsafePlan(
   // still restore the value the consumer holds.
   await refuseInUseExportChanges(engine, {
     stackName,
+    ssmNameHeals,
     currentState,
     effectiveTemplate,
     conditions,
@@ -187,6 +192,7 @@ async function refuseInUseExportChanges(
   engine: DeployEngine,
   {
     stackName,
+    ssmNameHeals,
     currentState,
     effectiveTemplate,
     conditions,
@@ -194,6 +200,7 @@ async function refuseInUseExportChanges(
     diffResolverContext,
   }: {
     stackName: string;
+    ssmNameHeals: readonly SlashedSsmNameHeal[];
     currentState: StackState;
     effectiveTemplate: CloudFormationTemplate;
     conditions: Record<string, boolean>;
@@ -253,6 +260,7 @@ async function refuseInUseExportChanges(
       unreadable,
       affectedExportNames: affected.map((a) => a.exportName),
       nested: engine.options.parentStackInfo !== undefined,
+      respelledSsmParameters: ssmNameHeals.map((heal) => heal.logicalId),
     });
   }
 }

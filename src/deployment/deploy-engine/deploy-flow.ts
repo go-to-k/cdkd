@@ -51,6 +51,7 @@ import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
 import { createNoEchoValueMacs } from '../noecho-value-macs.js';
+import { healSlashedSsmParameterNames, slashedSsmNameHealNote } from '../ssm-slashed-name-heal.js';
 
 /**
  * Connections `warmConnections` opens before the tail (#4837): the state
@@ -238,6 +239,15 @@ export async function doDeployWithPrefetch(
     // approval. Optional for the test doubles.
     if (idArrivesLater && !engine.options.dryRun) {
       engine.stateBackend.prefetchStackInstanceSibling?.(stackName, engine.stackRegion);
+    }
+    // go-to-k/cdkd#6274: a pre-#6272 generated SSM parameter name `/<name>`
+    // is re-spelled `<name>` (the same parameter) before anything reads the
+    // records, so the diff updates each dependent holding the old Ref and
+    // every save below records the new spelling.
+    const ssmNameHeal = healSlashedSsmParameterNames(currentState, template, stackName);
+    if (ssmNameHeal.heals.length > 0) {
+      currentState.resources = ssmNameHeal.resources;
+      for (const heal of ssmNameHeal.heals) engine.logger.info(slashedSsmNameHealNote(heal));
     }
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
@@ -537,6 +547,7 @@ export async function doDeployWithPrefetch(
 
     await refuseUnsafePlan(engine, {
       stackName,
+      ssmNameHeals: ssmNameHeal.heals,
       currentState,
       effectiveTemplate,
       parameterValues,
@@ -626,6 +637,7 @@ export async function doDeployWithPrefetch(
         maskedFingerprintsBackfilled,
         orphansChanged,
         terminationProtectionChanged,
+        ssmNamesHealed: ssmNameHeal.heals.length > 0,
         resolveStackInstanceId,
         startProvenanceCapture,
         startTime,

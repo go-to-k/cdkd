@@ -496,9 +496,24 @@ export class ExportInUseError extends CdkdError {
       unreadable?: ReadonlyArray<{ stackName: string; region: string }>;
       affectedExportNames?: readonly string[];
       nested?: boolean;
+      /**
+       * go-to-k/cdkd#6274: logical ids of SSM parameters this deploy re-spells
+       * from `/<name>` to `<name>`, the likely reason an export changes with
+       * no template change.
+       */
+      respelledSsmParameters?: readonly string[];
     } = {}
   ) {
     const unreadable = opts.unreadable ?? [];
+    const respelled = opts.respelledSsmParameters ?? [];
+    const respelledBlock =
+      respelled.length === 0
+        ? ''
+        : `This deploy re-spells the recorded name of SSM parameter ` +
+          `${respelled.map((id) => plainOrDescribed(id, 'logical id')).join(', ')} from /<name> to <name>\n` +
+          `(the same parameter in SSM; go-to-k/cdkd#6274), so every export referencing it changes value\n` +
+          `even though the template did not. The consumers must take the new spelling: deploy them\n` +
+          `together with this stack (step 1 below).\n\n`;
     // Record-derived values are printed plain or described, never quoted raw
     // (go-to-k/cdkd#3950), as in StackHasActiveImportsError.
     const lines = changes.map(
@@ -524,6 +539,7 @@ export class ExportInUseError extends CdkdError {
         `this deploy would change or remove exports that other stacks may still import via Fn::ImportValue.\n` +
         (lines.length > 0 ? `${lines.join('\n')}\n\n` : '\n') +
         unreadableBlock +
+        respelledBlock +
         (opts.nested === true ? '' : `Nothing was changed. `) +
         `This matches CloudFormation, which refuses to update or\n` +
         `remove an export while another stack imports it.\n\n` +

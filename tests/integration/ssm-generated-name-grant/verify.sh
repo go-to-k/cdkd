@@ -7,8 +7,15 @@
 # granted `parameter//<name>` and its GetParameter was denied. CloudFormation
 # names such a parameter without a leading slash, which CDK assumes.
 #
+# go-to-k/cdkd#6274: a record written before #6272 keeps `/<name>`; the next
+# deploy re-spells it `<name>` (SSM stores a one-level `/x` as `x`, so it is
+# the same parameter) and updates every dependent holding the old Ref.
+#
 # Phases:
-#   1. Deploy. Resolve the function name and the parameter's physical id.
+#   0. Deploy with the previous release (@cdkd/cli@${OLD_CDKD_VERSION}), which
+#      still generates `/<name>`: the pre-fix record.
+#   1. Redeploy with this build. The record is re-spelled `<name>`, and the
+#      function's PARAM_NAME and the Ref output follow it.
 #   2. Functional: invoking the function reads the value (not AccessDenied),
 #      and the parameter name has no leading slash.
 #   3. Destroy + assert the parameter, the function and the state are gone.
@@ -57,6 +64,10 @@ STACK="CdkdSsmGeneratedNameGrantExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_VALUE="cdkd-6272-value"
+# The last release that generates `/<name>` (go-to-k/cdkd#6272 shipped after it).
+OLD_CDKD_VERSION="0.350.2"
+OLD_TMPDIR=""
+DEPLOY_LOG=""
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -99,6 +110,12 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   rm -f "${INVOKE_OUT}"
+  if [ -n "${DEPLOY_LOG:-}" ]; then
+    rm -f "${DEPLOY_LOG}"
+  fi
+  if [ -n "${OLD_TMPDIR:-}" ] && [ -d "${OLD_TMPDIR}" ]; then
+    rm -rf "${OLD_TMPDIR}"
+  fi
   set -eu
 }
 
@@ -125,10 +142,58 @@ echo "==> Pre-run cleanup"
 cleanup
 INVOKE_OUT="$(mktemp)"
 
-# --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+echo "==> Installing the previous release (@cdkd/cli@${OLD_CDKD_VERSION})"
+OLD_TMPDIR="$(mktemp -d)"
+(cd "${OLD_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@cdkd/cli@${OLD_CDKD_VERSION}" >/dev/null)
+OLD_BIN="${OLD_TMPDIR}/node_modules/@cdkd/cli/dist/cli.js"
+if [ ! -f "${OLD_BIN}" ]; then
+  echo "FAIL: the previous release was not installed at ${OLD_BIN}" >&2
+  exit 1
+fi
+OLD_REPORTED="$(node "${OLD_BIN}" --version)"
+case "${OLD_REPORTED}" in
+  *"${OLD_CDKD_VERSION}"*) ;;
+  *)
+    echo "FAIL: the installed old binary reports '${OLD_REPORTED}', not ${OLD_CDKD_VERSION}" >&2
+    exit 1
+    ;;
+esac
+
+# --- Phase 0: the pre-fix record ---------------------------------------
+echo "==> Phase 0: deploy with @cdkd/cli@${OLD_CDKD_VERSION} (generates /<name>)"
+node "${OLD_BIN}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+OLD_PARAM_NAME="$(jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .value.physicalId // empty' <<<"${STATE}")"
+case "${OLD_PARAM_NAME}" in
+  /*/*|"")
+    echo "FAIL: premise: the previous release recorded '${OLD_PARAM_NAME}', not a one-level /<name>" >&2
+    exit 1
+    ;;
+  /*) echo "    OK: premise: the previous release recorded ${OLD_PARAM_NAME}" ;;
+  *)
+    echo "FAIL: premise: the previous release recorded '${OLD_PARAM_NAME}' without a leading slash" >&2
+    exit 1
+    ;;
+esac
+OLD_FUNCTION_NAME="$(jq -r '.outputs.FunctionName // empty' <<<"${STATE}")"
+OLD_ENV="$(aws lambda get-function-configuration --function-name "${OLD_FUNCTION_NAME}" --region "${REGION}" \
+  --query 'Environment.Variables.PARAM_NAME' --output text)"
+if [ "${OLD_ENV}" != "${OLD_PARAM_NAME}" ]; then
+  echo "FAIL: premise: the function's PARAM_NAME '${OLD_ENV}' is not the recorded '${OLD_PARAM_NAME}'" >&2
+  exit 1
+fi
+
+# --- Phase 1: redeploy with this build ---------------------------------
+echo "==> Phase 1: redeploy with this build (re-spells the record, #6274)"
+DEPLOY_LOG="$(mktemp)"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
+if ! grep -q 'go-to-k/cdkd#6274' "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy did not report re-spelling ${OLD_PARAM_NAME} (#6274)" >&2
+  exit 1
+fi
 
 STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 FUNCTION_NAME="$(jq -r '.outputs.FunctionName // empty' <<<"${STATE}")"
@@ -139,6 +204,17 @@ if [ -z "${FUNCTION_NAME}" ] || [ -z "${PARAM_NAME}" ]; then
 fi
 echo "    function:  ${FUNCTION_NAME}"
 echo "    parameter: ${PARAM_NAME}"
+if [ "${PARAM_NAME}" != "${OLD_PARAM_NAME#/}" ]; then
+  echo "FAIL: the record holds '${PARAM_NAME}', not ${OLD_PARAM_NAME} re-spelled without its slash (#6274)" >&2
+  exit 1
+fi
+ENV_NAME="$(aws lambda get-function-configuration --function-name "${FUNCTION_NAME}" --region "${REGION}" \
+  --query 'Environment.Variables.PARAM_NAME' --output text)"
+if [ "${ENV_NAME}" != "${PARAM_NAME}" ]; then
+  echo "FAIL: the function's PARAM_NAME '${ENV_NAME}' did not follow the re-spelled Ref '${PARAM_NAME}' (#6274)" >&2
+  exit 1
+fi
+echo "    OK: the record and the function's PARAM_NAME now read ${PARAM_NAME}"
 
 # --- Phase 2: functional ----------------------------------------------
 echo "==> Phase 2: the function reads its auto-named parameter through grantRead"
@@ -196,4 +272,4 @@ echo "    OK: cdkd state removed"
 sweep_log_groups
 echo "    OK: lambda log groups swept"
 
-echo "[verify] PASS — an auto-named SSM parameter has no leading slash and its grantRead lets the function read it, all 3 phases passed"
+echo "[verify] PASS — an auto-named SSM parameter the previous release named /<name> is re-spelled <name> on redeploy, and its grantRead lets the function read it, all 4 phases passed"

@@ -221,6 +221,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       '`applyNoEchoPersist` (go-to-k/cdkd#4043): masks the `NoEcho` coordinates of a ' +
       'bag `scrubResourceRecord` already redacted, on the same persist choke point.',
   },
+  'src/deployment/ssm-slashed-name-heal.ts': {
+    sites: 1,
+    why:
+      'A `:`-form WRITE that re-spells only the `Name` key of a stored, already ' +
+      'redacted bag to the cdkd-generated parameter name (go-to-k/cdkd#6274); the ' +
+      "record then persists through the deploy's redacting choke point.",
+  },
   'src/provisioning/stateful-types.ts': {
     sites: 3,
     why:
@@ -315,8 +322,8 @@ describe('observedProperties write population (issue #2828)', () => {
     // across 10. Splitting `scrub.ts` into `scrub/*.ts` moved its 2 into two
     // files: 14 across 11.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(14);
-    expect(Object.keys(EXPECTED)).toHaveLength(11);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(15);
+    expect(Object.keys(EXPECTED)).toHaveLength(12);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {
