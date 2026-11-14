@@ -603,6 +603,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-nested-create-only-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-protection-flip",
       "annotated": true,
       "scenarios": []
@@ -3792,6 +3797,7 @@
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",
+    "cc-nested-create-only-update",
     "cc-required-name-generation",
     "cc-to-sdk-reroute",
     "cc-to-sdk-reroute-ecs-service",

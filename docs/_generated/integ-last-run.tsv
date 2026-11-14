@@ -44,6 +44,7 @@ cc-api-fallback	2026-11-12T12:35:56Z	PASS	210	verify.sh	rc ok, orph clean, PR 61
 cc-api-fallback-transitions	2026-11-12T12:35:56Z	PASS	100	verify.sh	rc ok, orph clean, PR 6149 (merged main)
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
 cc-getatt-readback	2026-11-04T21:32:32Z	PASS	90	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
+cc-nested-create-only-update	2026-11-14T09:22:53Z	PASS	55	verify.sh	rc ok, orph clean; red on unfixed src (MeasureLatency refusal)
 cc-protection-flip	2026-11-02T01:39:49Z	PASS	551	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 cc-protection-flip-eks	2026-11-04T07:36:26Z	PASS	807	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 cc-required-name-generation	2026-11-05T04:10:23Z	PASS	53	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2)

@@ -3292,3 +3292,156 @@ describe('s3RedirectRegion (go-to-k/cdkd#5264)', () => {
     expect(s3RedirectRegion(error)).toBeUndefined();
   });
 });
+
+describe('CloudControlProvider update: an AWS-defaulted nested create-only member (go-to-k/cdkd#6294)', () => {
+  // Cloud Control applies the patch to the model it reads, where AWS filled
+  // in `MeasureLatency: false`; a `replace /HealthCheckConfig` with the
+  // template's object drops it, which Cloud Control reads as a create-only
+  // change and refuses. The live value must ride along in the op.
+  let provider: CloudControlProvider;
+
+  const TYPE = 'AWS::Route53::HealthCheck';
+  const SCHEMA = JSON.stringify({
+    createOnlyProperties: [
+      '/properties/HealthCheckConfig/Type',
+      '/properties/HealthCheckConfig/MeasureLatency',
+      '/properties/HealthCheckConfig/RequestInterval',
+    ],
+  });
+  const config = (extra: Record<string, unknown>): Record<string, unknown> => ({
+    Type: 'HTTPS',
+    FullyQualifiedDomainName: 'example.com',
+    RequestInterval: 30,
+    ...extra,
+  });
+  let liveModel: Record<string, unknown> | undefined;
+
+  function updatePatches(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+  // Reads sent BEFORE the update (the post-update sparse read-back is separate).
+  const readsBeforeUpdate = (): number => {
+    const names = mockCloudControlSend.mock.calls.map((c) => c[0]?.constructor?.name as string);
+    return names.slice(0, names.indexOf('UpdateResourceCommand')).filter((n) => n === 'GetResourceCommand')
+      .length;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    clearReadOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudFormationSend.mockResolvedValue({ Schema: SCHEMA });
+    liveModel = {
+      HealthCheckId: 'hc-1',
+      HealthCheckConfig: config({ Port: 8443, MeasureLatency: false, EnableSNI: true }),
+    };
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'hc-1' } });
+      }
+      if (name === 'GetResourceCommand') {
+        return Promise.resolve(
+          liveModel === undefined
+            ? {}
+            : { ResourceDescription: { Identifier: 'hc-1', Properties: JSON.stringify(liveModel) } }
+        );
+      }
+      return Promise.resolve({});
+    });
+    provider = new CloudControlProvider();
+  });
+
+  it('carries the live MeasureLatency into the whole-object replace', async () => {
+    await provider.update(
+      'Hc',
+      'hc-1',
+      TYPE,
+      { HealthCheckConfig: config({ Port: 443 }) },
+      { HealthCheckConfig: config({ Port: 8443, ResourcePath: '/health' }) }
+    );
+
+    expect(updatePatches()).toEqual([
+      [
+        {
+          op: 'replace',
+          path: '/HealthCheckConfig',
+          value: config({ Port: 443, MeasureLatency: false }),
+        },
+      ],
+    ]);
+    expect(readsBeforeUpdate()).toBe(1);
+  });
+
+  it('keeps a declared create-only member as the template wrote it, and reads nothing', async () => {
+    await provider.update(
+      'Hc',
+      'hc-1',
+      TYPE,
+      { HealthCheckConfig: config({ Port: 443, MeasureLatency: false }) },
+      { HealthCheckConfig: config({ Port: 8443, MeasureLatency: false }) }
+    );
+
+    expect(updatePatches()).toEqual([
+      [
+        {
+          op: 'replace',
+          path: '/HealthCheckConfig',
+          value: config({ Port: 443, MeasureLatency: false }),
+        },
+      ],
+    ]);
+    expect(readsBeforeUpdate()).toBe(0);
+  });
+
+  it('sends the template object unchanged when the live read is refused', async () => {
+    const base = mockCloudControlSend.getMockImplementation()!;
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) =>
+      cmd.constructor.name === 'GetResourceCommand'
+        ? Promise.reject(new Error('AccessDeniedException: not authorized'))
+        : base(cmd)
+    );
+
+    await provider.update(
+      'Hc',
+      'hc-1',
+      TYPE,
+      { HealthCheckConfig: config({ Port: 443 }) },
+      { HealthCheckConfig: config({ Port: 8443 }) }
+    );
+
+    expect(updatePatches()).toEqual([
+      [{ op: 'replace', path: '/HealthCheckConfig', value: config({ Port: 443 }) }],
+    ]);
+  });
+
+  it('sends the template object unchanged when the live model cannot be read', async () => {
+    liveModel = undefined;
+
+    await provider.update(
+      'Hc',
+      'hc-1',
+      TYPE,
+      { HealthCheckConfig: config({ Port: 443 }) },
+      { HealthCheckConfig: config({ Port: 8443 }) }
+    );
+
+    expect(updatePatches()).toEqual([
+      [{ op: 'replace', path: '/HealthCheckConfig', value: config({ Port: 443 }) }],
+    ]);
+  });
+});

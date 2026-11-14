@@ -25,6 +25,12 @@ import {
   getTopLevelWriteOnlyProperties,
 } from '../write-only-properties.js';
 import { getTopLevelDeployAttributeNames } from '../read-only-properties.js';
+import { getCreateOnlyPropertyPaths } from '../create-only-properties.js';
+import {
+  nestedCreateOnlyGaps,
+  withCarriedCreateOnlyMembers,
+  writesTopLevelObject,
+} from '../cc-nested-create-only-patch.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
@@ -212,6 +218,20 @@ export async function updateInIdLogScope(
       cleanProperties,
       context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
     );
+
+    // go-to-k/cdkd#6294: a whole-object op drops the AWS-defaulted nested
+    // create-only members Cloud Control reads; see the helper. The schema
+    // lookup is cached (the diff already ran it) and runs only when an op
+    // writes an object; the read only when a gap exists.
+    if (writesTopLevelObject(patch)) {
+      const gaps = nestedCreateOnlyGaps(patch, await getCreateOnlyPropertyPaths(resourceType));
+      if (gaps.length > 0) {
+        const liveModel = await this.readCcResourceModel(resourceType, physicalId, idLog);
+        if (liveModel !== undefined) {
+          patch = withCarriedCreateOnlyMembers(patch, gaps, liveModel);
+        }
+      }
+    }
 
     // go-to-k/cdkd#5260: no Cloud Control patch can change an imported
     // HTTP API's definition; it goes through `ReimportApi`, and Cloud
