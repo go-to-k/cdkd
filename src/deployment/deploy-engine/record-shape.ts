@@ -189,7 +189,9 @@ export function nestedDependencySnapshot(
  */
 export function withRecordedDependencies(
   resources: Readonly<Record<string, ResourceState>>,
-  lists: Readonly<Record<string, readonly string[]>>
+  lists: Readonly<Record<string, readonly string[]>>,
+  /** Told when a change was held back because it would form a cycle. */
+  onCycle?: () => void
 ): Record<string, ResourceState> | undefined {
   let next: Record<string, ResourceState> | undefined;
   for (const [logicalId, list] of Object.entries(lists)) {
@@ -199,7 +201,10 @@ export function withRecordedDependencies(
     const { dependencies: _old, ...rest } = record;
     next[logicalId] = list.length > 0 ? { ...rest, dependencies: [...list] } : rest;
   }
-  return next !== undefined && !hasDependencyCycle(next) ? next : undefined;
+  if (next === undefined) return undefined;
+  if (!hasDependencyCycle(next)) return next;
+  onCycle?.();
+  return undefined;
 }
 
 /** Whether `resources`' recorded dependencies (among its own ids) form a cycle. */

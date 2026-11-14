@@ -8,7 +8,7 @@ import { withoutPendingRequest } from '../../cc-pending-requests.js';
 import { stackInstanceIdOf } from '../../../state/stack-instance-id.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
-import { nestedDependencySnapshot, withRecordedDependencies } from '../record-shape.js';
+import { nestedDependencySnapshot } from '../record-shape.js';
 import type { RollbackJournalSegment } from '../../../types/rollback-journal.js';
 import {
   asIsMessage,
@@ -23,6 +23,7 @@ import {
   dropNestedChildJournals,
   dropSettledNestedJournals,
   nestedPendingSnapshot,
+  recordChildTemplateDependencies,
 } from '../../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../../rollback-executor.js';
 import {
@@ -237,7 +238,16 @@ export async function settleJournalAfterSuccess(
           },
         });
         if (childState !== undefined && childEtag !== undefined) {
-          await saveTemplateDependencies(deps, child, childState, childEtag, childSegments);
+          await recordChildTemplateDependencies({
+            stateBackend: deps.stateBackend,
+            child,
+            region: deps.stackRegion,
+            state: childState,
+            etag: childEtag,
+            segments: childSegments,
+            runId: deps.options.eventRecorder?.runId,
+            logger: deps.logger,
+          });
         }
         nestedLeft += settled.unaddressed;
         if (settled.stripCleared) stripOnFailure.set(child, settled.stripCleared);
@@ -249,48 +259,6 @@ export async function settleJournalAfterSuccess(
     }),
   ]);
   return ownLeft + nestedLeft;
-}
-
-/**
- * go-to-k/cdkd#6314: the ROOT's success writes onto a nested child's records
- * the full dependency lists its template derives, which the child's own
- * success could only trim (a failed parent may still have reverted it). Read
- * from the newest `nested-pending-parent` segment of this run carrying them,
- * the journal the success settle already loaded; saved under the child's lock
- * the caller holds, over the etag it read. Nothing is written when the lists
- * are already held or would record a dependency cycle. Best-effort.
- */
-async function saveTemplateDependencies(
-  deps: RollbackDeps,
-  child: string,
-  childState: StackState,
-  etag: string,
-  segments: readonly RollbackJournalSegment[]
-): Promise<void> {
-  const runId = deps.options.eventRecorder?.runId;
-  if (runId === undefined) return;
-  const lists = segments.findLast(
-    (segment) =>
-      segment.runId === runId &&
-      segment.reason === NESTED_PENDING_PARENT_REASON &&
-      segment.templateDependencies !== undefined
-  )?.templateDependencies;
-  if (lists === undefined) return;
-  const resources = withRecordedDependencies(childState.resources, lists);
-  if (resources === undefined) return;
-  try {
-    await deps.stateBackend.saveState(
-      child,
-      deps.stackRegion,
-      { ...childState, resources, lastModified: Date.now() },
-      { expectedEtag: etag }
-    );
-  } catch (error) {
-    deps.logger.warn(
-      safeMsg`Could not record the template's dependencies on nested stack ${displaySafe(child)}: ` +
-        safeMsg`${describeAwsFailure(error).summary}. A destroy may order its resources by an older template.`
-    );
-  }
 }
 
 /**

@@ -372,17 +372,20 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     });
 
     it('writes nothing for another run, or for a list that would record a cycle', async () => {
-      const cases: Array<[string, Record<string, ResourceState>]> = [
-        ['run-other', { A: record('A'), B: record('B') }],
-        [RUN, { A: record('A'), B: { ...record('B'), dependencies: ['A'] } }],
+      const bare = { runId: RUN, reason: 'nested-pending-parent' as const, operations: [] };
+      const cases: Array<[Partial<RollbackJournalSegment>[], Record<string, ResourceState>]> = [
+        [[pending('run-other', { A: ['B'] })], { A: record('A'), B: record('B') }],
+        [[pending(RUN, { A: ['B'] })], { A: record('A'), B: { ...record('B'), dependencies: ['A'] } }],
+        // This run's NEWEST segment decides: it carries no list, so none is written.
+        [[pending(RUN, { A: ['B'] }), bare], { A: record('A'), B: record('B') }],
       ];
-      for (const [runId, resources] of cases) {
+      for (const [segments, resources] of cases) {
         const { engine, backend } = build({
           nested: false,
           changes: new Map([['Q', createChange('Q')]]),
           resources: { Child: record('Child', NESTED) },
           childState: child(resources),
-          childJournal: { segments: [pending(runId, { A: ['B'] })] },
+          childJournal: { segments },
         });
 
         await engine.deploy(STACK, templateOf(['Q']));

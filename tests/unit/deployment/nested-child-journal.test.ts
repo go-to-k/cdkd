@@ -498,6 +498,20 @@ describe('revertNestedChildFromJournal (#3754)', () => {
       expect(resources['U']).toEqual({ reverted: true });
     });
 
+    it('a record an older segment of the run touched keeps what its replay put back', async () => {
+      const h = harness({
+        state: childState({ U: q(), X: q() }),
+        segments: [
+          seg('run-1', ['X']),
+          seg('run-1', [], { previousDependencies: { X: ['U'] } }),
+        ],
+      });
+
+      await h.run('run-1');
+
+      expect(savedResources(h)['X']).toEqual({ reverted: true });
+    });
+
     it('restores nothing that would record a cycle', async () => {
       const h = harness({
         state: childState({ W: q(['X']), X: q() }),

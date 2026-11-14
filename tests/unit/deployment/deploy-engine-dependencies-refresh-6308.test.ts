@@ -334,7 +334,11 @@ describe('withRecordedDependencies / hasDependencyCycle (go-to-k/cdkd#6314)', ()
   it('returns undefined when nothing changes, or when the result would hold a cycle', () => {
     const input = { A: record('a-phys', 'a'), B: record('b-phys', 'b', ['A']) };
     expect(withRecordedDependencies(input, { B: ['A'] })).toBeUndefined();
-    expect(withRecordedDependencies(input, { A: ['B'] })).toBeUndefined();
+    const onCycle = vi.fn();
+    expect(withRecordedDependencies(input, { B: ['A'] }, onCycle)).toBeUndefined();
+    expect(onCycle).not.toHaveBeenCalled();
+    expect(withRecordedDependencies(input, { A: ['B'] }, onCycle)).toBeUndefined();
+    expect(onCycle).toHaveBeenCalledOnce();
   });
 
   it('finds a cycle through any length, ignoring ids the records do not hold', () => {
