@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::TaskDefinition",
-  "generatedAt": "2026-10-20",
+  "generatedAt": "2026-11-14",
   "properties": [
     "ContainerDefinitions",
     "Cpu",
@@ -20,6 +20,7 @@
     "Tags",
     "TaskDefinitionArn",
     "TaskRoleArn",
+    "TrustedExecutionConfiguration",
     "Volumes"
   ],
   "readOnlyProperties": [
@@ -104,6 +105,10 @@
     "InferenceAccelerators": [
       "DeviceName",
       "DeviceType"
+    ],
+    "TrustedExecutionConfiguration": [
+      "AttestationPolicy",
+      "IsolationMode"
     ],
     "PlacementConstraints": [
       "Expression",
@@ -248,6 +253,10 @@
     "InferenceAccelerators": [
       "DeviceName",
       "DeviceType"
+    ],
+    "TrustedExecutionConfiguration": [
+      "AttestationPolicy",
+      "IsolationMode"
     ],
     "PlacementConstraints": [
       "Expression",
@@ -415,6 +424,7 @@
       "TaskRoleArn": "scalar",
       "IpcMode": "scalar",
       "InferenceAccelerators": "array",
+      "TrustedExecutionConfiguration": "object",
       "Memory": "scalar",
       "PlacementConstraints": "array",
       "Cpu": "scalar",
@@ -575,6 +585,10 @@
       "Value": "scalar",
       "Name": "scalar"
     },
+    "TrustedExecutionConfiguration": {
+      "IsolationMode": "scalar",
+      "AttestationPolicy": "scalar"
+    },
     "Device": {
       "HostPath": "scalar",
       "Permissions": "array",
@@ -681,6 +695,9 @@
     "EFSVolumeConfiguration": [
       "FilesystemId"
     ],
+    "TrustedExecutionConfiguration": [
+      "IsolationMode"
+    ],
     "Ulimit": [
       "HardLimit",
       "Name",
@@ -739,6 +756,9 @@
     ],
     "ProxyConfiguration": [
       "ContainerName"
+    ],
+    "TrustedExecutionConfiguration": [
+      "IsolationMode"
     ],
     "Volumes.EFSVolumeConfiguration": [
       "FilesystemId"
@@ -823,6 +843,7 @@
     "RuntimePlatform": "object",
     "Tags": "array",
     "Tags[]": "object",
+    "TrustedExecutionConfiguration": "object",
     "Volumes": "array",
     "Volumes[]": "object",
     "Volumes[].DockerVolumeConfiguration": "object",
@@ -1006,6 +1027,9 @@
     "Tags[].Value": "string",
     "TaskDefinitionArn": "string",
     "TaskRoleArn": "string",
+    "TrustedExecutionConfiguration": "object",
+    "TrustedExecutionConfiguration.AttestationPolicy": "string",
+    "TrustedExecutionConfiguration.IsolationMode": "string",
     "Volumes": "array",
     "Volumes[]": "object",
     "Volumes[].ConfiguredAtLaunch": "boolean",
@@ -1047,6 +1071,11 @@
     "ContainerDefinitions[].VersionConsistency": [
       "disabled",
       "enabled"
+    ],
+    "TrustedExecutionConfiguration.IsolationMode": [
+      "CONFIDENTIAL_SANDBOX",
+      "ISOLATED_SANDBOX",
+      "SHARED"
     ],
     "Volumes[].EFSVolumeConfiguration.AuthorizationConfig.IAM": [
       "DISABLED",

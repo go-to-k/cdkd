@@ -552,6 +552,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['ContainerDefinitions.Ulimits', ['HardLimit', 'Name', 'SoftLimit']],
       ['PlacementConstraints', ['Type']],
       ['ProxyConfiguration', ['ContainerName']],
+      ['TrustedExecutionConfiguration', ['IsolationMode']],
       ['Volumes.EFSVolumeConfiguration', ['FilesystemId']],
       ['Volumes.FSxWindowsFileServerVolumeConfiguration', ['FileSystemId', 'RootDirectory']],
       [

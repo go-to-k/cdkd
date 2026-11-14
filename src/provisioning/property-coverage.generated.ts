@@ -1633,6 +1633,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'InferenceAccelerators',
           'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
         ],
+        ['TrustedExecutionConfiguration', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>(['InferenceAccelerators']),
       readOnly: new Set<string>(['TaskDefinitionArn']),

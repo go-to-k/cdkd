@@ -23,6 +23,9 @@
     "regenerations of the `types` block."
   ],
   "types": {
+    "AWS::ECS::TaskDefinition": [
+      "TrustedExecutionConfiguration"
+    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ]
