@@ -332,8 +332,8 @@ export async function deployWithoutChanges(
     const refreshedResources = withTemplateDependencies(currentState.resources, effectiveTemplate);
 
     if (
-      refreshedResources !== undefined ||
       observedRefresh ||
+      refreshedResources !== undefined ||
       outputProvenanceBackfill ||
       maskedFingerprintsBackfilled ||
       conditionVerdictsChanged ||
@@ -445,7 +445,9 @@ export async function deployWithoutChanges(
         } else if (observedRefresh) {
           engine.logger.debug('Persisted refreshed observedProperties (no-change path)');
         } else if (refreshedResources !== undefined) {
-          engine.logger.debug('Persisted dependencies refreshed from the template (no-change path)');
+          engine.logger.debug(
+            'Persisted dependencies refreshed from the template (no-change path)'
+          );
         } else if (healedAttributesPending) {
           engine.logger.debug(
             'Persisted attributes re-read from AWS for a stale record (no-change path)'

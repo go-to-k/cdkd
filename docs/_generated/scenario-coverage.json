@@ -909,6 +909,11 @@
       ]
     },
     {
+      "name": "depends-on-flip",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "deployment-events",
       "annotated": true,
       "scenarios": [
@@ -3832,6 +3837,7 @@
     "custom-resource-noecho-nested",
     "custom-resource-physid-replace",
     "custom-resource-service-token-change",
+    "depends-on-flip",
     "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
