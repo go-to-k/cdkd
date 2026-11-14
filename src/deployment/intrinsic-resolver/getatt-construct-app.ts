@@ -64,6 +64,13 @@ export async function constructAttributeForAppTypes(
           ? `arn:${partition}:events:${region}:${accountId}:rule/${busName}/${physicalId}`
           : `arn:${partition}:events:${region}:${accountId}:rule/${physicalId}`;
       }
+      case 'RuleName':
+        // go-to-k/cdkd#6242: the plain rule name, on a custom bus too
+        // (measured against CloudFormation). The physical id is the rule ARN
+        // (`rule/[<bus>/]<name>`), which the physical-id fallback served whole.
+        return physicalId.startsWith('arn:')
+          ? physicalId.slice(physicalId.lastIndexOf('/') + 1)
+          : physicalId;
       default:
         return guardedPhysicalIdFallback(
           resolver,
@@ -362,6 +369,28 @@ export async function constructAttributeForAppTypes(
           context
         );
     }
+  }
+
+  // AutoScaling group. go-to-k/cdkd#6242: CloudFormation's ARN attribute is
+  // spelled `AutoScalingGroupARN`; the provider records the same ARN under
+  // `Arn`. Its upper-case suffix also slipped past the physical-id fallback's
+  // `*Arn` guard, which then served the group NAME.
+  if (
+    resourceType === 'AWS::AutoScaling::AutoScalingGroup' &&
+    attributeName === 'AutoScalingGroupARN'
+  ) {
+    const recorded = resource.attributes?.['Arn'];
+    if (typeof recorded === 'string' && recorded.startsWith('arn:')) {
+      return noteAttributeSecrecy(resolver, logicalId, attributeName, recorded, context);
+    }
+    healBeforeConstructing(resolver, context);
+    refuseUnconstructibleAttribute(resolver, {
+      logicalId,
+      attributeName,
+      resourceType,
+      context,
+      why: 'its ARN carries a group id cdkd cannot build from the group name',
+    });
   }
 
   // RDS DBInstance (DocDB and Neptune share the same rds: service prefix and db: separator)

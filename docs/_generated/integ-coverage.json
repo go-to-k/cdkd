@@ -738,6 +738,7 @@
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
         "drift-revert-vpc",
+        "getatt-asg-arn-rule-name",
         "launchtemplate-asg-inplace",
         "remove-protection",
         "remove-protection-compensation"
@@ -745,6 +746,10 @@
       "signals": {
         "drift-revert-vpc": [
           "l1",
+          "literal"
+        ],
+        "getatt-asg-arn-rule-name": [
+          "l2",
           "literal"
         ],
         "launchtemplate-asg-inplace": [
@@ -1594,6 +1599,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -1761,6 +1767,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -1916,6 +1925,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2072,6 +2082,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-asg-arn-rule-name": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -2258,6 +2271,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2425,6 +2439,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -2576,6 +2593,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2740,6 +2758,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-asg-arn-rule-name": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -3164,6 +3185,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -3346,6 +3368,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-asg-arn-rule-name": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -3534,6 +3559,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -3692,6 +3718,9 @@
         "generated-name-lifecycle": [
           "l2"
         ],
+        "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -3845,6 +3874,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "generated-name-security-group",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -4047,6 +4077,9 @@
           "l1",
           "literal"
         ],
+        "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2",
           "literal"
@@ -4237,6 +4270,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -4403,6 +4437,9 @@
           "l2"
         ],
         "generated-name-lifecycle": [
+          "l2"
+        ],
+        "getatt-asg-arn-rule-name": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -5221,6 +5258,7 @@
         "eventbridge",
         "eventbridge-archive",
         "eventbus-policy",
+        "getatt-asg-arn-rule-name",
         "sdk-ccapi-crossref"
       ],
       "signals": {
@@ -5239,6 +5277,9 @@
           "l2",
           "literal"
         ],
+        "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
         "sdk-ccapi-crossref": [
           "l1"
         ]
@@ -5252,6 +5293,7 @@
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "generated-name-lifecycle",
+        "getatt-asg-arn-rule-name",
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
@@ -5277,6 +5319,10 @@
           "literal"
         ],
         "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
+        "getatt-asg-arn-rule-name": [
           "l2",
           "literal"
         ],

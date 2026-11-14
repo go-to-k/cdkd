@@ -1343,6 +1343,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-asg-arn-rule-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-fallback-guard",
       "annotated": false,
       "scenarios": []
@@ -3836,6 +3841,7 @@
     "firehose-iceberg-destination",
     "firehose-msk-source",
     "generated-name-security-group",
+    "getatt-asg-arn-rule-name",
     "getatt-fallback-guard",
     "getatt-vpc-managed-policy",
     "globaltable-fix-forward-orphan",
