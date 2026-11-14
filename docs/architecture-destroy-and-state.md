@@ -66,6 +66,10 @@ The order comes from two sources:
 - **The recorded dependencies.** Each resource in state lists the logical ids
   it depends on. cdkd rebuilds the dependency graph from those lists and walks
   it in reverse, so a resource is deleted before the resources it depends on.
+  Every successful deploy rewrites those lists from the template it deployed,
+  including for resources it left unchanged, so a `DependsOn` change alone is
+  recorded too. In a nested stack, an unchanged resource only loses the ids its
+  template no longer lists.
 - **Rules by resource type.** AWS enforces some delete orders that no
   reference in the template expresses. For example, a Lambda function in a VPC
   leaves a network interface in its subnet for some time after the function is

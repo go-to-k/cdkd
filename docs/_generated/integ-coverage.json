@@ -9094,6 +9094,7 @@
         "custom-resource-noecho-nested",
         "deep-getatt-chains",
         "deletion-policy-retain",
+        "depends-on-flip",
         "deployment-events",
         "destroy-failed-delete-keeps-dependencies",
         "destroy-interrupt",
@@ -9265,6 +9266,10 @@
           "l1"
         ],
         "deletion-policy-retain": [
+          "l2",
+          "literal"
+        ],
+        "depends-on-flip": [
           "l2",
           "literal"
         ],

@@ -87,6 +87,52 @@ export function extractAllDependencies(
 }
 
 /**
+ * go-to-k/cdkd#6308: `resources` with each record the deployed template still
+ * declares carrying that template's `dependencies`, or `undefined` when every
+ * record already does. Called on a SUCCESSFUL deploy's save (the change path
+ * and the no-change path): the diff ignores `DependsOn`, so a record whose
+ * only change was its dependencies diffs NO_CHANGE, is never provisioned, and
+ * otherwise keeps the list an older template wrote. Destroy orders by these
+ * lists, so a reversed explicit dependency left both directions recorded and
+ * refused as a cycle. Not on a failed deploy's saves: a NO_CHANGE record
+ * moved to the new template beside an updated one a rollback puts back could
+ * record that cycle itself.
+ *
+ * `removalsOnly` (a nested child's engine): a record only DROPS the ids the
+ * template no longer lists and gains none. A child's success leaves its
+ * completed operations journaled until the ROOT succeeds, and a failed parent
+ * puts each updated record back to its previous one, dependencies included:
+ * a NO_CHANGE record that gained an edge to such a record (old U -> X, new
+ * X -> U, U updated) would then record the cycle after the revert. Dropping an
+ * edge can never form one. The child's records then lack a `DependsOn` added
+ * to an unchanged resource, as they did before this refresh existed.
+ *
+ * Compared as sets, so a record listing the same ids in another order is
+ * left as it is and a no-change deploy writes nothing for it. A changed
+ * record is a copy (its bags are the same objects, keeping their marks); the
+ * map returned is new, and `resources` is never mutated.
+ */
+export function withTemplateDependencies(
+  resources: Readonly<Record<string, ResourceState>>,
+  template: CloudFormationTemplate,
+  { removalsOnly = false }: { removalsOnly?: boolean } = {}
+): Record<string, ResourceState> | undefined {
+  let refreshed: Record<string, ResourceState> | undefined;
+  for (const [logicalId, record] of Object.entries(resources)) {
+    if (!Object.hasOwn(template.Resources ?? {}, logicalId)) continue;
+    const derived = extractAllDependencies(template, logicalId) ?? [];
+    const have = Array.isArray(record.dependencies) ? record.dependencies : [];
+    const haveSet = new Set(have);
+    const want = removalsOnly ? [...haveSet].filter((id) => derived.includes(id)) : derived;
+    if (want.length === haveSet.size && want.every((id) => haveSet.has(id))) continue;
+    refreshed ??= { ...resources };
+    const { dependencies: _stale, ...rest } = record;
+    refreshed[logicalId] = want.length > 0 ? { ...rest, dependencies: want } : rest;
+  }
+  return refreshed;
+}
+
+/**
  * `rebuilt`, a spread copy of a record's `properties` that only drops elements
  * of the record's own lists (a lost attachment), with the REDACTION marks
  * `original` carries (`carryRedactionMarks`, go-to-k/cdkd#5076): a spread

@@ -98,6 +98,7 @@ deletion-ordering-complex	2026-11-04T09:28:41Z	PASS	191	verify.sh	rc 0, own buck
 deletion-policy-retain	2026-11-07T16:15:27Z	PASS	33	verify.sh	#6022 destroy split head; rc ok, orph clean
 deletion-policy-snapshot	2026-11-10T15:49:48Z	PASS	281	verify.sh	rc ok, orph clean
 deletion-policy-snapshot-heavy	2026-11-10T15:44:51Z	PASS	832	verify.sh	rc ok, orph clean; own bucket
+depends-on-flip	2026-11-14T17:14:26Z	PASS	55	verify.sh	rc ok, orph clean
 deployment-events	2026-11-04T18:01:46Z	PASS	36	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 destroy-data-guard	2026-11-04T09:11:36Z	PASS	75	verify.sh	rc 0, guard fired + clean second destroy, orph clean; own state bucket
 destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	#6026 destroy-runner split head; rc ok, orph clean
@@ -226,7 +227,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-13T16:57:39Z	PASS	107	verify.sh	rc ok, orph clean
+lambda	2026-11-14T17:14:26Z	PASS	115	verify.sh	rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
