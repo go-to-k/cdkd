@@ -419,9 +419,9 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
   it('rethrows the CreateService error even when the settle step itself throws', async () => {
     const thrown = serverError();
     createSend.mockRejectedValueOnce(thrown);
-    afterSend.mockResolvedValueOnce(MISSING);
-    // The MISSING-after-5xx warning is the settle step's only call outside
-    // its own try: a throw there reaches the outer guard.
+    afterSend.mockRejectedValueOnce(new Error('lookup failed'));
+    // The "could not look for it" warning runs outside the lookup's own try:
+    // a throw there reaches only the outer guard.
     warn.mockImplementationOnce(() => {
       throw new Error('sink boom');
     });
