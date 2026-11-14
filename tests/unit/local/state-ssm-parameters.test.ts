@@ -158,6 +158,49 @@ describe('--from-state resolves SSM-typed template parameters (#6307)', () => {
     expect(sent.map((s) => s.region)).toEqual(['us-east-1']);
   });
 
+  it('a parameter referenced only from Outputs, or only from Conditions, is read too', async () => {
+    const param = (n: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: `/app/${n}` });
+    await new S3LocalStateProvider({ statePrefix: 'cdkd' }).resolveTemplateSsmParameters({
+      Parameters: { O: param('o'), C: param('c'), Unused: param('unused') },
+      Outputs: { Out: { Value: { Ref: 'O' } } },
+      Conditions: { IsX: { 'Fn::Equals': [{ Ref: 'C' }, 'x'] } },
+    } as never);
+    expect(sent.map((s) => [...s.names].sort())).toEqual([['/app/c', '/app/o']]);
+  });
+
+  it('with no load yet, the region is --stack-region, then --region', async () => {
+    await new S3LocalStateProvider({ statePrefix: 'cdkd', stackRegion: 'ap-south-1', region: 'sa-east-1' })
+      .resolveTemplateSsmParameters(TEMPLATE as never);
+    await new S3LocalStateProvider({ statePrefix: 'cdkd', region: 'sa-east-1' })
+      .resolveTemplateSsmParameters(TEMPLATE as never);
+    expect(sent.map((s) => s.region)).toEqual(['ap-south-1', 'sa-east-1']);
+  });
+
+  it('passes --profile to the client and destroys it after the read', async () => {
+    const destroy = vi.spyOn(SSMClient.prototype, 'destroy');
+    const profiles: unknown[] = [];
+    const send = SSMClient.prototype.send as unknown as { getMockImplementation(): (...a: unknown[]) => unknown };
+    const inner = send.getMockImplementation();
+    vi.spyOn(SSMClient.prototype, 'send').mockImplementation(async function (this: SSMClient, ...a: unknown[]) {
+      profiles.push((this.config as { profile?: string }).profile);
+      return inner.apply(this, a);
+    } as never);
+    await new S3LocalStateProvider({ statePrefix: 'cdkd', profile: 'dev' }).resolveTemplateSsmParameters(
+      TEMPLATE as never
+    );
+    expect(profiles).toEqual(['dev']);
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unreadable parameter does not throw: no value, so the env var warns and drops', async () => {
+    vi.spyOn(SSMClient.prototype, 'send').mockRejectedValue(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException', $metadata: {} })
+    );
+    await expect(
+      new S3LocalStateProvider({ statePrefix: 'cdkd' }).resolveTemplateSsmParameters(TEMPLATE as never)
+    ).resolves.toEqual({ values: {}, secureStringLogicalIds: [] });
+  });
+
   it('a template whose only SSM parameter is BootstrapVersion makes no SSM call', async () => {
     const provider = new S3LocalStateProvider({ statePrefix: 'cdkd' });
     const out = await provider.resolveTemplateSsmParameters({

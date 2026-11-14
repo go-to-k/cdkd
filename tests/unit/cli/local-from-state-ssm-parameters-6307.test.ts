@@ -85,11 +85,14 @@ function stack(): StackInfo {
   } as unknown as StackInfo;
 }
 
-/** A `--from-state` provider; `ssm: false` stands for one that cannot read SSM (the pre-fix S3 provider). */
-function provider(ssm = true) {
+/**
+ * A `--from-state` provider; `ssm: false` stands for one that cannot read SSM
+ * (the pre-fix S3 provider), `secure` for a SecureString parameter value.
+ */
+function provider(ssm = true, secure = false) {
   const resolveTemplateSsmParameters = vi.fn(async () => ({
     values: { [PARAM]: VALUE },
-    secureStringLogicalIds: [] as string[],
+    secureStringLogicalIds: secure ? [PARAM] : ([] as string[]),
   }));
   return {
     label: '--from-state',
@@ -157,6 +160,28 @@ describe('local start-api --from-state (#6307)', () => {
     expect(spec.env['PARAM_VALUE']).toBe(VALUE);
   });
 
+  it('a SecureString value is marked on the bundle and kept off the docker argv (a sensitive key)', async () => {
+    stateSource.createLocalStateProvider.mockReturnValue(provider(true, true));
+    const bundles = await loadStateForRoutedStacks([stack()], [route], [], {
+      fromState: true,
+    } as never);
+    expect([...(bundles.get('S')?.sensitiveParameters ?? [])]).toEqual([PARAM]);
+    const spec = await buildContainerSpec({
+      logicalId: 'Fn',
+      stacks: [stack()],
+      overrides: undefined,
+      assumeRole: undefined,
+      containerHost: '127.0.0.1',
+      stsRegion: undefined,
+      inlineTmpDirs: new Set([workDir]),
+      layerTmpDirs: new Set(),
+      stateByStack: bundles,
+      skipPull: true,
+    });
+    expect(spec.env['PARAM_VALUE']).toBe(VALUE);
+    expect([...(spec.sensitiveEnvKeys ?? [])]).toEqual(['PARAM_VALUE']);
+  });
+
   it('control: a provider that reads no SSM leaves the bundle without values', async () => {
     stateSource.createLocalStateProvider.mockReturnValue(provider(false));
     const bundles = await loadStateForRoutedStacks([stack()], [route], [], {
@@ -195,15 +220,23 @@ describe('local run-task --from-state (#6307)', () => {
       fromState: true,
     } as never);
     expect(context?.stateParameters).toEqual({ [PARAM]: VALUE });
+    expect(context?.stateSensitiveParameters).toBeUndefined();
     expect(buildSubstitutionContextFromImageContext(context)?.parameters).toEqual({
       [PARAM]: VALUE,
     });
   });
 
+  it('a SecureString value is marked on the image context', async () => {
+    const { context } = await buildEcsImageResolutionContext(taskStack(), provider(true, true) as never, {
+      fromState: true,
+    } as never);
+    expect(context?.stateSensitiveParameters).toEqual([PARAM]);
+  });
+
   it('an image context with no intrinsic env reads no SSM (as cdk-local gates it)', async () => {
     const p = provider();
     const s = taskStack();
-    const task = s.template.Resources!['Task'] as { Properties: { ContainerDefinitions: object[] } };
+    const task = s.template.Resources!['Task'] as unknown as { Properties: { ContainerDefinitions: object[] } };
     // The state record IS loaded (a same-stack ECR image), but no env needs it.
     s.template.Resources!['Repo'] = { Type: 'AWS::ECR::Repository', Properties: {} };
     task.Properties.ContainerDefinitions = [
@@ -219,7 +252,7 @@ describe('local run-task --from-state (#6307)', () => {
 
   it('a SecureString value is a plaintext key of its container (value-less -e KEY); a String one is not', () => {
     const s = taskStack();
-    const task = s.template.Resources!['Task'] as { Properties: { ContainerDefinitions: object[] } };
+    const task = s.template.Resources!['Task'] as unknown as { Properties: { ContainerDefinitions: object[] } };
     task.Properties.ContainerDefinitions = [
       {
         Name: 'app',
