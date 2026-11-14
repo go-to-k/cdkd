@@ -5,6 +5,7 @@ import { displaySafe } from '../../utils/display-safe.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { type ResolverContext, quotedRender } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import type { ResourceState } from '../../types/state.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
 import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
 import {
@@ -486,4 +487,55 @@ export function guardedPhysicalIdFallback(
     `Unknown attribute ${displayMasked(resolver, attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
   );
   return physicalId;
+}
+
+/**
+ * The endpoint attribute an ElastiCache cache cluster's engine does not have
+ * (go-to-k/cdkd#6242, maintainer decision): `RedisEndpoint` on a Memcached
+ * cluster, `ConfigurationEndpoint` on a Redis / Valkey one — whole or dotted.
+ * CloudFormation answers `{"Address": "", "Port": ""}` for both (measured
+ * us-east-1, 2026-11-14); cdkd refuses rather than serve an empty value. The
+ * check reads the cluster's recorded `Engine`, so it also covers a Memcached
+ * record written before this change, which holds the node endpoint under
+ * `RedisEndpoint.*`. A record with no string `Engine` gets no verdict:
+ * CloudFormation requires `Engine`, so only a hand-edited state lands there,
+ * and the attribute then resolves (or heals) as any other.
+ */
+function endpointTheEngineLacks(
+  resource: ResourceState,
+  attributeName: string
+): string | undefined {
+  if (resource.resourceType !== 'AWS::ElastiCache::CacheCluster') return undefined;
+  const engine = resource.properties?.['Engine'];
+  if (typeof engine !== 'string') return undefined;
+  const top = attributeName.split('.')[0];
+  const isMemcached = engine.toLowerCase() === 'memcached';
+  if (top === 'RedisEndpoint' && isMemcached) return 'RedisEndpoint';
+  if (top === 'ConfigurationEndpoint' && !isMemcached) return 'ConfigurationEndpoint';
+  return undefined;
+}
+
+/** Throw the refusal {@link endpointTheEngineLacks} names, if any. */
+export function refuseEndpointTheEngineLacks(
+  resolver: IntrinsicFunctionResolver,
+  resource: ResourceState,
+  logicalId: string,
+  attributeName: string,
+  context: ResolverContext | undefined
+): void {
+  const lacking = endpointTheEngineLacks(resource, attributeName);
+  if (lacking === undefined) return;
+  const engine = String(resource.properties?.['Engine']);
+  const other = lacking === 'RedisEndpoint' ? 'ConfigurationEndpoint' : 'RedisEndpoint';
+  // `markNonRetryable`: the verdict is read off the recorded Engine, which no
+  // retry of this deploy changes, and the message interpolates template text.
+  throw markNonRetryable(
+    new IntrinsicResolutionRefusalError(
+      `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ` +
+        `${displayMasked(resolver, attributeName, context)}]: the cache cluster's engine is ` +
+        `${displayMasked(resolver, engine, context)}, which has no ${lacking}. CloudFormation answers an ` +
+        `empty Address and Port for it; cdkd refuses instead of passing an empty endpoint on. ` +
+        `Reference ${other} instead.`
+    )
+  );
 }

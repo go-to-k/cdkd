@@ -461,6 +461,34 @@ export async function constructAttributeForAppTypes(
     });
   }
 
+  // ElastiCache CacheCluster (go-to-k/cdkd#6242): the endpoint objects the
+  // resolver assembles from the recorded flat members
+  // (`assembleFlatObjectAttribute`), and those members. A record lacking them
+  // (one `import()` wrote before the provider recorded any) reaches here, so
+  // heal first: the re-read records and assembles them. None can be built
+  // from the cluster id. The endpoint the engine does not have never gets
+  // here (`refuseEndpointTheEngineLacks`).
+  if (resourceType === 'AWS::ElastiCache::CacheCluster') {
+    switch (attributeName) {
+      case 'RedisEndpoint':
+      case 'RedisEndpoint.Address':
+      case 'RedisEndpoint.Port':
+      case 'ConfigurationEndpoint':
+      case 'ConfigurationEndpoint.Address':
+      case 'ConfigurationEndpoint.Port':
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: 'cdkd cannot build it from the cache cluster id',
+          remedyWhenHealCompleted:
+            'ElastiCache does not report it for the cluster yet (it may still be creating): deploy again once the cluster is available.',
+        });
+    }
+  }
+
   // RDS DBInstance (DocDB and Neptune share the same rds: service prefix and db: separator)
   if (
     resourceType === 'AWS::RDS::DBInstance' ||

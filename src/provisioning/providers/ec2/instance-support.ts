@@ -198,6 +198,13 @@ export function sameStringSet(a: unknown, b: unknown): boolean {
   return sa.size === sb.size && [...sa].every((x) => sb.has(x));
 }
 
+/** The EC2 instance states that are on their way to another (go-to-k/cdkd#6242). */
+const TRANSITIONAL_INSTANCE_STATES: ReadonlySet<string> = new Set([
+  'pending',
+  'stopping',
+  'shutting-down',
+]);
+
 /**
  * AWS EC2 Networking Provider
  *
@@ -256,10 +263,26 @@ export function sameStringSet(a: unknown, b: unknown): boolean {
  */
 export function describedInstanceAttributes(
   instanceId: string,
-  instance: Instance | undefined
+  instance: Instance | undefined,
+  options: { waited?: boolean } = {}
 ): Record<string, unknown> {
   const stateName = instance?.State?.Name;
   const settled = isSettledInstanceState(stateName);
+  // go-to-k/cdkd#6242: `State` as CloudFormation passes it to a consumer,
+  // `{"Code": "16", "Name": "running"}` (measured us-east-1, 2026-11-14:
+  // `Code` is a STRING). It is the state the operation observed once it
+  // settled; an operation that skipped the wait (`--no-wait`) records none, and
+  // neither does a read in a transition (`pending`, `stopping`,
+  // `shutting-down`), so a reference is refused rather than handed a value
+  // that is already on its way out.
+  const state =
+    settled &&
+    stateName !== undefined &&
+    options.waited !== false &&
+    !TRANSITIONAL_INSTANCE_STATES.has(stateName) &&
+    instance?.State?.Code !== undefined
+      ? { Code: String(instance.State.Code), Name: stateName }
+      : undefined;
   // A settled instance's public member: reported value, or the known empty.
   // A pending one's: reported non-empty value, or unknown.
   const publicMember = (value: string | undefined): string | undefined =>
@@ -271,6 +294,7 @@ export function describedInstanceAttributes(
     PrivateDnsName: instance?.PrivateDnsName,
     PublicDnsName: publicMember(instance?.PublicDnsName),
     AvailabilityZone: instance?.Placement?.AvailabilityZone,
+    State: state,
   });
 }
 // go-to-k/cdkd#5630: `PlacementGroupName` / `PrivateIpAddress` are create-only

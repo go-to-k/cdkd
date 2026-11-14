@@ -153,9 +153,10 @@ class FakeKinesis {
         }
         return {};
       }
-      case 'DescribeStreamCommand':
+      // The ACTIVE wait polls DescribeStreamSummary (go-to-k/cdkd#6242).
+      case 'DescribeStreamSummaryCommand':
         return {
-          StreamDescription: {
+          StreamDescriptionSummary: {
             StreamStatus: 'ACTIVE',
             StreamARN: `arn:aws:kinesis:us-east-1:123456789012:stream/${streamName}`,
           },
@@ -243,7 +244,7 @@ describe('KinesisStreamProvider create retry safety (issue #3978)', () => {
       strategy.refreshRetryTokenForRetry('t', { error: throttled() } as never)
     ).resolves.toBe('retry-token');
 
-    for (const name of ['DescribeStreamCommand', 'IncreaseStreamRetentionPeriodCommand']) {
+    for (const name of ['DescribeStreamSummaryCommand', 'IncreaseStreamRetentionPeriodCommand']) {
       const config = sentVia.find(([n]) => n === name)![1];
       expect(await config.retryStrategy()).toBe(baseStrategy);
     }

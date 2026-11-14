@@ -1,4 +1,4 @@
-import { KinesisClient } from '@aws-sdk/client-kinesis';
+import { KinesisClient, type StreamDescriptionSummary } from '@aws-sdk/client-kinesis';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import type { DeleteContext } from '../region-check.js';
@@ -293,7 +293,7 @@ export class KinesisStreamProvider implements ResourceProvider {
   waitForStreamActive(
     streamName: string,
     maxAttempts?: number
-  ): Promise<{ streamArn: string | undefined }> {
+  ): Promise<{ streamArn: string | undefined; summary: StreamDescriptionSummary | undefined }> {
     return waitForStreamActive.call(this, streamName, maxAttempts);
   }
 

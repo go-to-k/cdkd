@@ -7,31 +7,6 @@
         "FailureReason",
         "LastUpdatedAt"
       ]
-    },
-    {
-      "resourceType": "AWS::EC2::Instance",
-      "attributes": [
-        "State"
-      ]
-    },
-    {
-      "resourceType": "AWS::ElastiCache::CacheCluster",
-      "attributes": [
-        "ConfigurationEndpoint",
-        "RedisEndpoint"
-      ]
-    },
-    {
-      "resourceType": "AWS::Kinesis::Stream",
-      "attributes": [
-        "WarmThroughputObject"
-      ]
-    },
-    {
-      "resourceType": "AWS::Lambda::Function",
-      "attributes": [
-        "SnapStartResponse"
-      ]
     }
   ],
   "summary": {
@@ -40,7 +15,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 7
+    "refused": 2
   },
   "types": [
     {

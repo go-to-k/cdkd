@@ -66,9 +66,9 @@ describe('KinesisStreamProvider', () => {
     it('should create stream with PROVISIONED mode', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof CreateStreamCommand) return Promise.resolve({});
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
             },
@@ -84,6 +84,7 @@ describe('KinesisStreamProvider', () => {
       expect(result.physicalId).toBe('test-stream');
       expect(result.attributes).toEqual({
         Arn: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+        WarmThroughputObject: { TargetMiBps: 0, CurrentMiBps: 0 },
       });
 
       const createCall = mockSend.mock.calls.find(
@@ -100,9 +101,9 @@ describe('KinesisStreamProvider', () => {
     it('should create stream with tags', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof CreateStreamCommand) return Promise.resolve({});
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/tagged-stream',
             },
@@ -135,9 +136,9 @@ describe('KinesisStreamProvider', () => {
     it('should create stream with ON_DEMAND mode without ShardCount', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof CreateStreamCommand) return Promise.resolve({});
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/ondemand-stream',
             },
@@ -166,9 +167,9 @@ describe('KinesisStreamProvider', () => {
     it('should generate stream name when Name not provided', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof CreateStreamCommand) return Promise.resolve({});
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN:
                 'arn:aws:kinesis:us-east-1:123456789012:stream/generated-stream-name',
@@ -289,9 +290,9 @@ describe('KinesisStreamProvider', () => {
     it('should update shard count when changed', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof UpdateShardCountCommand) return Promise.resolve({});
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
             },
@@ -310,6 +311,7 @@ describe('KinesisStreamProvider', () => {
       expect(result.physicalId).toBe('test-stream');
       expect(result.attributes).toEqual({
         Arn: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+        WarmThroughputObject: { TargetMiBps: 0, CurrentMiBps: 0 },
       });
 
       const updateCall = mockSend.mock.calls.find(
@@ -329,15 +331,9 @@ describe('KinesisStreamProvider', () => {
         if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
             StreamDescriptionSummary: {
-              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
-              OpenShardCount: 1,
-            },
-          });
-        if (cmd instanceof DescribeStreamCommand)
-          return Promise.resolve({
-            StreamDescription: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
             },
           });
         return Promise.resolve({});
@@ -383,15 +379,9 @@ describe('KinesisStreamProvider', () => {
         if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
             StreamDescriptionSummary: {
-              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
-              OpenShardCount: 1,
-            },
-          });
-        if (cmd instanceof DescribeStreamCommand)
-          return Promise.resolve({
-            StreamDescription: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
             },
           });
         return Promise.resolve({});
@@ -429,15 +419,9 @@ describe('KinesisStreamProvider', () => {
         if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
             StreamDescriptionSummary: {
-              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
-              OpenShardCount: 1,
-            },
-          });
-        if (cmd instanceof DescribeStreamCommand)
-          return Promise.resolve({
-            StreamDescription: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
             },
           });
         return Promise.resolve({});
@@ -482,16 +466,10 @@ describe('KinesisStreamProvider', () => {
         if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
             StreamDescriptionSummary: {
+              StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
               // AWS assigned 4 shards on the on-demand -> provisioned switch.
               OpenShardCount: 4,
-            },
-          });
-        if (cmd instanceof DescribeStreamCommand)
-          return Promise.resolve({
-            StreamDescription: {
-              StreamStatus: 'ACTIVE',
-              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
             },
           });
         return Promise.resolve({});
@@ -529,9 +507,9 @@ describe('KinesisStreamProvider', () => {
 
     it('does not call UpdateStreamMode when the mode is unchanged', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeStreamCommand)
+        if (cmd instanceof DescribeStreamSummaryCommand)
           return Promise.resolve({
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamStatus: 'ACTIVE',
               StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
             },
@@ -566,14 +544,20 @@ describe('KinesisStreamProvider', () => {
       };
     }
 
-    it('explicit override: DescribeStream verifies and returns the stream name', async () => {
-      mockSend.mockResolvedValueOnce({ StreamDescription: { StreamName: 'adopted' } });
+    it('explicit override: DescribeStreamSummary verifies and returns the stream name', async () => {
+      mockSend.mockResolvedValueOnce({
+        StreamDescriptionSummary: { StreamName: 'adopted', StreamARN: 'arn:adopted' },
+      });
 
       const result = await provider.import(makeInput({ knownPhysicalId: 'adopted' }));
 
-      expect(result).toEqual({ physicalId: 'adopted', attributes: {} });
+      // The same attribute map create / update record (go-to-k/cdkd#6242).
+      expect(result).toEqual({
+        physicalId: 'adopted',
+        attributes: { Arn: 'arn:adopted', WarmThroughputObject: { TargetMiBps: 0, CurrentMiBps: 0 } },
+      });
       const call = mockSend.mock.calls[0][0];
-      expect(call.constructor.name).toBe('DescribeStreamCommand');
+      expect(call.constructor.name).toBe('DescribeStreamSummaryCommand');
       expect(call.input).toEqual({ StreamName: 'adopted' });
     });
 

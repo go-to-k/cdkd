@@ -15,6 +15,7 @@ import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult, CreateContext } from '../../../types/resource.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
+import { streamAttributes } from './attributes.js';
 import {
   isKmsEncryption,
   readShardLevelMetrics,
@@ -183,7 +184,9 @@ export async function create(
     this.logger.debug(`CreateStream initiated for ${streamName}, waiting for ACTIVE status`);
 
     // Poll until stream is ACTIVE
-    const streamInfo = await this.waitForStreamActive(streamName);
+    // The latest ACTIVE answer: each later wait replaces it, so the attributes
+    // below come from the stream as create left it (go-to-k/cdkd#6242).
+    let settled = await this.waitForStreamActive(streamName);
 
     // Apply RetentionPeriodHours if specified (default is 24 hours)
     const retentionPeriodHours = retentionRead.kind === 'usable' ? retentionRead.hours : undefined;
@@ -207,7 +210,7 @@ export async function create(
         );
       }
       // Wait for stream to become ACTIVE after retention period change
-      await this.waitForStreamActive(streamName);
+      settled = await this.waitForStreamActive(streamName);
     }
 
     // Apply StreamEncryption if specified.
@@ -232,7 +235,7 @@ export async function create(
         })
       );
       // Wait for stream to become ACTIVE after encryption change
-      await this.waitForStreamActive(streamName);
+      settled = await this.waitForStreamActive(streamName);
     }
 
     // Apply DesiredShardLevelMetrics. `EnableEnhancedMonitoring` takes the
@@ -252,7 +255,7 @@ export async function create(
           ShardLevelMetrics: metricsToEnable,
         })
       );
-      await this.waitForStreamActive(streamName);
+      settled = await this.waitForStreamActive(streamName);
     }
 
     this.logger.debug(`Successfully created Kinesis stream ${logicalId}: ${streamName}`);
@@ -260,7 +263,7 @@ export async function create(
     return {
       physicalId: streamName,
       attributes: {
-        Arn: streamInfo.streamArn,
+        ...streamAttributes(settled.summary),
       },
       // Record the EXPANDED metric list when the template used `ALL`: AWS
       // stores the seven names, so recording `ALL` would be permanent phantom

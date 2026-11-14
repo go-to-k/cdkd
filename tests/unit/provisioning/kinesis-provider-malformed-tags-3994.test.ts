@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   AddTagsToStreamCommand,
   CreateStreamCommand,
-  DescribeStreamCommand,
+  DescribeStreamSummaryCommand,
   RemoveTagsFromStreamCommand,
 } from '@aws-sdk/client-kinesis';
 
@@ -78,9 +78,9 @@ describe('KinesisStreamProvider Tags (go-to-k/cdkd#3994)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSend.mockImplementation(async (cmd: unknown) =>
-      cmd instanceof DescribeStreamCommand
+      cmd instanceof DescribeStreamSummaryCommand
         ? {
-            StreamDescription: {
+            StreamDescriptionSummary: {
               StreamName: STREAM,
               StreamStatus: 'ACTIVE',
               StreamARN: `arn:aws:kinesis:us-east-1:123456789012:stream/${STREAM}`,

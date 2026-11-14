@@ -1,7 +1,7 @@
 import type { KinesisStreamProvider } from '../kinesis-provider.js';
 import {
   KinesisClient,
-  DescribeStreamCommand,
+  type StreamDescriptionSummary,
   DescribeStreamSummaryCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
@@ -141,18 +141,22 @@ export async function waitForStreamActive(
   this: KinesisStreamProvider,
   streamName: string,
   maxAttempts = 30
-): Promise<{ streamArn: string | undefined }> {
+): Promise<{ streamArn: string | undefined; summary: StreamDescriptionSummary | undefined }> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // DescribeStreamSummary rather than DescribeStream (go-to-k/cdkd#6242):
+    // the same status and ARN without the shard list, and the ACTIVE answer
+    // carries the `WarmThroughput` a create records, so no extra read follows.
     const response = await this.getClient().send(
-      new DescribeStreamCommand({ StreamName: streamName })
+      new DescribeStreamSummaryCommand({ StreamName: streamName })
     );
 
-    const status = response.StreamDescription?.StreamStatus;
+    const status = response.StreamDescriptionSummary?.StreamStatus;
     this.logger.debug(`Stream ${streamName} status: ${status} (attempt ${attempt}/${maxAttempts})`);
 
     if (status === 'ACTIVE') {
       return {
-        streamArn: response.StreamDescription?.StreamARN,
+        streamArn: response.StreamDescriptionSummary?.StreamARN,
+        summary: response.StreamDescriptionSummary,
       };
     }
 

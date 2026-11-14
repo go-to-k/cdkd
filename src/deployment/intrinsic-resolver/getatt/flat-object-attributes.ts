@@ -32,6 +32,13 @@ const FLAT_OBJECT_MEMBERS: Readonly<Record<string, Readonly<Record<string, FlatO
     Endpoint: { required: ['Address', 'Port'] },
     ReadEndpoint: { required: ['Address'] },
   },
+  // Measured: `RedisEndpoint` (Redis) and `ConfigurationEndpoint` (Memcached)
+  // `{Address, Port}`, Port a string. The endpoint the engine does not have is
+  // refused before this assembly (`refuseEndpointTheEngineLacks`).
+  'AWS::ElastiCache::CacheCluster': {
+    RedisEndpoint: { required: ['Address', 'Port'] },
+    ConfigurationEndpoint: { required: ['Address', 'Port'] },
+  },
 };
 
 /** The shape `resourceType` assembles `attributeName` with, or `undefined`. */

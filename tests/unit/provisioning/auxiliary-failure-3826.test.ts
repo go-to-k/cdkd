@@ -944,8 +944,9 @@ const CASES: Case[] = [
       },
     ],
     responses: {
-      DescribeStreamCommand: {
-        StreamDescription: {
+      // The ACTIVE wait polls DescribeStreamSummary (go-to-k/cdkd#6242).
+      DescribeStreamSummaryCommand: {
+        StreamDescriptionSummary: {
           StreamStatus: 'ACTIVE',
           StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/stream',
         },

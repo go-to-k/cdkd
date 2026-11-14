@@ -49,7 +49,9 @@ const ACTIVE = {
 // must source its `StreamARN` from `resolveStreamArn` (DescribeStreamSummary).
 // With both fixtures carrying the same string, reading the wrong response field
 // would be undetectable.
-const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:summary', OpenShardCount: 1 } };
+const SUMMARY = {
+  StreamDescriptionSummary: { StreamARN: 'arn:summary', StreamStatus: 'ACTIVE', OpenShardCount: 1 },
+};
 
 function commandsOfType<T>(ctor: new (...args: never[]) => T): T[] {
   return mockSend.mock.calls.map((c) => c[0]).filter((c): c is T => c instanceof ctor);
