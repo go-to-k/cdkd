@@ -306,12 +306,14 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
 
   let childCheckFinishes: boolean;
+  let childHeals: boolean;
   // Set by the depth-2 case: the Child row's update runs a real child engine.
   let runChildEngine: ((physicalId: string) => Promise<unknown>) | undefined;
 
   beforeEach(() => {
     adoption.fake = undefined;
     childCheckFinishes = true;
+    childHeals = true;
     runChildEngine = undefined;
     records = {};
     provider = {
@@ -331,7 +333,7 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
           records[GRAND] = healed;
         }
         const child = records[CHILD];
-        if (logicalId === 'Child' && child && !(child instanceof Error)) {
+        if (logicalId === 'Child' && childHeals && child && !(child instanceof Error)) {
           // The child's own heal (go-to-k/cdkd#6274) re-spells its record.
           const healed = structuredClone(child);
           const param = healed.resources['Param'];
@@ -515,6 +517,16 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     };
     await deploy(template);
     expect(childUpdates()).toHaveLength(0);
+    expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
+  });
+
+  it('does not mark when the updated child’s record still holds the name', async () => {
+    fs.writeFileSync(path.join(dir, 'child.json'), JSON.stringify(ssmTemplate()));
+    const child = stateOf(CHILD, { Param: ssmRecord(`/${generated(CHILD, 'Param')}`) });
+    records = { [PARENT]: stateOf(PARENT, { Child: nestedRecord() }), [CHILD]: child };
+    childHeals = false;
+    await deploy();
+    expect(childUpdates()).toHaveLength(1);
     expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
   });
 
