@@ -18,6 +18,12 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { noEchoParameterNamesOf } from '../../../deployment/deploy-engine/noecho.js';
+import {
+  checkNestedSsmNames,
+  nestedSsmNameDeferredNote,
+  nestedSsmNameRowNote,
+} from '../../../deployment/nested-ssm-name-check.js';
+import { logger } from './logger.js';
 import { secretNamedRecordNeedles } from '../../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
@@ -60,6 +66,7 @@ import { collectCcApiRoutes } from './routes.js';
 /** Whether the deploy runs a nested child's engine for its parent's `row`. */
 function childRowRunsEngine(row: ResourceChange | undefined): boolean {
   if (row?.changeType === 'CREATE') return true;
+  if (row?.changeType === 'UPDATE' && row.nestedChildHeal === true) return true;
   return row?.changeType === 'UPDATE' && (row.propertyChanges?.length ?? 0) > 0;
 }
 
@@ -298,6 +305,22 @@ export async function buildDiffTree(args: {
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
+  // go-to-k/cdkd#6282: the deploy's one-time check of this node's nested
+  // children, only where this node's engine runs (none runs below a pending one).
+  const nestedSsmCheck =
+    ssmNameHeal === 'pending'
+      ? undefined
+      : await checkNestedSsmNames({
+          state,
+          template,
+          stackName,
+          region,
+          nestedTemplates,
+          readRecord: async (name, childRegion) =>
+            (await stateBackend.getState(name, childRegion))?.state,
+        });
+  for (const row of nestedSsmCheck?.forcedRows ?? []) logger.info(nestedSsmNameRowNote(row));
+  for (const row of nestedSsmCheck?.deferredRows ?? []) logger.info(nestedSsmNameDeferredNote(row));
   let stackDiff: StackDiffResult;
   try {
     stackDiff = await computeStackDiff(
@@ -329,6 +352,7 @@ export async function buildDiffTree(args: {
         inheritSecretBearingTemplate: false,
         previewMaskedInputs: !isNestedChild,
         ...(ssmNameHeal && { ssmNameHeal }),
+        ...(nestedSsmCheck && { forcedNestedChildRuns: nestedSsmCheck.forcedRows }),
         nestedTemplates,
       }
     );

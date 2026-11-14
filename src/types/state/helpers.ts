@@ -287,6 +287,7 @@ export function stackInstanceIdCarriedFrom(
         | 'supersededResources'
         | 'pendingMovesOut'
         | 'terminationProtection'
+        | 'nestedSsmNamesChecked'
       >
     | null
     | undefined
@@ -298,6 +299,7 @@ export function stackInstanceIdCarriedFrom(
   | 'supersededResources'
   | 'pendingMovesOut'
   | 'terminationProtection'
+  | 'nestedSsmNamesChecked'
 > {
   // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
   // its id -- a writer that dropped them would hand a re-added resource a
@@ -331,6 +333,9 @@ export function stackInstanceIdCarriedFrom(
     // protected stack. Only `true` is carried: a hand-edited other value
     // protects nothing and is not repeated.
     ...(previous?.terminationProtection === true && { terminationProtection: true }),
+    // go-to-k/cdkd#6282: so does the nested-children check -- a writer that
+    // dropped it would make the next deploy read every child record again.
+    ...(previous?.nestedSsmNamesChecked === true && { nestedSsmNamesChecked: true }),
   };
 }
 

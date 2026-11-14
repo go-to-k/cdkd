@@ -35,6 +35,14 @@ export interface ResourceChange {
    * instead of `No changes detected`.
    */
   attributeChanges?: AttributeChange[];
+
+  /**
+   * go-to-k/cdkd#6282: an `AWS::CloudFormation::Stack` row updated so its
+   * child's engine runs and re-spells a pre-#6272 SSM parameter name below
+   * it, though no property changed. The engine calls the provider for it
+   * (no no-change skip), and `cdkd diff` names why the row updates.
+   */
+  nestedChildHeal?: true;
 }
 
 /**

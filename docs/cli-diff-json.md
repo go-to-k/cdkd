@@ -68,13 +68,14 @@ The sections below describe each one.
 `changes` has one entry for each resource the deploy would create, update or
 delete. Resources that would not change are left out.
 
-Every entry has `logicalId`, `changeType` and `resourceType`. Four more
+Every entry has `logicalId`, `changeType` and `resourceType`. Five more
 fields appear only when they apply:
 
 | Field | Present when |
 | --- | --- |
 | `propertyChanges` | At least one property changes. |
 | `attributeChanges` | At least one attribute changes. |
+| `nestedChildHeal` | `true` on a nested stack the deploy updates only so that its own deploy fixes an SSM parameter name an older cdkd recorded with a leading `/`. |
 | `ccApi` | The resource would go through the Cloud Control API. |
 | `movedTo` | A `DELETE` that [`cdkd refactor`](cli-refactor.md) would keep: `{ "stackName", "logicalId" }` of where the resource reappears. |
 

@@ -535,7 +535,8 @@ export async function computeStackDiff(
         crossStackReads,
         stateBackend
       ),
-    }
+    },
+    options.forcedNestedChildRuns
   );
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a

@@ -125,7 +125,15 @@ export async function calculateDiff(
    * snapshot, a producer output's provenance). Absent, the arm reads this
    * stack's records only.
    */
-  readProvenance?: ReadProvenanceSources
+  readProvenance?: ReadProvenanceSources,
+  /**
+   * go-to-k/cdkd#6282: nested-stack rows whose child holds a pre-#6272 SSM
+   * parameter name (`checkNestedSsmNames`). Each one diffed `NO_CHANGE` or
+   * `UPDATE` is an UPDATE marked `nestedChildHeal`, before the promotion
+   * passes, so a reader of its `Outputs.<Key>` is promoted as for any
+   * updated nested stack.
+   */
+  forcedNestedChildRuns?: ReadonlySet<string>
 ): Promise<Map<string, ResourceChange>> {
   const changes = new Map<string, ResourceChange>();
 
@@ -552,6 +560,16 @@ export async function calculateDiff(
       });
       this.logger.debug(`DELETE: ${logicalId} (${currentResource.resourceType})`);
     }
+  }
+
+  for (const logicalId of forcedNestedChildRuns ?? []) {
+    const change = changes.get(logicalId);
+    if (change?.resourceType !== 'AWS::CloudFormation::Stack') continue;
+    if (change.changeType === 'NO_CHANGE') {
+      change.changeType = 'UPDATE';
+      change.propertyChanges = [];
+    }
+    if (change.changeType === 'UPDATE') change.nestedChildHeal = true;
   }
 
   // The `--recreate-via-*` targets that seed the replacement pass below

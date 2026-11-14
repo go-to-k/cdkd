@@ -17,6 +17,8 @@ export interface DiffChangeJson {
   resourceType: string;
   propertyChanges?: ResourceChange['propertyChanges'];
   attributeChanges?: ResourceChange['attributeChanges'];
+  /** go-to-k/cdkd#6282: a nested stack updated so its child re-spells an SSM parameter name. */
+  nestedChildHeal?: true;
   /**
    * SDK-unwired property names that #614's auto-fallback would route via
    * Cloud Control API for this resource. Present only when the resource is
@@ -170,6 +172,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
       ...(change.attributeChanges && change.attributeChanges.length > 0
         ? { attributeChanges: change.attributeChanges }
         : {}),
+      ...(change.nestedChildHeal === true && { nestedChildHeal: true as const }),
       ...(ccApi && ccApi.length > 0 ? { ccApi } : {}),
       ...(movedTo !== undefined && { movedTo }),
     });

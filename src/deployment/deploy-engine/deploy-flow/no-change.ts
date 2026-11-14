@@ -56,6 +56,7 @@ export async function deployWithoutChanges(
     orphansChanged,
     terminationProtectionChanged,
     ssmNamesHealed,
+    nestedSsmNamesMarked,
     resolveStackInstanceId,
     startProvenanceCapture,
     startTime,
@@ -76,6 +77,8 @@ export async function deployWithoutChanges(
     terminationProtectionChanged: boolean;
     /** go-to-k/cdkd#6274: a record's SSM parameter name was re-spelled in memory. */
     ssmNamesHealed: boolean;
+    /** go-to-k/cdkd#6282: the record newly carries `nestedSsmNamesChecked`. */
+    nestedSsmNamesMarked: boolean;
     resolveStackInstanceId: () => Promise<void>;
     startProvenanceCapture: () => void;
     startTime: number;
@@ -334,6 +337,7 @@ export async function deployWithoutChanges(
       supersededChanged ||
       terminationProtectionChanged ||
       ssmNamesHealed ||
+      nestedSsmNamesMarked ||
       healedAttributesPending
     ) {
       // A first deploy with nothing to create still writes its record here.

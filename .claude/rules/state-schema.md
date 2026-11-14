@@ -33,6 +33,7 @@ interface StackState {
   retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
   pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
   terminationProtection?: true; // no bump: each deploy writes it from synth (root only); destroy / state destroy refuse while present (#5238)
+  nestedSsmNamesChecked?: true; // no bump: children checked for a pre-#6272 SSM name (#6282)
   lastModified: number;
 }
 
@@ -84,7 +85,7 @@ Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/typ
 
 ## `stackInstanceId` and name generations (v13+, #5064)
 
-Minted only at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged. v16 `stackIdFromInstance` (#6170): a context resolving `AWS::StackId` passes `stackIdTail`, else `cdkd`.
+Minted at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged. v16 `stackIdFromInstance` (#6170): a context resolving `AWS::StackId` passes `stackIdTail`, else `cdkd`.
 
 Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. Every path whose record leaves the stack retires its generation (`retiredNameGenerationsAfter` / `retiredAfterRollback`), a rollback's taken-back CREATE included. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed, or a successor past a safe integer = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
 
@@ -94,11 +95,11 @@ A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure r
 
 ## `outputs`
 
-Values are `unknown`: a LIST `Fn::GetAtt` persists a JSON **array**. Without `--strict-getatt` an unresolvable output is dropped: absence means "not resolved", and a no-change save keeps the old value.
+Values are `unknown`: a LIST `Fn::GetAtt` persists a JSON **array**. Without `--strict-getatt` an unresolvable output is dropped (absent = not resolved); a no-change save keeps the old value.
 
 ## `deletionPolicy` / `updateReplacePolicy` (v5+)
 
-Recorded so an attribute-only flip is an UPDATE with no provider call.
+So an attribute-only flip is an UPDATE with no provider call.
 
 Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy` takes `state.deletionPolicy ?? template...DeletionPolicy`; template-less `cdkd state destroy` reads state only (pre-v5 state there deletes every resource).
 
@@ -106,7 +107,7 @@ Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy
 
 ## `provisionedBy` (v7+)
 
-`'sdk'` or `'cc-api'`. Absent means SDK-managed then, but does NOT pin routing: rule 2 gates on a RECORDED `'cc-api'`, so absent re-enters the matrix.
+`'sdk'` or `'cc-api'`. Absent = SDK-managed then, NOT pinned: rule 2 gates on a RECORDED `'cc-api'`, so absent re-enters the matrix.
 
 Routing matrix (`ProviderRegistry.getProviderFor`):
 
@@ -118,11 +119,11 @@ Routing matrix (`ProviderRegistry.getProviderFor`):
 6. No SDK Provider, Cloud Control supports the type -> Cloud Control.
 7. `--allow-unsupported-types` -> Cloud Control.
 
-**Sticky by default**: no SDK Provider backfill moves a `'cc-api'` resource back. Exemptions, `--pin-cc-api`: [provisioning-sticky-routing.md](provisioning-sticky-routing.md). `--recreate-via-*` migrate by destroy + recreate.
+**Sticky**: no SDK Provider backfill moves a `'cc-api'` resource back. Exemptions, `--pin-cc-api`: [provisioning-sticky-routing.md](provisioning-sticky-routing.md). `--recreate-via-*` migrate by destroy + recreate.
 
 ## `outputReads` (v8+)
 
-The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region included, cross-account `RoleArn` never), omitted when empty. **Informational** — no destroy refusal. `undefined` = "no consumers known".
+The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region yes, cross-account `RoleArn` never), omitted when empty. Informational, no destroy refusal. `undefined` = no consumers known.
 
 ## `observedBaselineRefused` (v10+)
 
@@ -132,7 +133,7 @@ The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-
 
 ## `noEchoLeaves` / `noEchoAttributeNames` (v11+)
 
-Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field plus witness-confirmed leaves (#4831), one with NONE (pre-v11) takes today's template positions. A non-mask stored leaf where today masks is the MIGRATION WITNESS (`witnessNormalize`): `version` certifies no redaction. `noEchoAttributeNames` comes from the DECLARATION (never which attributes hold `***`), unioned with earlier still-masked names. Spreading writers carry both. `noEchoExactEchoLeaves` (#4656) is echo behaviour: set only by a readback handed `***` there, never cleared by `differs`, kept while in `noEchoLeaves`; reset by a create-only replacement, dropped on an update's fallback.
+Written each deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field plus witness-confirmed leaves (#4831), one with NONE (pre-v11) takes today's template positions. A non-mask stored leaf where today masks is the MIGRATION WITNESS (`witnessNormalize`): `version` certifies no redaction. `noEchoAttributeNames` comes from the DECLARATION (never which attributes hold `***`), unioned with earlier still-masked names. Spreading writers carry both. `noEchoExactEchoLeaves` (#4656) is echo behaviour: set only by a readback handed `***` there, never cleared by `differs`, kept while in `noEchoLeaves`; reset by a create-only replacement, dropped on an update's fallback.
 
 ## `referenceProvenance` / `outputReferenceProvenance` (v12+)
 
@@ -148,10 +149,10 @@ Per member path (closed vocabulary: `GlobalSecondaryIndexes`, `Tags`, `DesiredSh
 
 ## `observedProperties` (v3+)
 
-Set on each create / update by a fire-and-forget `readCurrentState`, drained by the final save; `cdkd import` sets it at once. Drift compares it, else `properties`.
+Set per create / update by a fire-and-forget `readCurrentState`, drained by the final save; `cdkd import` sets it at once. Drift reads it (else `properties`).
 
 ## Rollback journal (NOT part of the state schema)
 
-`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix with its own `journalVersion`. Written when a deploy ends without a completed rollback: one `segment` per failed attempt, verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668, and replacements `nameGeneration`) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` consumes it (`--revert-failed`: `failedOperations`); popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion` errors.
+`rollback-journal.json` is a **sibling** of `state.json` (same key prefix, own `journalVersion`). Written when a deploy ends without a completed rollback: one `segment` per failed attempt, verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668, and replacements `nameGeneration`) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` reads it (`--revert-failed`: `failedOperations`); popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion` errors.
 
 **Secret redaction.** Its `properties` / `attemptedProperties` / `previousState` take `state.json`'s redaction (a public `String` / `StringList` ssm value stays resolved). The replay RE-RESOLVES them before `create()` / `update()` and re-redacts the rebuilt record.
