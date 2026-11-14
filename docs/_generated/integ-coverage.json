@@ -801,10 +801,14 @@
       "resourceType": "AWS::BedrockAgentCore::Evaluator",
       "integs": [
         "agentcore-tools",
+        "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-misc"
       ],
       "signals": {
         "agentcore-tools": [
+          "literal"
+        ],
+        "getatt-iam-waf-s3vectors-evaluator": [
           "literal"
         ],
         "import-attribute-readback-misc": [
@@ -5638,6 +5642,7 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "generated-name-lifecycle",
+        "getatt-iam-waf-s3vectors-evaluator",
         "getatt-vpc-managed-policy",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
@@ -5650,6 +5655,9 @@
       ],
       "signals": {
         "generated-name-lifecycle": [
+          "literal"
+        ],
+        "getatt-iam-waf-s3vectors-evaluator": [
           "literal"
         ],
         "getatt-vpc-managed-policy": [
@@ -5797,6 +5805,7 @@
         "firehose-msk-source",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
+        "getatt-iam-waf-s3vectors-evaluator",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -6009,6 +6018,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-iam-waf-s3vectors-evaluator": [
+          "l2"
         ],
         "glue-update-hardening": [
           "l2"
@@ -6674,6 +6686,7 @@
         "full-stack-demo",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
+        "getatt-iam-waf-s3vectors-evaluator",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -6899,6 +6912,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-iam-waf-s3vectors-evaluator": [
+          "l2"
         ],
         "iam-propagation-stress": [
           "l2"
@@ -8300,11 +8316,15 @@
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
       "integs": [
+        "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-final",
         "ref-shape-vector-namespace-attachment",
         "s3-vectors"
       ],
       "signals": {
+        "getatt-iam-waf-s3vectors-evaluator": [
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "literal"
         ],
@@ -9851,10 +9871,15 @@
     {
       "resourceType": "AWS::WAFv2::WebACL",
       "integs": [
+        "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-final",
         "wafv2"
       ],
       "signals": {
+        "getatt-iam-waf-s3vectors-evaluator": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],

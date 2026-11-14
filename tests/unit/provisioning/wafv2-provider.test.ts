@@ -180,7 +180,9 @@ describe('WAFv2WebACLProvider', () => {
         Id: TEST_ID,
         LabelNamespace: 'awswaf:123456789012:webacl:my-acl:',
       });
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      // go-to-k/cdkd#6242: GetWebACL (lock token), UpdateWebACL, then the
+      // Capacity read-back (unanswered here, so Capacity stays absent).
+      expect(mockSend).toHaveBeenCalledTimes(3);
 
       const getCall = mockSend.mock.calls[0][0];
       expect(getCall.constructor.name).toBe('GetWebACLCommand');
@@ -431,6 +433,7 @@ describe('WAFv2WebACLProvider update region guard (issue #2613)', () => {
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
       'GetWebACLCommand',
       'UpdateWebACLCommand',
+      'GetWebACLCommand', // go-to-k/cdkd#6242: the Capacity read-back
     ]);
   });
 
@@ -443,6 +446,7 @@ describe('WAFv2WebACLProvider update region guard (issue #2613)', () => {
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
       'GetWebACLCommand',
       'UpdateWebACLCommand',
+      'GetWebACLCommand', // go-to-k/cdkd#6242: the Capacity read-back
     ]);
   });
 });

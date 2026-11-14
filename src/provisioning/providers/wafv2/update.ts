@@ -14,6 +14,7 @@ import {
   type DataProtectionConfig,
   type OnSourceDDoSProtectionConfig,
   type MonetizationConfig,
+  type WebACL,
 } from '@aws-sdk/client-wafv2';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -21,7 +22,14 @@ import { assertRegionMatch } from '../../region-check.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { parseWebACLArn } from '../wafv2-arn.js';
-import { sanitizeDescription, applicationConfigForUpdate, toSdkRules } from './shared.js';
+import {
+  sanitizeDescription,
+  applicationConfigForUpdate,
+  toSdkRules,
+  webAclAttributes,
+} from './shared.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 /**
  * Update a WAFv2 WebACL
@@ -118,14 +126,28 @@ export async function update(
 
     this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
 
+    // go-to-k/cdkd#6242: `Capacity` is the rules' WCUs as AWS holds them
+    // AFTER `UpdateWebACL`, which replaced the live rules — and those may have
+    // drifted from the record (a console edit), so the pre-update read is not
+    // the answer even when the template's Rules did not change. One read
+    // after the update; a failed one omits `Capacity` (the update itself
+    // succeeded, and the resolver's heal re-reads it on a later deploy).
+    let webAcl: Pick<WebACL, 'LabelNamespace' | 'Capacity'> | undefined;
+    try {
+      webAcl = (
+        await this.getClient().send(new GetWebACLCommand({ Name: name, Scope: scope, Id: id }))
+      ).WebACL;
+    } catch (readError) {
+      this.logger.debug(
+        safeMsg`Could not read back ${logicalId} after update (Capacity omitted): ${describeAwsFailure(readError).detail}`
+      );
+      webAcl = { LabelNamespace: getResponse.WebACL?.LabelNamespace };
+    }
+
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
-        Arn: physicalId,
-        Id: id,
-        LabelNamespace: getResponse.WebACL?.LabelNamespace,
-      },
+      attributes: webAclAttributes(physicalId, id, webAcl),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;

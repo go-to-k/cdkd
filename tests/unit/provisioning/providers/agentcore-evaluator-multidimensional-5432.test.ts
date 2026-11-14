@@ -15,6 +15,7 @@ import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore
 
 interface Sent {
   path: string;
+  method: string;
   body: Record<string, unknown>;
 }
 const sent: Sent[] = [];
@@ -28,7 +29,11 @@ const client = new BedrockAgentCoreControlClient({
     handle: async (request: { path: string; method: string; body?: unknown }) => {
       // The JSON body arrives as a Buffer-like chunk, not a string.
       const text = request.body === undefined ? '' : String(request.body);
-      sent.push({ path: request.path, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} });
+      sent.push({
+        path: request.path,
+        method: request.method,
+        body: text ? (JSON.parse(text) as Record<string, unknown>) : {},
+      });
       const answer =
         request.method === 'GET' && request.path.includes('/tags/')
           ? { tags: {} }
@@ -101,7 +106,8 @@ const props = (ratingScale: Record<string, unknown>) => ({
 
 /** The `ratingScale` the one write request carried on the wire. */
 function sentRatingScale(): unknown {
-  const writes = sent.filter((s) => s.path.startsWith('/evaluators'));
+  // go-to-k/cdkd#6242: create / update also READ the evaluator back (a GET).
+  const writes = sent.filter((s) => s.path.startsWith('/evaluators') && s.method !== 'GET');
   expect(writes).toHaveLength(1);
   const evaluatorConfig = writes[0]!.body['evaluatorConfig'] as {
     llmAsAJudge: { ratingScale: unknown };

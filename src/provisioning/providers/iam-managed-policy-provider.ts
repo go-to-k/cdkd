@@ -49,7 +49,10 @@ import { create } from './iam-managed-policy/create.js';
 import { update } from './iam-managed-policy/update.js';
 import { deleteImpl } from './iam-managed-policy/delete.js';
 import { readCurrentState, importImpl } from './iam-managed-policy/read-state.js';
-import { managedPolicyAttributes } from './iam-managed-policy/shared.js';
+import {
+  MANAGED_POLICY_READ_BACK_KEYS,
+  managedPolicyAttributes,
+} from './iam-managed-policy/shared.js';
 import { policyIdentityToken } from './iam-managed-policy/shared.js';
 
 const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
@@ -207,10 +210,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // `Ref` also returns the ARN. The PolicyId / DefaultVersionId this
-    // type's create records (go-to-k/cdkd#6232) need a GetPolicy.
+    // `Ref` also returns the ARN. Every other attribute this type's create
+    // records (go-to-k/cdkd#6232, #6242) needs a GetPolicy.
     if (attributeName === 'PolicyArn') return physicalId;
-    if (attributeName === 'PolicyId' || attributeName === 'DefaultVersionId') {
+    if ((MANAGED_POLICY_READ_BACK_KEYS as readonly string[]).includes(attributeName)) {
       const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
       return managedPolicyAttributes(physicalId, resp.Policy)[attributeName];
     }

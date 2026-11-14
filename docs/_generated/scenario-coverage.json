@@ -1368,6 +1368,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-iam-waf-s3vectors-evaluator",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-vpc-managed-policy",
       "annotated": false,
       "scenarios": []
@@ -3871,6 +3876,7 @@
     "getatt-asg-arn-rule-name",
     "getatt-cloudtrail-appsync",
     "getatt-fallback-guard",
+    "getatt-iam-waf-s3vectors-evaluator",
     "getatt-vpc-managed-policy",
     "globaltable-fix-forward-orphan",
     "globaltable-template-baseline-drift",
