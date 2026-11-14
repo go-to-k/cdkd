@@ -149,6 +149,41 @@ export async function checkNestedSsmNames(args: {
   );
 }
 
+/**
+ * Whether every row this deploy updated for the check left its child checked
+ * as a whole: the child's deploy ran its own check over the grandchildren and
+ * marked its record, or the child has no nested-stack row. A child whose own
+ * check could not finish (a grandchild record it could not read) left no mark,
+ * so the parent must not claim its subtree either. One read per updated row,
+ * once; a failed read answers `false`.
+ */
+export async function forcedChildrenChecked(args: {
+  forcedRows: ReadonlySet<string>;
+  stackName: string;
+  region: string;
+  nestedTemplates: Readonly<Record<string, string>> | undefined;
+  readRecord: NestedRecordReader;
+}): Promise<boolean> {
+  const { forcedRows, stackName, region, nestedTemplates, readRecord } = args;
+  if (forcedRows.size === 0) return true;
+  const loader = childTemplateLoader(nestedTemplates);
+  if (loader === undefined) return false;
+  const verdicts = await Promise.all(
+    [...forcedRows].map(async (logicalId) => {
+      const child = loader(logicalId);
+      if (child === undefined) return false;
+      if (!hasNestedStackRows(child.template)) return true;
+      try {
+        const state = await readRecord(`${stackName}~${logicalId}`, region);
+        return isObject(state) && state.nestedSsmNamesChecked === true;
+      } catch {
+        return false;
+      }
+    })
+  );
+  return verdicts.every(Boolean);
+}
+
 /** The line `cdkd deploy` and `cdkd diff` print for a row the check updates. */
 export function nestedSsmNameRowNote(logicalId: string): string {
   return (

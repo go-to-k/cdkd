@@ -46,7 +46,11 @@ import { evaluateDeployConditions } from './deploy-flow/conditions.js';
 import { validateAndBuildGraph } from './deploy-flow/validate.js';
 import { calculateDeployDiff } from './deploy-flow/diff.js';
 import { getCurrentNestedStackContext } from '../../provisioning/nested-stack-context.js';
-import { checkNestedSsmNames, nestedSsmNameRowNote } from '../nested-ssm-name-check.js';
+import {
+  checkNestedSsmNames,
+  forcedChildrenChecked,
+  nestedSsmNameRowNote,
+} from '../nested-ssm-name-check.js';
 import { refuseUnsafePlan } from './deploy-flow/plan-checks.js';
 import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
@@ -777,7 +781,20 @@ export async function doDeployWithPrefetch(
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
     clock.lap('observed-state drain');
-    if (marksNestedCheck) newState.nestedSsmNamesChecked = true;
+    // A row updated for the check marks this record only once its child's
+    // own check is done too (its record is marked, or it has no nested row).
+    if (
+      marksNestedCheck &&
+      (await forcedChildrenChecked({
+        forcedRows: nestedCheck?.forcedRows ?? new Set(),
+        stackName,
+        region: engine.stackRegion,
+        nestedTemplates: getCurrentNestedStackContext()?.nestedTemplates,
+        readRecord: async (name, region) => (await engine.stateBackend.getState(name, region))?.state,
+      }))
+    ) {
+      newState.nestedSsmNamesChecked = true;
+    }
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is

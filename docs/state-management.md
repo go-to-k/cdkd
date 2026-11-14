@@ -291,6 +291,9 @@ Four of these fields change what a command does:
   `cdkd destroy` deletes the resource after the stack's own resources. While
   the delete keeps failing, the entry stays and each attempt warns.
 
+`nestedSsmNamesChecked` changes no command's outcome: it only tells a deploy
+it can skip reading the nested stacks' records for that one-time check.
+
 An `outputs` value is not always a string. Where CloudFormation defines an
 attribute as a list, such as a Route 53 hosted zone's `NameServers`, the
 output is stored as a JSON array. The `Outputs:` block that `cdkd deploy`

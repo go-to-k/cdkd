@@ -305,20 +305,29 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
   let records: Record<string, StackState | Error>;
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
 
+  let childCheckFinishes: boolean;
+
   beforeEach(() => {
     adoption.fake = undefined;
+    childCheckFinishes = true;
     records = {};
     provider = {
       create: vi.fn(),
       // The nested stack's update returns the child's outputs, the way
       // `NestedStackProvider.update` does after the child deploy.
-      update: vi.fn((logicalId: string, physicalId: string) =>
-        Promise.resolve(
+      // Its child's own deploy (not run here) finishes its own check and
+      // marks the child record, unless a case says the child's check failed.
+      update: vi.fn((logicalId: string, physicalId: string) => {
+        const child = records[CHILD];
+        if (logicalId === 'Child' && childCheckFinishes && child && !(child instanceof Error)) {
+          records[CHILD] = { ...child, nestedSsmNamesChecked: true };
+        }
+        return Promise.resolve(
           logicalId === 'Child'
             ? { physicalId, wasReplaced: false, attributes: { 'Outputs.ParamName': 'healed' } }
             : { physicalId, wasReplaced: false }
-        )
-      ),
+        );
+      }),
       delete: vi.fn(),
       getAttribute: vi.fn(),
       readCurrentState: vi.fn().mockResolvedValue(undefined),
@@ -380,6 +389,27 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     const final = savedStates().at(-1)!;
     expect(final.nestedSsmNamesChecked).toBe(true);
     expect(final.resources['Child']?.attributes).toEqual({ 'Outputs.ParamName': 'healed' });
+  });
+
+  it('does not mark when the updated child could not finish its own check of its children', async () => {
+    const child = childClean();
+    child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
+    records = { [PARENT]: stateOf(PARENT, { Child: nestedRecord() }), [CHILD]: child };
+    // The child deploy succeeded, but a grandchild read failed inside it, so
+    // its record carries no mark.
+    childCheckFinishes = false;
+    await deploy();
+    expect(childUpdates()).toHaveLength(1);
+    expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
+  });
+
+  it('marks when the updated child has no nested-stack row of its own', async () => {
+    fs.writeFileSync(path.join(dir, 'child.json'), JSON.stringify(ssmTemplate()));
+    const child = stateOf(CHILD, { Param: ssmRecord(`/${generated(CHILD, 'Param')}`) });
+    records = { [PARENT]: stateOf(PARENT, { Child: nestedRecord() }), [CHILD]: child };
+    childCheckFinishes = false;
+    await deploy();
+    expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
   });
 
   it('promotes a parent reader of the forced row’s outputs', async () => {
