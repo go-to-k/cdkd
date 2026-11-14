@@ -393,6 +393,76 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
         expect(childSaves(backend)).toEqual([]);
       }
     });
+
+    const base = (extra: Partial<Parameters<typeof build>[0]> = {}) =>
+      build({
+        nested: false,
+        changes: new Map([['Q', createChange('Q')]]),
+        resources: { Child: record('Child', NESTED) },
+        childState: child({ A: record('A'), B: record('B') }),
+        childJournal: { segments: [pending(RUN, { A: ['B'] })] },
+        ...extra,
+      });
+
+    it('a failed child save warns, and the child journal is still deleted', async () => {
+      const { engine, backend } = base();
+      backend.saveState.mockImplementation((name: string) =>
+        name === `${STACK}~Child` ? Promise.reject(new Error('etag conflict')) : Promise.resolve('etag-1')
+      );
+      const { getLogger } = await import('../../../src/utils/logger.js');
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childSaves(backend)).toHaveLength(1);
+      expect(vi.mocked(getLogger().warn)).toHaveBeenCalledWith(
+        expect.stringContaining('Could not record the template')
+      );
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toContain(`${STACK}~Child`);
+    });
+
+    it('writes nothing without an etag from the locked read, or an unreadable orphans container', async () => {
+      const noEtag = base();
+      const read = noEtag.backend.getState.getMockImplementation() as (
+        name: string
+      ) => Promise<{ state: StackState; etag?: string } | null>;
+      noEtag.backend.getState.mockImplementation(async (name: string) => {
+        const data = await read(name);
+        return name === `${STACK}~Child` && data ? { state: data.state } : data;
+      });
+      await noEtag.engine.deploy(STACK, templateOf(['Q']));
+      expect(childSaves(noEtag.backend)).toEqual([]);
+
+      const badOrphans = base({
+        childState: { ...child({ A: record('A'), B: record('B') }), orphans: 'x' as never },
+      });
+      await badOrphans.engine.deploy(STACK, templateOf(['Q']));
+      expect(childSaves(badOrphans.backend)).toEqual([]);
+    });
+
+    it('a grandchild record gains its lists too', async () => {
+      const GRAND = `${STACK}~Child~Grand`;
+      const { engine, backend } = base({
+        childState: child({ Grand: record('Grand', NESTED) }),
+        childJournal: { segments: [] },
+      });
+      const grand: StackState = { ...child({ A: record('A'), B: record('B') }), stackName: GRAND };
+      const read = backend.getState.getMockImplementation() as (
+        name: string
+      ) => Promise<{ state: StackState; etag?: string } | null>;
+      backend.getState.mockImplementation((name: string) =>
+        name === GRAND ? Promise.resolve({ state: grand, etag: 'g0' }) : read(name)
+      );
+      backend.loadRollbackJournal.mockImplementation((name: string) =>
+        Promise.resolve(name === GRAND ? { segments: [pending(RUN, { A: ['B'] })] } : name === STACK ? null : { segments: [] })
+      );
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      const saves = backend.saveState.mock.calls.filter((c) => c[0] === GRAND);
+      expect(saves).toHaveLength(1);
+      expect((saves[0]![2] as StackState).resources['A']!.dependencies).toEqual(['B']);
+      expect(saves[0]![3]).toEqual({ expectedEtag: 'g0' });
+    });
   });
 
   it('CONTROL: the ROOT no-change path deletes the child journal too', async () => {

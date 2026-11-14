@@ -109,6 +109,7 @@ import {
   dropSettledNestedJournals,
   getNestedRevertRun,
   nestedPendingSnapshot,
+  recordChildTemplateDependencies,
   revertNestedChildFromJournal,
   revertedNestedRowIds,
   type NestedRevertRun,
@@ -484,9 +485,10 @@ describe('revertNestedChildFromJournal (#3754)', () => {
       const h = harness({
         state: childState({ U: q(), X: q(), Y: q(['U']) }),
         segments: [
+          // Older than the run's own: it would win if the run filter let it in.
+          seg('run-other', [], { previousDependencies: { Y: [] } }),
           seg('run-1', ['U'], { previousDependencies: { X: ['U'], Y: ['U', 'Gone'] } }),
           seg('run-1', [], { previousDependencies: { X: ['Y'] } }),
-          seg('run-other', [], { previousDependencies: { Y: [] } }),
         ],
       });
 
@@ -984,6 +986,32 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     await h.run('r');
 
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining('1 operation(s) were skipped'));
+  });
+});
+
+describe('recordChildTemplateDependencies (go-to-k/cdkd#6314)', () => {
+  const args = (runId: string | undefined, segments: RollbackJournalSegment[]) => ({
+    stateBackend: { saveState: vi.fn().mockResolvedValue('e2') },
+    child: CHILD,
+    region: REGION,
+    state: childState({ A: { resourceType: 'T', physicalId: 'a' }, B: { resourceType: 'T', physicalId: 'b' } }),
+    etag: 'e1',
+    segments,
+    runId,
+    logger: { debug: vi.fn(), warn: vi.fn() },
+  });
+
+  it('writes the newest run segment lists over the etag', async () => {
+    const a = args('run-1', [seg('run-1', [], { templateDependencies: { A: ['B'] } })]);
+    await recordChildTemplateDependencies(a);
+    expect(a.stateBackend.saveState).toHaveBeenCalledOnce();
+    expect(a.stateBackend.saveState.mock.calls[0]![3]).toEqual({ expectedEtag: 'e1' });
+  });
+
+  it('a deploy with no run id writes nothing, even over a run-less segment', async () => {
+    const a = args(undefined, [seg(undefined, [], { templateDependencies: { A: ['B'] } })]);
+    await recordChildTemplateDependencies(a);
+    expect(a.stateBackend.saveState).not.toHaveBeenCalled();
   });
 });
 
