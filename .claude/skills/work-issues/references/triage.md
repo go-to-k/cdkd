@@ -134,7 +134,12 @@ Schema` (`required`, `createOnlyProperties`), else a throwaway change set
 (delete its stack, then its leftovers, e.g. FSx final backups, #5206),
 BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
 reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
-reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
+reason it (#5107). MEASURE an `Fn::GetAtt` value's shape and JSON type with a
+custom-resource echo: an inline python3.12 Lambda logging `ResourceProperties`
+and PUTting SUCCESS via `urllib` (never depend on `cfnresponse`),
+`ServiceTimeout: '60'` on the CR, else a lost response holds create AND delete
+an hour each; `Fn::ToJsonString` fails on an object attribute and Outputs
+stringify (#6309). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
 what they accept; MEASURE a CDK CLI premise by running the inputs through its
 parser from `node_modules`, never by reading its source (#2221). Before
 ranking an SDK-routed backfill row, grep its member in the installed SDK

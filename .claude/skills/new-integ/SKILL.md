@@ -121,7 +121,10 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      the AWS resources by deterministic name, remove the `state.json` + `lock.json`,
      and **sweep `/aws/lambda/${STACK}*` log groups** (Lambda auto-creates them on
      invoke and neither CFn nor cdkd deletes them — leaving them counts as an
-     orphan). **Any sweep that DELETES what a `${VAR}`-filtered listing returns
+     orphan; a Lambda logging to an explicit LogGroup takes an explicit role
+     granting only `logs:CreateLogStream` / `logs:PutLogEvents` on that group,
+     since the default role's `logs:CreateLogGroup` lets a late Delete-invocation
+     delivery re-create it after destroy, #6309). **Any sweep that DELETES what a `${VAR}`-filtered listing returns
      needs a scope guard that DOMINATES it** — either the sweep sits inside the
      non-catch-all arm, or it sits after an `esac` whose catch-all leaves via
      `exit` / `return`; a `case` that merely warns and falls through stops
@@ -158,21 +161,9 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
      ```
 
-     Never write `if aws <read-probe> ... >/dev/null 2>&1; then FAIL` (or the
-     inverse `if ! aws ...; then <gone>`): a throttled probe would silently
-     pass the leak check (issue #1097 pattern 2). The same goes for the
-     capture-form spelling `N=$(aws <read-verb> ... 2>/dev/null || echo 0)`
-     (`|| true` included) and for silenced probe wrappers
-     (`fn() { aws ... >/dev/null 2>&1; }`) — use plain strict captures, or a
-     `gone_probe` branch when not-found is a legitimate outcome (issue #1120).
-     In a multi-statement value wrapper, append `|| return 1` to every
-     INTERMEDIATE `out="$(aws ...)"` capture (errexit is cleared inside
-     `$( )`, so only the last command's status propagates otherwise), and
-     write best-effort cleanup helpers as `fn() { ( set +eu; ... ) }` so they
-     never re-arm strict mode in a `set +eu` caller.
-     Use `s3api head-object` for state files, never `aws s3 ls` (exit 1 +
-     empty output for "no keys" is indistinguishable from a silenced error).
-     Enforced by `tests/unit/scripts/integ-verify-probe-not-found.test.ts`.
+     The banned probe spellings (silenced `if aws ...`, capture-form fallbacks,
+     silenced wrappers, `aws s3 ls`) live in `.claude/rules/testing.md` →
+     "`verify.sh` gone-probes", enforced by `integ-verify-probe-not-found.test.ts`.
    - End with a single `echo "[verify] PASS — ..."` line (the run-integ harness
      greps for it).
    - `chmod +x verify.sh`.
