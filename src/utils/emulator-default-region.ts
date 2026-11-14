@@ -13,15 +13,25 @@
  * deployed into the emulator's `us-west-2` also runs there under `cdkd local`,
  * as it does on real AWS with no `AWS_REGION` in the shell.
  *
- * A leaf module (no cdkd imports) so `src/local` can use it without reaching
- * into `src/cli`.
+ * The record lives in cdk-local (its "ambient default region",
+ * go-to-k/cdk-local#964), so the chains cdkd owns (`local invoke`,
+ * `start-api`, `run-task`, `invoke-agentcore`) and the ones cdk-local owns
+ * (`start-service`, `start-alb`, `start-web-function`, `start-microvm`,
+ * `start-cloudfront`, `start-agentcore`) read ONE value: recording it here is
+ * the handover. This module only names it in cdkd's vocabulary.
  */
 
-let recorded: string | undefined;
+import {
+  ambientDefaultRegion,
+  namedEnvAwsRegion,
+  setAmbientDefaultRegion,
+} from 'cdk-local/internal';
+
+export { namedEnvAwsRegion };
 
 /** Remember `region` as the emulator run's default that cdkd wrote into `AWS_REGION`. */
 export function recordEmulatorDefaultRegion(region: string): void {
-  recorded = region;
+  setAmbientDefaultRegion(region);
 }
 
 /**
@@ -30,18 +40,10 @@ export function recordEmulatorDefaultRegion(region: string): void {
  * `--region` overwrote it).
  */
 export function emulatorDefaultRegion(): string | undefined {
-  return recorded !== undefined && process.env['AWS_REGION'] === recorded ? recorded : undefined;
-}
-
-/**
- * `process.env.AWS_REGION` unless it holds the emulator run's default — the
- * value of the variable as the user set it.
- */
-export function namedEnvAwsRegion(): string | undefined {
-  return emulatorDefaultRegion() === undefined ? process.env['AWS_REGION'] : undefined;
+  return ambientDefaultRegion();
 }
 
 /** Test hook: forget the recorded default between cases. */
 export function resetEmulatorDefaultRegionForTests(): void {
-  recorded = undefined;
+  setAmbientDefaultRegion(undefined);
 }

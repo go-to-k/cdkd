@@ -349,7 +349,7 @@ the flags. On this command they resolve the following:
 | --- | --- |
 | `Ref`, `Fn::Sub`, `Fn::Join`, pseudo parameters | Resolved under either flag. |
 | `Fn::GetAtt` | Resolved under `--from-state`. Dropped with a warning under `--from-cfn-stack`. |
-| `Fn::ImportValue`, `Fn::GetStackOutput` | Resolved from the active state source. With neither flag, a warning names both. |
+| `Fn::ImportValue`, `Fn::GetStackOutput` | Resolved from the active state source, also when nested inside `Fn::Join`, `Fn::Sub` or `Fn::Select`. With neither flag, a warning names both. |
 | `{{resolve:...}}` in `Environment` | Looked up before any container starts. |
 | `{{resolve:...}}` in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
 | A secret attribute (`AWS::IAM::AccessKey`'s `SecretAccessKey`, a masked custom resource attribute) in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
@@ -358,7 +358,8 @@ Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see
 below). The secret-attribute check reads the consumer stack's own state only:
 a value another stack exports, read through `Fn::ImportValue` or
-`Fn::GetStackOutput`, goes on the command line as exported.
+`Fn::GetStackOutput`, goes on the command line as exported, unless it was
+recorded as the secret mask (`***`), which is refused.
 
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.

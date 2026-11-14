@@ -13,6 +13,7 @@ import {
   EcsTaskResolutionError,
   resolveEcsTaskTarget,
 } from '../../../src/local/ecs-task-resolver.js';
+import { argvValue } from '../../../src/local/ecs-task-resolver/container.js';
 import type { CrossStackResolver } from '../../../src/local/state-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
@@ -146,6 +147,14 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
     );
     expect(cross.needsEnvOrSecretSubstitution).toBe(true);
     expect(cross.needsCrossStackResolver).toBe(true);
+    // Nested in Fn::Join: cdk-local resolves it now, so the resolver is built
+    // for it too (go-to-k/cdkd#6270).
+    const nested = detectEcsImageResolutionNeeds(
+      buildStack({
+        Command: ['cp', { 'Fn::Join': ['', ['s3://', { 'Fn::ImportValue': 'P-Bucket' }]] }],
+      })
+    );
+    expect(nested.needsCrossStackResolver).toBe(true);
     const literal = detectEcsImageResolutionNeeds(buildStack({ Command: ['echo', 'hi'] }));
     expect(literal.needsEnvOrSecretSubstitution).toBe(false);
   });
@@ -235,7 +244,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
     });
 
-    it('refuses a Fn::ImportValue nested in Fn::Join with the engine reason (top-level only)', async () => {
+    it('resolves a Fn::ImportValue nested in Fn::Join (go-to-k/cdkd#6270, cdk-local#965)', async () => {
       const nested = ['--uri', { 'Fn::Join': ['', ['s3://', { 'Fn::ImportValue': 'Producer-Bucket' }]] }];
       const task = resolveEcsTaskTarget('TD', [buildStack({ Command: nested })], {
         stateResources: {},
@@ -244,10 +253,121 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         resources: {},
         crossStackResolver: resolver('producer-bucket'),
       });
-      expect(task.containers[0]!.command).toEqual(['--uri', '']);
+      expect(task.containers[0]!.command).toEqual(['--uri', 's3://producer-bucket']);
+      expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+    });
+
+    it('refuses a nested cross-stack element that also reads a same-stack secret (go-to-k/cdkd#6270)', async () => {
+      // The sync pass defers a cross-stack element before its secret check,
+      // so the post-pass must run that check itself.
+      const state: Record<string, ResourceState> = {
+        Key: {
+          physicalId: 'AKIAEXAMPLE',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: {},
+          attributes: { SecretAccessKey: 'plaintext-secret-key' },
+          dependencies: [],
+        },
+      };
+      const element = {
+        'Fn::Join': [':', [{ 'Fn::ImportValue': 'Producer-Bucket' }, { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }]],
+      };
+      const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+        stateResources: state,
+      });
+      await applyCrossStackResolverToTask(task, {
+        resources: state,
+        crossStackResolver: resolver('producer-bucket'),
+      });
+      expect(task.containers[0]!.command).toEqual(['run', '']);
+      expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
       expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
-        /Command\[1\]: Fn::Join element \[1\]: unsupported intrinsic Fn::ImportValue/
+        /Command\[1\]: reads the secret attribute Key\.SecretAccessKey/
       );
+    });
+
+    it('refuses a producer output recorded as the secret mask (go-to-k/cdkd#6270)', async () => {
+      const task = resolveEcsTaskTarget('TD', [buildStack({ Command: importCommand })], {
+        stateResources: {},
+      });
+      await applyCrossStackResolverToTask(task, {
+        resources: {},
+        crossStackResolver: resolver('***'),
+      });
+      expect(task.containers[0]!.command).toEqual(['--bucket', '']);
+      expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+        /Command\[1\]: resolved a cross-stack value recorded as the secret mask/
+      );
+    });
+
+    it('argvValue refuses a value that is the secret mask on its own (go-to-k/cdkd#6270)', () => {
+      expect(argvValue('***')).toEqual({
+        reason: 'resolved to the secret mask (***), not the deployed value',
+      });
+      expect(argvValue('a***b')).toEqual({ value: 'a***b' });
+    });
+
+    it('refuses a producer mask joined into a longer element (go-to-k/cdkd#6270)', async () => {
+      const element = { 'Fn::Join': ['', ['--token=', { 'Fn::ImportValue': 'P-Tok' }]] };
+      const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+        stateResources: {},
+      });
+      await applyCrossStackResolverToTask(task, {
+        resources: {},
+        crossStackResolver: resolver('***'),
+      });
+      expect(task.containers[0]!.command).toEqual(['run', '']);
+      expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+        /Command\[1\]: resolved a cross-stack value recorded as the secret mask/
+      );
+    });
+
+    describe('an attribute read whose target a cross-stack value names (go-to-k/cdkd#6270)', () => {
+      const state: Record<string, ResourceState> = {
+        Key: {
+          physicalId: 'AKIAEXAMPLE',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: {},
+          attributes: { SecretAccessKey: 'plaintext-secret-key' },
+          dependencies: [],
+        },
+      };
+      it.each([
+        ['a Fn::GetAtt logical ID', { 'Fn::GetAtt': [{ 'Fn::ImportValue': 'X' }, 'SecretAccessKey'] }, 'Key', /Fn::GetAtt whose logical ID/],
+        ['a dotted Fn::GetAtt', { 'Fn::GetAtt': { 'Fn::ImportValue': 'X' } }, 'Key.SecretAccessKey', /Fn::GetAtt whose logical ID/],
+        ['a Fn::Sub template', { 'Fn::Sub': { 'Fn::ImportValue': 'X' } }, '${Key.SecretAccessKey}', /Fn::Sub whose template/],
+        [
+          'an array-form Fn::Sub template inside Fn::Join',
+          { 'Fn::Join': ['', ['k=', { 'Fn::Sub': [{ 'Fn::ImportValue': 'X' }, {}] }]] },
+          '${Key.SecretAccessKey}',
+          /Fn::Sub whose template/,
+        ],
+      ])('refuses %s', async (_label, element, exported, reason) => {
+        const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+          stateResources: state,
+        });
+        await applyCrossStackResolverToTask(task, {
+          resources: state,
+          crossStackResolver: resolver(exported),
+        });
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(reason);
+      });
+    });
+
+    it('resolves an Environment value with a nested Fn::ImportValue (go-to-k/cdkd#6270)', async () => {
+      const stack = buildStack({
+        Environment: [
+          { Name: 'URI', Value: { 'Fn::Join': ['', ['s3://', { 'Fn::ImportValue': 'Producer-Bucket' }]] } },
+        ],
+      });
+      expect(detectEcsImageResolutionNeeds(stack).needsCrossStackResolver).toBe(true);
+      const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+      await applyCrossStackResolverToTask(task, {
+        resources: {},
+        crossStackResolver: resolver('producer-bucket'),
+      });
+      expect(task.containers[0]!.environment['URI']).toBe('s3://producer-bucket');
     });
 
     it('names a cross-stack reference when no post-pass ran', () => {

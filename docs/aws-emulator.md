@@ -367,7 +367,7 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | S3 addressing | Keep the URL on `127.0.0.1`. cdkd rewrites `localhost` to it, and inside containers the URL stays loopback, so S3 stays path-style. |
 | `--auth off` | When the emulator runs without authentication, there is no `emulator_credentials` file. cdkd notices, and containers get fixed placeholder keys. |
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
-| Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set; else, for `local invoke` / `start-api` / `run-task` / `invoke-agentcore`, the stack's `env.region` or deployed region; else the run's `config` region. |
+| Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set; else, on every `cdkd local` command, the stack's `env.region` or deployed region; else the run's `config` region. |
 | SQS queue URLs | The emulator's queue URLs are rewritten so SQS calls stay local; see the note below. |
 | Docker image assets | Refused before anything is built. The emulator's ECR does not accept image pushes yet, and before 1.0.338 it returned repository URIs on the real `amazonaws.com` registry, so a push would have left your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |

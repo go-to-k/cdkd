@@ -278,10 +278,9 @@ function resolveArgvArray(
       return '';
     }
     if (isCrossStackIntrinsic(element)) {
-      // The async post-pass resolves a top-level one (or replaces this reason
-      // with its own); the sync substitution cannot. A nested one is refused
-      // below with the engine's own reason: cdk-local resolves cross-stack
-      // intrinsics only at the top level.
+      // The async post-pass resolves one at any depth (or replaces this
+      // reason with its own, a secret read included); the sync substitution
+      // cannot (go-to-k/cdk-local#965).
       unresolved.push({ field, index, reason: CROSS_STACK_ARGV_REASON });
       return '';
     }
@@ -315,7 +314,7 @@ function resolveArgvArray(
  * line, positional and unredacted, so either one is refused rather than
  * served (go-to-k/cdkd#6271).
  */
-function secretAttributeRead(
+export function secretAttributeRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
@@ -333,6 +332,43 @@ function secretAttributeRead(
         'pass the value through Environment or Secrets instead'
       );
     }
+  }
+  return undefined;
+}
+
+/**
+ * Why an argv element must not go through the cross-stack post-pass because a
+ * `Fn::GetAtt` logical ID / attribute name or a `Fn::Sub` template is itself
+ * built from an `Fn::ImportValue` / `Fn::GetStackOutput`, or `undefined`.
+ * cdk-local substitutes a nested cross-stack value BEFORE the sync pass, so
+ * such an element would read whichever same-stack attribute the export names,
+ * past {@link secretAttributeRead}, which sees only literal reads.
+ * CloudFormation refuses both shapes (go-to-k/cdkd#6270).
+ */
+export function computedAttributeRead(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const r = computedAttributeRead(item);
+      if (r !== undefined) return r;
+    }
+    return undefined;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Fn::GetAtt' && isCrossStackIntrinsic(value)) {
+      return (
+        'a Fn::GetAtt whose logical ID or attribute name is a cross-stack reference, ' +
+        'which CloudFormation does not accept'
+      );
+    }
+    if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      if (isCrossStackIntrinsic(template)) {
+        return 'a Fn::Sub whose template is a cross-stack reference, which CloudFormation does not accept';
+      }
+    }
+    const r = computedAttributeRead(value);
+    if (r !== undefined) return r;
   }
   return undefined;
 }
@@ -390,6 +426,11 @@ const CROSS_STACK_ARGV_REASON =
 export function argvValue(value: unknown): { value: string } | { reason: string } {
   if (typeof value === 'number' || typeof value === 'boolean') return { value: String(value) };
   if (typeof value !== 'string') return { reason: 'resolved to a non-string value' };
+  if (value === SECRET_MASK) {
+    // A masked value handed across (a producer's NoEcho output recorded as
+    // the mask) would run the command with `***` as an argument.
+    return { reason: `resolved to the secret mask (${SECRET_MASK}), not the deployed value` };
+  }
   if (containsDynamicReference(value)) {
     return {
       reason:

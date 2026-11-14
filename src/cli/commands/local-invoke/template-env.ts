@@ -1,4 +1,4 @@
-import { readEnvVarsFileText } from 'cdk-local/internal';
+import { containsCrossStackIntrinsic, readEnvVarsFileText } from 'cdk-local/internal';
 import { realAwsException } from '../../../local/local-aws-wiring.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
@@ -38,28 +38,20 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
 
 /**
  * Returns true when any value in the function's template env map carries
- * a top-level `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic. Used to
- * gate the cross-stack resolver construction inside the `--from-state`
+ * an `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic, at any depth. Used
+ * to gate the cross-stack resolver construction inside the `--from-state`
  * flow: literal + same-stack-intrinsic env maps shouldn't pay for the
  * extra S3 client / index-load cost (issue #454).
  *
- * Detection is one level deep — same heuristic CDK 2.x uses for these
- * intrinsics in practice. Nested cross-stack intrinsics (e.g. an
- * `Fn::ImportValue` buried inside a `Fn::Join`) are not detected here;
- * those won't resolve in v1 anyway because the async resolver path
- * defers to the sync helper for `Fn::Join` / `Fn::Sub` bodies (see
- * `substituteAgainstStateAsync` docstring).
+ * A cross-stack intrinsic nested inside `Fn::Join` / `Fn::Sub` /
+ * `Fn::Select` counts too: cdk-local's `substituteAgainstStateAsync`
+ * resolves it (go-to-k/cdk-local#965), but only when the resolver was built.
  */
 export function envHasCrossStackIntrinsic(
   templateEnv: Record<string, unknown> | undefined
 ): boolean {
   if (!templateEnv) return false;
-  for (const v of Object.values(templateEnv)) {
-    if (!v || typeof v !== 'object') continue;
-    const obj = v as Record<string, unknown>;
-    if ('Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj) return true;
-  }
-  return false;
+  return Object.values(templateEnv).some(containsCrossStackIntrinsic);
 }
 
 /**
