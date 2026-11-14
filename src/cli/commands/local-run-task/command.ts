@@ -119,6 +119,9 @@ export async function localRunTaskCommand(
   // SIGINT and SIGTERM share one handler and one count (go-to-k/cdkd#6285).
   let removeSignalHandlers: (() => void) | undefined;
   let signalCount = 0;
+  // The signal that started the teardown, so a force-exit line can say when
+  // the second one was a DIFFERENT signal.
+  let firstSignal: ShutdownSignal | undefined;
   // Set only once the detach path has actually handed the containers off.
   let detachedSuccessfully = false;
   // Issue #606: the active state provider (--from-state / --from-cfn-stack).
@@ -381,11 +384,12 @@ export async function localRunTaskCommand(
         // `--profile`, which is the case that must print nothing.
         const stranded = strandedProfileCredentialsNotice(credsHostPath);
         process.stderr.write(
-          `Force-exit on second ${signal === 'SIGINT' ? '^C' : 'SIGTERM'}; container cleanup skipped.` +
+          `${forceExitLead(signal, firstSignal)}; container cleanup skipped.` +
             `${stranded ? ` ${stranded}` : ''}\n`
         );
         process.exit(shutdownSignalExitCode(signal));
       }
+      firstSignal = signal;
       logger.info('Stopping task...');
       void cleanup().then(() => process.exit(shutdownSignalExitCode(signal)));
     };
@@ -658,4 +662,17 @@ export async function applyPerContainerNames(
       provider.dispose();
     }
   }
+}
+
+/**
+ * The force-exit line's lead (go-to-k/cdkd#6285): `Force-exit on second ^C` or
+ * `... second SIGTERM` when both signals were the same kind, and
+ * `Force-exit on a second signal (<this one>)` when a ^C followed a SIGTERM or
+ * the reverse, so the line never claims a signal was sent twice.
+ */
+function forceExitLead(signal: ShutdownSignal, first: ShutdownSignal | undefined): string {
+  const label = signal === 'SIGINT' ? '^C' : 'SIGTERM';
+  return first !== undefined && first !== signal
+    ? `Force-exit on a second signal (${label})`
+    : `Force-exit on second ${label}`;
 }

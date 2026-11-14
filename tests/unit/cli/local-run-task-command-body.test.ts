@@ -941,9 +941,9 @@ describe('localRunTaskCommand body: SIGTERM tears down what SIGINT does (go-to-k
   });
 
   it.each([
-    { first: 'SIGTERM', second: 'SIGTERM', label: 'SIGTERM', code: 143 },
-    { first: 'SIGINT', second: 'SIGTERM', label: 'SIGTERM', code: 143 },
-    { first: 'SIGTERM', second: 'SIGINT', label: '^C', code: 130 },
+    { first: 'SIGTERM', second: 'SIGTERM', label: 'second SIGTERM', code: 143 },
+    { first: 'SIGINT', second: 'SIGTERM', label: 'a second signal (SIGTERM)', code: 143 },
+    { first: 'SIGTERM', second: 'SIGINT', label: 'a second signal (^C)', code: 130 },
   ] as const)(
     'a $second after a $first is the second signal: force-exit $code',
     async ({ first, second, label, code }) => {
@@ -964,7 +964,7 @@ describe('localRunTaskCommand body: SIGTERM tears down what SIGINT does (go-to-k
         io.restore();
       }
 
-      const forceExit = io.stderr.find((c) => c.includes(`Force-exit on second ${label}`));
+      const forceExit = io.stderr.find((c) => c.includes(`Force-exit on ${label}`));
       expect(forceExit, `no force-exit line in ${JSON.stringify(io.stderr)}`).toBeDefined();
       // The stranded-credentials notice rides the SIGTERM arm too.
       expect(hostPath).toBeDefined();
