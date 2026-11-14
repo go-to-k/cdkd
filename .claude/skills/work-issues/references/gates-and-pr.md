@@ -20,8 +20,8 @@ same PR.
 - **`vp check --fix` WRITES** the WORKING TREE while `git commit` commits the
   INDEX: run `git add -u` after it, checking the SECOND column of
   `git status --porcelain` (`^ M` misses `MM`).
-- **Start every verification command with `cd <worktree> &&`**: the
-  `integ-destroy` marker store is PER-WORKTREE.
+- **Start every verification command with `cd <worktree> &&`**: a cwd does
+  not persist, and the `integ-destroy` marker store is PER-WORKTREE.
 - **A hook-gated command carries no SIDE-EFFECTING preamble, and "gated" means
   EVERY PreToolUse hook in `.claude/settings.json`**: a denial aborts the whole
   string before any of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
