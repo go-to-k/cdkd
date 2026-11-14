@@ -19,6 +19,7 @@ export {
 } from './ecs-task-resolver/role-arn.js';
 export { checkVolumeHostPath } from './ecs-task-resolver/volume.js';
 export { applyCrossStackResolverToTask } from './ecs-task-resolver/cross-stack.js';
+export { assertEcsTaskCommandsResolved } from './ecs-task-resolver/container.js';
 
 // Re-exported from cdk-local so this still-local module, the shimmed
 // `cloud-map-resolver` (which throws it), and every host-side

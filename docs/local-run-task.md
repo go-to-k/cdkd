@@ -353,8 +353,16 @@ the flags. On this command they resolve the following:
 | `{{resolve:...}}` in `Environment` | Looked up before any container starts. |
 | `{{resolve:...}}` in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
 
-When cdkd cannot resolve a value, it drops the value, prints a warning that
-names it, and continues the run.
+These references resolve in `Environment`, `Secrets`, and in each element of
+`Command`, `EntryPoint` and a health-check command.
+
+When cdkd cannot resolve an `Environment` or `Secrets` value, it drops the
+value, prints a warning that names it, and continues the run. An element of
+`Command`, `EntryPoint` or a health-check command that cannot be resolved
+(no state flag, a resource missing from state, a producer output that is not
+deployed) stops the run before any container starts, and the error names the
+container and the element's index: running without the argument would run a
+different command than the deployed task.
 
 ### Secrets
 

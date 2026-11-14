@@ -46,6 +46,15 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
         needsAssetRepoMarker = true;
       }
       if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
+      // An intrinsic argv element resolves against state too (go-to-k/cdkd#6271).
+      const argv = containerArgvElements(co);
+      if (argv.some((v) => v !== null && typeof v === 'object')) {
+        needsEnvOrSecretSubstitution = true;
+      }
+      if (argv.some(isCrossStackIntrinsic)) {
+        needsEnvOrSecretSubstitution = true;
+        needsCrossStackResolver = true;
+      }
       if (containerHasCrossStackEnvOrSecret(co)) {
         needsEnvOrSecretSubstitution = true;
         needsCrossStackResolver = true;
@@ -110,6 +119,20 @@ function containerHasCrossStackEnvOrSecret(c: Record<string, unknown>): boolean 
     }
   }
   return false;
+}
+
+/**
+ * Every element of a container's `Command` / `EntryPoint` /
+ * `HealthCheck.Command` (go-to-k/cdkd#6271).
+ */
+function containerArgvElements(c: Record<string, unknown>): unknown[] {
+  const health = c['HealthCheck'];
+  const lists = [
+    c['Command'],
+    c['EntryPoint'],
+    health && typeof health === 'object' ? (health as Record<string, unknown>)['Command'] : undefined,
+  ];
+  return lists.flatMap((l) => (Array.isArray(l) ? (l as unknown[]) : []));
 }
 
 export function isCrossStackIntrinsic(value: unknown): boolean {

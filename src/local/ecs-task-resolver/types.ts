@@ -75,6 +75,12 @@ export interface ResolvedEcsTask {
   warnings: string[];
 }
 
+export interface UnresolvedCommandElement {
+  field: 'Command' | 'EntryPoint' | 'HealthCheck.Command';
+  index: number;
+  reason: string;
+}
+
 export interface ResolvedEcsContainer {
   name: string;
   image: ResolvedEcsImage;
@@ -97,6 +103,12 @@ export interface ResolvedEcsContainer {
    * the runner keeps it off the `docker run` argv (go-to-k/cdkd#5756).
    */
   droppedSecretNames?: string[];
+  /**
+   * `Command` / `EntryPoint` / `HealthCheck.Command` elements the resolver
+   * could not resolve; each holds an empty placeholder at its index. The CLI
+   * refuses the run while any remain (go-to-k/cdkd#6271).
+   */
+  unresolvedCommandElements?: UnresolvedCommandElement[];
   /**
    * Container port mappings. `name` (mirrors the CFn `Name` field) is
    * surfaced for Service Connect resolution (Phase 3 of #262 / Issue
@@ -251,7 +263,8 @@ export interface EcsImageResolutionNeeds {
    */
   needsStateResources: boolean;
   /**
-   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` is
+   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` OR
+   * `Command` / `EntryPoint` / `HealthCheck.Command` element (go-to-k/cdkd#6271) is
    * an intrinsic (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`); OR
    * any task's `Volumes[].Host.SourcePath` is an intrinsic (Gap 6 of
    * #286); OR any task's `TaskRoleArn` / `ExecutionRoleArn` is a
@@ -259,12 +272,13 @@ export interface EcsImageResolutionNeeds {
    * this flag to gate `--from-state` state loading + pseudo-parameter
    * resolution. Without `--from-state` these entries either drop with
    * warnings (env / secret / role ARN) or hard-error (volume source
-   * path — silent drop would mount an empty anonymous volume).
+   * path — silent drop would mount an empty anonymous volume; an argv
+   * element — a dropped one runs a different command).
    */
   needsEnvOrSecretSubstitution: boolean;
   /**
-   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` is a
-   * cross-stack intrinsic (top-level `Fn::ImportValue` /
+   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` OR argv
+   * element (go-to-k/cdkd#6271) is a cross-stack intrinsic (top-level `Fn::ImportValue` /
    * `Fn::GetStackOutput`). Issue #454 — gates the cross-stack resolver
    * construction inside the `--from-state` flow so literal +
    * same-stack-intrinsic env maps don't pay the extra S3-client / index-

@@ -135,6 +135,11 @@ continues. cdkd never substitutes a guess. This happens for:
 
 To supply a dropped variable yourself, add it to an `--env-vars` file.
 
+An element of an ECS `Command`, `EntryPoint` or health-check command is the
+exception: `cdkd local run-task` refuses the run when one cannot be resolved,
+since running without it would run a different command
+([details](local-run-task.md)).
+
 Under `--aws-emulator` with neither state flag, a variable that references a
 resource is dropped the same way, and after those warnings cdkd prints one
 hint: add `--from-state` if the stack was deployed with

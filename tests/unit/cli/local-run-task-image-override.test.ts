@@ -440,3 +440,24 @@ describe('resolveRunTaskImageOverride (go-to-k/cdkd#5768)', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('localRunTaskCommand — unresolved command elements (go-to-k/cdkd#6271)', () => {
+  it('refuses a container whose Command element did not resolve, before the runner starts anything', async () => {
+    h.task = makeTask({ kind: 'public', uri: 'busybox:latest' });
+    (h.task as { containers: Record<string, unknown>[] }).containers[0]!['command'] = ['--bucket', ''];
+    (h.task as { containers: Record<string, unknown>[] }).containers[0]![
+      'unresolvedCommandElements'
+    ] = [{ field: 'Command', index: 1, reason: 'intrinsic-valued; pass --from-state' }];
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await run([]);
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(errSpy.mock.calls.flat().join('\n')).toMatch(/Container 'app' Command\[1\]/);
+    } finally {
+      exit.mockRestore();
+      errSpy.mockRestore();
+    }
+    expect(h.runEcsTask).not.toHaveBeenCalled();
+  });
+});

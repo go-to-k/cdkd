@@ -5,7 +5,12 @@ import { defineOwnKey } from '../../utils/own-keys.js';
 import { substituteAgainstState, type SubstitutionContext } from '../state-resolver.js';
 import { parseContainerImage } from './image.js';
 import { pickString, pickStringArray } from './pick.js';
-import type { ResolvedEcsContainer, EcsImageResolutionContext } from './types.js';
+import type {
+  ResolvedEcsContainer,
+  ResolvedEcsTask,
+  EcsImageResolutionContext,
+  UnresolvedCommandElement,
+} from './types.js';
 
 export function parseContainerDefinition(
   raw: unknown,
@@ -30,11 +35,26 @@ export function parseContainerDefinition(
 
   const image = parseContainerImage(c['Image'], name, taskLogicalId, resources, stack, context);
 
-  const command = pickStringArray(c['Command']);
-  const entryPoint = pickStringArray(c['EntryPoint']);
+  const subContext = buildSubstitutionContextFromImageContext(context);
+  // An argv element that does not resolve is RECORDED, not dropped: dropping
+  // it ran a different command (`--bucket` with no value, go-to-k/cdkd#6271).
+  // The CLI refuses the run via `assertEcsTaskCommandsResolved` once the
+  // cross-stack post-pass has had its chance at the element.
+  const unresolvedCommandElements: UnresolvedCommandElement[] = [];
+  const command = resolveArgvArray(
+    c['Command'],
+    'Command',
+    subContext,
+    unresolvedCommandElements
+  );
+  const entryPoint = resolveArgvArray(
+    c['EntryPoint'],
+    'EntryPoint',
+    subContext,
+    unresolvedCommandElements
+  );
   const workingDirectory = pickString(c['WorkingDirectory']);
 
-  const subContext = buildSubstitutionContextFromImageContext(context);
   const environment: Record<string, string> = {};
   const droppedEnvKeys: { key: string; reason: string }[] = [];
   if (Array.isArray(c['Environment'])) {
@@ -170,7 +190,12 @@ export function parseContainerDefinition(
   let healthCheck: ResolvedEcsContainer['healthCheck'] | undefined;
   if (c['HealthCheck'] && typeof c['HealthCheck'] === 'object') {
     const h = c['HealthCheck'] as Record<string, unknown>;
-    const command2 = pickStringArray(h['Command']);
+    const command2 = resolveArgvArray(
+      h['Command'],
+      'HealthCheck.Command',
+      subContext,
+      unresolvedCommandElements
+    );
     if (command2 && command2.length > 0) {
       healthCheck = { command: command2 };
       if (typeof h['Interval'] === 'number') healthCheck.interval = h['Interval'];
@@ -226,7 +251,89 @@ export function parseContainerDefinition(
   if (privileged !== undefined) out.privileged = privileged;
   if (readonlyRootFilesystem !== undefined) out.readonlyRootFilesystem = readonlyRootFilesystem;
   if (droppedSecretKeys.length > 0) out.droppedSecretNames = droppedSecretKeys.map((d) => d.key);
+  if (unresolvedCommandElements.length > 0) {
+    out.unresolvedCommandElements = unresolvedCommandElements;
+  }
   return out;
+}
+
+/**
+ * Resolve a container argv array (`Command` / `EntryPoint` /
+ * `HealthCheck.Command`). ECS resolves every element at deploy time, so an
+ * intrinsic element is substituted against state as `Environment` is
+ * (go-to-k/cdkd#6271). One that cannot be resolved keeps its POSITION as an
+ * empty placeholder and is recorded in `unresolved`; the run is refused
+ * before any container starts, so the placeholder never reaches docker.
+ */
+function resolveArgvArray(
+  raw: unknown,
+  field: UnresolvedCommandElement['field'],
+  subContext: SubstitutionContext | undefined,
+  unresolved: UnresolvedCommandElement[]
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((element: unknown, index) => {
+    if (typeof element === 'string') return element;
+    if (typeof element === 'number' || typeof element === 'boolean') return String(element);
+    if (!element || typeof element !== 'object' || Array.isArray(element)) {
+      unresolved.push({ field, index, reason: 'not a string or an intrinsic' });
+      return '';
+    }
+    if (!subContext) {
+      unresolved.push({
+        field,
+        index,
+        reason:
+          'intrinsic-valued; pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute it against deployed state',
+      });
+      return '';
+    }
+    const sub = substituteAgainstState(element, subContext);
+    if (sub.kind === 'literal') {
+      const literal = argvLiteral(sub.value);
+      if (literal !== undefined) return literal;
+    }
+    unresolved.push({
+      field,
+      index,
+      reason: sub.kind === 'literal' ? 'resolved to a non-string value' : sub.reason,
+    });
+    return '';
+  });
+}
+
+/**
+ * The argv string for a substituted value, or `undefined` when it is not one
+ * ECS could pass as an argument. A `{{resolve:...}}` dynamic reference is not
+ * resolved on an argv (it would land on the `docker run` command line), so
+ * it is refused rather than run as the literal token.
+ */
+export function argvLiteral(value: unknown): string | undefined {
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value !== 'string') return undefined;
+  return value.includes('{{resolve:') ? undefined : value;
+}
+
+/**
+ * Refuse the run when any container argv element (`Command` / `EntryPoint` /
+ * `HealthCheck.Command`) is still unresolved after the sync pass and the
+ * cross-stack post-pass: running without it runs a different command than
+ * the deployed task (go-to-k/cdkd#6271).
+ */
+export function assertEcsTaskCommandsResolved(task: ResolvedEcsTask): void {
+  const lines: string[] = [];
+  for (const container of task.containers) {
+    for (const u of container.unresolvedCommandElements ?? []) {
+      lines.push(`  - Container '${container.name}' ${u.field}[${u.index}]: ${u.reason}`);
+    }
+  }
+  if (lines.length === 0) return;
+  throw new EcsTaskResolutionError(
+    `Task '${task.taskDefinitionLogicalId}' has container command elements cdkd could not resolve:\n` +
+      `${lines.join('\n')}\n` +
+      'cdkd refuses to run the task with these arguments missing, since that runs a different command than the deployed task. ' +
+      'Deploy the stack and pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) so each element resolves against deployed state.'
+  );
 }
 
 /**

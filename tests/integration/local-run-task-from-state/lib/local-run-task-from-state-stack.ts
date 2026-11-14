@@ -237,7 +237,12 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
             // separate line so verify.sh greps unambiguously.
             // shellcheck disable=SC2016
             // eslint-disable-next-line no-template-curly-in-string
-            'echo "TABLE_NAME=$TABLE_NAME"; echo "TABLE_ARN=$TABLE_ARN"; echo "ENDPOINT=$ENDPOINT"; echo "JOINED=$JOINED"; echo "DB_SECRET_LEN=${#DB_SECRET}"',
+            'echo "TABLE_NAME=$TABLE_NAME"; echo "TABLE_ARN=$TABLE_ARN"; echo "ENDPOINT=$ENDPOINT"; echo "JOINED=$JOINED"; echo "DB_SECRET_LEN=${#DB_SECRET}"; echo "CMD_ARG=$1"',
+            // Issue #6271: a Command ELEMENT naming a deployed resource
+            // (`Ref: MyTable`, index 4; `sh -c` binds it to `$1`). cdkd used
+            // to drop it silently, so the container printed `CMD_ARG=`.
+            'cdkd-argv0',
+            table.tableName,
           ],
           environment: [
             // `Ref: MyTable` → table name (DDB Ref returns the name).
