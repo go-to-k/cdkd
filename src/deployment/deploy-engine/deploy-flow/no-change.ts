@@ -55,6 +55,7 @@ export async function deployWithoutChanges(
     maskedFingerprintsBackfilled,
     orphansChanged,
     terminationProtectionChanged,
+    ssmNamesHealed,
     resolveStackInstanceId,
     startProvenanceCapture,
     startTime,
@@ -73,6 +74,8 @@ export async function deployWithoutChanges(
     maskedFingerprintsBackfilled: boolean;
     orphansChanged: boolean;
     terminationProtectionChanged: boolean;
+    /** go-to-k/cdkd#6274: a record's SSM parameter name was re-spelled in memory. */
+    ssmNamesHealed: boolean;
     resolveStackInstanceId: () => Promise<void>;
     startProvenanceCapture: () => void;
     startTime: number;
@@ -330,6 +333,7 @@ export async function deployWithoutChanges(
       orphansChanged ||
       supersededChanged ||
       terminationProtectionChanged ||
+      ssmNamesHealed ||
       healedAttributesPending
     ) {
       // A first deploy with nothing to create still writes its record here.

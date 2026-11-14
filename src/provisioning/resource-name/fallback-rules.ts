@@ -166,7 +166,10 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
   // go-to-k/cdkd#6272: no leading `/`, as CloudFormation names one. CDK builds
   // an auto-named parameter's ARN as `parameter/` + Ref, so `/<name>` granted
   // `parameter//<name>`, which matches nothing. SSM stores a one-level `/x` as
-  // `x`, so an existing record's `/<name>` is the same parameter.
+  // `x`, so an existing record's `/<name>` is the same parameter, which the
+  // next deploy re-spells by re-deriving THIS rule's name
+  // (`src/deployment/ssm-slashed-name-heal.ts`, go-to-k/cdkd#6274): a change
+  // to these options stops that heal matching the names created under them.
   'AWS::SSM::Parameter': {
     nameProperty: 'Name',
     options: { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g },

@@ -13,6 +13,10 @@ import type { Construct } from 'constructs';
  * GetParameter was denied. The handler returns the error instead of throwing,
  * so verify.sh can tell AccessDenied from a read.
  *
+ * go-to-k/cdkd#6274: verify.sh deploys this first with the last release that
+ * still named it `/<name>`, then redeploys with this build, which re-spells
+ * the record `<name>` and updates the grant and PARAM_NAME to match.
+ *
  * covers: AWS::SSM::Parameter
  * covers: AWS::Lambda::Function
  * covers: AWS::IAM::Role

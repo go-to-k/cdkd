@@ -8,7 +8,7 @@ import {
 } from '../../../utils/nested-template-cycle.js';
 import * as path from 'node:path';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
-import type { ResourceState, StackState } from '../../../types/state.js';
+import type { ResourceChange, ResourceState, StackState } from '../../../types/state.js';
 import { DiffCalculator } from '../../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../../analyzer/diff-calculator.js';
 import type { ProducerLookup } from '../../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
@@ -56,6 +56,12 @@ import {
   healerUnderRecordPrintingBag,
 } from './child-parameters.js';
 import { collectCcApiRoutes } from './routes.js';
+
+/** Whether the deploy runs a nested child's engine for its parent's `row`. */
+function childRowRunsEngine(row: ResourceChange | undefined): boolean {
+  if (row?.changeType === 'CREATE') return true;
+  return row?.changeType === 'UPDATE' && (row.propertyChanges?.length ?? 0) > 0;
+}
 
 export async function buildDiffTree(args: {
   stackName: string;
@@ -187,6 +193,8 @@ export async function buildDiffTree(args: {
    * above diffs a damaged root with such a name.
    */
   isNestedChild: boolean;
+  /** See `ComputeStackDiffOptions.ssmNameHeal` (go-to-k/cdkd#6274); absent = apply. */
+  ssmNameHeal?: 'apply' | 'pending';
   /**
    * The parent node's printing corpus (go-to-k/cdkd#4049), see
    * {@link StackDiffResult.printingSecrets}. Absent at the root.
@@ -238,6 +246,7 @@ export async function buildDiffTree(args: {
     attributeHealerFor,
     ancestorTemplatePaths,
     isNestedChild,
+    ssmNameHeal,
     inheritedSecrets,
     inheritedDerivedNames,
     inheritedNoEchoParameters,
@@ -319,6 +328,7 @@ export async function buildDiffTree(args: {
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
         previewMaskedInputs: !isNestedChild,
+        ...(ssmNameHeal && { ssmNameHeal }),
         nestedTemplates,
       }
     );
@@ -590,6 +600,15 @@ export async function buildDiffTree(args: {
         ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,
         isNestedChild: true,
+        // go-to-k/cdkd#6274: only a row the deploy provisions runs the
+        // child's engine (a CREATE, or an UPDATE changing a property: one
+        // moving only DeletionPolicy / UpdateReplacePolicy calls no
+        // provider), and only that engine heals the child's records. Under
+        // a child no engine runs for, no grandchild's does either.
+        ssmNameHeal:
+          ssmNameHeal !== 'pending' && childRowRunsEngine(changes.get(logicalId))
+            ? 'apply'
+            : 'pending',
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
         ...(hasMaskableValues(childDerivedNames) && { inheritedDerivedNames: childDerivedNames }),

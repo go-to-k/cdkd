@@ -432,7 +432,7 @@ sns-topic-attr-removal	2026-11-13T15:36:43Z	PASS	80	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
 sqs-fifo-unnamed	2026-11-11T08:49:53Z	PASS	70	verify.sh	rc ok, orph clean; pre-fix probe red at phase-1 InvalidParameterValue (#6100)
-ssm-generated-name-grant	2026-11-14T04:52:08Z	PASS	70	verify.sh	rc ok, orph clean; us-east-1; revert probe (prefix '/') FAILs AccessDenied
+ssm-generated-name-grant	2026-11-14T06:47:15Z	PASS	105	verify.sh	rc ok, orph clean; heal revert-probe FAILs Phase 1
 ssm-secure-dynamic-ref	2026-11-04T20:24:16Z	PASS	95	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket; 0 surviving versions
 stack-copy-create-tokens	2026-11-10T16:05:59Z	PASS	1940	verify.sh	rc ok, orph clean
 stack-id-uuid	2026-11-13T03:29:59Z	PASS	88	verify.sh	rc ok, orph clean
