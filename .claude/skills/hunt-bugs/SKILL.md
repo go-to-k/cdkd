@@ -29,8 +29,8 @@ verified gone ("Cleanup is non-negotiable" below).
    ```
 4. **Parallelize, but cap at ~4-5 in flight.** One CDK app, several stacks.
    **Pre-synth once, then deploy from the assembly** — parallel deploys that
-   each re-synth collide on the shared `cdk.out` lock. `npx cdk synth --all -q`
-   once, then `node dist/cli.js deploy <Stack> -a /tmp/cdkd-bughunt/cdk.out ...`
+   each re-synth collide on the shared `cdk.out` lock. `npx cdk synth -q` (every
+   stack, no flag needed) once, then `node dist/cli.js deploy <Stack> -a /tmp/cdkd-bughunt/cdk.out ...`
    per stack. (Without `-a`, deploy serially.)
 
 ## Workflow
@@ -45,7 +45,7 @@ API GW); run slow ones (RDS / ElastiCache / CloudFront) sparingly.
 
 `vp run build` first (the CLI runs from `dist/`). One CDK app under
 `/tmp/cdkd-bughunt/`, one stack per pattern, names prefixed `CdkdBughunt<Pattern>`.
-`pnpm install --ignore-workspace`, then `npx cdk synth --all -q`. State
+`pnpm install --ignore-workspace`, then `npx cdk synth -q`. State
 bucket: `cdkd-state-$(aws sts get-caller-identity --query Account --output text)`.
 **Record every stack you are about to deploy into the bug-hunt sentinel**
 (this arms the cleanup gate):
