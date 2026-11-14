@@ -279,7 +279,12 @@ describe('CloudTrailProvider', () => {
 
       const result = await provider.import(makeInput({ knownPhysicalId: 'my-trail' }));
 
-      expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
+      // go-to-k/cdkd#6242: the ARN GetTrail answered is recorded (no topic,
+      // so no SnsTopicArn).
+      expect(result).toEqual({
+        physicalId: 'my-trail',
+        attributes: { Arn: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail' },
+      });
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetTrailCommand);
       expect(mockSend.mock.calls[0][0].input).toEqual({ Name: 'my-trail' });

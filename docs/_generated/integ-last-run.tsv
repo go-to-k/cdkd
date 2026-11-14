@@ -178,6 +178,7 @@ generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp 
 generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 getatt-appsync-s3express-s3tables	2026-11-14T03:39:08Z	PASS	71	verify.sh	rc ok, orph clean; asserts five (ApiKeyId unit-only: a bearer key) (#6242)
 getatt-asg-arn-rule-name	2026-11-14T02:50:55Z	PASS	90	verify.sh	rc ok, orph clean; CFn A/B measured both values (#6242)
+getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph clean incl. CR log group; CFn A/B measured all three (#6242)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-vpc-managed-policy	2026-11-13T18:14:58Z	PASS	96	verify.sh	rc ok, orph clean; pre-fix build FAILs it (#6232)
 getstackoutput-crossregion	2026-11-04T20:19:14Z	PASS	342	verify.sh	re-run after Phase 6a v12+ lower-bound fix: 6a and all later phases pass; rc ok, orph clean us-east-1+us-west-2

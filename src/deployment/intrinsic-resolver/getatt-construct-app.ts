@@ -186,6 +186,34 @@ export async function constructAttributeForAppTypes(
         return `arn:${partition}:appsync:${region}:${accountId}:apis/${physicalId}`;
       case 'ApiId':
         return physicalId;
+      case 'GraphQLEndpointArn':
+      case 'RealtimeUrl': {
+        // go-to-k/cdkd#6242, measured against CloudFormation: both are built
+        // on the API's ENDPOINT id (the first label of its GraphQL host, not
+        // the api id): `arn:...:appsync:<region>:<account>:endpoints/graphql-api/<id>`
+        // and `wss://<id>.appsync-realtime-api.<region>.<suffix>/graphql`. The
+        // provider records `RealtimeUrl`; both are read off the recorded
+        // GraphQL host otherwise, else heal, then refuse.
+        const host =
+          typeof resource.attributes?.['GraphQLDns'] === 'string'
+            ? (resource.attributes['GraphQLDns'] as string)
+            : urlHost(resource.attributes?.['GraphQLUrl']);
+        const match = host === undefined ? null : /^([a-z0-9]+)\.appsync-api\.(.+)$/.exec(host);
+        if (match) {
+          const [, endpointId, rest] = match;
+          return attributeName === 'GraphQLEndpointArn'
+            ? `arn:${partition}:appsync:${region}:${accountId}:endpoints/graphql-api/${endpointId}`
+            : `wss://${endpointId}.appsync-realtime-api.${rest}/graphql`;
+        }
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: "it is built on the endpoint id of the API's GraphQL host, which the record does not hold",
+        });
+      }
       case 'GraphQLDns':
       case 'RealtimeDns': {
         // go-to-k/cdkd#6242: the provider records both from AWS's `dns` map;
@@ -194,15 +222,9 @@ export async function constructAttributeForAppTypes(
         // A record written before that still holds `GraphQLUrl`, whose host
         // IS the GraphQL one; otherwise heal, then refuse.
         if (attributeName === 'GraphQLDns') {
-          const url = resource.attributes?.['GraphQLUrl'];
-          if (typeof url === 'string' && /^https:\/\/[^/]+\//.test(url)) {
-            return noteAttributeSecrecy(
-              resolver,
-              logicalId,
-              attributeName,
-              new URL(url).host,
-              context
-            );
+          const host = urlHost(resource.attributes?.['GraphQLUrl']);
+          if (host !== undefined) {
+            return noteAttributeSecrecy(resolver, logicalId, attributeName, host, context);
           }
         }
         healBeforeConstructing(resolver, context);
@@ -664,4 +686,18 @@ export async function constructAttributeForAppTypes(
     }
   }
   return NOT_CONSTRUCTED;
+}
+
+/**
+ * The host of a recorded `https://<host>/...` URL, or `undefined` for any
+ * other value, an unparseable one included (a hand-edited record must reach
+ * the heal-then-refuse path, never a raw `TypeError`).
+ */
+function urlHost(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^https:\/\/[^/]+\//.test(value)) return undefined;
+  try {
+    return new URL(value).host;
+  } catch {
+    return undefined;
+  }
 }
