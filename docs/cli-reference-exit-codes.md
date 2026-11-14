@@ -1,6 +1,6 @@
 ---
 title: Exit codes
-description: "What cdkd's exit codes 0, 1, 2, 3, 70 and 130 mean, which commands use each, and how a script should react."
+description: "What cdkd's exit codes 0, 1, 2, 3, 70, 130 and 143 mean, which commands use each, and how a script should react."
 ---
 
 # Exit codes
@@ -29,6 +29,7 @@ esac
 | `3` | `cdkd diff` only: the deploy it previews would refuse to start. |
 | `70` | cdkd stopped on an internal error, most likely a bug. |
 | `130` | `cdkd local` only: interrupted with {kbd:ctrl+c}. |
+| `143` | `cdkd local` only: stopped by `SIGTERM`. |
 
 [Local Execution](local-emulation.md) links to the pages of the `cdkd local`
 commands, which have their own tables.
@@ -131,11 +132,10 @@ stack.
 
 ## Exit `130` and the other `cdkd local` codes
 
-A `cdkd local` command exits `130` when you interrupt it with {kbd:ctrl+c}.
+A `cdkd local` command exits `130` when you interrupt it with {kbd:ctrl+c} and
+`143` when it is stopped by `SIGTERM`. Both run the same cleanup first.
 
-- On SIGTERM, `local start-service` and `local start-alb` also exit `130`.
-  `local start-api`, `local start-cloudfront`, `local start-agentcore`,
-  `local start-web-function` and `local start-microvm` exit `0`.
+- `local start-api` exits `0` on `SIGTERM` instead.
 - `cdkd local run-task` exits with the exit code of its essential container.
   A container that exits `70` therefore yields `70`, without the
   internal-error message.

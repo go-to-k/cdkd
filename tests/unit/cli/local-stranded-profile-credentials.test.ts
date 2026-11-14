@@ -294,8 +294,12 @@ describe('every force-exit arm that can strand the file consults the builder', (
       // deletes rather than reads.
       const collapsed = source.replace(/\s+/g, ' ');
       expect(
-        /void cleanup\(\)\.then\(\(\) => \{? ?process\.exit\(130\)/.test(collapsed),
-        `${name} no longer routes its SIGINT handler through cleanup(), so a second ^C may now ` +
+        // go-to-k/cdkd#6285: the handler now serves SIGINT and SIGTERM and
+        // exits with the signal's code.
+        /void cleanup\(\)\.then\(\(\) => \{? ?process\.exit\(shutdownSignalExitCode\(signal\)\)/.test(
+          collapsed
+        ),
+        `${name} no longer routes its signal handler through cleanup(), so a second ^C may now ` +
           'skip the dispose — it needs the force-exit notice, or its handler restored.'
       ).toBe(true);
     }

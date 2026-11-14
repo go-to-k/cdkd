@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { onShutdownSignals, shutdownSignalExitCode } from '../../../src/utils/shutdown-signals.js';
 
 describe('shutdown-signals (go-to-k/cdkd#6285)', () => {

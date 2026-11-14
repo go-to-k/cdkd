@@ -749,15 +749,19 @@ an error.
 
 ## Stopping a server
 
-Press {kbd:ctrl+c} to stop a long-running command. cdkd then removes every
-container, sidecar, Docker network and temporary file the command created.
+Press {kbd:ctrl+c} or send `SIGTERM` to stop a long-running command. cdkd then
+removes every container, sidecar, Docker network and temporary file the
+command created.
 
-If Docker itself hangs during that cleanup, press {kbd:ctrl+c} a second time.
-cdkd exits immediately and skips the cleanup, so containers can be left
-behind. `local start-web-function` and `local start-microvm` are the
-exceptions: a second signal exits at once only while a `docker run` is still
-in flight; otherwise they print that they are still removing the containers
-and wait for that to finish. Find and remove them yourself:
+If Docker itself hangs during that cleanup, send the signal again. `local
+start-api` and `local run-task` exit at once on the second signal and skip the
+cleanup, so containers can be left behind. `local start-service`, `local
+start-alb`, `local start-cloudfront` and `local start-agentcore` print that
+they are still shutting down on the second signal and exit at once on the
+third. `local start-web-function` and `local start-microvm` exit at once only
+while a `docker run` is still in flight; otherwise they print that they are
+still removing the containers and wait for that to finish. Find and remove
+what is left yourself:
 
 ```bash
 docker ps --filter name=cdkd-local-

@@ -361,8 +361,8 @@ restart the command.
 {kbd:ctrl+c} or `SIGTERM` removes every replica, then the temporary credential
 files, and finally the shared network and the sidecar.
 
-A second {kbd:ctrl+c} exits at once with code `130` and skips the cleanup, so
-containers can be left behind. [Local Execution](local-emulation.md) shows how
+A second signal prints that cdkd is still shutting down. A third exits at
+once and skips the cleanup, so containers can be left behind. [Local Execution](local-emulation.md) shows how
 to find and remove them.
 
 ## Limitations
@@ -398,7 +398,8 @@ around it.
 | Code | Meaning |
 | --- | --- |
 | `1` | An error, or a cancelled picker. |
-| `130` | Stopped by {kbd:ctrl+c} or `SIGTERM`. |
+| `130` | Stopped by {kbd:ctrl+c}. |
+| `143` | Stopped by `SIGTERM`. |
 
 There is no exit `0`. Once the services are up, the command runs until it
 receives a signal. These are the causes of exit `1`:

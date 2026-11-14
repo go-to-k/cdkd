@@ -221,9 +221,9 @@ cdkd local start-web-function MyStack/Endpoint --from-state --assume-role
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Stopped by `SIGTERM`. |
 | `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
+| `143` | Stopped by `SIGTERM`. |
 
 An error here is a target that does not exist, a synthesis failure, an
 unsupported runtime, code that is not a staged asset, an entry file missing

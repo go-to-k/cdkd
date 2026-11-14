@@ -279,9 +279,9 @@ as it is and installs no dependencies, so they must already be in the bundle.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Stopped by `SIGTERM`. |
 | `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
+| `143` | Stopped by `SIGTERM`. |
 
 An error here is a runtime that does not exist, a synthesis failure, an image
 that would not build or pull, a container that was not ready within

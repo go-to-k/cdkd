@@ -315,8 +315,8 @@ throughout.
 {kbd:ctrl+c} or `SIGTERM` closes the front-door servers, then removes every
 replica, the sidecar and the shared network.
 
-A second signal exits at once and skips the cleanup, so containers can be left
-behind. [Local Execution](local-emulation.md) shows how to find and remove
+A second signal prints that cdkd is still shutting down. A third exits at
+once and skips the cleanup, so containers can be left behind. [Local Execution](local-emulation.md) shows how to find and remove
 them.
 
 ## Exit codes
@@ -324,7 +324,8 @@ them.
 | Code | Meaning |
 | --- | --- |
 | `1` | An error, or a cancelled picker. |
-| `130` | Stopped by {kbd:ctrl+c} or `SIGTERM`. |
+| `130` | Stopped by {kbd:ctrl+c}. |
+| `143` | Stopped by `SIGTERM`. |
 
 There is no exit `0`, because the command runs until it receives a signal. An
 error here is a target that does not resolve, a synthesis failure, a Docker or

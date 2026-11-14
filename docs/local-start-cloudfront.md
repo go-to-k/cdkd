@@ -437,9 +437,9 @@ Changes under `cdk.out`, `node_modules` and `.git` are ignored. The
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Stopped by `SIGTERM`. |
 | `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
+| `143` | Stopped by `SIGTERM`. |
 
 An error here is a distribution that does not exist, a synthesis failure, a
 `--kvs-file` key that cannot be resolved, a Lambda or Web Function container

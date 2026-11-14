@@ -434,9 +434,9 @@ template. The task ends when that container exits:
 3. cdkd removes the sidecar and the network.
 4. cdkd exits with the essential container's exit code.
 
-{kbd:ctrl+c} runs the same teardown, including for anything still being
-created. A second {kbd:ctrl+c} exits `130` at once and skips the remaining
-cleanup. See [Stopping a server](local-emulation.md#stopping-a-server).
+{kbd:ctrl+c} or `SIGTERM` runs the same teardown, including for anything
+still being created, then exits `130` or `143`. A second signal exits at once
+and skips the remaining cleanup. See [Stopping a server](local-emulation.md#stopping-a-server).
 
 ### `--detach` and `--keep-running`
 
@@ -476,6 +476,7 @@ still removed.
 | `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
 | `1` | The essential container exited `1`, or cdkd failed: Docker unavailable, target not found, network creation failed, a secret could not be fetched, an unsupported volume type. |
 | `130` | {kbd:ctrl+c}. |
+| `143` | Stopped by `SIGTERM`, after the same teardown. |
 | `N` | Any other code the essential container exited with. |
 
 Exit code `1` can mean either a container failure or a cdkd failure. Read the
