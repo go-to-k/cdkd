@@ -7,8 +7,8 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
-import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { dbInstanceAttributes } from './instance-attributes.js';
+import { dbClusterAttributes } from './cluster-attributes.js';
 import { associatedRolesNamed, associatedRolesReadback } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
 import { replicatedBackupRetention } from './calls.js';
@@ -634,7 +634,9 @@ export async function importDBInstance(
       const described = resp.DBInstances?.[0];
       return {
         physicalId: explicit,
-        attributes: dbInstanceAttributes(described),
+        // A read, not an operation: the instance's own `available` status
+        // gates the transient values.
+        attributes: dbInstanceAttributes(described, { settled: true }),
       };
     } catch (err) {
       if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;
@@ -664,13 +666,7 @@ export async function importDBCluster(
       // only the ARN, so the endpoints resolved to the cluster identifier.
       return {
         physicalId: explicit,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
-          'ReadEndpoint.Address': described?.ReaderEndpoint,
-          Arn: described?.DBClusterArn,
-          DBClusterResourceId: described?.DbClusterResourceId,
-        }),
+        attributes: dbClusterAttributes(described),
       };
     } catch (err) {
       if ((err as { name?: string }).name === 'DBClusterNotFoundFault') return null;

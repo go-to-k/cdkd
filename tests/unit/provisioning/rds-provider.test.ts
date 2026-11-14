@@ -444,6 +444,11 @@ describe('RDSProvider', () => {
           'Endpoint.Address': 'my-instance.xxx.us-east-1.rds.amazonaws.com',
           'Endpoint.Port': '5432',
           Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+          ReadReplicaDBInstanceIdentifiers: [],
+          ReadReplicaDBClusterIdentifiers: [],
+          StatusInfos: [],
+          // The create waited for `available` (go-to-k/cdkd#6242).
+          DBInstanceStatus: 'available',
         });
 
         const createCall = mockSend.mock.calls[0][0];
@@ -1032,8 +1037,13 @@ describe('RDSProvider unassigned attributes are omitted, never recorded as an em
     });
 
     expect(mockSend).toHaveBeenCalledTimes(2);
+    // go-to-k/cdkd#6242: the lists are `[]`, as CloudFormation serves them;
+    // the `creating` status is not recorded.
     expect(result.attributes).toStrictEqual({
       Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+      ReadReplicaDBInstanceIdentifiers: [],
+      ReadReplicaDBClusterIdentifiers: [],
+      StatusInfos: [],
     });
   });
 
@@ -1060,6 +1070,9 @@ describe('RDSProvider unassigned attributes are omitted, never recorded as an em
 
     expect(result.attributes).toStrictEqual({
       Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+      ReadReplicaDBInstanceIdentifiers: [],
+      ReadReplicaDBClusterIdentifiers: [],
+      StatusInfos: [],
     });
   });
 
@@ -1086,6 +1099,10 @@ describe('RDSProvider unassigned attributes are omitted, never recorded as an em
       'Endpoint.Address': 'my-instance.xxx.us-east-1.rds.amazonaws.com',
       'Endpoint.Port': '5432',
       Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+      ReadReplicaDBInstanceIdentifiers: [],
+      ReadReplicaDBClusterIdentifiers: [],
+      StatusInfos: [],
+      // `available`, but the create did not wait (go-to-k/cdkd#6242).
     });
   });
 

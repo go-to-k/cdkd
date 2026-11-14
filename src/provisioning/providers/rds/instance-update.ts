@@ -812,7 +812,15 @@ export async function updateDBInstance(
     return {
       physicalId,
       wasReplaced: false,
-      attributes: dbInstanceAttributes(described),
+      // Under `--no-wait` the describe can read the instance before RDS
+      // starts the modification: its status is not the settled one. A waited
+      // update can still read it `modifying` (most modifications finish after
+      // ModifyDBInstance returns): then no `DBInstanceStatus` is recorded, a
+      // reference to it in this deploy is refused (no re-read of a record
+      // this deploy wrote), and the next deploy re-reads it.
+      attributes: dbInstanceAttributes(described, {
+        settled: process.env['CDKD_NO_WAIT'] !== 'true',
+      }),
       ...(effectiveProperties !== undefined && { effectiveProperties }),
     };
   } catch (error) {

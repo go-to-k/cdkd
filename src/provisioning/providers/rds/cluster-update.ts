@@ -12,9 +12,9 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { clearOnUpdateRemoval } from '../../update-removal.js';
-import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { associatedRoleList } from '../db-associated-roles.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { dbClusterAttributes } from './cluster-attributes.js';
 import {
   masterUserPasswordToSend,
   masterCredentialSettingsChanged,
@@ -75,7 +75,7 @@ import {
 } from './shared.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { slowCcOperationTimeoutMs } from '../../slow-cc-operation-timeouts.js';
-import { EXPRESS_WRITER_RESOURCE_ID_KEY, recordedExpressWriterId } from './express-writer.js';
+import { recordedExpressWriterId } from './express-writer.js';
 import { isRestoredRecord, recordedCreateOnlyDropsOf } from './cluster-restore.js';
 
 export async function updateDBCluster(
@@ -715,20 +715,14 @@ export async function updateDBCluster(
     return {
       physicalId,
       wasReplaced: false,
-      attributes: definedAttributes({
-        'Endpoint.Address': described?.Endpoint,
+      attributes: dbClusterAttributes(described, {
         // Under `--no-wait` the describe can still read the OLD port; record
         // the one sent, or a `Fn::GetAtt <cluster>.Endpoint.Port` consumer
         // stays stale.
-        'Endpoint.Port': stringifyIfAssigned(
-          noWait && portChanged && described !== undefined ? portToSend : described?.Port
-        ),
-        'ReadEndpoint.Address': described?.ReaderEndpoint,
-        Arn: described?.DBClusterArn,
-        DBClusterResourceId: described?.DbClusterResourceId,
+        port: noWait && portChanged ? portToSend : undefined,
         // go-to-k/cdkd#5984: the record's express writer id, carried over
         // (the map replaces the record's attributes).
-        [EXPRESS_WRITER_RESOURCE_ID_KEY]: recordedExpressWriterId(context?.recordedAttributes),
+        expressWriterId: recordedExpressWriterId(context?.recordedAttributes),
       }),
       // go-to-k/cdkd#5639: a skipped key keeps the previous record's value
       // (none when it held none or an unusable one).

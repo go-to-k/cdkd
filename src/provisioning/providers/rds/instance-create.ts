@@ -483,7 +483,8 @@ export async function createDBInstance(
     // instance as soon as this returns, and that instance (or its automated
     // backups and snapshots, which its delete removes) may be what the
     // restore is still reading.
-    if (process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate || restored) {
+    const waited = process.env['CDKD_NO_WAIT'] !== 'true' || modifyAfterCreate || restored;
+    if (waited) {
       await this.waitForInstanceAvailable(
         logicalId,
         dbInstanceIdentifier,
@@ -529,7 +530,7 @@ export async function createDBInstance(
 
     return {
       physicalId: dbInstanceIdentifier,
-      attributes: dbInstanceAttributes(described),
+      attributes: dbInstanceAttributes(described, { settled: waited }),
       // A replayed create that attached no role records none.
       ...(roles === 'skipped' && {
         effectiveProperties: Object.fromEntries(

@@ -1,5 +1,6 @@
 import type { CloudControlProvider } from '../cloud-control-provider.js';
 import { dbInstanceAttributes } from '../providers/rds/instance-attributes.js';
+import { dbClusterAttributes } from '../providers/rds/cluster-attributes.js';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
   DescribeDBClustersCommand,
@@ -97,13 +98,9 @@ export async function enrichResourceAttributes(
         );
         const cluster = describeResponse.DBClusters?.[0];
         if (cluster) {
-          if (cluster.Endpoint) enriched['Endpoint.Address'] = cluster.Endpoint;
-          if (cluster.Port !== undefined) enriched['Endpoint.Port'] = String(cluster.Port);
-          if (cluster.ReaderEndpoint) enriched['ReadEndpoint.Address'] = cluster.ReaderEndpoint;
-          if (cluster.DBClusterArn) enriched['Arn'] = cluster.DBClusterArn;
-          if (cluster.DbClusterResourceId) {
-            enriched['DBClusterResourceId'] = cluster.DbClusterResourceId;
-          }
+          // The SDK provider's map (go-to-k/cdkd#6242), so both routes record
+          // the same keys.
+          Object.assign(enriched, dbClusterAttributes(cluster));
           log.debug(
             `Enriched RDS DBCluster ${physicalId} with Endpoint/Port/Arn from DescribeDBClusters`
           );
@@ -146,7 +143,9 @@ export async function enrichResourceAttributes(
         if (inst) {
           // The SDK provider's map (go-to-k/cdkd#6242), so both routes record
           // the same keys.
-          Object.assign(enriched, dbInstanceAttributes(inst));
+          // Read after Cloud Control reported the operation done; the
+          // instance's own `available` status gates the transient values.
+          Object.assign(enriched, dbInstanceAttributes(inst, { settled: true }));
           log.debug(
             `Enriched RDS DBInstance ${physicalId} with Endpoint/Port/Arn from DescribeDBInstances`
           );

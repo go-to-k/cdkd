@@ -1210,6 +1210,65 @@ describe('CloudControlProvider RDS DBInstance attribute enrichment (CC-API routi
   });
 });
 
+// go-to-k/cdkd#6242: both RDS branches record the SDK provider's map, so the
+// Cloud Control route serves the same keys (StorageEncryptionType, the status).
+describe('CloudControlProvider RDS enrichment shares the SDK provider maps (#6242)', () => {
+  let provider: CloudControlProvider;
+  const enrich = (type: string, physicalId: string) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes(type, physicalId, {});
+
+  beforeEach(() => {
+    mockRdsSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('DBCluster records StorageEncryptionType beside the endpoints', async () => {
+    mockRdsSend.mockResolvedValueOnce({
+      DBClusters: [
+        {
+          Endpoint: 'db.cluster-x.us-east-1.rds.amazonaws.com',
+          ReaderEndpoint: 'db.cluster-ro-x.us-east-1.rds.amazonaws.com',
+          Port: 5432,
+          DBClusterArn: 'arn:aws:rds:us-east-1:123456789012:cluster:db',
+          DbClusterResourceId: 'cluster-ABC',
+          StorageEncryptionType: 'sse-kms',
+        },
+      ],
+    });
+    expect(await enrich('AWS::RDS::DBCluster', 'db')).toStrictEqual({
+      'Endpoint.Address': 'db.cluster-x.us-east-1.rds.amazonaws.com',
+      'Endpoint.Port': '5432',
+      'ReadEndpoint.Address': 'db.cluster-ro-x.us-east-1.rds.amazonaws.com',
+      Arn: 'arn:aws:rds:us-east-1:123456789012:cluster:db',
+      DBClusterResourceId: 'cluster-ABC',
+      StorageEncryptionType: 'sse-kms',
+    });
+  });
+
+  it('DBInstance records the status of an available instance, and not of one still modifying', async () => {
+    const instance = {
+      DBInstanceStatus: 'available',
+      DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:mydb',
+    };
+    mockRdsSend.mockResolvedValueOnce({ DBInstances: [instance] });
+    expect((await enrich('AWS::RDS::DBInstance', 'mydb'))['DBInstanceStatus']).toBe('available');
+    mockRdsSend.mockResolvedValueOnce({
+      DBInstances: [{ ...instance, DBInstanceStatus: 'modifying' }],
+    });
+    expect(
+      Object.hasOwn(await enrich('AWS::RDS::DBInstance', 'mydb'), 'DBInstanceStatus')
+    ).toBe(false);
+  });
+});
+
 describe('CloudControlProvider ElastiCache ReplicationGroup attribute enrichment (CC-API routing)', () => {
   let provider: CloudControlProvider;
 

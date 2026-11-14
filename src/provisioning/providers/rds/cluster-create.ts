@@ -17,9 +17,9 @@ import { generatedNameFor } from '../../resource-name.js';
 import { refuseRestoreFromItself } from '../../restore-source-guard.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
-import { definedAttributes, stringifyIfAssigned } from '../../attribute-map.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import type { RDSProvider } from '../rds-provider.js';
+import { dbClusterAttributes } from './cluster-attributes.js';
 import { desiredLogExports } from './instance-members.js';
 import {
   type ServerlessV2ScalingProps,
@@ -45,7 +45,6 @@ import {
   replicationSourceOf,
 } from './shared.js';
 import {
-  EXPRESS_WRITER_RESOURCE_ID_KEY,
   expressConfigurationFlag,
   expressWriterIdentifier,
   isOwnExpressWriter,
@@ -594,14 +593,7 @@ export async function createDBCluster(
 
       return {
         physicalId: dbClusterIdentifier,
-        attributes: definedAttributes({
-          'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
-          'ReadEndpoint.Address': described?.ReaderEndpoint,
-          Arn: described?.DBClusterArn,
-          DBClusterResourceId: described?.DbClusterResourceId,
-          [EXPRESS_WRITER_RESOURCE_ID_KEY]: expressWriterId,
-        }),
+        attributes: dbClusterAttributes(described, { expressWriterId }),
         ...(effectiveProperties !== undefined && { effectiveProperties }),
       };
     } catch (innerError) {

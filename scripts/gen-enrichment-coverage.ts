@@ -282,7 +282,68 @@ export function readEnrichmentSwitch(
     );
   }
   const holder = holders[0]!;
-  return { file: holder.path, byType: parseEnrichmentSwitch(holder.source, holder.path) };
+  return {
+    file: holder.path,
+    byType: parseEnrichmentSwitch(holder.source, holder.path, (name) =>
+      importedHelperKeys(holder.source, holder.path, name)
+    ),
+  };
+}
+
+/**
+ * go-to-k/cdkd#6242: the keys a helper `name` imported by `source` records —
+ * the top-level keys of every object literal passed to `definedAttributes(...)`
+ * in that exported function. An enrichment case that writes
+ * `Object.assign(enriched, dbInstanceAttributes(inst, ...))` records what the
+ * SDK provider records, from the one helper both use; reading only
+ * `enriched['X'] = ...` assignments reported every such key a gap.
+ * `undefined` when `name` is not a relative import or the function holds no
+ * such literal, which {@link parseEnrichmentSwitch} refuses.
+ */
+export function importedHelperKeys(
+  source: string,
+  fileName: string,
+  name: string
+): Set<string> | undefined {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  let spec: string | undefined;
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    const bindings = stmt.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    if (bindings.elements.some((e) => e.name.text === name)) spec = stmt.moduleSpecifier.text;
+  }
+  if (spec === undefined || !spec.startsWith('.')) return undefined;
+  const helperPath = resolve(dirname(fileName), spec.replace(/\.js$/, '.ts'));
+  if (!existsSync(helperPath)) return undefined;
+  const helper = ts.createSourceFile(
+    helperPath,
+    readFileSync(helperPath, 'utf8'),
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS
+  );
+  const keys = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'definedAttributes' &&
+      node.arguments[0] !== undefined &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      for (const prop of node.arguments[0].properties) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        if (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) keys.add(prop.name.text);
+      }
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const stmt of helper.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name?.text === name && stmt.body) visit(stmt.body);
+  }
+  return keys.size > 0 ? keys : undefined;
 }
 
 /**
@@ -297,7 +358,8 @@ export function readEnrichmentSwitch(
  */
 export function parseEnrichmentSwitch(
   source: string,
-  fileName = 'cloud-control-provider.ts'
+  fileName = 'cloud-control-provider.ts',
+  helperKeys: (name: string) => Set<string> | undefined = () => undefined
 ): Map<string, Set<string>> {
   const byType = new Map<string, Set<string>>();
   const switchStmt = findEnrichmentSwitch(source, fileName);
@@ -314,6 +376,33 @@ export function parseEnrichmentSwitch(
       if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) {
         out.add(arg.text);
       }
+    }
+    // `Object.assign(enriched, helper(...))` (go-to-k/cdkd#6242): the helper's
+    // recorded keys. A helper whose keys cannot be read fails loudly rather
+    // than reading as a gap or as covered.
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'Object' &&
+      node.expression.name.text === 'assign' &&
+      node.arguments.length === 2 &&
+      ts.isIdentifier(node.arguments[0]!) &&
+      (node.arguments[0] as ts.Identifier).text === 'enriched'
+    ) {
+      const call = node.arguments[1]!;
+      if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) {
+        throw new Error(
+          `enrichment-coverage: Object.assign(enriched, ...) in ${fileName} must pass a helper call`
+        );
+      }
+      const keys = helperKeys(call.expression.text);
+      if (keys === undefined) {
+        throw new Error(
+          `enrichment-coverage: cannot read the keys ${call.expression.text}() records (${fileName})`
+        );
+      }
+      for (const k of keys) out.add(k);
     }
     ts.forEachChild(node, (c) => collectAssignedKeys(c, out));
   };

@@ -9,12 +9,6 @@
       ]
     },
     {
-      "resourceType": "AWS::DocDB::DBCluster",
-      "attributes": [
-        "ServerlessV2PlatformVersion"
-      ]
-    },
-    {
       "resourceType": "AWS::EC2::Instance",
       "attributes": [
         "State"
@@ -38,35 +32,6 @@
       "attributes": [
         "SnapStartResponse"
       ]
-    },
-    {
-      "resourceType": "AWS::RDS::DBCluster",
-      "attributes": [
-        "Endpoint",
-        "ReadEndpoint",
-        "StorageEncryptionType"
-      ]
-    },
-    {
-      "resourceType": "AWS::RDS::DBInstance",
-      "attributes": [
-        "AutomaticRestartTime",
-        "CertificateDetails",
-        "DBInstanceStatus",
-        "Endpoint",
-        "InstanceCreateTime",
-        "IsStorageConfigUpgradeAvailable",
-        "LatestRestorableTime",
-        "ListenerEndpoint",
-        "PercentProgress",
-        "ReadReplicaDBClusterIdentifiers",
-        "ReadReplicaDBInstanceIdentifiers",
-        "ResumeFullAutomationModeTime",
-        "SecondaryAvailabilityZone",
-        "StatusInfos",
-        "StorageOperationPercentProgress",
-        "StorageOperationStatus"
-      ]
     }
   ],
   "summary": {
@@ -75,7 +40,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 27
+    "refused": 7
   },
   "types": [
     {

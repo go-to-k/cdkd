@@ -472,6 +472,12 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
       case 'DbiResourceId':
+      // go-to-k/cdkd#6242: the whole objects, which the resolver assembles
+      // from the recorded flat members (`assembleFlatObjectAttribute`); a
+      // record lacking one reaches here.
+      case 'Endpoint':
+      case 'ListenerEndpoint':
+      case 'CertificateDetails':
       case 'Endpoint.HostedZoneId':
       case 'ListenerEndpoint.Address':
       case 'ListenerEndpoint.Port':
@@ -495,7 +501,7 @@ export async function constructAttributeForAppTypes(
           // A completed read that reports none: for a listener endpoint the
           // instance has none (only some configurations, such as SQL Server
           // Multi-AZ, do); otherwise it is not available yet.
-          remedyWhenHealCompleted: attributeName.startsWith('ListenerEndpoint.')
+          remedyWhenHealCompleted: attributeName.startsWith('ListenerEndpoint')
             ? 'This DB instance has no listener endpoint, and CloudFormation cannot return one for it either: remove the reference, or use Endpoint.Address.'
             : 'RDS does not report it for the instance yet (it may still be creating): deploy again once the instance is available.',
         });
@@ -520,16 +526,32 @@ export async function constructAttributeForAppTypes(
       case 'DBClusterArn':
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:cluster:${physicalId}`;
-      default:
-        return guardedPhysicalIdFallback(
-          resolver,
+      case 'Endpoint':
+      case 'ReadEndpoint':
+        // go-to-k/cdkd#6242: the whole objects, which the resolver assembles
+        // from the recorded `Endpoint.*` / `ReadEndpoint.*` members; a record
+        // lacking one reaches here, so heal first. Not DocumentDB's or
+        // Neptune's, whose `Endpoint` is the address string they record.
+        if (resourceType !== 'AWS::RDS::DBCluster') break;
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
-          physicalId,
-          context
-        );
+          context,
+          why: 'cdkd cannot build it from the DB cluster identifier',
+          remedyWhenHealCompleted:
+            'RDS does not report it for the cluster yet (it may still be creating): deploy again once the cluster is available.',
+        });
     }
+    return guardedPhysicalIdFallback(
+      resolver,
+      logicalId,
+      attributeName,
+      resourceType,
+      physicalId,
+      context
+    );
   }
 
   // S3 Express Directory Bucket
