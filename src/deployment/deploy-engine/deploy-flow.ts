@@ -790,7 +790,8 @@ export async function doDeployWithPrefetch(
         stackName,
         region: engine.stackRegion,
         nestedTemplates: getCurrentNestedStackContext()?.nestedTemplates,
-        readRecord: async (name, region) => (await engine.stateBackend.getState(name, region))?.state,
+        readRecord: async (name, region) =>
+          (await engine.stateBackend.getState(name, region))?.state,
       }))
     ) {
       newState.nestedSsmNamesChecked = true;
