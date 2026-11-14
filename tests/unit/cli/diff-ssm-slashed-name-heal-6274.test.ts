@@ -346,6 +346,8 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
       const child = tree.children.find((c) => c.stackName === 'S~Child');
       // Premise: the child's preview diffs its grandchild row as an UPDATE.
       expect(child?.changes.get('Grand')?.changeType).toBe('UPDATE');
+      // A child no engine runs for runs no check of its own either.
+      expect(child?.changes.get('Grand')?.nestedChildHeal).toBe(marked ? undefined : true);
       const grand = child?.children.find((c) => c.stackName === 'S~Child~Grand');
       expect(grand?.changes.get('Reader')?.changeType).toBe(marked ? 'NO_CHANGE' : 'UPDATE');
       expect(infos.some((m) => m.includes('on the next deploy that updates this nested stack'))).toBe(
