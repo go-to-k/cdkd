@@ -4396,6 +4396,29 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     }
   );
 
+  // Issue #6293: compound Cloud Control ids whose CFn `Ref` is one segment.
+  it.each([
+    ['AWS::Logs::LogStream', '/aws/lg/app|stream-1', 'stream-1'],
+    ['AWS::SSM::MaintenanceWindowTarget', 'mw-0123456789abcdef0|11111111-2222-3333-4444-555555555555', '11111111-2222-3333-4444-555555555555'],
+    ['AWS::SSM::MaintenanceWindowTask', 'mw-0123456789abcdef0|66666666-7777-8888-9999-000000000000', '66666666-7777-8888-9999-000000000000'],
+    ['AWS::CodeDeploy::DeploymentGroup', 'my-app|my-group', 'my-group'],
+    ['AWS::Logs::SubscriptionFilter', 'my-filter|/aws/lg/app', 'my-filter'],
+    // Names may contain `|`; the log group name may not.
+    ['AWS::Logs::LogStream', '/aws/lg/app|a|b', 'a|b'],
+    ['AWS::Logs::SubscriptionFilter', 'a|b|/aws/lg/app', 'a|b'],
+  ])('Ref to %s returns the CFn Ref segment, not the compound physical id (#6293)', async (resourceType, physicalId, expected) => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: resourceType, Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+      },
+    };
+    expect(await resolver.resolve({ Ref: 'R' }, context)).toBe(expected);
+  });
+
   it('Ref to a UserPoolResourceServer inside an Fn::Join scope yields a bare <identifier>/<scope>', async () => {
     const template: CloudFormationTemplate = {
       Resources: {

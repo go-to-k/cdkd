@@ -5853,6 +5853,7 @@
         "recreate-parent-child-permission",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "ref-shape-compound-cc-ids",
         "replaced-delete-failed-rollback",
         "require-approval-broadening",
         "retain-orphan-redeploy",
@@ -6186,6 +6187,9 @@
         ],
         "recreate-via-sdk-provider": [
           "l2"
+        ],
+        "ref-shape-compound-cc-ids": [
+          "l1"
         ],
         "replaced-delete-failed-rollback": [
           "l1",
@@ -6733,6 +6737,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redacted-delete-address",
+        "ref-shape-compound-cc-ids",
         "refactor-lambda-version",
         "rename-refactor",
         "rollback-failure-injection",
@@ -7104,6 +7109,10 @@
           "l2",
           "literal"
         ],
+        "ref-shape-compound-cc-ids": [
+          "l1",
+          "literal"
+        ],
         "refactor-lambda-version": [
           "l2"
         ],
@@ -7247,6 +7256,7 @@
         "migrate-from-cfn",
         "propagation-races-2",
         "recreate-parent-child-permission",
+        "ref-shape-compound-cc-ids",
         "rename-refactor",
         "s3-event-notification",
         "secrets-rotation-schedule",
@@ -7281,6 +7291,10 @@
           "literal"
         ],
         "recreate-parent-child-permission": [
+          "l1",
+          "literal"
+        ],
+        "ref-shape-compound-cc-ids": [
           "l1",
           "literal"
         ],
@@ -7397,6 +7411,7 @@
         "monitoring",
         "orphan-getatt-takeover",
         "perf-cross-backend-check",
+        "ref-shape-compound-cc-ids",
         "remove-protection",
         "retain-orphan-redeploy",
         "rollback-replacement-retain",
@@ -7510,6 +7525,10 @@
         ],
         "perf-cross-backend-check": [
           "l2",
+          "literal"
+        ],
+        "ref-shape-compound-cc-ids": [
+          "l1",
           "literal"
         ],
         "remove-protection": [
@@ -9879,6 +9898,7 @@
     "AWS::Backup::BackupVault",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudWatch::CompositeAlarm",
+    "AWS::CodeDeploy::Application",
     "AWS::CodeDeploy::DeploymentGroup",
     "AWS::CodePipeline::CustomActionType",
     "AWS::CodePipeline::Pipeline",
@@ -9947,6 +9967,9 @@
     "AWS::SES::EmailIdentity",
     "AWS::SMSVOICE::ProtectConfiguration",
     "AWS::SSM::Document",
+    "AWS::SSM::MaintenanceWindow",
+    "AWS::SSM::MaintenanceWindowTarget",
+    "AWS::SSM::MaintenanceWindowTask",
     "AWS::Scheduler::ScheduleGroup",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",

@@ -351,6 +351,7 @@ recreate-via-cc-api	2026-11-12T12:35:56Z	PASS	145	verify.sh	rc ok, orph clean, P
 recreate-via-sdk-provider	2026-11-04T19:47:52Z	PASS	85	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-11-04T20:42:09Z	PASS	91	verify.sh	rc ok; #3952 redacted ApiId skip + clean destroy; us-east-1; orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)
+ref-shape-compound-cc-ids	2026-11-14T09:41:03Z	PASS	116	verify.sh	rc ok, orph clean
 ref-shape-vector-namespace-attachment	2026-11-13T19:37:31Z	PASS	120	verify.sh	rc ok, orph clean; 8-d revert probe red at all 5 Ref asserts, TableBucket control ok
 refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 refactor-lambda-version	2026-11-12T11:22:31Z	PASS	477	verify.sh	rc ok, orph clean; #6140 (us-east-1)
