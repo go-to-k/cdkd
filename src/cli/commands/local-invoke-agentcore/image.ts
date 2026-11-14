@@ -6,6 +6,10 @@ import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure
 import { displayIdent, displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { displayAssemblyPath } from '../../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import {
+  emulatorDefaultRegion,
+  namedEnvAwsRegion,
+} from '../../../utils/emulator-default-region.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import type { LocalStateProvider, LocalStateRecord } from 'cdk-local';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
@@ -259,9 +263,10 @@ export async function resolveAgentCoreCodeImageFromS3(
   const region = canonicalizeRegion(
     options.region ??
       options.stackRegion ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      resolved.stack.region
+      resolved.stack.region ??
+      emulatorDefaultRegion()
   );
 
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
@@ -415,9 +420,10 @@ export async function buildAgentCoreImageContext(
   const logger = getLogger();
   const region = canonicalizeRegion(
     options.region ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      candidate.region
+      candidate.region ??
+      emulatorDefaultRegion()
   );
 
   let accountId: string | undefined;

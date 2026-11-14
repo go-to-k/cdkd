@@ -14,6 +14,7 @@ import {
 import { installOnceLeakDetector } from './once-leak-detector.js';
 import { installStreamFence } from './stream-fence.js';
 import { resetInjectedAwsRegionForTests } from '../src/utils/injected-aws-region.js';
+import { resetEmulatorDefaultRegionForTests } from '../src/utils/emulator-default-region.js';
 
 /**
  * The unit suite must not depend on whether the DEVELOPER is behind a proxy.
@@ -77,8 +78,11 @@ delete process.env['AWS_DEFAULT_REGION'];
 // The `AWS_REGION` cdkd copies in from `AWS_DEFAULT_REGION` is remembered in
 // module state (`src/utils/injected-aws-region.ts`); forget it after every
 // case, or a later case's NAMED region of the same value reads as inferred.
+// The emulator run's default region (`src/utils/emulator-default-region.ts`)
+// likewise.
 afterEach(() => {
   resetInjectedAwsRegionForTests();
+  resetEmulatorDefaultRegionForTests();
 });
 
 /**

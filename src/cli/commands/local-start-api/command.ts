@@ -23,6 +23,7 @@ import { refuseFailedLookups } from '../../../synthesis/failed-lookups.js';
 import { resolveApp } from '../../config-loader.js';
 import { isCfnFlagPresent } from '../local-state-source.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import { namedEnvAwsRegion } from '../../../utils/emulator-default-region.js';
 import { foldRegionOption } from '../../region-options.js';
 import { resolveRuntimeImage } from '../../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../../local/docker-runner.js';
@@ -556,9 +557,12 @@ export async function localStartApiCommand(
           ...(debugPortBase !== undefined && { debugPort: debugPortBase + index }),
           // Issue #1843: folded at the read as well as at the handler entry, the
           // same shape as `local-invoke.ts`'s STS chain. It seeds the per-Lambda
-          // AssumeRole STS client and the container's own `AWS_REGION`.
+          // AssumeRole STS client and the container's own `AWS_REGION`. The
+          // `--aws-emulator` run's default region is left to
+          // `resolveContainerRegion`, which ranks it below the stack's and the
+          // state record's (go-to-k/cdkd#6270).
           stsRegion: canonicalizeRegion(
-            options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+            options.region ?? namedEnvAwsRegion() ?? process.env['AWS_DEFAULT_REGION']
           ),
           inlineTmpDirs,
           layerTmpDirs,

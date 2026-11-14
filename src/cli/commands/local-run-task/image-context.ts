@@ -2,6 +2,10 @@ import { getLogger } from '../../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import {
+  emulatorDefaultRegion,
+  namedEnvAwsRegion,
+} from '../../../utils/emulator-default-region.js';
+import {
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   type EcsImageResolutionContext,
@@ -62,9 +66,10 @@ export function resolveEcsConsumerRegion(
     // two env links keep `??` for parity with the sibling chains in this file
     // (an exported-but-empty `AWS_REGION` is not a shape this branch changed),
     // and `synthRegion` keeps `??` because a blank synth region is not user input.
-    (options.region || process.env['AWS_REGION']) ??
+    (options.region || namedEnvAwsRegion()) ??
       process.env['AWS_DEFAULT_REGION'] ??
       synthRegion ??
+      emulatorDefaultRegion() ??
       'us-east-1'
   );
 }
@@ -136,9 +141,10 @@ export async function buildEcsImageResolutionContext(
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
     const region = canonicalizeRegion(
       options.region ??
-        process.env['AWS_REGION'] ??
+        namedEnvAwsRegion() ??
         process.env['AWS_DEFAULT_REGION'] ??
-        candidate.region
+        candidate.region ??
+        emulatorDefaultRegion()
     );
     if (!region) {
       logger.warn(
