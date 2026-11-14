@@ -260,6 +260,24 @@ describe('the other region chains that rank AWS_REGION above a stack region', ()
     expect(outcome).not.toMatch(/Pass --region/);
   });
 
+  it('local invoke-agentcore --sigv4: a stack region outranks the run default in the signing scope', async () => {
+    emulatorDefault(RUN_REGION);
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIAEXAMPLE6270';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'secret6270';
+    const runtime = { logicalId: 'Runtime', stack: { stackName: 'S6270', region: 'us-west-2' } };
+    const headers = await buildSigV4HeadersIfRequested(
+      { sigv4: true } as never,
+      runtime as never,
+      undefined,
+      'localhost',
+      8080,
+      {},
+      's'
+    );
+    const auth = Object.entries(headers ?? {}).find(([k]) => k.toLowerCase() === 'authorization')?.[1];
+    expect(auth).toContain('/us-west-2/');
+  });
+
   it('local invoke-agentcore fromS3 bundle: the stack region, else the run default', async () => {
     emulatorDefault(RUN_REGION);
     const download = async (stackRegion: string | undefined): Promise<string | undefined> => {
