@@ -153,10 +153,9 @@ Run one hunt's add/verify/clear from the same worktree (or pin `CDKD_BUGHUNT_OWN
 
 ## Gotchas
 
-- **AWS Emulator does not evaluate IAM.** A hunt on `--aws-emulator` passes a
-  wrong grant ARN (go-to-k/cdkd#6272: an auto-named SSM parameter `/name` made
-  CDK's `grantRead` ARN `parameter//name`), so re-run every IAM-dependent path
-  (`grant*`, `--assume-role`) on real AWS before calling it clean.
+- **AWS Emulator does not evaluate IAM**: on a `--aws-emulator` hunt, re-run
+  every IAM-dependent path (`grant*`, `--assume-role`) on real AWS before
+  calling it clean (go-to-k/cdkd#6272).
 
 - **Filing an issue attracts malware bait — never run an attachment OR install a
   package a stranger posts on it.** This hunt's deliverable is public issues, and
