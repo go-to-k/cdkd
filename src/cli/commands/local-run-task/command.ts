@@ -19,6 +19,11 @@ import { resolveApp } from '../../config-loader.js';
 import { ensureDockerAvailable, flushStdio } from '../../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../../local/docker-version.js';
 import { strandedProfileCredentialsNotice } from '../local-profile-credentials-file.js';
+import {
+  onShutdownSignals,
+  shutdownSignalExitCode,
+  type ShutdownSignal,
+} from '../../../utils/shutdown-signals.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { foldRegionOption } from '../../region-options.js';
 import {
@@ -111,8 +116,9 @@ export async function localRunTaskCommand(
   }
 
   const state: EcsRunState = createEcsRunState();
-  let sigintHandler: (() => void) | undefined;
-  let sigintCount = 0;
+  // SIGINT and SIGTERM share one handler and one count (go-to-k/cdkd#6285).
+  let removeSignalHandlers: (() => void) | undefined;
+  let signalCount = 0;
   // Set only once the detach path has actually handed the containers off.
   let detachedSuccessfully = false;
   // Issue #606: the active state provider (--from-state / --from-cfn-stack).
@@ -340,9 +346,12 @@ export async function localRunTaskCommand(
     assertEcsTaskCommandsResolved(task);
 
     // Double-^C exits 130 immediately (matches `cdkd local start-api`).
-    sigintHandler = (): void => {
-      sigintCount += 1;
-      if (sigintCount >= 2) {
+    // SIGTERM takes the same path and exits 143 (go-to-k/cdkd#6285): before,
+    // it skipped this teardown and left the containers and the per-task
+    // network behind, whose subnet then refused the next run.
+    const onShutdownSignal = (signal: ShutdownSignal): void => {
+      signalCount += 1;
+      if (signalCount >= 2) {
         // `process.exit` runs no `finally` and awaits nothing, so `cleanup()`
         // never fires here and the mode-0600 credentials tmpdir survives with
         // live AWS credentials in it (issue go-to-k/cdkd#3410). The message used
@@ -372,14 +381,15 @@ export async function localRunTaskCommand(
         // `--profile`, which is the case that must print nothing.
         const stranded = strandedProfileCredentialsNotice(credsHostPath);
         process.stderr.write(
-          `Force-exit on second ^C; container cleanup skipped.${stranded ? ` ${stranded}` : ''}\n`
+          `Force-exit on second ${signal === 'SIGINT' ? '^C' : 'SIGTERM'}; container cleanup skipped.` +
+            `${stranded ? ` ${stranded}` : ''}\n`
         );
-        process.exit(130);
+        process.exit(shutdownSignalExitCode(signal));
       }
       logger.info('Stopping task...');
-      void cleanup().then(() => process.exit(130));
+      void cleanup().then(() => process.exit(shutdownSignalExitCode(signal)));
     };
-    process.on('SIGINT', sigintHandler);
+    removeSignalHandlers = onShutdownSignals(onShutdownSignal);
 
     // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the user-supplied
@@ -515,8 +525,8 @@ export async function localRunTaskCommand(
     } catch (err) {
       // A ^C began the teardown while the runner was mid-step (it then throws
       // `EcsTaskInterruptedError`, or a docker call fails against what the
-      // teardown removed): the SIGINT handler's cleanup removes what it
-      // started and exits 130 (issue #4495).
+      // teardown removed): the signal handler's cleanup removes what it
+      // started and exits 130, or 143 on SIGTERM (issue #4495).
       if (state.closing) return;
       throw err;
     }
@@ -555,7 +565,7 @@ export async function localRunTaskCommand(
       }
       // Only a REACHED detach hands the containers off; see the `finally`.
       detachedSuccessfully = true;
-      sigintCount = 99;
+      signalCount = 99;
       return;
     }
 
@@ -583,7 +593,7 @@ export async function localRunTaskCommand(
     // force-exit arm, which names the credentials file only while it still
     // exists) instead of Node's default exit, which would skip `docker rm -f`
     // and the dispose.
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (removeSignalHandlers) removeSignalHandlers();
   }
 }
 

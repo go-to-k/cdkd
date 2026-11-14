@@ -853,3 +853,137 @@ describe('localRunTaskCommand body: --aws-emulator (go-to-k/cdkd#6132)', () => {
     expect(mountedBytes).toBeUndefined();
   });
 });
+
+describe('localRunTaskCommand body: SIGTERM tears down what SIGINT does (go-to-k/cdkd#6285)', () => {
+  // `kill`, `timeout`, an IDE stop button and a CI cancellation send SIGTERM.
+  // With only a SIGINT handler armed, Node's default terminate skipped the
+  // teardown and left the task containers and the per-task docker network
+  // behind; the network's subnet then refused the next run.
+  //
+  // The handler is taken off `process` rather than re-emitted, so no unrelated
+  // listener in the vitest worker runs (see the double-^C case above).
+  function fire(signal: 'SIGINT' | 'SIGTERM'): void {
+    const listeners = process.listeners(signal);
+    const handler = listeners[listeners.length - 1] as (() => void) | undefined;
+    expect(handler, `the command body registered no ${signal} handler`).toBeDefined();
+    handler!();
+  }
+
+  function captureProcess(): {
+    exits: number[];
+    stderr: string[];
+    exitCalled: Promise<void>;
+    restore: () => void;
+  } {
+    const exits: number[] = [];
+    const stderr: string[] = [];
+    let exited!: () => void;
+    const exitCalled = new Promise<void>((r) => {
+      exited = r;
+    });
+    const realExit = process.exit;
+    const realOut = process.stdout.write;
+    const realErr = process.stderr.write;
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      exits.push(code ?? 0);
+      exited();
+    };
+    const sink =
+      (into?: string[]) =>
+      (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        into?.push(String(chunk));
+        const cb = rest.find((a): a is () => void => typeof a === 'function');
+        if (cb) cb();
+        return true;
+      };
+    (process.stdout as unknown as { write: unknown }).write = sink();
+    (process.stderr as unknown as { write: unknown }).write = sink(stderr);
+    return {
+      exits,
+      stderr,
+      exitCalled,
+      restore: (): void => {
+        (process as unknown as { exit: typeof realExit }).exit = realExit;
+        (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+        (process.stderr as unknown as { write: typeof realErr }).write = realErr;
+      },
+    };
+  }
+
+  const RESULT = {
+    state: { network: { networkName: 'cdkd-unit-net' } },
+    exitCode: 0,
+    essentialContainerName: undefined,
+  };
+
+  it('a SIGTERM runs the teardown, then exits 143', async () => {
+    const io = captureProcess();
+    const events: string[] = [];
+    cleanupEcsRunMock.mockImplementation(async () => {
+      events.push('cleanup');
+    });
+    try {
+      runEcsTaskMock.mockImplementation(async () => {
+        fire('SIGTERM');
+        await io.exitCalled;
+        events.push(`exit:${String(io.exits[0])}`);
+        return RESULT;
+      });
+      await runTask();
+    } finally {
+      io.restore();
+    }
+
+    expect(events[0], JSON.stringify(events)).toBe('cleanup');
+    expect(io.exits[0]).toBe(143);
+    // The `finally` re-enters the same single-flight teardown: one run.
+    expect(cleanupEcsRunMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { first: 'SIGTERM', second: 'SIGTERM', label: 'SIGTERM', code: 143 },
+    { first: 'SIGINT', second: 'SIGTERM', label: 'SIGTERM', code: 143 },
+    { first: 'SIGTERM', second: 'SIGINT', label: '^C', code: 130 },
+  ] as const)(
+    'a $second after a $first is the second signal: force-exit $code',
+    async ({ first, second, label, code }) => {
+      const io = captureProcess();
+      let hostPath: string | undefined;
+      try {
+        runEcsTaskMock.mockImplementation(
+          (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+            hostPath = runOpts.profileCredentialsFile?.hostPath;
+            if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+            fire(first);
+            fire(second);
+            return Promise.resolve(RESULT);
+          }
+        );
+        await runTask();
+      } finally {
+        io.restore();
+      }
+
+      const forceExit = io.stderr.find((c) => c.includes(`Force-exit on second ${label}`));
+      expect(forceExit, `no force-exit line in ${JSON.stringify(io.stderr)}`).toBeDefined();
+      // The stranded-credentials notice rides the SIGTERM arm too.
+      expect(hostPath).toBeDefined();
+      expect(forceExit).toContain(hostPath!);
+      // The force-exit is the FIRST exit: it does not wait for the teardown.
+      expect(io.exits[0]).toBe(code);
+    }
+  );
+
+  it('removes its SIGTERM listener when the run ends', async () => {
+    const before = process.listeners('SIGTERM').length;
+    let during: number | undefined;
+    runEcsTaskMock.mockImplementation(async () => {
+      during = process.listeners('SIGTERM').length;
+      return RESULT;
+    });
+    await runTask();
+
+    expect(during).toBe(before + 1);
+    expect(process.listeners('SIGTERM').length).toBe(before);
+  });
+});

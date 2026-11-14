@@ -2,6 +2,7 @@ import { logMixedModeForWorkload } from 'cdk-local/internal';
 import { rmSync } from 'node:fs';
 import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
+import { onShutdownSignals, shutdownSignalExitCode } from '../../../utils/shutdown-signals.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
@@ -179,7 +180,8 @@ export async function localInvokeCommand(
   let imagePlan: ImagePlan | undefined;
   let containerId: string | undefined;
   let logStream: ContainerLogStream | undefined;
-  let sigintHandler: (() => void) | undefined;
+  // SIGINT and SIGTERM both run the teardown (go-to-k/cdkd#6285).
+  let removeSignalHandlers: (() => void) | undefined;
   // Issue #2 deferred from #655: synthesized AWS shared credentials file
   // (one INI section) bind-mounted into the container so handlers using
   // `fromIni({ profile })` explicitly resolve to the same creds.
@@ -564,12 +566,14 @@ export async function localInvokeCommand(
     // expects a `void`-returning handler; wrap the async cleanup in a
     // non-async closure so the lint rule about misused-promises doesn't
     // fire.
-    sigintHandler = (): void => {
+    //
+    // SIGTERM runs the same teardown and exits 143 (go-to-k/cdkd#6285): before,
+    // it took Node's default terminate and left the container running.
+    removeSignalHandlers = onShutdownSignals((signal) => {
       void cleanup().then(() => {
-        process.exit(130);
+        process.exit(shutdownSignalExitCode(signal));
       });
-    };
-    process.on('SIGINT', sigintHandler);
+    });
 
     await waitForRieReady(containerHost, hostPort, 5000);
 
@@ -590,7 +594,7 @@ export async function localInvokeCommand(
     // Node's default exit, which would skip `docker rm -f` and the
     // credentials dispose.
     await cleanup();
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (removeSignalHandlers) removeSignalHandlers();
   }
 }
 /** The container env {@link resolveInvokeTemplateEnv} built from the function's template. */
