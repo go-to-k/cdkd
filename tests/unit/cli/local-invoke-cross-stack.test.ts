@@ -83,17 +83,19 @@ describe('envHasCrossStackIntrinsic', () => {
     ).toBe(false);
   });
 
-  it('returns false for nested cross-stack intrinsics (detection is one level deep, per docstring)', () => {
-    // Buried inside a Fn::Join — the detector intentionally does NOT
-    // descend (matches the v1 resolver's behavior where the async path
-    // defers to the sync helper for Fn::Join / Fn::Sub bodies and so
-    // cross-stack intrinsics nested under joins are not resolvable
-    // today either).
+  it('returns true for a cross-stack intrinsic nested in Fn::Join / Fn::Sub (go-to-k/cdkd#6270)', () => {
+    // cdk-local's async substitution resolves a nested one (go-to-k/cdk-local#965),
+    // but only when the resolver this predicate gates was built.
     expect(
       envHasCrossStackIntrinsic({
         BURIED: { 'Fn::Join': [':', [{ 'Fn::ImportValue': 'Other' }]] },
       })
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      envHasCrossStackIntrinsic({
+        SUB: { 'Fn::Sub': ['s3://${B}', { B: { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'B' } } }] },
+      })
+    ).toBe(true);
   });
 
   it('returns false for null / non-object env values (defensive)', () => {

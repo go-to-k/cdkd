@@ -277,7 +277,9 @@ function pointEnvironmentAtEmulator(url: string, port: number, caBundle?: string
   Object.assign(process.env, pointed);
   // A default, not a region the user named: the region chains that rank the
   // host `AWS_REGION` above a stack's or state record's region consult it last
-  // (go-to-k/cdkd#6270).
+  // (go-to-k/cdkd#6270). It is recorded as cdk-local's ambient default region,
+  // so the engine commands (`start-service`, `start-web-function`, ...) rank it
+  // the same way.
   if (pointed['AWS_REGION'] !== undefined) recordEmulatorDefaultRegion(pointed['AWS_REGION']);
   const run = readEmulatorRunFiles(port);
   const caPath = join(run.dir, 'ca.pem');

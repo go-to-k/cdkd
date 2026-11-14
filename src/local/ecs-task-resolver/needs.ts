@@ -1,3 +1,4 @@
+import { containsCrossStackIntrinsic } from 'cdk-local/internal';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { CDK_ASSET_IMAGE_REPO_RE, extractEcrRepoComponent, extractImageString } from './image.js';
@@ -97,7 +98,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
 
 /**
  * Returns true when any `Environment[].Value` or `Secrets[].ValueFrom`
- * is a top-level `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic.
+ * carries an `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic, at any depth.
  * Issue #454 — gates cross-stack resolver construction so literal +
  * same-stack-intrinsic env / secret maps don't pay the extra cost.
  */
@@ -137,10 +138,16 @@ function containerArgvElements(c: Record<string, unknown>): unknown[] {
   return lists.flatMap((l) => (Array.isArray(l) ? (l as unknown[]) : []));
 }
 
+/**
+ * Whether `value` carries an `Fn::ImportValue` / `Fn::GetStackOutput` at ANY
+ * depth — top level, or nested inside `Fn::Join` / `Fn::Sub` / `Fn::Select`
+ * (the shape CDK synthesizes for `s3://${otherStack.bucket.bucketName}`).
+ * cdk-local's `substituteAgainstStateAsync` resolves the nested ones
+ * (go-to-k/cdk-local#965), so every gate deciding whether a value goes to the
+ * cross-stack resolver uses the same deep check (go-to-k/cdkd#6270).
+ */
 export function isCrossStackIntrinsic(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const obj = value as Record<string, unknown>;
-  return 'Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj;
+  return containsCrossStackIntrinsic(value);
 }
 
 /**

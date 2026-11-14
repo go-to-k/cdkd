@@ -278,10 +278,9 @@ function resolveArgvArray(
       return '';
     }
     if (isCrossStackIntrinsic(element)) {
-      // The async post-pass resolves a top-level one (or replaces this reason
-      // with its own); the sync substitution cannot. A nested one is refused
-      // below with the engine's own reason: cdk-local resolves cross-stack
-      // intrinsics only at the top level.
+      // The async post-pass resolves one at any depth (or replaces this
+      // reason with its own, a secret read included); the sync substitution
+      // cannot (go-to-k/cdk-local#965).
       unresolved.push({ field, index, reason: CROSS_STACK_ARGV_REASON });
       return '';
     }
@@ -315,7 +314,7 @@ function resolveArgvArray(
  * line, positional and unredacted, so either one is refused rather than
  * served (go-to-k/cdkd#6271).
  */
-function secretAttributeRead(
+export function secretAttributeRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
@@ -390,6 +389,11 @@ const CROSS_STACK_ARGV_REASON =
 export function argvValue(value: unknown): { value: string } | { reason: string } {
   if (typeof value === 'number' || typeof value === 'boolean') return { value: String(value) };
   if (typeof value !== 'string') return { reason: 'resolved to a non-string value' };
+  if (value === SECRET_MASK) {
+    // A masked value handed across (a producer's NoEcho output recorded as
+    // the mask) would run the command with `***` as an argument.
+    return { reason: `resolved to the secret mask (${SECRET_MASK}), not the deployed value` };
+  }
   if (containsDynamicReference(value)) {
     return {
       reason:

@@ -1,6 +1,6 @@
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { substituteAgainstStateAsync, type SubstitutionContext } from '../state-resolver.js';
-import { argvValue } from './container.js';
+import { argvValue, secretAttributeRead } from './container.js';
 import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
@@ -164,6 +164,14 @@ export async function applyCrossStackResolverToTask(
         const rawElement = rawArgv(c, u.field)?.[u.index];
         if (!target || !isCrossStackIntrinsic(rawElement)) {
           remaining.push(u);
+          continue;
+        }
+        // The sync pass deferred this element before its secret check, and a
+        // nested cross-stack element can read a same-stack secret beside the
+        // import (`Fn::Join` of an `Fn::ImportValue` and a `Fn::GetAtt`).
+        const secret = secretAttributeRead(rawElement, secretContext.resources);
+        if (secret !== undefined) {
+          remaining.push({ ...u, reason: secret });
           continue;
         }
         const sub = await substituteAgainstStateAsync(rawElement, secretContext);
