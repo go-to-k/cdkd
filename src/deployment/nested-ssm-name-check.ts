@@ -224,9 +224,10 @@ export async function forcedChildrenChecked(args: {
 export function nestedSsmNameDeferredNote(logicalId: string): string {
   return (
     safeMsg`Nested stack ${logicalId}: a nested stack record below it holds an SSM parameter ` +
-    `name cdkd generated before go-to-k/cdkd#6272, but its Parameters read a value cdkd stores ` +
-    `masked, so it is not updated for that; the name is re-spelled by the next deploy that ` +
-    `changes this nested stack (go-to-k/cdkd#6282)`
+    `name cdkd generated before go-to-k/cdkd#6272, but the nested stack holding it reads a ` +
+    `value cdkd stores masked, so it is not updated for that; the name is re-spelled by the ` +
+    `next deploy that changes the nested stack whose Parameters read that value ` +
+    `(go-to-k/cdkd#6282)`
   );
 }
 

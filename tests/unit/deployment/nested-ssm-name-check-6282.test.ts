@@ -68,6 +68,10 @@ vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOrigin
 // One case below has the check's masked-value prediction miss: a row it
 // would defer is forced instead. Every other case runs the real check.
 const { prediction } = vi.hoisted(() => ({ prediction: { misses: false } }));
+// File scope, so no case inherits a miss whatever order the cases run in.
+afterEach(() => {
+  prediction.misses = false;
+});
 vi.mock('../../../src/deployment/nested-ssm-name-check.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../../src/deployment/nested-ssm-name-check.js')>();
   return {

@@ -211,7 +211,7 @@ export async function provisionUpdate(
     (context.redactedAttributeReads?.length ?? 0) > 0;
   if (healRowReadsRedacted) {
     engine.logger.warn(
-      safeMsg`${logicalId}: the nested stack is not updated to re-spell its SSM parameter name (go-to-k/cdkd#6282): its Parameters read a value cdkd stores masked. It is re-spelled by the next deploy that changes this nested stack.`
+      safeMsg`${logicalId}: the nested stack is not updated to re-spell its SSM parameter name (go-to-k/cdkd#6282): its Parameters read a value cdkd stores masked. It is re-spelled by the next deploy that changes this nested stack; until then each deploy checks it again and repeats this warning.`
     );
   }
   if ((mayTakeNoChangeSkip && !suppliesFreshMaskOnlyValue) || healRowReadsRedacted) {
