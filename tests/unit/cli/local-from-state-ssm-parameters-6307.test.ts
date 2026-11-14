@@ -204,13 +204,16 @@ describe('local run-task --from-state (#6307)', () => {
     const p = provider();
     const s = taskStack();
     const task = s.template.Resources!['Task'] as { Properties: { ContainerDefinitions: object[] } };
+    // The state record IS loaded (a same-stack ECR image), but no env needs it.
+    s.template.Resources!['Repo'] = { Type: 'AWS::ECR::Repository', Properties: {} };
     task.Properties.ContainerDefinitions = [
       {
         Name: 'app',
-        Image: { 'Fn::Join': ['', [{ Ref: 'AWS::AccountId' }, '.dkr.ecr.us-east-1.amazonaws.com/r:t']] },
+        Image: { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Repo', 'RepositoryUri'] }, ':latest']] },
       },
     ];
     await buildEcsImageResolutionContext(s, p as never, { fromState: true } as never);
+    expect(p.load).toHaveBeenCalled();
     expect(p.resolveTemplateSsmParameters).not.toHaveBeenCalled();
   });
 
