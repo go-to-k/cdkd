@@ -278,7 +278,11 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
   });
 
   it('waits for the stream to settle ACTIVE after the strategy update, before the next call', async () => {
-    const statuses = ['ACTIVE', 'UPDATING', 'ACTIVE'];
+    // Every DescribeStream after the strategy update is the wait's poll: the
+    // trailing attribute read is a DescribeStreamSummary (go-to-k/cdkd#6242),
+    // which an earlier `['ACTIVE', 'UPDATING', 'ACTIVE']` sequence let stand in
+    // for the second poll.
+    const statuses = ['UPDATING', 'ACTIVE'];
     mockSend.mockImplementation((cmd) => {
       if (cmd instanceof DescribeStreamCommand) {
         const status = statuses.length > 1 ? statuses.shift() : statuses[0];

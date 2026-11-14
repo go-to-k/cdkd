@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DescribeStreamCommand,
+  DescribeStreamSummaryCommand,
   StartStreamEncryptionCommand,
   StopStreamEncryptionCommand,
   UpdateShardCountCommand,
@@ -300,7 +301,7 @@ describe('KinesisStreamProvider read-update round-trip', () => {
     };
 
     mockSend.mockResolvedValueOnce({
-      StreamDescription: { StreamARN: STREAM_ARN },
+      StreamDescriptionSummary: { StreamARN: STREAM_ARN },
     });
 
     await provider.update(
@@ -323,9 +324,10 @@ describe('KinesisStreamProvider read-update round-trip', () => {
         c[0] instanceof RemoveTagsFromStreamCommand
     );
     expect(mutationCalls).toHaveLength(0);
-    // Trailing DescribeStream did fire (for the returned Arn attribute).
+    // The trailing DescribeStreamSummary did fire (for the returned Arn and
+    // WarmThroughputObject attributes, go-to-k/cdkd#6242).
     const describeCalls = mockSend.mock.calls.filter(
-      (c) => c[0] instanceof DescribeStreamCommand
+      (c) => c[0] instanceof DescribeStreamSummaryCommand
     );
     expect(describeCalls).toHaveLength(1);
   });

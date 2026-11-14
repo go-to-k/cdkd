@@ -45,6 +45,7 @@ import { reresolveCrossStackValue } from './cross-stack.js';
 import { lookupResourceRecord } from './refs.js';
 import { noteAttributeSecrecy, recordSecretNamedRead } from './getatt/secrecy.js';
 import { reresolveRecordedReferences } from './getatt/reresolve.js';
+import { flatMemberObject } from './getatt-construct-flat-members.js';
 
 export {
   noteAttributeSecrecy,
@@ -208,9 +209,11 @@ export async function resolveGetAtt(
     // from `JSON.parse` of state.json, so `Fn::GetAtt: [R, "constructor"]` read
     // the `Object` function, passed the `!== undefined` test below, and was
     // returned as the attribute VALUE into a live property.
+    // A whole object whose members are recorded as flat dot-keys is
+    // assembled from them (go-to-k/cdkd#6242, `flatMemberObject`).
     const storedValue = Object.hasOwn(resource.attributes, attributeName)
       ? resource.attributes[attributeName]
-      : undefined;
+      : flatMemberObject(resource.resourceType, attributeName, resource.attributes);
     // A pre-#3097 record for a security group declared without `VpcId`
     // holds `''` (the template's absent property, copied), and nothing
     // rewrites it on a no-change deploy; served here it would shadow the

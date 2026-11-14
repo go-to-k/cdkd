@@ -21,6 +21,7 @@ import {
   PLACEMENT_ON_REMOVAL,
   removalWarnings,
 } from './shared.js';
+import { cacheClusterAttributes } from './cache-cluster-attributes.js';
 
 export async function updateCacheCluster(
   this: ElastiCacheProvider,
@@ -167,23 +168,7 @@ export async function updateCacheCluster(
 
     this.warnRemovalsLeftInPlace(logicalId, properties, previousProperties, context);
 
-    const attributes: Record<string, unknown> = {};
-
-    if (described?.CacheNodes?.[0]?.Endpoint) {
-      const endpoint = described.CacheNodes[0].Endpoint;
-      if (endpoint.Address !== undefined) attributes['RedisEndpoint.Address'] = endpoint.Address;
-      if (endpoint.Port !== undefined) attributes['RedisEndpoint.Port'] = String(endpoint.Port);
-    }
-
-    if (described?.ConfigurationEndpoint) {
-      const configurationEndpoint = described.ConfigurationEndpoint;
-      if (configurationEndpoint.Address !== undefined) {
-        attributes['ConfigurationEndpoint.Address'] = configurationEndpoint.Address;
-      }
-      if (configurationEndpoint.Port !== undefined) {
-        attributes['ConfigurationEndpoint.Port'] = String(configurationEndpoint.Port);
-      }
-    }
+    const attributes = cacheClusterAttributes(described);
 
     return {
       physicalId,

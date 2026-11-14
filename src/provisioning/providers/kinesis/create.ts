@@ -6,6 +6,7 @@ import {
   DecreaseStreamRetentionPeriodCommand,
   StartStreamEncryptionCommand,
   type EncryptionType,
+  DescribeStreamSummaryCommand,
 } from '@aws-sdk/client-kinesis';
 import { readConfigString } from '../../config-shape.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -15,6 +16,7 @@ import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult, CreateContext } from '../../../types/resource.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
+import { streamAttributes } from './attributes.js';
 import {
   isKmsEncryption,
   readShardLevelMetrics,
@@ -257,10 +259,17 @@ export async function create(
 
     this.logger.debug(`Successfully created Kinesis stream ${logicalId}: ${streamName}`);
 
+    // The settled stream's attributes (go-to-k/cdkd#6242): only
+    // DescribeStreamSummary reports WarmThroughput.
+    const summary = await this.getClient().send(
+      new DescribeStreamSummaryCommand({ StreamName: streamName })
+    );
+
     return {
       physicalId: streamName,
       attributes: {
         Arn: streamInfo.streamArn,
+        ...streamAttributes(summary.StreamDescriptionSummary),
       },
       // Record the EXPANDED metric list when the template used `ALL`: AWS
       // stores the seven names, so recording `ALL` would be permanent phantom

@@ -1,6 +1,5 @@
 import type { KinesisStreamProvider } from '../kinesis-provider.js';
 import {
-  DescribeStreamCommand,
   DescribeStreamSummaryCommand,
   UpdateStreamModeCommand,
   UpdateShardCountCommand,
@@ -22,6 +21,7 @@ import { readConfigString } from '../../config-shape.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
+import { streamAttributes } from './attributes.js';
 import { maskerOrIdentity, type MaskerFn } from '../../masked-retry-logger.js';
 import {
   isKmsEncryption,
@@ -388,17 +388,16 @@ export async function update(
       }
     }
 
-    // Get current stream description for attributes
+    // The settled stream's attributes (go-to-k/cdkd#6242): only
+    // DescribeStreamSummary reports WarmThroughput.
     const response = await this.getClient().send(
-      new DescribeStreamCommand({ StreamName: physicalId })
+      new DescribeStreamSummaryCommand({ StreamName: physicalId })
     );
 
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
-        Arn: response.StreamDescription?.StreamARN,
-      },
+      attributes: streamAttributes(response.StreamDescriptionSummary),
       ...this.effectiveMetricsProperties(properties, desiredMetrics),
     };
   } catch (error) {

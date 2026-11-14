@@ -97,6 +97,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/getatt-construct-core.ts',
   'src/deployment/intrinsic-resolver/getatt-construct-app.ts',
   'src/deployment/intrinsic-resolver/getatt-construct-compute.ts',
+  'src/deployment/intrinsic-resolver/getatt-construct-flat-members.ts',
   'src/deployment/intrinsic-resolver/cross-stack.ts',
   'src/deployment/intrinsic-resolver/cross-stack/reresolve.ts',
   'src/deployment/intrinsic-resolver/cross-stack/import-value.ts',

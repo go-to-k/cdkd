@@ -649,7 +649,15 @@ const FLOORS = {
 // `toISOString().replace('.000Z', 'Z')` receiver and two arguments sit past the
 // cap (measured: removing that one value drops the count back to 32); a
 // formatting chain, not a fallback.
-const DEPTH_DROPPED_CAP = 35;
+// Raised to 37 by go-to-k/cdkd#6242: the ElastiCache cache cluster and Lambda
+// function now record their map through a helper over the SDK read
+// (`cacheClusterAttributes(described)`, `functionAttributes(response)`), so
+// the walk follows the read back to its arguments and drops two past the cap
+// (measured): `elasticache/cache-cluster.ts`'s generated cluster id
+// (`properties['ClusterName'] || ...`, the describe's argument) and
+// `lambda-function/create.ts`'s `this.createClient` (the send's receiver).
+// An id and an SDK client, not a recorded shape.
+const DEPTH_DROPPED_CAP = 37;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and

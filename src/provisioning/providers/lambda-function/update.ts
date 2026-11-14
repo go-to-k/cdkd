@@ -34,6 +34,7 @@ import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../t
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
+import { functionAttributes } from './attributes.js';
 import { maskDeep, type MaskedLogSinks, type MaskerFn } from '../../masked-retry-logger.js';
 import { withRemovalDefaults } from '../../update-removal.js';
 import {
@@ -512,10 +513,7 @@ export async function update(
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {
-        Arn: functionArn,
-        FunctionName: getResponse.Configuration?.FunctionName,
-      },
+      attributes: functionAttributes(getResponse.Configuration),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) {

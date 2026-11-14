@@ -4,6 +4,7 @@ import {
   DescribeCacheSubnetGroupsCommand,
 } from '@aws-sdk/client-elasticache';
 import { resolveExplicitPhysicalId } from '../../import-helpers.js';
+import { cacheClusterAttributes } from './cache-cluster-attributes.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
 
 /**
@@ -37,10 +38,13 @@ export async function importCacheCluster(
   if (explicit) {
     try {
       const resp = await this.getClient().send(
-        new DescribeCacheClustersCommand({ CacheClusterId: explicit })
+        new DescribeCacheClustersCommand({ CacheClusterId: explicit, ShowCacheNodeInfo: true })
       );
       const c = resp.CacheClusters?.[0];
-      return c?.CacheClusterId ? { physicalId: c.CacheClusterId, attributes: {} } : null;
+      // The same attribute set create / update record (go-to-k/cdkd#6242).
+      return c?.CacheClusterId
+        ? { physicalId: c.CacheClusterId, attributes: cacheClusterAttributes(c) }
+        : null;
     } catch (err) {
       if (this.isNotFoundError(err, 'CacheClusterNotFoundFault')) return null;
       throw err;

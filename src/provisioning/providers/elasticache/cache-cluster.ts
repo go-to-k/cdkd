@@ -22,6 +22,7 @@ import {
   MODIFY_DROPPED_AFTER_MS,
   TERMINAL_CLUSTER_STATUSES,
 } from './shared.js';
+import { cacheClusterAttributes } from './cache-cluster-attributes.js';
 
 export async function createCacheCluster(
   this: ElastiCacheProvider,
@@ -93,25 +94,7 @@ export async function createCacheCluster(
     // Describe to get final attributes
     const described = await this.describeCacheCluster(cacheClusterId);
 
-    const attributes: Record<string, unknown> = {};
-
-    // Redis endpoint attributes
-    if (described?.CacheNodes?.[0]?.Endpoint) {
-      const endpoint = described.CacheNodes[0].Endpoint;
-      if (endpoint.Address !== undefined) attributes['RedisEndpoint.Address'] = endpoint.Address;
-      if (endpoint.Port !== undefined) attributes['RedisEndpoint.Port'] = String(endpoint.Port);
-    }
-
-    // Configuration endpoint (for Memcached clusters)
-    if (described?.ConfigurationEndpoint) {
-      const configurationEndpoint = described.ConfigurationEndpoint;
-      if (configurationEndpoint.Address !== undefined) {
-        attributes['ConfigurationEndpoint.Address'] = configurationEndpoint.Address;
-      }
-      if (configurationEndpoint.Port !== undefined) {
-        attributes['ConfigurationEndpoint.Port'] = String(configurationEndpoint.Port);
-      }
-    }
+    const attributes = cacheClusterAttributes(described);
 
     return {
       physicalId: cacheClusterId,

@@ -1540,6 +1540,7 @@
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
+        "getatt-cache-kinesis-lambda-ec2",
         "import-migrate-vpc",
         "propagation-races-2",
         "remove-protection",
@@ -1555,6 +1556,10 @@
         ],
         "ec2-instance-fanout": [
           "l1"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l1",
+          "literal"
         ],
         "import-migrate-vpc": [
           "l2"
@@ -1619,6 +1624,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -1789,6 +1795,9 @@
         "getatt-asg-arn-rule-name": [
           "l2"
         ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -1945,6 +1954,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2104,6 +2114,9 @@
           "l2"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -2291,6 +2304,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2459,6 +2473,9 @@
           "l2"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -2613,6 +2630,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -2782,6 +2800,9 @@
         "getatt-asg-arn-rule-name": [
           "l2"
         ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -2922,6 +2943,7 @@
         "firehose-msk-source",
         "fsx-lustre",
         "generated-name-security-group",
+        "getatt-cache-kinesis-lambda-ec2",
         "lambda-capacity-provider-default-name",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -3042,6 +3064,9 @@
         "generated-name-security-group": [
           "l1",
           "literal"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
         ],
         "lambda-capacity-provider-default-name": [
           "l2"
@@ -3205,6 +3230,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -3390,6 +3416,9 @@
           "l2"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -3579,6 +3608,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -3740,6 +3770,9 @@
         "getatt-asg-arn-rule-name": [
           "l2"
         ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2"
         ],
@@ -3894,6 +3927,7 @@
         "generated-name-lifecycle",
         "generated-name-security-group",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -4099,6 +4133,9 @@
         "getatt-asg-arn-rule-name": [
           "l2"
         ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
+        ],
         "getatt-vpc-managed-policy": [
           "l2",
           "literal"
@@ -4290,6 +4327,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-cache-kinesis-lambda-ec2",
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
@@ -4459,6 +4497,9 @@
           "l2"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
           "l2"
         ],
         "getatt-vpc-managed-policy": [
@@ -5033,7 +5074,8 @@
       "integs": [
         "cache-streaming",
         "cc-final-snapshot-handlers",
-        "elasticache-snapshot-arns"
+        "elasticache-snapshot-arns",
+        "getatt-cache-kinesis-lambda-ec2"
       ],
       "signals": {
         "cache-streaming": [
@@ -5049,6 +5091,11 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l1",
+          "l2",
+          "literal"
         ]
       }
     },
@@ -5058,7 +5105,8 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "elasticache-replicationgroup-getatt",
-        "elasticache-snapshot-arns"
+        "elasticache-snapshot-arns",
+        "getatt-cache-kinesis-lambda-ec2"
       ],
       "signals": {
         "cache-streaming": [
@@ -5074,6 +5122,10 @@
           "l2"
         ],
         "elasticache-snapshot-arns": [
+          "l1",
+          "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
           "l1",
           "l2"
         ]
@@ -5797,6 +5849,7 @@
         "firehose-msk-source",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
+        "getatt-cache-kinesis-lambda-ec2",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -6009,6 +6062,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
         ],
         "glue-update-hardening": [
           "l2"
@@ -6470,6 +6526,7 @@
         "destroy-nested-cross-region",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
+        "getatt-cache-kinesis-lambda-ec2",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
         "log-pipeline",
@@ -6498,6 +6555,10 @@
         ],
         "dynamodb-ondemand": [
           "l2"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l1",
+          "literal"
         ],
         "kinesis-esm-filter": [
           "l2"
@@ -6674,6 +6735,7 @@
         "full-stack-demo",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
+        "getatt-cache-kinesis-lambda-ec2",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -6898,6 +6960,10 @@
         ],
         "generated-name-lifecycle": [
           "l2",
+          "literal"
+        ],
+        "getatt-cache-kinesis-lambda-ec2": [
+          "l1",
           "literal"
         ],
         "iam-propagation-stress": [

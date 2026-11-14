@@ -9,6 +9,7 @@ import type {
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { isFunctionName, functionIdentityToken } from './shared.js';
+import { functionAttributes } from './attributes.js';
 
 /**
  * go-to-k/cdkd#4606: whether the function a failed CREATE journaled is the
@@ -166,8 +167,9 @@ export async function importImpl(
   const explicit = resolveExplicitPhysicalId(input, 'FunctionName');
   if (explicit) {
     try {
-      await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: explicit }));
-      return { physicalId: explicit, attributes: {} };
+      const resp = await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: explicit }));
+      // The same attribute set create / update record (go-to-k/cdkd#6242).
+      return { physicalId: explicit, attributes: functionAttributes(resp.Configuration) };
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return null;
       throw err;

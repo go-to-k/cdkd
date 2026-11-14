@@ -1358,6 +1358,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-cache-kinesis-lambda-ec2",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-cloudtrail-appsync",
       "annotated": false,
       "scenarios": []
@@ -3869,6 +3874,7 @@
     "generated-name-security-group",
     "getatt-appsync-s3express-s3tables",
     "getatt-asg-arn-rule-name",
+    "getatt-cache-kinesis-lambda-ec2",
     "getatt-cloudtrail-appsync",
     "getatt-fallback-guard",
     "getatt-vpc-managed-policy",

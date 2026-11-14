@@ -22,19 +22,6 @@
       ]
     },
     {
-      "resourceType": "AWS::EC2::Instance",
-      "attributes": [
-        "State"
-      ]
-    },
-    {
-      "resourceType": "AWS::ElastiCache::CacheCluster",
-      "attributes": [
-        "ConfigurationEndpoint",
-        "RedisEndpoint"
-      ]
-    },
-    {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "attributes": [
         "AttachmentCount",
@@ -42,18 +29,6 @@
         "IsAttachable",
         "PermissionsBoundaryUsageCount",
         "UpdateDate"
-      ]
-    },
-    {
-      "resourceType": "AWS::Kinesis::Stream",
-      "attributes": [
-        "WarmThroughputObject"
-      ]
-    },
-    {
-      "resourceType": "AWS::Lambda::Function",
-      "attributes": [
-        "SnapStartResponse"
       ]
     },
     {
@@ -104,7 +79,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 36
+    "refused": 31
   },
   "types": [
     {
