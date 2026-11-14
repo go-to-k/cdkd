@@ -173,6 +173,34 @@ describe('healSlashedSsmParameterNames (go-to-k/cdkd#6274)', () => {
   });
 });
 
+describe('healSlashedSsmParameterNames leaves a record it cannot judge alone (go-to-k/cdkd#6274)', () => {
+  it('a malformed stack instance id or name generation heals nothing', () => {
+    const name = generated('Param');
+    for (const state of [
+      stateOf({ Param: record(`/${name}`) }, 'not-a-uuid'),
+      stateOf({ Param: record(`/${generated('Param', ID)}`, { nameGeneration: -1 }) }, ID),
+    ]) {
+      const result = healSlashedSsmParameterNames(state, unnamed(['Param']), STACK);
+      expect(result.heals).toEqual([]);
+      expect(result.resources).toBe(state.resources);
+    }
+  });
+
+  it('names only the heals an exported output reads', async () => {
+    const { healsReadByExports } = await import('../../../src/deployment/ssm-slashed-name-heal.js');
+    const heals = ['A', 'B', 'C', 'D'].map((id) => ({ logicalId: id, from: `/S-${id}`, to: `S-${id}` }));
+    const template = {
+      Resources: {},
+      Outputs: {
+        RefA: { Value: { Ref: 'A' }, Export: { Name: 'a' } },
+        SubB: { Value: { 'Fn::Sub': 'x-${B}' }, Export: { Name: 'b' } },
+        JoinC: { Value: { 'Fn::Join': ['', ['p/', { Ref: 'C' }]] } },
+      },
+    } as unknown as CloudFormationTemplate;
+    expect(healsReadByExports(heals, template).map((h) => h.logicalId)).toEqual(['A', 'B']);
+  });
+});
+
 describe('cdkd deploy heals the record and updates its dependents (go-to-k/cdkd#6274)', () => {
   const NAME = 'S-Param';
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
@@ -264,9 +292,88 @@ describe('cdkd deploy heals the record and updates its dependents (go-to-k/cdkd#
       state: stateOf({ Param: record(`/${NAME}`, { observedProperties: {} }) }),
       etag: 'e',
     });
-    await makeEngine([['Param']]).deploy(STACK, unnamed(['Param']));
+    const engine = makeEngine([['Param']]);
+    await engine.deploy(STACK, unnamed(['Param']));
     expect(provider['update']).not.toHaveBeenCalled();
     expect(savedStates().at(-1)?.resources['Param']?.physicalId).toBe(NAME);
+    // The #1852 attribute heal's baseline is the healed record.
+    expect(engine.healBaseline['Param']?.physicalId).toBe(NAME);
+  });
+
+  it("updates CDK's grantRead policy, whose Resource joins the Ref, to the real ARN", async () => {
+    const arn = (name: string) => `arn:aws:ssm:us-east-1:111122223333:parameter/${name}`;
+    const document = (resource: unknown) => ({
+      Version: '2012-10-17',
+      Statement: [{ Action: 'ssm:GetParameter', Effect: 'Allow', Resource: resource }],
+    });
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Param: { Type: TYPE, Properties: { Type: 'String', Value: 'v' } },
+        Grant: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyName: 'grant',
+            Roles: ['role'],
+            PolicyDocument: document({
+              'Fn::Join': ['', ['arn:aws:ssm:us-east-1:111122223333:parameter/', { Ref: 'Param' }]],
+            }),
+          },
+        },
+      },
+    };
+    stateBackend.getState.mockResolvedValue({
+      state: stateOf({
+        Param: record(`/${NAME}`),
+        Grant: {
+          resourceType: 'AWS::IAM::Policy',
+          physicalId: 'grant',
+          properties: { PolicyName: 'grant', Roles: ['role'], PolicyDocument: document(arn(`/${NAME}`)) },
+          dependencies: ['Param'],
+        },
+      }),
+      etag: 'e',
+    });
+    await makeEngine([['Param'], ['Grant']]).deploy(STACK, template);
+    expect(provider['update']).toHaveBeenCalledTimes(1);
+    const [logicalId, , , desired] = provider['update']!.mock.calls[0]!;
+    expect(logicalId).toBe('Grant');
+    expect(JSON.stringify(desired)).toContain(`"Resource":"${arn(NAME)}"`);
+    expect(JSON.stringify(desired)).not.toContain('parameter//');
+  });
+
+  it('--dry-run names the heal and saves nothing', async () => {
+    stateBackend.getState.mockResolvedValue({
+      state: stateOf({ Param: record(`/${NAME}`, { observedProperties: {} }) }),
+      etag: 'e',
+    });
+    const engine = makeEngine([['Param']]);
+    (engine.options as Record<string, unknown>)['dryRun'] = true;
+    await engine.deploy(STACK, unnamed(['Param']));
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    expect(logged.some((m) => m.includes('go-to-k/cdkd#6274'))).toBe(true);
+  });
+
+  it('a failed dependent update still leaves the parameter recorded under the new spelling', async () => {
+    provider['update']!.mockRejectedValue(new Error('boom'));
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Param: { Type: TYPE, Properties: { Type: 'String', Value: 'v' } },
+        Reader: { Type: TYPE, Properties: { Type: 'String', Value: { Ref: 'Param' } } },
+      },
+    };
+    stateBackend.getState.mockResolvedValue({
+      state: stateOf({
+        Param: record(`/${NAME}`),
+        Reader: record('S-Reader', { properties: { Type: 'String', Value: `/${NAME}` }, dependencies: ['Param'] }),
+      }),
+      etag: 'e',
+    });
+    await expect(makeEngine([['Param'], ['Reader']]).deploy(STACK, template)).rejects.toThrow();
+    const saved = savedStates();
+    expect(saved.length).toBeGreaterThan(0);
+    expect(saved.at(-1)!.resources['Param']!.physicalId).toBe(NAME);
+    // The dependent keeps what AWS still holds.
+    expect(saved.at(-1)!.resources['Reader']!.properties['Value']).toBe(`/${NAME}`);
   });
 
   it('CONTROL: a slash-less record deployed again saves nothing', async () => {

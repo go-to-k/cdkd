@@ -184,6 +184,15 @@ if [ "${OLD_ENV}" != "${OLD_PARAM_NAME}" ]; then
   echo "FAIL: premise: the function's PARAM_NAME '${OLD_ENV}' is not the recorded '${OLD_PARAM_NAME}'" >&2
   exit 1
 fi
+# The #6272 symptom itself: the grant's recorded policy names parameter//<name>.
+grant_names_double_slash() {
+  jq -e '[.resources[] | select(.resourceType == "AWS::IAM::Policy") | .properties.PolicyDocument | tostring | contains("parameter//")] | any' <<<"$1" >/dev/null
+}
+if ! grant_names_double_slash "${STATE}"; then
+  echo "FAIL: premise: the previous release's grant policy does not name parameter//<name>" >&2
+  exit 1
+fi
+echo "    OK: premise: the previous release's grant names parameter//<name>"
 
 # --- Phase 1: redeploy with this build ---------------------------------
 echo "==> Phase 1: redeploy with this build (re-spells the record, #6274)"
@@ -214,7 +223,25 @@ if [ "${ENV_NAME}" != "${PARAM_NAME}" ]; then
   echo "FAIL: the function's PARAM_NAME '${ENV_NAME}' did not follow the re-spelled Ref '${PARAM_NAME}' (#6274)" >&2
   exit 1
 fi
-echo "    OK: the record and the function's PARAM_NAME now read ${PARAM_NAME}"
+if grant_names_double_slash "${STATE}"; then
+  echo "FAIL: the grant policy still names parameter//<name> after the redeploy (#6274)" >&2
+  exit 1
+fi
+echo "    OK: the record, the grant policy and the function's PARAM_NAME now read ${PARAM_NAME}"
+
+echo "==> Phase 1b: redeploy again: the record is settled, nothing to re-spell"
+DEPLOY_LOG="$(mktemp)"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
+if grep -q 'go-to-k/cdkd#6274' "${DEPLOY_LOG}"; then
+  echo "FAIL: the settled record was re-spelled again (#6274)" >&2
+  exit 1
+fi
+if ! grep -q 'No changes detected' "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy after the re-spelling still changed something" >&2
+  exit 1
+fi
+echo "    OK: no change on the next deploy"
 
 # --- Phase 2: functional ----------------------------------------------
 echo "==> Phase 2: the function reads its auto-named parameter through grantRead"

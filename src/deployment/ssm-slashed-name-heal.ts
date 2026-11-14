@@ -155,3 +155,48 @@ export function slashedSsmNameHealNote(heal: SlashedSsmNameHeal): string {
     `(go-to-k/cdkd#6274)`
   );
 }
+
+/**
+ * The line `cdkd diff` prints for a nested child's record the deploy will not
+ * heal yet: the child's engine runs only when its parent's row changes.
+ */
+export function slashedSsmNameHealPendingNote(heal: SlashedSsmNameHeal, stackName: string): string {
+  return (
+    safeMsg`SSM parameter ${heal.logicalId} of nested stack ${stackName}: its recorded name ` +
+    safeMsg`${heal.from} is re-spelled ${heal.to} on the next deploy that updates this nested ` +
+    `stack, not on this one (go-to-k/cdkd#6274)`
+  );
+}
+
+/** Whether `value` reads `logicalId` through `Ref`, `Fn::GetAtt` or `Fn::Sub`. */
+function reads(value: unknown, logicalId: string): boolean {
+  if (Array.isArray(value)) return value.some((item) => reads(item, logicalId));
+  if (!isObject(value)) return false;
+  if (value['Ref'] === logicalId) return true;
+  const getAtt = value['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && getAtt[0] === logicalId) return true;
+  if (typeof getAtt === 'string' && getAtt.split('.')[0] === logicalId) return true;
+  const sub = value['Fn::Sub'];
+  const subText = Array.isArray(sub) ? sub[0] : sub;
+  if (
+    typeof subText === 'string' &&
+    (subText.includes(`\${${logicalId}}`) || subText.includes(`\${${logicalId}.`))
+  ) {
+    return true;
+  }
+  return Object.values(value).some((child) => reads(child, logicalId));
+}
+
+/**
+ * The heals an exported output of `template` reads: the re-spellings that can
+ * be why an export changes value with no template change.
+ */
+export function healsReadByExports(
+  heals: readonly SlashedSsmNameHeal[],
+  template: CloudFormationTemplate
+): SlashedSsmNameHeal[] {
+  const exported = Object.values(template.Outputs ?? {}).filter(
+    (output) => isObject(output) && output['Export'] !== undefined
+  );
+  return heals.filter((heal) => exported.some((output) => reads(output.Value, heal.logicalId)));
+}

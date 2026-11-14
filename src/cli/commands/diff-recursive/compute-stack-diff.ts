@@ -56,6 +56,7 @@ import { logger } from './logger.js';
 import {
   healSlashedSsmParameterNames,
   slashedSsmNameHealNote,
+  slashedSsmNameHealPendingNote,
 } from '../../../deployment/ssm-slashed-name-heal.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
@@ -124,16 +125,26 @@ export async function computeStackDiff(
     parentUnresolvedParameters,
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
+    ssmNameHeal = 'apply',
   } = options;
   // go-to-k/cdkd#6274: the deploy re-spells a pre-#6272 generated SSM
   // parameter name `/<name>` as `<name>` before its diff; so does the preview,
   // so each dependent holding the old Ref shows the update the deploy makes.
-  const ssmNameHeal = healSlashedSsmParameterNames(loadedState, template, stackName);
-  for (const heal of ssmNameHeal.heals) logger.info(slashedSsmNameHealNote(heal));
-  const currentState: StackState =
-    ssmNameHeal.heals.length > 0
-      ? { ...loadedState, resources: ssmNameHeal.resources }
-      : loadedState;
+  // A nested child whose row the deploy leaves alone runs no engine, so it is
+  // only named, not healed.
+  const healSsmNames = (state: StackState): StackState => {
+    const healed = healSlashedSsmParameterNames(state, template, stackName);
+    if (healed.heals.length === 0) return state;
+    for (const heal of healed.heals) {
+      logger.info(
+        ssmNameHeal === 'apply'
+          ? slashedSsmNameHealNote(heal)
+          : slashedSsmNameHealPendingNote(heal, stackName)
+      );
+    }
+    return ssmNameHeal === 'apply' ? { ...state, resources: healed.resources } : state;
+  };
+  const currentState: StackState = healSsmNames(loadedState);
   // go-to-k/cdkd#3869: every heal of this node binds the healed record's
   // printing bag, judged over the records the diff reads at that moment
   // (`healResources`, which takes the adopted records once they are spliced).
@@ -422,8 +433,12 @@ export async function computeStackDiff(
       healResources = resources;
     },
   });
-  const { adoptedOrphans, adoptedRecords, deployRefusals, stateForDiff, unreadableOrphans } =
-    orphanSplice;
+  const { adoptedOrphans, adoptedRecords, deployRefusals, unreadableOrphans } = orphanSplice;
+  // An adopted record never saw the heal above (as on the deploy).
+  const stateForDiff =
+    adoptedRecords !== undefined && Object.keys(adoptedRecords).length > 0
+      ? healSsmNames(orphanSplice.stateForDiff)
+      : orphanSplice.stateForDiff;
   let { blocking } = orphanSplice;
 
   // go-to-k/cdkd#4543: the deploy's input fingerprint, recomputed from this

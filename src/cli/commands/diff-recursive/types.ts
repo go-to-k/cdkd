@@ -292,6 +292,12 @@ export type SecretTokensByParameter = ReadonlyMap<string, ReadonlySet<string>>;
 
 /** The optional knobs of {@link computeStackDiff}. */
 export interface ComputeStackDiffOptions {
+  /**
+   * go-to-k/cdkd#6274: `'apply'` (default) re-spells a pre-#6272 SSM parameter
+   * name as the deploy does; `'pending'`, for a nested child whose row the
+   * deploy leaves unchanged (so no child engine runs), only names it.
+   */
+  ssmNameHeal?: 'apply' | 'pending';
   parameters?: Record<string, unknown>;
   /**
    * Same per-type normalization the deploy engine applies (issue #1591).

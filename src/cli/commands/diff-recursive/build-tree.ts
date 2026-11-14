@@ -187,6 +187,8 @@ export async function buildDiffTree(args: {
    * above diffs a damaged root with such a name.
    */
   isNestedChild: boolean;
+  /** See `ComputeStackDiffOptions.ssmNameHeal` (go-to-k/cdkd#6274); absent = apply. */
+  ssmNameHeal?: 'apply' | 'pending';
   /**
    * The parent node's printing corpus (go-to-k/cdkd#4049), see
    * {@link StackDiffResult.printingSecrets}. Absent at the root.
@@ -238,6 +240,7 @@ export async function buildDiffTree(args: {
     attributeHealerFor,
     ancestorTemplatePaths,
     isNestedChild,
+    ssmNameHeal,
     inheritedSecrets,
     inheritedDerivedNames,
     inheritedNoEchoParameters,
@@ -319,6 +322,7 @@ export async function buildDiffTree(args: {
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
         previewMaskedInputs: !isNestedChild,
+        ...(ssmNameHeal && { ssmNameHeal }),
         nestedTemplates,
       }
     );
@@ -590,6 +594,13 @@ export async function buildDiffTree(args: {
         ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,
         isNestedChild: true,
+        // go-to-k/cdkd#6274: only a row the deploy provisions runs the
+        // child's engine, and only that engine heals the child's records.
+        ssmNameHeal:
+          changes.get(logicalId)?.changeType === 'UPDATE' ||
+          changes.get(logicalId)?.changeType === 'CREATE'
+            ? 'apply'
+            : 'pending',
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
         ...(hasMaskableValues(childDerivedNames) && { inheritedDerivedNames: childDerivedNames }),

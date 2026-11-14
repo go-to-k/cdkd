@@ -250,7 +250,8 @@ on both layers. One an older cdkd's SDK provider named with a leading `/` is
 re-spelled without it on the next `cdkd deploy`: SSM stores a one-level `/x` as
 `x`, so it is the same parameter, and every resource reading its `Ref` (a
 `grantRead` policy, an environment variable) updates to the new spelling in
-that deploy. `cdkd diff` previews it. A stack exporting the name must then be
+that deploy. `cdkd diff` previews it. In a nested stack this happens on the
+next deploy that updates that nested stack. A stack exporting the name must then be
 deployed together with the stacks importing it.
 
 Neither layer generates the name of an `AWS::Events::EventBus`, which

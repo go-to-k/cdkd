@@ -384,14 +384,32 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
 
   it('names an SSM parameter the deploy re-spells as the cause (go-to-k/cdkd#6274)', async () => {
     const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
+    // The export reads `Q`, the record this deploy re-spelled.
+    const healOf = (logicalId: string) => [{ logicalId, from: `/S-${logicalId}`, to: `S-${logicalId}` }];
     const healed = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]])),
-      ssmNameHeals: [{ logicalId: 'Param', from: '/S-Param', to: 'S-Param' }],
+      ssmNameHeals: healOf('Q'),
     }).catch((e: unknown) => e as Error);
-    expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Param');
+    expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Q');
     expect(healed?.message).toContain('deploy them\ntogether with this stack');
     const plain = await refusal(engine, new Map([['Q', replacingChange]]));
     expect(plain?.message).not.toContain('re-spells');
+    // A re-spelling no export reads is not the cause.
+    const unrelated = await refuseUnsafePlan(engine, {
+      ...plan(new Map([['Q', replacingChange]])),
+      ssmNameHeals: healOf('Other'),
+    }).catch((e: unknown) => e as Error);
+    expect(unrelated?.message).not.toContain('re-spells');
+    // Nor beside an unreadable record alone, where no consumer was refused.
+    const unreadableOnly = engineDouble({
+      consumers: [{ name: 'Unreadable', imports: [], unreadable: true }],
+    });
+    const unread = await refuseUnsafePlan(unreadableOnly.engine, {
+      ...plan(new Map([['Q', replacingChange]])),
+      ssmNameHeals: healOf('Q'),
+    }).catch((e: unknown) => e as Error);
+    expect(unread?.message).toContain('could not be read');
+    expect(unread?.message).not.toContain('re-spells');
   });
 
   it('matches an in-run consumer whatever the case of its region', async () => {

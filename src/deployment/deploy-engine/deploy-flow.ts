@@ -51,7 +51,11 @@ import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
 import { createNoEchoValueMacs } from '../noecho-value-macs.js';
-import { healSlashedSsmParameterNames, slashedSsmNameHealNote } from '../ssm-slashed-name-heal.js';
+import {
+  healSlashedSsmParameterNames,
+  slashedSsmNameHealNote,
+  type SlashedSsmNameHeal,
+} from '../ssm-slashed-name-heal.js';
 
 /**
  * Connections `warmConnections` opens before the tail (#4837): the state
@@ -243,12 +247,19 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#6274: a pre-#6272 generated SSM parameter name `/<name>`
     // is re-spelled `<name>` (the same parameter) before anything reads the
     // records, so the diff updates each dependent holding the old Ref and
-    // every save below records the new spelling.
-    const ssmNameHeal = healSlashedSsmParameterNames(currentState, template, stackName);
-    if (ssmNameHeal.heals.length > 0) {
-      currentState.resources = ssmNameHeal.resources;
-      for (const heal of ssmNameHeal.heals) engine.logger.info(slashedSsmNameHealNote(heal));
-    }
+    // every save below records the new spelling. A nested child heals when
+    // its engine runs, i.e. when its parent's row changes: detecting a
+    // candidate in an unchanged child would cost the parent a read of every
+    // child's record on every deploy.
+    const ssmNameHeals: SlashedSsmNameHeal[] = [];
+    const healSsmNames = (): void => {
+      const healed = healSlashedSsmParameterNames(currentState, template, stackName);
+      if (healed.heals.length === 0) return;
+      currentState.resources = healed.resources;
+      for (const heal of healed.heals) engine.logger.info(slashedSsmNameHealNote(heal));
+      ssmNameHeals.push(...healed.heals);
+    };
+    healSsmNames();
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
@@ -491,6 +502,8 @@ export async function doDeployWithPrefetch(
     // keeps that from becoming load-bearing. Idempotent, and handed the same
     // `template` object as the first pass.
     if (Object.keys(orphanPlan.adopted).length > 0) {
+      // An adopted record never saw the heal above.
+      healSsmNames();
       stampReasonlessParameterRefusals(engine.logger, currentState.resources, template);
       // The same re-read for go-to-k/cdkd#4451's backfill.
       if (
@@ -547,7 +560,7 @@ export async function doDeployWithPrefetch(
 
     await refuseUnsafePlan(engine, {
       stackName,
-      ssmNameHeals: ssmNameHeal.heals,
+      ssmNameHeals,
       currentState,
       effectiveTemplate,
       parameterValues,
@@ -637,7 +650,7 @@ export async function doDeployWithPrefetch(
         maskedFingerprintsBackfilled,
         orphansChanged,
         terminationProtectionChanged,
-        ssmNamesHealed: ssmNameHeal.heals.length > 0,
+        ssmNamesHealed: ssmNameHeals.length > 0,
         resolveStackInstanceId,
         startProvenanceCapture,
         startTime,

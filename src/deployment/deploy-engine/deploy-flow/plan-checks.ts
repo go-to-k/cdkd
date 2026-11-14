@@ -18,7 +18,7 @@ import { scanActiveConsumers } from '../../../state/active-import-consumers.js';
 import { ExportInUseError } from '../../../utils/error-handler.js';
 import type { InUseExportChange } from '../../../utils/error-handler.js';
 import type { DeployEngine } from '../../deploy-engine.js';
-import type { SlashedSsmNameHeal } from '../../ssm-slashed-name-heal.js';
+import { healsReadByExports, type SlashedSsmNameHeal } from '../../ssm-slashed-name-heal.js';
 import type { StackState, ResourceChange } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResolverContext } from '../../intrinsic-resolver/context.js';
@@ -260,7 +260,11 @@ async function refuseInUseExportChanges(
       unreadable,
       affectedExportNames: affected.map((a) => a.exportName),
       nested: engine.options.parentStackInfo !== undefined,
-      respelledSsmParameters: ssmNameHeals.map((heal) => heal.logicalId),
+      // Only beside a consumer refusal, and only the heals an export reads.
+      respelledSsmParameters:
+        refused.length > 0
+          ? healsReadByExports(ssmNameHeals, effectiveTemplate).map((heal) => heal.logicalId)
+          : [],
     });
   }
 }
