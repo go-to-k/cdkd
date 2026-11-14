@@ -31,6 +31,7 @@ import {
   skippedCleanupText,
   type NameHeldBefore,
 } from '../create-ownership.js';
+import { settleAmbiguousCreateService } from './service-create-ambiguous.js';
 import {
   convertTags,
   settleRolloutDelays,
@@ -75,15 +76,43 @@ export async function createService(
     // settle (no wait runs), and not on a rollback replay, which warns and
     // keeps the service instead (see the catch below).
     const skipReason = controllerSkipsWait(properties);
-    const heldBefore: NameHeldBefore =
-      process.env['CDKD_NO_WAIT'] !== 'true' && skipReason === undefined && !replayingState
-        ? await nameHeldBefore(
-            () => this.serviceNameHeld(properties['Cluster'] as string | undefined, serviceName),
-            (error) => hasErrorName(error, ['ClusterNotFoundException'])
-          )
-        : 'free';
+    const heldBeforeMeasured =
+      process.env['CDKD_NO_WAIT'] !== 'true' && skipReason === undefined && !replayingState;
+    const heldBefore: NameHeldBefore = heldBeforeMeasured
+      ? await nameHeldBefore(
+          () => this.serviceNameHeld(properties['Cluster'] as string | undefined, serviceName),
+          (error) => hasErrorName(error, ['ClusterNotFoundException'])
+        )
+      : 'free';
 
-    const response = await client.send(
+    // go-to-k/cdkd#6284: a CreateService that threw AFTER ECS created the
+    // service (an unreadable 2xx, a 5xx, a reset or timeout) left it recorded
+    // nowhere, wedging the cluster's rollback and destroy.
+    const sendCreate = async (command: CreateServiceCommand) => {
+      const attemptStartMs = Date.now();
+      try {
+        return await client.send(command);
+      } catch (createError) {
+        survivorArn = await settleAmbiguousCreateService.call(
+          this,
+          {
+            logicalId,
+            cluster: properties['Cluster'] as string | undefined,
+            serviceName,
+            createError,
+            attemptStartMs,
+            heldBefore,
+            heldBeforeMeasured,
+          },
+          log
+        );
+        if (survivorArn !== undefined) {
+          reportCreatedResource(logicalId, resourceType, survivorArn);
+        }
+        throw createError;
+      }
+    };
+    const response = await sendCreate(
       new CreateServiceCommand({
         cluster: properties['Cluster'] as string | undefined,
         serviceName,
