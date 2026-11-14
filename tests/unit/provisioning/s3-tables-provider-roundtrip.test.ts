@@ -32,7 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { NotFoundException } from '@aws-sdk/client-s3tables';
+import { GetTableCommand, NotFoundException } from '@aws-sdk/client-s3tables';
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
 
 /** An unset configuration: each S3 Tables configuration Get answers NotFound. */
@@ -213,8 +213,10 @@ describe('S3TablesProvider read-update round-trip', () => {
     );
 
     expect(result).toEqual({ physicalId: TABLE_PHYSICAL_ID, wasReplaced: false });
-    // No tag delta → no TagResource / UntagResource calls fire.
-    expect(mockSend).not.toHaveBeenCalled();
+    // No tag delta → no TagResource / UntagResource calls fire; the only send
+    // is the post-update attribute re-read (issue #6238).
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetTableCommand);
   });
 
   it('AWS::S3Tables::Table — Format-less Table response: no Format key leaks to round-trip', async () => {
@@ -265,6 +267,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       observed!,
       observed!
     );
-    expect(mockSend).not.toHaveBeenCalled();
+    // Only the post-update attribute re-read (issue #6238).
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetTableCommand);
   });
 });

@@ -240,7 +240,7 @@ async function withTableAttributes(
     };
   } catch (readError) {
     provider.logger.debug(
-      `Could not re-read the attributes of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
+      safeMsg`Could not re-read the attributes of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
     );
     return result;
   }

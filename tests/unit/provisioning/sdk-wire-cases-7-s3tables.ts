@@ -330,6 +330,11 @@ export function describeS3tablesExtras(): void {
       expect(result).toEqual({
         physicalId: `${BUCKET_ARN}|ns_live|tbl_new`,
         wasReplaced: false,
+        // The post-update GetTable re-read (issue #6238), answered by the fake.
+        attributes: {
+          TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN`,
+          WarehouseLocation: 'fake-warehouseLocation',
+        },
       });
     });
 
@@ -345,6 +350,11 @@ export function describeS3tablesExtras(): void {
       expect(result).toEqual({
         physicalId: `${BUCKET_ARN}|ns_new|tbl_live`,
         wasReplaced: false,
+        // The post-update GetTable re-read (issue #6238), answered by the fake.
+        attributes: {
+          TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN`,
+          WarehouseLocation: 'fake-warehouseLocation',
+        },
       });
     });
 
@@ -371,7 +381,15 @@ export function describeS3tablesExtras(): void {
       const bag = { ...base, Namespace: 'ns_live', TableName: 'tbl_live' };
       const { result, writes } = await updateTable(bag, bag);
       expect(writes).toEqual([]);
-      expect(result).toEqual({ physicalId: TABLE.physicalId, wasReplaced: false });
+      expect(result).toEqual({
+        physicalId: TABLE.physicalId,
+        wasReplaced: false,
+        // The post-update GetTable re-read (issue #6238), answered by the fake.
+        attributes: {
+          TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN`,
+          WarehouseLocation: 'fake-warehouseLocation',
+        },
+      });
     });
   });
 
@@ -394,7 +412,11 @@ export function describeS3tablesExtras(): void {
       expect(outcome).toMatchObject({ threw: false });
       expect(created).toEqual({
         physicalId: `${BUCKET_ARN}|ns|tbl`,
-        attributes: { TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN` },
+        // + the GetTable read-back create() records (issue #6238).
+        attributes: {
+          TableARN: `arn:aws:svc:us-east-1:${ACCOUNT}:fake-tableARN`,
+          WarehouseLocation: 'fake-warehouseLocation',
+        },
       });
     });
   });

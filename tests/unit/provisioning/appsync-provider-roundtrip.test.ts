@@ -842,7 +842,7 @@ describe('AppSyncProvider.update', () => {
         'api-1|key-1',
         { ApiId: 'api-1', Description: 'new' },
         { ApiId: 'api-1', Description: 'old' },
-        ['ApiKey', 'Arn'],
+        ['ApiKey', 'ApiKeyId', 'Arn'],
       ],
     ])(
       'reports the COMPLETE attribute set on %s',

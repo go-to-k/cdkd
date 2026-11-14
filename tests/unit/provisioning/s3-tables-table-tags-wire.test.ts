@@ -133,7 +133,8 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'k', Value: 'v' }] },
         { Tags: [{ Key: 'k', Value: 'v' }] }
       );
-      expect(mockSend).not.toHaveBeenCalled();
+      // No tag call; only the post-update attribute re-read (issue #6238).
+      expect(mockSend.mock.calls.map((c) => c[0].constructor)).toEqual([GetTableCommand]);
     });
 
     it('add-only → TagResource (only, with GetTable ARN lookup first)', async () => {
@@ -148,8 +149,9 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'prod' }] },
         {}
       );
-      // 2 sends: GetTable + TagResource
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      // 3 sends: GetTable + TagResource + the post-update attribute re-read (#6238)
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(GetTableCommand); // post-update re-read (#6238)
       const call = mockSend.mock.calls[1][0];
       expect(call).toBeInstanceOf(TagResourceCommand);
       expect(call.input.resourceArn).toBe(TABLE_ARN);
@@ -182,7 +184,8 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         {},
         { Tags: [{ Key: 'gone', Value: 'x' }] }
       );
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(GetTableCommand); // post-update re-read (#6238)
       const call = mockSend.mock.calls[1][0];
       expect(call).toBeInstanceOf(UntagResourceCommand);
       expect(call.input.resourceArn).toBe(TABLE_ARN);
@@ -231,7 +234,8 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'staging' }] },
         { Tags: [{ Key: 'env', Value: 'dev' }] }
       );
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(GetTableCommand); // post-update re-read (#6238)
       expect(mockSend.mock.calls[1][0]).toBeInstanceOf(TagResourceCommand);
       expect(mockSend.mock.calls[1][0].input.tags).toEqual({ env: 'staging' });
     });
@@ -249,8 +253,9 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'dev' }, { Key: 'owner', Value: 'alice' }] }
       );
 
-      // 3 sends: GetTable + Untag + Tag
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      // 4 sends: GetTable + Untag + Tag + the post-update attribute re-read (#6238)
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend.mock.calls[3][0]).toBeInstanceOf(GetTableCommand); // post-update re-read (#6238)
       expect(mockSend.mock.calls[1][0]).toBeInstanceOf(UntagResourceCommand);
       expect(mockSend.mock.calls[1][0].input.tagKeys).toEqual(['owner']);
       expect(mockSend.mock.calls[2][0]).toBeInstanceOf(TagResourceCommand);

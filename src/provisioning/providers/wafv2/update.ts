@@ -16,6 +16,7 @@ import {
   type MonetizationConfig,
 } from '@aws-sdk/client-wafv2';
 import { definedAttributes } from '../../attribute-map.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -131,7 +132,7 @@ export async function update(
       ).WebACL?.Capacity;
     } catch (readError) {
       this.logger.debug(
-        `Could not read the capacity of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
+        safeMsg`Could not read the capacity of ${logicalId} after update: ${describeAwsFailure(readError).detail}`
       );
     }
 

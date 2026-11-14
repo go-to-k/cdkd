@@ -207,7 +207,7 @@ export async function createTable(
       versionToken = read.versionToken ?? versionToken;
     } catch (readError) {
       this.logger.debug(
-        `Could not read the warehouse location of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
+        safeMsg`Could not read the warehouse location of ${logicalId} after create: ${describeAwsFailure(readError).detail}`
       );
     }
 

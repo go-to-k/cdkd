@@ -451,7 +451,11 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         baseProperties([])
       );
 
-      const updateCall = mockSend.mock.calls.at(-1)!;
+      // The UpdateWebACL, which is no longer the LAST send: a GetWebACL re-reads
+      // Capacity after it (issue #6238).
+      const updateCall = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'UpdateWebACLCommand'
+      )!;
       const rules = updateCall[0].input.Rules as Record<string, unknown>[];
       const statement = rules[0]!['Statement'] as Record<string, unknown>;
       const reference = statement['IPSetReferenceStatement'] as Record<string, unknown>;
@@ -487,7 +491,11 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         Rules: { Ref: 'SomeUnresolvedParameter' },
       }, baseProperties([]));
 
-      const updateCall = mockSend.mock.calls.at(-1)!;
+      // The UpdateWebACL, which is no longer the LAST send: a GetWebACL re-reads
+      // Capacity after it (issue #6238).
+      const updateCall = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'UpdateWebACLCommand'
+      )!;
       expect(updateCall[0].input.Rules).toEqual({ Ref: 'SomeUnresolvedParameter' });
     });
 

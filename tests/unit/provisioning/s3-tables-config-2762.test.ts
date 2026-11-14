@@ -642,6 +642,10 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
             value: { status: 'disabled' },
           },
         ],
+        [
+          GetTableCommand.name,
+          { tableBucketARN: BUCKET_ARN, namespace: 'ns', name: 'tbl' },
+        ],
       ]);
     });
 
@@ -654,6 +658,10 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
         [
           CreateTableCommand.name,
           { tableBucketARN: BUCKET_ARN, namespace: 'ns', name: 'tbl', format: 'ICEBERG' },
+        ],
+        [
+          GetTableCommand.name,
+          { tableBucketARN: BUCKET_ARN, namespace: 'ns', name: 'tbl' },
         ],
       ]);
     });
@@ -693,6 +701,8 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
           },
         ],
         [RenameTableCommand.name, expect.objectContaining({ name: 'tbl', newName: 'tbl2' })],
+        // post-update attribute re-read of the renamed table (issue #6238)
+        [GetTableCommand.name, { tableBucketARN: BUCKET_ARN, namespace: 'ns', name: 'tbl2' }],
       ]);
     });
 
@@ -718,6 +728,7 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
         PutTableMaintenanceConfigurationCommand.name,
         'mark:SnapshotManagement',
         PutTableMaintenanceConfigurationCommand.name,
+        GetTableCommand.name, // post-update attribute re-read (issue #6238)
       ]);
     });
 
@@ -814,7 +825,8 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
         { ...bag, SnapshotManagement: { Status: 'disabled' } }
       );
 
-      expect(mockSend).not.toHaveBeenCalled();
+      // Nothing is written; only the post-update attribute re-read (issue #6238).
+      expect(sent().map(([name]) => name)).toEqual([GetTableCommand.name]);
       expect(String(warn.mock.calls[0]?.[0])).toContain('SnapshotManagement was removed');
     });
 
