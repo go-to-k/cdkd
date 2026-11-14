@@ -79,6 +79,14 @@ secret, a secret inside a list, a reference embedded in a longer string) is in
   secret, scrub has nothing to match the plaintext against, and the stack
   reports clean. `cdkd diff` still shows the record and `cdkd state show`
   prints it.
+- **A plain template string with a secret's text inside it.** A short secret
+  value can also occur inside an ordinary string, such as the generated
+  username `postgres` inside `Engine: aurora-postgresql`. State stores that
+  string as written. An older cdkd stored it with the reference spliced in
+  (`aurora-{{resolve:...}}ql`), which `cdkd diff` reports as a change. Scrub
+  puts the template's string back when the reference, looked up again, gives
+  exactly that string. The next `cdkd deploy` makes the same repair without
+  sending anything to AWS.
 
 ## What scrub leaves alone
 

@@ -4,6 +4,7 @@ import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure, verboseAwareText } from '../../../utils/aws-failure-text.js';
 import {
   scrubResourceRecord,
+  keepTemplateLiteralLeaves,
   redactForState,
   printingCorpusOf,
   maskSecretsInText,
@@ -412,14 +413,32 @@ export async function scrubStackRewritePass({
     // deployed, which `cdkd drift --revert` then pushes to AWS. The
     // trust-any-expression relaxation is kept — that source is still a STATE
     // bag — because it is what cleans a legacy PLAINTEXT observed leaf.
-    const scrubbed =
+    const walked =
       secrets || templateProps
         ? scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation', {
             // A record read from `state.json`: no bag this run produced.
             properties: 'unproven',
             observed: 'unproven',
+            propertiesPositioned: templateProps !== undefined,
           })
         : record;
+    // go-to-k/cdkd#6303: that walk's source is a STATE bag, so it value-scans
+    // an observed leaf even where the leaf is the template's own plain literal
+    // (`aurora-postgresql` around the generated username `postgres`). Such a
+    // leaf is public text, put back as it was read. See
+    // {@link keepTemplateLiteralLeaves}.
+    const scrubbed =
+      templateProps && record.observedProperties && walked.observedProperties
+        ? {
+            ...walked,
+            observedProperties: keepTemplateLiteralLeaves(
+              walked.observedProperties,
+              record.observedProperties,
+              templateProps,
+              ownSecrets
+            ) as Record<string, unknown>,
+          }
+        : walked;
     // go-to-k/cdkd#4043 Phase C, the migration rule: a plaintext this record
     // still holds at a `NoEcho` position is a needle of a SECOND scrub of
     // this record alone, in a map of its own: never `perResourceSecrets`,

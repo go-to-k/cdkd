@@ -24,6 +24,7 @@ import {
   nameDefinitionSecrets,
 } from './redact-path/definition.js';
 import { hasPlainPrototype } from './redact-path/json-equality.js';
+import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -44,6 +45,7 @@ export {
   replaceAtPath,
 } from './redact-path/definition.js';
 export { isUncertifiedBaselineMaskPosition } from './redact-path/baseline-mask.js';
+export { secretRerenderPairs, keepTemplateLiteralLeaves } from './redact-path/template-literal.js';
 export {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
@@ -209,6 +211,15 @@ export function redactByPath(
     // bound helper — so a secret embedded beside the token is still redacted.
     return positionByEmbeddedSpan(bag, source, secrets, bagIsSameGeneration);
   }
+  // The source's own PLAIN literal (go-to-k/cdkd#6303): a recorded plaintext
+  // inside it is a coincidence, never a substitution, so the value scan below
+  // must not splice an expression into it. See {@link isSourcePlainLiteral}.
+  if (isSourcePlainLiteral(bag, source, secrets, rules)) return bag;
+  // ...and the spelling that scan persisted for one before the fix, which
+  // `cdkd scrub` meets in a record it re-positions. See
+  // {@link rerenderedSourceLiteral}.
+  const rerendered = rerenderedSourceLiteral(bag, source, secrets);
+  if (rerendered !== undefined) return rerendered;
   if ((typeof bag === 'string' || Array.isArray(bag)) && isPlainObject(source)) {
     // A nested-stack child leaf spelled `{Ref: <Param>}` that this resource's
     // resolution read with an inherited secret in it (issue #2349): persisted

@@ -198,6 +198,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'a bag `scrubResourceRecord` already redacted, as the deploy\'s ' +
       '`applyNoEchoPersist` does.',
   },
+  'src/cli/commands/scrub/stack-rewrite.ts': {
+    sites: 1,
+    why:
+      'A `:`-form WRITE over the bag `scrubResourceRecord` just redacted: ' +
+      '`keepTemplateLiteralLeaves` puts back only a leaf equal to the TEMPLATE\'s own ' +
+      'plain literal and to no recorded plaintext (go-to-k/cdkd#6303).',
+  },
   'src/cli/commands/scrub/stack-resolve.ts': {
     sites: 1,
     why:
@@ -320,10 +327,12 @@ describe('observedProperties write population (issue #2828)', () => {
     // record, for 13 across 9; its Phase C added scrub's twin of it, for 14.
     // Splitting `drift.ts` into `drift/*.ts` moved its 3 into two files: 14
     // across 10. Splitting `scrub.ts` into `scrub/*.ts` moved its 2 into two
-    // files: 14 across 11.
+    // files: 14 across 11. go-to-k/cdkd#6274's SSM name heal added one: 15
+    // across 12. go-to-k/cdkd#6303 added scrub's template-literal
+    // keep over the redacted observed bag: 16 across 13.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(15);
-    expect(Object.keys(EXPECTED)).toHaveLength(12);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(16);
+    expect(Object.keys(EXPECTED)).toHaveLength(13);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {
