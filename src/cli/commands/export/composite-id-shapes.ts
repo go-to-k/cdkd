@@ -1,3 +1,4 @@
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import { getLogger } from '../../../utils/logger.js';
 import { canonicalizeIpv4Cidr } from '../../../utils/ipv4-cidr.js';
@@ -233,7 +234,7 @@ export function resolveRouteDestination(
   // this one line (a throw of the same text is bounded by `groupBlockedReasons`).
   getLogger().warn(
     displayAwsMessage(
-      `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
+      `${shared}, or pass the resource through ${proseQuoted(cdkdRemedy('cdkd import', '--resource'))} with the correct id. ` +
         `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
         `CIDR, whose AWS-side canonicalization cdkd does not model — so the difference may be ` +
         `benign.`

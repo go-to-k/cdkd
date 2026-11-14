@@ -439,7 +439,7 @@ export function resolveSingleRegion(
   if (matches.length === 0) {
     throw new Error(
       `No state found for stack ${displayStackName(stackName)}.\n` +
-        `Run 'cdkd state list' to see available stacks.`
+        `Run ${proseQuoted(cdkdRemedy('cdkd state list'))} to see available stacks.`
     );
   }
   if (requestedRegion) {

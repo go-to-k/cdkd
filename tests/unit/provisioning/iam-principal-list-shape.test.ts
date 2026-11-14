@@ -787,7 +787,7 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
     expect(warned.split('cdkd state orphan').length - 1).toBe(1);
     // No context marks a stack destroy: this record only (go-to-k/cdkd#4602).
     expect(warned).toContain(
-      "'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
+      "cdkd state orphan '<stack>' --stack-region '<region>' --resource M, which drops only this record"
     );
     expect(warned).not.toContain(LEAK);
   });
@@ -801,7 +801,7 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
       { stackDestroy: true }
     );
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
-      "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack still has in that region"
+      "cdkd state orphan '<stack>' --stack-region '<region>', which drops every record the stack still has in that region"
     );
   });
 
@@ -819,7 +819,7 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
     // record only, since no context marks a stack destroy (go-to-k/cdkd#4602).
     expect(warned).toContain(
       'Remove the users from the group by hand, then drop this record with ' +
-        "'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
+        "cdkd state orphan '<stack>' --stack-region '<region>' --resource M, which drops only this record"
     );
     expect(warned).not.toContain('Repair the recorded Users');
   });

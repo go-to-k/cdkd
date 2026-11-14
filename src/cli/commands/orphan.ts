@@ -258,7 +258,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     throw new Error(
       "'cdkd orphan' requires at least one construct path, e.g. 'cdkd orphan MyStack/MyTable'.\n" +
         "       To remove a stack's state record (the previous behavior), use:\n" +
-        '         cdkd state orphan MyStack'
+        `         ${pasteableCommand('cdkd state orphan', [{ value: 'MyStack', hole: 'stack' }]).command}`
     );
   }
 

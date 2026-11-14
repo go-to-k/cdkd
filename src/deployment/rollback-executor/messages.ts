@@ -1,8 +1,10 @@
 import {
+  cdkdRemedy,
   commandHole,
   pasteableCommand,
   physicalIdShownBesideCommand,
   plainOrDescribed,
+  proseQuoted,
   quotedOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
@@ -351,8 +353,9 @@ export function skipUnaddressableReplay(
     safeMsg`  Rollback: Cannot ${what} ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) ` +
       `\u2014 its state record has no non-empty string 'physicalId', so cdkd cannot address it in ` +
       `AWS and sent nothing for it. The resource and its state record are left exactly as they ` +
-      `are. Repair the record's 'physicalId' (inspect it with \`cdkd state show\`), then ` +
-      `re-converge it with \`cdkd deploy\`.`
+      `are. Repair the record's 'physicalId' (inspect it with ` +
+      safeMsg`${proseQuoted(cdkdRemedy('cdkd state show'), '`')}), then re-converge it with ` +
+      safeMsg`${proseQuoted(cdkdRemedy('cdkd deploy'), '`')}.`
   );
   recordRollbackSkip(scope, op, UNADDRESSABLE_SKIP_CAUSE);
 }

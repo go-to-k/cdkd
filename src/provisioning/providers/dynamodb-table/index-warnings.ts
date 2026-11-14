@@ -5,6 +5,7 @@ import type {
   ProvisionedThroughput,
   GlobalSecondaryIndexDescription,
 } from '@aws-sdk/client-dynamodb';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { isWarmThroughputDecrease } from '../../dynamodb-warm-throughput.js';
 import { maskDeep } from '../../masked-retry-logger.js';
 import type { SecretMasker } from '../../../types/resource.js';
@@ -393,7 +394,7 @@ export function skipZeroCapacityIndexUpdate(
       `than a capacity DynamoDB accepts (the minimum is 1), so no per-index throughput update was ` +
       `sent. This usually means the value came from a state record an older cdkd release wrote — a ` +
       `\`cdkd drift --revert\` of such a record, or a rollback replaying it. Re-run ` +
-      `\`cdkd deploy\` (or \`cdkd drift --accept\`) to refresh the record.`
+      `${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} (or ${proseQuoted(cdkdRemedy('cdkd drift', '--accept'), '`')}) to refresh the record.`
   );
   return true;
 }
@@ -564,7 +565,7 @@ export function warmThroughputOpFor(
         `successful deploy re-captures AWS's current value as the drift baseline. If your ` +
         `template declares this index's WarmThroughput, set it to the value AWS holds (or ` +
         `remove it, which AWS treats as keeping the last-set value); if it does not, the value ` +
-        `came from a cdkd state record and 'cdkd deploy' (or 'cdkd drift --accept') refreshes it.`
+        `came from a cdkd state record and ${proseQuoted(cdkdRemedy('cdkd deploy'))} (or ${proseQuoted(cdkdRemedy('cdkd drift', '--accept'))}) refreshes it.`
     );
     return undefined;
   }

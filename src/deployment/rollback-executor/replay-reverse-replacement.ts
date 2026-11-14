@@ -211,7 +211,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       logicalId: op.logicalId,
       consequence: 'create a default-configured resource and then delete the live one',
       remedy: `Re-run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to re-converge it.`,
-      retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
+      retry: `re-running ${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))} retries this op`,
     })
   ) {
     recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
@@ -597,7 +597,7 @@ function survivorUnprovenRefusal(
   const oldShown = hasAddressablePhysicalId({ physicalId: oldId })
     ? refusalPhysicalId(mask(String(oldId)))
     : 'no recorded id';
-  const rerun = rerunRollbackPhrase(ctx, 'cdkd rollback');
+  const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   const why =
     verdict === 'unreadable'
       ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +

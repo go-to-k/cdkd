@@ -656,7 +656,7 @@ export function sharedImportIdentifierReason(others: readonly string[]): string 
  */
 export function blockedMigrationTail(blocked: readonly BlockedResource[]): string {
   const generic =
-    'destroy them first (cdkd destroy / cdkd state destroy cherry-picked), or remove them ' +
+    `destroy them first (${cdkdRemedy('cdkd destroy')} / ${cdkdRemedy('cdkd state destroy')} cherry-picked), or remove them ` +
     'from the CDK app and re-synthesize.';
   // Per RESOURCE, as the rows are grouped. A resource with ANY manual reason
   // is manual — no command, the generic one included, is safe for it. Of the

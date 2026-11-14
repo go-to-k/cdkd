@@ -4,6 +4,7 @@ import {
   pasteableCommand,
   type CommandArg,
   proseQuoted,
+  shellQuote,
 } from '../../../utils/pasteable-command.js';
 import { isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
@@ -403,14 +404,15 @@ export function importRepairCommand(logicalId: string): string {
   // id where `cdkd import` declares `[stack]`). `isPasteableIdent` admits
   // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$`, which has no `=`, so it answers both.
   const named = isPasteableIdent(logicalId);
-  return `${
-    pasteableCommand('cdkd import', [
-      { hole: 'stack' },
-      named
-        ? { flag: '--resource', value: logicalId, hole: 'logicalId' }
-        : { flag: '--resource', hole: 'logicalId' },
-    ]).command
-  }=${commandHole('physicalId')} --force`;
+  // The `<id>=<physicalId>` pair is ONE word, built here, so the run flags
+  // `pasteableCommand` appends land after `--force`, never between the pair's
+  // halves (go-to-k/cdkd#6262).
+  const pair = `${named ? shellQuote(logicalId) : commandHole('logicalId')}=${commandHole('physicalId')}`;
+  return pasteableCommand('cdkd import', [
+    { hole: 'stack' },
+    { literal: `--resource ${pair}` },
+    { literal: '--force' },
+  ]).command;
 }
 
 /**

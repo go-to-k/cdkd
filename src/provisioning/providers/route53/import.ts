@@ -1,7 +1,12 @@
 import type { Route53Provider } from '../route53-provider.js';
 import { GetHostedZoneCommand } from '@aws-sdk/client-route-53';
 import { isPlainImportValue, remedyLogicalId, VALUE_NOT_SHOWN } from '../../import-helpers.js';
-import { commandHole } from '../../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  commandHole,
+  pasteableCommand,
+  proseQuoted,
+} from '../../../utils/pasteable-command.js';
 import {
   COMPOSITE_ID_SEPARATOR,
   canonicalizeRoute53QueryName as canonicalizeQueryName,
@@ -311,15 +316,20 @@ export async function hostedZoneImportAttributes(
     // gated all the same, as every other value on a command line is.
     const zoneShown = isPlainImportValue(zoneId) ? zoneId : VALUE_NOT_SHOWN;
     const zoneArg = isPasteableIdent(zoneId) ? zoneId : commandHole('hostedZoneId');
+    const importCommand = pasteableCommand('cdkd import', [
+      { literal: '--resource' },
+      { literal: `${remedyLogicalId(logicalId)}=${zoneArg}` },
+      { literal: '--force' },
+    ]).command;
     const head = `Imported hosted zone ${zoneShown} but could not read its NameServers: `;
     this.logger.warn(
       head +
         `${this.warnFailureText(head, error, undefined)}\n` +
         `The zone is adopted without them (any attributes already in state for this ` +
         `zone are kept). Re-run ` +
-        `\`cdkd import --resource ${remedyLogicalId(logicalId)}=${zoneArg} --force\` once the permission ` +
+        `${proseQuoted(importCommand, '`')} once the permission ` +
         `is granted, or make a template change that forces an UPDATE — a plain ` +
-        `\`cdkd deploy\` does NOT heal the record, because an unchanged zone is ` +
+        `${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} does NOT heal the record, because an unchanged zone is ` +
         `NO_CHANGE and never calls update().`
     );
     return {};

@@ -521,7 +521,7 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
       expect(error?.message).toContain('delete it deliberately in us-west-2');
       // No `stackDestroy`: a deploy-side delete, so this record only (go-to-k/cdkd#4602).
       expect(error?.message).toContain(
-        "'cdkd state orphan <stack> --stack-region <region> --resource MyBucket', which drops only this record"
+        "cdkd state orphan '<stack>' --stack-region '<region>' --resource MyBucket, which drops only this record"
       );
     });
 
@@ -539,7 +539,7 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         );
 
       expect(error?.message).toContain(
-        "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack " +
+        "cdkd state orphan '<stack>' --stack-region '<region>', which drops every record the stack " +
           "still has in that region, not just this one (add '--resource MyBucket' to drop only this one)"
       );
     });

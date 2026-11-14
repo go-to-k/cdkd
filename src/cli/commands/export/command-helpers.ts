@@ -195,7 +195,7 @@ export function refuseTransientContextIfUnsafe(options: {
         `Supplied:\n${indented}\n\n` +
         `Choose one:\n` +
         `  (recommended) Move these values into cdk.json's "context": { ... } field, then re-run\n` +
-        `                cdkd export without -c. CDK CLI reads cdk.json on every synth, so they\n` +
+        `                ${cdkdRemedy('cdkd export')} without -c. CDK CLI reads cdk.json on every synth, so they\n` +
         `                will be picked up automatically.\n` +
         `  (escape)      Pass --accept-transient-context to proceed. You will then need to\n` +
         `                pass the SAME -c flags to every future \`cdk deploy\` for this stack.`

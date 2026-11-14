@@ -5,7 +5,11 @@ import {
   settleJournalAfterCleanRollback,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { buildProgram } from '../../../src/cli/program.js';
 import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';import {
   withSkipPrefix,
   withStackScope,
   generateResourceName,
@@ -4724,6 +4728,34 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
       const strip = warned.find((w) => w.includes('Failed to remove the settled entries'));
       expect(strip).toContain('run a successful cdkd deploy of the stack first');
+    });
+
+    it("go-to-k/cdkd#6262: the failed-strip remedy carries the run's --aws-emulator", async () => {
+      buildProgram();
+      const run = async (): Promise<string> => {
+        const engine = noChangeEngine();
+        foreignHeld(engine);
+        journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+        journal.deleteRollbackJournal.mockResolvedValue(false);
+        journal.dropRollbackJournalFailedOperations.mockRejectedValue(new Error('PutObject denied'));
+        vi.mocked(getLogger().warn).mockClear();
+        await engine.deploy(stackName, template);
+        const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+        return warned.find((w) => w.includes('Failed to remove the settled entries'))!;
+      };
+      try {
+        setPasteableRunFlags({});
+        const plain = await run();
+        setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:4599' });
+        const emulated = await run();
+        expect(plain).toContain('run a successful cdkd deploy of the stack first');
+        expect(emulated).toContain(
+          'run a successful cdkd deploy --aws-emulator=https://127.0.0.1:4599 of the stack first'
+        );
+      } finally {
+        setPasteableRunFlags({});
+        setPasteableVerbFlags(undefined);
+      }
     });
 
     // Review CODE-M1's type check: a record of ANOTHER type holding the same id

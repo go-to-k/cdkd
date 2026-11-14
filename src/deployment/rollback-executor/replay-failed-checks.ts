@@ -9,6 +9,7 @@ import type {
   StackOrphanRecord,
   SupersededResourceRecord,
 } from '../../types/state.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import type { MovedIdCleanupQueue } from './replay-moved-id-cleanup.js';
 import { type RollbackExecutorContext, type FailedOperation } from './types.js';
@@ -68,7 +69,7 @@ export async function journaledOrphanKeepReason(
   }
   if (holding?.kind === 'unreadable') {
     return {
-      retry: `${holding.what} leaves open whether another stack holds it now; once that record can be read (re-deploy or inspect it with \`cdkd state show\`, or retry when the bucket is reachable), re-run`,
+      retry: `${holding.what} leaves open whether another stack holds it now; once that record can be read (re-deploy or inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'), '`')}, or retry when the bucket is reachable), re-run`,
     };
   }
   // The identity is READ here and the delete runs after it, unconditioned on

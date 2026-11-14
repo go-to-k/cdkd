@@ -6,7 +6,7 @@
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { IDENT_MAX_CODE_POINTS, displayIdent } from '../../utils/display-safe.js';
-import { isInertUnquoted } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, isInertUnquoted, proseQuoted } from '../../utils/pasteable-command.js';
 import type { LockRecoveryContext } from '../lock-contention-message.js';
 import { isReadableBag } from '../../types/state.js';
 import type { StackState } from '../../types/state.js';
@@ -685,7 +685,7 @@ export function malformedExportResourcePropertiesRefusalMessage(
       `map it cannot read makes each of those answers wrong — and the record showing the ` +
       `damage is deleted once the export succeeds. Nothing was imported and no state was ` +
       `written. Repair the record by hand, or re-import each named resource with a selective ` +
-      `'cdkd import --force', which records the properties resolved from the template; then ` +
+      `${proseQuoted(cdkdRemedy('cdkd import', '--force'))}, which records the properties resolved from the template; then ` +
       `export again.`,
     stackName,
     region,

@@ -106,7 +106,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
             `so the JOURNAL is kept. Check both resources by hand.` +
             (remedy.offered
               ? ` To leave this one as it is, re-run ` +
-                `${rerunRollbackPhrase(ctx, '`cdkd rollback`')} with the command below; that ` +
+                `${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))} with the command below; that ` +
                 `also drops the journal's only record of the ${oldKind} old resource ` +
                 `(${oldShown}), so note that id first.`
               : // A nested child's revert: no state repair makes this op's re-run
@@ -148,12 +148,12 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
         ? `Repair the record's 'physicalId' to the id of the replacement's NEW resource ` +
           `(inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'), '`')}): the journal does not record that id, and ` +
           `the re-run DELETES the resource the repaired record names as the new copy, so ` +
-          `name the right one. Then re-run ${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.`
+          `name the right one. Then re-run ${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))}.`
         : `Repair the record's 'physicalId' to ${target}, the replacement's new resource the ` +
           `journal records (inspect it with ${proseQuoted(cdkdRemedy('cdkd state show'), '`')}); the re-run deletes it and ` +
           `re-adopts the old one. Any other id stops the revert and drops the journal's only ` +
           `record of the ${oldKind} old resource (${oldShown}). Then re-run ` +
-          `${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.` +
+          `${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))}.` +
           // Only the journal holds it: the state record is the damaged one.
           (describedPhysicalIdPointer(target) !== ''
             ? ` That id is left out of the prose above: it is not a plain identifier — read ` +
@@ -430,7 +430,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       consequence:
         'be applied as a complete desired state: a patch provider removes every property, and an SDK provider may reset a subset or replace the resource',
       remedy: `Re-run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to re-converge it.`,
-      retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
+      retry: `re-running ${rerunRollbackPhrase(ctx, proseQuoted(cdkdRemedy('cdkd rollback'), '`'))} retries this op`,
     })
   ) {
     recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);

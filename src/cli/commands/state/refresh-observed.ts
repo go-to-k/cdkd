@@ -1,5 +1,6 @@
 import {
   cdkdRemedy,
+  commandHole,
   pasteableCommand,
   withheldTargetClause,
   proseQuoted,
@@ -146,7 +147,7 @@ async function stateRefreshObservedCommand(
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
-      `Stack name is required. Usage: ${pasteableCommand('cdkd state refresh-observed', [{ hole: 'stacks...' }]).command} | --all`
+      `Stack name is required. Usage: cdkd state refresh-observed ${commandHole('stacks...')} | --all`
     );
   }
 

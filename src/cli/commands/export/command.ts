@@ -1,4 +1,4 @@
-import { pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import {
   refuseMalformedResourcePropertiesForExport,
@@ -307,7 +307,7 @@ export async function exportCommand(
       logger.warn(
         `Stack ${quotedOrNotShown(resolvedStackName)} has a rollback journal — a previous deploy failed or was ` +
           `interrupted and has not been reverted. Exporting this half-deployed state to ` +
-          `CloudFormation is likely unintended; revert it first (or 'cdkd deploy' to fix ` +
+          `CloudFormation is likely unintended; revert it first (or ${proseQuoted(cdkdRemedy('cdkd deploy'))} to fix ` +
           `forward).` +
           `\nRevert it with: ${
             pasteableCommand('cdkd rollback', [{ value: resolvedStackName, hole: 'stack' }]).command

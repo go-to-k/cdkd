@@ -71,7 +71,9 @@ function replaceLiteralIn(source: string): boolean {
  */
 const REMEDY_VERB =
   '(?:bootstrap|synth|list|deploy|diff|drift|destroy|rollback|scrub|events|gc|orphan|refactor|' +
-  'import|publish-assets|force-unlock|export|state(?: [a-z-]+)?|local(?: [a-z-]+)?)';
+  'import|publish-assets|force-unlock|export|' +
+  // `state` and `local` only with a subcommand: a bare "cdkd state" is the noun.
+  'state (?:info|browse|list|resources|show|orphan|destroy|migrate|refresh-observed)|local [a-z-]+)';
 
 /**
  * A `cdkd <verb>` spelled as a literal right after a cue (go-to-k/cdkd#6262):
@@ -103,6 +105,12 @@ function remedyLiteralsIn(source: string): string[] {
   const flat = flattenSource(source);
   return [...flat.matchAll(REMEDY_LITERAL)]
     .filter((m) => !(m[0].startsWith(':') && VERB_VALUED_KEY.test(flat.slice(0, m.index))))
+    .filter((m) => {
+      // A whole-literal verb passed as an ARGUMENT (`withheldTargetClause(b, 'stack',
+      // 'cdkd destroy')`) is a verb a builder receives, not prose.
+      const q = /^,\s+(['"`])cdkd /.exec(m[0]);
+      return !(q && flat[m.index + m[0].length] === q[1]);
+    })
     .map((m) => flat.slice(Math.max(0, m.index - 80), m.index + m[0].length + 40));
 }
 
@@ -119,44 +127,69 @@ function wrappedBuiltCommandIn(source: string): boolean {
 }
 
 /**
- * Cued mentions that are NOT a command to paste, each `[file, a substring of
- * the hit's normalised context, why, hits?]`. An entry must match exactly
- * `hits` hits (default 1) — a list naming two commands is two hits — so a
- * stale one fails too. Keep it small: when in doubt, build the command with
- * `cdkdRemedy`.
+ * Files whose fence hits are all mentions, not commands to paste: `[file, hits,
+ * why]`. A file's hit count must equal `hits` EXACTLY, so a new literal remedy
+ * added to a listed file fails as surely as one in an unlisted file, and a
+ * stale count fails too. When in doubt, build the command with `cdkdRemedy`.
  */
-const DESCRIPTIVE_REMEDY_MENTIONS: ReadonlyArray<
-  readonly [string, string, string] | readonly [string, string, string, number]
-> = [
-  // --help / option / usage text: read in the help screen, where no run flag exists.
-  ['src/cli/commands/destroy.ts', 'already-destroyed stack: cdkd events prune', '--help text'],
-  ['src/cli/commands/force-unlock.ts', 'Usage: cdkd force-unlock', 'a usage line'],
-  ['src/cli/commands/local-invoke.ts', 'already deployed via cdkd deploy.', 'option help'],
-  ['src/cli/commands/local-start-api.ts', 'already deployed via cdkd deploy. Mirrors', 'option help'],
-  ['src/cli/commands/orphan.ts', "behavior, use 'cdkd state orphan <stack>'", '--help text'],
-  ['src/cli/commands/state/destroy.ts', "orphan'.\" ) .argument", '.description text'],
-  ['src/cli/commands/state/destroy.ts', "orphan'.\", ].join", '--help text'],
-  ['src/cli/commands/state/refresh-observed.ts', 'Run cdkd scrub first on state', '.description text'],
-  ['src/cli/options.ts', "this region is opted in via 'cdkd bootstrap'", 'option help'],
-  ['src/cli/options.ts', "not yet opted in via 'cdkd bootstrap'", 'option help'],
-  // Not a command at all: "cdkd state" is the noun, "cdkd state's" a possessive.
-  ['src/cli/commands/export/composite-id-shapes.ts', "VPCGatewayAttachment: cdkd state's", 'noun'],
-  ['src/cli/commands/export/composite-id-shapes.ts', "AWS::EC2::Route: cdkd state's", 'noun'],
-  ['src/cli/commands/retire-cfn-stack/prepare.ts', 'written yet: cdkd state and', 'noun'],
+const DESCRIPTIVE_REMEDY_MENTIONS: ReadonlyArray<readonly [string, number, string]> = [
+  // --help / option / `.description` / Usage text: read where no run flag exists.
+  ['src/cli/commands/destroy.ts', 1, '--help text'],
+  ['src/cli/commands/force-unlock.ts', 1, 'a usage line'],
+  ['src/cli/commands/local-invoke.ts', 1, 'option help'],
+  ['src/cli/commands/local-start-api.ts', 4, 'option help'],
+  ['src/cli/commands/local-start-api/command.ts', 1, "an elided '...' example in a hint"],
+  ['src/cli/commands/orphan.ts', 1, '--help text'],
+  ['src/cli/commands/state/destroy.ts', 2, '.description / --help text'],
+  ['src/cli/commands/state/refresh-observed.ts', 2, 'a usage line and .description text'],
+  ['src/cli/options.ts', 2, 'option help'],
+  // A label, a prompt name, or a log line naming the running command.
+  ['src/cli/commands/bootstrap-destroy.ts', 2, "the running command's own log lines"],
+  ['src/cli/commands/bootstrap.ts', 1, 'lead-in to the flag lines below'],
+  ['src/cli/commands/import/nested.ts', 4, 'error-message label naming the running mode'],
+  ['src/cli/commands/rollback-drop-failed.ts', 1, 'names the confirmation prompt'],
+  ['src/cli/commands/state-refresh-observed.ts', 1, 'names the confirmation prompt'],
+  ['src/local/invoke-agentcore-watch-loop.ts', 1, 'log prefix'],
+  ['src/local/mixed-mode-state.ts', 1, 'a regex stripping a question'],
+  ['src/cli/commands/local-state-loader.ts', 1, 'a question'],
+  // A verb a builder receives (`command: x ? 'cdkd state destroy' : 'cdkd destroy'`).
+  ['src/cli/commands/destroy-runner/under-lock-steps.ts', 2, 'ternary verb value for a builder'],
   // Describes what a command does or did, or forbids running it.
-  ['src/cli/commands/bootstrap.ts', 'You can now use cdkd deploy with:', 'lead-in to the flag lines below'],
-  ['src/cli/commands/export/per-stack-phases.ts', 'Do NOT run cdkd destroy on the tree', 'a prohibition'],
-  ['src/cli/commands/import/stack-state.ts', 'as imported: cdkd rollback leaves', 'describes rollback'],
-  ['src/cli/commands/local-state-loader.ts', "Was it deployed via 'cdkd deploy'?", 'a question'],
-  ['src/local/mixed-mode-state.ts', "Was it deployed via 'cdkd deploy'", 'a regex stripping that question'],
-  ['src/deployment/cc-pending-requests.ts', 'deploy created: cdkd destroy, cdkd rollback', 'lists what settles the entry'],
-  ['src/provisioning/providers/custom-resource/delete-skip-reasons.ts', "Do not drop this record with 'cdkd state orphan'", 'a prohibition'],
-  ['src/provisioning/providers/docdb/cluster-update.ts', 'cdkd drift --revert does not change', 'describes revert'],
-  ['src/state/malformed-resources-bag/properties.ts', "Do NOT run 'cdkd deploy' against", 'a prohibition'],
-  // Points at the deliberately unfilled template printed on its own line below
-  // (`.claude/rules/state-malformed-containers.md`).
-  ['src/state/malformed-resources-bag/orphans-container.ts', "run 'cdkd state orphan' against the stack", 'names the template below'],
-  ['src/state/malformed-resources-bag/resources.ts', "run 'cdkd state orphan' against the stack", 'names the template below'],
+  ['src/analyzer/refactor-pairing.ts', 1, 'describes refactor'],
+  ['src/cli/commands/export/command.ts', 1, 'a prohibition'],
+  ['src/cli/commands/export/import-plan.ts', 1, 'names what wrote a record'],
+  ['src/cli/commands/export/per-stack-loop.ts', 1, 'subject of a sentence'],
+  ['src/cli/commands/export/per-stack-phases.ts', 1, 'a prohibition'],
+  ['src/cli/commands/import/stack-state.ts', 1, 'describes rollback'],
+  ['src/cli/commands/refactor/plan.ts', 1, 'describes diff and deploy'],
+  ['src/cli/commands/scrub/stack-rewrite.ts', 1, 'describes diff'],
+  ['src/deployment/custom-resource-service-token.ts', 1, 'describes deploy'],
+  ['src/deployment/deploy-engine/name-collision.ts', 1, 'describes destroy'],
+  [
+    'src/deployment/deploy-engine/update-replace/create-first.ts',
+    4,
+    "'`cdkd deploy --replace` would ...' clauses, which #6245's fence exempts too",
+  ],
+  ['src/deployment/deploy-engine/update-in-place.ts', 1, 'names what refused'],
+  ['src/deployment/nested-child-journal.ts', 1, 'a recorded reason'],
+  ['src/deployment/rollback-executor/journaled-orphans.ts', 1, 'describes rollback / destroy'],
+  ['src/deployment/rollback-executor/messages.ts', 1, 'describes rollback --orphan'],
+  ['src/deployment/rollback-executor/replay-props.ts', 1, 'names what wrote a record'],
+  ['src/local/ecs-task-resolver/target.ts', 1, 'states what the commands honor'],
+  ['src/provisioning/composite-id.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/redacted-delete-address.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/providers/rds-dbproxy-targetgroup/delete.ts', 1, 'names where the record is kept'],
+  ['src/provisioning/providers/custom-resource/delete-skip-reasons.ts', 2, 'a prohibition; when cdkd re-resolves'],
+  ['src/provisioning/providers/custom-resource/delete.ts', 1, 'names what wrote a record'],
+  ['src/provisioning/providers/docdb/cluster-update.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/providers/dynamodb-table/index-warnings.ts', 2, 'describes drift --revert'],
+  ['src/provisioning/providers/iam-managed-policy/update.ts', 1, 'describes drift --accept'],
+  ['src/provisioning/providers/iam-policy/update.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/providers/iam-role/update.ts', 1, 'describes drift --accept'],
+  ['src/provisioning/providers/rds/calls.ts', 1, 'describes drift --revert'],
+  ['src/provisioning/region-check.ts', 1, 'describes a run shape'],
+  ['src/state/malformed-resources-bag/orphan-records.ts', 1, 'describes rollback'],
+  ['src/state/malformed-resources-bag/properties.ts', 3, 'a prohibition; describes drift / deploy'],
 ];
 
 describe('without a built program or recorded flags', () => {
@@ -250,22 +283,19 @@ describe('the verb table is read off the real Commander tree', () => {
         if (e.isDirectory()) walk(full);
         else if (e.name.endsWith('.ts')) {
           const file = full.split(path.sep).join('/');
-          for (const hit of remedyLiteralsIn(readFileSync(full, 'utf8'))) {
-            const i = DESCRIPTIVE_REMEDY_MENTIONS.findIndex(
-              ([f, snippet]) => f === file && hit.includes(snippet)
-            );
-            if (i === -1) unexplained.push(`${file}: ${hit}`);
-            else used.set(i, (used.get(i) ?? 0) + 1);
-          }
+          const hits = remedyLiteralsIn(readFileSync(full, 'utf8'));
+          const i = DESCRIPTIVE_REMEDY_MENTIONS.findIndex(([f]) => f === file);
+          if (i !== -1) used.set(i, hits.length);
+          else unexplained.push(...hits.map((hit) => `${file}: ${hit}`));
         }
       }
     };
     walk('src');
     expect(unexplained).toEqual([]);
-    // Each allowlisted mention matches exactly its hit count: a stale entry, or
-    // one broad enough to hide another literal, fails.
-    const misfit = DESCRIPTIVE_REMEDY_MENTIONS.flatMap((entry, i) =>
-      used.get(i) === (entry[3] ?? 1) ? [] : [`${entry[0]}: ${entry[1]} (${used.get(i) ?? 0} hits)`]
+    // Each listed file has exactly its count of hits: a new literal in it, or a
+    // stale count, fails.
+    const misfit = DESCRIPTIVE_REMEDY_MENTIONS.flatMap(([f, n], i) =>
+      used.get(i) === n ? [] : [`${f}: expected ${n} hits, found ${used.get(i) ?? 0}`]
     );
     expect(misfit).toEqual([]);
   });
@@ -354,6 +384,9 @@ describe('the verb table is read off the real Commander tree', () => {
       "const a = pasteableCommand('cdkd rollback', [{ value: s, hole: 'stack' }]).command;",
       "watchCommandInterrupt({ command: 'cdkd destroy' });",
       "const a = 'the entry cdkd destroy keeps retrying';",
+      // a whole-literal verb handed to a builder, and the noun "cdkd state"
+      "withheldTargetClause(built, 'stack', 'cdkd destroy');",
+      "const a = 'Nothing written: cdkd state and the stack are unchanged';",
     ];
     for (const src of passed) expect(remedyLiteralsIn(src), src).toEqual([]);
   });

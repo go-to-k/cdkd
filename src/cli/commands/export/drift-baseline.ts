@@ -341,7 +341,7 @@ export function reportDriftBaselineGaps(
               ? `print safely. This stack name begins with '-', which the CLI could read as an ` +
                 `option however it is quoted, so do not fill the stack hole with it: repair or ` +
                 `remove the record by hand. `
-              : `print safely; fill it from 'cdkd state list --json'` +
+              : `print safely; fill it from ${proseQuoted(cdkdRemedy('cdkd state list', '--json'))}` +
                 // The listing reads this run's bucket only with the same flags
                 // (go-to-k/cdkd#4648 review).
                 (account.length > 0

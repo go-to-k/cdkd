@@ -7,6 +7,7 @@ import {
   type UpdateGlobalSecondaryIndexAction,
   type GlobalSecondaryIndexDescription,
 } from '@aws-sdk/client-dynamodb';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import type { SecretMasker } from '../../../types/resource.js';
 import type { VectorIndexPlan } from '../../dynamodb-vector-indexes.js';
@@ -312,12 +313,15 @@ export async function applyGsiUpdates(
         // actually tell them apart" trap, and a false positive would refuse
         // a perfectly valid deploy. A visible warning naming `cdkd drift` is
         // the honest answer for the shape half.
+        const driftCommand = pasteableCommand('cdkd drift', [
+          { value: physicalId, hole: 'stack', opts: { patternMatched: true } },
+        ]).command;
         warn(
           `${this.indexScopeAt(name, physicalId, maskSecrets)} was adopted from AWS rather ` +
             `than created, so cdkd could ` +
             `not verify ` +
-            `its KeySchema / Projection match the template. Run \`cdkd drift ${physicalId}\` ` +
-            `to confirm, and \`cdkd drift --accept\` if AWS is the source of truth.`
+            `its KeySchema / Projection match the template. Run ${proseQuoted(driftCommand, '`')} ` +
+            `to confirm, and ${proseQuoted(cdkdRemedy('cdkd drift', '--accept'), '`')} if AWS is the source of truth.`
         );
         continue;
       }

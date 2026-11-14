@@ -12,6 +12,7 @@ import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { StateError } from '../utils/error-handler.js';
 import { missingStateBucketRemedy } from '../utils/missing-state-bucket-remedy.js';
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
@@ -645,7 +646,7 @@ export async function resolveStateBucketWithDefaultAndSource(
           logger.warn(
             `Both '${newName}' (new default) and '${legacyName}' (legacy default) exist, ` +
               `but the new bucket is empty and the legacy one has state. Reading from legacy. ` +
-              `Run \`cdkd state migrate --region ${displayIdent(legacyRegion)}\` to copy the state into the new ` +
+              `Run ${proseQuoted(cdkdRemedy('cdkd state migrate', '--region', displayIdent(legacyRegion)), '`')} to copy the state into the new ` +
               `bucket and stop seeing this warning.`
           );
           return { bucket: legacyName, source: 'default-legacy', probe: legacyProbe };
@@ -667,7 +668,7 @@ export async function resolveStateBucketWithDefaultAndSource(
       logger.warn(
         `Using legacy state bucket name '${legacyName}'. ` +
           `The default has changed to '${newName}'. To migrate, run:\n\n` +
-          `    cdkd state migrate --region ${displayIdent(legacyRegion)}\n\n` +
+          `    ${cdkdRemedy('cdkd state migrate', '--region', displayIdent(legacyRegion))}\n\n` +
           `(add --remove-legacy to delete the legacy bucket after a successful copy; ` +
           `legacy support will be dropped in a future release.)`
       );

@@ -15,6 +15,11 @@ import type { ResourceChange } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { buildProgram } from '../../../src/cli/program.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -205,6 +210,26 @@ describe('DeployEngine — replacement collision on a name another resource hold
       // The feared shape: create -> delete -> create.
       expect(callOrder).toEqual(['create']);
       expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('go-to-k/cdkd#6262: the descriptive --replace note names no run flag (it is not a remedy)', async () => {
+      buildProgram();
+      const refusal = async (): Promise<string> => {
+        createFailures = [collision('taken-name')];
+        const err = await provision(makeEngine(), { recorded: 'my-fn', desired: 'taken-name' });
+        return err!.message;
+      };
+      try {
+        setPasteableRunFlags({});
+        const plain = await refusal();
+        setPasteableRunFlags({ awsEmulator: 'https://127.0.0.1:4599' });
+        const emulated = await refusal();
+        expect(plain).toContain('so `cdkd deploy --replace` would delete this resource and still');
+        expect(emulated).toContain('so `cdkd deploy --replace` would delete this resource and still');
+      } finally {
+        setPasteableRunFlags({});
+        setPasteableVerbFlags(undefined);
+      }
     });
 
     it('does not advise --replace without the flag', async () => {

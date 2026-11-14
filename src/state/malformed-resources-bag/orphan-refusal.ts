@@ -5,8 +5,10 @@
  */
 import { isPasteableIdent } from '../../utils/display-safe.js';
 import {
+  cdkdRemedy,
   isInertUnquoted,
   pasteableCommand,
+  proseQuoted,
   SHELL_ACTIVE_WHY,
 } from '../../utils/pasteable-command.js';
 import { sanitizeRecoveryValue, shellQuote } from '../lock-contention-message.js';
@@ -438,7 +440,7 @@ function orphanInspectClause(
   const stackFill = stackShown
     ? ''
     : ` The stack name ${SHELL_ACTIVE_WHY}, so the key shows the hole '<stack>' in its place; ` +
-      `take the name from 'cdkd state list --json' and put it there, inside the outer quotes.`;
+      `take the name from ${proseQuoted(cdkdRemedy('cdkd state list', '--json'))} and put it there, inside the outer quotes.`;
   // The fill-in note only when no prefix was SUPPLIED: one that was supplied but
   // did not render exactly is not the default, so the note would mislead.
   // Its OWN sentence rather than a second parenthetical: appended to `where`'s

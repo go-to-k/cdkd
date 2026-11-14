@@ -5,6 +5,7 @@ import {
   ModifyDBClusterCommand,
   type CreateDBClusterCommandInput,
 } from '@aws-sdk/client-rds';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -673,7 +674,7 @@ export async function createDBCluster(
           );
           this.logger.warn(
             maskerOrIdentity(mask)(
-              `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'read as already deleted' : "already in status 'deleting'"}; cdkd did not delete it again. Outside a rollback's re-create, the failed deploy's rollback journal still records it, so \`cdkd rollback --revert-failed\` confirms it is gone`
+              `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'read as already deleted' : "already in status 'deleting'"}; cdkd did not delete it again. Outside a rollback's re-create, the failed deploy's rollback journal still records it, so ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')} confirms it is gone`
             )
           );
           throw innerError;
@@ -700,7 +701,7 @@ export async function createDBCluster(
           this.logger.debug(m(`${cleanupHead}${m(cleanupFailure.detail)}`));
         }
         this.logger.warn(
-          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}${writer}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+          `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}${writer}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
         );
       }
       throw innerError;

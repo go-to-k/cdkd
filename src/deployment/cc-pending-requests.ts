@@ -307,7 +307,7 @@ async function settlePending(
           logger.warn(
             safeMsg`The CREATE of ${named} ${ended} in AWS after cdkd stopped waiting, and made ` +
               safeMsg`${madeShown}. It is now recorded in the rollback journal as a resource the failed ` +
-              'deploy created: cdkd destroy, cdkd rollback --revert-failed and the next successful deploy ' +
+              safeMsg`deploy created: ${cdkdRemedy('cdkd destroy')}, ${cdkdRemedy('cdkd rollback', '--revert-failed')} and the next successful deploy ` +
               'delete it as its DeletionPolicy directs when cdkd can prove it is still the resource that ' +
               'create made, and otherwise name it in a warning for you to delete by hand.'
           );

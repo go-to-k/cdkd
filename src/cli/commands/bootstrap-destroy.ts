@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   S3Client,
   HeadBucketCommand,
@@ -703,7 +703,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': ${stateKeys.length} stack(s) ` +
             `still have state in it:\n${listing}\n` +
-            `Destroy every stack ('cdkd destroy' / 'cdkd state destroy') before ` +
+            `Destroy every stack (${proseQuoted(cdkdRemedy('cdkd destroy'))} / ${proseQuoted(cdkdRemedy('cdkd state destroy'))}) before ` +
             `deleting the state bucket.`,
           'STATE_BUCKET_NOT_EMPTY'
         );

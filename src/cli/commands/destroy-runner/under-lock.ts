@@ -2,7 +2,7 @@
  * The destroy runner from the stack lock on (split out of
  * `../destroy-runner.ts`, go-to-k/cdkd#5835).
  */
-import { plainOrDescribed } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, plainOrDescribed, proseQuoted } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { displaySafe, displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import { getLiveRenderer } from '../../../utils/live-renderer.js';
@@ -806,7 +806,7 @@ export async function destroyStackUnderLock({
             'depends on them failed, as CloudFormation leaves them: ' +
             safeMsg`${blockedIds.map((id) => plainOrDescribed(id, 'logical id')).join(', ')}. ` +
             'Their records are kept: once the resource blocking them is deleted, a re-run of ' +
-            "'cdkd destroy' / 'cdkd state destroy' deletes them."
+            safeMsg`${proseQuoted(cdkdRemedy('cdkd destroy'))} / ${proseQuoted(cdkdRemedy('cdkd state destroy'))} deletes them.`
         );
       }
     }

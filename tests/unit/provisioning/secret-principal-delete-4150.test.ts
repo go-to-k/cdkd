@@ -468,7 +468,7 @@ describe('IAMPolicyProvider.delete with a secret-derived principal list (go-to-k
     expect(printed()).toContain("cdkd orphan '<constructPath>'");
     // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
     expect(printed()).toContain(
-      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource P', which drops only this record"
+      "with no CDK app, cdkd state orphan '<stack>' --stack-region '<region>' --resource P, which drops only this record"
     );
     expect(printed()).not.toContain(ROLE);
   });
@@ -485,7 +485,7 @@ describe('IAMPolicyProvider.delete with a secret-derived principal list (go-to-k
       { ...OPT_IN, stackDestroy: true }
     );
     expect(printed()).toContain(
-      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region>', which drops every " +
+      "with no CDK app, cdkd state orphan '<stack>' --stack-region '<region>', which drops every " +
         "record the stack still has in that region, not just this one (add '--resource P' to drop only this one)"
     );
   });
@@ -842,7 +842,7 @@ describe('UserToGroupAddition delete with a secret-derived Users (go-to-k/cdkd#4
     expect(printed()).toContain("cdkd orphan '<constructPath>'");
     // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
     expect(printed()).toContain(
-      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
+      "with no CDK app, cdkd state orphan '<stack>' --stack-region '<region>' --resource M, which drops only this record"
     );
     expect(printed()).not.toContain(ROLE);
   });
@@ -854,7 +854,7 @@ describe('UserToGroupAddition delete with a secret-derived Users (go-to-k/cdkd#4
       stackDestroy: true,
     });
     expect(printed()).toContain(
-      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region>', which drops every " +
+      "with no CDK app, cdkd state orphan '<stack>' --stack-region '<region>', which drops every " +
         "record the stack still has in that region, not just this one (add '--resource M' to drop only this one)"
     );
   });
@@ -865,15 +865,15 @@ describe('UserToGroupAddition delete with a secret-derived Users (go-to-k/cdkd#4
       stackDestroy: true,
     });
     expect(printed()).toContain(
-      "Remove the users from the group by hand, then drop this record with 'cdkd state orphan " +
-        "<stack> --stack-region <region>', which drops every record the stack still has in that region"
+      "Remove the users from the group by hand, then drop this record with cdkd state orphan " +
+        "'<stack>' --stack-region '<region>', which drops every record the stack still has in that region"
     );
     warnSpy.mockClear();
     debugSpy.mockClear();
     await new IAMUserGroupProvider().delete('M', 'M', TYPE, record, { expectedRegion: 'us-east-1' });
     expect(printed()).toContain(
-      "Remove the users from the group by hand, then drop this record with 'cdkd state orphan " +
-        "<stack> --stack-region <region> --resource M', which drops only this record"
+      "Remove the users from the group by hand, then drop this record with cdkd state orphan " +
+        "'<stack>' --stack-region '<region>' --resource M, which drops only this record"
     );
   });
 

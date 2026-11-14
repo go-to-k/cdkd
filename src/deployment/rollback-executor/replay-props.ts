@@ -1,4 +1,9 @@
-import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
+import {
+  cdkdRemedy,
+  commandHole,
+  pasteableCommand,
+  proseQuoted,
+} from '../../utils/pasteable-command.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { recordedReferenceRegions, referenceProvenanceOf } from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
@@ -399,9 +404,9 @@ export function refuseMaskedReplayBaseline(
       `record that HOLDS the mask (${
         pasteableCommand('cdkd import', [
           { hole: 'stack' },
-          // One hole for the whole `<logicalId>=<physicalId>` value: a bare
-          // `<` / `>` would be a redirection that swallows the run's flags.
-          { flag: '--resource', hole: 'logicalId>=<physicalId' },
+          // Each placeholder quoted on its own, as `importRemedyCommand` does: a
+          // bare `<` / `>` would be a redirection that swallows the run's flags.
+          { literal: `--resource ${commandHole('logicalId')}=${commandHole('physicalId')}` },
           { literal: '--force' },
         ]).command
       }, granting cloudformation:DescribeType ` +

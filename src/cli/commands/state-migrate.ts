@@ -17,7 +17,7 @@ import {
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -161,7 +161,7 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
     if (!sourceExists) {
       throw new Error(
         `Source bucket '${legacyBucket}' does not exist. ` +
-          `Nothing to migrate. (Tip: run \`cdkd state info\` to confirm which bucket cdkd is reading from.)`
+          `Nothing to migrate. (Tip: run ${proseQuoted(cdkdRemedy('cdkd state info'), '`')} to confirm which bucket cdkd is reading from.)`
       );
     }
 

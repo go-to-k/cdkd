@@ -265,7 +265,7 @@ export async function replayFailedOperationsUnbound(
               `Type change (${refusalResourceType(op.previousState?.resourceType)} -> ` +
               `${refusalResourceType(op.resourceType)}), ` +
               `which is a replacement, and its remote state is unknown. Inspect it with ` +
-              `\`cdkd drift\` and re-converge with \`cdkd deploy\`. Skipping.`
+              `${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and re-converge with ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')}. Skipping.`
           );
           recordRollbackSkip(
             skipScope,
@@ -414,7 +414,7 @@ export async function replayFailedOperationsUnbound(
               // (`--drop-failed` drops one that can never be read).
               throw new Error(
                 `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for ` +
-                  `a re-run; \`cdkd rollback --drop-failed\` removes only that record and leaves the ` +
+                  `a re-run; ${proseQuoted(cdkdRemedy('cdkd rollback', '--drop-failed'), '`')} removes only that record and leaves the ` +
                   `resource in AWS`
               );
             }

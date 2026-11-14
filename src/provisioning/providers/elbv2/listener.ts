@@ -1,4 +1,5 @@
 import type { ELBv2Provider } from '../elbv2-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreateListenerCommand,
   DeleteListenerCommand,
@@ -224,7 +225,7 @@ export async function createListener(
             `Interrupted after creating Listener ${logicalId} (${listenerArn}) but before its ` +
               `attributes were applied. Nothing in cdkd state refers to it, so cdkd is deleting ` +
               `it now — left behind it would fail the next deploy with DuplicateListener and ` +
-              `destroy could not reach it. If that delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; ` +
+              `destroy could not reach it. If that delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; ` +
               `otherwise remove it yourself: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
           )
         );
@@ -242,7 +243,7 @@ export async function createListener(
           // Masked for the same reason as the TargetGroup cleanup above
           // (issue #2050).
           `${listenerCleanupHead}${this.cleanupFailureText(listenerCleanupHead, cleanupError, maskSecrets)} Outside a rollback's re-create, the failed deploy's rollback ` +
-            `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
+            `journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself ` +
             `before the next deploy: ` +
             `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
         );

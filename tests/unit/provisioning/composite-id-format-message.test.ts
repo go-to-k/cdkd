@@ -59,8 +59,8 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     expect(msg).toContain('state.json');
     // Outside a stack destroy the single-record form (go-to-k/cdkd#4602).
     expect(msg).toContain(
-      "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
-        "MyTable', which drops only this record"
+      "drop the record with cdkd state orphan '<stack>' --stack-region '<region>' --resource " +
+        "MyTable, which drops only this record"
     );
     expect(msg).toContain('never run it without --resource on a stack that is still deployed');
     // The deploy-side reachers must be named in full: the plain

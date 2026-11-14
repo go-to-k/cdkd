@@ -1,4 +1,5 @@
 import type { FSxFileSystemProvider } from '../fsx-filesystem-provider.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreateFileSystemCommand,
   CreateFileSystemFromBackupCommand,
@@ -244,7 +245,7 @@ export async function create(
         survivorId = fileSystemId;
         const cleanupHead = `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: `;
         this.logger.warn(
-          `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, context?.maskSecrets)} — outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
+          `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, context?.maskSecrets)} — outside a rollback's re-create, the failed deploy's rollback journal records it for ${proseQuoted(cdkdRemedy('cdkd rollback', '--revert-failed'), '`')}; otherwise delete it yourself to stop billing`
         );
       }
     }

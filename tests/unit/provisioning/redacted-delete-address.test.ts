@@ -146,7 +146,7 @@ describe('redactedDeleteAddressSkip', () => {
     expect(text).toContain('LEFT IN PLACE');
     // No context is a deploy-side caller: the single-record form (go-to-k/cdkd#4602).
     expect(text).toContain(
-      "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource MyStage'"
+      "drop the record with cdkd state orphan '<stack>' --stack-region '<region>' --resource MyStage"
     );
     expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
   });
