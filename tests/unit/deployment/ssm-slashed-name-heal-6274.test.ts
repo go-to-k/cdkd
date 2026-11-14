@@ -188,16 +188,26 @@ describe('healSlashedSsmParameterNames leaves a record it cannot judge alone (go
 
   it('names only the heals an exported output reads', async () => {
     const { healsReadByExports } = await import('../../../src/deployment/ssm-slashed-name-heal.js');
-    const heals = ['A', 'B', 'C', 'D'].map((id) => ({ logicalId: id, from: `/S-${id}`, to: `S-${id}` }));
+    const heals = ['A', 'B', 'C', 'D', 'E', 'F'].map((id) => ({
+      logicalId: id,
+      from: `/S-${id}`,
+      to: `S-${id}`,
+    }));
     const template = {
       Resources: {},
       Outputs: {
         RefA: { Value: { Ref: 'A' }, Export: { Name: 'a' } },
         SubB: { Value: { 'Fn::Sub': 'x-${B}' }, Export: { Name: 'b' } },
+        // Not exported.
         JoinC: { Value: { 'Fn::Join': ['', ['p/', { Ref: 'C' }]] } },
+        // Exported, the Ref nested in a join.
+        JoinD: { Value: { 'Fn::Join': ['', ['p/', { Ref: 'D' }]] }, Export: { Name: 'd' } },
+        // The Arn does not move with the re-spelling.
+        ArnE: { Value: { 'Fn::GetAtt': ['E', 'Arn'] }, Export: { Name: 'e' } },
+        SubArnF: { Value: { 'Fn::Sub': '${F.Arn}' }, Export: { Name: 'f' } },
       },
     } as unknown as CloudFormationTemplate;
-    expect(healsReadByExports(heals, template).map((h) => h.logicalId)).toEqual(['A', 'B']);
+    expect(healsReadByExports(heals, template).map((h) => h.logicalId)).toEqual(['A', 'B', 'D']);
   });
 });
 

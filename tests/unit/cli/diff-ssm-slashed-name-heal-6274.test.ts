@@ -151,9 +151,11 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
   });
 
   it.each([
-    ['an unchanged row: named, not healed', 'same-input', 'NO_CHANGE'],
-    ['a changed row: healed', 'new-input', 'UPDATE'],
-  ])('a nested child under %s', async (_label, input, readerChange) => {
+    ['an unchanged row: named, not healed', 'same-input', 'NO_CHANGE', 'NO_CHANGE', false],
+    ['a changed row: healed', 'new-input', 'UPDATE', 'UPDATE', false],
+    // An UPDATE moving only the policy calls no provider, so no child engine.
+    ['a row moving only DeletionPolicy: named, not healed', 'same-input', 'NO_CHANGE', 'UPDATE', true],
+  ] as const)('a nested child under %s', async (_label, input, readerChange, rowChange, retain) => {
     infos.length = 0;
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-6274-child-'));
     try {
@@ -174,6 +176,7 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
             Type: 'AWS::CloudFormation::Stack',
             Metadata: { 'aws:asset:path': 'child.json' },
             Properties: { Parameters: { In: input } },
+            ...(retain && { DeletionPolicy: 'Retain' }),
           },
         },
       } as CloudFormationTemplate;
@@ -229,9 +232,101 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
       });
+      // Premise: the parent's row is diffed as the case says.
+      expect(tree.changes.get('Child')?.changeType).toBe(rowChange);
       const childNode = tree.children.find((c) => c.stackName === 'S~Child');
       expect(childNode?.changes.get('Reader')?.changeType).toBe(readerChange);
       expect(infos.some((m) => m.includes('go-to-k/cdkd#6274'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a grandchild under a child no engine runs for is only named, whatever its own row', async () => {
+    infos.length = 0;
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-6274-grandchild-'));
+    try {
+      const ssmPair = {
+        Param: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'v' } },
+        Reader: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: { Ref: 'Param' } } },
+      };
+      writeFileSync(join(dir, 'grand.json'), JSON.stringify({ Resources: ssmPair }));
+      // The child passes its grandchild a NEW input: an UPDATE in its preview.
+      writeFileSync(
+        join(dir, 'child.json'),
+        JSON.stringify({
+          Resources: {
+            Grand: {
+              Type: 'AWS::CloudFormation::Stack',
+              Metadata: { 'aws:asset:path': 'grand.json' },
+              Properties: { Parameters: { In: 'new-input' } },
+            },
+          },
+        })
+      );
+      const parentTemplate = {
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: {},
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      const stackRow = (inputs: Record<string, string> | undefined): ResourceState => ({
+        physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/x/1',
+        resourceType: 'AWS::CloudFormation::Stack',
+        properties: inputs === undefined ? {} : { Parameters: inputs },
+        attributes: {},
+        dependencies: [],
+      });
+      const record = (resources: Record<string, ResourceState>, stackName: string): StackState => ({
+        stackName,
+        region: 'us-east-1',
+        version: 16,
+        lastModified: 0,
+        outputs: {},
+        resources,
+      });
+      const old = '/S-Child-Grand-Param';
+      const states: Record<string, StackState> = {
+        S: record({ Child: stackRow(undefined) }, 'S'),
+        'S~Child': record({ Grand: stackRow({ In: 'old-input' }) }, 'S~Child'),
+        'S~Child~Grand': record(
+          {
+            Param: { physicalId: old, resourceType: 'AWS::SSM::Parameter', properties: { Type: 'String', Value: 'v' } },
+            Reader: {
+              physicalId: 'r',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Type: 'String', Value: old },
+              dependencies: ['Param'],
+            },
+          },
+          'S~Child~Grand'
+        ),
+      };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: join(dir, 'child.json') },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      expect(tree.changes.get('Child')?.changeType).toBe('NO_CHANGE');
+      const child = tree.children.find((c) => c.stackName === 'S~Child');
+      // Premise: the child's preview diffs its grandchild row as an UPDATE.
+      expect(child?.changes.get('Grand')?.changeType).toBe('UPDATE');
+      const grand = child?.children.find((c) => c.stackName === 'S~Child~Grand');
+      expect(grand?.changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+      expect(infos.some((m) => m.includes('on the next deploy that updates this nested stack'))).toBe(
+        true
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

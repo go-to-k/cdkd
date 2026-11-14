@@ -384,10 +384,13 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
 
   it('names an SSM parameter the deploy re-spells as the cause (go-to-k/cdkd#6274)', async () => {
     const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: [EXPORT] }] });
-    // The export reads `Q`, the record this deploy re-spelled.
+    // The export reads `Q`'s Ref, the record this deploy re-spelled.
+    const exportingRef = template({
+      ExportsOutputRefQ: { Value: { Ref: 'Q' }, Export: { Name: EXPORT } },
+    });
     const healOf = (logicalId: string) => [{ logicalId, from: `/S-${logicalId}`, to: `S-${logicalId}` }];
     const healed = await refuseUnsafePlan(engine, {
-      ...plan(new Map([['Q', replacingChange]])),
+      ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
     }).catch((e: unknown) => e as Error);
     expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Q');
@@ -396,7 +399,7 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     expect(plain?.message).not.toContain('re-spells');
     // A re-spelling no export reads is not the cause.
     const unrelated = await refuseUnsafePlan(engine, {
-      ...plan(new Map([['Q', replacingChange]])),
+      ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Other'),
     }).catch((e: unknown) => e as Error);
     expect(unrelated?.message).not.toContain('re-spells');
@@ -405,11 +408,18 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
       consumers: [{ name: 'Unreadable', imports: [], unreadable: true }],
     });
     const unread = await refuseUnsafePlan(unreadableOnly.engine, {
-      ...plan(new Map([['Q', replacingChange]])),
+      ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
     }).catch((e: unknown) => e as Error);
     expect(unread?.message).toContain('could not be read');
     expect(unread?.message).not.toContain('re-spells');
+    // Nor when the export reads only the Arn, which the re-spelling keeps.
+    const arnOnly = await refuseUnsafePlan(engine, {
+      ...plan(new Map([['Q', replacingChange]])),
+      ssmNameHeals: healOf('Q'),
+    }).catch((e: unknown) => e as Error);
+    expect(arnOnly).toBeInstanceOf(ExportInUseError);
+    expect(arnOnly?.message).not.toContain('re-spells');
   });
 
   it('matches an in-run consumer whatever the case of its region', async () => {

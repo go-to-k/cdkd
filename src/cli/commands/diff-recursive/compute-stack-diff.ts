@@ -136,11 +136,8 @@ export async function computeStackDiff(
     const healed = healSlashedSsmParameterNames(state, template, stackName);
     if (healed.heals.length === 0) return state;
     for (const heal of healed.heals) {
-      logger.info(
-        ssmNameHeal === 'apply'
-          ? slashedSsmNameHealNote(heal)
-          : slashedSsmNameHealPendingNote(heal, stackName)
-      );
+      if (ssmNameHeal === 'apply') logger.info(slashedSsmNameHealNote(heal));
+      else logger.info(slashedSsmNameHealPendingNote(heal, stackName));
     }
     return ssmNameHeal === 'apply' ? { ...state, resources: healed.resources } : state;
   };
@@ -434,11 +431,13 @@ export async function computeStackDiff(
     },
   });
   const { adoptedOrphans, adoptedRecords, deployRefusals, unreadableOrphans } = orphanSplice;
-  // An adopted record never saw the heal above (as on the deploy).
-  const stateForDiff =
-    adoptedRecords !== undefined && Object.keys(adoptedRecords).length > 0
-      ? healSsmNames(orphanSplice.stateForDiff)
-      : orphanSplice.stateForDiff;
+  const { stateForDiff } = orphanSplice;
+  // An adopted record never saw the heal above; the deploy heals it after its
+  // adoption. Only named here: this preview's resolver reads the records as
+  // loaded, before the splice, so no dependent row could show the change.
+  if (Object.keys(adoptedRecords ?? {}).length > 0) {
+    healSsmNames({ ...currentState, resources: adoptedRecords });
+  }
   let { blocking } = orphanSplice;
 
   // go-to-k/cdkd#4543: the deploy's input fingerprint, recomputed from this

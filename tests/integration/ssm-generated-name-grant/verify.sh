@@ -230,7 +230,7 @@ fi
 echo "    OK: the record, the grant policy and the function's PARAM_NAME now read ${PARAM_NAME}"
 
 echo "==> Phase 1b: redeploy again: the record is settled, nothing to re-spell"
-DEPLOY_LOG="$(mktemp)"
+: > "${DEPLOY_LOG}"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 if grep -q 'go-to-k/cdkd#6274' "${DEPLOY_LOG}"; then

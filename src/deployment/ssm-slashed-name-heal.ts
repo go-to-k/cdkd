@@ -168,23 +168,19 @@ export function slashedSsmNameHealPendingNote(heal: SlashedSsmNameHeal, stackNam
   );
 }
 
-/** Whether `value` reads `logicalId` through `Ref`, `Fn::GetAtt` or `Fn::Sub`. */
-function reads(value: unknown, logicalId: string): boolean {
-  if (Array.isArray(value)) return value.some((item) => reads(item, logicalId));
+/**
+ * Whether `value` reads `logicalId`'s `Ref` (directly or as `${Id}` in
+ * `Fn::Sub`): the only read the re-spelling moves (the `Arn` attribute is
+ * built without the slash either way).
+ */
+function readsRef(value: unknown, logicalId: string): boolean {
+  if (Array.isArray(value)) return value.some((item) => readsRef(item, logicalId));
   if (!isObject(value)) return false;
   if (value['Ref'] === logicalId) return true;
-  const getAtt = value['Fn::GetAtt'];
-  if (Array.isArray(getAtt) && getAtt[0] === logicalId) return true;
-  if (typeof getAtt === 'string' && getAtt.split('.')[0] === logicalId) return true;
   const sub = value['Fn::Sub'];
   const subText = Array.isArray(sub) ? sub[0] : sub;
-  if (
-    typeof subText === 'string' &&
-    (subText.includes(`\${${logicalId}}`) || subText.includes(`\${${logicalId}.`))
-  ) {
-    return true;
-  }
-  return Object.values(value).some((child) => reads(child, logicalId));
+  if (typeof subText === 'string' && subText.includes(`\${${logicalId}}`)) return true;
+  return Object.values(value).some((child) => readsRef(child, logicalId));
 }
 
 /**
@@ -198,5 +194,5 @@ export function healsReadByExports(
   const exported = Object.values(template.Outputs ?? {}).filter(
     (output) => isObject(output) && output['Export'] !== undefined
   );
-  return heals.filter((heal) => exported.some((output) => reads(output.Value, heal.logicalId)));
+  return heals.filter((heal) => exported.some((output) => readsRef(output.Value, heal.logicalId)));
 }
