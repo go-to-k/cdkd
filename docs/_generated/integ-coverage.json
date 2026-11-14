@@ -879,7 +879,8 @@
         "remove-protection-journaled-orphan",
         "rollback-nested-cross-region-secret",
         "scrub-nested-child",
-        "secret-derived-immutable-names"
+        "secret-derived-immutable-names",
+        "ssm-generated-name-grant"
       ],
       "signals": {
         "created-before-failure-revert": [
@@ -940,6 +941,9 @@
           "literal"
         ],
         "secret-derived-immutable-names": [
+          "literal"
+        ],
+        "ssm-generated-name-grant": [
           "literal"
         ]
       }
