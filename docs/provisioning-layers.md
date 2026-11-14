@@ -241,10 +241,17 @@ each layer gave before:
 | Type | SDK provider | Cloud Control |
 | --- | --- | --- |
 | `AWS::Logs::LogGroup` | `/cdkd/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
-| `AWS::SSM::Parameter` | `/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
 | `AWS::CodeBuild::Project` | `<LogicalId>` | No Cloud Control route |
 | Auto Scaling group, DynamoDB global table, ECS task definition family, Lambda network connector, EventBridge pipe, EventBridge Scheduler schedule | `<StackName>-<LogicalId>` | Named by AWS |
 | EC2 security group, CloudTrail trail, Glue job, crawler, connection and trigger, Firehose delivery stream | `<LogicalId>` | Named by AWS |
+
+An un-named `AWS::SSM::Parameter` is named `<StackName>-<LogicalId>[-<suffix>]`
+on both layers. One an older cdkd's SDK provider named with a leading `/` is
+re-spelled without it on the next `cdkd deploy`: SSM stores a one-level `/x` as
+`x`, so it is the same parameter, and every resource reading its `Ref` (a
+`grantRead` policy, an environment variable) updates to the new spelling in
+that deploy. `cdkd diff` previews it. A stack exporting the name must then be
+deployed together with the stacks importing it.
 
 Neither layer generates the name of an `AWS::Events::EventBus`, which
 CloudFormation requires. A Cloud Control create of an un-named
