@@ -661,6 +661,7 @@ guarantee.
 | --- | --- |
 | `{{resolve:secretsmanager:...}}` in a function's environment | That workload excepts `SECRETS_MANAGER` |
 | `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}` | That workload excepts `SSM` |
+| An SSM-typed template parameter under `--from-state` / `--from-cfn-stack` | That workload excepts `SSM` |
 | ECS task `Secrets` (`ValueFrom`) on `local run-task` | That container excepts the ARN's service |
 | `--from-state` / `--from-cfn-stack` names | Per resource type: an excepted service's resources come from the real copy |
 | `${AWS::AccountId}` lookups | `Parameters` excepts `STS` |

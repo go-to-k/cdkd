@@ -8,6 +8,7 @@ import {
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
 import type { StackState } from '../../../types/state.js';
 import type { PseudoParameters } from '../../../local/state-resolver.js';
+import { templateSsmParameters } from '../../../local/state-ssm-parameters.js';
 import { derivePartitionAndUrlSuffix } from '../../../local/ecs-task-resolver.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { namedEnvAwsRegion } from '../../../utils/emulator-default-region.js';
@@ -62,6 +63,13 @@ export interface StackStateBundle {
    * refs).
    */
   pseudoParameters?: PseudoParameters;
+  /**
+   * Values of the stack's SSM-typed template parameters, by logical id
+   * (go-to-k/cdkd#6307), and the ones that are SecureStrings. Absent when
+   * the stack has none, or no reachable Lambda's env is intrinsic-valued.
+   */
+  parameters?: Record<string, string>;
+  sensitiveParameters?: ReadonlySet<string>;
 }
 
 /**
@@ -203,6 +211,10 @@ export async function loadStateForRoutedStacks(
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;
+        // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
+        // by the provider for THIS load's workload, so mixed mode routes it by
+        // that workload's exceptions.
+        Object.assign(bundle, await templateSsmParameters(provider, stack.template));
       }
       out.set(key, bundle);
       logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);

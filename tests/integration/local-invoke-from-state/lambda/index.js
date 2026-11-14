@@ -9,6 +9,7 @@ exports.handler = async (event) => {
     bucketName: process.env.BUCKET_NAME ?? 'unset',
     staticValue: process.env.STATIC_VALUE ?? 'unset',
     accountTag: process.env.ACCOUNT_TAG ?? 'unset',
+    paramValue: process.env.PARAM_VALUE ?? 'unset',
     importedSecret: process.env.IMPORTED_SECRET ?? 'unset',
     sameStackSecret: process.env.SAME_STACK_SECRET ?? 'unset',
     event,

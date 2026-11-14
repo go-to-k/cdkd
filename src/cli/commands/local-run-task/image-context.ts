@@ -18,6 +18,24 @@ import type { LocalStateProvider } from '../../../local/local-state-provider.js'
 import type { LocalRunTaskOptions } from './types.js';
 import { resolveStackAccountId } from './stack-account.js';
 import { stateRoleRecordIsEmulatorSide } from '../../../local/local-aws-wiring.js';
+import { templateSsmParameters } from '../../../local/state-ssm-parameters.js';
+
+/**
+ * A stack's SSM-typed parameter values in the image context's keys
+ * (`stateParameters` / `stateSensitiveParameters`), which
+ * `buildSubstitutionContextFromImageContext` maps onto the substitution context
+ * (go-to-k/cdkd#6307).
+ */
+export async function stateSsmParametersForImageContext(
+  stateProvider: LocalStateProvider,
+  candidate: Pick<StackInfo, 'template'>
+): Promise<Pick<EcsImageResolutionContext, 'stateParameters' | 'stateSensitiveParameters'>> {
+  const ssm = await templateSsmParameters(stateProvider, candidate.template);
+  return {
+    ...(ssm.parameters && { stateParameters: ssm.parameters }),
+    ...(ssm.sensitiveParameters && { stateSensitiveParameters: [...ssm.sensitiveParameters] }),
+  };
+}
 
 /**
  * Region the cross-stack resolver is scoped to for `cdkd local run-task`
@@ -184,6 +202,11 @@ export async function buildEcsImageResolutionContext(
     if (loaded) {
       ctx.stateResources = loaded.resources;
       stateRecordRegion = loaded.region;
+      // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
+      // only when an env / secret / command value needs substituting, as cdk-local gates it.
+      if (needs.needsEnvOrSecretSubstitution) {
+        Object.assign(ctx, await stateSsmParametersForImageContext(stateProvider, candidate));
+      }
     }
   } else if (!stateProvider && needs.needsStateResources) {
     // `--image-override` can replace a same-stack ECR image, so the warning is

@@ -56,6 +56,7 @@ import {
   taskRoleRecordIsEmulatorSide,
   pickCandidateStack,
   resolveEcsConsumerRegion,
+  stateSsmParametersForImageContext,
 } from './image-context.js';
 import { readEnvOverridesFile } from './env-overrides.js';
 import {
@@ -637,16 +638,24 @@ export async function applyPerContainerNames(
     try {
       const loaded = await provider.load(candidate.stackName, candidate.region);
       if (!loaded) continue;
-      const own = resolveEcsTaskTarget(target, stacks, {
-        ...baseContext,
-        stateResources: loaded.resources,
-      });
+      const ownContext = { ...baseContext, stateResources: loaded.resources };
+      // The SSM parameters too: this group's exceptions route that read (#6307).
+      delete ownContext.stateParameters;
+      delete ownContext.stateSensitiveParameters;
+      Object.assign(ownContext, await stateSsmParametersForImageContext(provider, candidate));
+      const own = resolveEcsTaskTarget(target, stacks, ownContext);
       for (const name of names) {
         const mine = own.containers.find((c) => c.name === name);
         const into = task.containers.find((c) => c.name === name);
         if (!mine || !into) continue;
         into.environment = mine.environment;
         into.secrets = mine.secrets;
+        // Its plaintext keys follow its own environment (go-to-k/cdkd#6307).
+        if (mine.resolvedDynamicReferenceKeys) {
+          into.resolvedDynamicReferenceKeys = mine.resolvedDynamicReferenceKeys;
+        } else {
+          delete into.resolvedDynamicReferenceKeys;
+        }
         // An argv element names a deployed resource too (go-to-k/cdkd#6271).
         // Same template, so each field is present on both or on neither.
         if (mine.command) into.command = mine.command;

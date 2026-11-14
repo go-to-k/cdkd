@@ -31,6 +31,9 @@ import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
+import type { AwsEmulatorWorkload } from 'cdk-local/internal';
+import type { ResolvedSsmParameters } from 'cdk-local';
+import { resolveStateTemplateSsmParameters } from './state-ssm-parameters.js';
 
 export interface S3LocalStateProviderOptions {
   /** Falls back to env / cdk.json / default per `resolveStateBucketWithDefault`. */
@@ -65,6 +68,12 @@ export interface S3LocalStateProviderOptions {
   warn?: (message: string) => void;
   /** The read runs inside the caller's client scope ({@link LoadStateForStackOptions.scopedClients}). */
   scopedClients?: boolean;
+  /**
+   * The workload the names are for, in AWS Emulator mixed mode: its
+   * `"real-aws"` exceptions decide whether the SSM parameter read goes to real
+   * AWS ({@link S3LocalStateProvider.resolveTemplateSsmParameters}).
+   */
+  workload?: AwsEmulatorWorkload;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {
@@ -88,6 +97,9 @@ export class S3LocalStateProvider implements LocalStateProvider {
    */
   private readonly warnedMalformedProducers = new Set<string>();
 
+  /** The region of the last record {@link load} returned: the stack's own. */
+  private loadedRegion: string | undefined;
+
   constructor(opts: S3LocalStateProviderOptions) {
     this.opts = opts;
     this.label = opts.logPrefix ?? '--from-state';
@@ -110,8 +122,11 @@ export class S3LocalStateProvider implements LocalStateProvider {
       ...(this.opts.warn !== undefined && { warn: this.opts.warn }),
       ...(this.opts.scopedClients === true && { scopedClients: true }),
     };
+    // Reset first: a failed load must not leave an earlier record's region behind.
+    this.loadedRegion = undefined;
     const loaded = await loadStateForStack(stackName, synthRegion, loadOpts);
     if (!loaded) return undefined;
+    this.loadedRegion = loaded.region;
     // The account flags each warning below prints on its `cdkd state show`
     // pointer: the bucket the record was READ from, not the raw flag, so a
     // pasted command reads the same record (go-to-k/cdkd#4159).
@@ -201,6 +216,29 @@ export class S3LocalStateProvider implements LocalStateProvider {
     if (!built) return undefined;
     this.disposers.push(built.dispose);
     return built.resolver;
+  }
+
+  /**
+   * The values of the template's SSM-typed parameters
+   * (`AWS::SSM::Parameter::Value<...>`, what `valueForStringParameter`
+   * synthesizes), read from SSM in the stack's region: state.json records no
+   * parameter values, so without this a `Ref` to one dropped the env var
+   * (go-to-k/cdkd#6307). Routing and identity: `resolveStateTemplateSsmParameters`.
+   */
+  public resolveTemplateSsmParameters(
+    template: NonNullable<Parameters<typeof resolveStateTemplateSsmParameters>[0]>
+  ): Promise<ResolvedSsmParameters> {
+    return resolveStateTemplateSsmParameters(template, {
+      region:
+        this.loadedRegion ??
+        this.opts.stackRegion ??
+        this.opts.region ??
+        process.env['AWS_REGION'] ??
+        process.env['AWS_DEFAULT_REGION'],
+      profile: this.opts.profile,
+      workload: this.opts.workload,
+      label: this.label,
+    });
   }
 
   public dispose(): void {

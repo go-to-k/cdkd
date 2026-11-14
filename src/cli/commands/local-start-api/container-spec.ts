@@ -231,6 +231,10 @@ export async function buildContainerSpec(args: {
     if (stateBundle.pseudoParameters) {
       context.pseudoParameters = stateBundle.pseudoParameters;
     }
+    if (stateBundle.parameters) context.parameters = stateBundle.parameters;
+    if (stateBundle.sensitiveParameters) {
+      context.sensitiveParameters = stateBundle.sensitiveParameters;
+    }
     const { env, audit } = substituteEnvVarsFromState(templateEnv, context);
     templateEnv = env;
     stateAudit = audit;
