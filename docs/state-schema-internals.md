@@ -2655,14 +2655,18 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::AppSync::DataSource` | the data source **ARN** |
 | `AWS::AppSync::Resolver` | the resolver **ARN** |
 | `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
+| `AWS::EC2::VPCGatewayAttachment` | `IGW\|<vpcId>` or `VGW\|<vpcId>`, by the stored gateway id's `igw-` / `vgw-` prefix; a Cloud-Control-routed id already has that shape |
 | `AWS::Glue::Table` | the table name — everything after the recorded `DatabaseName` and its `\|`, so a table named `a\|b` resolves to `a\|b` |
 | `AWS::Route53::RecordSet` | the record **name**. A three-part id returns its middle segment without reading state. When the name itself contains `\|` (a longer id), it is everything between the first and the last `\|`, only when that matches the recorded `Name` and the last segment the recorded `Type`; an id that does not match passes through raw |
-| `AWS::S3Tables::Namespace` | the namespace name (the segment after the last `\|`) |
+| `AWS::S3Tables::Namespace` | the stored composite, `<tableBucketARN>\|<namespace>`, unchanged; a Cloud-Control-routed id (`<namespace>\|<tableBucketARN>`) is reordered to it |
 | `AWS::S3Tables::Table` | the table **ARN**, from the recorded `TableARN` attribute; a Cloud-Control-routed table's physical id is already the ARN |
 
 The three `AWS::AppSync::*` children and an SDK-routed `AWS::S3Tables::Table`
 are the cases where the `Ref` value is not a segment at all: cdkd recovers the
-ARN from the attribute the provider records.
+ARN from the attribute the provider records. Two types with a non-composite id
+take the same recovery: `AWS::AppSync::GraphQLApi` (stored id: the API id; `Ref`:
+the recorded `Arn`) and `AWS::S3Vectors::VectorBucket` (stored id: the bucket
+name; `Ref`: the recorded `VectorBucketArn`).
 `cdkd import` records the same attribute a fresh deploy does — it reconstructs
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
@@ -2671,7 +2675,11 @@ Some records can still lack the attribute. `Ref` on such a record falls back to
 the raw composite id, except for an `AWS::S3Tables::Table` (one created by a
 cdkd older than v0.201.0): its `Ref` is read like `Fn::GetAtt TableARN`, so the
 re-read below applies to it too, and a `Ref` the re-read cannot answer is
-refused rather than served the composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+refused rather than served the composite id. A GraphQL API or vector bucket
+imported before `cdkd import` recorded its ARN is resolved through `Fn::GetAtt
+VectorBucketArn` (re-read from AWS as below) / `Fn::GetAtt Arn` (built from the
+API id, account and region), and is refused rather than served its bare id or
+name. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
 re-reads the resource from AWS once and records the real ARN; when that read
 cannot supply one it FAILS rather than serving a value CloudFormation would not
 return. The records are:

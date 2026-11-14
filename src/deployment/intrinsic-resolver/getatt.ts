@@ -552,7 +552,7 @@ export async function resolveGetAtt(
  *
  * Scoped to the `REF_RETURNS_ARN_FROM_STATE` types AND their declared
  * ARN attribute names, the narrowest form of the fix: a wildcard-bearing ARN
- * is only KNOWN to be a placeholder for these three attributes, and some
+ * is only KNOWN to be a placeholder for these attributes, and some
  * other type could legitimately cache an ARN-shaped string carrying a `*` in
  * a position `isPlaceholderArn` inspects. Every other attribute of
  * these same types (`AWS::AppSync::ApiKey`'s `ApiKey`,

@@ -21,7 +21,7 @@ describe('Ref of an AWS::AppSync::GraphQLSchema (issue #5540)', () => {
     );
   });
 
-  it('leaves the GraphQLApi Ref alone', () => {
+  it('leaves the GraphQLApi Ref alone when no ARN lookup is given (its ARN recovery: issue #6243)', () => {
     expect(cfnRefValueFromPhysicalId('AWS::AppSync::GraphQLApi', API)).toBe(API);
   });
 });
