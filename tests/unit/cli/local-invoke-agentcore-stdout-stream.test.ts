@@ -698,10 +698,17 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
     );
   });
 
-  /** Issue #4480, the ^C arm: drain, then flush stderr, then `process.exit(130)`. */
-  it.skipIf(process.platform === 'win32')(
-    'on SIGINT, relays the late log line before docker rm, and flushes stdio before process.exit(130)',
-    async () => {
+  /**
+   * Issue #4480, the ^C arm: drain, then flush stderr, then `process.exit(130)`.
+   * go-to-k/cdkd#6285: SIGTERM runs the same teardown and exits 143; before,
+   * nothing listened for it and `kill` left the agent container running.
+   */
+  it.skipIf(process.platform === 'win32').each([
+    { signal: 'SIGINT', code: 130 },
+    { signal: 'SIGTERM', code: 143 },
+  ])(
+    'on $signal, relays the late log line before docker rm, and flushes stdio before process.exit($code)',
+    async ({ signal, code }) => {
       const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
         '../../../src/local/docker-runner.js'
       );
@@ -726,8 +733,8 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
         await waitForContainerOutput(() =>
           live ? live.out.join('') + live.err.join('') : ''
         );
-        const call = onSpy.mock.calls.find(([event]) => event === 'SIGINT');
-        expect(call).toBeDefined();
+        const call = onSpy.mock.calls.find(([event]) => event === signal);
+        expect(call, `the command body registered no ${signal} handler`).toBeDefined();
         (call![1] as () => void)();
         await exitCalled;
         return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
@@ -748,7 +755,7 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       const flush = seq.lastIndexOf('flush');
       expect(late).toBeGreaterThanOrEqual(0);
       expect(flush).toBeGreaterThan(late);
-      expect(seq[seq.length - 1]).toBe('exit:130');
+      expect(seq[seq.length - 1]).toBe(`exit:${code}`);
       // The ^C teardown drains BEFORE it removes the container, too.
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
     },
@@ -771,9 +778,12 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
       mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
       const sigintBefore = process.listeners('SIGINT').length;
+      const sigtermBefore = process.listeners('SIGTERM').length;
       let sigintAtRemove: number | undefined;
+      let sigtermAtRemove: number | undefined;
       mocks.removeContainer.mockImplementation(async () => {
         sigintAtRemove = process.listeners('SIGINT').length;
+        sigtermAtRemove = process.listeners('SIGTERM').length;
       });
       let seqAtExit: string[] | undefined;
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -802,6 +812,10 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(seq[seq.length - 1]).toBe('exit:1');
       expect(sigintAtRemove).toBe(sigintBefore + 1);
       expect(process.listeners('SIGINT').length).toBe(sigintBefore);
+      // go-to-k/cdkd#6285: the SIGTERM twin is armed across the teardown too,
+      // and removed with it.
+      expect(sigtermAtRemove).toBe(sigtermBefore + 1);
+      expect(process.listeners('SIGTERM').length).toBe(sigtermBefore);
     },
     20_000
   );

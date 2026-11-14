@@ -427,6 +427,7 @@ pipe through `tail -1`.
 | `0` | The emulator answered, whether the handler returned a result or an error payload. |
 | `1` | cdkd failed before or after the handler ran: Docker missing, image pull or build failed, target not found, an invalid flag value, or the container not answering. |
 | `130` | {kbd:ctrl+c}. The container and temporary directories are removed first. |
+| `143` | Stopped by `SIGTERM`, after the same cleanup. |
 
 A handler that throws still exits `0`, because on AWS a thrown handler also
 produces a response, one that carries an error structure. To detect a handler

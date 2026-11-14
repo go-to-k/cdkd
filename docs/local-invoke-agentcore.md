@@ -376,6 +376,7 @@ detail.
 | `0` | The agent answered and the response was printed. |
 | `1` | The agent answered with an error, or cdkd could not get an answer. |
 | `130` | {kbd:ctrl+c}. The container is removed first. |
+| `143` | Stopped by `SIGTERM`. The container is removed first. |
 
 An error answer from the agent is a non-zero exit here, which differs from
 [`cdkd local invoke`](local-invoke.md). These are the causes of exit `1`:

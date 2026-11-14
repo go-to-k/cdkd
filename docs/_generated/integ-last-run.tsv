@@ -267,7 +267,7 @@ local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep
 local-invoke-python	2026-11-12T09:17:14Z	PASS	23	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-ruby	2026-11-05T06:47:04Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
 local-invoke-stage	2026-11-05T07:06:46Z	PASS	24	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-run-task	2026-11-13T08:07:28Z	PASS	17	verify.sh	rc ok, docker sweep clean, #6194
+local-run-task	2026-11-14T08:17:37Z	PASS	22	verify.sh	rc ok, docker sweep clean, #6288 SIGTERM step 4 (probe SIGINT-only fails)
 local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker sweep clean (#6192)
 local-run-task-from-state	2026-11-14T06:57:31Z	PASS	281	verify.sh	rc ok, orph clean, #6279; DOCKER_HOST override

@@ -255,10 +255,10 @@ an error quoting its last output.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Stopped by `SIGTERM`, or every MicroVM was terminated through the control endpoint. |
+| `0` | Every MicroVM was terminated through the control endpoint. |
 | `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
-| `143` | A second `SIGTERM` while a `docker run` was still in flight. |
+| `143` | Stopped by `SIGTERM`. |
 
 An error here is a target that does not exist, a synthesis failure, code that
 is not a staged asset, a build failure, a hook that failed or timed out, or a

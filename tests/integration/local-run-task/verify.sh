@@ -52,10 +52,10 @@ fi
 echo "==> Synthesizing fixture CDK app"
 ${CDKD} synth >/dev/null
 
-echo "==> [1/3] Starting task via --detach"
+echo "==> [1/4] Starting task via --detach"
 ${CDKD} local run-task CdkdLocalRunTaskFixture/NginxTask --detach --no-pull --container-host 127.0.0.1
 
-echo "==> [2/3] Curling http://127.0.0.1:18080/"
+echo "==> [2/4] Curling http://127.0.0.1:18080/"
 # Give nginx ~5s to listen.
 sleep 5
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/ || true)
@@ -91,7 +91,7 @@ echo "==> Teardown clean: 0 containers (incl. exited)"
 # releases it right after the ^C (capped at 60s), so the ^C lands inside it
 # deterministically; only cdkd's node process is signalled, so the shim's run
 # completes either way and the check reads what cdkd left.
-echo "==> [3/3] ^C during the task container's docker run leaves no container"
+echo "==> [3/4] ^C during the task container's docker run leaves no container"
 SHIM_DIR=$(mktemp -d -t cdkd-docker-shim-XXXX)
 TASK_LOG="${SHIM_DIR}/task.log"
 cat > "${SHIM_DIR}/docker-shim" <<'SHIM'
@@ -182,5 +182,67 @@ LEFT="${LEFT}$(docker network ls --filter "name=cdkd-local-task-" --format ' {{.
   exit 1
 }
 echo "    [^C during docker run] OK (container removed, exit 130)"
+
+# Test 4 — go-to-k/cdkd#6285: a SIGTERM (`kill`, `timeout`, an IDE stop, a CI
+# cancellation) must tear down what a ^C does. With only a SIGINT handler armed,
+# Node's default terminate skipped the teardown and left the task container, its
+# sidecar and the per-task network behind; the network's subnet then refused the
+# next run. Only cdkd's node process is signalled, by its exact PID.
+echo "==> [4/4] SIGTERM during a running task leaves no container or network"
+TERM_LOG="${SHIM_DIR}/term.log"
+${CDKD} local run-task CdkdLocalRunTaskFixture/NginxTask --no-pull --container-host 127.0.0.1 \
+  </dev/null >"${TERM_LOG}" 2>&1 &
+TASK_PID=$!
+HTTP_CODE=""
+for _ in $(seq 1 60); do
+  kill -0 "${TASK_PID}" 2>/dev/null || break
+  HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/ || true)
+  [[ "${HTTP_CODE}" == "200" ]] && break
+  sleep 1
+done
+# Guards against vacuity: the task is up, with containers and a network to leak.
+[[ "${HTTP_CODE}" == "200" ]] || {
+  echo "FAIL: the task never served 200 before the SIGTERM (last: ${HTTP_CODE}). Log:"
+  cat "${TERM_LOG}"
+  exit 1
+}
+BEFORE_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+BEFORE_NETWORKS=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+[[ "${BEFORE_CONTAINERS}" -gt 0 && "${BEFORE_NETWORKS}" -gt 0 ]] || {
+  echo "FAIL: expected task containers and a task network before the SIGTERM" \
+    "(containers=${BEFORE_CONTAINERS}, networks=${BEFORE_NETWORKS})"
+  exit 1
+}
+kill -TERM "${TASK_PID}"
+for _ in $(seq 1 60); do
+  kill -0 "${TASK_PID}" 2>/dev/null || break
+  sleep 1
+done
+kill -0 "${TASK_PID}" 2>/dev/null && {
+  echo "FAIL: cdkd did not exit within 60s of the SIGTERM. Log:"
+  cat "${TERM_LOG}"
+  exit 1
+}
+TASK_RC=0
+wait "${TASK_PID}" || TASK_RC=$?
+TASK_PID=""
+LEFT="$(docker ps -a --filter "name=cdkd-local-" --format ' {{.Names}} ({{.Status}})')"
+LEFT="${LEFT}$(docker network ls --filter "name=cdkd-local-task-" --format ' {{.Name}}')"
+[[ -z "${LEFT}" ]] || {
+  echo "FAIL: SIGTERM left resources behind:${LEFT}. Log:"
+  cat "${TERM_LOG}"
+  exit 1
+}
+grep -q 'Stopping task' "${TERM_LOG}" || {
+  echo "FAIL: the SIGTERM did not run the teardown (no 'Stopping task' line). Log:"
+  cat "${TERM_LOG}"
+  exit 1
+}
+[[ "${TASK_RC}" == "143" ]] || {
+  echo "FAIL: expected cdkd to exit 143 on SIGTERM, got ${TASK_RC}. Log:"
+  cat "${TERM_LOG}"
+  exit 1
+}
+echo "    [SIGTERM] OK (${BEFORE_CONTAINERS} container(s) and ${BEFORE_NETWORKS} network(s) removed, exit 143)"
 
 echo "==> All local-run-task tests passed"

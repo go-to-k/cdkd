@@ -4,6 +4,7 @@ import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
+import { onShutdownSignals, shutdownSignalExitCode } from '../../../utils/shutdown-signals.js';
 import { foldRegionOption } from '../../region-options.js';
 import {
   activateLocalAwsAndRoleArn,
@@ -168,7 +169,8 @@ export async function localInvokeAgentCoreCommand(
 
   let containerId: string | undefined;
   let logStream: ContainerLogStream | undefined;
-  let sigintHandler: (() => void) | undefined;
+  // SIGINT and SIGTERM both run the teardown (go-to-k/cdkd#6285).
+  let removeSignalHandlers: (() => void) | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
   let stateProvider: LocalStateProvider | undefined;
 
@@ -507,10 +509,11 @@ export async function localInvokeAgentCoreCommand(
     const hostPort = boot.hostPort;
     logStream = boot.logStream;
 
-    sigintHandler = (): void => {
-      void cleanup().then(() => process.exit(130));
-    };
-    process.on('SIGINT', sigintHandler);
+    // SIGTERM runs the same teardown and exits 143 (go-to-k/cdkd#6285): before,
+    // it took Node's default terminate and left the agent container running.
+    removeSignalHandlers = onShutdownSignals((signal) => {
+      void cleanup().then(() => process.exit(shutdownSignalExitCode(signal)));
+    });
 
     if (isMcp && mcpRequest) {
       // MCP has no /ping: mcpInvokeOnce folds the boot-wait into a retried
@@ -773,7 +776,7 @@ export async function localInvokeAgentCoreCommand(
     // Node's default exit, which would skip `docker rm -f` and the
     // credentials dispose.
     await cleanup();
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (removeSignalHandlers) removeSignalHandlers();
   }
 }
 
