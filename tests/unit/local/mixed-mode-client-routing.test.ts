@@ -43,6 +43,7 @@ import { STSClient } from '@aws-sdk/client-sts';
 import { setActiveWorkloadAwsWiring, setAwsEmulatorServiceRouting } from 'cdk-local/internal';
 
 import { createCallerDynamicReferenceResolver } from '../../../src/local/dynamic-reference.js';
+import { stateSsmClient } from '../../../src/local/state-ssm-parameters.js';
 import {
   mixedModeActive,
   mixedModeEmulatorOverride,
@@ -143,6 +144,11 @@ const SITES: { name: string; service: string; build: (workload?: Workload) => Sd
     service: 'SSM',
     build: (workload) => resolverFactories().ssm('us-east-1', { workload, emulator: false }),
   },
+  {
+    name: 'SSM-typed template parameters under --from-state (state-ssm-parameters.ts, #6307)',
+    service: 'SSM',
+    build: (workload) => stateSsmClient('us-east-1', undefined, workload) as unknown as SdkClient,
+  },
   // The ECS `Secrets` / `ValueFrom` fetch (ecs-secrets-resolver.ts) builds its
   // clients inline, from the option the population fence below requires; its
   // config is reproduced here as the site writes it.
@@ -214,8 +220,8 @@ describe('cdkd pre-start call sites x {excepted, not excepted, full emulator, no
 
     it('ECS: container taskA reads SSM from real AWS, container taskB from the emulator', async () => {
       mixed(ENV, ['STS', 'SECRETS_MANAGER', 'SSM']);
-      expect(await sideOf(SITES[3]!.build({ containerName: 'taskA' }))).toEqual(REAL);
-      expect(await sideOf(SITES[3]!.build({ containerName: 'taskB' }))).toEqual(EMULATED);
+      expect(await sideOf(SITES[4]!.build({ containerName: 'taskA' }))).toEqual(REAL);
+      expect(await sideOf(SITES[4]!.build({ containerName: 'taskB' }))).toEqual(EMULATED);
     });
 
     it('with no workload (a shared read), only the `Parameters` exceptions apply — never the union', () => {
@@ -442,8 +448,8 @@ describe('population: every AWS SDK client in src/ is accounted for', () => {
 
   it('finds the population (a floor per shape)', () => {
     expect(seen).toBeGreaterThanOrEqual(40);
-    // The four routed Secrets Manager / SSM pre-start reads.
-    expect(routedSeen).toBe(4);
+    // The five routed Secrets Manager / SSM pre-start reads.
+    expect(routedSeen).toBe(5);
     // 5 hops + 8 account lookups on the local surface.
     expect(stsSeen).toBeGreaterThanOrEqual(13);
   });

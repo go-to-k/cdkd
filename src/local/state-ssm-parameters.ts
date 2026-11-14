@@ -57,18 +57,30 @@ export async function resolveStateTemplateSsmParameters(
   const referenced = referencedParameterNames(template);
   const refs = collectSsmParameterRefs(template).filter((r) => referenced.has(r.logicalId));
   if (refs.length === 0) return { values: {}, secureStringLogicalIds: [] };
-  const region = canonicalizeRegion(opts.region) || undefined;
-  const realAws = realAwsException('SSM', opts.workload);
-  const client = new SSMClient({
-    ...awsClientDefaults({ profile: opts.profile, ignoreAssumedRole: true, realAws }),
-    ...(region && { region }),
-    ...(opts.profile && { profile: opts.profile }),
-  });
+  const client = stateSsmClient(opts.region, opts.profile, opts.workload);
   try {
     return await resolveSsmParameters(client, refs, opts.label);
   } finally {
     client.destroy();
   }
+}
+
+/**
+ * The SSM client the read uses (exported for the mixed-mode routing matrix):
+ * the caller's identity, routed by `workload`'s `"real-aws"` exceptions.
+ */
+export function stateSsmClient(
+  region: string | undefined,
+  profile: string | undefined,
+  workload: AwsEmulatorWorkload | undefined
+): SSMClient {
+  const folded = canonicalizeRegion(region) || undefined;
+  const realAws = realAwsException('SSM', workload);
+  return new SSMClient({
+    ...awsClientDefaults({ profile, ignoreAssumedRole: true, realAws }),
+    ...(folded && { region: folded }),
+    ...(profile && { profile }),
+  });
 }
 
 /**
