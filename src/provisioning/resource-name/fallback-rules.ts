@@ -13,7 +13,7 @@ import type { ResourceNameOptions } from './generate.js';
 export interface GeneratedNameRule {
   nameProperty: string;
   options: ResourceNameOptions;
-  /** Put before the generated name: a log group's `/cdkd/`, an SSM parameter's `/`. */
+  /** Put before the generated name: a log group's `/cdkd/`. */
   prefix?: string;
   /**
    * A directory bucket: the name ends with the required `--<zone id>--x-s3`,
@@ -163,12 +163,13 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'Name',
     options: { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g },
   },
-  // A legacy stack's Cloud Control fill had no leading `/` (a valid name too).
+  // go-to-k/cdkd#6272: no leading `/`, as CloudFormation names one. CDK builds
+  // an auto-named parameter's ARN as `parameter/` + Ref, so `/<name>` granted
+  // `parameter//<name>`, which matches nothing. SSM stores a one-level `/x` as
+  // `x`, so an existing record's `/<name>` is the same parameter.
   'AWS::SSM::Parameter': {
     nameProperty: 'Name',
     options: { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g },
-    prefix: '/',
-    legacy: { cloudControl: { maxLength: 2048 } },
   },
   'AWS::Cognito::UserPool': { nameProperty: 'UserPoolName', options: { maxLength: 128 } },
   'AWS::ElastiCache::SubnetGroup': {

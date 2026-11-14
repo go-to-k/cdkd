@@ -171,7 +171,6 @@ const OLD_CC: Record<string, ResourceNameOptions> = {
 /** Where a legacy stack's two routes differ, kept from before go-to-k/cdkd#5095. */
 const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> = {
   'AWS::Logs::LogGroup': { sdk: '/cdkd/MyStack-Resource', cc: 'MyStack-Resource' },
-  'AWS::SSM::Parameter': { sdk: '/MyStack-Resource', cc: 'MyStack-Resource' },
   'AWS::CodeBuild::Project': { sdk: 'Resource', cc: 'MyStack-Resource' },
   'AWS::AutoScaling::AutoScalingGroup': { sdk: 'MyStack-Resource', cc: undefined },
   'AWS::DynamoDB::GlobalTable': { sdk: 'MyStack-Resource', cc: undefined },
@@ -279,8 +278,23 @@ describe('the SDK and Cloud Control routes generate the same name (#5095)', () =
   });
 });
 
+/**
+ * go-to-k/cdkd#6272: the SDK provider's SSM parameter name lost its leading
+ * `/`, which made CDK's `grantRead` ARN `parameter//<name>`. SSM stores a
+ * one-level `/x` as `x`, so the moved name is the same parameter.
+ */
+const SDK_DROPPED_SLASH = ['AWS::SSM::Parameter'];
+
 describe("a legacy stack's names do not move (#5095)", () => {
-  it.each(Object.keys(OLD_SDK))('the SDK provider: %s', (type) => {
+  it.each(SDK_DROPPED_SLASH)('the SDK provider: %s drops only its leading slash (#6272)', (type) => {
+    for (const id of [...IDS, 'Lg_A.b/C']) {
+      const before = legacy(() => OLD_SDK[type]!(id));
+      expect(before.startsWith('/'), before).toBe(true);
+      expect(legacy(() => sdkName(type, id)), `${type} ${id}`).toBe(before.slice(1));
+    }
+  });
+
+  it.each(Object.keys(OLD_SDK).filter((t) => !SDK_DROPPED_SLASH.includes(t)))('the SDK provider: %s', (type) => {
     // The SDK provider's own pattern kept `_`, `.` and `/`: not CloudFormation
     // logical ids, but byte-identical anyway.
     for (const id of [...idsBelow(SDK_LOWERED, type), 'Lg_A.b/C']) {

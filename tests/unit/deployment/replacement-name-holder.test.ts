@@ -581,7 +581,7 @@ describe('replacementOldHoldsSentName', () => {
   it('a nameless SDK create of a type whose provider wraps the generated name is proven through the derived name', () => {
     const cases: Array<[string, string, string]> = [
       ['AWS::Logs::LogGroup', 'LogGroupName', '/cdkd/MyStack-Lg'],
-      ['AWS::SSM::Parameter', 'Name', '/MyStack-Lg'],
+      ['AWS::SSM::Parameter', 'Name', 'MyStack-Lg'],
       ['AWS::S3::Bucket', 'BucketName', 'mystack-lg'],
       ['AWS::CodeCommit::Repository', 'RepositoryName', 'MyStack-Lg'],
     ];
@@ -633,7 +633,7 @@ describe('replacementOldHoldsSentName', () => {
       'AWS::RDS::DBProxyEndpoint': 64,
       'AWS::S3::Bucket': 63,
       'AWS::Scheduler::Schedule': 64,
-      'AWS::SSM::Parameter': 1023 + '/'.length,
+      'AWS::SSM::Parameter': 1023,
     };
     const table = replacementDerivedGeneratedNames();
     expect(Object.keys(table).sort()).toEqual(Object.keys(expected).sort());
@@ -798,7 +798,7 @@ describe('the parent review round of #3979 (helper)', () => {
     const derive = (type: string) => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => table[type]!.derive('Lg_A.b/C'));
     expect(derive('AWS::S3::Bucket')).toBe('mystack-lg-a.b-c');
     expect(derive('AWS::Logs::LogGroup')).toBe('/cdkd/MyStack-Lg_A-b/C');
-    expect(derive('AWS::SSM::Parameter')).toBe('/MyStack-Lg_A-b/C');
+    expect(derive('AWS::SSM::Parameter')).toBe('MyStack-Lg_A-b/C');
     expect(derive('AWS::CodeCommit::Repository')).toBe('MyStack-Lg-A-b-C');
   });
 
