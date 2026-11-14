@@ -923,6 +923,21 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     );
   });
 
+  it.each(['previousDependencies', 'templateDependencies'])(
+    'round-trips %s, and refuses anything but logical ids to string arrays (go-to-k/cdkd#6314)',
+    (field) => {
+      const lists = { A: ['B'], C: [] };
+      expect(parseRollbackJournal(body({ [field]: lists }), 'P~C').segments[0]).toMatchObject({
+        [field]: lists,
+      });
+      for (const bad of [['A'], 'x', null, { A: 'B' }, { A: [1] }]) {
+        expect(() => parseRollbackJournal(body({ [field]: bad }), 'P~C')).toThrow(
+          new RegExp(`segments\\[0\\]\\.${field} must map logical ids to string arrays when present`)
+        );
+      }
+    }
+  );
+
   it('round-trips previousCrossStackReads, and refuses a non-object or a non-array list', () => {
     const reads = { imports: [{ exportName: 'E' }], outputReads: [] };
     expect(

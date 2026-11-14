@@ -103,6 +103,7 @@ import {
   type RolledBackCreate,
 } from '../state/name-generation.js';
 import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
+import { withRecordedDependencies } from './deploy-engine/record-shape.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   ledgerForStack,
@@ -368,7 +369,12 @@ export async function dropNestedChildJournals(args: {
    * journal (go-to-k/cdkd#4600: a proven orphan it still records was not
    * deleted).
    */
-  beforeDelete?: (child: string, state: StackState | undefined) => Promise<boolean>;
+  beforeDelete?: (
+    child: string,
+    state: StackState | undefined,
+    /** The re-read record's etag, for a save under the same lock (go-to-k/cdkd#6314). */
+    etag?: string
+  ) => Promise<boolean>;
   /**
    * Run under the child's lock when its journal delete fails (throws or
    * reports `false`), so a caller
@@ -412,9 +418,8 @@ export async function dropNestedChildJournals(args: {
         if (args.beforeDelete) {
           // Re-read under the lock: what decides whether a record owns a
           // resource must be the record no other command can be rewriting.
-          if (!(await args.beforeDelete(child, await readOwnRecord(stateBackend, child, region)))) {
-            return false;
-          }
+          const own = await readOwnRecord(stateBackend, child, region);
+          if (!(await args.beforeDelete(child, own?.state, own?.etag))) return false;
         }
         let gone: boolean | void;
         try {
@@ -439,12 +444,12 @@ export async function dropNestedChildJournals(args: {
   }
 }
 
-/** `child`'s record when it reads as its own, else undefined (never throws). */
+/** `child`'s record (and etag) when it reads as its own, else undefined (never throws). */
 async function readOwnRecord(
   stateBackend: S3StateBackend,
   child: string,
   region: string
-): Promise<StackState | undefined> {
+): Promise<{ state: StackState; etag: string | undefined } | undefined> {
   try {
     const data = await stateBackend.getState(child, region);
     if (
@@ -453,7 +458,7 @@ async function readOwnRecord(
       isPlainRecord(data.state.resources) &&
       (data.state.stackName === undefined || data.state.stackName === child)
     ) {
-      return data.state;
+      return { state: data.state, etag: data.etag };
     }
   } catch {
     // Unreadable: the caller treats it as a record that may own anything.
@@ -863,6 +868,17 @@ export async function revertNestedChildFromJournal(args: {
       }
     }
     restoring = failures === 0;
+    // go-to-k/cdkd#6314: the dependency ids the child's success trimmed from
+    // records no op rewrote, the OLDEST segment's list winning (the pre-run
+    // record). Only once nothing failed, as the outputs: a record a failed op
+    // left on the new template could otherwise close a cycle with one.
+    if (restoring) {
+      const lists: Record<string, string[]> = {};
+      for (let s = segments.length - 1; s >= 0; s--) {
+        Object.assign(lists, segments[s]!.previousDependencies ?? {});
+      }
+      Object.assign(stateResources, withRecordedDependencies(stateResources, lists));
+    }
     await save();
     // Only what was PERSISTED is published: the index must not serve outputs
     // the child's record does not hold.

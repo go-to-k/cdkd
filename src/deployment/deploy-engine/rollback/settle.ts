@@ -7,6 +7,9 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { withoutPendingRequest } from '../../cc-pending-requests.js';
 import { stackInstanceIdOf } from '../../../state/stack-instance-id.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
+import type { CloudFormationTemplate } from '../../../types/resource.js';
+import { nestedDependencySnapshot, withRecordedDependencies } from '../record-shape.js';
+import type { RollbackJournalSegment } from '../../../types/rollback-journal.js';
 import {
   asIsMessage,
   displaySafe,
@@ -95,7 +98,12 @@ export async function settleJournalAfterSuccess(
   completedOperations: CompletedOperation[],
   previousState: StackState,
   finalResources: Record<string, ResourceState>,
-  initialDeploy: boolean
+  initialDeploy: boolean,
+  /**
+   * The deployed template, for a nested child's dependency snapshot
+   * (go-to-k/cdkd#6314); none is journaled without it.
+   */
+  template?: CloudFormationTemplate
 ): Promise<number> {
   if (deps.options.parentStackInfo) {
     await writeRollbackJournalSegment(
@@ -105,27 +113,38 @@ export async function settleJournalAfterSuccess(
       [],
       NESTED_PENDING_PARENT_REASON,
       initialDeploy,
-      // go-to-k/cdkd#4043 Phase C: an alias the previous record exported is
-      // snapshotted only while this deploy's export-name verdict still
-      // publishes it; with no verdict (no outputs pass ran), none is.
-      nestedPendingSnapshot(previousState, (name) => {
-        const verdict = deps.outputsRun().carriedExportAliasRefusal;
-        const dropped = verdict === undefined || verdict(name, name) !== undefined;
-        // Said once per dropped name: the revert of this child will not
-        // restore it. The name is never printed: the verdict refuses it
-        // because it spells a NoEcho value, and the deploy's own export
-        // warning (a publish-time sentence) does not fit a revert snapshot.
-        if (dropped) {
-          deps.logger.warn(
-            verdict === undefined
-              ? 'An export alias the previous record published was not kept for a revert of ' +
-                  'this nested stack: no export-name verdict is available.'
-              : 'An export alias the previous record published was not kept for a revert of ' +
-                  'this nested stack: its name contains a NoEcho value.'
-          );
-        }
-        return dropped;
-      })
+      {
+        // go-to-k/cdkd#6314: the child's refresh only drops dependency ids;
+        // its revert puts dropped ones back, the root's success adds the rest.
+        ...(template !== undefined &&
+          nestedDependencySnapshot(
+            previousState.resources,
+            finalResources,
+            template,
+            new Set(completedOperations.map((op) => op.logicalId))
+          )),
+        // go-to-k/cdkd#4043 Phase C: an alias the previous record exported is
+        // snapshotted only while this deploy's export-name verdict still
+        // publishes it; with no verdict (no outputs pass ran), none is.
+        ...nestedPendingSnapshot(previousState, (name) => {
+          const verdict = deps.outputsRun().carriedExportAliasRefusal;
+          const dropped = verdict === undefined || verdict(name, name) !== undefined;
+          // Said once per dropped name: the revert of this child will not
+          // restore it. The name is never printed: the verdict refuses it
+          // because it spells a NoEcho value, and the deploy's own export
+          // warning (a publish-time sentence) does not fit a revert snapshot.
+          if (dropped) {
+            deps.logger.warn(
+              verdict === undefined
+                ? 'An export alias the previous record published was not kept for a revert of ' +
+                    'this nested stack: no export-name verdict is available.'
+                : 'An export alias the previous record published was not kept for a revert of ' +
+                    'this nested stack: its name contains a NoEcho value.'
+            );
+          }
+          return dropped;
+        }),
+      }
     );
     return 0;
   }
@@ -185,7 +204,8 @@ export async function settleJournalAfterSuccess(
       region: deps.stackRegion,
       resources: finalResources,
       logger: deps.logger,
-      beforeDelete: async (child, childRecord) => {
+      beforeDelete: async (child, childRecord, childEtag) => {
+        let childSegments: readonly RollbackJournalSegment[] = [];
         // An unreadable orphans container is an unreadable record: a rollback-
         // orphan record in it may own the resource, so nothing is deleted.
         const childState =
@@ -212,7 +232,13 @@ export async function settleJournalAfterSuccess(
             nestedChildStack: child,
           },
           logger: deps.logger,
+          onSegments: (segments) => {
+            childSegments = segments;
+          },
         });
+        if (childState !== undefined && childEtag !== undefined) {
+          await saveTemplateDependencies(deps, child, childState, childEtag, childSegments);
+        }
         nestedLeft += settled.unaddressed;
         if (settled.stripCleared) stripOnFailure.set(child, settled.stripCleared);
         return !settled.keepJournal;
@@ -223,6 +249,48 @@ export async function settleJournalAfterSuccess(
     }),
   ]);
   return ownLeft + nestedLeft;
+}
+
+/**
+ * go-to-k/cdkd#6314: the ROOT's success writes onto a nested child's records
+ * the full dependency lists its template derives, which the child's own
+ * success could only trim (a failed parent may still have reverted it). Read
+ * from the newest `nested-pending-parent` segment of this run carrying them,
+ * the journal the success settle already loaded; saved under the child's lock
+ * the caller holds, over the etag it read. Nothing is written when the lists
+ * are already held or would record a dependency cycle. Best-effort.
+ */
+async function saveTemplateDependencies(
+  deps: RollbackDeps,
+  child: string,
+  childState: StackState,
+  etag: string,
+  segments: readonly RollbackJournalSegment[]
+): Promise<void> {
+  const runId = deps.options.eventRecorder?.runId;
+  if (runId === undefined) return;
+  const lists = segments.findLast(
+    (segment) =>
+      segment.runId === runId &&
+      segment.reason === NESTED_PENDING_PARENT_REASON &&
+      segment.templateDependencies !== undefined
+  )?.templateDependencies;
+  if (lists === undefined) return;
+  const resources = withRecordedDependencies(childState.resources, lists);
+  if (resources === undefined) return;
+  try {
+    await deps.stateBackend.saveState(
+      child,
+      deps.stackRegion,
+      { ...childState, resources, lastModified: Date.now() },
+      { expectedEtag: etag }
+    );
+  } catch (error) {
+    deps.logger.warn(
+      safeMsg`Could not record the template's dependencies on nested stack ${displaySafe(child)}: ` +
+        safeMsg`${describeAwsFailure(error).summary}. A destroy may order its resources by an older template.`
+    );
+  }
 }
 
 /**

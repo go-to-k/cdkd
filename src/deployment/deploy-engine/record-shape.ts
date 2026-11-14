@@ -132,6 +132,91 @@ export function withTemplateDependencies(
   return refreshed;
 }
 
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  const set = new Set(a);
+  return set.size === new Set(b).size && b.every((id) => set.has(id));
+}
+
+function dependenciesOf(record: ResourceState | undefined): string[] {
+  return Array.isArray(record?.dependencies) ? record.dependencies : [];
+}
+
+/**
+ * go-to-k/cdkd#6314: what a nested child's success journals beside its ops
+ * about the removals-only refresh ({@link withTemplateDependencies}).
+ * `previousDependencies`: the pre-deploy list of each record no op touched
+ * whose list the refresh trimmed, for a failed parent's revert to put back.
+ * `templateDependencies`: the full template list of each saved record lacking
+ * part of it, for the root's success to write. `saved` is the record map the
+ * child saved, or the pre-deploy one on the no-change path, which is
+ * refreshed here exactly as that path's save did.
+ */
+export function nestedDependencySnapshot(
+  previous: Readonly<Record<string, ResourceState>>,
+  saved: Readonly<Record<string, ResourceState>>,
+  template: CloudFormationTemplate,
+  touchedLogicalIds: ReadonlySet<string>
+): {
+  previousDependencies?: Record<string, string[]>;
+  templateDependencies?: Record<string, string[]>;
+} {
+  const final = withTemplateDependencies(saved, template, { removalsOnly: true }) ?? saved;
+  const previousDependencies: Record<string, string[]> = {};
+  const templateDependencies: Record<string, string[]> = {};
+  for (const [logicalId, record] of Object.entries(final)) {
+    if (!Object.hasOwn(template.Resources ?? {}, logicalId)) continue;
+    const before = Object.hasOwn(previous, logicalId) ? previous[logicalId] : undefined;
+    if (before !== undefined && !touchedLogicalIds.has(logicalId)) {
+      const had = dependenciesOf(before);
+      if (!sameIds(had, dependenciesOf(record))) previousDependencies[logicalId] = [...had];
+    }
+    const derived = extractAllDependencies(template, logicalId) ?? [];
+    if (!sameIds(derived, dependenciesOf(record))) templateDependencies[logicalId] = derived;
+  }
+  return {
+    ...(Object.keys(previousDependencies).length > 0 && { previousDependencies }),
+    ...(Object.keys(templateDependencies).length > 0 && { templateDependencies }),
+  };
+}
+
+/**
+ * `resources` with each record `lists` names (and `resources` holds) carrying
+ * that list, or `undefined` when nothing changes. Also `undefined` when the
+ * result would hold a dependency cycle among `resources`' records, which
+ * `cdkd destroy` refuses: the caller then keeps the records as they are.
+ */
+export function withRecordedDependencies(
+  resources: Readonly<Record<string, ResourceState>>,
+  lists: Readonly<Record<string, readonly string[]>>
+): Record<string, ResourceState> | undefined {
+  let next: Record<string, ResourceState> | undefined;
+  for (const [logicalId, list] of Object.entries(lists)) {
+    const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+    if (record === undefined || sameIds(dependenciesOf(record), list)) continue;
+    next ??= { ...resources };
+    const { dependencies: _old, ...rest } = record;
+    next[logicalId] = list.length > 0 ? { ...rest, dependencies: [...list] } : rest;
+  }
+  return next !== undefined && !hasDependencyCycle(next) ? next : undefined;
+}
+
+/** Whether `resources`' recorded dependencies (among its own ids) form a cycle. */
+export function hasDependencyCycle(resources: Readonly<Record<string, ResourceState>>): boolean {
+  const state = new Map<string, 'open' | 'done'>();
+  const visit = (id: string): boolean => {
+    const mark = state.get(id);
+    if (mark === 'done') return false;
+    if (mark === 'open') return true;
+    state.set(id, 'open');
+    for (const dep of dependenciesOf(resources[id])) {
+      if (Object.hasOwn(resources, dep) && visit(dep)) return true;
+    }
+    state.set(id, 'done');
+    return false;
+  };
+  return Object.keys(resources).some((id) => visit(id));
+}
+
 /**
  * `rebuilt`, a spread copy of a record's `properties` that only drops elements
  * of the record's own lists (a lost attachment), with the REDACTION marks

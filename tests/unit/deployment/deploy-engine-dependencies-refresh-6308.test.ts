@@ -13,8 +13,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { withTemplateDependencies } from '../../../src/deployment/deploy-engine/record-shape.js';
+import {
+  hasDependencyCycle,
+  withRecordedDependencies,
+  withTemplateDependencies,
+} from '../../../src/deployment/deploy-engine/record-shape.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { RollbackJournalSegment } from '../../../src/types/rollback-journal.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
@@ -147,6 +152,11 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     );
   }
 
+  const journaledSegment = (): RollbackJournalSegment => {
+    expect(mockStateBackend.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    return mockStateBackend.appendRollbackJournalSegment!.mock.calls[0]![2] as RollbackJournalSegment;
+  };
+
   const lastSaved = (): StackState =>
     mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
 
@@ -244,6 +254,12 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     expect(saved.resources['A']?.dependencies).toBeUndefined();
     expect(saved.resources['C']?.dependencies).toBeUndefined();
     expect(saved.resources['B']?.dependencies).toBeUndefined();
+     // go-to-k/cdkd#6314: the journaled halves of the trim. C's pre-deploy list
+    // for a failed parent's revert (A had none, B was updated); A's template
+    // list for the root's success.
+    const segment = journaledSegment();
+    expect(segment.previousDependencies).toEqual({ C: ['B'] });
+    expect(segment.templateDependencies).toEqual({ A: ['B'] });
   });
 
   it('nested child, no-change path: the stale edge of a reversed dependency is dropped', async () => {
@@ -259,6 +275,23 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     expect(saved.resources['A']?.dependencies).toBeUndefined();
     // Gains nothing: B's new edge to A is not added to the unchanged record.
     expect(saved.resources['B']?.dependencies).toBeUndefined();
+     const segment = journaledSegment();
+    expect(segment.previousDependencies).toEqual({ A: ['B'] });
+    expect(segment.templateDependencies).toEqual({ B: ['A'] });
+  });
+
+  it('nested child: lists already matching the template journal neither half', async () => {
+    prime(stateWith({ A: record('a-phys', 'a'), B: record('b-phys', 'b2', ['A']) }), [
+      { logicalId: 'A', changeType: 'NO_CHANGE', resourceType: SSM },
+      { logicalId: 'B', changeType: 'NO_CHANGE', resourceType: SSM },
+    ]);
+
+    await makeEngine([], true).deploy('Parent~Child', v2Template());
+
+    const segment = journaledSegment();
+    expect(segment.reason).toBe('nested-pending-parent');
+    expect('previousDependencies' in segment).toBe(false);
+    expect('templateDependencies' in segment).toBe(false);
   });
 
   it('no-change path: lists already matching (any order) write nothing', async () => {
@@ -281,6 +314,34 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     await makeEngine([]).deploy(STACK, template);
 
     expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+  });
+});
+
+describe('withRecordedDependencies / hasDependencyCycle (go-to-k/cdkd#6314)', () => {
+  it('sets the named lists on records it holds, copying only those, and never mutates the input', () => {
+    const a = record('a-phys', 'a');
+    const b = record('b-phys', 'b', ['A']);
+    const input = { A: a, B: b };
+    const out = withRecordedDependencies(input, { A: [], B: ['A', 'Gone'], Missing: ['A'] })!;
+    expect(out['A']).toBe(a);
+    expect(out['B']!.dependencies).toEqual(['A', 'Gone']);
+    expect(out['B']!.properties).toBe(b.properties);
+    expect(b.dependencies).toEqual(['A']);
+    expect('Missing' in out).toBe(false);
+    expect('dependencies' in withRecordedDependencies(input, { B: [] })!['B']!).toBe(false);
+  });
+
+  it('returns undefined when nothing changes, or when the result would hold a cycle', () => {
+    const input = { A: record('a-phys', 'a'), B: record('b-phys', 'b', ['A']) };
+    expect(withRecordedDependencies(input, { B: ['A'] })).toBeUndefined();
+    expect(withRecordedDependencies(input, { A: ['B'] })).toBeUndefined();
+  });
+
+  it('finds a cycle through any length, ignoring ids the records do not hold', () => {
+    const r = (deps: string[]) => record('p', 'v', deps);
+    expect(hasDependencyCycle({ A: r(['B']), B: r(['C']), C: r(['A']) })).toBe(true);
+    expect(hasDependencyCycle({ A: r(['A']) })).toBe(true);
+    expect(hasDependencyCycle({ A: r(['B', 'X']), B: r(['C']), C: r([]), D: r(['A', 'C']) })).toBe(false);
   });
 });
 

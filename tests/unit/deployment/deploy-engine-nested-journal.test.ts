@@ -328,6 +328,72 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     ]);
   });
 
+  describe('the ROOT success writes the child template dependencies (go-to-k/cdkd#6314)', () => {
+    const child = (resources: Record<string, ResourceState>): StackState => ({
+      version: 8,
+      stackName: `${STACK}~Child`,
+      region: REGION,
+      resources,
+      outputs: {},
+      lastModified: 0,
+    });
+    const childSaves = (backend: Harness['backend']) =>
+      backend.saveState.mock.calls.filter((c) => c[0] === `${STACK}~Child`);
+    const pending = (runId: string, templateDependencies: Record<string, string[]>) => ({
+      runId,
+      reason: 'nested-pending-parent' as const,
+      operations: [],
+      templateDependencies,
+    });
+
+    it.each([
+      ['change path', new Map([['Q', createChange('Q')]]), ['Q']],
+      ['no-change path', new Map<string, ResourceChange>(), []],
+    ])('%s: the newest segment of this run wins, saved over the etag read under the lock', async (_label, changes, ids) => {
+      const { engine, backend } = build({
+        nested: false,
+        changes,
+        resources: { Child: record('Child', NESTED) },
+        childState: child({ A: record('A'), B: record('B') }),
+        childJournal: {
+          segments: [pending(RUN, { A: ['B', 'Old'] }), pending(RUN, { A: ['B'] }), pending('run-other', { B: ['A'] })],
+        },
+      });
+
+      await engine.deploy(STACK, templateOf(ids as string[]));
+
+      const saves = childSaves(backend);
+      expect(saves).toHaveLength(1);
+      const saved = saves[0]![2] as StackState;
+      expect(saved.resources['A']!.dependencies).toEqual(['B']);
+      expect(saved.resources['B']!.dependencies).toEqual([]);
+      expect(saves[0]![3]).toEqual({ expectedEtag: 'c0' });
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toContain(`${STACK}~Child`);
+    });
+
+    it('writes nothing for another run, or for a list that would record a cycle', async () => {
+      for (const [childJournal, resources] of [
+        [{ segments: [pending('run-other', { A: ['B'] })] }, { A: record('A'), B: record('B') }],
+        [
+          { segments: [pending(RUN, { A: ['B'] })] },
+          { A: record('A'), B: { ...record('B'), dependencies: ['A'] } },
+        ],
+      ] as const) {
+        const { engine, backend } = build({
+          nested: false,
+          changes: new Map([['Q', createChange('Q')]]),
+          resources: { Child: record('Child', NESTED) },
+          childState: child({ ...resources }),
+          childJournal: { segments: [...childJournal.segments] },
+        });
+
+        await engine.deploy(STACK, templateOf(['Q']));
+
+        expect(childSaves(backend)).toEqual([]);
+      }
+    });
+  });
+
   it('CONTROL: the ROOT no-change path deletes the child journal too', async () => {
     const { engine, backend } = build({
       nested: false,

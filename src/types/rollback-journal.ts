@@ -121,6 +121,22 @@ export interface RollbackJournalSegment {
    */
   previousCrossStackReads?: Pick<StackState, 'imports' | 'outputReads'>;
   /**
+   * go-to-k/cdkd#6314, `nested-pending-parent` segments only: the
+   * `dependencies` of each record no op of the child deploy rewrote but whose
+   * list its success refresh trimmed (removals only), as they were before. A
+   * failed parent's revert puts them back, so a child reverted to the old
+   * template keeps that template's ordering. ADDITIVE, no bump.
+   */
+  previousDependencies?: Record<string, string[]>;
+  /**
+   * go-to-k/cdkd#6314, `nested-pending-parent` segments only: the full list
+   * the child's template derives for each record whose saved list lacks some
+   * of it (the child's refresh only drops ids). The ROOT's success writes
+   * them onto the child's records, once no parent can revert the child any
+   * more. ADDITIVE, no bump.
+   */
+  templateDependencies?: Record<string, string[]>;
+  /**
    * go-to-k/cdkd#4402: logical ids whose failed attempts — in this segment and
    * every older one — a NEWER segment superseded before it was removed. The
    * removed segment's completed ops were what told `priorAttemptsInJournal`
@@ -811,6 +827,25 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
             );
           }
         });
+      }
+    }
+    // go-to-k/cdkd#6314: both are written into a child's state.json.
+    for (const field of ['previousDependencies', 'templateDependencies']) {
+      const lists: unknown = seg[field];
+      if (
+        lists !== undefined &&
+        (typeof lists !== 'object' ||
+          lists === null ||
+          Array.isArray(lists) ||
+          !Object.values(lists).every(
+            (list: unknown) =>
+              Array.isArray(list) && list.every((id: unknown) => typeof id === 'string')
+          ))
+      ) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].${field} must map logical ids to string arrays when present.`
+        );
       }
     }
     const prevOut: unknown = seg['previousOutputs'];
