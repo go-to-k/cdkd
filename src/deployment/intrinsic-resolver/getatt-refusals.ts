@@ -6,6 +6,7 @@ import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { type ResolverContext, quotedRender } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
+import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
 import {
   healWithheld,
   staleRecordRemedy,
@@ -222,6 +223,75 @@ export function describeFailureObserved(
 }
 
 /**
+ * go-to-k/cdkd#6242: the attribute is a member of the type's
+ * `primaryIdentifier`. The fallback keeps serving such an attribute exactly
+ * as before this guard existed — an SDK provider's physical id is, for
+ * nearly every type, that identifier or one member of it (an API Gateway
+ * child's `ResourceId`, an ApiGatewayV2 `IntegrationId`), and a record
+ * `import()` wrote may hold no copy of it — so the guard never refuses what
+ * it served correctly. The one exclusion is a type whose physical id is
+ * provably NOT its identifier.
+ */
+export function isPhysicalIdIdentifier(
+  resourceType: string,
+  primaryIdentifier: ReadonlySet<string>,
+  attribute: string
+): boolean {
+  if (IDENTIFIER_NOT_PHYSICAL_ID_TYPES.has(resourceType)) return false;
+  return primaryIdentifier.has(attribute);
+}
+
+/**
+ * Types whose cdkd physical id is not their CloudFormation `primaryIdentifier`:
+ * `AWS::CodeCommit::Repository` records the repository NAME
+ * (`codecommit-repository/create.ts`), while its identifier is `RepositoryId`.
+ */
+const IDENTIFIER_NOT_PHYSICAL_ID_TYPES: ReadonlySet<string> = new Set([
+  'AWS::CodeCommit::Repository',
+]);
+
+/**
+ * `Arn`, or the type's own `<Type>Arn` / `<Type>ARN` (`TopicArn`,
+ * `TableBucketARN`): the resource's own ARN, which an ARN physical id is. Not
+ * another resource's ARN it carries (CloudTrail's `SnsTopicArn`).
+ */
+export function isOwnArnAttribute(resourceType: string, attributeName: string): boolean {
+  const typeName = resourceType.split('::').pop() ?? '';
+  const lower = attributeName.toLowerCase();
+  return lower === 'arn' || lower === `${typeName.toLowerCase()}arn`;
+}
+
+/**
+ * go-to-k/cdkd#6242: schema read-only attributes CloudFormation itself REJECTS
+ * in `Fn::GetAtt` at template validation ("resource X does not support
+ * attribute type Id in Fn::GetAtt", measured us-east-1, 2026-11-14). Each is
+ * its type's `primaryIdentifier`, which the fallback would otherwise keep
+ * serving; refused instead, for parity.
+ */
+export const CFN_REJECTED_GETATT_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'AWS::CloudFormation::WaitConditionHandle.Id',
+  'AWS::IAM::UserToGroupAddition.Id',
+]);
+
+/**
+ * go-to-k/cdkd#6242: CloudFormation read-only attributes whose value IS the
+ * physical id cdkd records, each MEASURED against a CloudFormation stack
+ * deploying the same template (us-east-1, 2026-11-14): CloudFormation answers
+ * the same value as the resource's own `Ref`, and so does cdkd. Anything not
+ * listed here that reaches the physical-id fallback is refused (see
+ * `guardedPhysicalIdFallback`). Measured and deliberately ABSENT:
+ * `AWS::CloudFormation::WaitConditionHandle.Id` and
+ * `AWS::IAM::UserToGroupAddition.Id`, which CloudFormation rejects at
+ * template validation ("does not support attribute type Id").
+ */
+export const PHYSICAL_ID_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'AWS::ApiGateway::Account.Id',
+  'AWS::Budgets::Budget.Id',
+  'AWS::EFS::MountTarget.Id',
+  'AWS::SQS::QueuePolicy.Id',
+]);
+
+/**
  * Shared unknown-attribute physicalId fallback (issues #1106 / #1111).
  *
  * Applied by BOTH the final unknown-type fallback of
@@ -317,6 +387,49 @@ export function guardedPhysicalIdFallback(
             : `attributes are not enriched for this resource type, and --strict-getatt `) +
           `rejects the physical ID fallback ${quotedRender(displayMasked(resolver, physicalId, context), '"')} (which may not be the value ` +
           `CloudFormation would return). Drop --strict-getatt to fall back with a warning. ` +
+          (recordMayBeStale
+            ? staleRecordRemedy(resolver, healOutcome, context)
+            : unenrichedRemedy(resolver, resourceType, attributeName, healOutcome, context))
+      )
+    );
+  }
+  // go-to-k/cdkd#6242: an attribute CloudFormation DEFINES (a read-only
+  // property of the type's schema) that an SDK provider's record cannot
+  // answer is refused, not served as the physical id: measured against
+  // CloudFormation across 60 such attributes, the physical id was the wrong
+  // value for all but `PHYSICAL_ID_ATTRIBUTES`. A Cloud Control record keeps
+  // the warning (it records the whole model, and its identifier often IS the
+  // value), as does an `*Arn` attribute whose physical id is an ARN.
+  // The type's own identifier (a `primaryIdentifier` member, which the
+  // physical id holds) and its own ARN on an ARN physical id keep the warning
+  // too: there the physical id is the value.
+  const topAttribute = attributeName.split('.')[0] ?? attributeName;
+  // `Object.hasOwn`: `logicalId` is template text, and a plain read would
+  // serve `Object.prototype` members for `constructor` / `__proto__`.
+  const resources = context?.resources;
+  const record =
+    resources !== undefined && Object.hasOwn(resources, logicalId)
+      ? resources[logicalId]
+      : undefined;
+  const coverage = getPropertyCoverage(resourceType);
+  if (
+    CFN_REJECTED_GETATT_ATTRIBUTES.has(`${resourceType}.${attributeName}`) ||
+    (record?.provisionedBy !== 'cc-api' &&
+      coverage?.readOnly.has(topAttribute) === true &&
+      !isPhysicalIdIdentifier(resourceType, coverage.primaryIdentifier, topAttribute) &&
+      !PHYSICAL_ID_ATTRIBUTES.has(`${resourceType}.${attributeName}`) &&
+      !(isOwnArnAttribute(resourceType, attributeName) && physicalId.startsWith('arn:')))
+  ) {
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ${loggedType}: ` +
+          (recordMayBeStale
+            ? `the state record holds no value for it, and its physical ID `
+            : healOutcome?.kind === 'read'
+              ? `the provider's re-read of the resource reports no value for it (one still creating has none yet), and its physical ID `
+              : `cdkd does not record it for this resource type, and its physical ID `) +
+          `${quotedRender(displayMasked(resolver, physicalId, context), '"')} is not the value CloudFormation returns, ` +
+          `so serving it would silently produce a wrong value. ` +
           (recordMayBeStale
             ? staleRecordRemedy(resolver, healOutcome, context)
             : unenrichedRemedy(resolver, resourceType, attributeName, healOutcome, context))

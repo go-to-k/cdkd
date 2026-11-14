@@ -449,8 +449,17 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
     it('NEGATIVE CONTROL: the pre-fix empty attribute set still throws', async () => {
       // Pins the mechanism the fix removes rather than trusting that the
       // assertions above could only pass for the right reason.
-      await expect(resolver.resolve(OUTPUT, contextFor({}))).rejects.toThrow(
-        /Fn::Join's second argument must be a list/
+      // go-to-k/cdkd#6242: with no NameServers recorded, the GetAtt is now
+      // refused (a CFn read-only attribute is never served as the physical id)
+      // before Fn::Join sees the physical id; either failure keeps this a
+      // negative control. A rejection means 'ZE2E' is never served.
+      const outcome = await resolver.resolve(OUTPUT, contextFor({})).then(
+        (value: unknown) => ({ served: value }),
+        (e: unknown) => e
+      );
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(
+        /Cannot resolve Fn::GetAtt \[Zone, NameServers\]/
       );
     });
   });

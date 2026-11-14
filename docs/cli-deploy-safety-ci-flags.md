@@ -54,19 +54,29 @@ If the attribute is still missing, cdkd substitutes the resource's physical
 ID. That guess can be wrong, and what happens next depends on the attribute's
 name:
 
-| Attribute name | The guess | Result |
+| Attribute | The guess | Result |
 | --- | --- | --- |
 | Ends in `Arn` | Is not `arn:`-shaped | The deploy fails |
 | Ends in `Url` | Is not an http(s) URL | The deploy fails |
+| Defined by CloudFormation for the type, on a resource cdkd's SDK provider created, and not the resource's own identifier or ARN | Any value | The deploy fails |
 | Anything else | Any value | A warning; the deploy continues |
 
 A failure names the resource and the attribute and carries an issue link. The
 warning reads
 `Unknown attribute X for resource type Y, returning physical ID`.
 
+An attribute CloudFormation defines for the type (a read-only attribute of its
+schema) fails rather than warns: measured against CloudFormation, the physical
+ID was the wrong value for almost every such attribute. The few whose value
+really is the physical ID are still served: the resource's own identifier
+(such as a secret's `Id`), its own ARN when the physical ID is that ARN, and a
+few measured ones such as an EFS mount target's `Id`. A resource provisioned
+through Cloud Control keeps the warning, since cdkd records every attribute
+Cloud Control reports. The [SDK attribute coverage matrix](_generated/sdk-attr-coverage.md)
+lists most of the attributes cdkd cannot answer yet.
+
 Other attribute names only warn because cdkd cannot tell a wrong value from a
-right one by its shape. An alias or an endpoint looks like a plain name, so
-failing there would break correct deploys.
+right one by its shape.
 
 A summary line counts the guesses, once per distinct place and per stack. A
 nested stack counts its own.

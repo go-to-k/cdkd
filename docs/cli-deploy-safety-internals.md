@@ -635,7 +635,10 @@ not hold them:
 
 - an EC2 instance's `PrivateIp` / `PublicIp` / `PrivateDnsName` /
   `PublicDnsName` / `AvailabilityZone`;
-- a VPC's `DefaultSecurityGroup`;
+- a VPC's `DefaultSecurityGroup` and `DefaultNetworkAcl`, and its
+  `CidrBlockAssociations` (always, since a later `VPCCidrBlock` grows it);
+- an S3 Express directory bucket's `AvailabilityZoneName`, from the zone ID in
+  its name;
 - a CloudFront distribution's `DomainName`;
 - a security group's `VpcId` (see below);
 - a subnet's `OutpostArn` / `AvailabilityZone` / `AvailabilityZoneId` /

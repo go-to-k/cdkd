@@ -64,6 +64,14 @@ const NESTED = 'AWS::CloudFormation::Stack';
 const PARAM_ARN = 'arn:aws:ssm:us-east-1:123456789012:parameter/app/p';
 const ENDPOINT = 'db1.abc.us-east-1.rds.amazonaws.com';
 const URL = 'https://abc123.lambda-url.us-east-1.on.aws/';
+/**
+ * go-to-k/cdkd#6242: a DBInstance attribute in neither the CFn schema's
+ * `readOnlyProperties` nor `PHYSICAL_ID_ATTRIBUTES`, so an unhealed miss on it
+ * stays on the warn-and-return physical-id arm (a read-only one such as
+ * `Endpoint.Address` is now refused). Vehicle for the heal-plumbing and
+ * warn-wording tests below.
+ */
+const WARN_ARM_ATTRIBUTE = 'Unmodeled.Address';
 /** A physical id whose read AWS denies (go-to-k/cdkd#4163). */
 const DENIED = 'db-denied';
 
@@ -86,7 +94,7 @@ function fakeBackend(states: Record<string, StackState>): S3StateBackend {
 /** What AWS reports for each physical id. */
 const live: Record<string, Record<string, unknown>> = {
   '/app/p': { Arn: PARAM_ARN, Type: 'String' },
-  db1: { 'Endpoint.Address': ENDPOINT, 'Endpoint.Port': '5432' },
+  db1: { 'Endpoint.Address': ENDPOINT, 'Endpoint.Port': '5432', [WARN_ARM_ATTRIBUTE]: ENDPOINT },
   [`arn:aws:lambda:us-east-1:123456789012:function:fn`]: { FunctionUrl: URL },
   // An endpoint whose live value equals a NoEcho parameter's (go-to-k/cdkd#4049).
   'db-secret': { 'Endpoint.Address': 'noecho-plain-7731' },
@@ -180,7 +188,8 @@ describe('computeStackDiff heals the resource diff and the Outputs pass (go-to-k
     expect(state.resources['Db']?.attributes).toEqual({});
   });
 
-  it('without a healer the same diff previews the physical id, so no change (the pre-fix preview)', async () => {
+  // go-to-k/cdkd#6242: the physical id is not Endpoint.Address, so the unhealed preview no longer serves it.
+  it('without a healer the same diff never previews the physical id as the endpoint (refused, so an update)', async () => {
     const { changes } = await computeStackDiff(
       dbState(),
       dbTemplate,
@@ -189,7 +198,12 @@ describe('computeStackDiff heals the resource diff and the Outputs pass (go-to-k
       fakeBackend({}),
       new DiffCalculator()
     );
-    expect(changes.get('Endpoint')?.changeType).toBe('NO_CHANGE');
+    const update = changes.get('Endpoint');
+    expect(update?.changeType).toBe('UPDATE');
+    const valueRow = update?.propertyChanges?.find((c) => c.path === 'Value');
+    expect(valueRow?.oldValue).toBe('db1');
+    expect(valueRow?.newValue).not.toBe('db1');
+    expect(valueRow?.newValue).not.toBe(ENDPOINT);
     expect(importCalls).toEqual([]);
   });
 
@@ -383,6 +397,8 @@ describe("buildDiffTree heals a nested child's Parameters against the parent's s
 
   it("heals a record in the nested child's OWN state, keyed to the child stack", async () => {
     // The child deploys through its own engine, which heals its own records.
+    // go-to-k/cdkd#6242: WARN_ARM_ATTRIBUTE, so the unhealed run still takes the
+    // physical-id fallback (NO_CHANGE) and the contrast with the heal stays.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-3456-own-'));
     try {
       const childPath = join(dir, 'child.json');
@@ -393,7 +409,7 @@ describe("buildDiffTree heals a nested child's Parameters against the parent's s
             Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
             Endpoint: {
               Type: 'AWS::SSM::Parameter',
-              Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+              Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', WARN_ARM_ATTRIBUTE] } },
             },
           },
         })
@@ -550,7 +566,7 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
           Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
           Endpoint: {
             Type: 'AWS::SSM::Parameter',
-            Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+            Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', WARN_ARM_ATTRIBUTE] } },
           },
         },
       },
@@ -576,7 +592,8 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
       isNestedChild: false,
       attributeHealerFor: healerFor(),
     });
-    // The read was issued and failed, so the row falls back to the physical id.
+    // The read was issued and failed, so the row falls back to the physical id
+    // (WARN_ARM_ATTRIBUTE stays on the warn arm under go-to-k/cdkd#6242).
     expect(importCalls).toEqual([{ logicalId: 'Db', knownPhysicalId: DENIED, stackName: 'S' }]);
     expect(node.changes.get('Endpoint')?.changeType).toBe('NO_CHANGE');
     const warned = warn.mock.calls.map((call) => String(call[0])).filter((l) => l.includes('holds no'));
@@ -603,7 +620,7 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
             Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
             Endpoint: {
               Type: 'AWS::SSM::Parameter',
-              Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+              Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', WARN_ARM_ATTRIBUTE] } },
             },
           },
         })
@@ -642,7 +659,8 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
         isNestedChild: false,
         attributeHealerFor: healerFor(),
       });
-      // The CHILD's record was read, keyed to the child stack, and failed.
+      // The CHILD's record was read, keyed to the child stack, and failed
+      // (WARN_ARM_ATTRIBUTE stays on the warn arm under go-to-k/cdkd#6242).
       expect(importCalls).toEqual([{ logicalId: 'Db', knownPhysicalId: DENIED, stackName: 'S~Child' }]);
       const child = node.children.find((c) => c.stackName === 'S~Child');
       expect(child?.changes.get('Endpoint')?.changeType).toBe('NO_CHANGE');

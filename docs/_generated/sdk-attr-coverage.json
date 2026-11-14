@@ -1,11 +1,135 @@
 {
   "schemaVersion": 1,
+  "refusedAttributes": [
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "attributes": [
+        "GraphQLEndpointArn",
+        "RealtimeUrl"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "attributes": [
+        "EvaluatorType",
+        "Provider"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "attributes": [
+        "FailureReason",
+        "LastUpdatedAt"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "attributes": [
+        "ChangeSetId",
+        "CreationTime",
+        "LastUpdateTime",
+        "Outputs",
+        "ParentId",
+        "RootId",
+        "StackStatus"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "attributes": [
+        "SnsTopicArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "attributes": [
+        "ServerlessV2PlatformVersion"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "attributes": [
+        "State"
+      ]
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "attributes": [
+        "ConfigurationEndpoint",
+        "RedisEndpoint"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "attributes": [
+        "AttachmentCount",
+        "CreateDate",
+        "IsAttachable",
+        "PermissionsBoundaryUsageCount",
+        "UpdateDate"
+      ]
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "attributes": [
+        "WarmThroughputObject"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "attributes": [
+        "SnapStartResponse"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "attributes": [
+        "Endpoint",
+        "ReadEndpoint",
+        "StorageEncryptionType"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "attributes": [
+        "AutomaticRestartTime",
+        "CertificateDetails",
+        "DBInstanceStatus",
+        "Endpoint",
+        "InstanceCreateTime",
+        "IsStorageConfigUpgradeAvailable",
+        "LatestRestorableTime",
+        "ListenerEndpoint",
+        "PercentProgress",
+        "ReadReplicaDBClusterIdentifiers",
+        "ReadReplicaDBInstanceIdentifiers",
+        "ResumeFullAutomationModeTime",
+        "SecondaryAvailabilityZone",
+        "StatusInfos",
+        "StorageOperationPercentProgress",
+        "StorageOperationStatus"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "attributes": [
+        "CreationTime"
+      ]
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "attributes": [
+        "Capacity"
+      ]
+    }
+  ],
   "summary": {
     "classifiedCount": 140,
     "covered": 67,
     "noArnAttr": 73,
     "gap": 0,
-    "knownGap": 0
+    "knownGap": 0,
+    "refused": 46
   },
   "types": [
     {

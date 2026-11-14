@@ -8240,6 +8240,14 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
   const TEMPLATE_KEY_EXPRESSIONS: ReadonlyArray<readonly [string, number, string]> = [
     // --- arm A: a template literal passed straight to .get/.set/.has/.add ---
     [
+      'src/deployment/intrinsic-resolver/getatt-refusals.ts',
+      2,
+      '`${resourceType}.${attributeName}` membership in the closed, hand-measured ' +
+        'PHYSICAL_ID_ATTRIBUTES / CFN_REJECTED_GETATT_ATTRIBUTES sets (go-to-k/cdkd#6242); ' +
+        'injective, since a resource type holds no `.`, and only a membership test, never ' +
+        'a key anything is stored under',
+    ],
+    [
       'src/cli/commands/drift/revert-merge.ts',
       2,
       'sets of RENDERED report paths; nothing is SERVED by these, they only ' +

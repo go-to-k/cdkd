@@ -2140,7 +2140,7 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
     expect(addr).toBe('my-cluster.cluster-abc.us-east-1.rds.amazonaws.com');
   });
 
-  it('falls back to constructAttribute (physicalId default) when neither flat nor nested matches', async () => {
+  it('falls through to the physical-id fallback, which refuses a read-only attribute, when neither flat nor nested matches', async () => {
     const template: CloudFormationTemplate = {
       Resources: { Cluster: { Type: 'AWS::RDS::DBCluster', Properties: {} } },
     };
@@ -2158,10 +2158,19 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
     };
 
     // Endpoint not in attributes, RDS DBCluster constructAttribute falls
-    // through to physicalId for non-Arn attributes — this is the
-    // pre-#381 behavior preserved as last-resort fallback.
-    const port = await resolver.resolve({ 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] }, context);
-    expect(port).toBe('my-cluster');
+    // through to the physical-id fallback — which, go-to-k/cdkd#6242, now
+    // refuses a CFn read-only attribute (Endpoint) instead of serving the id.
+    const error = await resolver
+      .resolve({ 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] }, context)
+      .then(
+        (value: unknown) => ({ served: value }),
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain('Cannot resolve Fn::GetAtt [Cluster, Endpoint.Port]');
+    expect((error as Error).message).toContain('is not the value CloudFormation returns');
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
   });
 
   it('walks 3+ nested levels (defense-in-depth for deeper CFn shapes)', async () => {
@@ -4176,7 +4185,8 @@ describe('IntrinsicFunctionResolver - AWS::RDS::DBProxy / DBProxyEndpoint VpcId 
     resetAccountInfoCache();
   });
 
-  it('leaves every other DBProxy attribute on the generic fallback (Endpoint warns and answers the name)', async () => {
+  // go-to-k/cdkd#6242: a recordless Endpoint is refused by the read-only guard, not served as the name.
+  it('leaves every other DBProxy attribute to the generic fallback (Endpoint is refused there, not answered with the name)', async () => {
     const context: ResolverContext = {
       template: { Resources: { Proxy: { Type: 'AWS::RDS::DBProxy', Properties: {} } } },
       resources: {
@@ -4189,12 +4199,19 @@ describe('IntrinsicFunctionResolver - AWS::RDS::DBProxy / DBProxyEndpoint VpcId 
         },
       },
     };
-    // `Endpoint` carries no shape the fallback can refuse on, so it takes
-    // the warn-and-return arm — the VpcId refusal must not widen to it.
-    expect(await resolver.resolve({ 'Fn::GetAtt': ['Proxy', 'Endpoint'] }, context)).toBe(
-      'my-proxy'
+    // `Endpoint` reaches the generic fallback (the VpcId refusal must not
+    // widen to it), whose read-only-attribute guard refuses it.
+    const refusal = await resolver.resolve({ 'Fn::GetAtt': ['Proxy', 'Endpoint'] }, context).then(
+      (value: unknown) => ({ served: value }),
+      (e: unknown) => e
     );
-    expect(resolver.getPhysicalIdFallbackCount()).toBe(1);
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(isMarkedNonRetryable(refusal)).toBe(true);
+    const message = (refusal as Error).message;
+    expect(message).toContain('Cannot resolve Fn::GetAtt [Proxy, Endpoint] for AWS::RDS::DBProxy');
+    expect(message).toContain('cdkd does not record it for this resource type');
+    expect(message).not.toContain('VpcId');
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
   });
 
   for (const [resourceType, physicalId] of [
