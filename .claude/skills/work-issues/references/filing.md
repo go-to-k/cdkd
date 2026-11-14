@@ -11,8 +11,9 @@ the same ROOT CAUSE, not the same AREA: does one sentence describe the fix at
 every site? A residue is `next` only on external input
 (`.claude/rules/session-report.md`'s reason (a); never (b), its files being
 loaded) — then file an umbrella naming every site, and say which this lane DID
-close. **NOT external input**: an umbrella already owning the population, "a
-different shape", a scope-creep trip, or a file shared with another code path —
+close. **NOT external input**: an umbrella already owning the population, a
+fix, release or bump in go-to-k/cdk-local (maintained in-session, not
+upstream; cdk-local#962, #967), "a different shape", a scope-creep trip, or a file shared with another code path —
 each is a SEPARATE PR, still `now`. Lines an open PR this session did not open
 holds (triage.md §2) ARE (a), and are not this PR's to edit: before a sweep
 touches a file the claim did not name, ask LIVE, then read the hit's

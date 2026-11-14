@@ -149,8 +149,9 @@ never reaches you. **Name the parent's `SendMessage` address, `main`** (a guesse
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
 Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
 `completed`, or running with a frozen tool count and its PR green (#5593); ask
-any lane silent past 30 min what is pending plus an ETA, and relay that to
-the user unasked (#6068). A lane reporting "CI pending": read
+any lane silent past 30 min what is pending plus an ETA, saying "reply, then
+continue — this is not a handback" (a bare ETA ask stopped two lanes with
+unpushed commits, #6282), and relay that to the user unasked (#6068). A lane reporting "CI pending": read
 `gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
 (#6110). Read
 a completion when it arrives, and check the PR and tree before believing it.
