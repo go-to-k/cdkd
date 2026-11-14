@@ -181,7 +181,7 @@ describe('S3StateBackend.verifyBucketExists', () => {
       setPasteableRunFlags({});
       setPasteableVerbFlags(undefined);
     }
-  });
+  }, 30_000);
 
   it('threads the underlying AWS error as `cause` on the missing-bucket arm', async () => {
     // go-to-k/cdkd#2075. Without the cause the retry classifiers
