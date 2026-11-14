@@ -53,6 +53,8 @@ function flattenSource(source: string): string {
       .replace(/\$\{\s*(['"`])([^'"`]*)\1\s*\}/g, '$2')
       // 'a ' + 'b', across line breaks -> a b
       .replace(/(['"`])\s*\+\s*(['"`])/g, '')
+      // 'a ' + safeMsg`b` -> a b (a literal joined to a TAGGED template)
+      .replace(/(['"`])\s*\+\s*[A-Za-z_]\w*`/g, '')
       // an escaped newline inside a literal reads as the break it prints
       .replace(/\\n/g, ' ')
       .replace(/\s+/g, ' ')
@@ -86,12 +88,13 @@ const REMEDY_VERB =
  * reaches real AWS.
  */
 const REMEDY_LITERAL = new RegExp(
-  `(?:\\b(?i:run|re-run|rerun|retry|try|use|with|via|then|inspect|check|or)|[:?,/]|(?:^|\\s)-)` +
+  `(?:\\b(?:run|re-run|rerun|retry|try|use|with|via|then|inspect|check|or)|[:?,/]|(?:^|\\s)-)` +
     `\\s+(?:\\\\?[\`'"])?cdkd ${REMEDY_VERB}\\b` +
     // A command spelled with a flag or an interpolated argument is one to run
     // whatever word precedes it (`records it for \`cdkd rollback --revert-failed\``).
     `|cdkd ${REMEDY_VERB}(?= --[a-z]| \\$\\{)`,
-  'g'
+  // `i` for the cue's case (`RE-RUN`); not the `(?i:)` modifier, which needs Node 23+.
+  'gi'
 );
 
 /**
@@ -364,6 +367,8 @@ describe('the verb table is read off the real Commander tree', () => {
       "const a = { instead: 'cdkd local start-api x' };",
       // a ternary arm
       "const c = x ? 'cdkd state destroy' : y;",
+      // a literal joined to a TAGGED template after the cue
+      "const a = `then re-run ` + safeMsg`'cdkd deploy' to resume ${x}`;",
       // a flag-carrying or interpolated command after any word
       "const a = 'the journal records it for `cdkd rollback --revert-failed`.';",
       'const a = `confirm, and cdkd drift ${id} shows it`;',

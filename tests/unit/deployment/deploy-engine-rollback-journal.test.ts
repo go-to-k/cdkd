@@ -9,7 +9,8 @@ import { buildProgram } from '../../../src/cli/program.js';
 import {
   setPasteableRunFlags,
   setPasteableVerbFlags,
-} from '../../../src/utils/pasteable-run-context.js';import {
+} from '../../../src/utils/pasteable-run-context.js';
+import {
   withSkipPrefix,
   withStackScope,
   generateResourceName,
