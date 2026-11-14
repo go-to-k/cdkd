@@ -65,6 +65,25 @@ vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOrigin
   };
 });
 
+// One case below has the check's masked-value prediction miss: a row it
+// would defer is forced instead. Every other case runs the real check.
+const { prediction } = vi.hoisted(() => ({ prediction: { misses: false } }));
+vi.mock('../../../src/deployment/nested-ssm-name-check.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/deployment/nested-ssm-name-check.js')>();
+  return {
+    ...real,
+    checkNestedSsmNames: async (...args: Parameters<typeof real.checkNestedSsmNames>) => {
+      const result = await real.checkNestedSsmNames(...args);
+      if (!prediction.misses || result === undefined) return result;
+      return {
+        ...result,
+        forcedRows: new Set([...result.forcedRows, ...result.deferredRows]),
+        deferredRows: new Set<string>(),
+      };
+    },
+  };
+});
+
 const SSM = 'AWS::SSM::Parameter';
 const NESTED = 'AWS::CloudFormation::Stack';
 const PARENT = 'P';
@@ -355,6 +374,7 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
 
   beforeEach(() => {
     adoption.fake = undefined;
+    prediction.misses = false;
     childCheckFinishes = true;
     childHeals = true;
     runChildEngine = undefined;
@@ -518,25 +538,11 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
     expect(savedStates().at(-1)?.nestedSsmNamesChecked).toBe(true);
   });
 
-  it('defers, names and still marks a row whose Parameters read a masked value', async () => {
-    // Updating it would reach the #2274 redacted-read refusal and fail a
-    // deploy of a stack nobody changed; CloudFormation deploys it as a no-op.
+  const maskedReaderCase = (): CloudFormationTemplate => {
     fs.writeFileSync(path.join(dir, 'other.json'), JSON.stringify(ssmTemplate()));
     nestedTemplates = { ...nestedTemplates, Other: path.join(dir, 'other.json') };
     const child = childClean();
     child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
-    const template: CloudFormationTemplate = {
-      Resources: {
-        Other: { Type: NESTED, Properties: { TemplateURL: 'https://s3.amazonaws.com/assets/o.json' } },
-        Child: {
-          Type: NESTED,
-          Properties: {
-            TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
-            Parameters: { In: { 'Fn::GetAtt': ['Other', 'Outputs.Secret'] } },
-          },
-        },
-      },
-    };
     records = {
       [PARENT]: stateOf(PARENT, {
         Other: {
@@ -558,6 +564,37 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
       [CHILD]: child,
       [GRAND]: grandClean(),
     };
+    return {
+      Resources: {
+        Other: { Type: NESTED, Properties: { TemplateURL: 'https://s3.amazonaws.com/assets/o.json' } },
+        Child: {
+          Type: NESTED,
+          Properties: {
+            TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
+            Parameters: { In: { 'Fn::GetAtt': ['Other', 'Outputs.Secret'] } },
+          },
+        },
+      },
+    };
+  };
+
+  it('skips, warns and does not mark when a forced row reads a masked value the check did not predict', async () => {
+    // Without the skip, the #2274 redacted-read refusal would fail a deploy
+    // of a stack nobody changed.
+    const template = maskedReaderCase();
+    prediction.misses = true;
+    await deploy(template);
+    expect(childUpdates()).toHaveLength(0);
+    expect(logged.some((m) => m.includes('Child: the nested stack is not updated') && m.includes('#6282'))).toBe(
+      true
+    );
+    expect(savedStates().some((s) => s.nestedSsmNamesChecked === true)).toBe(false);
+  });
+
+  it('defers, names and still marks a row whose Parameters read a masked value', async () => {
+    // Updating it would reach the #2274 redacted-read refusal and fail a
+    // deploy of a stack nobody changed; CloudFormation deploys it as a no-op.
+    const template = maskedReaderCase();
     await deploy(template);
     expect(childUpdates()).toHaveLength(0);
     expect(logged.some((m) => m.includes('Nested stack Child') && m.includes('stores masked'))).toBe(true);

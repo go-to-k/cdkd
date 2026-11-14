@@ -189,17 +189,32 @@ export async function provisionUpdate(
     await readOnce();
   }
   // What both no-change skips below require. go-to-k/cdkd#6282: a nested-stack
-  // row updated for its child's engine to run is never skipped (the check
-  // defers a row whose record holds a masked value, so none reaches the
-  // redacted-read refusal below only because of it).
-  const mayTakeNoChangeSkip =
+  // row updated only for its child's engine to run is not skipped (the check
+  // defers a row whose record holds a masked value, so none should reach the
+  // redacted-read refusal below only because of it)...
+  const unchangedApartFromHeal =
     !typeChanged &&
     lostChild === undefined &&
-    change.nestedChildHeal !== true &&
     recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
     unsettledNames.size === 0;
-  if (mayTakeNoChangeSkip && !suppliesFreshMaskOnlyValue) {
+  const mayTakeNoChangeSkip = unchangedApartFromHeal && change.nestedChildHeal !== true;
+  // ...unless it reads a redacted value all the same (the check's prediction
+  // missed): sending it would take the #2274 refusal below, failing a deploy
+  // of a stack nobody changed. It is skipped instead, and the parent's record
+  // stays unmarked (`forcedChildrenChecked` finds the child unhealed), so the
+  // next deploy checks it again.
+  const healRowReadsRedacted =
+    change.nestedChildHeal === true &&
+    unchangedApartFromHeal &&
+    !suppliesFreshMaskOnlyValue &&
+    (context.redactedAttributeReads?.length ?? 0) > 0;
+  if (healRowReadsRedacted) {
+    engine.logger.warn(
+      safeMsg`${logicalId}: the nested stack is not updated to re-spell its SSM parameter name (go-to-k/cdkd#6282): its Parameters read a value cdkd stores masked. It is re-spelled by the next deploy that changes this nested stack.`
+    );
+  }
+  if ((mayTakeNoChangeSkip && !suppliesFreshMaskOnlyValue) || healRowReadsRedacted) {
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
     // value now records the versions it was served (the save persists it).
     if (provenanceUnchanged.length > 0) {
