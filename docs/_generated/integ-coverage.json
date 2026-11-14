@@ -1243,6 +1243,7 @@
         "docdb-global-cluster",
         "docdb-neptune",
         "docdb-restore",
+        "getatt-rds-docdb-attributes",
         "lambda-esm-documentdb"
       ],
       "signals": {
@@ -1260,6 +1261,10 @@
           "l1",
           "literal"
         ],
+        "getatt-rds-docdb-attributes": [
+          "l1",
+          "literal"
+        ],
         "lambda-esm-documentdb": [
           "l1",
           "literal"
@@ -1271,6 +1276,7 @@
       "integs": [
         "docdb-fix-forward-orphan",
         "docdb-neptune",
+        "getatt-rds-docdb-attributes",
         "lambda-esm-documentdb"
       ],
       "signals": {
@@ -1278,6 +1284,9 @@
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l1"
         ],
         "lambda-esm-documentdb": [
@@ -1293,6 +1302,7 @@
         "docdb-global-cluster",
         "docdb-neptune",
         "docdb-restore",
+        "getatt-rds-docdb-attributes",
         "lambda-esm-documentdb"
       ],
       "signals": {
@@ -1306,6 +1316,9 @@
           "l1"
         ],
         "docdb-restore": [
+          "l1"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l1"
         ],
         "lambda-esm-documentdb": [
@@ -3209,6 +3222,7 @@
         "fsx-windows",
         "generated-name-lifecycle",
         "getatt-asg-arn-rule-name",
+        "getatt-rds-docdb-attributes",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -3395,6 +3409,9 @@
         ],
         "getatt-asg-arn-rule-name": [
           "l2"
+        ],
+        "getatt-rds-docdb-attributes": [
+          "l1"
         ],
         "getatt-vpc-managed-policy": [
           "l2"
@@ -3898,6 +3915,7 @@
         "generated-name-lifecycle",
         "generated-name-security-group",
         "getatt-asg-arn-rule-name",
+        "getatt-rds-docdb-attributes",
         "getatt-vpc-managed-policy",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
@@ -4102,6 +4120,9 @@
         ],
         "getatt-asg-arn-rule-name": [
           "l2"
+        ],
+        "getatt-rds-docdb-attributes": [
+          "l1"
         ],
         "getatt-vpc-managed-policy": [
           "l2",
@@ -5806,6 +5827,7 @@
         "gc-custom-asset-names",
         "generated-name-lifecycle",
         "getatt-iam-waf-s3vectors-evaluator",
+        "getatt-rds-docdb-attributes",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -6020,6 +6042,9 @@
           "literal"
         ],
         "getatt-iam-waf-s3vectors-evaluator": [
+          "l2"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l2"
         ],
         "glue-update-hardening": [
@@ -6687,6 +6712,7 @@
         "gc-custom-asset-names",
         "generated-name-lifecycle",
         "getatt-iam-waf-s3vectors-evaluator",
+        "getatt-rds-docdb-attributes",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -6914,6 +6940,9 @@
           "literal"
         ],
         "getatt-iam-waf-s3vectors-evaluator": [
+          "l2"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l2"
         ],
         "iam-propagation-stress": [
@@ -7417,6 +7446,7 @@
         "fsx-lustre",
         "full-stack-demo",
         "generated-name-lifecycle",
+        "getatt-rds-docdb-attributes",
         "glue-update-hardening",
         "local-start-alb-from-state",
         "log-pipeline",
@@ -7507,6 +7537,9 @@
         "generated-name-lifecycle": [
           "l2",
           "literal"
+        ],
+        "getatt-rds-docdb-attributes": [
+          "l2"
         ],
         "glue-update-hardening": [
           "l1"
@@ -7685,6 +7718,7 @@
       "resourceType": "AWS::RDS::DBCluster",
       "integs": [
         "cc-final-snapshot-handlers",
+        "getatt-rds-docdb-attributes",
         "import-attribute-readback-final",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -7695,6 +7729,10 @@
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
+          "l1",
+          "literal"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l1",
           "literal"
         ],
@@ -7728,6 +7766,7 @@
     {
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
+        "getatt-rds-docdb-attributes",
         "rds-aurora",
         "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
@@ -7740,6 +7779,10 @@
         "rds-full-stack"
       ],
       "signals": {
+        "getatt-rds-docdb-attributes": [
+          "l1",
+          "literal"
+        ],
         "rds-aurora": [
           "l1",
           "l2"
@@ -7794,6 +7837,7 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "cc-final-snapshot-handlers",
+        "getatt-rds-docdb-attributes",
         "import-attribute-readback-final",
         "list-parameters",
         "rds-aurora",
@@ -7811,6 +7855,9 @@
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
+          "l1"
+        ],
+        "getatt-rds-docdb-attributes": [
           "l1"
         ],
         "import-attribute-readback-final": [

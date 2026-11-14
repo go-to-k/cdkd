@@ -31,6 +31,7 @@ import {
 } from '../stale-attribute-heal.js';
 import { describeFailureObserved } from './getatt-refusals.js';
 import { constructAttribute, noteAttributeSecrecy } from './getatt.js';
+import { assembleFlatObjectAttribute } from './getatt/flat-object-attributes.js';
 
 /**
  * The remedy half of a STALE-RECORD refusal (issue
@@ -215,10 +216,17 @@ export async function healStaleAttributes(
 export function usableHealedAttribute(
   _resolver: IntrinsicFunctionResolver,
   outcome: StaleAttributeHealOutcome | undefined,
-  attributeName: string
+  attributeName: string,
+  resourceType?: string
 ): unknown {
   if (outcome?.kind !== 'read') return undefined;
-  const value = readHealedAttribute(outcome.attributes, attributeName);
+  // go-to-k/cdkd#6242: an object the record serves by assembling flat members
+  // (`assembleFlatObjectAttribute`) is assembled from the read the same way.
+  const value =
+    readHealedAttribute(outcome.attributes, attributeName) ??
+    (resourceType === undefined
+      ? undefined
+      : assembleFlatObjectAttribute(resourceType, attributeName, outcome.attributes));
   return value === undefined || carriesSecretMask(value) ? undefined : value;
 }
 
@@ -293,7 +301,7 @@ export async function constructWithStaleRecordHeal(
   const outcome = (await healStaleAttributes(resolver, logicalId, resource, context)) ?? {
     kind: 'not-attempted' as const,
   };
-  const healed = usableHealedAttribute(resolver, outcome, attributeName);
+  const healed = usableHealedAttribute(resolver, outcome, attributeName, resource.resourceType);
   if (healed !== undefined) {
     return serveHealedAttribute(resolver, logicalId, attributeName, healed, context);
   }

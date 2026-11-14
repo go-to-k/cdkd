@@ -59,6 +59,12 @@ const input = (resourceType: string) => ({
   knownPhysicalId: 'mydb',
 });
 
+const RDS_READ_ONLY_LISTS = {
+  ReadReplicaDBInstanceIdentifiers: [],
+  ReadReplicaDBClusterIdentifiers: [],
+  StatusInfos: [],
+};
+
 describe.each(CASES)('%s import() attributes (#1852 / #3077)', (resourceType, make, send) => {
   beforeEach(() => {
     send.mockReset();
@@ -90,6 +96,10 @@ describe.each(CASES)('%s import() attributes (#1852 / #3077)', (resourceType, ma
           Endpoint: 'mydb.abc.us-east-1.rds.amazonaws.com',
           Port: '5432',
         }),
+        // An RDS instance also records its status lists and, read
+        // `available`, its status (go-to-k/cdkd#6242).
+        ...(resourceType === 'AWS::RDS::DBInstance' && RDS_READ_ONLY_LISTS),
+        ...(resourceType === 'AWS::RDS::DBInstance' && { DBInstanceStatus: 'available' }),
       },
     });
     expect(send).toHaveBeenCalledTimes(1);
@@ -108,7 +118,11 @@ describe.each(CASES)('%s import() attributes (#1852 / #3077)', (resourceType, ma
 
     const result = await make().import(input(resourceType));
 
-    expect(result?.attributes).toEqual({ Arn: 'arn:aws:rds:us-east-1:111122223333:db:mydb' });
+    // The `creating` status is not recorded (go-to-k/cdkd#6242).
+    expect(result?.attributes).toEqual({
+      Arn: 'arn:aws:rds:us-east-1:111122223333:db:mydb',
+      ...(resourceType === 'AWS::RDS::DBInstance' && RDS_READ_ONLY_LISTS),
+    });
     expect(Object.hasOwn(result!.attributes!, 'Endpoint.Address')).toBe(false);
     expect(Object.hasOwn(result!.attributes!, 'Endpoint.Port')).toBe(false);
   });

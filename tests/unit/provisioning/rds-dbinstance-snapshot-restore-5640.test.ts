@@ -907,3 +907,24 @@ describe('RDS DBInstance snapshot restore (go-to-k/cdkd#5640)', () => {
     );
   });
 });
+
+// go-to-k/cdkd#6242: a restore waits for `available` under --no-wait too, so
+// the create that waited records the settled status.
+describe('RDS DBInstance snapshot restore under --no-wait records the status it waited for (#6242)', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    warn.mockReset();
+    arm();
+  });
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  it('records DBInstanceStatus from the waited restore', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    const provider = new RDSProvider();
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
+    const result = await provider.create('L', INSTANCE, { ...FROM_SNAPSHOT });
+    expect(result.attributes?.['DBInstanceStatus']).toBe('available');
+  });
+});

@@ -352,7 +352,7 @@ export function clusterPortToSend(
 /**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
  * CloudFormation's `Fn::GetAtt` names (`Endpoint`, `Port`, `ReadEndpoint`,
- * `ClusterResourceId`). The RDS-style dotted keys (`Endpoint.Address`, ...)
+ * `ClusterResourceId`, `ServerlessV2PlatformVersion`). The RDS-style dotted keys (`Endpoint.Address`, ...)
  * are kept for records and readers that already use them; no
  * `Fn::GetAtt` names them for this service, so on their own they left
  * `Fn::GetAtt [Cluster, Endpoint]` resolving to the cluster identifier.
@@ -365,6 +365,7 @@ export function clusterAttributes(
         ReaderEndpoint?: string | undefined;
         DBClusterArn?: string | undefined;
         DbClusterResourceId?: string | undefined;
+        ServerlessV2PlatformVersion?: string | undefined;
       }
     | undefined
 ): Record<string, unknown> {
@@ -377,6 +378,9 @@ export function clusterAttributes(
     'ReadEndpoint.Address': cluster?.ReaderEndpoint,
     Arn: cluster?.DBClusterArn,
     ClusterResourceId: cluster?.DbClusterResourceId,
+    // go-to-k/cdkd#6242: reported for a serverless v2 cluster only; absent
+    // otherwise, where CloudFormation refuses the attribute too.
+    ServerlessV2PlatformVersion: cluster?.ServerlessV2PlatformVersion,
   });
 }
 

@@ -2691,7 +2691,8 @@
         "DBClusterResourceId",
         "Endpoint.Address",
         "Endpoint.Port",
-        "ReadEndpoint.Address"
+        "ReadEndpoint.Address",
+        "StorageEncryptionType"
       ],
       "attributes": [
         {
@@ -2712,7 +2713,7 @@
         },
         {
           "name": "StorageEncryptionType",
-          "status": "gap"
+          "status": "enriched"
         },
         {
           "name": "StorageThroughput",
@@ -2721,7 +2722,6 @@
       ],
       "gaps": [
         "DBClusterArn",
-        "StorageEncryptionType",
         "StorageThroughput"
       ]
     },
@@ -2749,92 +2749,22 @@
         "StorageOperationPercentProgress",
         "StorageOperationStatus"
       ],
-      "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "AutomaticRestartTime",
-          "status": "gap"
-        },
-        {
-          "name": "CertificateDetails",
-          "status": "gap"
-        },
-        {
-          "name": "DBInstanceArn",
-          "status": "gap"
-        },
-        {
-          "name": "DBInstanceStatus",
-          "status": "gap"
-        },
-        {
-          "name": "DbiResourceId",
-          "status": "gap"
-        },
-        {
-          "name": "Endpoint",
-          "status": "gap"
-        },
-        {
-          "name": "InstanceCreateTime",
-          "status": "gap"
-        },
-        {
-          "name": "IsStorageConfigUpgradeAvailable",
-          "status": "gap"
-        },
-        {
-          "name": "LatestRestorableTime",
-          "status": "gap"
-        },
-        {
-          "name": "ListenerEndpoint",
-          "status": "gap"
-        },
-        {
-          "name": "PercentProgress",
-          "status": "gap"
-        },
-        {
-          "name": "ReadReplicaDBClusterIdentifiers",
-          "status": "gap"
-        },
-        {
-          "name": "ReadReplicaDBInstanceIdentifiers",
-          "status": "gap"
-        },
-        {
-          "name": "ResumeFullAutomationModeTime",
-          "status": "gap"
-        },
-        {
-          "name": "SecondaryAvailabilityZone",
-          "status": "gap"
-        },
-        {
-          "name": "StatusInfos",
-          "status": "gap"
-        },
-        {
-          "name": "StorageOperationPercentProgress",
-          "status": "gap"
-        },
-        {
-          "name": "StorageOperationStatus",
-          "status": "gap"
-        }
-      ],
-      "gaps": [
+      "enrichedKeys": [
+        "Arn",
         "AutomaticRestartTime",
-        "CertificateDetails",
-        "DBInstanceArn",
+        "CertificateDetails.CAIdentifier",
+        "CertificateDetails.ValidTill",
         "DBInstanceStatus",
         "DbiResourceId",
-        "Endpoint",
+        "Endpoint.Address",
+        "Endpoint.HostedZoneId",
+        "Endpoint.Port",
         "InstanceCreateTime",
         "IsStorageConfigUpgradeAvailable",
         "LatestRestorableTime",
-        "ListenerEndpoint",
+        "ListenerEndpoint.Address",
+        "ListenerEndpoint.HostedZoneId",
+        "ListenerEndpoint.Port",
         "PercentProgress",
         "ReadReplicaDBClusterIdentifiers",
         "ReadReplicaDBInstanceIdentifiers",
@@ -2843,6 +2773,83 @@
         "StatusInfos",
         "StorageOperationPercentProgress",
         "StorageOperationStatus"
+      ],
+      "attributes": [
+        {
+          "name": "AutomaticRestartTime",
+          "status": "enriched"
+        },
+        {
+          "name": "CertificateDetails",
+          "status": "enriched"
+        },
+        {
+          "name": "DBInstanceArn",
+          "status": "gap"
+        },
+        {
+          "name": "DBInstanceStatus",
+          "status": "enriched"
+        },
+        {
+          "name": "DbiResourceId",
+          "status": "enriched"
+        },
+        {
+          "name": "Endpoint",
+          "status": "enriched"
+        },
+        {
+          "name": "InstanceCreateTime",
+          "status": "enriched"
+        },
+        {
+          "name": "IsStorageConfigUpgradeAvailable",
+          "status": "enriched"
+        },
+        {
+          "name": "LatestRestorableTime",
+          "status": "enriched"
+        },
+        {
+          "name": "ListenerEndpoint",
+          "status": "enriched"
+        },
+        {
+          "name": "PercentProgress",
+          "status": "enriched"
+        },
+        {
+          "name": "ReadReplicaDBClusterIdentifiers",
+          "status": "enriched"
+        },
+        {
+          "name": "ReadReplicaDBInstanceIdentifiers",
+          "status": "enriched"
+        },
+        {
+          "name": "ResumeFullAutomationModeTime",
+          "status": "enriched"
+        },
+        {
+          "name": "SecondaryAvailabilityZone",
+          "status": "enriched"
+        },
+        {
+          "name": "StatusInfos",
+          "status": "enriched"
+        },
+        {
+          "name": "StorageOperationPercentProgress",
+          "status": "enriched"
+        },
+        {
+          "name": "StorageOperationStatus",
+          "status": "enriched"
+        }
+      ],
+      "gaps": [
+        "DBInstanceArn"
       ]
     },
     {

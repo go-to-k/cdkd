@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   parseEnrichmentSwitch,
+  importedHelperKeys,
   readEnrichmentSwitch,
   loadEnrichmentSwitch,
   latentGapMessage,
@@ -371,5 +372,57 @@ describe('ENRICHMENT_ALLOW_LIST seed', () => {
     const entry = ENRICHMENT_ALLOW_LIST.get('AWS::Elasticsearch::Domain');
     expect(entry).toBeDefined();
     expect(entry?.rationale).toMatch(/non-provisionable/i);
+  });
+});
+
+// go-to-k/cdkd#6242: a case that records through the SDK provider's helper
+// (`Object.assign(enriched, helper(...))`) is credited with the helper's keys.
+describe('enrichment through a shared attribute helper (#6242)', () => {
+  const wrap = (body: string): string => `
+    export async function enrichResourceAttributes(resourceType, physicalId, attributes) {
+      const enriched = { ...attributes };
+      switch (resourceType) {
+        ${body}
+        default:
+          break;
+      }
+      return enriched;
+    }
+  `;
+
+  it('credits the keys the helper returns', () => {
+    const map = parseEnrichmentSwitch(
+      wrap(`case 'AWS::X::Y': Object.assign(enriched, helper(r)); break;`),
+      'enrich.ts',
+      (name) => (name === 'helper' ? new Set(['A', 'B.C']) : undefined)
+    );
+    expect(map.get('AWS::X::Y')).toEqual(new Set(['A', 'B.C']));
+  });
+
+  it('fails loudly when the helper keys cannot be read', () => {
+    expect(() =>
+      parseEnrichmentSwitch(wrap(`case 'AWS::X::Y': Object.assign(enriched, other(r)); break;`))
+    ).toThrow(/cannot read the keys other\(\) records/);
+  });
+
+  it('reads the real RDS helpers through their imports', () => {
+    const { byType } = loadEnrichmentSwitch();
+    expect(byType.get('AWS::RDS::DBCluster')).toEqual(
+      // The computed express-writer key is cdkd's own, not a GetAtt name.
+      new Set([
+        'Endpoint.Address',
+        'Endpoint.Port',
+        'ReadEndpoint.Address',
+        'Arn',
+        'DBClusterResourceId',
+        'StorageEncryptionType',
+      ])
+    );
+    expect(byType.get('AWS::RDS::DBInstance')).toContain('DBInstanceStatus');
+    expect(byType.get('AWS::RDS::DBInstance')).toContain('Endpoint.HostedZoneId');
+  });
+
+  it('answers undefined for a name that is not a relative import', () => {
+    expect(importedHelperKeys(`import { x } from 'pkg';`, 'enrich.ts', 'x')).toBeUndefined();
   });
 });

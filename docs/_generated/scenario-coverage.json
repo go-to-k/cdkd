@@ -1378,6 +1378,11 @@
       "scenarios": []
     },
     {
+      "name": "getatt-rds-docdb-attributes",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-vpc-managed-policy",
       "annotated": false,
       "scenarios": []
@@ -3883,6 +3888,7 @@
     "getatt-cloudtrail-appsync",
     "getatt-fallback-guard",
     "getatt-iam-waf-s3vectors-evaluator",
+    "getatt-rds-docdb-attributes",
     "getatt-vpc-managed-policy",
     "globaltable-fix-forward-orphan",
     "globaltable-template-baseline-drift",
