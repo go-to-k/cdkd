@@ -349,7 +349,8 @@ grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_ROLE}" || {
   exit 1
 }
 # Issue #6307: the SSM read runs as the CALLER, never the role, whose policy
-# grants nothing on SSM (lib/local-invoke-from-state-stack.ts).
+# grants nothing on SSM (lib/local-invoke-from-state-stack.ts; the denial is
+# proven by the step-4i control below).
 grep -qF "\"paramValue\":\"${SSM_PARAMETER_VALUE}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: expected PARAM_VALUE=${SSM_PARAMETER_VALUE} under --from-state --role-arn (#6307), got: ${RESULT_ROLE}"
   exit 1
@@ -473,7 +474,7 @@ grep -q '"importedSecret":"local-override-2056"' <<<"${RESULT_SECRET_OVR}" || {
 # Negative control for 4i: the role really cannot touch the secret, so 4i
 # resolving it proves the lookup did not run as the role. DescribeSecret, not a
 # value read: the probe needs the denial, never the plaintext.
-echo "[verify] step 4i-control: <LocalReadRole> is denied on the secret"
+echo "[verify] step 4i-control: <LocalReadRole> is denied on the secret (and on the #6307 SSM parameter)"
 ROLE_CREDS="$(aws sts assume-role --role-arn "${READ_ROLE_ARN}" --role-session-name cdkd-2056-control \
   --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)"
 read -r CTL_AKID CTL_SECRET CTL_TOKEN <<< "${ROLE_CREDS}"
@@ -490,6 +491,21 @@ if control_err="$(
 fi
 grep -q 'AccessDenied' <<<"${control_err}" || {
   echo "[verify] FAIL: the 4i control failed for a reason other than AccessDenied: ${control_err}"
+  exit 1
+}
+# Issue #6307's control for step 4e: the role cannot read the SSM parameter
+# either, so PARAM_VALUE resolving under --role-arn proved the read ran as the
+# caller.
+if control_err="$(
+  unset AWS_PROFILE
+  export AWS_ACCESS_KEY_ID="${CTL_AKID}" AWS_SECRET_ACCESS_KEY="${CTL_SECRET}" AWS_SESSION_TOKEN="${CTL_TOKEN}"
+  aws ssm get-parameters --names "${SSM_PARAMETER_NAME}" --region "${REGION}" 2>&1 >/dev/null
+)"; then
+  echo "[verify] FAIL: the 4e role CAN read ${SSM_PARAMETER_NAME}, so 4e would not tell the caller from the role"
+  exit 1
+fi
+grep -q 'AccessDenied' <<<"${control_err}" || {
+  echo "[verify] FAIL: the #6307 control failed for a reason other than AccessDenied: ${control_err}"
   exit 1
 }
 unset ROLE_CREDS CTL_AKID CTL_SECRET CTL_TOKEN
