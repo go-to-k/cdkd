@@ -130,7 +130,9 @@ function containerArgvElements(c: Record<string, unknown>): unknown[] {
   const lists = [
     c['Command'],
     c['EntryPoint'],
-    health && typeof health === 'object' ? (health as Record<string, unknown>)['Command'] : undefined,
+    health && typeof health === 'object'
+      ? (health as Record<string, unknown>)['Command']
+      : undefined,
   ];
   return lists.flatMap((l) => (Array.isArray(l) ? (l as unknown[]) : []));
 }

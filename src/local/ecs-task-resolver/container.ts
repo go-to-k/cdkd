@@ -41,12 +41,7 @@ export function parseContainerDefinition(
   // The CLI refuses the run via `assertEcsTaskCommandsResolved` once the
   // cross-stack post-pass has had its chance at the element.
   const unresolvedCommandElements: UnresolvedCommandElement[] = [];
-  const command = resolveArgvArray(
-    c['Command'],
-    'Command',
-    subContext,
-    unresolvedCommandElements
-  );
+  const command = resolveArgvArray(c['Command'], 'Command', subContext, unresolvedCommandElements);
   const entryPoint = resolveArgvArray(
     c['EntryPoint'],
     'EntryPoint',
