@@ -41,6 +41,7 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
+import { withTemplateDependencies } from './record-shape.js';
 import { provisionResource } from './provision.js';
 import { retiredNameGenerationsAfter } from '../../state/name-generation.js';
 import { type ReportedCreateToSettle, recordUnsettledMarks } from './execute/helpers.js';
@@ -613,6 +614,11 @@ export async function executeDeployment(
     );
     throw outputError;
   }
+
+  // go-to-k/cdkd#6308: a record no provider call rewrote (a NO_CHANGE row, a
+  // DependsOn-only change) takes today's dependencies, so destroy orders by
+  // the template this deploy left in place. Success only: see the helper.
+  Object.assign(newResources, withTemplateDependencies(newResources, template));
 
   return {
     state: {

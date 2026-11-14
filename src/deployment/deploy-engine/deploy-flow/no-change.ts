@@ -29,6 +29,7 @@ import {
   readRecordedConditionVerdicts,
 } from '../../condition-verdicts.js';
 import { buildDisplayOutputs, resolveOutputs } from '../outputs.js';
+import { withTemplateDependencies } from '../record-shape.js';
 import type { DeployEngine } from '../../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { PhaseClock } from '../../../utils/phase-timings.js';
@@ -325,7 +326,13 @@ export async function deployWithoutChanges(
         redactOutputs(engine.maskingDeps(), persistedOutputs)
       ) !== undefined;
 
+    // go-to-k/cdkd#6308: a DependsOn-only change diffs NO_CHANGE, so this path
+    // is the one that writes the template's dependencies onto the records
+    // (destroy orders by them); undefined when every record already holds them.
+    const refreshedResources = withTemplateDependencies(currentState.resources, effectiveTemplate);
+
     if (
+      refreshedResources !== undefined ||
       observedRefresh ||
       outputProvenanceBackfill ||
       maskedFingerprintsBackfilled ||
@@ -347,7 +354,7 @@ export async function deployWithoutChanges(
           version: STATE_SCHEMA_VERSION_CURRENT,
           region: engine.stackRegion,
           stackName: currentState.stackName,
-          resources: currentState.resources,
+          resources: refreshedResources ?? currentState.resources,
           ...orphansCarriedFrom(currentState),
           ...stackInstanceIdCarriedFrom(currentState),
           outputs: (outputsChanged ? outputsToPersist : persistedOutputs) as Record<string, string>,
@@ -437,6 +444,8 @@ export async function deployWithoutChanges(
           }
         } else if (observedRefresh) {
           engine.logger.debug('Persisted refreshed observedProperties (no-change path)');
+        } else if (refreshedResources !== undefined) {
+          engine.logger.debug('Persisted dependencies refreshed from the template (no-change path)');
         } else if (healedAttributesPending) {
           engine.logger.debug(
             'Persisted attributes re-read from AWS for a stale record (no-change path)'
