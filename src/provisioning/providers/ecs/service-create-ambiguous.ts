@@ -7,6 +7,7 @@ import { logicalIdShown } from '../../composite-id.js';
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import { CREATION_DATE_SKEW_MARGIN_MS, isInsideWindow } from '../ambiguous-create.js';
+import { orphanCommandRegionArg } from '../orphan-report.js';
 import type { NameHeldBefore } from '../create-ownership.js';
 
 /**
@@ -66,12 +67,12 @@ export interface AmbiguousCreateServiceAttempt {
  * Identity evidence, as the steady-state cleanup's (go-to-k/cdkd#4403): a
  * service that held the name BEFORE the create (`heldBefore === 'held'`,
  * which ECS may have handed back) is never this create's. Otherwise the
- * service found under the name is this create's when the pre-create lookup
- * MEASURED the name free, or when its `createdAt` falls inside the attempt's
- * skew-widened window. Unlike the report-only orphan lookups of
+ * service found under the name is this create's only when the pre-create
+ * lookup MEASURED the name free; one created inside the attempt's window
+ * without that measurement is reported, never marked. Unlike the report-only orphan lookups of
  * `orphan-report.ts`, the name is not the evidence here: a service name is
- * unique per cluster, and either proof ties the service to this create's
- * attempt; the measured-free one is what the steady-state cleanup deletes on.
+ * unique per cluster, and the name measured free just before the create is
+ * the proof the steady-state cleanup already deletes on.
  *
  * When the lookup cannot answer, a `CreateService` that answered 2xx with the
  * name measured free has PROVABLY made the service, but its ARN is unknown:
@@ -118,6 +119,11 @@ async function settle(
   // A truthy NON-string reaches the tag and withholds the command: dropping
   // `--cluster` would address the default cluster instead.
   const clusterArg = cluster ? aws` --cluster ${cluster}` : aws``;
+  // The commands address the service by NAME: `--region` keeps a shell whose
+  // default region differs from pointing them at another region's namesake.
+  const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+  const describeCommand = aws`aws ecs describe-services${regionArg}${clusterArg} --services ${serviceName}`;
+  const deleteCommand = aws`aws ecs delete-service${regionArg}${clusterArg} --service ${serviceName} --force`;
   const shown = (value: string): string =>
     isPlainImportValue(value) ? `(${value})` : VALUE_NOT_SHOWN;
   const subject = `ECS service ${logicalIdShown(logicalId)} ${shown(serviceName)}`;
@@ -131,7 +137,15 @@ async function settle(
     const services = response?.services ?? [];
     const failures = response?.failures ?? [];
     if (services.length === 0 && failures.length === 1 && failures[0]?.reason === 'MISSING') {
-      log.debug(`No ECS service ${logicalId} exists after its ambiguous CreateService failure`);
+      if (answeredSuccess(createError)) {
+        log.debug(`No ECS service ${logicalId} exists after its ambiguous CreateService failure`);
+      } else {
+        // A request that timed out or was reset can still be committed
+        // after this lookup ran.
+        log.warn(
+          `CreateService for ${subject} failed without a definite answer, and no service holds the name yet; ECS may still create it. Check later: ${describeCommand.render()}. Only after confirming it is this deploy's and not another's, delete it: ${deleteCommand.render()}.`
+        );
+      }
       return undefined;
     }
     if (failures.length > 0 || services.length !== 1 || !services[0]!.serviceArn) {
@@ -151,10 +165,19 @@ async function settle(
       return undefined;
     }
     const arn = found.serviceArn!;
-    if (!measuredFree && !isInsideWindow(found.createdAt, window)) {
-      log.debug(
-        `ECS service ${logicalId} exists after its ambiguous CreateService failure, but nothing shows this create made it (created ${found.createdAt?.toISOString() ?? 'at an unknown time'}): left alone`
-      );
+    if (!measuredFree) {
+      // Without the measurement, a creation time inside the attempt is not
+      // proof: another deploy (another state bucket) may have created the
+      // same name meanwhile, and #4403's cleanup only reports this case too.
+      if (isInsideWindow(found.createdAt, window)) {
+        log.warn(
+          `CreateService for ${subject} failed without a definite answer, and the service ${shown(arn)} under that name was created during the attempt, which may make it this deploy's; cdkd did not check the name before creating, so it neither records nor deletes it. Inspect it: ${describeCommand.render()}. Only after confirming it is this deploy's and not another's, delete it: ${deleteCommand.render()}.`
+        );
+      } else {
+        log.debug(
+          `ECS service ${logicalId} exists after its ambiguous CreateService failure, but was not created during the attempt (${found.createdAt?.toISOString() ?? 'no creation time'}): left alone`
+        );
+      }
       return undefined;
     }
     log.warn(
@@ -163,14 +186,17 @@ async function settle(
     return arn;
   }
 
-  const describeCommand = aws`aws ecs describe-services${clusterArg} --services ${serviceName}`;
-  const deleteCommand = aws`aws ecs delete-service${clusterArg} --service ${serviceName} --force`;
   if (!(answeredSuccess(createError) && measuredFree)) {
     log.warn(
       `CreateService for ${subject} failed without a definite answer, so ECS may have created the service, which no cdkd state records, and cdkd could not look for it (${lookupFailure}). Inspect it: ${describeCommand.render()}. Only after confirming it is this deploy's and not another's, delete it: ${deleteCommand.render()}.`
     );
     return undefined;
   }
+  // Named BEFORE the delete: nothing marks this service (its ARN is unknown),
+  // so an interrupted run must still leave the command behind.
+  log.warn(
+    `CreateService for ${subject} created the service, but its answer could not be read (${lookupFailure}). Deleting it by name so no unrecorded service is left; if this run is interrupted, delete it with: ${deleteCommand.render()}`
+  );
   try {
     await this.getClient().send(
       new DeleteServiceCommand({ cluster, service: serviceName, force: true })
@@ -190,8 +216,8 @@ async function settle(
       return undefined;
     }
   }
-  log.warn(
-    `Deleted ${subject}: CreateService created it but its answer could not be read (${lookupFailure}), so the next deploy's CreateService does not collide on the name.`
-  );
+  // DRAINING outlives the call, so the next deploy's CreateService can still
+  // collide on the name until it is INACTIVE (as the steady-state cleanup's).
+  log.warn(`Deleted ${subject}; it stays DRAINING for a while before the name is free again.`);
   return undefined;
 }

@@ -93,8 +93,11 @@ const MISSING = { services: [], failures: [{ arn: 'x', reason: 'MISSING' }] };
 const callsOf = (ctor: abstract new (...args: never[]) => unknown) =>
   afterSend.mock.calls.filter(([c]) => c instanceof ctor);
 
-async function failedCreate(): Promise<unknown> {
-  return new ECSProvider().create('MySvc', TYPE, { ...PROPS }).then(
+async function failedCreate(
+  props: Record<string, unknown> = PROPS,
+  context?: { replayingState?: boolean }
+): Promise<unknown> {
+  return new ECSProvider().create('MySvc', TYPE, { ...props }, context as never).then(
     () => {
       throw new Error('create unexpectedly succeeded');
     },
@@ -188,14 +191,83 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
     expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
   });
 
-  it('marks nothing when no service exists under the name', async () => {
-    createSend.mockRejectedValueOnce(serverError());
+  it('marks nothing when no service exists after an unreadable 2xx', async () => {
+    createSend.mockRejectedValueOnce(unreadable2xx());
     afterSend.mockResolvedValueOnce(MISSING);
 
     const error = await failedCreate();
 
     expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('marks nothing but warns when no service exists YET after a 5xx (ECS may still commit)', async () => {
+    createSend.mockRejectedValueOnce(serverError());
+    afterSend.mockResolvedValueOnce(MISSING);
+
+    const error = await failedCreate();
+
+    expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+    expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+    expect(warned()).toMatch(
+      /ECS may still create it\. Check later: aws ecs describe-services --region us-east-1 --cluster my-cluster --services my-service/
+    );
+  });
+
+  it.each([
+    ['a failure other than MISSING', { services: [], failures: [{ reason: 'ACCESS_DENIED' }] }],
+    ['two services', { services: [present(new Date()).services[0], present(new Date()).services[0]] }],
+    ['a service with no ARN', { services: [{ serviceName: 'my-service', status: 'ACTIVE' }] }],
+  ])('treats a lookup answering %s as no answer: no mark', async (_l, answer) => {
+    createSend.mockRejectedValueOnce(serverError());
+    afterSend.mockResolvedValueOnce(answer);
+
+    const error = await failedCreate();
+
+    expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+    expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+    expect(warned()).toMatch(/could not look for it \(DescribeServices gave no readable answer/);
+  });
+
+  describe('pre-create lookup could not answer (heldBefore unknown)', () => {
+    beforeEach(() => {
+      lookupSend.mockRejectedValue(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+    });
+
+    it('does not mark the service found under the name', async () => {
+      createSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockResolvedValueOnce(present(new Date(0)));
+
+      const error = await failedCreate();
+
+      expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+    });
+
+    it('does not delete by name when the lookup after cannot answer either', async () => {
+      createSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(unreadable2xx());
+
+      const error = await failedCreate();
+
+      expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+      expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+    });
+  });
+
+  it.each([
+    ['a rollback replay', PROPS, { replayingState: true }],
+    ['a controller ECS does not settle', { ...PROPS, DeploymentController: { Type: 'EXTERNAL' } }, undefined],
+  ])('treats the name as unmeasured under %s: no delete by name, no mark', async (_l, props, context) => {
+    createSend.mockRejectedValueOnce(unreadable2xx());
+    afterSend.mockRejectedValueOnce(unreadable2xx());
+
+    const error = await failedCreate(props, context);
+
+    expect(lookupSend).not.toHaveBeenCalled();
+    expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+    expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
   });
 
   it('marks nothing for an INACTIVE service under the name', async () => {
@@ -212,14 +284,16 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
       process.env['CDKD_NO_WAIT'] = 'true';
     });
 
-    it('marks a service created inside the attempt window', async () => {
+    it('reports, never marks, a service created inside the attempt window', async () => {
       createSend.mockRejectedValueOnce(serverError());
       afterSend.mockResolvedValueOnce(present(new Date()));
 
       const error = await failedCreate();
 
       expect(lookupSend).not.toHaveBeenCalled();
-      expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBe(SERVICE_ARN);
+      expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+      expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
+      expect(warned()).toMatch(/was created during the attempt.*neither records nor deletes it/s);
     });
 
     it.each([
@@ -244,7 +318,9 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
       expect(callsOf(DeleteServiceCommand)).toHaveLength(0);
       expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
       expect(warned()).toMatch(/could not look for it/);
-      expect(warned()).toMatch(/aws ecs delete-service --cluster my-cluster --service my-service/);
+      expect(warned()).toMatch(
+        /aws ecs delete-service --region us-east-1 --cluster my-cluster --service my-service/
+      );
     });
   });
 
@@ -264,7 +340,54 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
         force: true,
       });
       expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
-      expect(warned()).toMatch(/Deleted ECS service MySvc \(my-service\)/);
+      // The command is named BEFORE the delete: nothing marks this service.
+      const firstWarn = String(warn.mock.calls[0]![0]);
+      expect(firstWarn).toMatch(/Deleting it by name.*if this run is interrupted, delete it with: aws ecs delete-service/s);
+      expect(warned()).toMatch(/Deleted ECS service MySvc \(my-service\); it stays DRAINING/);
+    });
+
+    it('says nothing was deleted when DeleteService finds no service', async () => {
+      createSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(
+        Object.assign(new Error('Service not found.'), { name: 'ServiceNotFoundException' })
+      );
+
+      await failedCreate();
+
+      expect(callsOf(DeleteServiceCommand)).toHaveLength(1);
+      expect(warned()).not.toMatch(/Deleted ECS service/);
+      expect(warned()).not.toMatch(/Failed to clean up/);
+    });
+
+    it('withholds AWS text of a failed delete from the warning', async () => {
+      createSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(
+        Object.assign(new Error('User arn:aws:sts::123456789012:assumed-role/x is not authorized'), {
+          name: 'AccessDeniedException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        })
+      );
+
+      await failedCreate();
+
+      expect(warned()).toMatch(/Failed to clean up .*AccessDeniedException/s);
+      expect(warned()).not.toMatch(/123456789012/);
+    });
+
+    it('omits --cluster for a service in the default cluster', async () => {
+      createSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(unreadable2xx());
+      afterSend.mockRejectedValueOnce(new Error('delete denied'));
+      const { Cluster: _omit, ...noCluster } = PROPS;
+
+      await failedCreate(noCluster);
+
+      expect(callsOf(DeleteServiceCommand)[0]![0].input.cluster).toBeUndefined();
+      expect(warned()).toMatch(/aws ecs delete-service --region us-east-1 --service my-service --force/);
+      expect(warned()).not.toMatch(/--cluster/);
     });
 
     it('warns with the manual command when that delete fails', async () => {
@@ -275,7 +398,7 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
       await failedCreate();
 
       expect(warned()).toMatch(
-        /Failed to clean up .*Manual deletion may be required.*aws ecs delete-service --cluster my-cluster --service my-service --force/s
+        /Failed to clean up .*Manual deletion may be required.*aws ecs delete-service --region us-east-1 --cluster my-cluster --service my-service --force/s
       );
     });
 
@@ -293,11 +416,14 @@ describe('ECSProvider.create (Service) — CreateService itself fails ambiguousl
     });
   });
 
-  it('rethrows the CreateService error even when the lookup itself blows up', async () => {
+  it('rethrows the CreateService error even when the settle step itself throws', async () => {
     const thrown = serverError();
     createSend.mockRejectedValueOnce(thrown);
-    afterSend.mockImplementationOnce(() => {
-      throw new Error('synchronous boom');
+    afterSend.mockResolvedValueOnce(MISSING);
+    // The MISSING-after-5xx warning is the settle step's only call outside
+    // its own try: a throw there reaches the outer guard.
+    warn.mockImplementationOnce(() => {
+      throw new Error('sink boom');
     });
 
     const error = await failedCreate();
