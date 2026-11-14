@@ -329,7 +329,10 @@ export async function deployWithoutChanges(
     // go-to-k/cdkd#6308: a DependsOn-only change diffs NO_CHANGE, so this path
     // is the one that writes the template's dependencies onto the records
     // (destroy orders by them); undefined when every record already holds them.
-    const refreshedResources = withTemplateDependencies(currentState.resources, effectiveTemplate);
+    // Removals only in a nested child, as on the change path (see the helper).
+    const refreshedResources = withTemplateDependencies(currentState.resources, effectiveTemplate, {
+      removalsOnly: engine.options.parentStackInfo !== undefined,
+    });
 
     if (
       observedRefresh ||

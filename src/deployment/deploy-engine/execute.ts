@@ -617,8 +617,14 @@ export async function executeDeployment(
 
   // go-to-k/cdkd#6308: a record no provider call rewrote (a NO_CHANGE row, a
   // DependsOn-only change) takes today's dependencies, so destroy orders by
-  // the template this deploy left in place. Success only: see the helper.
-  Object.assign(newResources, withTemplateDependencies(newResources, template));
+  // the template this deploy left in place. Success only, and removals only
+  // in a nested child, whose operations a failed parent reverts: see the helper.
+  Object.assign(
+    newResources,
+    withTemplateDependencies(newResources, template, {
+      removalsOnly: engine.options.parentStackInfo !== undefined,
+    })
+  );
 
   return {
     state: {

@@ -98,6 +98,15 @@ export function extractAllDependencies(
  * moved to the new template beside an updated one a rollback puts back could
  * record that cycle itself.
  *
+ * `removalsOnly` (a nested child's engine): a record only DROPS the ids the
+ * template no longer lists and gains none. A child's success leaves its
+ * completed operations journaled until the ROOT succeeds, and a failed parent
+ * puts each updated record back to its previous one, dependencies included:
+ * a NO_CHANGE record that gained an edge to such a record (old U -> X, new
+ * X -> U, U updated) would then record the cycle after the revert. Dropping an
+ * edge can never form one. The child's records then lack a `DependsOn` added
+ * to an unchanged resource, as they did before this refresh existed.
+ *
  * Compared as sets, so a record listing the same ids in another order is
  * left as it is and a no-change deploy writes nothing for it. A changed
  * record is a copy (its bags are the same objects, keeping their marks); the
@@ -105,14 +114,18 @@ export function extractAllDependencies(
  */
 export function withTemplateDependencies(
   resources: Readonly<Record<string, ResourceState>>,
-  template: CloudFormationTemplate
+  template: CloudFormationTemplate,
+  { removalsOnly = false }: { removalsOnly?: boolean } = {}
 ): Record<string, ResourceState> | undefined {
   let refreshed: Record<string, ResourceState> | undefined;
   for (const [logicalId, record] of Object.entries(resources)) {
     if (!Object.hasOwn(template.Resources ?? {}, logicalId)) continue;
-    const want = extractAllDependencies(template, logicalId) ?? [];
+    const derived = extractAllDependencies(template, logicalId) ?? [];
     const have = Array.isArray(record.dependencies) ? record.dependencies : [];
     const haveSet = new Set(have);
+    const want = removalsOnly
+      ? [...haveSet].filter((id) => derived.includes(id))
+      : derived;
     if (want.length === haveSet.size && want.every((id) => haveSet.has(id))) continue;
     refreshed ??= { ...resources };
     const { dependencies: _stale, ...rest } = record;

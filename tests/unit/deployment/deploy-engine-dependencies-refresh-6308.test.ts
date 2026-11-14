@@ -103,7 +103,7 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     };
   });
 
-  function makeEngine(levels: string[][]): DeployEngine {
+  function makeEngine(levels: string[][], nested = false): DeployEngine {
     return new DeployEngine(
       mockStateBackend as never,
       {
@@ -123,7 +123,16 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
       } as never,
-      { dryRun: false },
+      {
+        dryRun: false,
+        ...(nested && {
+          parentStackInfo: {
+            parentStack: 'Parent',
+            parentLogicalId: 'Child',
+            parentRegion: 'us-east-1',
+          },
+        }),
+      },
       'us-east-1'
     );
   }
@@ -181,6 +190,77 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
     expect(saved.resources['A']?.observedProperties).toEqual({ Type: 'String', Value: 'a' });
   });
 
+  const updateB = (): ResourceChange => ({
+    logicalId: 'B',
+    changeType: 'UPDATE',
+    resourceType: SSM,
+    currentProperties: { Type: 'String', Value: 'b' },
+    desiredProperties: { Type: 'String', Value: 'b2' },
+    propertyChanges: [{ path: 'Value', oldValue: 'b', newValue: 'b2', requiresReplacement: false }],
+  });
+
+  it('a failed deploy keeps the unchanged record\'s list on every save', async () => {
+    mockProvider.update!.mockRejectedValue(new Error('update refused'));
+    prime(stateWith({ A: record('a-phys', 'a', ['B']), B: record('b-phys', 'b') }), [
+      { logicalId: 'A', changeType: 'NO_CHANGE', resourceType: SSM },
+      updateB(),
+    ]);
+
+    await expect(makeEngine([['B']]).deploy(STACK, v2Template())).rejects.toThrow();
+
+    expect(mockStateBackend.saveState).toHaveBeenCalled();
+    for (const call of mockStateBackend.saveState!.mock.calls) {
+      expect((call[2] as StackState).resources['A']?.dependencies).toEqual(['B']);
+    }
+  });
+
+  // Old U -> X, new X -> U with U updated: a failed parent reverts U to its
+  // old record, so a child that gave X the new edge would record U <-> X.
+  it('nested child: an unchanged record drops stale ids but gains none', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: SSM, Properties: { Type: 'String', Value: 'a' }, DependsOn: ['B'] },
+        B: { Type: SSM, Properties: { Type: 'String', Value: 'b2' } },
+        C: { Type: SSM, Properties: { Type: 'String', Value: 'c' } },
+      },
+    };
+    // B (updated) listed A in the old template; A now lists B. C listed B, which it no longer does.
+    prime(
+      stateWith({
+        A: record('a-phys', 'a'),
+        B: record('b-phys', 'b', ['A']),
+        C: record('c-phys', 'c', ['B']),
+      }),
+      [
+        { logicalId: 'A', changeType: 'NO_CHANGE', resourceType: SSM },
+        updateB(),
+        { logicalId: 'C', changeType: 'NO_CHANGE', resourceType: SSM },
+      ]
+    );
+
+    await makeEngine([['B']], true).deploy('Parent~Child', template);
+
+    const saved = lastSaved();
+    expect(saved.resources['A']?.dependencies).toBeUndefined();
+    expect(saved.resources['C']?.dependencies).toBeUndefined();
+    expect(saved.resources['B']?.dependencies).toBeUndefined();
+  });
+
+  it('nested child, no-change path: the stale edge of a reversed dependency is dropped', async () => {
+    prime(stateWith({ A: record('a-phys', 'a', ['B']), B: record('b-phys', 'b2') }), [
+      { logicalId: 'A', changeType: 'NO_CHANGE', resourceType: SSM },
+      { logicalId: 'B', changeType: 'NO_CHANGE', resourceType: SSM },
+    ]);
+
+    await makeEngine([], true).deploy('Parent~Child', v2Template());
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = lastSaved();
+    expect(saved.resources['A']?.dependencies).toBeUndefined();
+    // Gains nothing: B's new edge to A is not added to the unchanged record.
+    expect(saved.resources['B']?.dependencies).toBeUndefined();
+  });
+
   it('no-change path: lists already matching (any order) write nothing', async () => {
     const template: CloudFormationTemplate = {
       Resources: {
@@ -206,6 +286,16 @@ describe('a deploy refreshes recorded dependencies from the template (#6308)', (
 
 describe('withTemplateDependencies (#6308)', () => {
   const template = v2Template();
+
+  it('removalsOnly keeps the ids the template still lists and adds none', () => {
+    const out = withTemplateDependencies(
+      { A: record('a-phys', 'a', ['B', 'Gone']), B: record('b-phys', 'b2') },
+      { Resources: { ...template.Resources, A: { Type: SSM, DependsOn: ['B'] } } },
+      { removalsOnly: true }
+    )!;
+    expect(out['A']!.dependencies).toEqual(['B']);
+    expect(out['B']!.dependencies).toBeUndefined();
+  });
 
   it('leaves a record the template no longer declares as it is', () => {
     const kept = record('gone-phys', 'x', ['A']);
