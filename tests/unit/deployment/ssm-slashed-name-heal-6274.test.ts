@@ -155,6 +155,11 @@ describe('healSlashedSsmParameterNames (go-to-k/cdkd#6274)', () => {
       ],
       ['a record the template no longer declares', stateOf({ Param: record(`/${legacy}`) }), unnamed([])],
       [
+        'a logical id the template now declares as another type',
+        stateOf({ Param: record(`/${legacy}`) }),
+        { Resources: { Param: { Type: 'AWS::SNS::Topic', Properties: {} } } },
+      ],
+      [
         'another resource type',
         stateOf({ Param: { ...record(`/${legacy}`), resourceType: 'AWS::SNS::Topic' } }),
         { Resources: { Param: { Type: 'AWS::SNS::Topic', Properties: {} } } },
