@@ -32,16 +32,15 @@ git log --oneline -3
 cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
-Also read the issue thread for a claim naming this branch (cross-clone
-signal); a live lane's tree gets instructions, not edits.
+Also read the issue thread for a claim naming this branch; a live lane's
+tree gets instructions, not edits.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
 this tree arrived on is the OUTER TOOL's: committing onto it would DELETE that
 branch, and §9 puts it back untouched (`references/launch-mode.md`).
 
 ```bash
-git status --porcelain   # must be empty FIRST -- `git switch` carries
-                         # uncommitted changes onto your branch
+git status --porcelain   # empty FIRST: `git switch` carries changes over
 git fetch origin && git switch -c <branch> origin/main   # unchained, a failed
                          # fetch still branches off a stale origin/main
 ```
@@ -82,16 +81,16 @@ done                                                               # RIGHT
 Fix in the lane's tree, matching the existing pattern; AGENTS.md owns the
 mechanics. Make the unit test **fail without the fix and pass with it**. A
 hook's harness is `.claude/hooks/<name>.test.sh`, run by `run-tests.sh` from
-BESIDE its subject.
+BESIDE its subject. A src file near `src-file-size-cap.test.ts`'s 1000
+lines gets a sibling module BEFORE you grow it (#6108, #6255).
 
 **A fix to a value cdkd CAPTURES into state** (a drift baseline, a recorded
 attribute) also heals, or compares around, the records written before it, in
 the SAME issue: old state keeps the bad value, and a no-change deploy re-reads
 nothing (#5737 needed #5749).
 
-**Adding a HANDLER to a single slot REPLACES it** — a second `trap ... EXIT`
-disarms the first, which in an integ fixture is the AWS teardown. Work inside
-it, or re-install one calling the original
+**A second `trap ... EXIT` REPLACES the first** (in a fixture, the AWS
+teardown): work inside it, or re-install one calling the original
 (`tests/unit/scripts/integ-single-exit-trap.test.ts`).
 
 ### 5-d. Measurement audits

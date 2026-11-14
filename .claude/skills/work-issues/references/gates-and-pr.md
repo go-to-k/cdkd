@@ -20,9 +20,8 @@ same PR.
 - **`vp check --fix` WRITES** the WORKING TREE while `git commit` commits the
   INDEX: run `git add -u` after it, checking the SECOND column of
   `git status --porcelain` (`^ M` misses `MM`).
-- **Start every verification command with `cd <worktree> &&`** — a cwd does not
-  persist, and the `integ-destroy` marker store is PER-WORKTREE: one set
-  in the main checkout is ABSENT from the lane.
+- **Start every verification command with `cd <worktree> &&`**: a cwd does
+  not persist, and the `integ-destroy` marker store is PER-WORKTREE.
 - **A hook-gated command carries no SIDE-EFFECTING preamble, and "gated" means
   EVERY PreToolUse hook in `.claude/settings.json`**: a denial aborts the whole
   string before any of it runs, and a write redirect, `cp` or `mv` is lost SILENTLY. Write the file
@@ -38,8 +37,9 @@ same PR.
 
 All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
-`src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
-`Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll.
+`src/**` change is refused in CI (#2717). Push, open the PR with
+`Closes #<n>` and NO `--label` (the workflow copies the issue's; #6108,
+#6255), and wait on CI with `ship.md`'s "Read the merge state" poll.
 A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel (it reads
 every owner's) is the maintainer's: a LIVE hunt (its session busy) is waited
 out; for a stale one ask, then destroy under `CDKD_BUGHUNT_OWNER=<that owner>`
