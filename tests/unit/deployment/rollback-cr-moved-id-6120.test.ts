@@ -316,10 +316,31 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
     expect(printed.warn.some((l) => l.includes('the rollback was interrupted'))).toBe(true);
   });
 
+  it("go-to-k/cdkd#6309: the revert Update types each side by the record that wrote it", async () => {
+    await replay({
+      op: movedOp({ previousState: record('name-1', OLD_PROPS, { typedPayloadLeaves: [['Old']] }) }),
+      live: record('name-2', NEW_PROPS, { typedPayloadLeaves: [['New']] }),
+    });
+    expect(provider.update).toHaveBeenCalledWith(
+      'Res',
+      'name-2',
+      CR,
+      OLD_PROPS,
+      NEW_PROPS,
+      expect.objectContaining({
+        typedPayloadLeaves: [['Old']],
+        previousTypedPayloadLeaves: [['New']],
+      })
+    );
+  });
+
   it('never records a NoEcho-masked record, and hands its delete the leaves', async () => {
     const leaves = [['Secret']];
     const { superseded, events } = await replay({
-      live: record('name-2', { ...NEW_PROPS, Secret: '***' }, { noEchoLeaves: leaves } as Partial<ResourceState>),
+      live: record('name-2', { ...NEW_PROPS, Secret: '***' }, {
+        noEchoLeaves: leaves,
+        typedPayloadLeaves: [['Count']],
+      } as Partial<ResourceState>),
     });
     expect(events[0]).toBe('save Res ');
     expect(superseded).toEqual([]);
@@ -328,7 +349,8 @@ describe('rollback of a custom resource whose Update moved its id (#6120)', () =
       'name-2',
       CR,
       expect.anything(),
-      expect.objectContaining({ recordedNoEchoLeaves: leaves })
+      // go-to-k/cdkd#6309: the payload positions travel with them.
+      expect.objectContaining({ recordedNoEchoLeaves: leaves, recordedTypedPayloadLeaves: [['Count']] })
     );
   });
 

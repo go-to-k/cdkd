@@ -5808,6 +5808,7 @@
         "composite-stack",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
+        "custom-resource-payload-types",
         "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
@@ -5971,6 +5972,9 @@
         "cross-backend-same-stack-migration": [
           "l2",
           "literal"
+        ],
+        "custom-resource-payload-types": [
+          "l2"
         ],
         "deep-getatt-chains": [
           "l1"
@@ -6693,6 +6697,7 @@
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
+        "custom-resource-payload-types",
         "custom-resource-physid-replace",
         "custom-resource-provider",
         "custom-resource-resolved-secret",
@@ -6868,6 +6873,9 @@
         "custom-resource-noecho-nested": [
           "l2",
           "literal"
+        ],
+        "custom-resource-payload-types": [
+          "l2"
         ],
         "custom-resource-physid-replace": [
           "l2",
@@ -7441,6 +7449,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
+        "custom-resource-payload-types",
         "drift-revert",
         "ec2-vpc",
         "ecs-fargate",
@@ -7511,6 +7520,9 @@
         "cross-region-concurrent-stacks": [
           "l2",
           "literal"
+        ],
+        "custom-resource-payload-types": [
+          "l2"
         ],
         "drift-revert": [
           "l1"

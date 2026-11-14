@@ -406,6 +406,8 @@ export async function replaceFallbackFor(
           recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: currentResource.noEchoLeaves,
+          // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+          recordedTypedPayloadLeaves: currentResource.typedPayloadLeaves,
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
           // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
           // also logs under; the physical id can be a name it derives.

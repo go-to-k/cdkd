@@ -667,8 +667,11 @@ export class CustomResourceProvider implements ResourceProvider {
     return cleanupResponseObject.call(this, responseKey);
   }
 
-  stringifyProperties(properties: Record<string, unknown>): Record<string, unknown> {
-    return stringifyProperties.call(this, properties);
+  stringifyProperties(
+    properties: Record<string, unknown>,
+    typedLeaves?: readonly (readonly (string | number)[])[]
+  ): Record<string, unknown> {
+    return stringifyProperties.call(this, properties, typedLeaves);
   }
 
   sleep(ms: number): Promise<void> {

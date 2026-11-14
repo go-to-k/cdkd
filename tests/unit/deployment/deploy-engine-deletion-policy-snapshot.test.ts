@@ -599,9 +599,14 @@ describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', 
   });
 
   it("go-to-k/cdkd#4043: threads the old record's noEchoLeaves into the delete-first", async () => {
-    await invokeDeleteFirst(undefined, { noEchoLeaves: [['Immutable']] });
+    await invokeDeleteFirst(undefined, {
+      noEchoLeaves: [['Immutable']],
+      typedPayloadLeaves: [['Count']],
+    });
     expect(deleteProvider.create).toHaveBeenCalledTimes(2);
     expect(deleteContextArg()['recordedNoEchoLeaves']).toEqual([['Immutable']]);
+    // go-to-k/cdkd#6309: threaded beside it.
+    expect(deleteContextArg()['recordedTypedPayloadLeaves']).toEqual([['Count']]);
   });
 
   it('policy absent — the delete-first carries no identifier', async () => {
@@ -679,8 +684,13 @@ describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement 
   });
 
   it("go-to-k/cdkd#4043: threads the old record's noEchoLeaves into the fallback replacement delete", async () => {
-    await invokeUpdateFallback({}, { noEchoLeaves: [['AllocatedStorage']] });
+    await invokeUpdateFallback({}, {
+      noEchoLeaves: [['AllocatedStorage']],
+      typedPayloadLeaves: [['Count']],
+    });
     expect(deleteContextArg()['recordedNoEchoLeaves']).toEqual([['AllocatedStorage']]);
+    // go-to-k/cdkd#6309: threaded beside it.
+    expect(deleteContextArg()['recordedTypedPayloadLeaves']).toEqual([['Count']]);
   });
 
   it('skipFinalSnapshot: true — plain replacement delete (opt-out polarity)', async () => {

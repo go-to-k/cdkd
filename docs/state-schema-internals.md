@@ -906,6 +906,14 @@ reports it; none holds any part of a value:
 
 An ABSENT field means "not known", which is every record an older cdkd wrote.
 
+A custom resource's record also carries `typedPayloadLeaves` (issue #6309, no
+version bump): the positions in `properties` whose value its handler receives
+with its own JSON type, because an `Fn::GetAtt` served it. Every other number
+and boolean is sent as a string, as CloudFormation does. The `Update`
+payload's `OldResourceProperties` and the `Delete` payload read it; ABSENT
+keeps the previous rule (every number and boolean under an object a string, a
+list passed as it is).
+
 #### How a deploy compares a masked value
 
 AWS still receives the real value: cdkd resolves the parameter on every deploy

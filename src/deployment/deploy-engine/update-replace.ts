@@ -26,6 +26,10 @@ import { maskedInputSources } from './resolver-context.js';
 import { refuseUnsafeReplacement } from './update-replace/preflight.js';
 import { recreateDestroyThenCreate } from './update-replace/recreate.js';
 import { replaceCreateFirst } from './update-replace/create-first.js';
+import {
+  customResourcePayloadLeaves,
+  customResourcePayloadLeavesField,
+} from './custom-resource-payload-leaves.js';
 
 /** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateByReplacement(
@@ -189,6 +193,15 @@ export async function updateByReplacement(
     replaceDecision.provisionedBy === 'cc-api'
       ? preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
       : resolvedProps;
+  // go-to-k/cdkd#6309: sent with the new resource's Create, then recorded.
+  const typedPayloadLeaves = customResourcePayloadLeaves(
+    resourceType,
+    template?.Resources?.[logicalId]?.Properties,
+    resolvedProps,
+    template,
+    engine.noEchoRun.noEchoConditions,
+    stateResources
+  );
 
   // Order: property-driven replacement (immutable prop changed)
   // creates the NEW resource first so the old survives a CREATE
@@ -287,6 +300,7 @@ export async function updateByReplacement(
       deleteProvisionedBy: oldDeleteRoute.provisionedBy,
       deleteProperties: currentResource.properties,
       secrets: updateSecrets,
+      typedPayloadLeaves,
       change: nameChange,
       equalIdIsSameResource,
       snapshotPolicy: updateReplacePolicy,
@@ -312,6 +326,7 @@ export async function updateByReplacement(
       updateReplacePolicy,
       updateSecrets,
       recreateViaCcApi,
+      typedPayloadLeaves,
     });
   } else {
     createResult = await replaceCreateFirst(engine, {
@@ -331,6 +346,7 @@ export async function updateByReplacement(
       updateReplacePolicy,
       updateSecrets,
       lostWithParent,
+      typedPayloadLeaves,
       nameChange,
     });
   }
@@ -381,6 +397,9 @@ export async function updateByReplacement(
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: replaceDecision.provisionedBy,
+    // go-to-k/cdkd#6309: positions of the bag this replacement wrote, for the
+    // new resource's later `Update` / `Delete` payloads.
+    ...customResourcePayloadLeavesField(typedPayloadLeaves),
   };
   // go-to-k/cdkd#5511: state now holds the resource, so no failure after
   // this point journals it as an orphan.

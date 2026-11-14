@@ -99,6 +99,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **mutually-exclusive-properties.ts** - Pre-flight rejection of property COMBINATIONS AWS accepts only one of, reachable nowhere else: once the resource exists the diff says `NO_CHANGE` forever. **The presence predicate is load-bearing**: pre-flight runs BEFORE intrinsic resolution, so a key behind an unresolved intrinsic counts as UNKNOWN, never declared.
 
+- **custom-resource-payload-types.ts** - The JSON types of a custom resource's `ResourceProperties` (#6309): `typedPayloadLeavesOf` reads which positions an `Fn::GetAtt` served off the TEMPLATE bag, `serializeResourceProperties` stringifies every other number and boolean. Unknown positions keep the pre-#6309 rule.
 - **custom-resource-secure-references.ts** - Pre-flight refusal of a SECURE dynamic reference (`secretsmanager` / `ssm-secure`) anywhere in a custom resource's properties, intrinsic parts included (a token SPLIT across `Fn::Join` parts or a `Fn::Sub` `${...}` counts by its opener), which CloudFormation does not support (#3976). A plain `ssm` reference stays accepted. Template path only, so a rollback replay never reaches it.
 
 - **nested-required.ts** + **.generated.ts** - Pre-flight rejection of a PRESENT nested block missing a schema-`required` member (#1802). **A schema `required` list is not evidence CloudFormation enforces it**: `CFN_ENFORCED_TYPES` holds only types MEASURED to refuse, so a type joins it by measurement, never by reading its schema.

@@ -278,7 +278,7 @@ export async function create(
         ResourceType: resourceType,
         LogicalResourceId: logicalId,
         StackId: invocation.stackId,
-        ResourceProperties: this.stringifyProperties(properties),
+        ResourceProperties: this.stringifyProperties(properties, context?.typedPayloadLeaves),
       }),
       // Issue #2178: the handler's response can echo the RESOLVED
       // `ResourceProperties` back, so the payload refusal masks before it
@@ -388,8 +388,11 @@ export async function update(
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
         StackId: invocation.stackId,
-        ResourceProperties: this.stringifyProperties(properties),
-        OldResourceProperties: this.stringifyProperties(previousProperties),
+        ResourceProperties: this.stringifyProperties(properties, context?.typedPayloadLeaves),
+        OldResourceProperties: this.stringifyProperties(
+          previousProperties,
+          context?.previousTypedPayloadLeaves
+        ),
       }),
       // Issue #2178: see `create()` — same payload refusal, same bag.
       maskerOrIdentity(context?.maskSecrets),

@@ -260,6 +260,14 @@ export interface DeleteContext extends SecretMaskingContext {
   recordedNoEchoLeaves?: readonly (readonly (string | number)[])[] | undefined;
 
   /**
+   * The record's `typedPayloadLeaves` (go-to-k/cdkd#6309): the coordinates of
+   * its `properties` a custom resource's `Delete` payload keeps with their
+   * JSON type. Threaded beside `recordedNoEchoLeaves`. ABSENT means not
+   * known, and the payload keeps the pre-#6309 rule.
+   */
+  recordedTypedPayloadLeaves?: readonly (readonly (string | number)[])[] | undefined;
+
+  /**
    * Today's values at the record's masked `recordedNoEchoLeaves`
    * coordinates (go-to-k/cdkd#4682), from a caller that holds the template:
    * `cdkd destroy` with the app, and a deploy's replacement delete of a

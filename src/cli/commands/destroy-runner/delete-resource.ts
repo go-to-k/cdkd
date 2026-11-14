@@ -431,6 +431,8 @@ export async function deleteStackResource(
                         recordedCreateOnlyDrops: resource.acceptedCreateOnlyDrops,
                         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
                         recordedNoEchoLeaves: resource.noEchoLeaves,
+                        // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+                        recordedTypedPayloadLeaves: resource.typedPayloadLeaves,
                         ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
                         ...(ctx.noEchoReresolver !== undefined && {
                           noEchoReresolver: ctx.noEchoReresolver,

@@ -60,6 +60,7 @@ export async function replaceCreateFirst(
     stackName,
     updateReplacePolicy,
     updateSecrets,
+    typedPayloadLeaves,
     lostWithParent,
     nameChange,
   }: ReplacementArmInput & {
@@ -104,6 +105,7 @@ export async function replaceCreateFirst(
             withCurrentResourceSecrets(updateSecrets, () =>
               replaceProvider.create(logicalId, resourceType, replaceProps, {
                 maskSecrets: createSecretMasker(updateSecrets),
+                ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
               })
             ),
           logicalId,

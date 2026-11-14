@@ -263,6 +263,8 @@ export async function deleteSupersededEntry(
           recordedAttributes: record.attributes,
           recordedCreateOnlyDrops: record.acceptedCreateOnlyDrops,
           recordedNoEchoLeaves: record.noEchoLeaves,
+          // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+          recordedTypedPayloadLeaves: record.typedPayloadLeaves,
           maskSecrets: input.maskSecrets,
         }
       );

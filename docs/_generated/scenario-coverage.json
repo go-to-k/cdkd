@@ -839,6 +839,11 @@
       "scenarios": []
     },
     {
+      "name": "custom-resource-payload-types",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "custom-resource-physid-replace",
       "annotated": false,
       "scenarios": []
@@ -3845,6 +3850,7 @@
     "cross-region-concurrent-stacks",
     "cross-stack-export-in-use",
     "custom-resource-noecho-nested",
+    "custom-resource-payload-types",
     "custom-resource-physid-replace",
     "custom-resource-service-token-change",
     "depends-on-flip",

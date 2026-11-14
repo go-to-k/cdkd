@@ -25,4 +25,6 @@ export interface ReplacementArmInput {
   stackName: string;
   updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | undefined;
   updateSecrets: RecordedSecretValues;
+  /** go-to-k/cdkd#6309: a custom resource's `Fn::GetAtt` positions, for its Create. */
+  typedPayloadLeaves?: (string | number)[][] | undefined;
 }

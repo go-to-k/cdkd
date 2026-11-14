@@ -254,7 +254,7 @@ export async function deleteImpl(
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
         StackId: invocation.stackId,
-        ResourceProperties: this.stringifyProperties(payload),
+        ResourceProperties: this.stringifyProperties(payload, context?.recordedTypedPayloadLeaves),
       }),
       // See deletePathMasker (go-to-k/cdkd#2007, go-to-k/cdkd#4682).
       deleteMask

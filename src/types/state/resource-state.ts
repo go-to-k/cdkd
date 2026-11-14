@@ -511,6 +511,21 @@ export interface ResourceState {
    * beside the MACs it describes in a record it does not write.
    */
   noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> | undefined;
+
+  /**
+   * No bump (go-to-k/cdkd#6309): on a custom resource, the coordinates of
+   * `properties` whose value the handler payload keeps verbatim (an
+   * `Fn::GetAtt` value), read off the template that produced the bag; every
+   * other number and boolean is sent as a string, as CloudFormation does. The
+   * `Update` payload's `OldResourceProperties` and the `Delete` payload read
+   * it, since neither has the template that wrote the bag. SEGMENT ARRAYS,
+   * positions only, never values. `[]` means known with nothing typed;
+   * ABSENT (every record an earlier cdkd wrote) means not known, and the
+   * payload keeps the pre-#6309 rule. Recomputed by every writer that
+   * rebuilds `properties` from a template; spreading writers carry it. Read
+   * through `recordedTypedPayloadLeavesOf` (malformed reads as absent).
+   */
+  typedPayloadLeaves?: (string | number)[][] | undefined;
 }
 
 /**

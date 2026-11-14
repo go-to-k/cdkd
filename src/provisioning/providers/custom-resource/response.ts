@@ -18,6 +18,10 @@ import {
 } from './lambda-payload.js';
 import { CR_LOG_TAIL_WARN_MAX_CHARS, customResourceRetryDelays } from './retry-policy.js';
 import {
+  type PayloadCoordinate,
+  serializeResourceProperties,
+} from '../../custom-resource-payload-types.js';
+import {
   hasHandlerLogOutput,
   parseCfnResponseBody,
   describeCfnResponseBody,
@@ -442,30 +446,20 @@ export async function cleanupResponseObject(
 }
 
 /**
- * Convert property values to strings for CloudFormation compatibility
- *
- * CloudFormation converts all ResourceProperties values to strings before
- * passing them to Lambda handlers. Some CDK internal handlers (like
- * BucketNotificationsHandler) depend on this behavior (e.g., calling .lower()
- * on boolean values).
+ * The handler's `ResourceProperties` / `OldResourceProperties`, typed as
+ * CloudFormation delivers them (go-to-k/cdkd#6309): a template literal number
+ * or boolean as a string (some CDK handlers, such as
+ * `BucketNotificationsHandler`, call `.lower()` on a boolean), a value an
+ * `Fn::GetAtt` served (`typedLeaves`) with its own JSON type. Without
+ * `typedLeaves` the pre-#6309 rule applies. See
+ * `custom-resource-payload-types.ts`.
  */
 export function stringifyProperties(
   this: CustomResourceProvider,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  typedLeaves?: readonly PayloadCoordinate[]
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(properties)) {
-    if (typeof value === 'boolean') {
-      result[key] = String(value);
-    } else if (typeof value === 'number') {
-      result[key] = String(value);
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result[key] = this.stringifyProperties(value as Record<string, unknown>);
-    } else {
-      result[key] = value;
-    }
-  }
-  return result;
+  return serializeResourceProperties(properties, typedLeaves);
 }
 
 export function sleep(this: CustomResourceProvider, ms: number): Promise<void> {

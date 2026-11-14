@@ -48,6 +48,7 @@ export async function recreateDestroyThenCreate(
     updateReplacePolicy,
     updateSecrets,
     recreateViaCcApi,
+    typedPayloadLeaves,
   }: ReplacementArmInput & { recreateViaCcApi: boolean }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
 ): Promise<any> {
@@ -130,6 +131,8 @@ export async function recreateDestroyThenCreate(
             recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
             recordedNoEchoLeaves: currentResource.noEchoLeaves,
+            // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+            recordedTypedPayloadLeaves: currentResource.typedPayloadLeaves,
             ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
             // go-to-k/cdkd#2007: the bag the call logs under and the delete
             // error below is masked with.
@@ -261,6 +264,7 @@ export async function recreateDestroyThenCreate(
               withCurrentResourceSecrets(updateSecrets, () =>
                 replaceProvider.create(logicalId, resourceType, replaceProps, {
                   maskSecrets: createSecretMasker(updateSecrets),
+                  ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
                 })
               ),
             logicalId,

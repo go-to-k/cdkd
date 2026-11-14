@@ -286,6 +286,8 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
           recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: current.noEchoLeaves,
+          // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+          recordedTypedPayloadLeaves: current.typedPayloadLeaves,
           // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
           maskSecrets: mask,
         }
@@ -643,6 +645,9 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           // go-to-k/cdkd#5380: what either record names unsettled is
           // converged against AWS, since the record built below clears it.
           ...unsettledContextOf(current, previousState),
+          // go-to-k/cdkd#6309: each side typed by the record that wrote it.
+          typedPayloadLeaves: previousState.typedPayloadLeaves,
+          previousTypedPayloadLeaves: current.typedPayloadLeaves,
         },
       ],
       op.logicalId,

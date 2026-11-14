@@ -185,8 +185,16 @@ const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
  * bag by reference on every call and so does not depend on that ordering, but
  * the ordering is what makes it correct here without relying on that.
  */
-export function replayingStateCreateContext(secrets: RecordedSecretValues): CreateContext {
-  return { ...REPLAYING_STATE_CREATE_CONTEXT, maskSecrets: createSecretMasker(secrets) };
+export function replayingStateCreateContext(
+  secrets: RecordedSecretValues,
+  // go-to-k/cdkd#6309: the restored record's custom-resource positions.
+  typedPayloadLeaves?: (string | number)[][]
+): CreateContext {
+  return {
+    ...REPLAYING_STATE_CREATE_CONTEXT,
+    maskSecrets: createSecretMasker(secrets),
+    ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
+  };
 }
 
 /**

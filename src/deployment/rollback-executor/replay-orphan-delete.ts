@@ -292,6 +292,8 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
         recordedCreateOnlyDrops: stateResources[op.logicalId]?.acceptedCreateOnlyDrops,
         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
         recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
+        // go-to-k/cdkd#6309: a custom resource's Delete payload types.
+        recordedTypedPayloadLeaves: stateResources[op.logicalId]?.typedPayloadLeaves,
         // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
         maskSecrets: mask,
       })
