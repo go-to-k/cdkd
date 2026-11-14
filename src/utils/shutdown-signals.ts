@@ -18,8 +18,8 @@
  * the provider-side interrupt scope for the commands that reach a provider
  * wait through a stack lock, and a forwarded SIGTERM exits as a SIGINT would.
  * A local command reaches no provider wait, and its exit code is the signal's
- * own. `cdkd local start-api` keeps its own handlers, which predate this
- * module and exit 0 on SIGTERM; the cdk-local engine commands (`start-service`,
+ * own. `cdkd local start-api` registers through it too (go-to-k/cdkd#6291);
+ * the cdk-local engine commands (`start-service`,
  * `start-alb`, `start-cloudfront`, `start-agentcore`, `start-web-function`,
  * `start-microvm`) register SIGTERM inside cdk-local.
  */

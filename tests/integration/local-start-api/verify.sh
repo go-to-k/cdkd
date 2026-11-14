@@ -685,6 +685,13 @@ if kill -0 "${SERVER_PID}" 2>/dev/null; then
   echo "FAIL: the first server did not exit within 120s of SIGTERM."
   exit 1
 fi
+# #6291: a SIGTERM stop exits 143 (128 + 15), after the same cleanup.
+SERVER_RC=0
+wait "${SERVER_PID}" 2>/dev/null || SERVER_RC=$?
+if [[ "${SERVER_RC}" -ne 143 ]]; then
+  echo "FAIL: start-api exited ${SERVER_RC} on SIGTERM, expected 143 (#6291)."
+  exit 1
+fi
 SERVER_PID=""
 docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 

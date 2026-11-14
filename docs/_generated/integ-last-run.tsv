@@ -275,7 +275,7 @@ local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, dock
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-alb	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-start-alb-from-state	2026-11-12T13:54:58Z	PASS	376	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
-local-start-api	2026-11-13T05:08:51Z	PASS	25	verify.sh	rc ok, #6160
+local-start-api	2026-11-14T09:07:25Z	PASS	26	verify.sh	rc ok, docker sweep clean; #6291 143 assert, revert probe FAILs
 local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-12T11:22:31Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6140
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean

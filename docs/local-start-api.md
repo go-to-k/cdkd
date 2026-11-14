@@ -372,9 +372,9 @@ exits immediately and can leave containers behind; see
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Shut down cleanly on `SIGTERM`. |
 | `1` | Startup failed (Docker missing or too old, port in use, a template the server cannot route), or an uncaught error during the run. |
-| `130` | Stopped with {kbd:ctrl+c}, including the immediate second one. |
+| `130` | Stopped with {kbd:ctrl+c}, including the immediate second signal of either kind. |
+| `143` | Stopped with `SIGTERM`, after the same cleanup. Before this was `0`; a script that treated `0` as success after a `SIGTERM` stop must now accept `143`. |
 
 The full cross-command table is in [Exit codes](cli-reference-exit-codes.md).
 
