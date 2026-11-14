@@ -2826,6 +2826,11 @@
       "scenarios": []
     },
     {
+      "name": "ssm-generated-name-grant",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ssm-secure-dynamic-ref",
       "annotated": true,
       "scenarios": [
@@ -3981,6 +3986,7 @@
     "sns-topic-attr-removal",
     "sqs-esm-max-concurrency",
     "sqs-fifo-unnamed",
+    "ssm-generated-name-grant",
     "stack-id-uuid",
     "stack-lock-renewal",
     "stage-assets",

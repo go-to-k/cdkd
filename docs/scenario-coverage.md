@@ -354,6 +354,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`sns-topic-attr-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sns-topic-attr-removal/)
 - [`sqs-esm-max-concurrency`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sqs-esm-max-concurrency/)
 - [`sqs-fifo-unnamed`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sqs-fifo-unnamed/)
+- [`ssm-generated-name-grant`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ssm-generated-name-grant/)
 - [`stack-id-uuid`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stack-id-uuid/)
 - [`stack-lock-renewal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stack-lock-renewal/)
 - [`stage-assets`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stage-assets/)

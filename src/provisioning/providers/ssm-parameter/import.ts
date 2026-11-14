@@ -45,9 +45,10 @@ import type { SSMParameterProvider } from '../ssm-parameter-provider.js';
  *    since the name's leading slash IS the separator — `aws-cdk-lib`'s
  *    `arnForParameterName` renders the two to the identical string, and that
  *    is precisely why CDK needs an explicit `simpleName` flag whenever the
- *    name is a token. Guessing wrong writes a physicalId naming a DIFFERENT
- *    parameter, i.e. converts a loud failure into a silent wrong-resource
- *    write.
+ *    name is a token. SSM stores a one-level `/foo` as `foo`, so both name
+ *    the same parameter (measured, go-to-k/cdkd#6272), but the spelling is
+ *    what the record's Ref returns, and the ARN cannot say which one the
+ *    template's consumers expect.
  *  - A parameter SHARED from another account has no name form at all
  *    ("For parameters shared with you from another account, you must use the
  *    full ARN"), so for that shape there is nothing to normalize TO.

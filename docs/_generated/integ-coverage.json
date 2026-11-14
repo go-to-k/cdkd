@@ -5686,7 +5686,8 @@
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "migrate-from-cfn",
-        "require-approval-broadening"
+        "require-approval-broadening",
+        "ssm-generated-name-grant"
       ],
       "signals": {
         "asset-migration": [
@@ -5733,6 +5734,9 @@
         ],
         "require-approval-broadening": [
           "l2",
+          "literal"
+        ],
+        "ssm-generated-name-grant": [
           "literal"
         ]
       }
@@ -5850,6 +5854,7 @@
         "secrets-dynamic-ref",
         "serverless-api",
         "sns-sqs-event",
+        "ssm-generated-name-grant",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",
         "stream-delete-redeploy",
@@ -6220,6 +6225,9 @@
         ],
         "sns-sqs-event": [
           "l2"
+        ],
+        "ssm-generated-name-grant": [
+          "literal"
         ],
         "stepfunctions-logging": [
           "l2"
@@ -6725,6 +6733,7 @@
         "sns-event-source",
         "sns-sqs-event",
         "sqs-esm-max-concurrency",
+        "ssm-generated-name-grant",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
         "stage-assets",
@@ -7125,6 +7134,10 @@
         ],
         "sqs-esm-max-concurrency": [
           "l2"
+        ],
+        "ssm-generated-name-grant": [
+          "l2",
+          "literal"
         ],
         "ssm-secure-dynamic-ref": [
           "l2",
@@ -9114,6 +9127,7 @@
         "secrets-dynamic-ref",
         "select-out-of-bounds",
         "shared-stackname-multi-region",
+        "ssm-generated-name-grant",
         "stack-id-uuid",
         "stale-attribute-heal",
         "state-info-command",
@@ -9520,6 +9534,10 @@
           "l2"
         ],
         "shared-stackname-multi-region": [
+          "l2",
+          "literal"
+        ],
+        "ssm-generated-name-grant": [
           "l2",
           "literal"
         ],
