@@ -104,8 +104,10 @@ export function extractAllDependencies(
  * puts each updated record back to its previous one, dependencies included:
  * a NO_CHANGE record that gained an edge to such a record (old U -> X, new
  * X -> U, U updated) would then record the cycle after the revert. Dropping an
- * edge can never form one. The child's records then lack a `DependsOn` added
- * to an unchanged resource, as they did before this refresh existed.
+ * edge can never form one. The rest is journaled with the child's ops
+ * (go-to-k/cdkd#6314, `nestedDependencySnapshot`): the ROOT's success writes
+ * the ids the child could not add, and a failed parent's revert puts back the
+ * ids it dropped.
  *
  * Compared as sets, so a record listing the same ids in another order is
  * left as it is and a no-change deploy writes nothing for it. A changed

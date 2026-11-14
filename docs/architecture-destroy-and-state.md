@@ -68,8 +68,10 @@ The order comes from two sources:
   it in reverse, so a resource is deleted before the resources it depends on.
   Every successful deploy rewrites those lists from the template it deployed,
   including for resources it left unchanged, so a `DependsOn` change alone is
-  recorded too. In a nested stack, an unchanged resource only loses the ids its
-  template no longer lists.
+  recorded too. In a nested stack, an unchanged resource first only loses the
+  ids its template no longer lists, and gains the new ones once the top-level
+  deploy succeeds. If the top-level deploy fails and reverts the nested stack,
+  the removed ids come back.
 - **Rules by resource type.** AWS enforces some delete orders that no
   reference in the template expresses. For example, a Lambda function in a VPC
   leaves a network interface in its subnet for some time after the function is
