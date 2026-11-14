@@ -147,7 +147,9 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
       previewOrphanAdoption: async () => ({ adopted: { Param: param }, refusals: [] }),
     });
     expect(result.changes.has('Param')).toBe(true);
-    expect(infos.filter((m) => m.includes('go-to-k/cdkd#6274'))).toHaveLength(1);
+    const notes = infos.filter((m) => m.includes('go-to-k/cdkd#6274'));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('this preview does not show those updates');
   });
 
   it.each([

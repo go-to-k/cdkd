@@ -57,6 +57,7 @@ import {
   healSlashedSsmParameterNames,
   slashedSsmNameHealNote,
   slashedSsmNameHealPendingNote,
+  slashedSsmNameHealAdoptedNote,
 } from '../../../deployment/ssm-slashed-name-heal.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
@@ -436,7 +437,10 @@ export async function computeStackDiff(
   // adoption. Only named here: this preview's resolver reads the records as
   // loaded, before the splice, so no dependent row could show the change.
   if (Object.keys(adoptedRecords ?? {}).length > 0) {
-    healSsmNames({ ...currentState, resources: adoptedRecords });
+    const adopted = { ...currentState, resources: adoptedRecords };
+    for (const heal of healSlashedSsmParameterNames(adopted, template, stackName).heals) {
+      logger.info(slashedSsmNameHealAdoptedNote(heal));
+    }
   }
   let { blocking } = orphanSplice;
 

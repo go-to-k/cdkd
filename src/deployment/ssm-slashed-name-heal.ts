@@ -169,6 +169,19 @@ export function slashedSsmNameHealPendingNote(heal: SlashedSsmNameHeal, stackNam
 }
 
 /**
+ * The line `cdkd diff` prints for a rollback orphan it previews adopting:
+ * the deploy re-spells it after the adoption, but this preview resolves
+ * against the records as loaded, so it shows no dependent update.
+ */
+export function slashedSsmNameHealAdoptedNote(heal: SlashedSsmNameHeal): string {
+  return (
+    safeMsg`SSM parameter ${heal.logicalId} (adopted back): the deploy re-spells its recorded ` +
+    safeMsg`name ${heal.from} as ${heal.to} and updates resources referencing it; this ` +
+    `preview does not show those updates (go-to-k/cdkd#6274)`
+  );
+}
+
+/**
  * Whether `value` reads `logicalId`'s `Ref` (directly or as `${Id}` in
  * `Fn::Sub`): the only read the re-spelling moves (the `Arn` attribute is
  * built without the slash either way).
