@@ -533,14 +533,18 @@ export function buildReport(
 }
 
 /**
- * The `'AWS::X::Y.Attr'` entries of `PHYSICAL_ID_ATTRIBUTES`, read from the
- * resolver source (the script cannot import `src/`, whose `.js` specifiers
- * Node's type stripping does not map). Throws when the set is not found, so a
- * rename fails loudly instead of emptying the allow-list.
+ * The `'AWS::X::Y.Attr'` entries of a resolver set (`PHYSICAL_ID_ATTRIBUTES`
+ * by default, or `CFN_REJECTED_GETATT_ATTRIBUTES`), read from the resolver
+ * source (the script cannot import `src/`, whose `.js` specifiers Node's type
+ * stripping does not map). Throws when the set is not found, so a rename fails
+ * loudly instead of emptying the allow-list.
  */
-export function parsePhysicalIdAttributes(source: string): Set<string> {
-  const block = /PHYSICAL_ID_ATTRIBUTES[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(source);
-  if (!block) throw new Error('PHYSICAL_ID_ATTRIBUTES not found in getatt-refusals.ts');
+export function parseResolverAttributeSet(
+  source: string,
+  setName = 'PHYSICAL_ID_ATTRIBUTES'
+): Set<string> {
+  const block = new RegExp(`\\bconst ${setName}[^=]*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`).exec(source);
+  if (!block) throw new Error(`${setName} not found in getatt-refusals.ts`);
   return new Set([...block[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!));
 }
 
@@ -555,7 +559,7 @@ export function collectRefusedAttributes(
   sdkBackedTypes: ReadonlySet<string>,
   cachedKeysByType: ReadonlyMap<string, ReadonlySet<string>>,
   resolverText: string,
-  physicalIdAttributes: ReadonlySet<string>
+  excludedAttributes: ReadonlySet<string>
 ): RefusedAttributes[] {
   const out: RefusedAttributes[] = [];
   for (const f of fixtures) {
@@ -565,7 +569,7 @@ export function collectRefusedAttributes(
       .filter((p) => !p.includes('/') && !p.includes('.'))
       .filter((p) => !cached.has(p))
       .filter((p) => !resolverText.includes(`'${p}'`))
-      .filter((p) => !physicalIdAttributes.has(`${f.resourceType}.${p}`))
+      .filter((p) => !excludedAttributes.has(`${f.resourceType}.${p}`))
       // The runtime keeps serving a member of the type's identifier (not
       // CodeCommit's, whose physical id is the name) and its own ARN.
       .filter(
@@ -730,15 +734,19 @@ function loadReport(): SdkAttrCoverageReport {
     resolverText += source;
     for (const t of collectConstructAttributeTypes(source)) constructAttributeTypes.add(t);
   }
-  const physicalIdAttributes = parsePhysicalIdAttributes(
-    readFileSync(join(RESOLVER_DIR, 'getatt-refusals.ts'), 'utf8')
-  );
+  // A CloudFormation-rejected attribute is excluded too: refusing it IS the
+  // parity, so it is no gap to close.
+  const refusalsSource = readFileSync(join(RESOLVER_DIR, 'getatt-refusals.ts'), 'utf8');
+  const excludedAttributes = new Set([
+    ...parseResolverAttributeSet(refusalsSource),
+    ...parseResolverAttributeSet(refusalsSource, 'CFN_REJECTED_GETATT_ATTRIBUTES'),
+  ]);
   const refused = collectRefusedAttributes(
     fixtures,
     sdkBackedTypes,
     cachedKeysByType,
     resolverText,
-    physicalIdAttributes
+    excludedAttributes
   );
   return buildReport(
     fixtures,

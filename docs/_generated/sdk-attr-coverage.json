@@ -16,18 +16,6 @@
       ]
     },
     {
-      "resourceType": "AWS::CloudFormation::Stack",
-      "attributes": [
-        "ChangeSetId",
-        "CreationTime",
-        "LastUpdateTime",
-        "Outputs",
-        "ParentId",
-        "RootId",
-        "StackStatus"
-      ]
-    },
-    {
       "resourceType": "AWS::DocDB::DBCluster",
       "attributes": [
         "ServerlessV2PlatformVersion"
@@ -116,7 +104,7 @@
     "noArnAttr": 73,
     "gap": 0,
     "knownGap": 0,
-    "refused": 43
+    "refused": 36
   },
   "types": [
     {

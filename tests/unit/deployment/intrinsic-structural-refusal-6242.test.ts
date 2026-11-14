@@ -83,10 +83,56 @@ describe('structural GetAtt refusal (#6242)', () => {
   it.each([
     ['AWS::CloudFormation::WaitConditionHandle', 'Id'],
     ['AWS::IAM::UserToGroupAddition', 'Id'],
+    ['AWS::CloudFormation::Stack', 'StackId'],
+    ['AWS::CloudFormation::Stack', 'StackStatus'],
+    ['AWS::CloudFormation::Stack', 'Outputs'],
   ])('refuses %s %s, which CloudFormation rejects at template validation', async (type, attr) => {
-    expect(await refusalOf(resolve(type, 'the-physical-id', attr, 'sdk'))).toBeInstanceOf(
-      IntrinsicResolutionRefusalError
+    const error = await refusalOf(resolve(type, 'the-physical-id', attr, 'sdk'));
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(String((error as Error).message)).toContain('CloudFormation does not support this attribute');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('gives the rejection, not the strict-getatt remedy, under --strict-getatt', async () => {
+    // Dropping the flag would not help: the attribute is refused either way.
+    const error = await refusalOf(
+      new IntrinsicFunctionResolver('us-east-1', { strictGetAtt: true }).resolve(
+        { 'Fn::GetAtt': ['X', 'StackStatus'] },
+        {
+          template: { Resources: { X: { Type: 'AWS::CloudFormation::Stack', Properties: {} } } },
+          resources: {
+            X: { physicalId: 'p', resourceType: 'AWS::CloudFormation::Stack', properties: {}, attributes: {}, dependencies: [] },
+          },
+        } as ResolverContext
+      )
     );
+    expect(String((error as Error).message)).toContain('CloudFormation does not support this attribute');
+    expect(String((error as Error).message)).not.toContain('strict-getatt');
+  });
+
+  it('keeps serving a nested stack Outputs.<Key> the record holds', async () => {
+    await expect(
+      new IntrinsicFunctionResolver('us-east-1').resolve({ 'Fn::GetAtt': ['X', 'Outputs.Foo'] }, {
+        template: { Resources: { X: { Type: 'AWS::CloudFormation::Stack', Properties: {} } } },
+        resources: {
+          X: {
+            physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/X',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: { 'Outputs.Foo': 'bar' },
+            dependencies: [],
+          },
+        },
+      } as ResolverContext)
+    ).resolves.toBe('bar');
+  });
+
+  it('refuses a nested stack StackId on its synthetic ARN physical id, even on a Cloud Control record', async () => {
+    // A nested stack's physical id starts with `arn:`, so no ARN-shape test
+    // stops it; StackId would serve a `cdkd-local` ARN no AWS API knows.
+    const synthetic = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
+    const error = await refusalOf(resolve('AWS::CloudFormation::Stack', synthetic, 'StackId', 'cc-api'));
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
   });
 
   it.each([

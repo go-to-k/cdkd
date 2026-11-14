@@ -266,11 +266,21 @@ export function isOwnArnAttribute(resourceType: string, attributeName: string): 
  * in `Fn::GetAtt` at template validation ("resource X does not support
  * attribute type Id in Fn::GetAtt", measured us-east-1, 2026-11-14). Each is
  * its type's `primaryIdentifier`, which the fallback would otherwise keep
- * serving; refused instead, for parity.
+ * serving; refused instead, for parity. A nested stack's are every read-only
+ * attribute but a dotted `Outputs.<Key>` (each probed by a change set,
+ * us-east-1, 2026-11-14), refused for the same parity.
  */
 export const CFN_REJECTED_GETATT_ATTRIBUTES: ReadonlySet<string> = new Set([
   'AWS::CloudFormation::WaitConditionHandle.Id',
   'AWS::IAM::UserToGroupAddition.Id',
+  'AWS::CloudFormation::Stack.ChangeSetId',
+  'AWS::CloudFormation::Stack.CreationTime',
+  'AWS::CloudFormation::Stack.LastUpdateTime',
+  'AWS::CloudFormation::Stack.Outputs',
+  'AWS::CloudFormation::Stack.ParentId',
+  'AWS::CloudFormation::Stack.RootId',
+  'AWS::CloudFormation::Stack.StackId',
+  'AWS::CloudFormation::Stack.StackStatus',
 ]);
 
 /**
@@ -279,7 +289,8 @@ export const CFN_REJECTED_GETATT_ATTRIBUTES: ReadonlySet<string> = new Set([
  * deploying the same template (us-east-1, 2026-11-14): CloudFormation answers
  * the same value as the resource's own `Ref`, and so does cdkd. Anything not
  * listed here that reaches the physical-id fallback is refused (see
- * `guardedPhysicalIdFallback`). Measured and deliberately ABSENT:
+ * `guardedPhysicalIdFallback`, which also keeps a Cloud Control record's and
+ * the type's own identifier / ARN). Measured and deliberately ABSENT:
  * `AWS::CloudFormation::WaitConditionHandle.Id` and
  * `AWS::IAM::UserToGroupAddition.Id`, which CloudFormation rejects at
  * template validation ("does not support attribute type Id").
@@ -333,6 +344,21 @@ export function guardedPhysicalIdFallback(
   // caller has had one since this PR renamed `_context`.
   context?: ResolverContext
 ): string {
+  // go-to-k/cdkd#6242: CloudFormation rejects these at template validation,
+  // so the verdict depends on nothing recorded: decided first, before the heal
+  // probe (a re-read cannot change it) and the strict arm (whose "drop
+  // --strict-getatt" remedy would not help).
+  if (CFN_REJECTED_GETATT_ATTRIBUTES.has(`${resourceType}.${attributeName}`)) {
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ${displayMasked(resolver, resourceType, context)}: ` +
+          `CloudFormation does not support this attribute in Fn::GetAtt and rejects the template at validation. ` +
+          (resourceType === 'AWS::CloudFormation::Stack'
+            ? `Remove the reference; a nested stack supports only Outputs.<Key> attributes.`
+            : `Remove the reference.`)
+      )
+    );
+  }
   // Issue #1852: under the heal wrapper's PROBE context, do not decide — the
   // record may simply be stale, and the wrapper re-reads it before any
   // verdict. Raised before the shape test on purpose: the warn-and-return
@@ -413,12 +439,11 @@ export function guardedPhysicalIdFallback(
       : undefined;
   const coverage = getPropertyCoverage(resourceType);
   if (
-    CFN_REJECTED_GETATT_ATTRIBUTES.has(`${resourceType}.${attributeName}`) ||
-    (record?.provisionedBy !== 'cc-api' &&
-      coverage?.readOnly.has(topAttribute) === true &&
-      !isPhysicalIdIdentifier(resourceType, coverage.primaryIdentifier, topAttribute) &&
-      !PHYSICAL_ID_ATTRIBUTES.has(`${resourceType}.${attributeName}`) &&
-      !(isOwnArnAttribute(resourceType, attributeName) && physicalId.startsWith('arn:')))
+    record?.provisionedBy !== 'cc-api' &&
+    coverage?.readOnly.has(topAttribute) === true &&
+    !isPhysicalIdIdentifier(resourceType, coverage.primaryIdentifier, topAttribute) &&
+    !PHYSICAL_ID_ATTRIBUTES.has(`${resourceType}.${attributeName}`) &&
+    !(isOwnArnAttribute(resourceType, attributeName) && physicalId.startsWith('arn:'))
   ) {
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
