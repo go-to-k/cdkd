@@ -164,6 +164,27 @@ describe('DeployEngine — the row of an in-place-path replacement (go-to-k/cdkd
     expect(rows[0]).not.toContain('updated');
   });
 
+  it('renders `replaced` on the partial warning row too', async () => {
+    // The create-then-delete replacement whose old-resource delete did not
+    // land: the row is a WARN naming the reason, and must still say replaced.
+    provider.update!.mockResolvedValue({
+      physicalId: 'new-queue',
+      wasReplaced: true,
+      outcome: 'partial',
+      reason: 'the old queue was not deleted',
+    });
+
+    await makeEngine().deploy(stackName, template).catch(() => undefined);
+
+    const rows = logLines.filter(
+      (line) => line.startsWith('warn ') && line.includes('✓') && line.includes(TYPE)
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain('replaced');
+    expect(rows[0]).toContain('the old queue was not deleted');
+    expect(rows[0]).not.toContain('updated');
+  });
+
   it('still renders `updated` for a plain in-place update', async () => {
     provider.update!.mockResolvedValue({ physicalId: 'old-queue', wasReplaced: false });
 

@@ -164,7 +164,7 @@ CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-
 # Match only PER-RESOURCE status lines (`<glyph> <id> (AWS::Type) <verb>`), never
 # the run summary, which says "created" / "updated" / "deleted" on a no-op too.
 PHASE3_CHANGES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE3_LOG}" \
-  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|deleted)' || true)
+  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|replaced|deleted)' || true)
 # Sentinel: the same per-resource pattern MUST match phase 2's two updates, so a
 # reworded status line fails here instead of letting phase 3 pass on no match.
 PHASE2_UPDATES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE2_LOG}" \

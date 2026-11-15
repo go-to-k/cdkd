@@ -247,7 +247,7 @@ CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-
 # bare word grep. ANSI colour codes sit between the type and the verb, so strip
 # them before matching rather than trying to regex across them.
 PHASE3_CHANGES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE3_LOG}" \
-  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|deleted)' || true)
+  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|replaced|deleted)' || true)
 if [[ -n "${PHASE3_CHANGES}" ]]; then
   echo "FAIL: the unchanged re-deploy reported resource changes — phantom drift on the"
   echo "    dropped flags. Offending lines:"

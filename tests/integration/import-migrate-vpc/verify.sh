@@ -178,7 +178,7 @@ echo "[verify] step 5: cdkd deploy with an unchanged template"
 (cd "${TEST_DIR}" && ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}") 2>&1 | tee "${WORK}/deploy.log"
 # cdkd colours every resource line, so strip ANSI before matching the row.
-if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -qE '✓ .* (created|updated|deleted)'; then
+if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -qE '✓ .* (created|updated|replaced|deleted)'; then
   echo "[verify] FAIL: an unchanged deploy after the migration created, updated or deleted resources (issue #3661)"
   exit 1
 fi
