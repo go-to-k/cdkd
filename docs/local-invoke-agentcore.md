@@ -289,8 +289,8 @@ refers to an ECR repository in the same stack, cdkd uses the deployed image
 URI.
 
 With finch on macOS or Windows, cdkd refuses an invoke whose environment holds
-a decrypted SecureString parameter, or a secret another stack exports, before
-the container starts.
+a decrypted SecureString parameter, or a value another stack exports that
+holds a secret or that cdkd could not check, before the container starts.
 [Local Execution](local-emulation.md) explains the refusal and the ways around
 it.
 
