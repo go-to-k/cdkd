@@ -204,7 +204,7 @@ iam-role-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	102	verify.sh	rc ok, orph 
 iam-role-policies-drift-clean	2026-11-04T17:48:59Z	PASS	341	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-role-prefixed-name-update	2026-11-06T22:51:07Z	PASS	170	verify.sh	#5926 iam-policy split head; rc ok, orph clean
 iam-secret-derived-principals	2026-11-05T09:22:31Z	PASS	153	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans
-iam-sibling-managed-policy-drift	2026-11-15T15:03:33Z	PASS	225	verify.sh	rc ok, orph clean; #6328 pre-fix RED at Phase 2
+iam-sibling-managed-policy-drift	2026-11-15T16:33:50Z	PASS	326	verify.sh	rc ok, orph clean; #6343 pre-fix RED at Phase 9
 iam-user-group-fix-forward-orphan	2026-11-06T19:54:23Z	PASS	211	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
 import-attribute-readback-final	2026-11-04T19:01:45Z	PASS	240	verify.sh	rc ok, orph clean (temp state bucket)
@@ -232,7 +232,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-14T18:31:46Z	PASS	120	verify.sh	rc ok, orph clean
+lambda	2026-11-15T16:33:50Z	PASS	126	verify.sh	rc ok, orph clean; broad run for #6343 deploy-flow change
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
