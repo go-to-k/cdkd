@@ -44,7 +44,11 @@ import {
   producerRecordKey,
 } from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
-import { type ProducerSecretCheck, ProducerSecretLedger } from '../../local/cross-stack-secrets.js';
+import {
+  type ProducerSecretCheck,
+  ProducerSecretReader,
+  servedOutputValue,
+} from '../../local/cross-stack-secrets.js';
 import { quotedOrDescribed } from '../../utils/pasteable-command.js';
 import { regionShown } from '../region-options.js';
 
@@ -697,41 +701,18 @@ export async function buildCrossStackResolver(
     statePrefix: opts.statePrefix,
   };
 
-  // go-to-k/cdkd#6337: what each served value's producer state says is a
-  // secret, read by cdkd's own post-pass beside cdk-local's contract.
-  const secrets = new ProducerSecretLedger();
-  // The index entry carries the value alone, so its producer's state is read
-  // here; a record that cannot be read leaves the value unverified, which the
-  // argv refuses (fail closed). Read once per record.
-  const producerReads = new Map<string, Promise<unknown>>();
-  const noteIndexedProducer = async (
-    producerStack: string,
-    producerRegion: string,
-    served: string
-  ): Promise<void> => {
-    const key = producerRecordKey(producerStack, producerRegion);
-    let read = producerReads.get(key);
-    if (read === undefined) {
-      read = Promise.resolve()
-        .then(() => stateBackend.getState(producerStack, producerRegion))
-        .then(
-          (got) => got?.state,
-          (err: unknown) => {
-            logger.debug(
-              `${prefix}: state read failed for ${producerStack} (${producerRegion}) while checking an exports-index value for secrets: ${describeAwsFailure(err).detail}`
-            );
-            return undefined;
-          }
-        );
-      producerReads.set(key, read);
-    }
-    const state = await read;
-    if (state === undefined || state === null) secrets.noteUnverified(served);
-    else secrets.noteProducerState(state);
-  };
+  // go-to-k/cdkd#6337: what each served value's producer state (and its
+  // nested children's) says is a secret, read by cdkd's own post-pass beside
+  // cdk-local's contract. The exports index carries the value alone, so its
+  // producer record is read for it; one that cannot be read leaves the value
+  // unverified, which the argv refuses (fail closed).
+  const secrets = new ProducerSecretReader(
+    (stackName, region) => stateBackend.getState(stackName, region),
+    (message) => logger.debug(`${prefix}: ${message}`)
+  );
 
   const resolver: CrossStackResolver & ProducerSecretCheck = {
-    producerSecretReason: (value) => secrets.producerSecretReason(value),
+    producerSecretOf: (value) => secrets.producerSecretOf(value),
     async resolveImport(exportName: string): Promise<string | undefined> {
       // Fast path: consult the persistent exports index.
       try {
@@ -742,13 +723,8 @@ export async function buildCrossStackResolver(
           // downstream env-var carries something useful. The deploy-time
           // intrinsic resolver flattens these in practice but the index
           // value is the source of truth here, so we mirror its shape.
-          const served =
-            typeof value === 'string'
-              ? value
-              : typeof value === 'number' || typeof value === 'boolean'
-                ? String(value)
-                : JSON.stringify(value);
-          await noteIndexedProducer(entry.producerStack, entry.producerRegion, served);
+          const served = servedOutputValue(value);
+          await secrets.noteIndexed(entry.producerStack, entry.producerRegion, exportName, served);
           return served;
         }
       } catch (err) {
@@ -789,7 +765,7 @@ export async function buildCrossStackResolver(
           // bag also holds every plain Output name, and matching on those
           // bound a local env var to a stack that exports nothing of that name.
           if (importableOutputKeys(got.state).includes(exportName)) {
-            secrets.noteProducerState(got.state);
+            await secrets.noteProducer(ref.stackName, region, got.state);
             const value = got.state.outputs[exportName];
             if (typeof value === 'string') return value;
             if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -809,10 +785,10 @@ export async function buildCrossStackResolver(
       producerRegion: string,
       outputName: string
     ): Promise<string | undefined> {
-      const readOutput = (
+      const readOutput = async (
         got: { state: StackState } | null | undefined,
         recordRegion: string
-      ): string | undefined => {
+      ): Promise<string | undefined> => {
         if (!got) return undefined;
         // Issue #3207. This is the `Fn::GetStackOutput` arm; its
         // `Fn::ImportValue` sibling above is already covered because it tests
@@ -856,7 +832,7 @@ export async function buildCrossStackResolver(
         // defence, and the same reason, as the deploy-side resolver's
         // `Fn::GetStackOutput` arm (issue #2767).
         if (!Object.hasOwn(outputs, outputName)) return undefined;
-        secrets.noteProducerState(got.state);
+        await secrets.noteProducer(producerStack, recordRegion, got.state);
         const value = outputs[outputName];
         if (typeof value === 'string') return value;
         if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -871,7 +847,7 @@ export async function buildCrossStackResolver(
         // case-variant record instead would answer from a record the caller did
         // not name.
         const got = await stateBackend.getState(producerStack, producerRegion);
-        if (got) return readOutput(got, producerRegion);
+        if (got) return await readOutput(got, producerRegion);
         // Issue #1836 round 4: case recovery, the same BOTH-SIDES fold
         // `resolveImport`'s index-miss scan does — this arm had none, and it is
         // reached with a `producerRegion` cdkd does not control. cdk-local's
@@ -894,7 +870,10 @@ export async function buildCrossStackResolver(
           // The RECORD's own region spelling, not the caller's: this arm reads a
           // case-variant record, so a warning naming `producerRegion` would
           // point the reader at a key that does not exist.
-          const recovered = readOutput(await stateBackend.getState(producerStack, region), region);
+          const recovered = await readOutput(
+            await stateBackend.getState(producerStack, region),
+            region
+          );
           if (recovered !== undefined) {
             logger.debug(
               `${prefix}: Fn::GetStackOutput '${producerStack}.${outputName}' resolved from the case-variant state record '${region}' (no record spells '${producerRegion}' exactly).`

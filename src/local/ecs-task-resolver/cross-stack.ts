@@ -1,6 +1,12 @@
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
-import { producerSecretCheckOf, type ProducerSecretCheck } from '../cross-stack-secrets.js';
+import {
+  producerSecretArgvReason,
+  producerSecretCheckOf,
+  producerSecretValueFromReason,
+  type ProducerSecretCheck,
+  type ProducerSecretVerdict,
+} from '../cross-stack-secrets.js';
 import {
   substituteAgainstStateAsync,
   type CrossStackResolver,
@@ -172,7 +178,13 @@ export async function applyCrossStackResolverToTask(
         // A producer's secret is no ARN, and the secrets resolver would name it
         // in its lookup line: it stays dropped, with this reason (go-to-k/cdkd#6337).
         if (watched.seen.producerSecret !== undefined) {
-          redropSecret(task, container, containerName, sName);
+          redropSecret(
+            task,
+            container,
+            containerName,
+            sName,
+            producerSecretValueFromReason(watched.seen.producerSecret)
+          );
           continue;
         }
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
@@ -219,7 +231,7 @@ export async function applyCrossStackResolverToTask(
               reason: `resolved a cross-stack value recorded as the secret mask (${SECRET_MASK}), not the deployed value`,
             }
           : watched.seen.producerSecret !== undefined
-            ? { reason: watched.seen.producerSecret }
+            ? { reason: producerSecretArgvReason(watched.seen.producerSecret) }
             : sub.kind === 'literal'
               ? argvValue(sub.value)
               : { reason: sub.reason };
@@ -267,8 +279,8 @@ export async function applyCrossStackResolverToTask(
 interface ResolvedSeen {
   /** A value that is the secret mask. */
   masked: boolean;
-  /** Why a value holds a producer stack's secret, for the first such value. */
-  producerSecret: string | undefined;
+  /** The producer-secret verdict on the values read, `secret` over `unverified`. */
+  producerSecret: ProducerSecretVerdict | undefined;
 }
 
 /**
@@ -285,7 +297,11 @@ function watchResolved(
   const watch = (v: string | undefined): string | undefined => {
     if (v === undefined) return v;
     if (v === SECRET_MASK) seen.masked = true;
-    seen.producerSecret ??= producerSecrets?.producerSecretReason(v);
+    // `secret` outranks `unverified` when one element reads several values.
+    const verdict = producerSecrets?.producerSecretOf(v);
+    if (verdict === 'secret' || seen.producerSecret === undefined) {
+      seen.producerSecret = verdict ?? seen.producerSecret;
+    }
     return v;
   };
   const resolver: CrossStackResolver = {
@@ -298,16 +314,18 @@ function watchResolved(
 
 /**
  * Re-word the sync pass's "dropped" warning for `Secrets` entry `name` (both
- * the container's line and the task's copy): its ValueFrom resolved to a
- * producer stack's secret (go-to-k/cdkd#6337).
+ * the container's line and the task's copy) with `reason`: its ValueFrom
+ * resolved to a producer stack's secret, or to a value whose producer state
+ * could not be read (go-to-k/cdkd#6337).
  */
 function redropSecret(
   task: ResolvedEcsTask,
   container: ResolvedEcsContainer,
   containerName: string,
-  name: string
+  name: string,
+  reason: string
 ): void {
-  const line = `Secret '${name}' dropped: ValueFrom resolved a cross-stack value holding a secret of the producer stack, rather than naming a Secrets Manager secret or an SSM parameter`;
+  const line = `Secret '${name}' dropped: ${reason}`;
   const own = `Secret '${name}' dropped:`;
   container.warnings = [...container.warnings.filter((w) => !w.startsWith(own)), line];
   const taskOwn = `Container '${containerName}': ${own}`;

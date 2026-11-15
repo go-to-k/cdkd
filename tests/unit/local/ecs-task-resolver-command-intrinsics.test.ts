@@ -818,20 +818,25 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
         dependencies: [],
       },
     },
-    outputs: { Key: plaintext, Bucket: 'producer-bucket' },
+    outputs: {
+      Key: plaintext,
+      KeyArn: `arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/${plaintext}`,
+      Bucket: 'producer-bucket',
+    },
   };
   /**
    * A cdkd-built resolver's shape: it serves the producer's outputs and notes
    * the producer state it read, as `buildCrossStackResolver` does.
    */
-  function producerResolver(): CrossStackResolver {
+  function producerResolver(unverified?: string): CrossStackResolver {
     const ledger = new ProducerSecretLedger();
+    if (unverified !== undefined) ledger.noteUnverified(unverified);
     const serve = (name: string): string | undefined => {
       ledger.noteProducerState(producerState);
       return (producerState.outputs as Record<string, string>)[name];
     };
     return {
-      producerSecretReason: (v: string) => ledger.producerSecretReason(v),
+      producerSecretOf: (v: string) => ledger.producerSecretOf(v),
       resolveImport: async (exportName: string) => serve(exportName.replace(/^Producer-/, '')),
       resolveGetStackOutput: async (_stack: string, _region: string, output: string) =>
         serve(output),
@@ -842,6 +847,7 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     ['Fn::ImportValue', { 'Fn::ImportValue': 'Producer-Key' }],
     ['Fn::GetStackOutput', { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Key' } }],
     ['a Fn::Join of Fn::ImportValue', { 'Fn::Join': ['', ['--key=', { 'Fn::ImportValue': 'Producer-Key' }]] }],
+    ['an export holding the key inside a longer value (its ARN)', { 'Fn::ImportValue': 'Producer-KeyArn' }],
   ])('refuses %s of a producer secret on the Command argv', async (_label, element) => {
     const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
       stateResources: {},
@@ -927,6 +933,26 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     );
     expect(task.warnings).toContainEqual(
       expect.stringMatching(/^Container 'cli': Secret 'TOKEN' dropped: ValueFrom resolved a cross-stack/)
+    );
+  });
+
+  it('refuses on the argv, and drops as a ValueFrom, a value whose producer state was unreadable', async () => {
+    const stack = buildStack({
+      Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
+      Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Bucket' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver('producer-bucket'),
+    });
+    expect(dockerArgs(task)).not.toContain('producer-bucket');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value whose producer stack's state cdkd could not read/
+    );
+    expect(task.containers[0]!.secrets).toEqual([]);
+    expect(task.containers[0]!.warnings).toContainEqual(
+      expect.stringMatching(/^Secret 'TOKEN' dropped: ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read/)
     );
   });
 

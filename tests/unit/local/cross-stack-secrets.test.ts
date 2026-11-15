@@ -4,7 +4,6 @@
  */
 import { describe, expect, it } from 'vite-plus/test';
 import {
-  holdsNeedle,
   producerSecretCheckOf,
   producerSecretNeedles,
   ProducerSecretLedger,
@@ -32,29 +31,56 @@ describe('producerSecretNeedles', () => {
             Token: '{{resolve:secretsmanager:s}}',
             ClientSecret: { Nested: ['nested-secret-value'] },
             SecretArn: 'arn:aws:secretsmanager:::secret:x',
+            MasterUserSecret: { SecretArn: 'arn:aws:secretsmanager:::secret:db-AbCd' },
           },
         },
         Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'b', attributes: { Arn: 'a' } },
       },
     });
-    expect(new Set(needles)).toEqual(
+    expect(needles.segments).toEqual(['da2-key-segment']);
+    // `MasterUserSecret.SecretArn` is an ARN by its dotted name, as the
+    // same-stack check reads it.
+    expect(new Set(needles.leaves)).toEqual(
       new Set(['da2-key-segment', 'secret-access-key-value', 'nested-secret-value'])
     );
   });
 
   it('reads a malformed state as holding nothing', () => {
-    expect(producerSecretNeedles(null)).toEqual([]);
-    expect(producerSecretNeedles({ resources: [] })).toEqual([]);
-    expect(producerSecretNeedles({ resources: { A: { attributes: 'x' } } })).toEqual([]);
+    const none = { segments: [], leaves: [] };
+    expect(producerSecretNeedles(null)).toEqual(none);
+    expect(producerSecretNeedles({ resources: [] })).toEqual(none);
+    expect(producerSecretNeedles({ resources: { A: { attributes: 'x' } } })).toEqual(none);
   });
 });
 
-describe('holdsNeedle', () => {
-  it('matches a needle whole, or inside a value from four characters', () => {
-    expect(holdsNeedle('abc', ['abc'])).toBe(true);
-    expect(holdsNeedle('x-abc-y', ['abc'])).toBe(false);
-    expect(holdsNeedle('x-abcd-y', ['abcd'])).toBe(true);
-    expect(holdsNeedle('other', ['abcd'])).toBe(false);
+describe('ProducerSecretLedger matching', () => {
+  const ledger = new ProducerSecretLedger();
+  ledger.noteProducerState({
+    resources: {
+      K: { resourceType: 'AWS::AppSync::ApiKey', physicalId: 'a|abcd' },
+      N: {
+        resourceType: 'AWS::CloudFormation::Stack',
+        physicalId: 'n',
+        attributes: {
+          'Outputs.PasswordPolicy': 'strict',
+          'Outputs.ClientSecret': 'a-long-client-secret-value',
+        },
+      },
+    },
+  });
+  it('matches an id segment whole, or inside a value from four characters', () => {
+    expect(ledger.producerSecretOf('abcd')).toBe('secret');
+    expect(ledger.producerSecretOf('x-abcd-y')).toBe('secret');
+  });
+  it('matches an attribute leaf whole, and inside a value only from sixteen characters', () => {
+    expect(ledger.producerSecretOf('strict')).toBe('secret');
+    expect(ledger.producerSecretOf('mode=strict')).toBeUndefined();
+    expect(ledger.producerSecretOf('k=a-long-client-secret-value')).toBe('secret');
+  });
+  it('reports a noted unverified value as such, and nothing else', () => {
+    ledger.noteUnverified('maybe');
+    expect(ledger.producerSecretOf('maybe')).toBe('unverified');
+    expect(ledger.producerSecretOf('other')).toBeUndefined();
   });
 });
 
@@ -67,12 +93,10 @@ describe('producerSecretCheckOf', () => {
     const resolver = {
       resolveImport: async () => undefined,
       resolveGetStackOutput: async () => undefined,
-      producerSecretReason: (v: string) => ledger.producerSecretReason(v),
+      producerSecretOf: (v: string) => ledger.producerSecretOf(v),
     };
-    expect(producerSecretCheckOf(resolver)?.producerSecretReason('da2-secretkey')).toMatch(
-      /holding a secret of the producer stack/
-    );
-    expect(producerSecretCheckOf(resolver)?.producerSecretReason('public')).toBeUndefined();
+    expect(producerSecretCheckOf(resolver)?.producerSecretOf('da2-secretkey')).toBe('secret');
+    expect(producerSecretCheckOf(resolver)?.producerSecretOf('public')).toBeUndefined();
     expect(
       producerSecretCheckOf({
         resolveImport: async () => undefined,

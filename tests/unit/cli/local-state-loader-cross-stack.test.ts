@@ -1070,7 +1070,7 @@ describe('buildCrossStackResolver', () => {
       return built;
     }
     const reasonOf = (built: Built, value: string): string | undefined =>
-      producerSecretCheckOf(built.resolver)?.producerSecretReason(value);
+      producerSecretCheckOf(built.resolver)?.producerSecretOf(value);
     const indexEntry = (name: keyof typeof producerState.outputs) => ({
       value: producerState.outputs[name],
       producerStack: 'Producer',
@@ -1086,14 +1086,13 @@ describe('buildCrossStackResolver', () => {
 
       expect(await built.resolver.resolveImport('Producer-Key')).toBe(plaintext);
       expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
-      expect(reasonOf(built, plaintext)).toMatch(/holding a secret of the producer stack/);
-      expect(reasonOf(built, `--key=${plaintext}`)).toMatch(/holding a secret/);
-      expect(reasonOf(built, plaintext)).not.toContain(plaintext);
+      expect(reasonOf(built, plaintext)).toBe('secret');
+      expect(reasonOf(built, `--key=${plaintext}`)).toBe('secret');
 
       expect(await built.resolver.resolveImport('Producer-Secret')).toBe(
         'plaintext-secret-access-key'
       );
-      expect(reasonOf(built, 'plaintext-secret-access-key')).toMatch(/holding a secret/);
+      expect(reasonOf(built, 'plaintext-secret-access-key')).toBe('secret');
 
       // Both polarities: the same producer's non-secret export is not flagged.
       expect(await built.resolver.resolveImport('Producer-Bucket')).toBe('producer-bucket');
@@ -1111,7 +1110,7 @@ describe('buildCrossStackResolver', () => {
       mocks.lookupMock.mockResolvedValue(indexEntry('Producer-Bucket'));
       prime();
       expect(await built.resolver.resolveImport('Producer-Bucket')).toBe('producer-bucket');
-      expect(reasonOf(built, 'producer-bucket')).toMatch(/could not read to check it for secrets/);
+      expect(reasonOf(built, 'producer-bucket')).toBe('unverified');
       expect(reasonOf(built, 'other-value')).toBeUndefined();
       built.dispose();
     });
@@ -1123,7 +1122,7 @@ describe('buildCrossStackResolver', () => {
       expect(await built.resolver.resolveImport('Producer-Bucket')).toBe('producer-bucket');
       expect(reasonOf(built, 'producer-bucket')).toBeUndefined();
       expect(await built.resolver.resolveImport('Producer-Key')).toBe(plaintext);
-      expect(reasonOf(built, plaintext)).toMatch(/holding a secret of the producer stack/);
+      expect(reasonOf(built, plaintext)).toBe('secret');
       built.dispose();
     });
 
@@ -1137,8 +1136,81 @@ describe('buildCrossStackResolver', () => {
       expect(await built.resolver.resolveGetStackOutput('Producer', 'us-east-1', 'Producer-Key')).toBe(
         plaintext
       );
-      expect(reasonOf(built, plaintext)).toMatch(/holding a secret of the producer stack/);
+      expect(reasonOf(built, plaintext)).toBe('secret');
       built.dispose();
+    });
+    it('the fast path flags a stale index value the producer record no longer exports', async () => {
+      const built = await makeResolver();
+      mocks.lookupMock.mockResolvedValue({
+        value: 'old-value-from-before',
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+      });
+      mocks.getStateMock.mockResolvedValue({ state: producerState, etag: 'e' });
+      expect(await built.resolver.resolveImport('Producer-Bucket')).toBe('old-value-from-before');
+      expect(reasonOf(built, 'old-value-from-before')).toBe('unverified');
+      built.dispose();
+    });
+
+    describe('a nested child stack holding the secret', () => {
+      const childKey = 'da2-childstackplaintextkey';
+      const parent = {
+        stackName: 'Producer',
+        resources: {
+          Child: {
+            physicalId: 'arn:cdkd-local:us-east-1:123:nested-stack/Producer/Child',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: { 'Outputs.ApiKeyOut': childKey, 'Outputs.BucketOut': 'child-bucket' },
+            dependencies: [],
+          },
+        },
+        outputs: { 'Producer-Key': childKey, 'Producer-Bucket': 'child-bucket' },
+      };
+      const child = {
+        stackName: 'Producer~Child',
+        resources: {
+          ApiKey: {
+            physicalId: `apiid|${childKey}`,
+            resourceType: 'AWS::AppSync::ApiKey',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: { ApiKeyOut: childKey, BucketOut: 'child-bucket' },
+      };
+
+      it("flags a parent export of a child's secret, read from the child's record", async () => {
+        const built = await makeResolver();
+        mocks.lookupMock.mockResolvedValue(undefined);
+        mocks.getStateMock.mockImplementation(async (stack: string) =>
+          stack === 'Producer'
+            ? { state: parent, etag: 'e' }
+            : stack === 'Producer~Child'
+              ? { state: child, etag: 'e' }
+              : null
+        );
+        expect(await built.resolver.resolveImport('Producer-Key')).toBe(childKey);
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Producer~Child', 'us-east-1');
+        expect(reasonOf(built, childKey)).toBe('secret');
+        expect(reasonOf(built, 'child-bucket')).toBeUndefined();
+        built.dispose();
+      });
+
+      it("leaves the row's outputs unverified when the child record cannot be read", async () => {
+        const built = await makeResolver();
+        mocks.lookupMock.mockResolvedValue(undefined);
+        mocks.getStateMock.mockImplementation(async (stack: string) =>
+          stack === 'Producer' ? { state: parent, etag: 'e' } : null
+        );
+        expect(await built.resolver.resolveGetStackOutput('Producer', 'us-east-1', 'Producer-Key')).toBe(
+          childKey
+        );
+        expect(reasonOf(built, childKey)).toBe('unverified');
+        expect(reasonOf(built, 'unrelated')).toBeUndefined();
+        built.dispose();
+      });
     });
   });
 
