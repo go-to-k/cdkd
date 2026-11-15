@@ -374,10 +374,10 @@ export function secretValueFromReason(
 /**
  * The secret read `value` makes from state, named as `LogicalId` or
  * `LogicalId.Attribute` (never the value), or `undefined` when it reads none.
- * For a value that is a NAME or a PATH (a `ValueFrom`, a `Host.SourcePath`):
- * only the rules a recorded value backs apply, never the attribute-name
- * heuristic, since CDK's nested-stack secret reaches a `ValueFrom` as
- * `Outputs.<...>Secret<hash>Ref`, an ARN.
+ * For a value that is a NAME or a PATH (a `ValueFrom`, a `Host.SourcePath`)
+ * the attribute-name heuristic skips a nested stack's outputs, which its
+ * `secretNamedAttributes` governs: CDK's nested-stack secret reaches a
+ * `ValueFrom` as `Outputs.<...>Secret<hash>Ref`, an ARN.
  */
 export function secretValueRead(
   value: unknown,
@@ -400,8 +400,8 @@ function mayHoldSegment(stored: unknown, segment: string): boolean {
 
 /**
  * The first read of a secret from state, or `undefined`. An `Fn::GetAtt` (or
- * a dotted `${Id.Attr}`) counts when the attribute's type says it is one (or
- * its name, under `byName`), it is recorded as the mask, it is a nested stack's output the record
+ * a dotted `${Id.Attr}`) counts when the attribute's type or name says it is
+ * one (the name not for a nested stack's output unless `byName`), it is recorded as the mask, it is a nested stack's output the record
  * names in `secretNamedAttributes` (a child's secret passed up), or the
  * record's physical id embeds a secret ({@link secretPhysicalIdSegment}) and
  * the recorded value may hold it ({@link mayHoldSegment}) (the ApiKey's `Arn`
@@ -424,7 +424,8 @@ function secretRead(
     const secretNamed = (record as { secretNamedAttributes?: unknown } | undefined)
       ?.secretNamedAttributes;
     if (
-      (options.byName && isSensitiveAttributeName(attribute)) ||
+      ((options.byName || record?.resourceType !== 'AWS::CloudFormation::Stack') &&
+        isSensitiveAttributeName(attribute)) ||
       isSecretValuedAttribute(record?.resourceType, attribute) ||
       stored === SECRET_MASK ||
       (record?.resourceType === 'AWS::CloudFormation::Stack' &&

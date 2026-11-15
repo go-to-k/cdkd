@@ -288,6 +288,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
     it('drops a Secrets ValueFrom whose recorded value is a secret, naming no value', () => {
       const secrets = [
         { Name: 'KEY', ValueFrom: { 'Fn::GetAtt': ['ApiKey', 'ApiKey'] } },
+        { Name: 'SAK', ValueFrom: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] } },
         { Name: 'MASKED', ValueFrom: { 'Fn::GetAtt': ['Cr', 'Token'] } },
         { Name: 'CHILD', ValueFrom: { 'Fn::GetAtt': ['Child', 'Outputs.Key'] } },
       ];
@@ -297,6 +298,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(JSON.stringify(c)).not.toMatch(/plaintext|\*\*\*/);
       expect(c.warnings).toEqual([
         expect.stringMatching(/^Secret 'KEY' dropped: ValueFrom reads ApiKey\.ApiKey, which holds a secret/),
+        expect.stringMatching(/^Secret 'SAK' dropped: ValueFrom reads Key\.SecretAccessKey, which holds a secret/),
         expect.stringMatching(/^Secret 'MASKED' dropped: ValueFrom reads Cr\.Token, which holds a secret/),
         expect.stringMatching(/^Secret 'CHILD' dropped: ValueFrom reads Child\.Outputs\.Key, which holds a secret/),
       ]);
@@ -518,6 +520,24 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         expect(args.join(' ')).not.toMatch(/plaintext/);
         expect(String(error)).toMatch(/Volumes\[0\] 'v' Host\.SourcePath reads ApiKey, which holds a secret; .*as a -v path/);
         expect(String(error)).not.toMatch(/plaintext/);
+      });
+
+      it.each([
+        ['an AccessKey secret', { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }, 'Key\\.SecretAccessKey'],
+        ['a nested stack output named secret', { 'Fn::GetAtt': ['Child', 'Outputs.Key'] }, 'Child\\.Outputs\\.Key'],
+      ])('refuses a Host.SourcePath that reads %s, before any -v reaches the argv', (_l, read, named) => {
+        const stack = buildStack({ MountPoints: [{ SourceVolume: 'v', ContainerPath: '/data' }] });
+        const td = stack.template.Resources!['TD']!.Properties as Record<string, unknown>;
+        td['Volumes'] = [{ Name: 'v', Host: { SourcePath: { 'Fn::Join': ['', ['/tmp/', read]] } } }];
+        let args: string[] = [];
+        let error: unknown;
+        try {
+          args = dockerArgs(resolveEcsTaskTarget('TD', [stack], { stateResources: secretState }));
+        } catch (err) {
+          error = err;
+        }
+        expect(args.join(' ')).not.toMatch(/plaintext/);
+        expect(String(error)).toMatch(new RegExp(`Host\\.SourcePath reads ${named}, which holds a secret`));
       });
 
       it('still mounts a Host.SourcePath that Refs a non-secret record', () => {
