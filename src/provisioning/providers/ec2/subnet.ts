@@ -65,6 +65,7 @@ export async function prepareSubnetProperties(
 ): Promise<Record<string, unknown>> {
   let prepared = properties;
   for (const key of [
+    'MapPublicIpOnLaunch',
     'EnableDns64',
     'Ipv6CidrBlock',
     'AssignIpv6AddressOnCreation',
@@ -297,9 +298,8 @@ export async function createSubnet(
         );
       }
 
-      // Set MapPublicIpOnLaunch if specified
-      const mapPublicIp = properties['MapPublicIpOnLaunch'];
-      if (mapPublicIp === true || mapPublicIp === 'true') {
+      // Set MapPublicIpOnLaunch if specified (a new subnet holds false).
+      if (coerceCfnBoolean(prepared['MapPublicIpOnLaunch']) === true) {
         await this.ec2Client.send(
           new ModifySubnetAttributeCommand({
             SubnetId: subnetId,
@@ -479,14 +479,27 @@ export async function updateSubnet(
     }
 
     // MapPublicIpOnLaunch IS mutable via ModifySubnetAttribute (issue
-    // #1300). Coerce the CFn string-or-bool spelling and treat an absent
-    // value as the AWS default `false` (CFn resets a removed property to
-    // its default), diff-based so a no-op round-trip (`update(state,
-    // state)` from `cdkd drift --revert`) sends zero mutating calls.
-    const asBool = (v: unknown): boolean => v === true || v === 'true';
-    const newMapPublicIp = asBool(properties['MapPublicIpOnLaunch']);
-    const oldMapPublicIp = asBool(previousProperties['MapPublicIpOnLaunch']);
-    if (newMapPublicIp !== oldMapPublicIp) {
+    // #1300). Compared as booleans (CFn spells one either way), so a no-op
+    // round-trip (`update(state, state)` from `cdkd drift --revert`) sends
+    // zero mutating calls. go-to-k/cdkd#6342: CloudFormation KEEPS the live
+    // value when the property is removed (measured A/B, us-east-1), so an
+    // absent desired value sends nothing, as for EnableDns64. A declared
+    // value over an absent previous one is sent: the live value is unknown.
+    const newMapPublicIp = coerceCfnBoolean(prepared['MapPublicIpOnLaunch']);
+    const oldMapPublicIp = coerceCfnBoolean(previousProperties['MapPublicIpOnLaunch']);
+    // A rollback replay restoring a record without the property may keep a true
+    // the failed deploy turned on, so the restore is not silent about it.
+    if (
+      context?.replayingState === true &&
+      newMapPublicIp === undefined &&
+      prepared['MapPublicIpOnLaunch'] === properties['MapPublicIpOnLaunch'] &&
+      oldMapPublicIp === true
+    ) {
+      this.logger.warn(
+        safeMsg`Subnet ${logicalId}: MapPublicIpOnLaunch may stay true after the rollback, since the restored record does not declare it (CloudFormation keeps a removed value)`
+      );
+    }
+    if (newMapPublicIp !== undefined && newMapPublicIp !== oldMapPublicIp) {
       await this.ec2Client.send(
         new ModifySubnetAttributeCommand({
           SubnetId: physicalId,

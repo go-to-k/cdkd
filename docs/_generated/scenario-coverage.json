@@ -2950,6 +2950,11 @@
       "scenarios": []
     },
     {
+      "name": "subnet-mappublicip-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "synthetics-canary",
       "annotated": false,
       "scenarios": []
@@ -4053,6 +4058,7 @@
     "stepfunctions-s3-definition",
     "stepfunctions-sync-managed-rule",
     "stream-delete-redeploy",
+    "subnet-mappublicip-removal",
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",

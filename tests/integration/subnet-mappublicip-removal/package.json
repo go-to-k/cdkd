@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-subnet-mappublicip-removal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Subnet MapPublicIpOnLaunch removal keeps the live value, as CloudFormation does (#6342)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
