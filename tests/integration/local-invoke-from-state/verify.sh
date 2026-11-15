@@ -40,6 +40,9 @@
 #      parameter, a `Ref` to an SSM-typed template parameter. Dropped without
 #      --from-state; resolved under it (step 4), and under --role-arn too
 #      (step 4e), where the read runs as the caller: the role has no SSM grant.
+#   4j (issue #6325): the region only in the AWS profile (no AWS_REGION): the
+#      env-agnostic stack's ${AWS::Region} / ${AWS::Partition} /
+#      ${AWS::URLSuffix} env values take the state record's region.
 #   5. cdkd destroy --force (consumer, then producer; the secret is force-deleted)
 #
 # Run via `/run-integ local-invoke-from-state` (recommended) or directly:
@@ -529,6 +532,59 @@ grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_ROLE}"
   exit 1
 }
 rm -f "${SECRET_ERR}"
+
+# Step 4j (issue #6325): the region lives ONLY in the AWS profile. The stack is
+# env-agnostic, so ${AWS::Region} / ${AWS::Partition} / ${AWS::URLSuffix} must
+# come from the state record's region, not be dropped. Simulated as in
+# profile-region-default: the caller's credentials are exported, and a temp
+# AWS_CONFIG_FILE's `[default]` carries only `region = ${REGION}`. A subshell,
+# so nothing leaks into step 5.
+echo "[verify] step 4j: --from-state with the region only in the profile (no AWS_REGION) — expect REGION_VALUE=${REGION}"
+PARTITION="$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)"
+URL_SUFFIX="amazonaws.com"
+case "${REGION}" in cn-*) URL_SUFFIX="amazonaws.com.cn" ;; esac
+PROFILE_DIR="$(mktemp -d)"
+PROFILE_ERR="${PROFILE_DIR}/stderr"
+RESULT_PROFILE="$(
+  eval "$(aws configure export-credentials --format env)"
+  printf '[default]\nregion = %s\n' "${REGION}" >"${PROFILE_DIR}/config"
+  : >"${PROFILE_DIR}/no-credentials"
+  unset AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE
+  export AWS_CONFIG_FILE="${PROFILE_DIR}/config"
+  export AWS_SHARED_CREDENTIALS_FILE="${PROFILE_DIR}/no-credentials"
+  [ "$(aws configure get region)" = "${REGION}" ] || {
+    echo "[verify] FAIL: the simulated profile does not resolve ${REGION}" >&2
+    exit 1
+  }
+  ${CLI} local invoke "${STACK}/EchoBucketHandler" --from-state --no-pull \
+    --state-bucket "${STATE_BUCKET}" 2>"${PROFILE_ERR}" | tail -1
+)" || {
+  echo "[verify] FAIL: step 4j invoke failed; stderr tail:"
+  tail -20 "${PROFILE_ERR}"
+  exit 1
+}
+echo "[verify]   response: ${RESULT_PROFILE}"
+grep -qF "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_PROFILE}" || {
+  echo "[verify] FAIL: step 4j did not read the state record (BUCKET_NAME), got: ${RESULT_PROFILE}"
+  exit 1
+}
+grep -qF "\"regionValue\":\"${REGION}\"" <<<"${RESULT_PROFILE}" || {
+  echo "[verify] FAIL: REGION_VALUE (Ref AWS::Region) was not ${REGION} with a profile-only region (#6325), got: ${RESULT_PROFILE}"
+  exit 1
+}
+grep -qF "\"partitionArn\":\"arn:${PARTITION}:s3:::${DEPLOYED_BUCKET}\"" <<<"${RESULT_PROFILE}" || {
+  echo "[verify] FAIL: PARTITION_ARN (\${AWS::Partition}) was dropped with a profile-only region (#6325), got: ${RESULT_PROFILE}"
+  exit 1
+}
+grep -qF "\"suffixHost\":\"s3.${URL_SUFFIX}\"" <<<"${RESULT_PROFILE}" || {
+  echo "[verify] FAIL: SUFFIX_HOST (\${AWS::URLSuffix}) was dropped with a profile-only region (#6325), got: ${RESULT_PROFILE}"
+  exit 1
+}
+if grep -qF 'could not determine the target region' "${PROFILE_ERR}"; then
+  echo "[verify] FAIL: step 4j still warned that the region could not be determined (#6325)"
+  exit 1
+fi
+rm -rf "${PROFILE_DIR}"
 
 echo "[verify] step 5: cdkd destroy --force (consumer, then producer)"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

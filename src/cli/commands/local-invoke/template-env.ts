@@ -62,9 +62,10 @@ export function envHasCrossStackIntrinsic(
  * bag still works for env vars that only reference real logical IDs.
  *
  * Region precedence (mirrors `local-run-task`): `--region` > `AWS_REGION`
- * > `AWS_DEFAULT_REGION` > the synth-derived stack region > the `--aws-emulator`
- * run's default region (go-to-k/cdkd#6270: that default is not a region the
- * user named, so a stack's own region outranks it).
+ * > `AWS_DEFAULT_REGION` > `stackRegion` (the synth-derived stack region, else
+ * the loaded state record's, go-to-k/cdkd#6325) > the `--aws-emulator` run's
+ * default region (go-to-k/cdkd#6270: that default is not a region the user
+ * named, so a stack's own region outranks it).
  *
  * The resolved region is CANONICALIZED (issue #1795) before anything consumes
  * it. That covers all four sources — `--region`, both env vars, and the

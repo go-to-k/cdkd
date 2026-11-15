@@ -730,7 +730,12 @@ async function resolveInvokeTemplateEnvWith(
             }),
         };
         if (envHasIntrinsicValue(templateEnv)) {
-          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+          // An env-agnostic stack has no synth region; the state record's region is
+          // where it was deployed, as `local start-api` uses (go-to-k/cdkd#6325).
+          const pseudo = await resolvePseudoParametersForInvoke(
+            lambda.stack.region ?? loaded.region,
+            options
+          );
           if (pseudo) subContext.pseudoParameters = pseudo;
           // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307).
           Object.assign(

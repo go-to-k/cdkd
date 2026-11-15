@@ -101,7 +101,8 @@ export function resolveEcsConsumerRegion(
  *
  * Tier 1 (pseudo parameters) fires `sts:GetCallerIdentity` once for
  * `${AWS::AccountId}`; region / partition / URL suffix come from the CLI
- * (`--region` → env vars → synth-derived stack region). Tier 2 (state
+ * (`--region` → env vars → synth-derived stack region → the loaded state
+ * record's region, go-to-k/cdkd#6325). Tier 2 (state
  * load) routes through the active {@link LocalStateProvider} so both
  * `--from-state` and `--from-cfn-stack` produce the same downstream
  * context shape (issue #606).
@@ -150,6 +151,37 @@ export async function buildEcsImageResolutionContext(
   // resolver the caller builds afterwards (issue #1836).
   let stateRecordRegion: string | undefined;
 
+  const wantsState =
+    needs.needsStateResources || needs.needsEnvOrSecretSubstitution || wantsStateForTaskRole;
+  if (stateProvider && wantsState) {
+    const loaded = await stateProvider.load(candidate.stackName, candidate.region);
+    if (loaded) {
+      ctx.stateResources = loaded.resources;
+      stateRecordRegion = loaded.region;
+      // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
+      // only when an env / secret / command value needs substituting, as cdk-local gates it.
+      if (needs.needsEnvOrSecretSubstitution) {
+        Object.assign(ctx, await stateSsmParametersForImageContext(stateProvider, candidate));
+      }
+    }
+  } else if (!stateProvider && needs.needsStateResources) {
+    // `--image-override` can replace a same-stack ECR image, so the warning is
+    // noise when one is passed; an uncovered image still fails with the full
+    // remedy (`assertEcsTaskImagesResolvable`).
+    if (!options.imageOverride?.length) {
+      logger.warn(
+        'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) ' +
+          'to substitute the deployed repository URI, or --image-override to build it from a local Dockerfile. ' +
+          'Otherwise the run stops before any container starts.'
+      );
+    }
+  } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
+    logger.warn(
+      'Container Environment / Secrets / Command entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
+        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state. Without a state source Environment / Secrets entries are dropped (per-key warnings will follow) and an intrinsic Command / EntryPoint / HealthCheck.Command element refuses the run.'
+    );
+  }
+
   // Pseudo parameters are needed (a) by image Fn::Sub references to AWS::*,
   // and (b) by env / secret Fn::Join / Fn::Sub bodies when a state
   // provider is set — `ecs.Secret.fromSsmParameter` synthesizes a Fn::Join
@@ -162,6 +194,9 @@ export async function buildEcsImageResolutionContext(
         namedEnvAwsRegion() ??
         process.env['AWS_DEFAULT_REGION'] ??
         candidate.region ??
+        // An env-agnostic stack has no synth region; the state record's region is
+        // where it was deployed (go-to-k/cdkd#6325), so the load runs first.
+        stateRecordRegion ??
         emulatorDefaultRegion()
     );
     if (!region) {
@@ -193,37 +228,6 @@ export async function buildEcsImageResolutionContext(
         urlSuffix: partitionAndSuffix.urlSuffix,
       }),
     };
-  }
-
-  const wantsState =
-    needs.needsStateResources || needs.needsEnvOrSecretSubstitution || wantsStateForTaskRole;
-  if (stateProvider && wantsState) {
-    const loaded = await stateProvider.load(candidate.stackName, candidate.region);
-    if (loaded) {
-      ctx.stateResources = loaded.resources;
-      stateRecordRegion = loaded.region;
-      // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
-      // only when an env / secret / command value needs substituting, as cdk-local gates it.
-      if (needs.needsEnvOrSecretSubstitution) {
-        Object.assign(ctx, await stateSsmParametersForImageContext(stateProvider, candidate));
-      }
-    }
-  } else if (!stateProvider && needs.needsStateResources) {
-    // `--image-override` can replace a same-stack ECR image, so the warning is
-    // noise when one is passed; an uncovered image still fails with the full
-    // remedy (`assertEcsTaskImagesResolvable`).
-    if (!options.imageOverride?.length) {
-      logger.warn(
-        'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) ' +
-          'to substitute the deployed repository URI, or --image-override to build it from a local Dockerfile. ' +
-          'Otherwise the run stops before any container starts.'
-      );
-    }
-  } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
-    logger.warn(
-      'Container Environment / Secrets / Command entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
-        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state. Without a state source Environment / Secrets entries are dropped (per-key warnings will follow) and an intrinsic Command / EntryPoint / HealthCheck.Command element refuses the run.'
-    );
   }
 
   // Issue #1025: a container Image targets an ECR repo whose name does not
