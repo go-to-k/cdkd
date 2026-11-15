@@ -138,7 +138,7 @@ export async function bootAgentCoreContainer(args: {
   } = args;
 
   // If the fromS3 bundle's Code.S3.Bucket is an intrinsic, resolve it against
-  // --from-cfn-stack state BEFORE the image step (which needs a literal bucket
+  // --from-state / --from-cfn-stack state BEFORE the image step (which needs a literal bucket
   // for the S3 download).
   await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext, options);
 

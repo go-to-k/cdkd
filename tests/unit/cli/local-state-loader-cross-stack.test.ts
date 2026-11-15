@@ -94,6 +94,11 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 
 import { buildCrossStackResolver } from '../../../src/cli/commands/local-state-loader.js';
 import { producerSecretCheckOf } from '../../../src/local/cross-stack-secrets.js';
+import {
+  applyCrossStackResolverToTask,
+  resolveEcsTaskTarget,
+} from '../../../src/local/ecs-task-resolver.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 /** The config the S3 client was actually built with (issue #1836 round 3). */
 const awsClientsConfig = (): Record<string, unknown> =>
@@ -1348,6 +1353,56 @@ describe('buildCrossStackResolver', () => {
             'the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state',
         });
         second.dispose();
+        built.dispose();
+      });
+
+      it("keeps an unchecked secret-ARN Secrets ValueFrom through run-task's post-pass, dropping an unchecked non-ARN one (go-to-k/cdkd#6339)", async () => {
+        const dbArn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf';
+        const exporter = {
+          ...reExporter,
+          outputs: { ...reExporter.outputs, DbArn: dbArn },
+        };
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(async (stack: string) => {
+          if (stack === 'Source') throw new Error('AccessDenied');
+          return stack === 'ReExporter' ? { state: exporter, etag: 'e' } : null;
+        });
+        mocks.lookupMock.mockImplementation(async (name: string) => ({
+          value: exporter.outputs[name as keyof typeof exporter.outputs],
+          producerStack: 'ReExporter',
+          producerRegion: 'us-east-1',
+        }));
+        const stack: StackInfo = {
+          stackName: 'Consumer',
+          displayName: 'Consumer',
+          artifactId: 'Consumer',
+          template: {
+            Resources: {
+              TD: {
+                Type: 'AWS::ECS::TaskDefinition',
+                Properties: {
+                  Family: 'fam',
+                  NetworkMode: 'bridge',
+                  ContainerDefinitions: [
+                    {
+                      Name: 'app',
+                      Image: 'busybox:latest',
+                      Secrets: [
+                        { Name: 'DB', ValueFrom: { 'Fn::ImportValue': 'DbArn' } },
+                        { Name: 'OTHER', ValueFrom: { 'Fn::ImportValue': 'Bucket' } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          dependencyNames: [],
+        };
+        const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+        await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: built.resolver });
+        expect(task.containers[0]!.secrets).toEqual([{ name: 'DB', valueFrom: dbArn }]);
+        expect(task.containers[0]!.droppedSecretNames).toEqual(['OTHER']);
         built.dispose();
       });
 

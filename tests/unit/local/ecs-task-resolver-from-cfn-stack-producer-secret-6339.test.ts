@@ -32,6 +32,7 @@ const API_KEY = 'da2-producerkey6339abcdefgh';
 const PRODUCER = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Producer/1111';
 const LOCKED = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Locked/2222';
 const LOCKED_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf';
+const LOCKED_PARAM_ARN = 'arn:aws:ssm:us-east-1:123456789012:parameter/app/db-password';
 
 function stub(command: unknown): unknown {
   if (command instanceof ListExportsCommand) {
@@ -41,6 +42,7 @@ function stub(command: unknown): unknown {
         { Name: 'Producer-Plain', Value: 'plain-value-6339', ExportingStackId: PRODUCER },
         { Name: 'Locked-Bucket', Value: 'locked-bucket-6339', ExportingStackId: LOCKED },
         { Name: 'Locked-SecretArn', Value: LOCKED_SECRET_ARN, ExportingStackId: LOCKED },
+        { Name: 'Locked-ParamArn', Value: LOCKED_PARAM_ARN, ExportingStackId: LOCKED },
       ],
     };
   }
@@ -69,6 +71,7 @@ function stub(command: unknown): unknown {
         : [
             { OutputKey: 'BucketOut', ExportName: 'Locked-Bucket', OutputValue: 'locked-bucket-6339' },
             { OutputKey: 'ArnOut', ExportName: 'Locked-SecretArn', OutputValue: LOCKED_SECRET_ARN },
+            { OutputKey: 'ParamOut', ExportName: 'Locked-ParamArn', OutputValue: LOCKED_PARAM_ARN },
           ];
     return { Stacks: [{ StackName: stackName, Outputs: outputs }] };
   }
@@ -210,11 +213,15 @@ describe('--from-cfn-stack: a producer stack exported secret stays off the docke
     const t = task({
       Secrets: [
         { Name: 'DB', ValueFrom: { 'Fn::ImportValue': 'Locked-SecretArn' } },
+        { Name: 'PARAM', ValueFrom: { 'Fn::ImportValue': 'Locked-ParamArn' } },
         { Name: 'OTHER', ValueFrom: { 'Fn::ImportValue': 'Locked-Bucket' } },
       ],
     });
     await resolve(t);
-    expect(t.containers[0]!.secrets).toEqual([{ name: 'DB', valueFrom: LOCKED_SECRET_ARN }]);
+    expect(t.containers[0]!.secrets).toEqual([
+      { name: 'DB', valueFrom: LOCKED_SECRET_ARN },
+      { name: 'PARAM', valueFrom: LOCKED_PARAM_ARN },
+    ]);
     expect(t.containers[0]!.droppedSecretNames).toEqual(['OTHER']);
   });
 
