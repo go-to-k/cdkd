@@ -1198,6 +1198,47 @@ describe('buildCrossStackResolver', () => {
         built.dispose();
       });
 
+      it('leaves an index-miss scan value unverified when its child record cannot be read', async () => {
+        const built = await makeResolver();
+        mocks.lookupMock.mockResolvedValue(undefined);
+        mocks.getStateMock.mockImplementation(async (stack: string) =>
+          stack === 'Producer' ? { state: parent, etag: 'e' } : null
+        );
+        expect(await built.resolver.resolveImport('Producer-Key')).toBe(childKey);
+        expect(reasonOf(built, childKey)).toBe('unverified');
+        built.dispose();
+      });
+
+      it("judges another producer's equal value by that producer's own records", async () => {
+        const p = {
+          stackName: 'P',
+          resources: {
+            Child: {
+              physicalId: 'arn:cdkd-local:us-east-1:123:nested-stack/P/Child',
+              resourceType: 'AWS::CloudFormation::Stack',
+              properties: {},
+              attributes: { 'Outputs.Region': 'us-east-1' },
+              dependencies: [],
+            },
+          },
+          outputs: { Bucket: 'p-bucket', Region: 'us-east-1' },
+        };
+        const q = { stackName: 'Q', resources: {}, outputs: { Region: 'us-east-1' } };
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(async (stack: string) =>
+          stack === 'P' ? { state: p, etag: 'e' } : stack === 'Q' ? { state: q, etag: 'e' } : null
+        );
+        // P's child is unreadable, but the value served from P is not its row's.
+        expect(await built.resolver.resolveGetStackOutput('P', 'us-east-1', 'Bucket')).toBe('p-bucket');
+        expect(reasonOf(built, 'p-bucket')).toBeUndefined();
+        expect(await built.resolver.resolveGetStackOutput('Q', 'us-east-1', 'Region')).toBe('us-east-1');
+        expect(reasonOf(built, 'us-east-1')).toBeUndefined();
+        // Served from P itself, the same value is unverified.
+        expect(await built.resolver.resolveGetStackOutput('P', 'us-east-1', 'Region')).toBe('us-east-1');
+        expect(reasonOf(built, 'us-east-1')).toBe('unverified');
+        built.dispose();
+      });
+
       it("leaves the row's outputs unverified when the child record cannot be read", async () => {
         const built = await makeResolver();
         mocks.lookupMock.mockResolvedValue(undefined);

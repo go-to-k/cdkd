@@ -16,6 +16,8 @@ import { SECRET_MASK } from '../deployment/secret-redaction.js';
 import { secretSegmentsOfState } from '../provisioning/secret-physical-id.js';
 import { producerRecordKey } from '../state/record-keys.js';
 import { importableOutputKeys } from '../types/state.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../utils/stringify.js';
 import type { CrossStackResolver } from './state-resolver.js';
 
@@ -195,7 +197,7 @@ const MAX_NESTED_DEPTH = 32;
 export class ProducerSecretReader implements ProducerSecretCheck {
   private readonly ledger = new ProducerSecretLedger();
   private readonly reads = new Map<string, Promise<unknown>>();
-  private readonly walked = new Map<string, Promise<void>>();
+  private readonly walked = new Map<string, Promise<ReadonlySet<string>>>();
 
   private readonly getState: (
     stackName: string,
@@ -226,7 +228,7 @@ export class ProducerSecretReader implements ProducerSecretCheck {
           (got) => got?.state ?? undefined,
           (err: unknown) => {
             this.debug(
-              `state read failed for ${stackName} (${region}) while checking a cross-stack value for secrets: ${err instanceof Error ? err.name : 'unknown error'}`
+              `state read failed for ${displayIdent(stackName)} (${displayIdent(region)}) while checking a cross-stack value for secrets: ${describeAwsFailure(err).detail}`
             );
             return undefined;
           }
@@ -238,10 +240,32 @@ export class ProducerSecretReader implements ProducerSecretCheck {
 
   /**
    * Note the secrets of producer `stackName`'s record `state` (already read)
-   * and of its nested children. A child record that cannot be read leaves its
-   * row's recorded outputs unverified.
+   * and of its nested children, then judge `served`, the value read from it.
+   * A child record that cannot be read leaves its row's recorded outputs
+   * unverified, for a value served from THIS producer's tree only: another
+   * producer exporting the same ordinary value (a region name, `true`) is
+   * judged by its own records.
+   *
+   * Every nested row's child is read, whichever output was served: one GET
+   * per child record per run, which a local command can pay.
    */
-  public noteProducer(stackName: string, region: string, state: unknown, depth = 0): Promise<void> {
+  public async noteProducer(
+    stackName: string,
+    region: string,
+    state: unknown,
+    served?: string
+  ): Promise<void> {
+    const unverified = await this.tree(stackName, region, state, 0);
+    if (served !== undefined && unverified.has(served)) this.ledger.noteUnverified(served);
+  }
+
+  /** {@link walk}, once per record. */
+  private tree(
+    stackName: string,
+    region: string,
+    state: unknown,
+    depth: number
+  ): Promise<ReadonlySet<string>> {
     const key = producerRecordKey(stackName, region);
     let walk = this.walked.get(key);
     if (walk === undefined) {
@@ -251,18 +275,25 @@ export class ProducerSecretReader implements ProducerSecretCheck {
     return walk;
   }
 
+  /**
+   * Note the needles of `state` and its nested children; return the output
+   * leaves of the rows whose child record could not be read.
+   */
   private async walk(
     stackName: string,
     region: string,
     state: unknown,
     depth: number
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string>> {
     this.ledger.noteProducerState(state);
+    const unverified = new Set<string>();
     const resources =
       state !== null && typeof state === 'object'
         ? (state as { resources?: unknown }).resources
         : undefined;
-    if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) return;
+    if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) {
+      return unverified;
+    }
     await Promise.all(
       Object.entries(resources).map(async ([logicalId, record]) => {
         if (record === null || typeof record !== 'object') return;
@@ -271,14 +302,17 @@ export class ProducerSecretReader implements ProducerSecretCheck {
         const childName = `${stackName}~${logicalId}`;
         const child = depth < MAX_NESTED_DEPTH ? await this.read(childName, region) : undefined;
         if (child !== undefined) {
-          await this.noteProducer(childName, region, child, depth + 1);
+          for (const leaf of await this.tree(childName, region, child, depth + 1)) {
+            unverified.add(leaf);
+          }
           return;
         }
         for (const { leaf } of namedLeaves('', r.attributes)) {
-          if (isPlaintext(leaf)) this.ledger.noteUnverified(leaf);
+          if (isPlaintext(leaf)) unverified.add(leaf);
         }
       })
     );
+    return unverified;
   }
 
   /**
@@ -298,7 +332,7 @@ export class ProducerSecretReader implements ProducerSecretCheck {
       this.ledger.noteUnverified(served);
       return;
     }
-    await this.noteProducer(producerStack, producerRegion, state);
+    await this.noteProducer(producerStack, producerRegion, state, served);
     const outputs = (state as { outputs?: unknown }).outputs;
     const current =
       outputs !== null &&

@@ -765,11 +765,9 @@ export async function buildCrossStackResolver(
           // bag also holds every plain Output name, and matching on those
           // bound a local env var to a stack that exports nothing of that name.
           if (importableOutputKeys(got.state).includes(exportName)) {
-            await secrets.noteProducer(ref.stackName, region, got.state);
-            const value = got.state.outputs[exportName];
-            if (typeof value === 'string') return value;
-            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-            return JSON.stringify(value);
+            const served = servedOutputValue(got.state.outputs[exportName]);
+            await secrets.noteProducer(ref.stackName, region, got.state, served);
+            return served;
           }
         } catch (err) {
           logger.debug(
@@ -832,11 +830,9 @@ export async function buildCrossStackResolver(
         // defence, and the same reason, as the deploy-side resolver's
         // `Fn::GetStackOutput` arm (issue #2767).
         if (!Object.hasOwn(outputs, outputName)) return undefined;
-        await secrets.noteProducer(producerStack, recordRegion, got.state);
-        const value = outputs[outputName];
-        if (typeof value === 'string') return value;
-        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-        return JSON.stringify(value);
+        const served = servedOutputValue(outputs[outputName]);
+        await secrets.noteProducer(producerStack, recordRegion, got.state, served);
+        return served;
       };
       try {
         // EXACT spelling first, for the same reason `loadStateForStack`'s
