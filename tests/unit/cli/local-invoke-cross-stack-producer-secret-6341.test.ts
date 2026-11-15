@@ -110,7 +110,8 @@ vi.mock('../../../src/local/rie-client.js', async (importOriginal) => ({
 
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import { bootAgentCoreContainer } from '../../../src/cli/commands/local-invoke-agentcore/container.js';
-import { releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { resolveFromS3BucketIntrinsic } from '../../../src/cli/commands/local-invoke-agentcore.js';
+import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
 
 /** An export as the cdkd-built resolver serves it: a value and its producer's verdict. */
 type Export = { value: string; verdict?: ProducerSecretVerdict };
@@ -460,5 +461,47 @@ describe('under finch on macOS, a producer secret is refused before docker run (
     templateEnv = { TABLE: importOf('PlainExport') };
     await bootAgent();
     expect(envFlags(dockerRun().argv)).toContain(`TABLE=${PLAIN}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invoke-agentcore fromS3 Code.S3.Bucket: resolved, never logged when judged
+// ---------------------------------------------------------------------------
+
+describe('invoke-agentcore fromS3 bucket intrinsic: a judged value is not logged (go-to-k/cdkd#6341)', () => {
+  async function resolveBucket(name: string): Promise<{ bucket: unknown; info: string }> {
+    const resolved = {
+      logicalId: 'Runtime',
+      stack: { stackName: 'AgentStack', region: 'us-east-1' },
+      codeArtifact: { s3Source: { bucketIntrinsic: importOf(name) } },
+    };
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    try {
+      await resolveFromS3BucketIntrinsic(
+        resolved as never,
+        stateProvider() as never,
+        { region: 'eu-west-1', outputs: {}, resources: {} } as never,
+        undefined
+      );
+      return {
+        bucket: (resolved.codeArtifact.s3Source as { bucket?: unknown }).bucket,
+        info: info.mock.calls.map((c) => String(c[0])).join('\n'),
+      };
+    } finally {
+      info.mockRestore();
+    }
+  }
+
+  it.each(['SecretExport', 'UnreadableExport'])('%s: resolved for the download, absent from the log', async (name) => {
+    const r = await resolveBucket(name);
+    expect(r.bucket).toBe(SECRET);
+    expect(r.info).toContain('Resolved fromS3 Code.S3.Bucket from state');
+    expect(r.info).not.toContain(SECRET);
+  });
+
+  it('control: a non-secret export is logged as resolved', async () => {
+    const r = await resolveBucket('PlainExport');
+    expect(r.bucket).toBe(PLAIN);
+    expect(r.info).toContain(`resolved to ${PLAIN}`);
   });
 });
