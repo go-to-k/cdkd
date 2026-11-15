@@ -592,6 +592,14 @@ describe('rewriteResourceReferences', () => {
       'a secret-valued attribute',
     ],
     [
+      // go-to-k/cdkd#6238: the same key under CloudFormation's other name.
+      'a secret-valued attribute (AppSync ApiKey ApiKeyId)',
+      'AWS::AppSync::ApiKey',
+      'ApiKeyId',
+      'da2-plaintextapikey',
+      'a secret-valued attribute',
+    ],
+    [
       'a secret-valued attribute (IVS StreamKey Value)',
       'AWS::IVS::StreamKey',
       'Value',
