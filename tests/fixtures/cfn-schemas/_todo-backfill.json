@@ -23,6 +23,10 @@
     "regenerations of the `types` block."
   ],
   "types": {
+    "AWS::Lambda::Function": [
+      "AcceleratorConfig",
+      "RuntimeConfig"
+    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ]
