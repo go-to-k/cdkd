@@ -54,7 +54,7 @@ import {
   preFixBaselineUncomparedDriftKeys,
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
-import { stripSiblingManagedPolicyArns } from '../../../provisioning/iam-sibling-managed-policies.js';
+import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
 
 /** What {@link compareDriftReadback} reads from `runDriftForStack`'s scope. */
 interface CompareDriftReadbackArgs {
@@ -362,11 +362,13 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     normalized.aws,
     resource.resourceType
   );
-  // go-to-k/cdkd#6324: a managed policy a sibling `AWS::IAM::ManagedPolicy`
-  // attaches to this IAM principal is that resource's, not the principal's.
-  // The readback already dropped it; the BASELINE drops it here, so one
-  // captured after the sibling's attach (or before this fix) compares clean.
-  const siblingStripped = stripSiblingManagedPolicyArns(
+  // go-to-k/cdkd#6324 / #6328: a list member a SIBLING owns (a managed policy
+  // a sibling `AWS::IAM::ManagedPolicy` attaches, a group a
+  // `UserToGroupAddition` adds, a principal attaching this managed policy) is
+  // that resource's. The readback already dropped it; the BASELINE drops it
+  // here, so one captured after the sibling's write (or before the fix)
+  // compares clean.
+  const siblingStripped = stripSiblingOwnedMembers(
     resource.resourceType,
     resource.physicalId,
     protocolNormalized.baseline,

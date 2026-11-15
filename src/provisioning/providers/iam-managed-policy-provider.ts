@@ -26,6 +26,7 @@ import { planTagDiff, tagPlanWarning } from '../tag-list.js';
 import { type MaskedLogSinks, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   CreateContext,
+  ReadCurrentStateContext,
   UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
@@ -224,9 +225,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties, context);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

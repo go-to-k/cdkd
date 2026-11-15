@@ -21,6 +21,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * covers: AWS::IAM::User
  * covers: AWS::IAM::Group
  * covers: AWS::IAM::ManagedPolicy
+ * covers: AWS::IAM::UserToGroupAddition
  */
 export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -46,12 +47,50 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
       managedPolicies: [own],
     });
 
-    new iam.ManagedPolicy(this, 'Mp', {
+    const mp = new iam.ManagedPolicy(this, 'Mp', {
       managedPolicyName: 'cdkd-iam-sibling-mp-policy',
       roles: [role],
       users: [user],
       groups: [group],
       statements: [new iam.PolicyStatement({ actions: ['sqs:GetQueueUrl'], resources: ['*'] })],
+    });
+
+    // Mode tokens (monotonic: every later deploy keeps `late`):
+    //  - `late`: the second deploy adds the Attacher role and puts the
+    //    declared-Groups user into the addition. The policy and that user are
+    //    NO_CHANGE there, so their baselines stay pinned to what the FIRST
+    //    deploy recorded, before either sibling wrote.
+    //  - `shrink`: drops the second user from the addition.
+    const updateMode = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
+    const late = updateMode.includes('late');
+    const shrink = updateMode.includes('shrink');
+
+    // go-to-k/cdkd#6328, the mirror: a role attaching the policy from ITS side
+    // (`ManagedPolicyArns: [{Ref: Mp}]`). The policy's baseline `Roles` is
+    // `[role]`, and `ListEntitiesForPolicy` then reports this role too.
+    if (late) {
+      new iam.Role(this, 'Attacher', {
+        roleName: 'cdkd-iam-sibling-mp-attacher',
+        assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+        managedPolicies: [mp],
+      });
+    }
+
+    // go-to-k/cdkd#6328: group membership a sibling `UserToGroupAddition`
+    // writes, on users that declare no `Groups` (1 and 2) and on one that does
+    // (3).
+    const addGroup = new iam.CfnGroup(this, 'AddGroup', { groupName: 'cdkd-iam-sibling-mp-addgroup' });
+    const u1 = new iam.CfnUser(this, 'AddUser1', { userName: 'cdkd-iam-sibling-mp-add-u1' });
+    const u2 = new iam.CfnUser(this, 'AddUser2', { userName: 'cdkd-iam-sibling-mp-add-u2' });
+    // The DECLARED shape: this user lists the first group in its own `Groups`,
+    // and (from `late`) the addition puts it in the second one too.
+    const u3 = new iam.CfnUser(this, 'AddUser3', {
+      userName: 'cdkd-iam-sibling-mp-add-u3',
+      groups: [group.groupName],
+    });
+    new iam.CfnUserToGroupAddition(this, 'Add', {
+      groupName: addGroup.ref,
+      users: [u1.ref, ...(shrink ? [] : [u2.ref]), ...(late ? [u3.ref] : [])],
     });
   }
 }

@@ -8,12 +8,17 @@ import {
 } from '@aws-sdk/client-iam';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../../import-helpers.js';
 import type {
+  ReadCurrentStateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { managedPolicyAttributes } from './shared.js';
+import {
+  collectPrincipalsAttachingPolicy,
+  withoutSiblingOwned,
+} from '../../iam-sibling-managed-policies.js';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -46,7 +51,9 @@ const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
  *  - `PolicyDocument` — fetched via `GetPolicyVersion` on the default
  *    version, URL-decoded + JSON-parsed.
  *  - `Groups` / `Roles` / `Users` — string arrays from
- *    `ListEntitiesForPolicy`.
+ *    `ListEntitiesForPolicy`, minus a sibling principal that attaches the
+ *    policy through its own `ManagedPolicyArns` (go-to-k/cdkd#6328) unless
+ *    this policy's template lists it too.
  *  - `Tags` — via `ListPolicyTags`, with the `aws:cdk:path` etc. filtered
  *    out by `normalizeAwsTagsToCfn`.
  *
@@ -57,7 +64,8 @@ export async function readCurrentState(
   physicalId: string,
   _logicalId: string,
   _resourceType: string,
-  _properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let policy;
   try {
@@ -114,9 +122,18 @@ export async function readCurrentState(
       if (!resp.IsTruncated) break;
       marker = resp.Marker;
     }
-    result['Groups'] = groups;
-    result['Roles'] = roles;
-    result['Users'] = users;
+    // go-to-k/cdkd#6328: a principal attaching this policy through its OWN
+    // `ManagedPolicyArns` (`role.addManagedPolicy(mp)`) owns that attachment.
+    const own = (key: 'Groups' | 'Roles' | 'Users', names: string[]): string[] =>
+      withoutSiblingOwned(
+        names,
+        collectPrincipalsAttachingPolicy(physicalId, context, key),
+        properties,
+        key
+      );
+    result['Groups'] = own('Groups', groups);
+    result['Roles'] = own('Roles', roles);
+    result['Users'] = own('Users', users);
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }

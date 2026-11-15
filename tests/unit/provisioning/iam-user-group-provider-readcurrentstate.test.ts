@@ -413,6 +413,51 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
     });
   });
 
+  // go-to-k/cdkd#6328: a group a sibling AWS::IAM::UserToGroupAddition adds the
+  // user to is that resource's membership.
+  describe('a sibling AWS::IAM::UserToGroupAddition', () => {
+    function readGroups(live: string[], properties: Record<string, unknown>, siblings: Record<string, unknown>) {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetUserCommand) return Promise.resolve({ User: { UserName: 'alice', Path: '/' } });
+        if (cmd instanceof ListAttachedUserPoliciesCommand) return Promise.resolve({ AttachedPolicies: [] });
+        if (cmd instanceof ListGroupsForUserCommand) {
+          return Promise.resolve({ Groups: live.map((GroupName) => ({ GroupName })) });
+        }
+        return Promise.resolve({ PolicyNames: [], IsTruncated: false });
+      });
+      return provider
+        .readCurrentState('alice', 'U', 'AWS::IAM::User', properties, { siblings } as never)
+        .then((r) => bagOf(r)?.['Groups']);
+    }
+    const addition = (group: unknown, users: unknown) => ({
+      A: { resourceType: 'AWS::IAM::UserToGroupAddition', properties: { GroupName: group, Users: users } },
+    });
+
+    it('excludes the group it adds the user to, keeping declared and out-of-band ones', async () => {
+      expect(await readGroups(['own', 'added', 'oob'], { Groups: ['own'] }, addition('added', ['alice']))).toEqual(['own', 'oob']);
+    });
+
+    it('keeps a group the user ALSO declares', async () => {
+      expect(await readGroups(['both'], { Groups: ['both'] }, addition('both', ['alice']))).toEqual(['both']);
+    });
+
+    // IAM group and user names are case-insensitive.
+    it('matches the group and the user name case-insensitively', async () => {
+      expect(await readGroups(['own', 'Added'], { Groups: ['own'] }, addition('ADDED', ['Alice']))).toEqual(['own']);
+      expect(await readGroups(['Both'], { Groups: ['BOTH'] }, addition('both', ['alice']))).toEqual(['Both']);
+    });
+
+    it.each([
+      ['adding ANOTHER user', addition('added', ['bob'])],
+      ['with a non-string GroupName', addition({ Ref: 'G' }, ['alice'])],
+      ['with a non-list Users', addition('added', 'alice')],
+      ['of another type', { A: { resourceType: 'AWS::IAM::Policy', properties: { GroupName: 'added', Users: ['alice'] } } }],
+    ])('keeps the group for a sibling %s', async (_l, siblings) => {
+      expect(await readGroups(['added'], {}, siblings)).toEqual(['added']);
+    });
+  });
+
   describe('AWS::IAM::UserToGroupAddition', () => {
     it('returns undefined (membership-only resource, see JSDoc)', async () => {
       const result = await provider.readCurrentState(
