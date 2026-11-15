@@ -35,20 +35,27 @@ import type { CrossStackResolver } from './state-resolver.js';
 export type ProducerSecretVerdict = 'secret' | 'unreadable' | 'stale';
 
 /**
- * A verdict, with the upstream stack that blocked the check when an
- * unreadable re-export source did (`Q (us-east-1)`, rendered for display;
- * a stack name and region only, never a value).
+ * Why a re-export source left its producer's tree unjudged: it could not be
+ * read, its stack name is recorded masked, or it lies past the re-export
+ * depth bound. `shown` is the stack and region rendered for display (record
+ * identifiers only, never a value).
  */
+export type OpaqueSource =
+  | { reason: 'unreadable'; shown: string }
+  | { reason: 'redacted' }
+  | { reason: 'too-deep'; shown: string };
+
+/** A verdict, with the re-export source that blocked the check, if one did. */
 export interface Judgement {
   verdict: ProducerSecretVerdict;
-  source?: string | undefined;
+  source?: OpaqueSource | undefined;
 }
 
 /** A value one resolver call returned, with its producer's verdict. */
 export interface JudgedValue {
   value: string | undefined;
   verdict?: ProducerSecretVerdict | undefined;
-  source?: string | undefined;
+  source?: OpaqueSource | undefined;
 }
 
 /** The judged variants a cdkd-built resolver carries beside cdk-local's contract. */
@@ -197,7 +204,7 @@ interface TreeSummary {
    * The first stack the tree re-exports from that could not be read (for
    * display): nothing the tree serves is judged then.
    */
-  opaqueSource: string | undefined;
+  opaqueSource: OpaqueSource | undefined;
 }
 
 const emptySummary = (): TreeSummary => ({
@@ -325,9 +332,13 @@ export class ProducerSecretReader {
    * `Fn::GetStackOutput` and index-miss scan do. A case-variant record that
    * still cannot be read, or a listing that fails, is `error` (fail closed).
    */
-  private async readSource(stackName: string, region: string): Promise<RecordRead> {
+  private async readSource(
+    stackName: string,
+    region: string
+  ): Promise<{ state: unknown; region: string } | 'absent' | 'error'> {
     const exact = await this.read(stackName, region);
-    if (exact !== 'absent' || this.listStacks === undefined) return exact;
+    if (typeof exact === 'object') return { state: exact.state, region };
+    if (exact === 'error' || this.listStacks === undefined) return exact;
     const list = this.listStacks;
     this.listed ??= Promise.resolve()
       .then(() => list())
@@ -347,12 +358,15 @@ export class ProducerSecretReader {
         ref.region !== region &&
         canonicalizeRegion(ref.region) === folded
     );
-    if (variants.length === 0) return 'absent';
+    let failed = false;
     for (const ref of variants) {
       const got = await this.read(stackName, ref.region!);
-      if (typeof got === 'object') return got;
+      // The variant's own spelling: its nested children live under it.
+      if (typeof got === 'object') return { state: got.state, region: ref.region! };
+      if (got === 'error') failed = true;
     }
-    return 'error';
+    // Every variant gone since the listing: no record, as for no variant.
+    return failed ? 'error' : 'absent';
   }
 
   /** A record, read once per resolver. */
@@ -440,21 +454,21 @@ export class ProducerSecretReader {
           });
           const sources = sourcesOf(node.state).map(async (source) => {
             if (source === 'redacted') {
-              summary.opaqueSource ??= 'a stack whose name is recorded redacted';
+              summary.opaqueSource ??= { reason: 'redacted' };
               return;
             }
             const shown = `${displayIdent(source.stackName)} (${displayIdent(source.region)})`;
             if (deeper > MAX_NESTED_DEPTH) {
-              summary.opaqueSource ??= shown;
+              summary.opaqueSource ??= { reason: 'too-deep', shown };
               return;
             }
             if (!claim(source.stackName, source.region)) return;
             const got = await this.readSource(source.stackName, source.region);
-            if (got === 'error') summary.opaqueSource ??= shown;
+            if (got === 'error') summary.opaqueSource ??= { reason: 'unreadable', shown };
             else if (got !== 'absent') {
               next.push({
                 stackName: source.stackName,
-                region: source.region,
+                region: got.region,
                 state: got.state,
                 depth: deeper,
               });
@@ -508,9 +522,15 @@ export class ProducerSecretReader {
   }
 }
 
-/** Where an unreadable source is named, what the operator can do about it. */
-function sourceRemedy(source: string): string {
-  return `the producer re-exports from ${source}, whose state cdkd could not read (retry; a record written by a newer cdkd needs a cdkd upgrade)`;
+/** Why the re-export source blocked the check, and what the operator can do. */
+function sourceRemedy(source: OpaqueSource): string {
+  if (source.reason === 'redacted') {
+    return 'the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state';
+  }
+  if (source.reason === 'too-deep') {
+    return `the producer re-exports from ${source.shown}, beyond the ${MAX_NESTED_DEPTH}-level re-export bound`;
+  }
+  return `the producer re-exports from ${source.shown}, whose state cdkd could not read (retry; or a newer-schema record needs a cdkd upgrade)`;
 }
 
 /** The argv refusal for a value with `judgement`. */

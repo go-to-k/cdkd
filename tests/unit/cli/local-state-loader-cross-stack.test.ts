@@ -1315,7 +1315,7 @@ describe('buildCrossStackResolver', () => {
         expect(await output(built, 'ReExporter', 'Bucket')).toEqual({
           value: 'producer-bucket',
           verdict: 'unreadable',
-          source: 'Source (us-east-1)',
+          source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
         });
         const redacted = {
           ...reader,
@@ -1326,7 +1326,7 @@ describe('buildCrossStackResolver', () => {
         expect(await output(second, 'Reader', 'Key')).toEqual({
           value: plaintext,
           verdict: 'unreadable',
-          source: 'a stack whose name is recorded redacted',
+          source: { reason: 'redacted' },
         });
         second.dispose();
         built.dispose();
@@ -1355,6 +1355,49 @@ describe('buildCrossStackResolver', () => {
           built.dispose();
         });
 
+        it("reads the variant's nested children under the variant's own spelling", async () => {
+          const childKey = 'da2-variantchildkey00000';
+          const parentSource = {
+            stackName: 'Source',
+            resources: {
+              Child: {
+                physicalId: 'arn:cdkd-local:US-EAST-1:123:nested-stack/Source/Child',
+                resourceType: 'AWS::CloudFormation::Stack',
+                properties: {},
+                attributes: { 'Outputs.KeyOut': childKey },
+                dependencies: [],
+              },
+            },
+            outputs: { Key: childKey },
+          };
+          const childRecord = {
+            stackName: 'Source~Child',
+            resources: {
+              ApiKey: {
+                physicalId: `apiid|${childKey}`,
+                resourceType: 'AWS::AppSync::ApiKey',
+                properties: {},
+                attributes: {},
+                dependencies: [],
+              },
+            },
+            outputs: { KeyOut: childKey },
+          };
+          const readsChild = { ...folded, outputs: { Key: childKey } };
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) => {
+            if (stack === 'Reader') return { state: readsChild, etag: 'e' };
+            if (region !== 'US-EAST-1') return null;
+            if (stack === 'Source') return { state: parentSource, etag: 'e' };
+            return stack === 'Source~Child' ? { state: childRecord, etag: 'e' } : null;
+          });
+          // Judged from the child's record (secret), not left unverified.
+          expect(await output(built, 'Reader', 'Key')).toEqual({ value: childKey, verdict: 'secret' });
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source~Child', 'US-EAST-1');
+          built.dispose();
+        });
+
         it('fails closed when the case-variant record cannot be read', async () => {
           const built = await makeResolver();
           mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
@@ -1365,10 +1408,46 @@ describe('buildCrossStackResolver', () => {
           expect(await output(built, 'Reader', 'Key')).toEqual({
             value: plaintext,
             verdict: 'unreadable',
-            source: 'Source (us-east-1)',
+            source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
           });
           built.dispose();
         });
+      });
+
+      it('skips a source whose only case variant is gone by the time it is read', async () => {
+        const folded = {
+          ...reader,
+          outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const built = await makeResolver();
+        mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+        mocks.getStateMock.mockImplementation(stateOf({ Reader: folded }));
+        expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext });
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+        built.dispose();
+      });
+
+      it('fails closed past the re-export depth bound', async () => {
+        // S0 re-exports from S1, ... S32 from S33: 33 levels.
+        const records: Record<string, unknown> = {};
+        for (let i = 0; i <= 33; i += 1) {
+          records[`S${i}`] = {
+            stackName: `S${i}`,
+            resources: {},
+            outputs: { V: 'v' },
+            ...(i < 33 && {
+              imports: [{ sourceStack: `S${i + 1}`, sourceRegion: 'us-east-1', exportName: 'V' }],
+            }),
+          };
+        }
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf(records));
+        expect(await output(built, 'S0', 'V')).toEqual({
+          value: 'v',
+          verdict: 'unreadable',
+          source: { reason: 'too-deep', shown: 'S33 (us-east-1)' },
+        });
+        built.dispose();
       });
 
       it('skips a source with no record (moved out of cdkd), judging the rest', async () => {

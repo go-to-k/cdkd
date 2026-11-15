@@ -1073,17 +1073,29 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
   });
 
-  it('names an unreadable upstream source, and no value, in the argv refusal and the ValueFrom warning', async () => {
-    const blocked: CrossStackResolver = {
-      resolveImportJudged: async () => ({
-        value: 'producer-bucket',
-        verdict: 'unreadable',
-        source: 'Upstream (us-east-1)',
-      }),
+  it.each([
+    [
+      'unreadable',
+      { reason: 'unreadable', shown: 'Upstream (us-east-1)' },
+      /the producer re-exports from Upstream \(us-east-1\), whose state cdkd could not read \(retry; or a newer-schema record needs a cdkd upgrade\)/,
+    ],
+    [
+      'redacted',
+      { reason: 'redacted' },
+      /the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state/,
+    ],
+    [
+      'too-deep',
+      { reason: 'too-deep', shown: 'Upstream (us-east-1)' },
+      /the producer re-exports from Upstream \(us-east-1\), beyond the 32-level re-export bound/,
+    ],
+  ])('names an %s upstream source, and no value, in the argv refusal and the ValueFrom warning', async (_l, source, message) => {
+    const blocked = {
+      resolveImportJudged: async () => ({ value: 'producer-bucket', verdict: 'unreadable', source }),
       resolveGetStackOutputJudged: async () => ({ value: undefined }),
       resolveImport: async () => 'producer-bucket',
       resolveGetStackOutput: async () => undefined,
-    } as CrossStackResolver;
+    } as unknown as CrossStackResolver;
     const stack = buildStack({
       Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
       Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Bucket' } }],
@@ -1092,10 +1104,11 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: blocked });
     expect(dockerArgs(task)).not.toContain('producer-bucket');
     expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
-      /Command\[1\]: resolved a cross-stack value cdkd could not check for secrets: the producer re-exports from Upstream \(us-east-1\), whose state cdkd could not read \(retry; a record written by a newer cdkd needs a cdkd upgrade\)/
+      /Command\[1\]: resolved a cross-stack value cdkd could not check for secrets: /
     );
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(message);
     const warning = task.containers[0]!.warnings.find((w) => w.startsWith("Secret 'TOKEN' dropped:"));
-    expect(warning).toMatch(/re-exports from Upstream \(us-east-1\), whose state cdkd could not read/);
+    expect(warning).toMatch(message);
     expect(warning).not.toContain('producer-bucket');
   });
 

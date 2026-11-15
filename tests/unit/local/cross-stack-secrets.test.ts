@@ -138,7 +138,10 @@ describe('strongerVerdict', () => {
 
 describe('strongerJudgement', () => {
   it("keeps the winning verdict's blocking source", () => {
-    const blocked = { verdict: 'unreadable' as const, source: 'Q (us-east-1)' };
+    const blocked = {
+      verdict: 'unreadable' as const,
+      source: { reason: 'unreadable' as const, shown: 'Q (us-east-1)' },
+    };
     expect(strongerJudgement(blocked, undefined)).toBe(blocked);
     expect(strongerJudgement(blocked, { verdict: 'secret' })).toEqual({ verdict: 'secret' });
     expect(strongerJudgement({ verdict: 'secret' }, blocked)).toEqual({ verdict: 'secret' });
