@@ -230,20 +230,21 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
     return undefined;
   };
 
-  // AWS Emulator (go-to-k/cdkd#6252): its own `emulator` user is allowed
-  // everything WITHOUT any IAM policy, so a GetFederationToken session — the
-  // user's policies intersected with the role's — is allowed nothing, and
-  // every call the workload makes would be denied.
+  // AWS Emulator (go-to-k/cdkd#6252, #6347): it evaluates IAM policies only
+  // on IAM and STS calls, so session policies on a GetFederationToken session
+  // would deny nothing the workload calls — the emulation would reproduce no
+  // missing permission and only change the identity to a federated user.
   if (
     args.emulateRoleVia === undefined &&
     !args.realAws &&
     mixedModeEmulatorOverride() !== undefined
   ) {
     return cannot(
-      "in AWS Emulator a sts:GetFederationToken session is allowed nothing (the emulator's own user has no " +
-        "IAM policies). Let the role's trust policy allow the emulator's identity, for example the account " +
-        'root (arn:aws:iam::000000000000:root), and redeploy, or pass --emulate-role-via <arn> naming an ' +
-        'emulator role you can assume'
+      'AWS Emulator checks IAM policies only on IAM and STS calls, so session policies there would not ' +
+        "show a missing permission. To run as the role, let the role's trust policy allow the emulator's " +
+        'identity, for example the account root (arn:aws:iam::000000000000:root), and redeploy, or pass ' +
+        '--emulate-role-via <arn> naming an emulator role you can assume; run under the role on real AWS ' +
+        'to find a missing permission'
     );
   }
 

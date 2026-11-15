@@ -177,8 +177,11 @@ code makes reach real AWS as you. They come from, in order:
 Under [`--aws-emulator`](#aws-emulator) the container gets the emulator's
 credentials and nothing else. With a role flag from the table below, cdkd
 assumes the role in the emulator, and the container gets the role's emulator
-credentials instead, so the emulator checks the role's policies. The role's
-trust policy must allow the emulator's identity (see
+credentials instead, so the code runs as the role. The emulator evaluates IAM
+policies only on IAM and STS calls: it checks the trust policy when cdkd
+assumes the role, but lets the role call other services, such as S3, DynamoDB
+or SSM, whatever its policies say. A missing permission therefore shows up
+only on real AWS. The role's trust policy must allow the emulator's identity (see
 [Trusting yourself in the role](#trusting-yourself-in-the-role)). When it does
 not, cdkd warns and the container keeps the emulator's keys (`local run-task`
 and `local start-api` stop instead).
@@ -255,8 +258,9 @@ developer role. It also takes precedence for an IAM user.
 
 Under [`--aws-emulator`](#aws-emulator), `local invoke`, `local start-api`,
 `local run-task` and `local invoke-agentcore` do not use
-`sts:GetFederationToken`. The emulator's own user has no IAM policies, so a
-session made from it would be allowed nothing. Let the role trust the emulator's
+`sts:GetFederationToken`. The emulator does not check other services' calls
+against IAM policies, so session policies there would not show a missing
+permission either. To run as the role, let the role trust the emulator's
 identity instead, such as the account root
 (`arn:aws:iam::000000000000:root`), or pass `--emulate-role-via`.
 

@@ -209,8 +209,10 @@ identity is the only one cdkd uses:
 - Containers started by `cdkd local` get the emulator's keys and nothing else.
   A handler that misses the endpoint fails with a credential error rather than
   reaching your account. A role flag such as `--assume-role` swaps in the
-  role's credentials, which the emulator's STS issued, so the emulator checks
-  the role's policies
+  role's credentials, which the emulator's STS issued, so the code runs as the
+  role. The emulator checks IAM policies only on IAM and STS calls, so a
+  permission the role lacks for another service, such as `ssm:GetParameter`,
+  does not fail there. Run under the role on real AWS to find one
   ([details](local-emulation.md#credentials-inside-the-container)).
 
 cdkd prints one line naming what it ignored, never the values:

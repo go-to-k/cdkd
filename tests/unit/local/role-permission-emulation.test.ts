@@ -424,12 +424,16 @@ describe('isAssumeRoleAccessDenied', () => {
 });
 
 describe('emulateRoleAfterDeniedAssume against AWS Emulator (go-to-k/cdkd#6252)', () => {
-  it('skips GetFederationToken: the emulator user has no policies, so the session would allow nothing', async () => {
+  it('skips GetFederationToken: the emulator checks no service call against session policies', async () => {
     aws.emulatorOverride = { endpoint: 'https://127.0.0.1:9297' };
     expect(await emulateRoleAfterDeniedAssume(accessDenied(), args)).toBeUndefined();
     expect(aws.sent).toEqual([]);
     const text = warnings();
-    expect(text).toContain('GetFederationToken session is allowed nothing');
+    // go-to-k/cdkd#6347: the emulator lets every non-IAM/STS call through, so
+    // the warning must not promise IAM errors locally.
+    expect(text).toContain('checks IAM policies only on IAM and STS calls');
+    expect(text).toContain('run under the role on real AWS to find a missing permission');
+    expect(text).not.toContain('allowed nothing');
     expect(text).toContain("trust policy allow the emulator's identity");
     expect(text).not.toContain('APPROXIMATION');
   });
