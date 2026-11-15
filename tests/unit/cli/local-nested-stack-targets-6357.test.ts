@@ -107,9 +107,13 @@ describe('pickTargetStacks targetFallback parent object', () => {
 });
 
 describe('resolvers list colliding nested logical ids by nested stack name', () => {
-  const app = mk('App', {});
-  const a = mk('App~A', { Same: fn, TD: td }, ['App', 'A']);
+  // Own*: the parent's; Uniq*: one nested stack's; Same/TD: shared by two;
+  // Mine*: the parent's id, copied in a nested stack.
+  const app = mk('App', { OwnFn: fn, OwnTD: td, MineFn: fn, MineTD: td });
+  const a = mk('App~A', { Same: fn, TD: td, UniqFn: fn, UniqTD: td, MineFn: fn, MineTD: td }, ['App', 'A']);
   const b = mk('App~B', { Same: fn, TD: td }, ['App', 'B']);
+  // A bare ID as its own token, never as the tail of `<stack>:<id>`.
+  const bare = (m: string, id: string): boolean => new RegExp(`(^|[^:\\w])${id}\\b`).test(m);
   const message = (f: () => unknown): string => {
     try {
       f();
@@ -120,17 +124,28 @@ describe('resolvers list colliding nested logical ids by nested stack name', () 
   };
   it('lambda: logical-id miss lists nested resources, every shared copy as <nested>:<id>', () => {
     const m = message(() => resolveLambdaTarget('App:Nope', [app, a, b]));
-    expect(m).toContain('Same');
     // Every copy two nested stacks share is qualified: a bare ID selects neither.
     expect(m).toContain('App~A:Same');
     expect(m).toContain('App~B:Same');
+    expect(bare(m, 'Same')).toBe(false);
+    // The parent's own ID and a unique nested ID stay bare (both select it).
+    expect(bare(m, 'OwnFn')).toBe(true);
+    expect(bare(m, 'UniqFn')).toBe(true);
+    expect(m).not.toContain('App~A:UniqFn');
+    // A nested copy of the parent's ID is qualified; the parent's stays bare.
+    expect(bare(m, 'MineFn')).toBe(true);
+    expect(m).toContain('App~A:MineFn');
   });
   it('ecs: logical-id miss lists nested resources, every shared copy as <nested>:<id>', () => {
     const m = message(() => resolveEcsTaskTarget('App:Nope', [app, a, b]));
-    expect(m).toContain('TD');
-    // Every copy two nested stacks share is qualified: a bare ID selects neither.
     expect(m).toContain('App~A:TD');
     expect(m).toContain('App~B:TD');
+    expect(bare(m, 'TD')).toBe(false);
+    expect(bare(m, 'OwnTD')).toBe(true);
+    expect(bare(m, 'UniqTD')).toBe(true);
+    expect(m).not.toContain('App~A:UniqTD');
+    expect(bare(m, 'MineTD')).toBe(true);
+    expect(m).toContain('App~A:MineTD');
   });
 });
 

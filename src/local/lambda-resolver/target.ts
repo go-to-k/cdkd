@@ -232,7 +232,7 @@ function resourcesWithNestedStacks(
       // has it; an ID two nested stacks share selects neither, so list each
       // copy in the `<nested stack>:<LogicalId>` form that does.
       const shared = owners.get(logicalId)!;
-      const bare = s === stack || (shared.length === 1 && !shared.includes(stack));
+      const bare = s === stack || shared.length === 1;
       merged[bare ? logicalId : `${s.stackName}:${logicalId}`] = resource;
     }
   }
