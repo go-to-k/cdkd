@@ -107,7 +107,7 @@ const imageOnlyTaskStack = () =>
   });
 
 const NO_REGION_WARNING = 'could not determine the target region';
-const warnedNoRegion = (warn: ReturnType<typeof vi.spyOn>) =>
+const warnedNoRegion = (warn: { mock: { calls: unknown[][] } }) =>
   warn.mock.calls.some((args) => String(args[0]).includes(NO_REGION_WARNING));
 
 /** A `--from-state` provider whose record was deployed to `recordRegion`. */
