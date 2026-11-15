@@ -29,6 +29,7 @@ import {
   resolveRecordSecrets,
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { managedPolicyAttachmentField } from '../../provisioning/iam-sibling-managed-policies.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
 import {
   createUnionSecretMasker,
@@ -633,6 +634,10 @@ export interface ObservedCaptureSiblingsDeps {
  * `collectInlinePolicyNamesManagedBySiblings` expects
  * (`{ [attachmentField]: [thisPrincipalPhysicalId], PolicyName }`).
  *
+ * A sibling `AWS::IAM::ManagedPolicy` attaching via the same list is added
+ * too, keyed by its recorded ARN, so its attachment stays out of the
+ * captured `ManagedPolicyArns` (go-to-k/cdkd#6324).
+ *
  * Returns `undefined` (no context) for non-IAM-principal types and when
  * no sibling policy attaches to the captured principal — both leave the
  * capture behaving exactly as before.
@@ -651,14 +656,7 @@ export async function buildObservedCaptureSiblings(
   // Capture disabled (kickOffObservedCapture would ignore the context) —
   // skip the template walk / resolver work entirely.
   if (deps.options.captureObservedState !== true) return undefined;
-  const attachmentField =
-    resourceType === 'AWS::IAM::Role'
-      ? 'Roles'
-      : resourceType === 'AWS::IAM::User'
-        ? 'Users'
-        : resourceType === 'AWS::IAM::Group'
-          ? 'Groups'
-          : undefined;
+  const attachmentField = managedPolicyAttachmentField(resourceType);
   if (!attachmentField) return undefined;
   const resources = template?.Resources;
   if (!resources) return undefined;
@@ -682,8 +680,29 @@ export async function buildObservedCaptureSiblings(
   const standaloneType = STANDALONE_SIBLING[attachmentField];
   for (const [lid, res] of Object.entries(resources)) {
     if (lid === capturedLogicalId) continue;
-    if (res.Type !== 'AWS::IAM::Policy' && res.Type !== standaloneType.type) continue;
     const props = (res.Properties ?? {}) as Record<string, unknown>;
+    // go-to-k/cdkd#6324: an `AWS::IAM::ManagedPolicy` attaching itself via
+    // the same list. Its ARN is its state physicalId, recorded only once it
+    // exists (an UPDATE capture); before that it has attached nothing cdkd
+    // can name, and `cdkd drift` strips it from the baseline instead.
+    if (res.Type === 'AWS::IAM::ManagedPolicy') {
+      const attachments = props[attachmentField];
+      const arn = stateResources[lid]?.physicalId;
+      if (
+        Array.isArray(attachments) &&
+        typeof arn === 'string' &&
+        arn !== '' &&
+        attachments.some((a) => isRefTo(a, capturedLogicalId) || a === capturedPhysicalId)
+      ) {
+        siblings[lid] = {
+          resourceType: 'AWS::IAM::ManagedPolicy',
+          physicalId: arn,
+          properties: { [attachmentField]: [capturedPhysicalId] },
+        };
+      }
+      continue;
+    }
+    if (res.Type !== 'AWS::IAM::Policy' && res.Type !== standaloneType.type) continue;
     const attachments =
       res.Type === 'AWS::IAM::Policy' ? props[attachmentField] : [props[standaloneType.field]];
     if (!Array.isArray(attachments)) continue;
@@ -718,6 +737,23 @@ export async function buildObservedCaptureSiblings(
     siblings[lid] = {
       resourceType: 'AWS::IAM::Policy',
       properties: { [attachmentField]: [capturedPhysicalId], PolicyName: policyName },
+    };
+  }
+  // go-to-k/cdkd#6324: a RECORDED `AWS::IAM::ManagedPolicy` still attached to
+  // this principal although the template no longer lists it there (the policy
+  // is being removed, or drops the principal, in this deploy). Its detach runs
+  // after this capture, so its ARN is not the principal's either.
+  for (const [lid, rec] of Object.entries(stateResources)) {
+    if (lid === capturedLogicalId || siblings[lid] !== undefined) continue;
+    if (rec?.resourceType !== 'AWS::IAM::ManagedPolicy') continue;
+    const recorded = rec.properties?.[attachmentField];
+    const arn = rec.physicalId;
+    if (typeof arn !== 'string' || arn === '' || !Array.isArray(recorded)) continue;
+    if (!recorded.some((a) => a === capturedPhysicalId)) continue;
+    siblings[lid] = {
+      resourceType: 'AWS::IAM::ManagedPolicy',
+      physicalId: arn,
+      properties: { [attachmentField]: [capturedPhysicalId] },
     };
   }
   return Object.keys(siblings).length > 0 ? { siblings } : undefined;

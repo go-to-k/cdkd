@@ -576,6 +576,169 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
     });
   });
 
+  // go-to-k/cdkd#6324: a sibling AWS::IAM::ManagedPolicy attaching itself via
+  // `Roles` is keyed by its recorded ARN, so the capture's ManagedPolicyArns
+  // leaves it out. It is in state only once it exists (an UPDATE of the role).
+  it('passes a recorded sibling AWS::IAM::ManagedPolicy (by ARN) as capture context on a Role UPDATE', async () => {
+    const doc = { Version: '2012-10-17', Statement: [] };
+    const mpArn = 'arn:aws:iam::123456789012:policy/iam-capture-stack-Mp-ABC';
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 8,
+        region: 'us-east-1',
+        stackName,
+        resources: {
+          Role: {
+            physicalId: 'phys-Role',
+            resourceType: 'AWS::IAM::Role',
+            properties: { AssumeRolePolicyDocument: doc },
+          },
+          Mp: {
+            physicalId: mpArn,
+            resourceType: 'AWS::IAM::ManagedPolicy',
+            properties: { PolicyDocument: doc, Roles: ['phys-Role'] },
+          },
+          OtherMp: {
+            physicalId: 'arn:aws:iam::123456789012:policy/other',
+            resourceType: 'AWS::IAM::ManagedPolicy',
+            properties: { PolicyDocument: doc, Roles: ['some-other-role'] },
+          },
+          UserMp: {
+            physicalId: 'arn:aws:iam::123456789012:policy/on-user',
+            resourceType: 'AWS::IAM::ManagedPolicy',
+            properties: { PolicyDocument: doc, Users: ['phys-Role'] },
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: 'etag-old',
+    });
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: { Description: 'new', AssumeRolePolicyDocument: doc } },
+        Mp: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: doc, Roles: [{ Ref: 'Role' }] } },
+        OtherMp: {
+          Type: 'AWS::IAM::ManagedPolicy',
+          Properties: { PolicyDocument: doc, Roles: ['some-other-role'] },
+        },
+        // `Users` names a user, never this role, even one spelled alike.
+        UserMp: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: doc, Users: [{ Ref: 'Role' }] } },
+      },
+    };
+    mockProvider.update.mockResolvedValue({ physicalId: 'phys-Role', wasReplaced: false });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Role',
+          {
+            logicalId: 'Role',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::IAM::Role',
+            desiredProperties: template.Resources!['Role']!.Properties,
+            currentProperties: { AssumeRolePolicyDocument: doc },
+          },
+        ],
+      ])
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['Role']]);
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(captureContextFor('Role')).toEqual({
+      siblings: {
+        Mp: {
+          resourceType: 'AWS::IAM::ManagedPolicy',
+          physicalId: mpArn,
+          properties: { Roles: ['phys-Role'] },
+        },
+      },
+    });
+  });
+
+  // The policy's detach from the role runs AFTER this capture: a recorded
+  // attachment the template drops (or a policy it removes) is still not the
+  // role's own.
+  it.each([
+    ['the template drops the role from the policy', { Mp: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: {}, Roles: ['other'] } } }],
+    ['the template removes the policy', {}],
+  ])('passes a recorded ManagedPolicy still attached to the Role when %s', async (_label, extra) => {
+    const doc = { Version: '2012-10-17', Statement: [] };
+    const mpArn = 'arn:aws:iam::123456789012:policy/leaving';
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 8,
+        region: 'us-east-1',
+        stackName,
+        resources: {
+          Role: { physicalId: 'phys-Role', resourceType: 'AWS::IAM::Role', properties: { AssumeRolePolicyDocument: doc } },
+          Mp: { physicalId: mpArn, resourceType: 'AWS::IAM::ManagedPolicy', properties: { PolicyDocument: doc, Roles: ['phys-Role'] } },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: 'etag-old',
+    });
+    const template = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: { Description: 'new', AssumeRolePolicyDocument: doc } },
+        ...extra,
+      },
+    } as CloudFormationTemplate;
+    mockProvider.update.mockResolvedValue({ physicalId: 'phys-Role', wasReplaced: false });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Role',
+          {
+            logicalId: 'Role',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::IAM::Role',
+            desiredProperties: template.Resources!['Role']!.Properties,
+            currentProperties: { AssumeRolePolicyDocument: doc },
+          },
+        ],
+      ])
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['Role']]);
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(captureContextFor('Role')).toEqual({
+      siblings: {
+        Mp: { resourceType: 'AWS::IAM::ManagedPolicy', physicalId: mpArn, properties: { Roles: ['phys-Role'] } },
+      },
+    });
+  });
+
+  it('passes no ManagedPolicy sibling at a Role CREATE, where the policy has no recorded ARN yet', async () => {
+    const doc = { Version: '2012-10-17', Statement: [] };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: doc } },
+        Mp: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: doc, Roles: [{ Ref: 'Role' }] } },
+      },
+    };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>(
+        Object.entries(template.Resources!).map(([id, r]) => [
+          id,
+          { logicalId: id, changeType: 'CREATE', resourceType: r.Type, desiredProperties: r.Properties },
+        ])
+      )
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['Role'], ['Mp']]);
+    // The policy's `Ref` to the role orders its create after the role's.
+    mockDagBuilder.getDirectDependencies.mockImplementation((_dag: unknown, id: string) =>
+      id === 'Mp' ? ['Role'] : []
+    );
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(mockProvider.create.mock.calls.map((c) => c[0])).toEqual(['Role', 'Mp']);
+    expect(captureContextFor('Role')).toBeUndefined();
+  });
+
   it("marks the capture after a create-only REPLACEMENT as following cdkd's own write (issue #4112)", async () => {
     mockStateBackend.getState.mockResolvedValue({
       state: {

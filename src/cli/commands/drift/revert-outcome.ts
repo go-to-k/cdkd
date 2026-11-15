@@ -33,6 +33,8 @@ import {
 import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
+import { buildReadCurrentStateContext } from './compare.js';
+import { stripSiblingManagedPolicyArns } from '../../../provisioning/iam-sibling-managed-policies.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -373,6 +375,19 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // missing a member the readback now carries is completed from that
     // readback; sent without it, `update()` would read the member as
     // REMOVED. Identity for a provider without the hook.
+    //
+    // go-to-k/cdkd#6324: first, the same sibling-attached managed policy
+    // ARNs detection dropped from the baseline leave the desired bag too;
+    // the readback (the previous side) never carried them, so `update()`
+    // neither detaches nor re-attaches them.
+    desiredProperties = stripSiblingManagedPolicyArns(
+      outcome.resourceType,
+      stateResource.physicalId,
+      desiredProperties,
+      outcome.awsProperties,
+      stateResource.properties,
+      buildReadCurrentStateContext(report.state, outcome.logicalId)
+    ).baseline;
     if (provider.canonicalizeDriftPair) {
       desiredProperties = (
         await provider.canonicalizeDriftPair(

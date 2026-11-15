@@ -352,6 +352,67 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
     });
   });
 
+  // go-to-k/cdkd#6324: a sibling AWS::IAM::ManagedPolicy attaching itself via
+  // `Users` / `Groups` is that resource's, not the principal's.
+  describe('a sibling AWS::IAM::ManagedPolicy attached via Users / Groups', () => {
+    const MP = 'arn:aws:iam::123456789012:policy/Stack-Mp-ABC';
+    const OWN = 'arn:aws:iam::aws:policy/ReadOnlyAccess';
+    const OOB = 'arn:aws:iam::aws:policy/AWSDenyAll';
+    function routeSend(attached: string[]): void {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetUserCommand) return Promise.resolve({ User: { UserName: 'alice', Path: '/' } });
+        if (cmd instanceof GetGroupCommand) return Promise.resolve({ Group: { GroupName: 'devs', Path: '/' } });
+        if (cmd instanceof ListAttachedUserPoliciesCommand || cmd instanceof ListAttachedGroupPoliciesCommand) {
+          return Promise.resolve({ AttachedPolicies: attached.map((PolicyArn) => ({ PolicyArn })) });
+        }
+        if (cmd instanceof ListGroupsForUserCommand) return Promise.resolve({ Groups: [] });
+        return Promise.resolve({ PolicyNames: [], IsTruncated: false });
+      });
+    }
+    const sibling = (field: string, names: string[]) => ({
+      siblings: {
+        Mp: { resourceType: 'AWS::IAM::ManagedPolicy', physicalId: MP, properties: { [field]: names } },
+      },
+    });
+
+    it.each([
+      ['AWS::IAM::User', 'alice', 'Users'],
+      ['AWS::IAM::Group', 'devs', 'Groups'],
+    ])('%s: excludes its ARN, keeping the declared and out-of-band ones', async (type, name, field) => {
+      routeSend([MP, OWN, OOB]);
+      const r = bagOf(
+        await provider.readCurrentState(name, 'P', type, { ManagedPolicyArns: [OWN] }, sibling(field, [name]))
+      );
+      expect(r?.['ManagedPolicyArns']).toEqual([OWN, OOB]);
+    });
+
+    it.each([
+      ['AWS::IAM::User', 'alice', 'Users'],
+      ['AWS::IAM::Group', 'devs', 'Groups'],
+    ])('%s: keeps its ARN when the principal ALSO declares it', async (type, name, field) => {
+      routeSend([MP, OWN]);
+      const r = bagOf(
+        await provider.readCurrentState(name, 'P', type, { ManagedPolicyArns: [MP, OWN] }, sibling(field, [name]))
+      );
+      expect(r?.['ManagedPolicyArns']).toEqual([MP, OWN]);
+    });
+
+    it.each([
+      // The other principal kind's list, and another principal of this kind.
+      ['AWS::IAM::User', 'alice', sibling('Groups', ['alice'])],
+      ['AWS::IAM::User', 'alice', sibling('Users', ['bob'])],
+      ['AWS::IAM::Group', 'devs', sibling('Users', ['devs'])],
+      ['AWS::IAM::Group', 'devs', sibling('Groups', ['ops'])],
+    ])('%s: keeps its ARN for a sibling that does not list it', async (type, name, context) => {
+      routeSend([MP, OWN]);
+      const r = bagOf(
+        await provider.readCurrentState(name, 'P', type, { ManagedPolicyArns: [OWN] }, context)
+      );
+      expect(r?.['ManagedPolicyArns']).toEqual([MP, OWN]);
+    });
+  });
+
   describe('AWS::IAM::UserToGroupAddition', () => {
     it('returns undefined (membership-only resource, see JSDoc)', async () => {
       const result = await provider.readCurrentState(

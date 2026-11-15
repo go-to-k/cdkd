@@ -5627,6 +5627,7 @@
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-sibling-managed-policy-drift",
         "iam-user-group-fix-forward-orphan",
         "import-attribute-readback-misc",
         "infra-security"
@@ -5647,6 +5648,10 @@
         ],
         "iam-secret-derived-principals": [
           "l2"
+        ],
+        "iam-sibling-managed-policy-drift": [
+          "l2",
+          "literal"
         ],
         "iam-user-group-fix-forward-orphan": [
           "l1"
@@ -5725,6 +5730,7 @@
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-sibling-managed-policy-drift",
         "import-attributes",
         "import-auto-mode",
         "replaced-delete-failed-rollback",
@@ -5752,6 +5758,9 @@
         ],
         "iam-secret-derived-principals": [
           "l1",
+          "literal"
+        ],
+        "iam-sibling-managed-policy-drift": [
           "literal"
         ],
         "import-attributes": [
@@ -5896,6 +5905,7 @@
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
+        "iam-sibling-managed-policy-drift",
         "import-attribute-readback",
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
@@ -6145,6 +6155,10 @@
         "iam-secret-derived-principals": [
           "l2"
         ],
+        "iam-sibling-managed-policy-drift": [
+          "l2",
+          "literal"
+        ],
         "import-attribute-readback": [
           "l2",
           "literal"
@@ -6389,6 +6403,7 @@
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-sibling-managed-policy-drift",
         "iam-user-group-fix-forward-orphan",
         "import-attribute-readback-misc",
         "import-heal-prefix-record",
@@ -6410,6 +6425,10 @@
         ],
         "iam-secret-derived-principals": [
           "l1",
+          "literal"
+        ],
+        "iam-sibling-managed-policy-drift": [
+          "l2",
           "literal"
         ],
         "iam-user-group-fix-forward-orphan": [
