@@ -115,6 +115,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'CapacityProviderConfig',
         'FunctionScalingConfig',
         'PublishToLatestPublished',
+        'RuntimeConfig',
       ]),
     ],
   ]);
@@ -187,6 +188,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'CapacityProviderConfig',
         'FunctionScalingConfig',
         'PublishToLatestPublished',
+        // Cleared by the `Runtime` change away from 'custom' it must ride
+        // with; kept with 'custom', it is refused.
+        'RuntimeConfig',
       ]),
     ],
   ]);
