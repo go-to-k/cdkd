@@ -104,7 +104,12 @@ export async function substituteEnvVarsJudgedAsync(
     audit.resolvedKeys.push(...sub.audit.resolvedKeys);
     audit.unresolved.push(...sub.audit.unresolved);
     audit.sensitiveKeys.push(...sub.audit.sensitiveKeys);
-    if (watched.seen.producerSecret !== undefined && !audit.sensitiveKeys.includes(key)) {
+    // Only a key that resolved: an unresolved one is dropped, never passed.
+    if (
+      watched.seen.producerSecret !== undefined &&
+      sub.audit.resolvedKeys.includes(key) &&
+      !audit.sensitiveKeys.includes(key)
+    ) {
       audit.sensitiveKeys.push(key);
     }
   }

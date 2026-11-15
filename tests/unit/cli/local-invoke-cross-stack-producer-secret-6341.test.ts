@@ -112,6 +112,7 @@ import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import { bootAgentCoreContainer } from '../../../src/cli/commands/local-invoke-agentcore/container.js';
 import { resolveFromS3BucketIntrinsic } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { substituteEnvVarsJudgedAsync } from '../../../src/local/cross-stack-watch.js';
 
 /** An export as the cdkd-built resolver serves it: a value and its producer's verdict. */
 type Export = { value: string; verdict?: ProducerSecretVerdict };
@@ -469,7 +470,9 @@ describe('under finch on macOS, a producer secret is refused before docker run (
 // ---------------------------------------------------------------------------
 
 describe('invoke-agentcore fromS3 bucket intrinsic: a judged value is not logged (go-to-k/cdkd#6341)', () => {
-  async function resolveBucket(name: string): Promise<{ bucket: unknown; info: string }> {
+  async function resolveBucket(
+    name: string
+  ): Promise<{ bucket: unknown; judged: unknown; info: string }> {
     const resolved = {
       logicalId: 'Runtime',
       stack: { stackName: 'AgentStack', region: 'us-east-1' },
@@ -485,6 +488,7 @@ describe('invoke-agentcore fromS3 bucket intrinsic: a judged value is not logged
       );
       return {
         bucket: (resolved.codeArtifact.s3Source as { bucket?: unknown }).bucket,
+        judged: (resolved.codeArtifact.s3Source as { bucketJudged?: unknown }).bucketJudged,
         info: info.mock.calls.map((c) => String(c[0])).join('\n'),
       };
     } finally {
@@ -495,6 +499,8 @@ describe('invoke-agentcore fromS3 bucket intrinsic: a judged value is not logged
   it.each(['SecretExport', 'UnreadableExport'])('%s: resolved for the download, absent from the log', async (name) => {
     const r = await resolveBucket(name);
     expect(r.bucket).toBe(SECRET);
+    // Marked for the download, whose own log line cdkd does not yet control.
+    expect(r.judged).toBe(true);
     expect(r.info).toContain('Resolved fromS3 Code.S3.Bucket from state');
     expect(r.info).not.toContain(SECRET);
   });
@@ -502,6 +508,23 @@ describe('invoke-agentcore fromS3 bucket intrinsic: a judged value is not logged
   it('control: a non-secret export is logged as resolved', async () => {
     const r = await resolveBucket('PlainExport');
     expect(r.bucket).toBe(PLAIN);
+    expect(r.judged).toBeUndefined();
     expect(r.info).toContain(`resolved to ${PLAIN}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// substituteEnvVarsJudgedAsync: only a RESOLVED key is marked
+// ---------------------------------------------------------------------------
+
+describe('substituteEnvVarsJudgedAsync (go-to-k/cdkd#6341)', () => {
+  it('a key whose judged read did not resolve is unresolved, not marked sensitive', async () => {
+    const { env, audit } = await substituteEnvVarsJudgedAsync(
+      { BROKEN: joinOf('SecretExport', 'MissingExport'), OK: importOf('SecretExport') },
+      { resources: {}, crossStackResolver: judgedResolver() as never }
+    );
+    expect(Object.hasOwn(env, 'BROKEN')).toBe(false);
+    expect(audit.unresolved.map((u) => u.key)).toEqual(['BROKEN']);
+    expect(audit.sensitiveKeys).toEqual(['OK']);
   });
 });

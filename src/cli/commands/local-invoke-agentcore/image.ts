@@ -336,6 +336,18 @@ function findFileAssetByObjectKey(
 }
 
 /**
+ * A fromS3 source whose bucket name {@link resolveFromS3BucketIntrinsic} read
+ * from a cross-stack value holding a producer stack's secret, or one cdkd could
+ * not check (go-to-k/cdkd#6341). cdkd's own resolution line does not print it;
+ * the bundle download (cdk-local's `downloadAndExtractS3Bundle`) still names
+ * `s3://<bucket>/<key>` in its log line and errors until a cdk-local release
+ * with a display override (go-to-k/cdk-local#982) lets this mark be passed on.
+ */
+export interface JudgedS3Source {
+  bucketJudged?: true;
+}
+
+/**
  * Resolve a fromS3 bundle's intrinsic `Code.S3.Bucket` to a literal bucket
  * name in place on `resolved.codeArtifact.s3Source.bucket`. Uses the SAME
  * state-substitution machinery env vars use under `--from-cfn-stack`, so
@@ -402,6 +414,7 @@ export async function resolveFromS3BucketIntrinsic(
     );
   }
   s3Source.bucket = result.value;
+  if (watched.seen.producerSecret !== undefined) (s3Source as JudgedS3Source).bucketJudged = true;
   getLogger().info(
     watched.seen.producerSecret === undefined
       ? `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} resolved to ${result.value}`
