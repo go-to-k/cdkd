@@ -230,18 +230,29 @@ function makeZipLambda(): ResolvedZipLambda {
   } as unknown as ResolvedZipLambda;
 }
 
+/** Every line any console or stream channel received during the last {@link invoke}. */
+let invokeOutput: string[] = [];
+
 async function invoke(provider = stateProvider()): Promise<void> {
+  const lines: string[] = [];
+  invokeOutput = lines;
   mocks.resolveApp.mockReturnValue('node app.js');
   mocks.synthesize.mockResolvedValue({ stacks: [makeStack()], assemblyDir: 'cdk.out' });
   mocks.resolveLambdaTarget.mockImplementation(() => makeZipLambda());
   mocks.createLocalStateProvider.mockReturnValue(provider);
   const quiet = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
-    vi.spyOn(console, m).mockImplementation(() => {})
+    vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+      lines.push(a.map(String).join(' '));
+    })
   );
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (() => true) as typeof process.stdout.write;
-  process.stderr.write = (() => true) as typeof process.stderr.write;
+  const sink = ((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stdout.write = sink;
+  process.stderr.write = sink;
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new Error(`process.exit(${code})`);
   }) as never);
@@ -399,5 +410,55 @@ describe('local invoke-agentcore --from-state: a producer secret stays off the d
     const { resolveImport, resolveGetStackOutput } = judgedResolver();
     await bootAgent({ resolveImport, resolveGetStackOutput });
     expect(envFlags(dockerRun().argv)).toContain(`API_KEY=${SECRET}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// finch on macOS / Windows: the value-less flag does not keep it off an argv
+// ---------------------------------------------------------------------------
+
+describe('under finch on macOS, a producer secret is refused before docker run (go-to-k/cdkd#6341)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+
+  beforeEach(() => {
+    savedDocker = process.env['CDK_DOCKER'];
+    process.env['CDK_DOCKER'] = 'finch';
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+  });
+
+  const runs = () => mocks.execFile.mock.calls.filter((c) => (c[1] as string[])[0] === 'run');
+
+  it.each(['SecretExport', 'UnreadableExport'])('local invoke: %s', async (name) => {
+    templateEnv = { VALUE: importOf(name) };
+    await expect(invoke()).rejects.toThrow(/process\.exit\(1\)/);
+    expect(runs()).toHaveLength(0);
+    expect(invokeOutput.join('\n')).toMatch(
+      /refusing to forward secret\(s\) VALUE under CDK_DOCKER=finch/
+    );
+  });
+
+  it('local invoke control: a non-secret import still runs', async () => {
+    templateEnv = { TABLE: importOf('PlainExport') };
+    await invoke();
+    expect(envFlags(dockerRun().argv)).toContain(`TABLE=${PLAIN}`);
+  });
+
+  it.each(['SecretExport', 'UnreadableExport'])('local invoke-agentcore: %s', async (name) => {
+    templateEnv = { VALUE: importOf(name) };
+    await expect(bootAgent()).rejects.toThrow(/refusing to forward secret\(s\) VALUE under CDK_DOCKER=finch/);
+    expect(runs()).toHaveLength(0);
+  });
+
+  it('local invoke-agentcore control: a non-secret import still runs', async () => {
+    templateEnv = { TABLE: importOf('PlainExport') };
+    await bootAgent();
+    expect(envFlags(dockerRun().argv)).toContain(`TABLE=${PLAIN}`);
   });
 });
