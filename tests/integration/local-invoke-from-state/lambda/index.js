@@ -13,6 +13,7 @@ exports.handler = async (event) => {
     regionValue: process.env.REGION_VALUE ?? 'unset',
     partitionArn: process.env.PARTITION_ARN ?? 'unset',
     suffixHost: process.env.SUFFIX_HOST ?? 'unset',
+    stackNameSub: process.env.STACK_NAME_SUB ?? 'unset',
     importedSecret: process.env.IMPORTED_SECRET ?? 'unset',
     sameStackSecret: process.env.SAME_STACK_SECRET ?? 'unset',
     event,

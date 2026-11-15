@@ -292,6 +292,7 @@ describe('a pasted ` -> ` line redirects nothing (#4239)', () => {
     await resolveFromS3BucketIntrinsic(
       {
         logicalId: 'Agent',
+        stack: { stackName: 'S' },
         codeArtifact: { s3Source: { bucketIntrinsic: { Ref: 'Bucket' } } },
       } as never,
       { buildCrossStackResolver: async () => undefined } as never,

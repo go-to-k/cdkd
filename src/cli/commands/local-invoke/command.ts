@@ -20,7 +20,7 @@ import {
 import { refuseFailedLookups } from '../../../synthesis/failed-lookups.js';
 import { resolveApp } from '../../config-loader.js';
 import { readCdkPathOrUndefined } from '../../cdk-path.js';
-import { createLocalStateProvider } from '../local-state-source.js';
+import { createLocalStateProvider, withDeployedStackName } from '../local-state-source.js';
 import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
@@ -736,7 +736,11 @@ async function resolveInvokeTemplateEnvWith(
             lambda.stack.region ?? loaded.region,
             options
           );
-          if (pseudo) subContext.pseudoParameters = pseudo;
+          subContext.pseudoParameters = withDeployedStackName(
+            pseudo,
+            options,
+            lambda.stack.stackName
+          );
           // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307).
           Object.assign(
             subContext,

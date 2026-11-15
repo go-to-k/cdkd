@@ -19,6 +19,7 @@ import type { LocalRunTaskOptions } from './types.js';
 import { resolveStackAccountId } from './stack-account.js';
 import { stateRoleRecordIsEmulatorSide } from '../../../local/local-aws-wiring.js';
 import { templateSsmParameters } from '../../../local/state-ssm-parameters.js';
+import { withDeployedStackName } from '../local-state-source.js';
 
 /**
  * A stack's SSM-typed parameter values in the image context's keys
@@ -225,14 +226,18 @@ export async function buildEcsImageResolutionContext(
       );
     }
     const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
-    ctx.pseudoParameters = {
-      ...(accountId !== undefined && { accountId }),
-      ...(region !== undefined && { region }),
-      ...(partitionAndSuffix && {
-        partition: partitionAndSuffix.partition,
-        urlSuffix: partitionAndSuffix.urlSuffix,
-      }),
-    };
+    ctx.pseudoParameters = withDeployedStackName(
+      {
+        ...(accountId !== undefined && { accountId }),
+        ...(region !== undefined && { region }),
+        ...(partitionAndSuffix && {
+          partition: partitionAndSuffix.partition,
+          urlSuffix: partitionAndSuffix.urlSuffix,
+        }),
+      },
+      options,
+      candidate.stackName
+    );
   }
 
   // Issue #1025: a container Image targets an ECR repo whose name does not

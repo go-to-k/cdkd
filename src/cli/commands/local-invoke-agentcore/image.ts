@@ -44,6 +44,7 @@ import {
 } from './env.js';
 import { platformToArchitecture } from './output.js';
 import type { LocalInvokeAgentCoreOptions } from './types.js';
+import { withDeployedStackName } from '../local-state-source.js';
 
 /**
  * Acquire the agent image. A CODE artifact (managed runtime) is built from
@@ -348,7 +349,8 @@ export async function resolveFromS3BucketIntrinsic(
   resolved: ResolvedAgentCoreRuntime,
   stateProvider: LocalStateProvider | undefined,
   loaded: LocalStateRecord | undefined,
-  imageContext: ImageResolutionContext | undefined
+  imageContext: ImageResolutionContext | undefined,
+  options: { fromCfnStack?: string | boolean | undefined } = {}
 ): Promise<void> {
   const s3Source = resolved.codeArtifact?.s3Source;
   if (!s3Source || s3Source.bucketIntrinsic === undefined) return;
@@ -367,8 +369,13 @@ export async function resolveFromS3BucketIntrinsic(
     resources: imageContext?.stateResources ?? loaded.resources,
     consumerRegion: loaded.region,
   };
-  const pseudo = imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
-  if (pseudo) subContext.pseudoParameters = pseudo;
+  subContext.pseudoParameters =
+    imageContext?.pseudoParameters ??
+    withDeployedStackName(
+      derivePseudoParametersFromRegion(loaded.region),
+      options,
+      resolved.stack.stackName
+    );
   const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
   if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
 
@@ -448,8 +455,11 @@ export async function buildAgentCoreImageContext(
   }
 
   const context: ImageResolutionContext = {};
-  const pseudo = derivePseudoParametersFromRegion(region, accountId);
-  if (pseudo) context.pseudoParameters = pseudo;
+  context.pseudoParameters = withDeployedStackName(
+    derivePseudoParametersFromRegion(region, accountId),
+    options,
+    candidate.stackName
+  );
 
   if (loaded) {
     context.stateResources = loaded.resources;
