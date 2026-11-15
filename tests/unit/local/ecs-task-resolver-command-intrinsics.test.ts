@@ -487,7 +487,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
           error = err;
         }
         expect(args.join(' ')).not.toMatch(/plaintext/);
-        expect(String(error)).toMatch(/Volumes\[0\] 'v' Host\.SourcePath references ApiKey, whose physical id holds a secret/);
+        expect(String(error)).toMatch(/Volumes\[0\] 'v' Host\.SourcePath reads ApiKey, which holds a secret; .*as a -v path/);
         expect(String(error)).not.toMatch(/plaintext/);
       });
 

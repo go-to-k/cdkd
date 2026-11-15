@@ -2,7 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import { substituteAgainstState, type SubstitutionContext } from '../state-resolver.js';
-import { secretAttributeRead } from './container.js';
+import { secretValueRead } from './container.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsVolume } from './types.js';
 
@@ -120,10 +120,11 @@ function resolveVolumeSourcePath(
   // The path goes on the `docker run` argv as `-v <path>:<containerPath>`,
   // so a secret read from state is refused as an argv element is
   // (go-to-k/cdkd#6330).
-  const secret = secretAttributeRead(raw, subContext.resources);
+  const secret = secretValueRead(raw, subContext.resources);
   if (secret !== undefined) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath ${secret}.`
+      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath reads ${secret}, which holds a secret; ` +
+        'cdkd will not put it on the docker run command line as a -v path.'
     );
   }
   const sub = substituteAgainstState(raw, subContext);

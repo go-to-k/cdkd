@@ -366,10 +366,32 @@ export function secretValueFromReason(
   valueFrom: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
-  const hit = secretRead(valueFrom, stateResources);
-  if (hit === undefined) return undefined;
-  const read = hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
+  const read = secretValueRead(valueFrom, stateResources);
+  if (read === undefined) return undefined;
   return `ValueFrom reads ${read}, which holds a secret rather than naming a Secrets Manager secret or an SSM parameter`;
+}
+
+/**
+ * The secret read `value` makes from state, named as `LogicalId` or
+ * `LogicalId.Attribute` (never the value), or `undefined` when it reads none.
+ */
+export function secretValueRead(
+  value: unknown,
+  stateResources: SubstitutionContext['resources']
+): string | undefined {
+  const hit = secretRead(value, stateResources);
+  if (hit === undefined) return undefined;
+  return hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
+}
+
+/**
+ * Whether a recorded attribute value may carry `segment`: a string holding it,
+ * or a value it cannot be checked in (unrecorded, or an object). A number or
+ * boolean cannot.
+ */
+function mayHoldSegment(stored: unknown, segment: string): boolean {
+  if (typeof stored === 'string') return stored.includes(segment);
+  return stored === undefined || stored === null || typeof stored === 'object';
 }
 
 /**
@@ -382,16 +404,6 @@ export function secretValueFromReason(
  * ends in the key). A `Ref` (or a dot-less `${Id}` of `Fn::Sub`) counts when
  * the physical id it resolves to embeds one (go-to-k/cdkd#6330).
  */
-/**
- * Whether a recorded attribute value may carry `segment`: a string holding it,
- * or a value it cannot be checked in (unrecorded, or an object). A number or
- * boolean cannot.
- */
-function mayHoldSegment(stored: unknown, segment: string): boolean {
-  if (typeof stored === 'string') return stored.includes(segment);
-  return stored === undefined || stored === null || typeof stored === 'object';
-}
-
 function secretRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
