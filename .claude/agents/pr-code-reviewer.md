@@ -22,8 +22,8 @@ FILE holding `gitdir: <repo>/.git/worktrees/<name>`, which `cp -R` carries, so a
 Report the target worktree's `git status --porcelain` at the START and at the
 END of your round; if it is non-empty at the start, say so rather than restoring
 anything. **Never edit a file in that tree either**: a mutation probe runs in
-your scratch dir (`mkdir -p <dir>`, `git archive <sha> | tar -x -C <dir>`, then
-`ln -s` the tree's `node_modules` into it), so a probe cannot overwrite in-flight
+your scratch dir (`mkdir <dir> && git archive <sha> | tar -x -C <dir> && ln -sn`
+the tree's `node_modules` in; no `-p`: a reused dir must stop the chain), so a probe cannot overwrite in-flight
 work. The extract has no `.git` or `dist`: first confirm the target test file
 passes there UNMUTATED with none skipped (one that needs either cannot be probed
 this way, so say so), and take `testing.md`'s receipt with `diff -r`.
