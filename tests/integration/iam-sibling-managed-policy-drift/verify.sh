@@ -425,7 +425,7 @@ echo "    no drift"
 # addition's write: before the fix that recorded ${ADD_GROUP} on ${ADD_U2}
 # every time (no race left to lose), so the arm below is RED on pre-fix code.
 echo "==> Phase 8: re-capture the baselines"
-node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET}"
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET}" --yes
 export CDKD_TEST_UPDATE=late,shrink
 echo "==> Phase 8: drop ${ADD_U2} from the UserToGroupAddition"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
