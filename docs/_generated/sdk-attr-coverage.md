@@ -39,7 +39,7 @@ None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed t
 | `AWS::AppSync::DataSource` | covered | `DataSourceArn` (cached) |
 | `AWS::AppSync::GraphQLApi` | covered | `Arn` (cached), `GraphQLEndpointArn` (ctor), `GraphQLUrl` (cached), `RealtimeUrl` (cached) |
 | `AWS::AppSync::Resolver` | covered | `ResolverArn` (cached) |
-| `AWS::AutoScaling::AutoScalingGroup` | covered | `AutoScalingGroupARN` (ctor) |
+| `AWS::AutoScaling::AutoScalingGroup` | covered | `AutoScalingGroupARN` (cached) |
 | `AWS::BedrockAgentCore::Browser` | covered | `BrowserArn` (cached) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | covered | `CodeInterpreterArn` (cached) |
 | `AWS::BedrockAgentCore::Evaluator` | covered | `EvaluatorArn` (cached) |
