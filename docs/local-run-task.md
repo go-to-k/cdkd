@@ -360,10 +360,17 @@ the flags. On this command they resolve the following:
 
 Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see
-below). The secret check reads the consumer stack's own state only:
-a value another stack exports, read through `Fn::ImportValue` or
-`Fn::GetStackOutput`, goes on the command line as exported, unless it was
-recorded as the secret mask (`***`), which is refused.
+below). Under `--from-state` the secret check also covers a value another
+stack exports, read through `Fn::ImportValue` or `Fn::GetStackOutput`. It
+reads the producer stack's state, and a value that holds one of that stack's
+secrets (an `AWS::AppSync::ApiKey`'s key, a secret attribute above) is
+treated like a secret read from the consumer's own state: refused in
+`Command`, `EntryPoint` or a health-check command, resolved off the command
+line in `Environment`, and dropped as a `Secrets` `ValueFrom`. A value whose
+producer state cdkd cannot read is refused in `Command`, `EntryPoint` or a
+health-check command too. A value recorded as the secret mask (`***`) is
+refused there. Under `--from-cfn-stack` an exported value is not checked
+and goes on the command line as exported.
 
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.

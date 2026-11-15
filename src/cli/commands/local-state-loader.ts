@@ -44,6 +44,7 @@ import {
   producerRecordKey,
 } from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
+import { type ProducerSecretCheck, ProducerSecretLedger } from '../../local/cross-stack-secrets.js';
 import { quotedOrDescribed } from '../../utils/pasteable-command.js';
 import { regionShown } from '../region-options.js';
 
@@ -696,20 +697,59 @@ export async function buildCrossStackResolver(
     statePrefix: opts.statePrefix,
   };
 
-  const resolver: CrossStackResolver = {
+  // go-to-k/cdkd#6337: what each served value's producer state says is a
+  // secret, read by cdkd's own post-pass beside cdk-local's contract.
+  const secrets = new ProducerSecretLedger();
+  // The index entry carries the value alone, so its producer's state is read
+  // here; a record that cannot be read leaves the value unverified, which the
+  // argv refuses (fail closed). Read once per record.
+  const producerReads = new Map<string, Promise<unknown>>();
+  const noteIndexedProducer = async (
+    producerStack: string,
+    producerRegion: string,
+    served: string
+  ): Promise<void> => {
+    const key = producerRecordKey(producerStack, producerRegion);
+    let read = producerReads.get(key);
+    if (read === undefined) {
+      read = Promise.resolve()
+        .then(() => stateBackend.getState(producerStack, producerRegion))
+        .then(
+          (got) => got?.state,
+          (err: unknown) => {
+            logger.debug(
+              `${prefix}: state read failed for ${producerStack} (${producerRegion}) while checking an exports-index value for secrets: ${describeAwsFailure(err).detail}`
+            );
+            return undefined;
+          }
+        );
+      producerReads.set(key, read);
+    }
+    const state = await read;
+    if (state === undefined || state === null) secrets.noteUnverified(served);
+    else secrets.noteProducerState(state);
+  };
+
+  const resolver: CrossStackResolver & ProducerSecretCheck = {
+    producerSecretReason: (value) => secrets.producerSecretReason(value),
     async resolveImport(exportName: string): Promise<string | undefined> {
       // Fast path: consult the persistent exports index.
       try {
         const entry = await exportIndex.lookup(exportName);
         if (entry) {
           const value = entry.value;
-          if (typeof value === 'string') return value;
-          if (typeof value === 'number' || typeof value === 'boolean') return String(value);
           // Object-valued Outputs (rare) — serialize as JSON so the
           // downstream env-var carries something useful. The deploy-time
           // intrinsic resolver flattens these in practice but the index
           // value is the source of truth here, so we mirror its shape.
-          return JSON.stringify(value);
+          const served =
+            typeof value === 'string'
+              ? value
+              : typeof value === 'number' || typeof value === 'boolean'
+                ? String(value)
+                : JSON.stringify(value);
+          await noteIndexedProducer(entry.producerStack, entry.producerRegion, served);
+          return served;
         }
       } catch (err) {
         logger.debug(
@@ -749,6 +789,7 @@ export async function buildCrossStackResolver(
           // bag also holds every plain Output name, and matching on those
           // bound a local env var to a stack that exports nothing of that name.
           if (importableOutputKeys(got.state).includes(exportName)) {
+            secrets.noteProducerState(got.state);
             const value = got.state.outputs[exportName];
             if (typeof value === 'string') return value;
             if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -815,6 +856,7 @@ export async function buildCrossStackResolver(
         // defence, and the same reason, as the deploy-side resolver's
         // `Fn::GetStackOutput` arm (issue #2767).
         if (!Object.hasOwn(outputs, outputName)) return undefined;
+        secrets.noteProducerState(got.state);
         const value = outputs[outputName];
         if (typeof value === 'string') return value;
         if (typeof value === 'number' || typeof value === 'boolean') return String(value);
