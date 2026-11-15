@@ -23,6 +23,7 @@
  * The sibling's ARN is its state record's physicalId, so a sibling with no
  * recorded physicalId (not created yet) excludes nothing.
  */
+import { injectiveKey } from '../state/record-keys.js';
 import type { ReadCurrentStateContext } from '../types/resource.js';
 
 /** The `AWS::IAM::ManagedPolicy` list that names a principal of each type. */
@@ -222,4 +223,192 @@ export function stripSiblingOwnedMembers(
     return out;
   };
   return { baseline: strip(baseline), aws: strip(aws) };
+}
+
+/** A list key of one record and the members to drop from its baseline. */
+export interface StoppedSiblingMembers {
+  key: string;
+  members: Set<string>;
+  foldCase: boolean;
+}
+
+/** The minimal record shape {@link membersSiblingsStoppedWriting} reads. */
+interface WriterRecord {
+  resourceType: string;
+  physicalId?: string;
+  properties?: Record<string, unknown>;
+  deletionPolicy?: string | undefined;
+  updateReplacePolicy?: string | undefined;
+}
+
+const RETAINS: ReadonlySet<unknown> = new Set(['Retain', 'RetainExceptOnCreate']);
+
+/**
+ * Whether the AWS resource behind `previous[logicalId]` may still exist after
+ * the deploy, so it may still write what its record lists: a DELETE under a
+ * retaining `DeletionPolicy` drops the record without a provider call, and a
+ * replacement under a retaining `UpdateReplacePolicy`, or whose old-resource
+ * delete was deferred, skipped or not confirmed (`oldMaySurvive`), leaves the
+ * old physical resource attached.
+ */
+function previousMaySurvive(
+  logicalId: string,
+  record: WriterRecord,
+  next: Readonly<Record<string, WriterRecord>>,
+  oldMaySurvive: (logicalId: string) => boolean,
+  templatePolicies: TemplatePolicies | undefined
+): boolean {
+  // A record lacking a policy (written before state schema v5) falls back to
+  // the template's, as `delete.ts` does, reading the same Condition-filtered
+  // template: a removed resource has no definition there, so the fallback
+  // only reaches a resource the template still defines (a replacement).
+  const policies = templatePolicies?.(logicalId);
+  const now = next[logicalId];
+  if (now === undefined) {
+    return RETAINS.has(record.deletionPolicy ?? policies?.deletionPolicy);
+  }
+  if (now.physicalId === record.physicalId) return false;
+  return (
+    RETAINS.has(record.updateReplacePolicy ?? policies?.updateReplacePolicy) ||
+    oldMaySurvive(logicalId)
+  );
+}
+
+/** The template's `DeletionPolicy` / `UpdateReplacePolicy` for a logical id. */
+export type TemplatePolicies = (
+  logicalId: string
+) => { deletionPolicy?: unknown; updateReplacePolicy?: unknown } | undefined;
+
+/**
+ * A stored expression or mask (`{{resolve:...}}`, `***`) rather than a name:
+ * `previous` holds the PERSISTED form and `next` the in-memory plaintext, so a
+ * member or target spelled this way cannot be compared across the two.
+ */
+function isStoredExpression(value: string): boolean {
+  return value.includes('{{resolve:') || value.includes('***');
+}
+
+/**
+ * Every member `record` writes onto ANOTHER stack resource's list, as
+ * `[targetType, targetId, key, member, foldCase]`: a managed policy's ARN onto
+ * each principal its `Roles` / `Users` / `Groups` names, a principal's name
+ * onto each policy its `ManagedPolicyArns` names, and a
+ * `UserToGroupAddition`'s group onto each user its `Users` names (folded:
+ * IAM user and group names are case-insensitive).
+ */
+function siblingWritesOf(record: WriterRecord): Array<[string, string, string, string, boolean]> {
+  const out: Array<[string, string, string, string, boolean]> = [];
+  const props = record.properties ?? {};
+  const id = record.physicalId;
+  if (record.resourceType === 'AWS::IAM::ManagedPolicy' && typeof id === 'string' && id !== '') {
+    for (const field of ['Roles', 'Users', 'Groups'] as const) {
+      for (const name of stringsAt(props, field) ?? []) {
+        out.push([PRINCIPAL_TYPE[field], name, 'ManagedPolicyArns', id, false]);
+      }
+    }
+  }
+  const field = managedPolicyAttachmentField(record.resourceType);
+  if (field !== undefined && typeof id === 'string' && id !== '') {
+    for (const arn of stringsAt(props, 'ManagedPolicyArns') ?? []) {
+      out.push(['AWS::IAM::ManagedPolicy', arn, field, id, false]);
+    }
+  }
+  if (record.resourceType === 'AWS::IAM::UserToGroupAddition') {
+    const group = props['GroupName'];
+    if (typeof group === 'string' && group !== '') {
+      for (const user of stringsAt(props, 'Users') ?? []) {
+        out.push(['AWS::IAM::User', user.toLowerCase(), 'Groups', group.toLowerCase(), true]);
+      }
+    }
+  }
+  return out.filter(
+    ([, target, , member]) => !isStoredExpression(target) && !isStoredExpression(member)
+  );
+}
+
+/**
+ * go-to-k/cdkd#6343: per logical id of `next`, the list members a SIBLING
+ * wrote onto that resource before this deploy (`previous`) and no longer
+ * writes after it: a managed policy that dropped the principal or was
+ * replaced (a new ARN) or deleted, a principal that dropped the policy from
+ * its `ManagedPolicyArns` or was deleted, a `UserToGroupAddition` that dropped
+ * the user. The deploy's own provider call has just removed each of these from
+ * AWS (a detach, a `RemoveUserFromGroup`, a delete), so a drift baseline still
+ * holding one (a capture that raced the sibling's write, or one taken before
+ * go-to-k/cdkd#6324 / #6328) records a member the stack stopped writing:
+ * `cdkd drift` would report it lost and `--revert` would re-add it.
+ *
+ * The evidence is the sibling's own RECORDED write, never the readback, so a
+ * member detached out of band and `--accept`ed is not touched: no sibling's
+ * record changed for it. A sibling whose previous AWS resource may survive the
+ * deploy (`previousMaySurvive`: retained, or a replaced old resource not
+ * confirmed gone) stopped nothing. A member the target's own template declares
+ * is kept by {@link withoutStoppedSiblingMembers}. In-memory only; no AWS call.
+ */
+export function membersSiblingsStoppedWriting(
+  previous: Readonly<Record<string, WriterRecord>>,
+  next: Readonly<Record<string, WriterRecord>>,
+  oldMaySurvive: (logicalId: string) => boolean = () => false,
+  templatePolicies?: TemplatePolicies
+): Map<string, StoppedSiblingMembers[]> {
+  const encode = (w: [string, string, string, string, boolean]): string =>
+    injectiveKey(w[0], w[1], w[2], w[3], String(w[4]));
+  const stillWritten = new Set<string>();
+  for (const record of Object.values(next)) {
+    for (const w of siblingWritesOf(record)) stillWritten.add(encode(w));
+  }
+  // injectiveKey(targetType, foldCase, targetId) -> key -> members
+  const stopped = new Map<string, Map<string, StoppedSiblingMembers>>();
+  for (const [logicalId, record] of Object.entries(previous)) {
+    const writes = siblingWritesOf(record);
+    if (
+      writes.length === 0 ||
+      previousMaySurvive(logicalId, record, next, oldMaySurvive, templatePolicies)
+    ) {
+      continue;
+    }
+    for (const w of writes) {
+      if (stillWritten.has(encode(w))) continue;
+      const [targetType, targetId, key, member, foldCase] = w;
+      const target = injectiveKey(targetType, String(foldCase), targetId);
+      let byKey = stopped.get(target);
+      if (byKey === undefined) stopped.set(target, (byKey = new Map()));
+      let entry = byKey.get(key);
+      if (entry === undefined) byKey.set(key, (entry = { key, members: new Set(), foldCase }));
+      entry.members.add(member);
+    }
+  }
+  const result = new Map<string, StoppedSiblingMembers[]>();
+  if (stopped.size === 0) return result;
+  for (const [logicalId, record] of Object.entries(next)) {
+    const id = record.physicalId;
+    if (typeof id !== 'string' || id === '') continue;
+    const entries = [
+      ...(stopped.get(injectiveKey(record.resourceType, 'false', id))?.values() ?? []),
+      // A `UserToGroupAddition` names its user folded.
+      ...(stopped.get(injectiveKey(record.resourceType, 'true', id.toLowerCase()))?.values() ?? []),
+    ];
+    if (entries.length > 0) result.set(logicalId, entries);
+  }
+  return result;
+}
+
+/**
+ * `bag` without the {@link membersSiblingsStoppedWriting} members the
+ * resource's own `properties` do not declare under the same key. Returned by
+ * identity when nothing is dropped.
+ */
+export function withoutStoppedSiblingMembers(
+  bag: Record<string, unknown>,
+  stopped: readonly StoppedSiblingMembers[],
+  properties: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  let out = bag;
+  for (const { key, members, foldCase } of stopped) {
+    const list = stringsAt(out, key);
+    if (list === undefined) continue;
+    const kept = withoutSiblingOwned(list, members, properties, key, foldCase);
+    if (kept.length !== list.length) out = { ...out, [key]: kept };
+  }
+  return out;
 }

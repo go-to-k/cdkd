@@ -824,4 +824,157 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
 
     expect(captureContextFor('Bucket')).toBeUndefined();
   });
+
+  // go-to-k/cdkd#6343: the Role is NO_CHANGE, so nothing re-captures it, while
+  // its baseline (a CREATE-race or pre-#6324 capture) holds the policy's ARN.
+  describe('a NO_CHANGE principal whose sibling ManagedPolicy stopped attaching it (#6343)', () => {
+    const doc = { Version: '2012-10-17', Statement: [] };
+    const oldArn = 'arn:aws:iam::123456789012:policy/iam-capture-stack-Mp-OLD';
+    const awsManaged = 'arn:aws:iam::aws:policy/ReadOnlyAccess';
+
+    function stateWith(roleDeclares: string[]) {
+      return {
+        state: {
+          version: 8,
+          region: 'us-east-1',
+          stackName,
+          resources: {
+            Role: {
+              physicalId: 'phys-Role',
+              resourceType: 'AWS::IAM::Role',
+              properties: { AssumeRolePolicyDocument: doc, ManagedPolicyArns: roleDeclares },
+              observedProperties: { ManagedPolicyArns: [awsManaged, oldArn], RoleName: 'phys-Role' },
+            },
+            Mp: {
+              physicalId: oldArn,
+              resourceType: 'AWS::IAM::ManagedPolicy',
+              properties: { PolicyDocument: doc, Roles: ['phys-Role'] },
+              observedProperties: { Roles: ['phys-Role'] },
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        etag: 'etag-old',
+      };
+    }
+
+    async function deployMpChange(
+      mpProps: Record<string, unknown>,
+      updated: { physicalId: string; wasReplaced: boolean },
+      roleDeclares: string[],
+      // A later CREATE that fails, on a `--no-rollback` deploy.
+      failAfter = false
+    ) {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Role: {
+            Type: 'AWS::IAM::Role',
+            Properties: { AssumeRolePolicyDocument: doc, ManagedPolicyArns: roleDeclares },
+          },
+          Mp: { Type: 'AWS::IAM::ManagedPolicy', Properties: mpProps },
+          ...(failAfter && { Boom: { Type: 'AWS::S3::Bucket', Properties: {} } }),
+        },
+      };
+      if (failAfter) {
+        mockProvider.create.mockRejectedValue(new Error('boom'));
+      }
+      mockStateBackend.getState.mockResolvedValue(stateWith(roleDeclares));
+      mockProvider.update.mockResolvedValue(updated);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        new Map<string, ResourceChange>([
+          [
+            'Role',
+            {
+              logicalId: 'Role',
+              changeType: 'NO_CHANGE',
+              resourceType: 'AWS::IAM::Role',
+              desiredProperties: template.Resources!['Role']!.Properties,
+              currentProperties: template.Resources!['Role']!.Properties,
+            },
+          ],
+          [
+            'Mp',
+            {
+              logicalId: 'Mp',
+              changeType: 'UPDATE',
+              resourceType: 'AWS::IAM::ManagedPolicy',
+              desiredProperties: mpProps,
+              currentProperties: { PolicyDocument: doc, Roles: ['phys-Role'] },
+            },
+          ],
+          ...(failAfter
+            ? ([
+                [
+                  'Boom',
+                  { logicalId: 'Boom', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', desiredProperties: {} },
+                ],
+              ] as Array<[string, ResourceChange]>)
+            : []),
+        ])
+      );
+      mockDagBuilder.getExecutionLevels.mockReturnValue(
+        failAfter ? [['Role'], ['Mp'], ['Boom']] : [['Role'], ['Mp']]
+      );
+      if (failAfter) {
+        const engine = new DeployEngine(
+          mockStateBackend as never,
+          mockLockManager as never,
+          mockDagBuilder as never,
+          mockDiffCalculator as never,
+          mockProviderRegistry as never,
+          { dryRun: false, noRollback: true },
+          'us-east-1'
+        );
+        await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      } else {
+        await makeEngine().deploy(stackName, template);
+      }
+      const saved = mockStateBackend.saveState.mock.calls.at(-1)![2] as {
+        resources: Record<string, { observedProperties?: Record<string, unknown> }>;
+      };
+      return saved.resources['Role']!.observedProperties;
+    }
+
+    it('drops the ARN once the policy drops the role from its Roles', async () => {
+      const observed = await deployMpChange(
+        { PolicyDocument: doc, Roles: ['some-other-role'] },
+        { physicalId: oldArn, wasReplaced: false },
+        [awsManaged]
+      );
+      expect(observed).toEqual({ ManagedPolicyArns: [awsManaged], RoleName: 'phys-Role' });
+    });
+
+    it('drops the OLD ARN once the policy is replaced under a new ARN', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/iam-capture-stack-Mp-NEW';
+      const observed = await deployMpChange(
+        { PolicyDocument: doc, ManagedPolicyName: 'renamed', Roles: [{ Ref: 'Role' }] },
+        { physicalId: newArn, wasReplaced: true },
+        [awsManaged]
+      );
+      expect(observed).toEqual({ ManagedPolicyArns: [awsManaged], RoleName: 'phys-Role' });
+    });
+
+    // `--no-rollback`: the policy's detach stays, and the next deploy would
+    // see the new record as the previous one, so the failure save prunes too.
+    it('drops the ARN in the state a --no-rollback failure saves', async () => {
+      const observed = await deployMpChange(
+        { PolicyDocument: doc, Roles: ['some-other-role'] },
+        { physicalId: oldArn, wasReplaced: false },
+        [awsManaged],
+        true
+      );
+      expect(mockProvider.create).toHaveBeenCalled();
+      expect(observed).toEqual({ ManagedPolicyArns: [awsManaged], RoleName: 'phys-Role' });
+    });
+
+    it("keeps the ARN when the role's own template declares it too", async () => {
+      const observed = await deployMpChange(
+        { PolicyDocument: doc, Roles: ['some-other-role'] },
+        { physicalId: oldArn, wasReplaced: false },
+        [awsManaged, oldArn]
+      );
+      expect(observed).toEqual({ ManagedPolicyArns: [awsManaged, oldArn], RoleName: 'phys-Role' });
+    });
+  });
 });

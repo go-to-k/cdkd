@@ -1,6 +1,9 @@
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
-import { stampReasonlessParameterRefusals } from './observed-capture.js';
+import {
+  pruneStoppedSiblingMembersBestEffort,
+  stampReasonlessParameterRefusals,
+} from './observed-capture.js';
 import { captureStoredNoEchoNamingValues, stateNamingSecrets } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
@@ -783,6 +786,14 @@ export async function doDeployWithPrefetch(
       // Best-effort: never in the way of the save it serves.
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
+    // go-to-k/cdkd#6343: a member a sibling stopped writing leaves the baseline.
+    pruneStoppedSiblingMembersBestEffort(
+      engine.logger,
+      currentState.resources,
+      newState.resources,
+      engine.replacementRun,
+      effectiveTemplate
+    );
     clock.lap('observed-state drain');
     // A row updated for the check marks this record only once its child's
     // own check is done too (its record is marked, or it has no nested row).

@@ -3,7 +3,7 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
- * Integ probe for go-to-k/cdkd#6324: a managed policy that a SIBLING
+ * Integ probe for go-to-k/cdkd#6324 (and #6328 / #6343, below): a managed policy that a SIBLING
  * `AWS::IAM::ManagedPolicy` attaches to an IAM principal through its own
  * `Roles` / `Users` / `Groups` list is that resource's, not the principal's.
  *
@@ -47,23 +47,38 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
       managedPolicies: [own],
     });
 
-    const mp = new iam.ManagedPolicy(this, 'Mp', {
-      managedPolicyName: 'cdkd-iam-sibling-mp-policy',
-      roles: [role],
-      users: [user],
-      groups: [group],
-      statements: [new iam.PolicyStatement({ actions: ['sqs:GetQueueUrl'], resources: ['*'] })],
-    });
-
     // Mode tokens (monotonic: every later deploy keeps `late`):
     //  - `late`: the second deploy adds the Attacher role and puts the
     //    declared-Groups user into the addition. The policy and that user are
     //    NO_CHANGE there, so their baselines stay pinned to what the FIRST
     //    deploy recorded, before either sibling wrote.
     //  - `shrink`: drops the second user from the addition.
+    //  - `touch` (go-to-k/cdkd#6343): UPDATEs the policy and the declared-Groups
+    //    user while both siblings write, so each one's capture records the
+    //    sibling's member on its DECLARED list (`Roles` / `Groups`).
+    //  - `drop` (#6343): the Attacher role drops the policy and the addition
+    //    drops the declared-Groups user; the policy and that user are NO_CHANGE.
+    //  - `rename` (#6343): renames the policy, so it is REPLACED under a new ARN
+    //    while the role it attaches is NO_CHANGE.
     const updateMode = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
     const late = updateMode.includes('late');
     const shrink = updateMode.includes('shrink');
+    const touch = updateMode.includes('touch');
+    const drop = updateMode.includes('drop');
+    const rename = updateMode.includes('rename');
+
+    const mp = new iam.ManagedPolicy(this, 'Mp', {
+      managedPolicyName: rename ? 'cdkd-iam-sibling-mp-policy2' : 'cdkd-iam-sibling-mp-policy',
+      roles: [role],
+      users: [user],
+      groups: [group],
+      statements: [
+        new iam.PolicyStatement({
+          actions: touch ? ['sqs:GetQueueUrl', 'sqs:ListQueues'] : ['sqs:GetQueueUrl'],
+          resources: ['*'],
+        }),
+      ],
+    });
 
     // go-to-k/cdkd#6328, the mirror: a role attaching the policy from ITS side
     // (`ManagedPolicyArns: [{Ref: Mp}]`). The policy's baseline `Roles` is
@@ -72,7 +87,7 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
       new iam.Role(this, 'Attacher', {
         roleName: 'cdkd-iam-sibling-mp-attacher',
         assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-        managedPolicies: [mp],
+        managedPolicies: drop ? [] : [mp],
       });
     }
 
@@ -87,10 +102,11 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
     const u3 = new iam.CfnUser(this, 'AddUser3', {
       userName: 'cdkd-iam-sibling-mp-add-u3',
       groups: [group.groupName],
+      ...(touch && { tags: [{ key: 'cdkd-6343', value: 'touch' }] }),
     });
     new iam.CfnUserToGroupAddition(this, 'Add', {
       groupName: addGroup.ref,
-      users: [u1.ref, ...(shrink ? [] : [u2.ref]), ...(late ? [u3.ref] : [])],
+      users: [u1.ref, ...(shrink ? [] : [u2.ref]), ...(late && !drop ? [u3.ref] : [])],
     });
   }
 }

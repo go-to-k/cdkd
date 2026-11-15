@@ -29,10 +29,15 @@ import {
   resolveRecordSecrets,
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
-import { managedPolicyAttachmentField } from '../../provisioning/iam-sibling-managed-policies.js';
+import {
+  managedPolicyAttachmentField,
+  membersSiblingsStoppedWriting,
+  withoutStoppedSiblingMembers,
+} from '../../provisioning/iam-sibling-managed-policies.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
 import {
   createUnionSecretMasker,
+  carryRedactionMarks,
   markSameGenerationBag,
   maskReadbackAtCoordinates,
   maskedLeafCoordinatesOf,
@@ -588,6 +593,86 @@ export class ObservedCapture {
       return undefined;
     });
     this.observedCaptureTasks.set(logicalId, task);
+  }
+}
+
+/**
+ * go-to-k/cdkd#6343: after a successful deploy's drain, drop from each
+ * resource's `observedProperties` the IAM list members a sibling wrote onto it
+ * before the deploy and stopped writing in it (`membersSiblingsStoppedWriting`
+ * says which, and why the sibling's RECORDED write is the evidence). Runs after
+ * the drain so a baseline captured THIS deploy is covered too: a principal's
+ * CREATE capture races its sibling's attach, and the sibling may drop it in a
+ * later deploy that leaves the principal NO_CHANGE.
+ *
+ * In memory, over the two record maps, with no AWS call. Each changed record
+ * is REPLACED in `next` (never mutated: an unchanged record is shared with the
+ * loaded state). The new bag carries the redaction marks of the one it
+ * replaces (`carryRedactionMarks`): it holds a subset of that bag's leaves,
+ * unchanged (the drain marks every readback it installs). `replacementRun`
+ * names the replacements whose old resource may survive (kept, deferred,
+ * skipped, unconfirmed), and `template` supplies the `DeletionPolicy` /
+ * `UpdateReplacePolicy` a record lacks: those stopped writing nothing.
+ * Returns how many records changed.
+ */
+export function pruneMembersSiblingsStoppedWriting(
+  previous: Readonly<Record<string, ResourceState>>,
+  next: Record<string, ResourceState>,
+  replacementRun?: {
+    retainedOldOnReplacement: ReadonlySet<string>;
+    replacedOldMaySurvive: ReadonlyMap<string, unknown>;
+  },
+  template?: CloudFormationTemplate
+): number {
+  const oldMaySurvive = (logicalId: string): boolean =>
+    replacementRun !== undefined &&
+    (replacementRun.retainedOldOnReplacement.has(logicalId) ||
+      replacementRun.replacedOldMaySurvive.has(logicalId));
+  let changed = 0;
+  const templatePolicies = (
+    logicalId: string
+  ): { deletionPolicy?: unknown; updateReplacePolicy?: unknown } | undefined => {
+    const def = template?.Resources?.[logicalId];
+    return def === undefined
+      ? undefined
+      : { deletionPolicy: def.DeletionPolicy, updateReplacePolicy: def.UpdateReplacePolicy };
+  };
+  for (const [logicalId, stopped] of membersSiblingsStoppedWriting(
+    previous,
+    next,
+    oldMaySurvive,
+    templatePolicies
+  )) {
+    const record = next[logicalId];
+    const observed = record?.observedProperties;
+    if (record === undefined || observed === undefined) continue;
+    const pruned = withoutStoppedSiblingMembers(observed, stopped, record.properties);
+    if (pruned === observed) continue;
+    next[logicalId] = {
+      ...record,
+      observedProperties: carryRedactionMarks(observed, pruned),
+    };
+    changed++;
+  }
+  return changed;
+}
+
+/**
+ * {@link pruneMembersSiblingsStoppedWriting} at a state save: best-effort, so a
+ * failure leaves the baselines as they were and never stands in the way of the
+ * save it precedes. The debug line names the cause CLASS only.
+ */
+export function pruneStoppedSiblingMembersBestEffort(
+  logger: Pick<Logger, 'debug'>,
+  ...args: Parameters<typeof pruneMembersSiblingsStoppedWriting>
+): void {
+  try {
+    pruneMembersSiblingsStoppedWriting(...args);
+  } catch (err) {
+    const cause = err instanceof Error ? err.name : typeof err;
+    logger.debug(
+      safeMsg`Sibling-written IAM members were not pruned from the observed baselines (${cause}); they stay until 'cdkd state refresh-observed'.`
+    );
   }
 }
 
