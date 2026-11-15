@@ -155,15 +155,13 @@ export async function buildEcsImageResolutionContext(
   // its region, but only when nothing above the record in the region chain
   // below names one (go-to-k/cdkd#6325): a `fromAsset` image needs pseudo
   // parameters as well, and must not start reading state it never read.
-  const regionNamedAboveRecord =
-    !!options.region ||
-    !!namedEnvAwsRegion() ||
-    !!process.env['AWS_DEFAULT_REGION'] ||
-    !!candidate.region;
+  const regionAboveRecord = canonicalizeRegion(
+    options.region ?? namedEnvAwsRegion() ?? process.env['AWS_DEFAULT_REGION'] ?? candidate.region
+  );
   const wantsState =
     needs.needsStateResources ||
     needs.needsEnvOrSecretSubstitution ||
-    (needs.needsPseudoParameters && !regionNamedAboveRecord) ||
+    (needs.needsPseudoParameters && !regionAboveRecord) ||
     wantsStateForTaskRole;
   if (stateProvider && wantsState) {
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
@@ -201,15 +199,10 @@ export async function buildEcsImageResolutionContext(
   // around a Ref to the parameter. Issue #291.
   const wantsPseudoForEnvOrSecret = !!stateProvider && needs.needsEnvOrSecretSubstitution;
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
+    // An env-agnostic stack has no synth region; the state record's region is
+    // where it was deployed (go-to-k/cdkd#6325), so the load runs first.
     const region = canonicalizeRegion(
-      options.region ??
-        namedEnvAwsRegion() ??
-        process.env['AWS_DEFAULT_REGION'] ??
-        candidate.region ??
-        // An env-agnostic stack has no synth region; the state record's region is
-        // where it was deployed (go-to-k/cdkd#6325), so the load runs first.
-        stateRecordRegion ??
-        emulatorDefaultRegion()
+      regionAboveRecord ?? stateRecordRegion ?? emulatorDefaultRegion()
     );
     if (!region) {
       logger.warn(
