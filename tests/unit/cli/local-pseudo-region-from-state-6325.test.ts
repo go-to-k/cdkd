@@ -236,6 +236,18 @@ describe('local run-task --from-state: an env-agnostic stack takes the state rec
     });
     expect(warnedNoRegion(warn)).toBe(false);
   });
+
+  it('an image-only task with a region already named does not start reading state', async () => {
+    process.env['AWS_REGION'] = 'ap-northeast-1';
+    const p = provider('eu-west-1');
+    const { context } = await buildEcsImageResolutionContext(
+      imageOnlyTaskStack(),
+      p as never,
+      { fromState: true } as never
+    );
+    expect(p.load).not.toHaveBeenCalled();
+    expect(context?.pseudoParameters?.region).toBe('ap-northeast-1');
+  });
 });
 
 describe('local invoke-agentcore --from-state: an env-agnostic stack takes the state record region (#6325)', () => {

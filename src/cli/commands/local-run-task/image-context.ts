@@ -152,11 +152,18 @@ export async function buildEcsImageResolutionContext(
   let stateRecordRegion: string | undefined;
 
   // An image `Fn::Sub` naming only pseudo parameters loads the record too, for
-  // its region (go-to-k/cdkd#6325).
+  // its region, but only when nothing above the record in the region chain
+  // below names one (go-to-k/cdkd#6325): a `fromAsset` image needs pseudo
+  // parameters as well, and must not start reading state it never read.
+  const regionNamedAboveRecord =
+    !!options.region ||
+    !!namedEnvAwsRegion() ||
+    !!process.env['AWS_DEFAULT_REGION'] ||
+    !!candidate.region;
   const wantsState =
     needs.needsStateResources ||
     needs.needsEnvOrSecretSubstitution ||
-    needs.needsPseudoParameters ||
+    (needs.needsPseudoParameters && !regionNamedAboveRecord) ||
     wantsStateForTaskRole;
   if (stateProvider && wantsState) {
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
