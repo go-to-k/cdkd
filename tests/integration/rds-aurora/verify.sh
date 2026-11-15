@@ -2013,8 +2013,8 @@ printf '%s\n' "${DESTROY_2B_PLAIN}" >&2
 # refusal itself is read on the wrap's --verbose debug line. Both lines are
 # the provider's own DeleteDBCluster catch-wrap. This destroy IS --verbose,
 # so the wrap carries no "Re-run with --verbose" pointer (go-to-k/cdkd#6162):
-# the class ends the line.
-if ! grep -qE "Failed to delete DBCluster SecurityCluster: InvalidDBClusterStateFault\.$" <<<"${DESTROY_2B_PLAIN}"; then
+# the class ends the message (the line may close its quote).
+if ! grep -qE "Failed to delete DBCluster SecurityCluster: InvalidDBClusterStateFault\.(\"|$)" <<<"${DESTROY_2B_PLAIN}"; then
   echo "FAIL: phase 2b destroy failed, but not with the DeleteDBCluster catch-wrap (InvalidDBClusterStateFault, class only) -- the arm did not reach the compensation" >&2
   exit 1
 fi
@@ -2068,7 +2068,7 @@ assert_failed_event_class_only_2B() { # usage: <logicalId> <wrap prefix>
     exit 1
   fi
   # The destroy is --verbose, so no "Re-run with --verbose" pointer (#6162).
-  if ! grep -qE "$2: [A-Za-z0-9]+\.$" <<<"${msg}"; then
+  if ! grep -qE "$2: [A-Za-z0-9]+\.(\"|$)" <<<"${msg}"; then
     echo "FAIL: phase 2b: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>.' (#2319, #6162); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi

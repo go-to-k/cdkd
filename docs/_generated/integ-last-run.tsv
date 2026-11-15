@@ -324,7 +324,7 @@ nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-04T18:46:30Z	PASS	341	verify.sh	rc ok, destroy 0 errors, orph clean; own state bucket
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
-noecho-parameter-masking	2026-11-07T14:54:28Z	PASS	1412	verify.sh	#6010 deploy-engine masking split head; own bucket; rc ok, orph clean
+noecho-parameter-masking	2026-11-15T18:54:02Z	PASS	1347	verify.sh	rc 0, 0 orphans; #6162 pointer, aws-cdk-lib 2.277.0 Tier warning, #6207 wording; own bucket
 noecho-restapi-body-mac	2026-11-13T16:57:39Z	PASS	117	verify.sh	rc ok, orph clean
 opensearch-domain-getatt	2026-11-04T07:36:26Z	PASS	1744	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs
@@ -339,7 +339,7 @@ pipes-input-template-removal	2026-11-13T18:07:10Z	PASS	115	verify.sh	rc ok, orph
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-12T15:51:04Z	PASS	4579	verify.sh	rc ok, orph clean (#5639 write forwarding + replica cluster, PR #6155 final head)
+rds-aurora	2026-11-15T20:05:25Z	PASS	4475	verify.sh	rc 0, 0 orphans; #6162 class-only 2b assertions (quoted line end)
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
@@ -378,7 +378,7 @@ require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destro
 retain-orphan-redeploy	2026-11-04T22:42:27Z	PASS	200	verify.sh	rc ok, #5064 name generations behave as the fixture expects, orph clean, own temp state bucket
 retain-orphan-secret	2026-11-04T22:39:07Z	PASS	85	verify.sh	rc ok, no plaintext in any S3 version, orph clean, own temp state bucket
 rollback-attribute-only-revert	2026-11-11T09:21:38Z	PASS	75	verify.sh	rc ok, orph clean, own state bucket; pre-fix probe red at phase-2 policy assert (#6101)
-rollback-command	2026-11-12T07:20:46Z	PASS	932	verify.sh	rc 0, destroy 0 errors, 0 orphans; #6120 final set, own bucket
+rollback-command	2026-11-15T17:52:36Z	PASS	853	verify.sh	rc 0, 0 orphans; #6162 class-only D3 assertion, own bucket
 rollback-cross-region-secret	2026-11-04T20:53:00Z	PASS	265	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
 rollback-explicit-name-rewrite	2026-11-07T16:05:09Z	PASS	248	verify.sh	#6023 rollback plan split head; rc ok, orph clean
