@@ -92,6 +92,12 @@ detection does not compare that property either, because the template does not
 set it on the bucket. As in CloudFormation, a console edit to those
 notifications is not reported.
 
+An event bus's `Policy` is handled the same way. Unless your template sets
+`Policy` on the `AWS::Events::EventBus` itself, drift does not compare it: an
+`AWS::Events::EventBusPolicy` resource (CDK's `bus.addToResourcePolicy(...)`) or
+another tool writes those statements. So `--revert` and `--accept` leave the
+live policy alone, and a console edit to it is not reported.
+
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.
 Drift does not report that difference while your template leaves `Enabled`

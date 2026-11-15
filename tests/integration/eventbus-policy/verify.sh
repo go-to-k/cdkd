@@ -14,7 +14,11 @@
 #   2. `cdkd diff` under CDKD_TEST_UPDATE=true; assert the #1608 symmetric
 #      shape (old: {} / new: only the added Condition, no Principal echo).
 #   3. Re-deploy with CDKD_TEST_UPDATE=true; assert the deployed statement
-#      keeps Sid/Principal/Action/Resource AND gains the Condition.
+#      keeps Sid/Principal/Action/Resource AND gains the Condition. The bus's
+#      Description changes in the same deploy (issue #6323).
+#   3a. `cdkd drift` reports no drift (the bus does not declare Policy, so
+#      the sibling-written policy is not compared) and `drift --revert`
+#      leaves the Condition live (issue #6323).
 #   3b. Re-deploy adding CDKD_TEST_BUS_POLICY_UPDATE=true; assert the second
 #      bus's EventBus `Policy` (issue #5044, asserted live since Phase 1) now
 #      carries the new Sid and no longer the old one (whole-document replace).
@@ -173,6 +177,48 @@ for token in '"Sid":"cdkd-integ-buspolicy-stmt"' '"Action":"events:PutEvents"' '
   fi
 done
 echo "    full statement retained WITH the added Condition"
+
+# --- Phase 3a: drift on the sibling-written bus policy (issue #6323) -------
+# Phase 3 updated the bus (Description) and the BusPolicy statement together,
+# so the bus's re-captured baseline holds the policy WITHOUT the Condition.
+# The bus does not declare Policy, so drift must not compare it, and
+# --revert must not write the stale document back.
+echo "==> Phase 3a: cdkd drift does not report the sibling-written bus policy (#6323)"
+DRIFT_RC=0
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || DRIFT_RC=$?
+printf '%s\n' "${DRIFT_OUT}"
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: #6323: cdkd drift exited ${DRIFT_RC} on the untouched stack" >&2
+  exit 1
+fi
+if grep -qF 'Policy.Statement' <<<"${DRIFT_OUT}"; then
+  echo "FAIL: #6323: cdkd drift reported the sibling-written bus policy as drift" >&2
+  exit 1
+fi
+# The fully-compared clean row only: the `⚠ ... no drift detected, but ...`
+# rows also exit 0 when a resource was skipped or unreadable, which would
+# leave the bus uncompared and this phase vacuous.
+if grep -qF '⚠' <<<"${DRIFT_OUT}"; then
+  echo "FAIL: cdkd drift did not compare every resource (a ⚠ row): the #6323 check is vacuous" >&2
+  exit 1
+fi
+# All three resources compared (Bus, BusPolicy, PolicyPropBus), none unsupported.
+if ! grep -qF "✓ ${STACK} (${REGION}): no drift detected (3 resources checked, 0 unsupported)" <<<"${DRIFT_OUT}"; then
+  echo "FAIL: cdkd drift printed no clean row comparing all 3 resources (wording changed, or one went unsupported?)" >&2
+  exit 1
+fi
+
+echo "==> Phase 3a: cdkd drift --revert keeps the live Condition (#6323)"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+POLICY_P3A="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
+  --query 'Policy' --output text)"
+for token in '"Condition"' 'cdkd.integ'; do
+  if ! grep -qF "${token}" <<<"${POLICY_P3A}"; then
+    echo "FAIL: #6323: drift --revert dropped ${token} from the bus policy: ${POLICY_P3A}" >&2
+    exit 1
+  fi
+done
+echo "    drift clean and --revert left the sibling's Condition in place"
 
 # --- Phase 3b: change the EventBus Policy property (issue #5044) ----------
 echo "==> Phase 3b: re-deploy with a changed EventBus Policy Sid"
