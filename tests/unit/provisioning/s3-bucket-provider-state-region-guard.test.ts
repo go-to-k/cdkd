@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'my-globally-unique-bucket';
@@ -328,9 +329,11 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
     });
 
     it('does not probe at all when the update is a REPLACEMENT', async () => {
-      // A renamed bucket short-circuits before any AWS call. The probe must not
-      // move ahead of that: there is nothing to identify yet.
-      const result = await provider.update(
+      // A renamed bucket is refused before any AWS call. The probe must not
+      // move ahead of that: there is nothing to identify yet. The refusal is
+      // the typed error `--replace` acts on; it used to claim
+      // `wasReplaced: true` with no new bucket (go-to-k/cdkd#6370).
+      const result = provider.update(
         'MyBucket',
         BUCKET,
         RESOURCE_TYPE,
@@ -338,7 +341,8 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         {}
       );
 
-      expect(result).toMatchObject({ wasReplaced: true });
+      await expect(result).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      await expect(result).rejects.toThrow(/BucketName .*cannot be changed after creation/);
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

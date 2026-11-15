@@ -26,7 +26,11 @@ import {
   maskerOrIdentity,
   withDerivedNameMasks,
 } from '../../masked-retry-logger.js';
-import { ProvisioningError } from '../../../utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../utils/error-handler.js';
+import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import {
   RESOURCE_NOT_FOUND,
   type ResourceDeleteResult,
@@ -106,15 +110,22 @@ export async function update(
 
   const newBucketName = properties['BucketName'] as string | undefined;
 
-  // Bucket name is immutable - if changed, requires replacement
+  // Bucket name is immutable. The diff classifies a BucketName change as a
+  // replacement before `update()` runs, so this arm is defence-in-depth. It
+  // used to return `wasReplaced: true` with the OLD id and no new bucket,
+  // which reported a replacement that never happened (go-to-k/cdkd#6370).
+  // The typed error is what `--replace` acts on.
   if (newBucketName && newBucketName !== physicalId) {
     this.logger.debug(
       `Bucket name changed (from ${this.shown(physicalId)} to ${this.shown(newBucketName)}), replacement required`
     );
-    return {
-      physicalId,
-      wasReplaced: true,
-    };
+    throw new ResourceUpdateNotSupportedError(
+      resourceType,
+      logicalId,
+      `the BucketName (from ${this.shown(physicalId)} to ${this.shown(newBucketName)}) cannot be ` +
+        `changed after creation; replacement required (deploy with ${deployReplaceCommand(true)}, ` +
+        `or destroy + redeploy)`
+    );
   }
 
   // The template-path half of the versioning / logging shape guards (issue
