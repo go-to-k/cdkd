@@ -370,7 +370,9 @@ its construct ID (`RoutesKvs`).
 for the parts of a distribution that exist only after a deploy. The two are
 mutually exclusive. With either, cdkd:
 
-- reads an S3 origin's files from the deployed bucket,
+- reads an S3 origin's files from the deployed bucket when no `BucketDeployment`
+  in the app fills it; one it fills is still served from the deployment's
+  source in `cdk.out`,
 - answers `cf.kvs()` reads from the deployed KeyValueStore,
 - resolves the environment variables of Function URL origin Lambda functions,
   Web Function endpoint origin revisions and Lambda@Edge functions.
@@ -386,8 +388,8 @@ CloudFormation client under `--from-cfn-stack`.
 
 ### Caching objects from the deployed bucket
 
-Under a state source, cdkd reads an S3 origin's object from S3 on every
-request, so you always see the bucket's current content. `--cache-origin`
+Under a state source, cdkd reads an S3 origin served from the deployed bucket
+from S3 on every request, so you always see the bucket's current content. `--cache-origin`
 keeps each object in memory after the first read, which is faster. The cache
 lasts until a `--watch` reload or a restart.
 
