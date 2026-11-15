@@ -217,4 +217,20 @@ describe('--from-cfn-stack: a producer stack exported secret stays off the docke
     expect(t.containers[0]!.secrets).toEqual([{ name: 'DB', valueFrom: LOCKED_SECRET_ARN }]);
     expect(t.containers[0]!.droppedSecretNames).toEqual(['OTHER']);
   });
+
+  it('still drops a ValueFrom judged a secret even when it is ARN-shaped', async () => {
+    const t = task({ Secrets: [{ Name: 'DB', ValueFrom: { 'Fn::ImportValue': 'X' } }] });
+    const judged = { value: LOCKED_SECRET_ARN, verdict: 'secret' as const };
+    await applyCrossStackResolverToTask(t, {
+      resources: {},
+      crossStackResolver: {
+        resolveImport: async () => LOCKED_SECRET_ARN,
+        resolveGetStackOutput: async () => undefined,
+        resolveImportJudged: async () => judged,
+        resolveGetStackOutputJudged: async () => ({ value: undefined }),
+      } as CrossStackResolver,
+    });
+    expect(t.containers[0]!.secrets).toEqual([]);
+    expect(t.containers[0]!.droppedSecretNames).toEqual(['DB']);
+  });
 });
