@@ -1139,8 +1139,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           'X',
           TABLE_NAME,
           RESOURCE_TYPE,
-          { AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }] },
           {
+            KeySchema: [
+              { AttributeName: 'pk', KeyType: 'HASH' },
+              { AttributeName: 'sk', KeyType: 'RANGE' },
+            ],
+            AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+          },
+          {
+            KeySchema: [
+              { AttributeName: 'pk', KeyType: 'HASH' },
+              { AttributeName: 'sk', KeyType: 'RANGE' },
+            ],
             AttributeDefinitions: [
               { AttributeName: 'pk', AttributeType: 'S' },
               { AttributeName: 'sk', AttributeType: 'S' },

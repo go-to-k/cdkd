@@ -72,9 +72,10 @@ import type { MaskedLogSinks } from '../../masked-retry-logger.js';
  *      additional AttributeDefinitions). Wait ACTIVE after each.
  *   7. TimeToLiveSpecification toggle.
  *
- * Immutable properties (TableName / KeySchema / AttributeDefinitions
- * removals / LocalSecondaryIndexes changes) throw
- * `ResourceUpdateNotSupportedError` naming the offending field. Only
+ * Immutable properties (TableName / KeySchema / LocalSecondaryIndexes
+ * changes) throw `ResourceUpdateNotSupportedError` naming the offending
+ * field; an AttributeDefinitions removal a key still references (an invalid
+ * template) stays a plain `ProvisioningError`, see its arm. Only
  * `TableName` is create-only in the schema, so a KeySchema change and an
  * added or changed LSI list always reach these guards (CloudFormation
  * classifies them as "Some interruptions", not as Replacement). The typed
@@ -202,9 +203,8 @@ export async function updateInScope(
   }
 
   // ─── Immutable property guards (defense-in-depth) ───────────────────
-  // Issue [#2610] sites 5-7. The refusals below advise a replacement, and the
-  // bare `--replace` they used to name was wrong twice over. (The fourth, the
-  // AttributeDefinitions removal, prints the same remedy since #6363.)
+  // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
+  // and the bare `--replace` they used to name was wrong twice over.
   //
   // 1. `AWS::DynamoDB::GlobalTable` is in `STATEFUL_TYPES`, so the deploy
   //    engine's `--replace` fallback refuses a second time with
@@ -384,12 +384,18 @@ export async function updateInScope(
     (a) => a.AttributeName !== undefined && desiredKeyAttrNames.has(a.AttributeName)
   );
   if (removedButStillReferenced.length > 0) {
-    throw new ResourceUpdateNotSupportedError(
-      resourceType,
-      logicalId,
+    // Deliberately NOT the typed error the three guards above throw
+    // (go-to-k/cdkd#6363 review): a removed attribute a desired key still
+    // names is an INVALID template, which `CreateTable` rejects too. Under
+    // `--replace` a delete-first replacement would drop the table and its
+    // data, and then fail to re-create it.
+    throw new ProvisioningError(
       `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
         `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
-        (await replaceRemedy())
+        `replacement required`,
+      resourceType,
+      logicalId,
+      physicalId
     );
   }
 

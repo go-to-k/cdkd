@@ -95,12 +95,6 @@ const cases: Array<{
     }),
     previous: base({ KeySchema: PK_SK, AttributeDefinitions: ATTR_PK_SK }),
   },
-  {
-    guard: 'AttributeDefinitions removal',
-    says: /AttributeDefinitions removals are immutable .*key schema still references/,
-    desired: base({ KeySchema: PK_SK, AttributeDefinitions: ATTR_PK }),
-    previous: base({ KeySchema: PK_SK, AttributeDefinitions: ATTR_PK_SK }),
-  },
 ];
 
 describe('GlobalTable immutable-property refusals are the typed error --replace acts on (#6363)', () => {
@@ -127,4 +121,26 @@ describe('GlobalTable immutable-property refusals are the typed error --replace 
       expect(mockSend).not.toHaveBeenCalled();
     });
   }
+
+  it('AttributeDefinitions removal a key still references stays a plain ProvisioningError', async () => {
+    // An INVALID template (CreateTable rejects it too): the typed error would
+    // let --replace delete the table and then fail the re-create.
+    const provider = new DynamoDBGlobalTableProvider();
+    const error = await provider
+      .update(
+        'Table',
+        TABLE,
+        TYPE,
+        base({ KeySchema: PK_SK, AttributeDefinitions: ATTR_PK }),
+        base({ KeySchema: PK_SK, AttributeDefinitions: ATTR_PK_SK })
+      )
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toMatch(
+      /AttributeDefinitions removals are immutable .*key schema still references/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
 });
