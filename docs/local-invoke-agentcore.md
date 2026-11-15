@@ -280,14 +280,17 @@ The container receives the environment variables the runtime declares, such as
 resource needs a deployed stack to resolve it, which is what the state flags,
 `--from-state` and `--from-cfn-stack`, provide.
 [Local Execution](local-emulation.md) explains where values come from. The rules are the same ones
-[`cdkd local invoke`](local-invoke.md) applies to a Lambda function.
+[`cdkd local invoke`](local-invoke.md) applies to a Lambda function. Under
+`--from-state`, that includes keeping a secret another stack exports off the
+`docker run` command line.
 
 A state flag also resolves the image. When the runtime's `ContainerUri`
 refers to an ECR repository in the same stack, cdkd uses the deployed image
 URI.
 
 With finch on macOS or Windows, cdkd refuses an invoke whose environment holds
-a decrypted SecureString parameter, before the container starts.
+a decrypted SecureString parameter, or a secret another stack exports, before
+the container starts.
 [Local Execution](local-emulation.md) explains the refusal and the ways around
 it.
 
