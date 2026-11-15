@@ -3,6 +3,7 @@ import { safeStringify } from '../../../utils/aws-failure-text.js';
 import { stackForConstructPath } from '../../cdk-path.js';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
 import { matchStacks } from '../../stack-matcher.js';
+import { topLevelStacks, withNestedDescendants } from 'cdk-local/internal';
 import { plainOrDescribed } from '../../../utils/pasteable-command.js';
 
 /**
@@ -87,20 +88,35 @@ export function pickTargetStacks(
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
-  if (effective !== undefined && typeof effective !== 'string') return [effective];
+  // A CDK nested stack is served with the stack it is deployed under, and a
+  // stack with nested stacks counts as one stack (go-to-k/cdk-local#986).
+  if (effective !== undefined && typeof effective !== 'string') {
+    return withNestedDescendants([effective], stacks);
+  }
+  const top = topLevelStacks(stacks);
   if (effective) {
     // By identity: two stacks sharing a physical name (a Stage deployed twice)
     // are both selected, and `assertServedLogicalIdsUnambiguous` refuses
-    // their shared name rather than one being dropped silently (#5175).
-    return matchStacks(stacks, [effective], { dedupe: 'identity' });
+    // their shared name rather than one being dropped silently (#5175). A
+    // pattern no top-level stack matches may name a nested stack by its path.
+    const named = matchStacks(top, [effective], { dedupe: 'identity' });
+    const matched =
+      named.length > 0
+        ? named
+        : matchStacks(
+            stacks.filter((s) => s.nestedStack !== undefined),
+            [effective],
+            { dedupe: 'identity' }
+          );
+    return withNestedDescendants(matched, stacks);
   }
-  if (stacks.length === 1) return stacks;
+  if (top.length === 1) return stacks;
   if (stacks.length === 0) return [];
   // Multi-stack apps can be served as a union — every stack contributes
   // its routes — but for v1 we require an explicit selection so users
   // don't accidentally serve a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack '<name>', --from-cfn-stack '<name>', or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => plainOrDescribed(s.stackName, 'stack name')).join(', ')}.`
+    `Multi-stack app: pass --stack '<name>', --from-cfn-stack '<name>', or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${top.map((s) => plainOrDescribed(s.stackName, 'stack name')).join(', ')}.`
   );
 }
 

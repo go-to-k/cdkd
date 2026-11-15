@@ -1,4 +1,5 @@
 import type { CdkAppSynthesizer } from 'cdk-local';
+import { expandNestedStacks } from 'cdk-local/internal';
 import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import {
@@ -86,4 +87,22 @@ function publishAssumedRoleFromEnv(): void {
     );
   }
   setAssumedRoleCredentials({ accessKeyId, secretAccessKey, sessionToken });
+}
+
+/**
+ * cdkd's synthesizer for a `cdkd local` command that synthesizes on its own
+ * (`local invoke`, `start-api`, `run-task`, `invoke-agentcore`): each
+ * synthesis also lists the app's CDK nested stacks, so a target inside one
+ * resolves and its state source reads the nested stack's own record
+ * (go-to-k/cdk-local#986). The commands that take {@link cdkdHostSynthesizer}
+ * get the same from cdk-local itself.
+ */
+export function localCommandSynthesizer(): Pick<Synthesizer, 'synthesize'> {
+  const synthesizer = new Synthesizer();
+  return {
+    synthesize: async (options) => {
+      const result = await synthesizer.synthesize(options);
+      return { ...result, stacks: expandNestedStacks(result.stacks) };
+    },
+  };
 }

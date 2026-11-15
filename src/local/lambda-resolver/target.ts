@@ -1,4 +1,5 @@
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import { withNestedDescendants } from 'cdk-local/internal';
 import type { TemplateResource } from '../../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../cli/cdk-path.js';
 import {
@@ -82,10 +83,11 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   }
 
   const parsed = parseTarget(target);
-  const stack = pickStack(parsed, stacks, target);
+  const stack = ownerOfLogicalId(parsed, pickStack(parsed, stacks, target), stacks);
 
   const template = stack.template;
   const resources = template.Resources ?? {};
+  const listed = resourcesWithNestedStacks(stack, stacks);
 
   let match: { logicalId: string; resource: TemplateResource } | undefined;
 
@@ -101,7 +103,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     );
 
     if (lambdaMatches.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, listed);
     }
     if (lambdaMatches.length > 1) {
       throw new LocalInvokeResolutionError(
@@ -115,7 +117,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   } else {
     const resource = resources[parsed.pathOrId];
     if (!resource) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, listed);
     }
     match = { logicalId: parsed.pathOrId, resource };
   }
@@ -201,4 +203,41 @@ function notFoundError(
     }
   }
   return new LocalInvokeResolutionError(msg.trimEnd());
+}
+
+/**
+ * A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
+ * resource of the picked stack OR of a CDK nested stack deployed under it
+ * (go-to-k/cdk-local#986): the owner, when exactly one nested stack has it.
+ */
+function ownerOfLogicalId(
+  parsed: { isPath: boolean; pathOrId: string },
+  stack: StackInfo,
+  stacks: StackInfo[]
+): StackInfo {
+  if (parsed.isPath || stack.template.Resources?.[parsed.pathOrId] !== undefined) return stack;
+  const owners = withNestedDescendants([stack], stacks).filter(
+    (s) => s !== stack && s.template.Resources?.[parsed.pathOrId] !== undefined
+  );
+  return owners.length === 1 ? owners[0]! : stack;
+}
+
+/**
+ * `stack`'s resources followed by those of the CDK nested stacks deployed
+ * under it, for the not-found message's candidate list.
+ */
+function resourcesWithNestedStacks(
+  stack: StackInfo,
+  stacks: StackInfo[]
+): Record<string, TemplateResource> {
+  const merged: Record<string, TemplateResource> = Object.create(null) as Record<
+    string,
+    TemplateResource
+  >;
+  for (const s of withNestedDescendants([stack], stacks)) {
+    for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
+      if (!(logicalId in merged)) merged[logicalId] = resource;
+    }
+  }
+  return merged;
 }

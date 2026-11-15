@@ -340,6 +340,7 @@
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-cloudfront-from-state",
@@ -869,6 +870,7 @@
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api",
@@ -1348,6 +1350,7 @@
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-cloudfront-from-state",
@@ -1667,6 +1670,7 @@
     {
       "flag": "--stack",
       "integs": [
+        "local-invoke-nested-stack-from-state",
         "local-invoke-stage"
       ]
     },
@@ -1916,6 +1920,7 @@
         "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-cloudfront-from-state",

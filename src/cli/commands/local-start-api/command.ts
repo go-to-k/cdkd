@@ -14,11 +14,8 @@ import {
 } from '../../../local/local-aws-wiring.js';
 import { explicitRoleArnOrThrow } from '../../../utils/role-arn.js';
 import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
-import {
-  Synthesizer,
-  synthesisStatusMessage,
-  type SynthesisOptions,
-} from '../../../synthesis/synthesizer.js';
+import { synthesisStatusMessage, type SynthesisOptions } from '../../../synthesis/synthesizer.js';
+import { localCommandSynthesizer } from '../local-host-synthesizer.js';
 import { refuseFailedLookups } from '../../../synthesis/failed-lookups.js';
 import { resolveApp } from '../../config-loader.js';
 import { isCfnFlagPresent } from '../local-state-source.js';
@@ -299,7 +296,7 @@ export async function localStartApiCommand(
    */
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
-    const synthesizer = new Synthesizer();
+    const synthesizer = localCommandSynthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

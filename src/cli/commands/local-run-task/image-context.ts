@@ -305,7 +305,9 @@ export function pickCandidateStack(
   if (byPrefix) return byPrefix;
   const { stackPattern } = parsed;
   if (stackPattern === null) {
-    if (stacks.length === 1) return stacks[0];
+    // A stack with CDK nested stacks is one stack (go-to-k/cdk-local#986).
+    const top = stacks.filter((s) => s.nestedStack === undefined);
+    if (top.length === 1) return top[0];
     return undefined;
   }
   // By identity: two Stage stacks sharing a physical name are not unique,

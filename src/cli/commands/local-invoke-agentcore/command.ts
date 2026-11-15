@@ -15,11 +15,8 @@ import { checkEmulateRoleVia } from '../../options/emulate-role-via.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
 import { resolveSingleTarget } from '../../../local/target-picker.js';
-import {
-  Synthesizer,
-  synthesisStatusMessage,
-  type SynthesisOptions,
-} from '../../../synthesis/synthesizer.js';
+import { synthesisStatusMessage, type SynthesisOptions } from '../../../synthesis/synthesizer.js';
+import { localCommandSynthesizer } from '../local-host-synthesizer.js';
 import { refuseFailedLookups } from '../../../synthesis/failed-lookups.js';
 import { resolveApp } from '../../config-loader.js';
 import { readCdkPathOrUndefined } from '../../cdk-path.js';
@@ -359,7 +356,7 @@ export async function localInvokeAgentCoreCommand(
     }
 
     logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
-    const synthesizer = new Synthesizer();
+    const synthesizer = localCommandSynthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

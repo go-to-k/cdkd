@@ -1,4 +1,5 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
+import { withNestedDescendants } from 'cdk-local/internal';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../cli/cdk-path.js';
 import {
@@ -56,8 +57,9 @@ export function resolveEcsTaskTarget(
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
   }
   const parsed = parseEcsTarget(target);
-  const stack = pickStack(parsed, stacks, target);
+  const stack = ownerOfLogicalId(parsed, pickStack(parsed, stacks, target), stacks);
   const resources = stack.template.Resources ?? {};
+  const listed = resourcesWithNestedStacks(stack, stacks);
 
   let logicalId: string | undefined;
   let resource: TemplateResource | undefined;
@@ -69,7 +71,7 @@ export function resolveEcsTaskTarget(
       ({ logicalId: l }) => resources[l]?.Type === 'AWS::ECS::TaskDefinition'
     );
     if (taskDefs.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, listed);
     }
     if (taskDefs.length > 1) {
       throw new EcsTaskResolutionError(
@@ -82,11 +84,11 @@ export function resolveEcsTaskTarget(
     resource = resources[logicalId];
   } else {
     resource = resources[parsed.pathOrId];
-    if (!resource) throw notFoundError(target, stack, resources);
+    if (!resource) throw notFoundError(target, stack, listed);
     logicalId = parsed.pathOrId;
   }
 
-  if (!logicalId || !resource) throw notFoundError(target, stack, resources);
+  if (!logicalId || !resource) throw notFoundError(target, stack, listed);
 
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
@@ -284,4 +286,41 @@ function notFoundError(
     }
   }
   return new EcsTaskResolutionError(msg.trimEnd());
+}
+
+/**
+ * A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
+ * resource of the picked stack OR of a CDK nested stack deployed under it
+ * (go-to-k/cdk-local#986): the owner, when exactly one nested stack has it.
+ */
+function ownerOfLogicalId(
+  parsed: { isPath: boolean; pathOrId: string },
+  stack: StackInfo,
+  stacks: StackInfo[]
+): StackInfo {
+  if (parsed.isPath || stack.template.Resources?.[parsed.pathOrId] !== undefined) return stack;
+  const owners = withNestedDescendants([stack], stacks).filter(
+    (s) => s !== stack && s.template.Resources?.[parsed.pathOrId] !== undefined
+  );
+  return owners.length === 1 ? owners[0]! : stack;
+}
+
+/**
+ * `stack`'s resources followed by those of the CDK nested stacks deployed
+ * under it, for the not-found message's candidate list.
+ */
+function resourcesWithNestedStacks(
+  stack: StackInfo,
+  stacks: StackInfo[]
+): Record<string, TemplateResource> {
+  const merged: Record<string, TemplateResource> = Object.create(null) as Record<
+    string,
+    TemplateResource
+  >;
+  for (const s of withNestedDescendants([stack], stacks)) {
+    for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
+      if (!(logicalId in merged)) merged[logicalId] = resource;
+    }
+  }
+  return merged;
 }

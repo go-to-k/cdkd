@@ -28,6 +28,8 @@ import { stackForPathFormTarget } from './cdk-path.js';
 export interface StackLike {
   stackName: string;
   displayName?: string;
+  /** Set on a CDK nested stack the `cdkd local` commands list (go-to-k/cdk-local#986). */
+  nestedStack?: unknown;
   /**
    * The CDK Stage the stack was read from, or `undefined` for a top-level
    * stack of the app's own assembly. `--all` selects top-level stacks only.
@@ -239,7 +241,9 @@ export function selectTargetStack<T extends StackLike>(
   stacks: readonly T[]
 ): TargetStackSelection<T> {
   if (parsed.stackPattern === null) {
-    return stacks.length === 1 ? { kind: 'found', stack: stacks[0]! } : { kind: 'no-prefix' };
+    // A stack with CDK nested stacks is one stack (go-to-k/cdk-local#986).
+    const top = stacks.filter((s) => s.nestedStack === undefined);
+    return top.length === 1 ? { kind: 'found', stack: top[0]! } : { kind: 'no-prefix' };
   }
   const byPrefix = stackForPathFormTarget(parsed, target, stacks);
   if (byPrefix) {

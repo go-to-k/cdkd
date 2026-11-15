@@ -134,8 +134,8 @@ cdkd local invoke Handler
 
 [Naming the target](local-emulation.md#naming-the-target) has the full rules.
 
-When the target matches nothing, the error lists every Lambda in the stack,
-so you can copy a valid one.
+When the target matches nothing, the error lists every Lambda in the stack
+and in its nested stacks, so you can copy a valid one.
 
 ### Edge case: a Custom Resource
 

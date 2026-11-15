@@ -1895,6 +1895,13 @@
       ]
     },
     {
+      "name": "local-invoke-nested-stack-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-from-state-substitution"
+      ]
+    },
+    {
       "name": "local-invoke-provided",
       "annotated": true,
       "scenarios": [
@@ -3486,6 +3493,7 @@
       "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.",
       "fixtures": [
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-run-task-from-state"
       ]
     },
