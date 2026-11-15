@@ -274,6 +274,15 @@ describe('userPoolDeletionProtectionUpdate', () => {
     );
   });
 
+  it('does not echo DcrConfiguration, measured kept on omission', () => {
+    const input = userPoolDeletionProtectionUpdate(
+      POOL,
+      { Id: POOL, DcrConfiguration: { EnableStatus: 'Enabled', OpenDcrEnabled: false } } as never,
+      'INACTIVE'
+    );
+    expect(input).not.toHaveProperty('DcrConfiguration');
+  });
+
   it('addresses the caller physical id, never the id the read reported', () => {
     const input = userPoolDeletionProtectionUpdate(POOL, { Id: 'us-east-1_other' } as never, 'ACTIVE');
     expect(input.UserPoolId).toBe(POOL);
@@ -366,6 +375,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     ]);
     expect([...USER_POOL_KEPT_ON_OMISSION].sort()).toEqual([
       'AccountRecoverySetting',
+      'DcrConfiguration',
       'EmailConfiguration',
       'IssuerConfiguration',
       'KeyConfiguration',

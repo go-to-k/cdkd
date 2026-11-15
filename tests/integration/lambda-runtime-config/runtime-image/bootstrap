@@ -1,0 +1,12 @@
+#!/bin/sh
+# A minimal Runtime API loop: every invocation answers with a fixed marker, so
+# verify.sh can tell this runtime served the call.
+set -eu
+while true; do
+  H=$(mktemp)
+  curl -sS -LD "$H" "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/next" >/dev/null
+  ID=$(grep -Fi Lambda-Runtime-Aws-Request-Id "$H" | tr -d '[:space:]' | cut -d: -f2)
+  curl -sS -X POST "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/$ID/response" \
+    -d '{"ok":"cdkd-it-runtime"}' >/dev/null
+  rm -f "$H"
+done

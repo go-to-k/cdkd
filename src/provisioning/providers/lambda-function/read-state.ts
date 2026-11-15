@@ -277,6 +277,16 @@ export async function readCurrentState(
     if (cfg.TenancyConfig?.TenantIsolationMode !== undefined) {
       result['TenancyConfig'] = { TenantIsolationMode: cfg.TenancyConfig.TenantIsolationMode };
     }
+    // Same response, CFn spellings verbatim; absent unless Runtime is
+    // 'custom' (live readback us-east-1, go-to-k/cdkd#6352).
+    if (cfg.RuntimeConfig !== undefined) {
+      const rc: Record<string, unknown> = {};
+      if (cfg.RuntimeConfig.RuntimeArn !== undefined)
+        rc['RuntimeArn'] = cfg.RuntimeConfig.RuntimeArn;
+      if (cfg.RuntimeConfig.RuntimeAlias !== undefined)
+        rc['RuntimeAlias'] = cfg.RuntimeConfig.RuntimeAlias;
+      if (Object.keys(rc).length > 0) result['RuntimeConfig'] = rc;
+    }
 
     // A Managed Instances function: the attachment rides on this response,
     // the scaling settings have their own read of the version they apply to.

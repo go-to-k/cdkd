@@ -145,6 +145,11 @@ const FUNCTION_FULL: Bag = {
     KMSKeyArn: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k3`,
   },
   TenancyConfig: { TenantIsolationMode: 'PER_TENANT' },
+  // AWS pairs it with Runtime 'custom' only; this bag checks the wire, not that rule.
+  RuntimeConfig: {
+    RuntimeArn: `arn:aws:lambda:us-east-1:${ACCOUNT}:runtime/rt1`,
+    RuntimeAlias: 'stable',
+  },
   Tags: [
     { Key: 'k1', Value: 'v1' },
     { Key: 'k2', Value: 'v2' },

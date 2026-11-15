@@ -29,6 +29,7 @@ import {
   type DurableConfig,
   type TenancyConfig,
   type UpdateRuntimeOn,
+  type FunctionRuntimeConfig,
 } from '@aws-sdk/client-lambda';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -166,6 +167,9 @@ export async function create(
       // the separate Put/DeleteFunctionCodeSigningConfig control-plane pair
       // (there is no member on UpdateFunctionConfiguration).
       CodeSigningConfigArn: properties['CodeSigningConfigArn'] as string | undefined,
+      // Customer-managed runtime + alias; AWS requires it with Runtime
+      // 'custom' and refuses it with any other (go-to-k/cdkd#6352).
+      RuntimeConfig: properties['RuntimeConfig'] as FunctionRuntimeConfig | undefined,
       Tags: tags,
       ...(capacityProviderConfig !== undefined && {
         CapacityProviderConfig: capacityProviderConfig,

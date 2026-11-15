@@ -29,6 +29,7 @@ import {
   type LoggingConfig,
   type RecursiveLoop,
   type DurableConfig,
+  type FunctionRuntimeConfig,
 } from '@aws-sdk/client-lambda';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -103,6 +104,26 @@ export async function update(
     { replayingState: context?.replayingState, physicalId },
     log.warn
   );
+  // A `custom` function keeps its live RuntimeConfig when the member is
+  // omitted, so this removal would report success and change nothing. AWS
+  // refuses the same pair on CreateFunction ("RuntimeConfig is required when
+  // Runtime is 'custom'"); the valid removal switches `Runtime` away, which
+  // clears it (both live-probed us-east-1, go-to-k/cdkd#6352).
+  if (
+    properties['Runtime'] === 'custom' &&
+    properties['RuntimeConfig'] == null &&
+    previousProperties['RuntimeConfig'] != null
+  ) {
+    const message =
+      `Lambda function ${logicalId} keeps Runtime 'custom' without RuntimeConfig: AWS keeps ` +
+      `the live RuntimeConfig, and refuses a 'custom' function without one. Keep the ` +
+      `property, or change Runtime to remove it.`;
+    if (context?.replayingState === true) {
+      log.warn(message);
+    } else {
+      throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId, physicalId));
+    }
+  }
   try {
     // Whether this function is Managed Instances is AWS's to say, not the
     // record's: an `import` record or an older binary's holds a block the SDK
@@ -169,6 +190,7 @@ export async function update(
       'LoggingConfig',
       'DurableConfig',
       'CapacityProviderConfig',
+      'RuntimeConfig',
     ];
 
     const changedConfigFields: string[] = [];
@@ -253,6 +275,10 @@ export async function update(
         CapacityProviderConfig: capacityProviderConfigForUpdate(
           capacityNeverApplied ? undefined : desiredCapacity
         ),
+        // Customer-managed runtime: valid only beside Runtime 'custom', and an
+        // alias change applies in place. Its removal rides the `Runtime` change
+        // above, which clears it (live-probed us-east-1, go-to-k/cdkd#6352).
+        RuntimeConfig: properties['RuntimeConfig'] as FunctionRuntimeConfig | undefined,
       };
 
       for (const field of changedConfigFields) markUnsettled(field);
