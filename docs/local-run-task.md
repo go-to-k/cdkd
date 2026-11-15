@@ -352,10 +352,11 @@ the flags. On this command they resolve the following:
 | `Fn::ImportValue`, `Fn::GetStackOutput` | Resolved from the active state source, also when nested inside `Fn::Join`, `Fn::Sub` or `Fn::Select`. With neither flag, a warning names both. |
 | `{{resolve:...}}` in `Environment` | Looked up before any container starts. |
 | `{{resolve:...}}` in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
-| A secret attribute (`AWS::IAM::AccessKey`'s `SecretAccessKey`, a masked custom resource attribute) in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
+| A secret attribute (`AWS::IAM::AccessKey`'s `SecretAccessKey`, a masked custom resource attribute, a nested stack output carrying a child's secret) in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
 | A `Ref` (or a `${Id}` of `Fn::Sub`) to an `AWS::AppSync::ApiKey`, or its `Arn`, both holding the key, in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
 | A secret attribute or such a `Ref` in `Environment` | Resolved, and kept off the `docker run` command line. |
-| Such a `Ref` or `Arn` as a `Secrets` `ValueFrom` | Dropped with a warning naming the resource, not the value. |
+| Any secret above as a `Secrets` `ValueFrom` | Dropped with a warning naming the resource, not the value. |
+| Any secret above in a volume's `Host.SourcePath` | Refused. |
 
 Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see

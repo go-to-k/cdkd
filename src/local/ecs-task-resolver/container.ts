@@ -341,77 +341,88 @@ export function secretAttributeRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
-  for (const [logicalId, attribute] of getAttReads(element)) {
-    const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
-    const recorded = record?.attributes;
-    const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
-    if (
-      isSensitiveAttributeName(attribute) ||
-      isSecretValuedAttribute(record?.resourceType, attribute) ||
-      stored === SECRET_MASK
-    ) {
-      return secretAttributeReason(`${logicalId}.${attribute}`);
-    }
-  }
-  const hit = secretPhysicalIdRead(element, stateResources);
+  const hit = secretRead(element, stateResources);
   if (hit === undefined) return undefined;
-  if (hit.attribute !== undefined)
-    return secretAttributeReason(`${hit.logicalId}.${hit.attribute}`);
+  if (hit.attribute === undefined) {
+    return (
+      `references ${hit.logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
+      'pass the value through Environment or Secrets instead'
+    );
+  }
   return (
-    `references ${hit.logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
+    `reads the secret attribute ${hit.logicalId}.${hit.attribute}, which cdkd will not put on the docker run command line; ` +
     'pass the value through Environment or Secrets instead'
   );
 }
 
 /**
- * Why a `Secrets[].ValueFrom` must not be resolved: one reading a record
- * whose physical id embeds a secret would resolve to that secret, which the
- * secrets resolver then names in its lookup line and its refusal. A
- * `ValueFrom` is a Secrets Manager or SSM parameter ARN, never such a value
- * (go-to-k/cdkd#6330).
+ * Why a `Secrets[].ValueFrom` must not be resolved: one reading a secret from
+ * state (any read {@link secretAttributeRead} refuses) would resolve to that
+ * secret, which the secrets resolver then names in its lookup line and its
+ * refusal. A `ValueFrom` is a Secrets Manager or SSM parameter ARN, never such
+ * a value (go-to-k/cdkd#6330).
  */
 export function secretValueFromReason(
   valueFrom: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
-  const hit = secretPhysicalIdRead(valueFrom, stateResources);
+  const hit = secretRead(valueFrom, stateResources);
   if (hit === undefined) return undefined;
   const read = hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
   return `ValueFrom reads ${read}, which holds a secret rather than naming a Secrets Manager secret or an SSM parameter`;
 }
 
-function secretAttributeReason(read: string): string {
-  return (
-    `reads the secret attribute ${read}, which cdkd will not put on the docker run command line; ` +
-    'pass the value through Environment or Secrets instead'
-  );
+/**
+ * The first read of a secret from state, or `undefined`. An `Fn::GetAtt` (or
+ * a dotted `${Id.Attr}`) counts when the attribute's name or type says it is
+ * one, it is recorded as the mask, it is a nested stack's output the record
+ * names in `secretNamedAttributes` (a child's secret passed up), or the
+ * record's physical id embeds a secret ({@link secretPhysicalIdSegment}) and
+ * the recorded value may hold it ({@link mayHoldSegment}) (the ApiKey's `Arn`
+ * ends in the key). A `Ref` (or a dot-less `${Id}` of `Fn::Sub`) counts when
+ * the physical id it resolves to embeds one (go-to-k/cdkd#6330).
+ */
+/**
+ * Whether a recorded attribute value may carry `segment`: a string holding it,
+ * or a value it cannot be checked in (unrecorded, or an object). A number or
+ * boolean cannot.
+ */
+function mayHoldSegment(stored: unknown, segment: string): boolean {
+  if (typeof stored === 'string') return stored.includes(segment);
+  return stored === undefined || stored === null || typeof stored === 'object';
 }
 
-/**
- * The first read of a record whose physical id embeds a secret
- * ({@link secretPhysicalIdSegment}; an `AWS::AppSync::ApiKey`'s is
- * `<apiId>|<key>`), or `undefined` (go-to-k/cdkd#6330). A `Ref` (or a dot-less
- * `${Id}` of `Fn::Sub`) resolves to the physical id itself; an `Fn::GetAtt`
- * counts when the recorded value holds the segment (the ApiKey's `Arn` ends
- * in the key) or cannot be checked for it.
- */
-function secretPhysicalIdRead(
+function secretRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): { logicalId: string; attribute?: string } | undefined {
-  const segmentOf = (logicalId: string): string | undefined => {
-    const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
-    return record ? secretPhysicalIdSegment(record.resourceType, record.physicalId) : undefined;
-  };
+  const recordOf = (logicalId: string) =>
+    Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
   for (const [logicalId, attribute] of getAttReads(element)) {
-    const segment = segmentOf(logicalId);
-    if (segment === undefined) continue;
-    const recorded = stateResources[logicalId]!.attributes;
+    const record = recordOf(logicalId);
+    const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
-    if (typeof stored !== 'string' || stored.includes(segment)) return { logicalId, attribute };
+    const segment = secretPhysicalIdSegment(record?.resourceType, record?.physicalId);
+    // cdkd's own record field; cdk-local's `ResourceState` does not declare it.
+    const secretNamed = (record as { secretNamedAttributes?: unknown } | undefined)
+      ?.secretNamedAttributes;
+    if (
+      isSensitiveAttributeName(attribute) ||
+      isSecretValuedAttribute(record?.resourceType, attribute) ||
+      stored === SECRET_MASK ||
+      (record?.resourceType === 'AWS::CloudFormation::Stack' &&
+        Array.isArray(secretNamed) &&
+        secretNamed.includes(attribute)) ||
+      (segment !== undefined && mayHoldSegment(stored, segment))
+    ) {
+      return { logicalId, attribute };
+    }
   }
   for (const logicalId of refReads(element)) {
-    if (segmentOf(logicalId) !== undefined) return { logicalId };
+    const record = recordOf(logicalId);
+    if (record && secretPhysicalIdSegment(record.resourceType, record.physicalId) !== undefined) {
+      return { logicalId };
+    }
   }
   return undefined;
 }

@@ -62,7 +62,7 @@ function dockerArgs(task: ResolvedEcsTask): string[] {
     container,
     image: 'img',
     network: 'net',
-    volumeByName: new Map(),
+    volumeByName: new Map(task.volumes.map((v) => [v.name, v])),
     secrets: [],
     plaintextEnvKeys: container.resolvedDynamicReferenceKeys ?? [],
     envOverrides: undefined,
@@ -203,6 +203,16 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         },
         dependencies: [],
       },
+      // A nested stack row whose `Outputs.Key` passes a child's secret up
+      // (`secretNamedAttributes`, go-to-k/cdkd#3869).
+      Child: {
+        physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/child/1',
+        resourceType: 'AWS::CloudFormation::Stack',
+        properties: {},
+        attributes: { 'Outputs.Key': 'child-plaintext-key', 'Outputs.Bucket': 'child-bucket' },
+        secretNamedAttributes: ['Outputs.Key'],
+        dependencies: [],
+      },
       Cr: {
         physicalId: 'cr-1',
         resourceType: 'Custom::Thing',
@@ -230,6 +240,9 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       // go-to-k/cdkd#6330: the ApiKey's `Arn` ends in the key.
       ['an attribute holding the secret physical-id segment', { 'Fn::GetAtt': ['ApiKey', 'Arn'] }, 'ApiKey.Arn'],
       ['such an attribute inside Fn::Sub', { 'Fn::Sub': 'arn=${ApiKey.Arn}' }, 'ApiKey.Arn'],
+      // go-to-k/cdkd#6330: a nested stack output the row names as a secret.
+      ['a nested stack output named secret', { 'Fn::GetAtt': ['Child', 'Outputs.Key'] }, 'Child.Outputs.Key'],
+      ['a nested stack output named secret, dotted', { 'Fn::GetAtt': 'Child.Outputs.Key' }, 'Child.Outputs.Key'],
       ['an attribute recorded as the mask', { 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
     ])('refuses %s', (_label, element, named) => {
       const task = resolve(['run', element]);
@@ -246,6 +259,47 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       const task = resolve(['echo', { 'Fn::Sub': 'literal ${!Key.SecretAccessKey}' }]);
       const [u] = task.containers[0]!.unresolvedCommandElements!;
       expect(u!.reason).not.toMatch(/reads the secret attribute/);
+    });
+
+    it('still resolves a nested stack output the row does not name as a secret', () => {
+      const task = resolve(['run', { 'Fn::GetAtt': ['Child', 'Outputs.Bucket'] }]);
+      expect(task.containers[0]!.command).toEqual(['run', 'child-bucket']);
+    });
+
+    it('passes a secret-read Environment value value-less (secret attribute, mask, nested output)', () => {
+      const task = resolveEcsTaskTarget(
+        'TD',
+        [
+          buildStack({
+            Environment: [
+              { Name: 'SAK', Value: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] } },
+              { Name: 'CHILD', Value: { 'Fn::GetAtt': ['Child', 'Outputs.Key'] } },
+              { Name: 'BUCKET', Value: { 'Fn::GetAtt': ['Child', 'Outputs.Bucket'] } },
+            ],
+          }),
+        ],
+        { stateResources: secretState }
+      );
+      const args = dockerArgs(task);
+      expect(args.join(' ')).not.toMatch(/plaintext/);
+      expect(envFlags(args)).toEqual(expect.arrayContaining(['SAK', 'CHILD', 'BUCKET=child-bucket']));
+    });
+
+    it('drops a Secrets ValueFrom that reads any secret attribute, naming no value', () => {
+      const secrets = [
+        { Name: 'SAK', ValueFrom: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] } },
+        { Name: 'MASKED', ValueFrom: { 'Fn::GetAtt': ['Cr', 'Token'] } },
+        { Name: 'CHILD', ValueFrom: { 'Fn::GetAtt': ['Child', 'Outputs.Key'] } },
+      ];
+      const task = resolveEcsTaskTarget('TD', [buildStack({ Secrets: secrets })], { stateResources: secretState });
+      const c = task.containers[0]!;
+      expect(c.secrets).toEqual([]);
+      expect(JSON.stringify(c)).not.toMatch(/plaintext|\*\*\*/);
+      expect(c.warnings).toEqual([
+        expect.stringMatching(/^Secret 'SAK' dropped: ValueFrom reads Key\.SecretAccessKey, which holds a secret/),
+        expect.stringMatching(/^Secret 'MASKED' dropped: ValueFrom reads Cr\.Token, which holds a secret/),
+        expect.stringMatching(/^Secret 'CHILD' dropped: ValueFrom reads Child\.Outputs\.Key, which holds a secret/),
+      ]);
     });
 
     it('still resolves a non-secret attribute of the same custom resource', () => {
@@ -389,6 +443,60 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
             expect.stringMatching(/^Secret 'CROSS' dropped: ValueFrom reads ApiKey, which holds a secret/),
           ])
         );
+      });
+
+      it.each([
+        ['unrecorded', undefined],
+        ['an object', { Nested: 'apiid123|da2-plaintext-api-key' }],
+      ])('refuses an ApiKey attribute whose recorded value is %s, which cannot be checked for the key', (_l, stored) => {
+        const state: Record<string, ResourceState> = {
+          ApiKey: { ...secretState['ApiKey']!, attributes: stored === undefined ? {} : { Blob: stored } },
+        };
+        const task = resolveEcsTaskTarget(
+          'TD',
+          [buildStack({ Command: ['run', { 'Fn::GetAtt': ['ApiKey', 'Blob'] }] })],
+          { stateResources: state }
+        );
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+          /Command\[1\]: reads the secret attribute ApiKey\.Blob/
+        );
+      });
+
+      it('still resolves a numeric ApiKey attribute, which cannot hold the key', () => {
+        const state: Record<string, ResourceState> = {
+          ApiKey: { ...secretState['ApiKey']!, attributes: { Expires: 1767225600 } },
+        };
+        const task = resolveEcsTaskTarget(
+          'TD',
+          [buildStack({ Command: ['run', { 'Fn::GetAtt': ['ApiKey', 'Expires'] }] })],
+          { stateResources: state }
+        );
+        expect(task.containers[0]!.command).toEqual(['run', '1767225600']);
+      });
+
+      it('refuses a Host.SourcePath that reads the key, before any -v reaches the argv', () => {
+        const stack = buildStack({ MountPoints: [{ SourceVolume: 'v', ContainerPath: '/data' }] });
+        const td = stack.template.Resources!['TD']!.Properties as Record<string, unknown>;
+        td['Volumes'] = [{ Name: 'v', Host: { SourcePath: { 'Fn::Join': ['', ['/tmp/', { Ref: 'ApiKey' }]] } } }];
+        let args: string[] = [];
+        let error: unknown;
+        try {
+          args = dockerArgs(resolveEcsTaskTarget('TD', [stack], { stateResources: secretState }));
+        } catch (err) {
+          error = err;
+        }
+        expect(args.join(' ')).not.toMatch(/plaintext/);
+        expect(String(error)).toMatch(/Volumes\[0\] 'v' Host\.SourcePath references ApiKey, whose physical id holds a secret/);
+        expect(String(error)).not.toMatch(/plaintext/);
+      });
+
+      it('still mounts a Host.SourcePath that Refs a non-secret record', () => {
+        const stack = buildStack({ MountPoints: [{ SourceVolume: 'v', ContainerPath: '/data' }] });
+        const td = stack.template.Resources!['TD']!.Properties as Record<string, unknown>;
+        td['Volumes'] = [{ Name: 'v', Host: { SourcePath: { 'Fn::Join': ['', ['/tmp/', { Ref: 'Key' }]] } } }];
+        const args = dockerArgs(resolveEcsTaskTarget('TD', [stack], { stateResources: secretState }));
+        expect(args).toContain('/tmp/AKIAEXAMPLE:/data');
       });
 
       it('keeps a cross-stack Environment value that Refs a same-stack ApiKey off the argv', async () => {
