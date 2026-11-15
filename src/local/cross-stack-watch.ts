@@ -77,6 +77,13 @@ export function watchResolved(
  * (`secret`, or the fail-closed `unreadable` / `stale`) joins
  * `audit.sensitiveKeys`. The value still resolves; the caller passes those
  * keys value-less (`-e KEY`), as it does a decrypted SecureString.
+ *
+ * A cdk-local carrying go-to-k/cdk-local#982 does the same check inside
+ * `substituteEnvVarsFromStateAsync`. It never runs twice here: the resolver
+ * cdk-local is handed is the watcher's, which carries no judged variants, so
+ * cdk-local sees an unjudged resolver and each value is judged once, by cdkd.
+ * Its `--from-cfn-stack` resolver carries the same two method names, so that
+ * resolver is judged here too, the same way.
  */
 export async function substituteEnvVarsJudgedAsync(
   templateEnv: Record<string, unknown> | undefined,

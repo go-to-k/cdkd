@@ -330,7 +330,7 @@ describe('local invoke --from-state: a producer secret stays off the docker argv
     expect(flags).toContain(`PLAIN_JOIN=${PLAIN}-${PLAIN}`);
   });
 
-  it('control: a resolver without the judged variants (--from-cfn-stack) is not judged here', async () => {
+  it('control: a resolver without the judged variants is not judged here', async () => {
     templateEnv = { API_KEY: importOf('SecretExport') };
     const { resolveImport, resolveGetStackOutput } = judgedResolver();
     await invoke(stateProvider({ resolveImport, resolveGetStackOutput }));
@@ -406,7 +406,7 @@ describe('local invoke-agentcore --from-state: a producer secret stays off the d
     expect(spawnEnv['JOINED']).toBe(names.map((n) => EXPORTS[n]!.value).join('-'));
   });
 
-  it('control: a resolver without the judged variants (--from-cfn-stack) is not judged here', async () => {
+  it('control: a resolver without the judged variants is not judged here', async () => {
     templateEnv = { API_KEY: importOf('SecretExport') };
     const { resolveImport, resolveGetStackOutput } = judgedResolver();
     await bootAgent({ resolveImport, resolveGetStackOutput });

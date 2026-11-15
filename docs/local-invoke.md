@@ -292,8 +292,7 @@ passed off the `docker run` command line, as a `-e KEY` argument with no
 value. So is a value cdkd cannot check: a producer record it cannot read, or
 an exports-index entry the producer no longer exports. The check is the one
 [`cdkd local run-task`](local-run-task.md#environment-variables-and-secrets)
-applies, with the same limits. Under `--from-cfn-stack`, an exported value is
-passed as exported.
+applies, with the same limits.
 
 cdkd also sets the variables the Lambda runtime normally provides, so that
 the handler's `context` object looks real: `AWS_LAMBDA_FUNCTION_NAME`,
