@@ -1250,6 +1250,17 @@ describe('buildCrossStackResolver', () => {
         );
         expect(reasonOf(built, childKey)).toBe('unverified');
         expect(reasonOf(built, 'unrelated')).toBeUndefined();
+        // A parent output embedding the child's in a longer one is unverified too.
+        const joined = { ...parent, outputs: { ...parent.outputs, Joined: `key=${childKey}` } };
+        mocks.getStateMock.mockImplementation(async (stack: string) =>
+          stack === 'Producer' ? { state: joined, etag: 'e' } : null
+        );
+        const fresh = await makeResolver();
+        expect(await fresh.resolver.resolveGetStackOutput('Producer', 'us-east-1', 'Joined')).toBe(
+          `key=${childKey}`
+        );
+        expect(reasonOf(fresh, `key=${childKey}`)).toBe('unverified');
+        fresh.dispose();
         built.dispose();
       });
     });

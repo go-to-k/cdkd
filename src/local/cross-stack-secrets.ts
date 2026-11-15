@@ -256,7 +256,14 @@ export class ProducerSecretReader implements ProducerSecretCheck {
     served?: string
   ): Promise<void> {
     const unverified = await this.tree(stackName, region, state, 0);
-    if (served !== undefined && unverified.has(served)) this.ledger.noteUnverified(served);
+    // A parent output can embed the child's in a longer one (`Fn::Join`),
+    // matched as the needle leaves are.
+    if (
+      served !== undefined &&
+      [...unverified].some((l) => holds(served, l, LEAF_SUBSTRING_FLOOR))
+    ) {
+      this.ledger.noteUnverified(served);
+    }
   }
 
   /** {@link walk}, once per record. */
