@@ -135,8 +135,21 @@ if [ "$(jq -r --arg id "${ASG_ID}" '.resources[$id].attributes | (has("Arn") or 
 fi
 echo "    OK: record ${ASG_ID} holds no ARN; AsgArn output is '${PLANTED}'"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
-if grep -E 'Unknown attribute AutoScalingGroupARN|Cannot resolve Fn::GetAtt' "${DEPLOY_LOG}"; then
-  echo "FAIL: the heal-phase deploy fell back or refused (see above)" >&2
+# Narrowed to THIS group's own refusal / fallback line. Sentinel (testing.md):
+# any OTHER line naming the attribute also fails, so a reworded refusal cannot
+# slip past the parsed pattern; and the log must name the stack, or an empty
+# log would pass the absence check.
+ASG_REFUSAL="Cannot resolve Fn::GetAtt \\[${ASG_ID}, AutoScalingGroupARN\\]|Unknown attribute AutoScalingGroupARN"
+if ! grep -qF "${STACK}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the heal-phase deploy log never names ${STACK} -- the absence check below would be vacuous" >&2
+  exit 1
+fi
+if grep -E "${ASG_REFUSAL}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the heal-phase deploy refused or fell back on ${ASG_ID}.AutoScalingGroupARN (see above)" >&2
+  exit 1
+fi
+if grep -F "AutoScalingGroupARN" "${DEPLOY_LOG}"; then
+  echo "FAIL: an unrecognised line names AutoScalingGroupARN (refusal wording drifted?) -- see above" >&2
   exit 1
 fi
 expect_eq "AsgArn output after the heal" "$(output_of AsgArn)" "${LIVE_ASG_ARN}"
