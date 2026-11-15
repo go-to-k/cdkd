@@ -108,10 +108,20 @@ unless your template sets them on the resource itself: a user's `Groups`, the
 When your template does set the list, drift compares it but leaves out the
 members such a resource in the same stack currently writes, unless your
 template lists them too. So `--revert` neither removes nor re-adds those
-members. A member such a resource has since stopped writing can still show as
-drift on a declared list. As in
-CloudFormation, an out-of-band change to a list your template does not set is
-not reported.
+members. When a deploy makes such a resource stop writing a member (the
+policy drops the principal, is replaced under a new ARN, or is deleted; the
+addition drops the user; the role drops the policy), that deploy also removes
+the member from the other resource's recorded snapshot, even when that
+resource itself does not change. So drift does not report the member as lost,
+and `--revert` does not add it back. A resource the deploy kept in AWS (a
+`Retain` policy, or a replaced resource whose old copy was not deleted) still
+writes its members, so they stay. A snapshot recorded before cdkd had this fix,
+or left by a deploy that was killed mid-run, can still hold a member the stack
+stopped writing. So can a snapshot whose member cdkd recorded as `***` or as a
+`{{resolve:...}}` reference (a role, policy or group name taken from a
+secret): it does not match the name the stack writes, so cdkd leaves it. Run
+`cdkd state refresh-observed --yes` once to re-read either. As in CloudFormation, an
+out-of-band change to a list your template does not set is not reported.
 
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.

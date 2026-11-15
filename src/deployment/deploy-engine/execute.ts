@@ -50,6 +50,7 @@ import { provisionCreateUpdateNode } from './execute/provision-node.js';
 import { settleFailedDeployRecords } from './execute/failed-deploy-records.js';
 import { rollbackFailedDeploy } from './execute/rollback-after-failure.js';
 import type { DeployRun } from './execute/run.js';
+import { pruneStoppedSiblingMembersBestEffort } from './observed-capture.js';
 
 /**
  * Execute deployment by processing resources via event-driven DAG dispatch.
@@ -478,6 +479,15 @@ export async function executeDeployment(
     const initialDeploy = currentEtag === undefined;
 
     await settleFailedDeployRecords(run);
+    // go-to-k/cdkd#6343: a sibling write that succeeded before the failure
+    // stays under `--no-rollback`; the next deploy no longer sees the change.
+    pruneStoppedSiblingMembersBestEffort(
+      engine.logger,
+      currentState.resources,
+      newResources,
+      engine.replacementRun,
+      template
+    );
 
     // Save partial state BEFORE rollback to track all successfully provisioned
     // resources (including those that completed concurrently with the one that
@@ -593,6 +603,14 @@ export async function executeDeployment(
       outputs
     );
   } catch (outputError) {
+    // go-to-k/cdkd#6343: every provider call succeeded, so each stopped write did.
+    pruneStoppedSiblingMembersBestEffort(
+      engine.logger,
+      currentState.resources,
+      newResources,
+      engine.replacementRun,
+      template
+    );
     await persistStateAfterOutputFailure(
       engine,
       stackName,

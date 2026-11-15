@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd integ for go-to-k/cdkd#6324.
+# verify.sh — cdkd integ for go-to-k/cdkd#6324 (+ #6328, #6343).
 #
 # A sibling AWS::IAM::ManagedPolicy attaching itself to a role / user / group
 # through its own `Roles` / `Users` / `Groups` list is that resource's, not the
@@ -26,6 +26,15 @@
 #   8. (go-to-k/cdkd#6328) Shrink a UserToGroupAddition on users that declare
 #      no Groups: `cdkd drift` exits 0 and `--revert` re-grants nothing.
 #      Phases 1-6 also cover a role attaching the policy from its own side.
+#   9. (go-to-k/cdkd#6343) UPDATE the policy and the declared-Groups user while
+#      both siblings write (each capture records the sibling's member on its
+#      DECLARED list), then the Attacher role drops the policy and the addition
+#      drops that user, both left NO_CHANGE: `cdkd drift` exits 0 and
+#      `--revert` re-attaches / re-adds nothing.
+#  10. (#6343) Plant the policy's ARN in the role's baseline, as a pre-#6324 or
+#      CREATE-race capture leaves it, then rename the policy (REPLACED under a
+#      new ARN; the role NO_CHANGE): `cdkd drift` exits 0 and `--revert`
+#      exits 0 (before the fix it re-attached the deleted ARN: NoSuchEntity).
 #   7. Destroy + gone-probes.
 #
 # Required env vars:
@@ -85,6 +94,7 @@ ADD_U3="cdkd-iam-sibling-mp-add-u3"
 # Phase 1b and Phase 8 set the modes; an inherited value would deploy them early.
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
+PLANT_FILE=""
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -94,6 +104,8 @@ CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 PARTITION="$(cut -d: -f2 <<<"${CALLER_ARN}")"
 MP_ARN="arn:${PARTITION}:iam::${ACCOUNT}:policy/${POLICY_NAME}"
+# go-to-k/cdkd#6343 Phase 10 renames the policy, which replaces it.
+MP2_ARN="arn:${PARTITION}:iam::${ACCOUNT}:policy/${POLICY_NAME}2"
 BASIC_ARN="arn:${PARTITION}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 DENY_ARN="arn:${PARTITION}:iam::aws:policy/AWSDenyAll"
 OWN_ARN="arn:${PARTITION}:iam::aws:policy/IAMUserChangePassword"
@@ -104,7 +116,7 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  rm -f "${DRIFT_LOG:-}"
+  rm -f "${DRIFT_LOG:-}" "${PLANT_FILE:-}"
   for arn in $(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
     aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
@@ -137,11 +149,13 @@ cleanup() {
   aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${ADD_U3}" >/dev/null 2>&1
   aws iam delete-group --group-name "${GROUP_NAME}" >/dev/null 2>&1
   # A policy with non-default versions refuses DeletePolicy until they go.
-  for v in $(aws iam list-policy-versions --policy-arn "${MP_ARN}" \
-      --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text 2>/dev/null); do
-    aws iam delete-policy-version --policy-arn "${MP_ARN}" --version-id "${v}" >/dev/null 2>&1
+  for p in "${MP_ARN}" "${MP2_ARN}"; do
+    for v in $(aws iam list-policy-versions --policy-arn "${p}" \
+        --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text 2>/dev/null); do
+      aws iam delete-policy-version --policy-arn "${p}" --version-id "${v}" >/dev/null 2>&1
+    done
+    aws iam delete-policy --policy-arn "${p}" >/dev/null 2>&1
   done
-  aws iam delete-policy --policy-arn "${MP_ARN}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
@@ -474,6 +488,138 @@ fi
 rm -f "${DRIFT_LOG}"
 echo "    ${ADD_U2} stays out of ${ADD_GROUP}"
 
+# --- Phase 9: siblings that STOP writing a declared list (go-to-k/cdkd#6343) -
+# `touch` UPDATEs the policy and ${ADD_U3} while the Attacher role still
+# attaches the policy and the addition still adds ${ADD_U3}. Neither capture
+# has a sibling context for that member, so the policy's baseline `Roles` holds
+# the Attacher and ${ADD_U3}'s baseline `Groups` holds ${ADD_GROUP}, both on
+# DECLARED lists -- deterministic, not a race (asserted from the state below).
+export CDKD_TEST_UPDATE=late,shrink,touch
+echo "==> Phase 9: UPDATE the policy and ${ADD_U3} while both siblings write"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Prints `<policy Roles>|<u3 Groups>` from the state's recorded baselines.
+baselines() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+    let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+      const rs = Object.values(JSON.parse(d).resources);
+      const by = (t, id) => rs.find((r) => r.resourceType === t && r.physicalId === id);
+      const list = (r, k) => [...((r && r.observedProperties && r.observedProperties[k]) || [])].sort().join(" ");
+      process.stdout.write(list(by("AWS::IAM::ManagedPolicy", process.argv[1]), "Roles") + "|" +
+        list(by("AWS::IAM::User", process.argv[2]), "Groups"));
+    });' "$1" "${ADD_U3}"
+}
+if ! GOT_BASELINES="$(baselines "${MP_ARN}")"; then
+  echo "FAIL: could not read the recorded baselines from s3://${STATE_BUCKET}/${STATE_KEY}" >&2
+  exit 1
+fi
+WANT_PLANTED="$(sorted "${ROLE_NAME}" "${ATTACHER_NAME}")|$(sorted "${GROUP_NAME}" "${ADD_GROUP}")"
+if [ "${GOT_BASELINES}" != "${WANT_PLANTED}" ]; then
+  echo "FAIL: premise: after the touch deploy the policy's baseline Roles | ${ADD_U3}'s baseline Groups are '${GOT_BASELINES}', want '${WANT_PLANTED}' (the sibling's member must be in each DECLARED baseline for this arm to discriminate)" >&2
+  exit 1
+fi
+echo "    each baseline holds its sibling's member: ${GOT_BASELINES}"
+
+export CDKD_TEST_UPDATE=late,shrink,touch,drop
+echo "==> Phase 9: the Attacher role drops the policy; the addition drops ${ADD_U3}"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+dropped_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  read_attacher
+  read_u3
+  if [ -z "${GOT_ATTACHER}" ] && [ "${GOT_U3}" = "${GROUP_NAME}" ]; then
+    dropped_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${dropped_ok}" -ne 1 ]; then
+  echo "FAIL: premise: after the drop the attacher role holds '${GOT_ATTACHER}' (want none), ${ADD_U3} is in '${GOT_U3}' (want '${GROUP_NAME}')" >&2
+  exit 1
+fi
+echo "==> Phase 9: cdkd drift after the drop (expect exit 0)"
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after the siblings stopped writing; a member the stack no longer writes stayed in a DECLARED baseline (go-to-k/cdkd#6343)" >&2
+  exit 1
+fi
+echo "==> Phase 9: cdkd drift --revert -y (expect exit 0)"
+run_drift --revert -y
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} after the drop" >&2
+  exit 1
+fi
+# The subject is that nothing changed, so no poll: one read after a settle
+# long enough for a re-attach to show.
+sleep 15
+read_attacher
+read_u3
+if [ -n "${GOT_ATTACHER}" ] || [ "${GOT_U3}" != "${GROUP_NAME}" ]; then
+  echo "FAIL: after --revert the attacher role holds '${GOT_ATTACHER}' (want none) and ${ADD_U3} is in '${GOT_U3}' (want '${GROUP_NAME}'); the revert re-wrote a member the template removed (go-to-k/cdkd#6343)" >&2
+  exit 1
+fi
+rm -f "${DRIFT_LOG}"
+echo "    the policy stays off the attacher role; ${ADD_U3} stays out of ${ADD_GROUP}"
+
+# --- Phase 10: a replaced sibling policy (go-to-k/cdkd#6343) --------------
+# The role's capture excludes the policy's ARN whenever the policy is
+# recorded, so a baseline holding it is one a pre-#6324 binary wrote or a
+# CREATE capture that raced the policy's attach. Planted here so the arm does
+# not depend on winning that race.
+echo "==> Phase 10: plant the policy's ARN in the role's recorded baseline"
+PLANT_FILE="$(mktemp)"
+if ! aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+    let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+      const s = JSON.parse(d);
+      const role = Object.values(s.resources).find(
+        (r) => r.resourceType === "AWS::IAM::Role" && r.physicalId === process.argv[1]);
+      const arns = role && role.observedProperties && role.observedProperties.ManagedPolicyArns;
+      if (!Array.isArray(arns)) { process.stderr.write("role has no baseline ManagedPolicyArns\n"); process.exit(1); }
+      if (!arns.includes(process.argv[2])) arns.push(process.argv[2]);
+      process.stdout.write(JSON.stringify(s));
+    });' "${ROLE_NAME}" "${MP_ARN}" >"${PLANT_FILE}"; then
+  rm -f "${PLANT_FILE}"
+  echo "FAIL: premise: could not plant ${MP_ARN} in ${ROLE_NAME}'s recorded baseline" >&2
+  exit 1
+fi
+aws s3 cp "${PLANT_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --content-type application/json >/dev/null
+rm -f "${PLANT_FILE}"
+export CDKD_TEST_UPDATE=late,shrink,touch,drop,rename
+echo "==> Phase 10: rename the policy (replaced under ${MP2_ARN})"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+WANT_RENAMED="$(sorted "${BASIC_ARN}" "${MP2_ARN}")"
+renamed_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  read_all
+  if [ "${GOT_ROLE}" = "${WANT_RENAMED}" ]; then
+    renamed_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${renamed_ok}" -ne 1 ]; then
+  echo "FAIL: premise: after the rename the role holds '${GOT_ROLE}', want '${WANT_RENAMED}'" >&2
+  exit 1
+fi
+echo "==> Phase 10: cdkd drift after the rename (expect exit 0)"
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after the sibling policy was replaced; the role's baseline kept the OLD ARN (go-to-k/cdkd#6343)" >&2
+  exit 1
+fi
+echo "==> Phase 10: cdkd drift --revert -y (expect exit 0)"
+run_drift --revert -y
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} after the rename; it tried to re-attach the deleted policy (go-to-k/cdkd#6343)" >&2
+  exit 1
+fi
+read_all
+if [ "${GOT_ROLE}" != "${WANT_RENAMED}" ]; then
+  echo "FAIL: after --revert the role holds '${GOT_ROLE}', want '${WANT_RENAMED}'" >&2
+  exit 1
+fi
+rm -f "${DRIFT_LOG}"
+echo "    the role holds the renamed policy only; drift is clean"
+
 # --- Phase 7: destroy ------------------------------------------------------
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -482,6 +628,7 @@ assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --ro
 assert_gone "user ${USER_NAME} still exists after destroy" aws iam get-user --user-name "${USER_NAME}"
 assert_gone "group ${GROUP_NAME} still exists after destroy" aws iam get-group --group-name "${GROUP_NAME}"
 assert_gone "policy ${MP_ARN} still exists after destroy" aws iam get-policy --policy-arn "${MP_ARN}"
+assert_gone "policy ${MP2_ARN} still exists after destroy" aws iam get-policy --policy-arn "${MP2_ARN}"
 assert_gone "role ${ATTACHER_NAME} still exists after destroy" aws iam get-role --role-name "${ATTACHER_NAME}"
 assert_gone "group ${ADD_GROUP} still exists after destroy" aws iam get-group --group-name "${ADD_GROUP}"
 assert_gone "user ${ADD_U1} still exists after destroy" aws iam get-user --user-name "${ADD_U1}"
@@ -490,4 +637,4 @@ assert_gone "user ${ADD_U3} still exists after destroy" aws iam get-user --user-
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    every resource and the cdkd state are gone"
 
-echo "[verify] PASS — a sibling's IAM attachment or group membership is not drift on the other side, and drift --revert detaches only the out-of-band ARN and re-grants no removed membership"
+echo "[verify] PASS — a sibling's IAM attachment or group membership is not drift on the other side, drift --revert detaches only the out-of-band ARN and re-grants no removed membership, and a member a sibling stopped writing leaves the declared baseline"
