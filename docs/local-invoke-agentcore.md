@@ -304,6 +304,11 @@ of source code. cdkd runs both.
 | Container image | `AgentRuntimeArtifact.fromAsset`, `fromEcrRepository`, `fromImageUri` | Built from the Docker asset, or pulled |
 | Source code | `AgentRuntimeArtifact.fromCodeAsset`, `fromS3` | Built from source for the declared runtime |
 
+A `fromS3` bucket name read from another stack's export under `--from-state`
+is not printed in cdkd's line naming the resolved bucket when the export holds
+a secret or cdkd cannot check it. The bundle download still prints the
+`s3://<bucket>/<key>` location, and so do its errors.
+
 ### `CodeConfiguration` builds
 
 A source-code runtime, which the template expresses as `CodeConfiguration`,
