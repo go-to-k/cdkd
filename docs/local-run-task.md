@@ -385,8 +385,11 @@ secret attribute above) is treated like a secret in the consumer's own state:
 - resolved off the command line in `Environment`;
 - dropped as a `Secrets` `ValueFrom`.
 
-A value cdkd cannot check is handled the same way. In every case, passing the
-value through `Environment` instead keeps it resolving. A value recorded as
+A value cdkd cannot check is handled the same way, with one exception: as a
+`Secrets` `ValueFrom`, it is kept when it is a well-formed Secrets Manager or
+SSM parameter ARN, since an ARN names the secret rather than holding it. In
+every case, passing the value through `Environment` instead keeps it
+resolving. A value recorded as
 the secret mask (`***`) is refused in `Command`, `EntryPoint` or a
 health-check command.
 

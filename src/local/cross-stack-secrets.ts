@@ -571,7 +571,7 @@ export function producerSecretArgvReason(judgement: Judgement): string {
     return `resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}, ${tail}`;
   }
   if (judgement.detail !== undefined) {
-    return `resolved a cross-stack value cdkd could not check for secrets: ${judgement.detail}, ${tail}`;
+    return `resolved a cross-stack value cdkd could not check for secrets: ${displaySafe(judgement.detail)}, ${tail}`;
   }
   return `resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets, ${tail}`;
 }
@@ -588,7 +588,7 @@ export function producerSecretValueFromReason(judgement: Judgement): string {
     return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}`;
   }
   if (judgement.detail !== undefined) {
-    return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${judgement.detail}`;
+    return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${displaySafe(judgement.detail)}`;
   }
   return "ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets";
 }

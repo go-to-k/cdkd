@@ -17,6 +17,10 @@ import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
 
+/** A Secrets Manager secret or SSM parameter ARN, as cdk-local's post-pass spells it. */
+const SECRET_POINTER_ARN =
+  /^arn:aws(?:-[a-z]+)*:(?:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@!-]+(?::[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*)?|ssm:[a-z0-9-]+:\d{12}:parameter\/[A-Za-z0-9/_.-]+)$/;
+
 /** The resolved argv array an unresolved element's placeholder lives in. */
 function argvTarget(
   container: ResolvedEcsContainer,
@@ -172,7 +176,18 @@ export async function applyCrossStackResolverToTask(
         const sub = await substituteAgainstStateAsync(valueFromRaw, watched.context);
         // A producer's secret is no ARN, and the secrets resolver would name it
         // in its lookup line: it stays dropped, with this reason (go-to-k/cdkd#6337).
-        if (watched.seen.producerSecret !== undefined) {
+        // A value cdkd could only not CHECK is kept when it is a well-formed
+        // secret ARN, which names the secret rather than holding it -- the rule
+        // cdk-local's own post-pass applies in start-service (go-to-k/cdkd#6339).
+        if (
+          watched.seen.producerSecret !== undefined &&
+          !(
+            watched.seen.producerSecret.verdict !== 'secret' &&
+            sub.kind === 'literal' &&
+            typeof sub.value === 'string' &&
+            SECRET_POINTER_ARN.test(sub.value)
+          )
+        ) {
           redropSecret(
             task,
             container,

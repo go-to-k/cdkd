@@ -31,6 +31,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 const API_KEY = 'da2-producerkey6339abcdefgh';
 const PRODUCER = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Producer/1111';
 const LOCKED = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Locked/2222';
+const LOCKED_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf';
 
 function stub(command: unknown): unknown {
   if (command instanceof ListExportsCommand) {
@@ -39,6 +40,7 @@ function stub(command: unknown): unknown {
         { Name: 'Producer-ApiKey', Value: API_KEY, ExportingStackId: PRODUCER },
         { Name: 'Producer-Plain', Value: 'plain-value-6339', ExportingStackId: PRODUCER },
         { Name: 'Locked-Bucket', Value: 'locked-bucket-6339', ExportingStackId: LOCKED },
+        { Name: 'Locked-SecretArn', Value: LOCKED_SECRET_ARN, ExportingStackId: LOCKED },
       ],
     };
   }
@@ -64,7 +66,10 @@ function stub(command: unknown): unknown {
             { OutputKey: 'KeyOut', ExportName: 'Producer-ApiKey', OutputValue: API_KEY },
             { OutputKey: 'PlainOut', ExportName: 'Producer-Plain', OutputValue: 'plain-value-6339' },
           ]
-        : [{ OutputKey: 'BucketOut', ExportName: 'Locked-Bucket', OutputValue: 'locked-bucket-6339' }];
+        : [
+            { OutputKey: 'BucketOut', ExportName: 'Locked-Bucket', OutputValue: 'locked-bucket-6339' },
+            { OutputKey: 'ArnOut', ExportName: 'Locked-SecretArn', OutputValue: LOCKED_SECRET_ARN },
+          ];
     return { Stacks: [{ StackName: stackName, Outputs: outputs }] };
   }
   if (command instanceof GetTemplateCommand) {
@@ -199,5 +204,17 @@ describe('--from-cfn-stack: a producer stack exported secret stays off the docke
       /Command\[1\]: resolved a cross-stack value cdkd could not check for secrets: GetTemplate of .*Locked.* failed: AccessDenied/
     );
     expect(message).not.toContain('locked-bucket-6339');
+  });
+
+  it('keeps an unchecked Secrets ValueFrom that is a well-formed secret ARN, and drops an unchecked non-ARN one', async () => {
+    const t = task({
+      Secrets: [
+        { Name: 'DB', ValueFrom: { 'Fn::ImportValue': 'Locked-SecretArn' } },
+        { Name: 'OTHER', ValueFrom: { 'Fn::ImportValue': 'Locked-Bucket' } },
+      ],
+    });
+    await resolve(t);
+    expect(t.containers[0]!.secrets).toEqual([{ name: 'DB', valueFrom: LOCKED_SECRET_ARN }]);
+    expect(t.containers[0]!.droppedSecretNames).toEqual(['OTHER']);
   });
 });

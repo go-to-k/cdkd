@@ -387,10 +387,7 @@ Each replica is run the way [`cdkd local run-task`](local-run-task.md) runs a
 task. That page's rules for images, secrets, secret names, volumes and the
 order containers start in apply here too, including the check of
 [values another stack exports](local-run-task.md#values-another-stack-exports)
-for the producer stack's secrets. One difference: a `Secrets` `ValueFrom`
-cdkd could not check is kept here when it resolves to a well-formed Secrets
-Manager or SSM parameter ARN, since an ARN names the secret rather than
-holding it. `run-task` drops it.
+for the producer stack's secrets.
 
 With finch on macOS or Windows, cdkd refuses to start a task that has a
 `Secrets` entry, because finch would expose the secret's value. cdkd makes

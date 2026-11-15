@@ -197,6 +197,9 @@ describe("a fail-closed verdict's detail (go-to-k/cdkd#6339)", () => {
     );
     expect(producerSecretArgvReason({ verdict: 'unreadable', source, detail })).toContain(bound);
     expect(producerSecretArgvReason({ verdict: 'unreadable', source, detail })).not.toContain(detail);
+    const hostile = 'GetTemplate of P failed: \u001b[31mred';
+    expect(producerSecretArgvReason({ verdict: 'unreadable', detail: hostile })).not.toContain('\u001b');
+    expect(producerSecretValueFromReason({ verdict: 'unreadable', detail: hostile })).not.toContain('\u001b');
     expect(producerSecretArgvReason({ verdict: 'unreadable' })).toContain(
       "whose producer stack's state cdkd could not read"
     );
