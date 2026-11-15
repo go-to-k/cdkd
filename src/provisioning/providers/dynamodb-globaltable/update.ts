@@ -6,7 +6,10 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 
-import { ProvisioningError } from '../../../utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../utils/error-handler.js';
 import { planTagDiff, tagPlanWarning } from '../../tag-list.js';
 import {
   coerceCfnBoolean,
@@ -69,11 +72,16 @@ import type { MaskedLogSinks } from '../../masked-retry-logger.js';
  *      additional AttributeDefinitions). Wait ACTIVE after each.
  *   7. TimeToLiveSpecification toggle.
  *
- * Immutable properties (TableName / KeySchema / AttributeDefinitions
- * removals / LocalSecondaryIndexes changes) throw `ProvisioningError`
- * naming the offending field — the deploy engine's diff classifier
- * should catch these as REPLACEMENT before ever calling `update()`,
- * but the guard is defense-in-depth.
+ * Immutable properties (TableName / KeySchema / LocalSecondaryIndexes
+ * changes) throw `ResourceUpdateNotSupportedError` naming the offending
+ * field; an AttributeDefinitions removal a key still references (an invalid
+ * template) stays a plain `ProvisioningError`, see its arm. Only
+ * `TableName` is create-only in the schema, so a KeySchema change and an
+ * added or changed LSI list always reach these guards (CloudFormation
+ * classifies them as "Some interruptions", not as Replacement). The typed
+ * error is what lets `--replace` turn the refusal into a replacement
+ * (`update-in-place.ts`). A plain `ProvisioningError` made the remedy the
+ * message prints a no-op (go-to-k/cdkd#6363).
  */
 export async function update(
   this: DynamoDBGlobalTableProvider,
@@ -309,11 +317,10 @@ export async function updateInScope(
       physicalName: physicalId,
     }))
   ) {
-    throw new ProvisioningError(
-      log.mask(`TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(`TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`)
     );
   }
   if (
@@ -321,11 +328,10 @@ export async function updateInScope(
     previousProperties['KeySchema'] !== undefined &&
     !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
   ) {
-    throw new ProvisioningError(
-      log.mask(`KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(`KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`)
     );
   }
   // go-to-k/cdkd#5489: an ADDED or REMOVED whole list is a change too. Before,
@@ -345,13 +351,12 @@ export async function updateInScope(
       lsiListOrEmpty(previousProperties['LocalSecondaryIndexes'])
     )
   ) {
-    throw new ProvisioningError(
-      log.mask(
-        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`
-      ),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(
+        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`
+      )
     );
   }
   // AttributeDefinitions: additions are allowed (needed for new GSIs).
@@ -379,10 +384,16 @@ export async function updateInScope(
     (a) => a.AttributeName !== undefined && desiredKeyAttrNames.has(a.AttributeName)
   );
   if (removedButStillReferenced.length > 0) {
+    // Deliberately NOT the typed error the three guards above throw
+    // (go-to-k/cdkd#6363 review): a removed attribute a desired key still
+    // names is an INVALID template, which `CreateTable` rejects too. Under
+    // `--replace` a delete-first replacement would drop the table and its
+    // data, and then fail to re-create it.
     throw new ProvisioningError(
       `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
         `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
-        `replacement required`,
+        `the template is invalid: declare the attribute in AttributeDefinitions or drop it ` +
+        `from the key schema (a replacement cannot apply it either)`,
       resourceType,
       logicalId,
       physicalId

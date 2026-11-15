@@ -124,7 +124,10 @@ import {
   diffGlobalSecondaryIndexes,
   replicaDeleteGoneWait,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
-import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../src/utils/error-handler.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE_NAME = 'my-table';
@@ -1106,7 +1109,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
     });
 
-    it('throws ProvisioningError on immutable TableName change', async () => {
+    it('throws ResourceUpdateNotSupportedError on immutable TableName change (#6363)', async () => {
       await expect(
         provider.update(
           'X',
@@ -1115,10 +1118,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           { TableName: 'new-name' },
           { TableName: 'old-name' }
         )
-      ).rejects.toBeInstanceOf(ProvisioningError);
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     });
 
-    it('throws ProvisioningError on immutable KeySchema change', async () => {
+    it('throws ResourceUpdateNotSupportedError on immutable KeySchema change (#6363)', async () => {
       await expect(
         provider.update(
           'X',
@@ -1127,7 +1130,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           { KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }] },
           { KeySchema: [{ AttributeName: 'other', KeyType: 'HASH' }] }
         )
-      ).rejects.toBeInstanceOf(ProvisioningError);
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     });
 
     it('throws ProvisioningError on AttributeDefinitions removal (additions allowed)', async () => {
@@ -1136,8 +1139,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           'X',
           TABLE_NAME,
           RESOURCE_TYPE,
-          { AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }] },
           {
+            KeySchema: [
+              { AttributeName: 'pk', KeyType: 'HASH' },
+              { AttributeName: 'sk', KeyType: 'RANGE' },
+            ],
+            AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+          },
+          {
+            KeySchema: [
+              { AttributeName: 'pk', KeyType: 'HASH' },
+              { AttributeName: 'sk', KeyType: 'RANGE' },
+            ],
             AttributeDefinitions: [
               { AttributeName: 'pk', AttributeType: 'S' },
               { AttributeName: 'sk', AttributeType: 'S' },
@@ -1147,7 +1160,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
-    it('throws ProvisioningError on LocalSecondaryIndexes change', async () => {
+    it('throws ResourceUpdateNotSupportedError on LocalSecondaryIndexes change (#6363)', async () => {
       await expect(
         provider.update(
           'X',
@@ -1156,7 +1169,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           { LocalSecondaryIndexes: [{ IndexName: 'idx2' } as never] },
           { LocalSecondaryIndexes: [{ IndexName: 'idx1' } as never] }
         )
-      ).rejects.toBeInstanceOf(ProvisioningError);
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     });
 
     it('issues GSI Create with AttributeDefinitions overlay', async () => {
