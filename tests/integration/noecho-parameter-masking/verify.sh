@@ -1291,13 +1291,20 @@ set -e
 # 2.277.0 words the same warning from the parameter's side, `Parameters/
 # NoEchoToken/Default: ... default '<value>' is not one of the allowed values
 # for property 'Tier' when resolved at Resources/NoEchoReject/Properties/Tier`;
-# both exact shapes are excluded, nothing else.
+# both exact shapes are excluded, nothing else. This deploy is --verbose, so
+# cdkd relays the app's stderr line behind its `[AppExecutor]` log prefix.
 P2_CDKD_OUT=$(grep -vE \
-  -e "^WARNING Tier: '.*' is not one of \[.*\] \(CloudFormation Validate\)$" \
-  -e "^WARNING Parameters/NoEchoToken/Default: .* is not one of the allowed values for property 'Tier' when resolved at Resources/NoEchoReject/Properties/Tier \(CloudFormation Validate\)$" \
+  -e "^(.*\[AppExecutor\] )?WARNING Tier: '.*' is not one of \[.*\] \(CloudFormation Validate\)$" \
+  -e "^(.*\[AppExecutor\] )?WARNING Parameters/NoEchoToken/Default: .* is not one of the allowed values for property 'Tier' when resolved at Resources/NoEchoReject/Properties/Tier \(CloudFormation Validate\)$" \
   <<< "${DEPLOY_OUT_P2}" || true)
 if [[ "${P2_CDKD_OUT}" == *"${TOKEN}"* ]] || [[ "${P2_CDKD_OUT}" == *"${STRING_TOKEN}"* ]]; then
-  echo "FAIL: the Phase 2 deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
+  echo "FAIL: the Phase 2 deploy output carries the NoEcho value in plaintext (issue #1998); the lines, value masked:" >&2
+  while IFS= read -r p2_line; do
+    if [[ "${p2_line}" == *"${TOKEN}"* || "${p2_line}" == *"${STRING_TOKEN}"* ]]; then
+      p2_line="${p2_line//${TOKEN}/<NOECHO>}"
+      printf '    %s\n' "${p2_line//${STRING_TOKEN}/<NOECHO>}" >&2
+    fi
+  done <<< "${P2_CDKD_OUT}"
   exit 1
 fi
 assert_no_split_piece "the Phase 2 deploy output" "${DEPLOY_OUT_P2}"
@@ -1457,10 +1464,18 @@ assert_noecho_rollback_kept() {
       exit 1
     fi
   else
-    # Sentinel pair: the kept-record line, and a journal holding ONLY the
-    # failed op (no completed op left to replay, so NoEchoConsumer is done).
-    if ! grep -qF 'pre-failure record was kept' <<< "${out}"; then
-      echo "FAIL: premise: the Phase ${phase} deploy printed no 'pre-failure record was kept' line -- the clean rollback did not keep a failed-only journal" >&2
+    # Sentinel pair: the kept failed op named, and a journal holding ONLY it
+    # (no completed op left to replay, so NoEchoConsumer is done). The failed
+    # CREATE has no physical id, so cdkd names the manual check instead of
+    # `--revert-failed` (go-to-k/cdkd#6207).
+    if ! grep -qF 'NoEchoFailingQueue (AWS::SQS::Queue): the failed CREATE recorded no physical id' <<< "${out}"; then
+      echo "FAIL: premise: the Phase ${phase} deploy did not name NoEchoFailingQueue's failed CREATE as having no physical id -- the clean rollback did not keep a failed-only journal; its NoEchoFailingQueue lines, values masked:" >&2
+      while IFS= read -r p2_line; do
+        if [[ "${p2_line}" == *NoEchoFailingQueue* ]]; then
+          p2_line="${p2_line//${TOKEN}/<NOECHO>}"
+          printf '    %s\n' "${p2_line//${tok}/<NOECHO>}" >&2
+        fi
+      done <<< "${out}"
       exit 1
     fi
     journal_body=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_PREFIX}rollback-journal.json" - --region "${REGION}") || {
