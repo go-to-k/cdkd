@@ -1115,15 +1115,19 @@ describe('buildCrossStackResolver', () => {
     });
 
     it.each([
-      ['has no record', () => mocks.getStateMock.mockResolvedValue(null)],
-      ['cannot be read', () => mocks.getStateMock.mockRejectedValue(new Error('AccessDenied'))],
-    ])('the fast path fails closed on a producer record that %s', async (_l, prime) => {
+      ['has no record', () => mocks.getStateMock.mockResolvedValue(null), 'stale'],
+      [
+        'cannot be read',
+        () => mocks.getStateMock.mockRejectedValue(new Error('AccessDenied')),
+        'unreadable',
+      ],
+    ])('the fast path fails closed on a producer record that %s', async (_l, prime, verdict) => {
       const built = await makeResolver();
       mocks.lookupMock.mockResolvedValue(indexEntry('Producer-Bucket'));
       prime();
       expect(await imported(built, 'Producer-Bucket')).toEqual({
         value: 'producer-bucket',
-        verdict: 'unreadable',
+        verdict,
       });
       built.dispose();
     });

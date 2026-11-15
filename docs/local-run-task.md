@@ -375,6 +375,8 @@ like a secret in the consumer's own state:
 
 A value cdkd cannot check is handled the same way. That covers a state record
 cdkd cannot read, and an exports-index entry the producer no longer exports.
+In every case, passing the value through `Environment` instead keeps it
+resolving.
 A value recorded as the secret mask (`***`) is refused in `Command`,
 `EntryPoint` or a health-check command.
 

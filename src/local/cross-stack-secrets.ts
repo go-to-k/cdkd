@@ -397,8 +397,8 @@ export class ProducerSecretReader {
   /**
    * The verdict on `served`, an exports-index value for `exportName` published
    * by `producerStack`: that record is read (the entry carries the value
-   * alone). A missing or unreadable record is `unreadable`; one no longer
-   * exporting `served` is `stale`.
+   * alone). An unreadable record is `unreadable`; a missing one, or one no
+   * longer exporting `served`, is `stale`.
    */
   public async judgeIndexed(
     producerStack: string,
@@ -407,7 +407,9 @@ export class ProducerSecretReader {
     served: string
   ): Promise<ProducerSecretVerdict | undefined> {
     const got = await this.read(producerStack, producerRegion);
-    if (typeof got !== 'object') return 'unreadable';
+    // No record left at the key the index names: the entry outlived it.
+    if (got === 'absent') return 'stale';
+    if (got === 'error') return 'unreadable';
     const state = got.state;
     const verdict = await this.judge(producerStack, producerRegion, state, served);
     if (verdict === 'secret') return verdict;
