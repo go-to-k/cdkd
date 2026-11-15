@@ -29,14 +29,15 @@ exercises. A turn blocked on a fixture fix never blocks the other lanes.
 **Every integ in flight across lanes is ONE parallel set under `/run-integ`
 step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a `SAFETY NOTE` fixture gets its OWN region;
-- a `cdkd gc` fixture waits until no other lane's integ is running, and none
-  starts during it, and so does `custom-resource-provider` (`/run-integ` step 4);
+- a `cdkd gc` or `custom-resource-provider` fixture runs ALONE (`/run-integ` step 4);
+- `local-*` fixtures run one per HOST: `/run-integ` step 10 and many `verify.sh`
+  traps remove EVERY `cdkd-local-*` container, run-task pins a subnet (#6353);
 - a rollback-journal reader or `cdkd rollback` caller gets its own state
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
   quotas carry, else spread across regions.
 
-The PARENT checks all four before granting each further lane's integ. ANY
+The PARENT checks all five before granting each further lane's integ. ANY
 turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
