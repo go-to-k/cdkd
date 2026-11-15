@@ -2,6 +2,7 @@ import { containsDynamicReference, EcsTaskResolutionError } from 'cdk-local/inte
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
+import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
 import { substituteAgainstState, type SubstitutionContext } from '../state-resolver.js';
@@ -86,7 +87,12 @@ export function parseContainerDefinition(
         });
         if (sub.kind === 'literal') {
           defineOwnKey(environment, key, String(sub.value));
-          if (sensitive) plaintextEnvKeys.push(key);
+          // A value read from a secret in state (the remedy the argv refusal
+          // names) is passed value-less too, or `-e KEY=<secret>` puts it on
+          // the argv after all (go-to-k/cdkd#6330).
+          if (sensitive || secretAttributeRead(value, subContext.resources) !== undefined) {
+            plaintextEnvKeys.push(key);
+          }
           continue;
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
@@ -118,6 +124,11 @@ export function parseContainerDefinition(
       // parameters; without it, drop the secret and warn — the user's
       // workaround is `fromSecretCompleteArn` (literal ARN at synth time).
       if (subContext) {
+        const reason = secretValueFromReason(valueFromRaw, subContext.resources);
+        if (reason !== undefined) {
+          droppedSecretKeys.push({ key: sName, reason });
+          continue;
+        }
         const sub = substituteAgainstState(valueFromRaw, subContext);
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           secrets.push({ name: sName, valueFrom: sub.value });
@@ -321,27 +332,114 @@ function resolveArgvArray(
  * state, or `undefined` when it reads none. State records some secrets in
  * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, the attributes
  * {@link isSecretValuedAttribute} names) and a `NoEcho` custom resource's
- * attribute as the mask; an argv element lands on the `docker run` command
- * line, positional and unredacted, so either one is refused rather than
- * served (go-to-k/cdkd#6271).
+ * attribute as the mask, and some physical ids embed one
+ * ({@link secretPhysicalIdSegment}); an argv element lands on the `docker run`
+ * command line, positional and unredacted, so each is refused rather than
+ * served (go-to-k/cdkd#6271, go-to-k/cdkd#6330).
  */
 export function secretAttributeRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
+  const hit = secretRead(element, stateResources, { byName: true });
+  if (hit === undefined) return undefined;
+  if (hit.attribute === undefined) {
+    return (
+      `references ${hit.logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
+      'pass the value through Environment or Secrets instead'
+    );
+  }
+  return (
+    `reads the secret attribute ${hit.logicalId}.${hit.attribute}, which cdkd will not put on the docker run command line; ` +
+    'pass the value through Environment or Secrets instead'
+  );
+}
+
+/**
+ * Why a `Secrets[].ValueFrom` must not be resolved: one reading a secret from
+ * state ({@link secretValueRead}) would resolve to that
+ * secret, which the secrets resolver then names in its lookup line and its
+ * refusal. A `ValueFrom` is a Secrets Manager or SSM parameter ARN, never such
+ * a value (go-to-k/cdkd#6330).
+ */
+export function secretValueFromReason(
+  valueFrom: unknown,
+  stateResources: SubstitutionContext['resources']
+): string | undefined {
+  const read = secretValueRead(valueFrom, stateResources);
+  if (read === undefined) return undefined;
+  return `ValueFrom reads ${read}, which holds a secret rather than naming a Secrets Manager secret or an SSM parameter`;
+}
+
+/**
+ * The secret read `value` makes from state, named as `LogicalId` or
+ * `LogicalId.Attribute` (never the value), or `undefined` when it reads none.
+ * For a value that is a NAME or a PATH (a `ValueFrom`, a `Host.SourcePath`)
+ * the attribute-name heuristic skips a nested stack's outputs, which its
+ * `secretNamedAttributes` governs: CDK's nested-stack secret reaches a
+ * `ValueFrom` as `Outputs.<...>Secret<hash>Ref`, an ARN.
+ */
+export function secretValueRead(
+  value: unknown,
+  stateResources: SubstitutionContext['resources']
+): string | undefined {
+  const hit = secretRead(value, stateResources, { byName: false });
+  if (hit === undefined) return undefined;
+  return hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
+}
+
+/**
+ * Whether a recorded attribute value may carry `segment`: a string holding it,
+ * or a value it cannot be checked in (unrecorded, or an object). A number or
+ * boolean cannot.
+ */
+function mayHoldSegment(stored: unknown, segment: string): boolean {
+  if (typeof stored === 'string') return stored.includes(segment);
+  return stored === undefined || stored === null || typeof stored === 'object';
+}
+
+/**
+ * The first read of a secret from state, or `undefined`. An `Fn::GetAtt` (or
+ * a dotted `${Id.Attr}`) counts when the attribute's type or name says it is
+ * one (the name not for a nested stack's output unless `byName`), it is recorded as the mask, it is a nested stack's output the record
+ * names in `secretNamedAttributes` (a child's secret passed up), or the
+ * record's physical id embeds a secret ({@link secretPhysicalIdSegment}) and
+ * the recorded value may hold it ({@link mayHoldSegment}) (the ApiKey's `Arn`
+ * ends in the key). A `Ref` (or a dot-less `${Id}` of `Fn::Sub`) counts when
+ * the physical id it resolves to embeds one (go-to-k/cdkd#6330).
+ */
+function secretRead(
+  element: unknown,
+  stateResources: SubstitutionContext['resources'],
+  options: { byName: boolean }
+): { logicalId: string; attribute?: string } | undefined {
+  const recordOf = (logicalId: string) =>
+    Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
   for (const [logicalId, attribute] of getAttReads(element)) {
-    const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
+    const record = recordOf(logicalId);
     const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
+    const segment = secretPhysicalIdSegment(record?.resourceType, record?.physicalId);
+    // cdkd's own record field; cdk-local's `ResourceState` does not declare it.
+    const secretNamed = (record as { secretNamedAttributes?: unknown } | undefined)
+      ?.secretNamedAttributes;
     if (
-      isSensitiveAttributeName(attribute) ||
+      ((options.byName || record?.resourceType !== 'AWS::CloudFormation::Stack') &&
+        isSensitiveAttributeName(attribute)) ||
       isSecretValuedAttribute(record?.resourceType, attribute) ||
-      stored === SECRET_MASK
+      stored === SECRET_MASK ||
+      (record?.resourceType === 'AWS::CloudFormation::Stack' &&
+        Array.isArray(secretNamed) &&
+        secretNamed.includes(attribute)) ||
+      (segment !== undefined && mayHoldSegment(stored, segment))
     ) {
-      return (
-        `reads the secret attribute ${logicalId}.${attribute}, which cdkd will not put on the docker run command line; ` +
-        'pass the value through Environment or Secrets instead'
-      );
+      return { logicalId, attribute };
+    }
+  }
+  for (const logicalId of refReads(element)) {
+    const record = recordOf(logicalId);
+    if (record && secretPhysicalIdSegment(record.resourceType, record.physicalId) !== undefined) {
+      return { logicalId };
     }
   }
   return undefined;
@@ -415,6 +513,38 @@ function getAttReads(node: unknown, out: [string, string][] = []): [string, stri
       }
     }
     getAttReads(value, out);
+  }
+  return out;
+}
+
+/**
+ * Every logical ID an intrinsic reads through `Ref` or a dot-less `${Id}`
+ * placeholder of `Fn::Sub`, at any depth. Pseudo parameters (`AWS::...`),
+ * an escaped `${!Literal}` and a name the array form's variable map defines
+ * are no reads of a record.
+ */
+function refReads(node: unknown, out: string[] = []): string[] {
+  if (node === null || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const item of node) refReads(item, out);
+    return out;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Ref') {
+      if (typeof value === 'string' && !value.startsWith('AWS::')) out.push(value);
+    } else if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      const variables = Array.isArray(value) ? value[1] : undefined;
+      const isVariable = (name: string): boolean =>
+        variables !== null && typeof variables === 'object' && Object.hasOwn(variables, name);
+      if (typeof template === 'string') {
+        for (const m of template.matchAll(/\$\{([^}!]+)\}/g)) {
+          const ref = m[1]!;
+          if (!ref.includes('.') && !ref.startsWith('AWS::') && !isVariable(ref)) out.push(ref);
+        }
+      }
+    }
+    refReads(value, out);
   }
   return out;
 }
