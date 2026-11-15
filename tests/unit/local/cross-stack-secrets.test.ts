@@ -80,7 +80,27 @@ describe('ProducerSecretReader.judge', () => {
     expect(await judge('k=wxyz')).toBe('secret');
   });
 
-  it('matches a name-judged leaf only from sixteen characters, whole or inside', async () => {
+  it('matches a name-judged leaf whole from eight characters, inside only from sixteen', async () => {
+    const tenChars = new ProducerSecretReader(
+      async () => null,
+      () => undefined
+    );
+    const db = {
+      resources: {
+        D: {
+          resourceType: 'Custom::Thing',
+          physicalId: 'd',
+          attributes: { DbPassword: 'pw10charsX', Pin: 'x', ApiSecret: 'sevench' },
+        },
+      },
+    };
+    expect(await tenChars.judge('P', 'r', db, 'pw10charsX')).toBe('secret');
+    expect(await tenChars.judge('P', 'r', db, 'u:pw10charsX@h')).toBeUndefined();
+    // Seven characters: no secret, even whole.
+    expect(await tenChars.judge('P', 'r', db, 'sevench')).toBeUndefined();
+  });
+
+  it('matches a long name-judged leaf whole or inside', async () => {
     expect(await judge('strict')).toBeUndefined();
     expect(await judge('mode=strict')).toBeUndefined();
     expect(await judge('a-long-client-secret-value')).toBe('secret');

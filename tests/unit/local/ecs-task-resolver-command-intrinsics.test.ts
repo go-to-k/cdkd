@@ -817,17 +817,26 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
         attributes: { ApiKey: plaintext },
         dependencies: [],
       },
+      Db: {
+        physicalId: 'db',
+        resourceType: 'Custom::Database',
+        properties: {},
+        // A 10-character secret under a secret-like name, beside short
+        // ordinary values under such names.
+        attributes: { DbPassword: 'pw10charsX', PasswordPolicy: 'strict', SecretEnabled: 'true' },
+        dependencies: [],
+      },
     },
     outputs: {
       Key: plaintext,
       KeyArn: `arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/${plaintext}`,
       Bucket: 'producer-bucket',
+      Pw: 'pw10charsX',
+      Mode: 'strict',
+      Flag: 'true',
+      Url: 'postgres://u:pw10charsX@db.example',
     },
   };
-  /**
-   * A cdkd-built resolver's shape: it serves the producer's outputs and notes
-   * the producer state it read, as `buildCrossStackResolver` does.
-   */
   /**
    * A cdkd-built resolver's shape: the judged variants beside the contract,
    * each judging the value against the producer state with the real reader.
@@ -1024,6 +1033,44 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     const args = dockerArgs(task);
     expect(args).not.toContain('BUCKET=producer-bucket');
     expect(envFlags(args)).toContain('BUCKET');
+  });
+
+  it('refuses a 10-character secret-named value exported whole', async () => {
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--pw', { 'Fn::ImportValue': 'Producer-Pw' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain('pw10charsX');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it.each([
+    ['a short value under a secret-like name (strict)', 'Producer-Mode', 'strict'],
+    ['a short value under a secret-like name (true)', 'Producer-Flag', 'true'],
+    [
+      'a longer export holding a 10-character secret-named value',
+      'Producer-Url',
+      'postgres://u:pw10charsX@db.example',
+    ],
+  ])('still resolves %s onto the argv', async (_l, exportName, value) => {
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--v', { 'Fn::ImportValue': exportName }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task)).toContain(value);
+    expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
   });
 
   it('a resolver without the check is not judged (the --from-cfn-stack one)', async () => {

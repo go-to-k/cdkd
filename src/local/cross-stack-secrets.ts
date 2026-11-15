@@ -82,11 +82,13 @@ const SEGMENT_SUBSTRING_FLOOR = 4;
 
 /**
  * Shortest leaf a NAME heuristic (`isSensitiveAttributeName`) counts as a
- * secret at all, and matches inside a longer value. Such a name can hold a
- * short ordinary value (`Outputs.PasswordPolicy` of `strict`, a
- * `*SecretEnabled` of `true`), which must not refuse an export equal to or
- * containing it; the credentials these leaves stand for are far longer.
+ * secret, matched as the WHOLE served value. Such a name can hold a short
+ * ordinary value (`Outputs.PasswordPolicy` of `strict`, a `*SecretEnabled` of
+ * `true`), which the producer's own equal export must not be refused for.
  */
+const NAMED_LEAF_EXACT_FLOOR = 8;
+
+/** Shortest name-judged leaf matched INSIDE a longer served value. */
 const NAMED_LEAF_FLOOR = 16;
 
 /** Every string leaf of `value` with its dotted path under `name`. */
@@ -113,7 +115,7 @@ export interface ProducerSecretNeedles {
   segments: string[];
   /** Leaves of attributes their TYPE says are secrets (`isSecretValuedAttribute`). */
   typed: string[];
-  /** Leaves of attributes their dotted NAME says are secrets, from 16 characters. */
+  /** Leaves of attributes their dotted NAME says are secrets, from 8 characters. */
   named: string[];
 }
 
@@ -147,7 +149,7 @@ export function producerSecretNeedles(state: unknown): ProducerSecretNeedles {
         for (const { path, leaf } of namedLeaves(name, stored)) {
           if (!isPlaintext(leaf)) continue;
           if (isTyped) typed.push(leaf);
-          else if (isSensitiveAttributeName(path) && leaf.length >= NAMED_LEAF_FLOOR) {
+          else if (isSensitiveAttributeName(path) && leaf.length >= NAMED_LEAF_EXACT_FLOOR) {
             named.push(leaf);
           }
         }
