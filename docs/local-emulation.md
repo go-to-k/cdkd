@@ -177,16 +177,19 @@ code makes reach real AWS as you. They come from, in order:
 Under [`--aws-emulator`](#aws-emulator) the container gets the emulator's
 credentials and nothing else. With a role flag from the table below, cdkd
 assumes the role in the emulator, and the container gets the role's emulator
-credentials instead, so the code runs as the role. The emulator evaluates IAM
-policies only on IAM and STS calls: it checks the trust policy when cdkd
-assumes the role, but lets the role call other services, such as S3, DynamoDB
-or SSM, whatever its policies say. A missing permission therefore shows up
-only on real AWS. The role's trust policy must allow the emulator's identity (see
+credentials instead, so the code runs as the role. The role's trust policy
+must allow the emulator's identity (see
 [Trusting yourself in the role](#trusting-yourself-in-the-role)). When it does
 not, cdkd warns and the container keeps the emulator's keys (`local run-task`
 and `local start-api` stop instead).
 
-Your credentials usually allow more than the
+> [!NOTE]
+> AWS Emulator evaluates IAM policies only on IAM and STS calls. It checks the
+> trust policy when cdkd assumes the role, but lets the role call other
+> services, such as S3, DynamoDB or SSM, whatever its policies say. A missing
+> permission shows up only on real AWS.
+
+On real AWS, your credentials usually allow more than the
 deployed role does, which means a missing IAM permission goes unnoticed. To see
 IAM errors locally, run the code under the deployed role:
 
@@ -262,7 +265,8 @@ Under [`--aws-emulator`](#aws-emulator), `local invoke`, `local start-api`,
 against IAM policies, so session policies there would not show a missing
 permission either. To run as the role, let the role trust the emulator's
 identity instead, such as the account root
-(`arn:aws:iam::000000000000:root`), or pass `--emulate-role-via`.
+(`arn:aws:iam::000000000000:root`). `--emulate-role-via` still works there,
+but the emulator does not enforce its session policies either.
 
 ```bash
 cdkd local invoke MyStack/Handler --from-state --assume-role \

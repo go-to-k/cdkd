@@ -211,7 +211,8 @@ cdkd local run-task MyStack/Worker --profile dev
 - With no flag, the containers get whatever the default credential chain
   resolves on your machine.
 - `--assume-task-role` assumes the role once at startup and gives the
-  containers its temporary credentials. Use it to see IAM errors locally.
+  containers its temporary credentials. Use it to see IAM errors locally on
+  real AWS; AWS Emulator checks IAM policies only on IAM and STS calls.
 - `--profile <name>` gives the containers the profile's credentials. They
   come from the sidecar, and also from a read-only credentials file mounted
   in every container, where they are stored under `[<name>]`.

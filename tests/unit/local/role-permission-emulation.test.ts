@@ -443,6 +443,15 @@ describe('emulateRoleAfterDeniedAssume against AWS Emulator (go-to-k/cdkd#6252)'
     const creds = await emulateRoleAfterDeniedAssume(accessDenied(), { ...args, emulateRoleVia: VIA });
     expect(creds?.accessKeyId).toBe('ASIA-AssumeRole');
     expect(viaAssumes()).toEqual([VIA]);
+    // go-to-k/cdkd#6347: the emulator does not enforce the session policies.
+    expect(warnings()).toContain('does not enforce these session policies on other services');
+  });
+
+  it('says nothing about the emulator when --emulate-role-via runs against real AWS', async () => {
+    const creds = await emulateRoleAfterDeniedAssume(accessDenied(), { ...args, emulateRoleVia: VIA });
+    expect(creds?.accessKeyId).toBe('ASIA-AssumeRole');
+    expect(warnings()).toContain('EMULATES its permissions');
+    expect(warnings()).not.toContain('AWS Emulator');
   });
 
   describe('the role credentials the emulator issued reach the container', () => {
