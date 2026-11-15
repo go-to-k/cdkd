@@ -1996,6 +1996,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
         },
       });
+      // #6367: the eu-west-1 copy's deletion-protection read, before any write
+      mockSend.mockResolvedValueOnce({ Table: { DeletionProtectionEnabled: false } });
       // UpdateTable Delete eu-west-1
       mockSend.mockResolvedValueOnce({});
       // waitForReplicaGone — eu-west-1 not in replicas anymore
@@ -2013,10 +2015,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         expectedRegion: 'us-east-1',
       });
 
-      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(UpdateTableCommand);
-      const updateInput = (mockSend.mock.calls[1]?.[0] as UpdateTableCommand).input;
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(UpdateTableCommand);
+      const updateInput = (mockSend.mock.calls[2]?.[0] as UpdateTableCommand).input;
       expect(updateInput.ReplicaUpdates).toEqual([{ Delete: { RegionName: 'eu-west-1' } }]);
-      const deleteCall = mockSend.mock.calls[4]?.[0];
+      const deleteCall = mockSend.mock.calls[5]?.[0];
       expect(deleteCall).toBeInstanceOf(DeleteTableCommand);
     });
 
@@ -2052,6 +2054,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
         },
       });
+      // #6367: the eu-west-1 copy's deletion-protection read, before any write
+      mockSend.mockResolvedValueOnce({ Table: { DeletionProtectionEnabled: false } });
       // 2. UpdateTable Delete eu-west-1
       mockSend.mockResolvedValueOnce({});
       // 3 + 4. waitForReplicaGone — replica still DELETING for two polls.
@@ -2093,6 +2097,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // regional read + DeleteTable + final RNF poll + the regional gone-wait.
       expect(names).toEqual([
         'DescribeTableCommand', // pre-delete scan
+        'DescribeTableCommand', // #6367: eu-west-1 deletion-protection read
         'UpdateTableCommand', // Delete eu-west-1
         'DescribeTableCommand', // waitForReplicaGone poll #1 (still DELETING)
         'DescribeTableCommand', // waitForReplicaGone poll #2 (still DELETING)
@@ -2121,6 +2126,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
           },
         }); // pre-delete scan
+        mockSend.mockResolvedValueOnce({ Table: { DeletionProtectionEnabled: false } }); // #6367 protection read
         mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
         mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } }); // waitForReplicaGone
         mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // #5581 regional read
@@ -2146,7 +2152,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           'DescribeTableCommand', // eu-west-1 copy DELETING
           'DescribeTableCommand', // eu-west-1 copy -> RNF ends the wait
         ]);
-        expect(mockSend).toHaveBeenCalledTimes(9);
+        expect(mockSend).toHaveBeenCalledTimes(10);
         // The wait reads the eu-west-1 client, not the source's: the source
         // table is already gone, so reading it would end the wait at once.
         const regions = await Promise.all(
@@ -2166,6 +2172,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
           },
         });
+        mockSend.mockResolvedValueOnce({ Table: { DeletionProtectionEnabled: false } }); // #6367 protection read
         mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
         mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } });
         mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // #5581 read

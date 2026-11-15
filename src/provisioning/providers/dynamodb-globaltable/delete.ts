@@ -40,6 +40,8 @@ import {
   replicaDeleteGoneWait,
   deleteTableRetryDelays,
 } from './capacity.js';
+import { protectedDeleteMessage } from './protection-preflight.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provider.js';
 
 /**
@@ -47,7 +49,10 @@ import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provid
  *
  * Order is load-bearing:
  *  1. Optional `--remove-protection` flip-off (idempotent).
- *  2. `DescribeTable` → drop every non-local replica via UpdateTable
+ *  2. `DescribeTable`; without `--remove-protection`, refuse before any
+ *     write when the local table or a cross-region replica is protected
+ *     (go-to-k/cdkd#6367, `./protection-preflight.ts`). Then drop every
+ *     non-local replica via UpdateTable
  *     `ReplicaUpdates: [{ Delete: { RegionName } }]`, one at a time
  *     (AWS rejects multiple replica updates per call). Each delete
  *     polls until the replica disappears from `Replicas[]`.
@@ -422,6 +427,34 @@ export async function deleteGlobalTableResource(
     // running against state whose properties are stale, and an orphaned
     // scalable target is only findable by the index that actually exists.
     preDeleteTable = describe.Table;
+    // go-to-k/cdkd#6367: refuse BEFORE the first write when any copy is
+    // protected. Otherwise the replica loop below strips every other region
+    // and only then does `DeleteTable` (or a protected replica's drop) refuse.
+    // Under `--remove-protection` the flips above and in `dropReplicaForDelete`
+    // own the flag instead.
+    if (context?.removeProtection !== true) {
+      const protectedRegions = await this.protectedRegionsBeforeDelete(
+        physicalId,
+        currentRegion,
+        describe.Table,
+        deleteMask
+      );
+      if (protectedRegions.length > 0) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            protectedDeleteMessage(
+              logicalId,
+              shownTable,
+              protectedRegions,
+              context?.stackDestroy === true
+            ),
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+    }
     if ((describe.Table?.VectorIndexes ?? []).length > 0) indexNoun = TABLE_INDEX_NOUN;
     const tableIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
       .map((gsi) => gsi.IndexName)

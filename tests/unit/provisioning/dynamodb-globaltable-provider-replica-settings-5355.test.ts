@@ -1473,9 +1473,14 @@ describe('DynamoDB GlobalTable replica settings (go-to-k/cdkd#5355)', () => {
       sourceTable();
       regionalTable(true);
 
-      await provider.delete('T', TABLE, RESOURCE_TYPE);
+      // go-to-k/cdkd#6367: a protected replica now refuses the whole delete
+      // before any write, rather than failing its own drop mid-loop.
+      await expect(provider.delete('T', TABLE, RESOURCE_TYPE)).rejects.toThrow(
+        /deletion protection enabled in .*cdkd changed nothing/
+      );
 
       expect(sent(regionalSend, UpdateTableCommand)).toEqual([]);
+      expect(sent(mockSend, UpdateTableCommand)).toEqual([]);
     });
 
     it('stops before the drop, guard restored, when the flip never settles', async () => {

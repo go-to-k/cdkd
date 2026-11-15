@@ -345,8 +345,9 @@ describe('the GlobalTable delete path honours Ctrl-C (#2053 / #1952)', () => {
       if (command instanceof DescribeTableCommand) {
         replicaProbes += 1;
         // The replica NEVER drops out, so the wait really runs. Fire on the
-        // second probe: the first is the pre-delete describe.
-        if (replicaProbes === 2) fireInterrupt();
+        // third probe: the first is the pre-delete describe, the second the
+        // us-west-2 deletion-protection read (go-to-k/cdkd#6367).
+        if (replicaProbes === 3) fireInterrupt();
         return Promise.resolve({
           Table: {
             TableName: 'orders',
@@ -433,7 +434,8 @@ describe('the GlobalTable delete waits mask a secret-derived table name (go-to-k
     let replicaProbes = 0;
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeTableCommand) {
-        if (++replicaProbes === 2) fireInterrupt();
+        // Third probe: after the pre-delete describe and the #6367 protection read.
+        if (++replicaProbes === 3) fireInterrupt();
         return Promise.resolve({
           Table: {
             TableName: NAME,

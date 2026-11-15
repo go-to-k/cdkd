@@ -1406,6 +1406,11 @@
       ]
     },
     {
+      "name": "globaltable-delete-protection-preflight",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "globaltable-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -3935,6 +3940,7 @@
     "getatt-iam-waf-s3vectors-evaluator",
     "getatt-rds-docdb-attributes",
     "getatt-vpc-managed-policy",
+    "globaltable-delete-protection-preflight",
     "globaltable-fix-forward-orphan",
     "globaltable-keyschema-replace",
     "globaltable-template-baseline-drift",

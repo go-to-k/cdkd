@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-globaltable-delete-protection-preflight",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd GlobalTable delete refuses before stripping replicas when a copy is protected (issue #6367)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
