@@ -564,8 +564,8 @@ in the emulator.
 A Kinesis call from a Node.js function run by `cdkd local` fails with
 `The pending stream has been canceled (caused by: ... tlsv1 alert no
 application protocol ...)`. The AWS SDK for JavaScript v3 Kinesis client
-speaks HTTP/2 only, and the emulator offers only HTTP/1.1, so the TLS
-handshake is refused. It is not a certificate problem: other services' calls
+uses an HTTP/2-only request handler by default, and the emulator (as of
+1.0.338) offers only HTTP/1.1, so the TLS handshake is refused. It is not a certificate problem: other services' calls
 from the same function succeed.
 
 Give the client an HTTP/1.1 handler. On real AWS every Kinesis call except
