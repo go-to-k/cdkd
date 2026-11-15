@@ -75,7 +75,7 @@ function dockerArgs(task: ResolvedEcsTask): string[] {
 
 const envFlags = (args: string[]): string[] => args.flatMap((a, i) => (args[i - 1] === '-e' ? [a] : []));
 
-const bucketCommand =['s3api', 'head-bucket', '--bucket', { Ref: 'B08E7C7AF' }];
+const bucketCommand = ['s3api', 'head-bucket', '--bucket', { Ref: 'B08E7C7AF' }];
 
 describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
   it('substitutes a Ref element of Command against state, keeping its position', () => {
@@ -230,7 +230,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       // go-to-k/cdkd#6330: the ApiKey's `Arn` ends in the key.
       ['an attribute holding the secret physical-id segment', { 'Fn::GetAtt': ['ApiKey', 'Arn'] }, 'ApiKey.Arn'],
       ['such an attribute inside Fn::Sub', { 'Fn::Sub': 'arn=${ApiKey.Arn}' }, 'ApiKey.Arn'],
-      ['an attribute recorded as the mask',{ 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
+      ['an attribute recorded as the mask', { 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
     ])('refuses %s', (_label, element, named) => {
       const task = resolve(['run', element]);
       expect(task.containers[0]!.command).toEqual(['run', '']);
