@@ -559,6 +559,25 @@ three in
 Run a function of your own through `cdkd local invoke` instead of invoking it
 in the emulator.
 
+### A Node.js function's Kinesis call fails with `no application protocol`
+
+A Kinesis call from a Node.js function run by `cdkd local` fails with
+`The pending stream has been canceled (caused by: ... tlsv1 alert no
+application protocol ...)`. The AWS SDK for JavaScript v3 Kinesis client
+uses an HTTP/2-only request handler by default, and the emulator (as of
+1.0.338) offers only HTTP/1.1, so the TLS handshake is refused. It is not a certificate problem: other services' calls
+from the same function succeed.
+
+Give the client an HTTP/1.1 handler. On real AWS every Kinesis call except
+`SubscribeToShard` works over it too:
+
+```ts
+import { KinesisClient } from '@aws-sdk/client-kinesis';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+
+const kinesis = new KinesisClient({ requestHandler: new NodeHttpHandler() });
+```
+
 ### A Docker image asset is refused
 
 ```text
