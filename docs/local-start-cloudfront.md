@@ -388,8 +388,8 @@ CloudFormation client under `--from-cfn-stack`.
 
 ### Caching objects from the deployed bucket
 
-Under a state source, cdkd reads an S3 origin's object from S3 on every
-request, so you always see the bucket's current content. `--cache-origin`
+Under a state source, cdkd reads an S3 origin served from the deployed bucket
+from S3 on every request, so you always see the bucket's current content. `--cache-origin`
 keeps each object in memory after the first read, which is faster. The cache
 lasts until a `--watch` reload or a restart.
 
