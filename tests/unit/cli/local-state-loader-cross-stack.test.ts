@@ -1302,14 +1302,93 @@ describe('buildCrossStackResolver', () => {
         built.dispose();
       });
 
-      it('fails closed when the source record cannot be read', async () => {
+      it('fails closed when the source record cannot be read, or its name is redacted', async () => {
         const built = await makeResolver();
-        mocks.getStateMock.mockImplementation(stateOf({ ReExporter: reExporter }));
+        mocks.getStateMock.mockImplementation(async (stack: string) => {
+          if (stack === 'Source') throw new Error('AccessDenied');
+          return stack === 'ReExporter' ? { state: reExporter, etag: 'e' } : null;
+        });
         expect(await output(built, 'ReExporter', 'Bucket')).toEqual({
           value: 'producer-bucket',
           verdict: 'unreadable',
         });
+        const redacted = {
+          ...reader,
+          outputReads: [{ sourceStack: '***', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const second = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ Reader: redacted }));
+        expect(await output(second, 'Reader', 'Key')).toEqual({
+          value: plaintext,
+          verdict: 'unreadable',
+        });
+        second.dispose();
         built.dispose();
+      });
+
+      it('skips a source with no record (moved out of cdkd), judging the rest', async () => {
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ ReExporter: reExporter }));
+        expect(await output(built, 'ReExporter', 'Bucket')).toEqual({ value: 'producer-bucket' });
+        built.dispose();
+      });
+
+      describe('cross-reading stacks (outputReads can form a cycle)', () => {
+        const key = 'da2-cyclekeyplaintext000';
+        const c = {
+          stackName: 'C',
+          resources: {
+            ApiKey: {
+              physicalId: `apiid|${key}`,
+              resourceType: 'AWS::AppSync::ApiKey',
+              properties: {},
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: { Key: key },
+          outputReads: [{ sourceStack: 'B', sourceRegion: 'us-east-1', outputName: 'V' }],
+        };
+        const b = {
+          stackName: 'B',
+          resources: {},
+          outputs: { V: 'b-value', Key: key },
+          outputReads: [{ sourceStack: 'C', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const a = {
+          stackName: 'A',
+          resources: {},
+          outputs: { Key: key, V: 'a-value' },
+          outputReads: [
+            { sourceStack: 'B', sourceRegion: 'us-east-1', outputName: 'V' },
+            { sourceStack: 'C', sourceRegion: 'us-east-1', outputName: 'Key' },
+          ],
+        };
+        const within = <T>(p: Promise<T>): Promise<T | 'HUNG'> =>
+          Promise.race([p, new Promise<'HUNG'>((r) => setTimeout(() => r('HUNG'), 2000))]);
+
+        it('judges stacks of one cycle concurrently without waiting on itself', async () => {
+          const built = await makeResolver();
+          mocks.getStateMock.mockImplementation(stateOf({ A: a, B: b, C: c }));
+          const both = await within(
+            Promise.all([output(built, 'A', 'Key'), output(built, 'B', 'Key'), output(built, 'C', 'Key')])
+          );
+          expect(both).toEqual([
+            { value: key, verdict: 'secret' },
+            { value: key, verdict: 'secret' },
+            { value: key, verdict: 'secret' },
+          ]);
+          expect(await within(output(built, 'A', 'V'))).toEqual({ value: 'a-value' });
+          built.dispose();
+        });
+
+        it("judges a re-exporter by the whole cycle, whichever was judged first", async () => {
+          const built = await makeResolver();
+          mocks.getStateMock.mockImplementation(stateOf({ B: b, C: c }));
+          expect(await within(output(built, 'C', 'Key'))).toEqual({ value: key, verdict: 'secret' });
+          expect(await within(output(built, 'B', 'Key'))).toEqual({ value: key, verdict: 'secret' });
+          built.dispose();
+        });
       });
 
       it('ends a re-export cycle instead of waiting on itself', async () => {

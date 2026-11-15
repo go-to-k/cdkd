@@ -181,13 +181,6 @@ const emptySummary = (): TreeSummary => ({
   opaque: false,
 });
 
-function mergeInto(into: TreeSummary, from: TreeSummary): void {
-  for (const k of ['segments', 'typed', 'named', 'unverified'] as const) {
-    for (const v of from[k]) into[k].add(v);
-  }
-  if (from.opaque) into.opaque = true;
-}
-
 /** The verdict `summary` gives `served`. */
 function verdictOf(summary: TreeSummary, served: string): ProducerSecretVerdict | undefined {
   for (const s of summary.segments) if (holds(served, s, SEGMENT_SUBSTRING_FLOOR)) return 'secret';
@@ -218,12 +211,14 @@ const MAX_NESTED_DEPTH = 32;
 /**
  * The stacks a record read across stacks (`imports` / `outputReads`): an
  * output can re-export another stack's value, secret included, which only
- * that stack's record names. A malformed entry, or a redacted stack name, is
- * skipped.
+ * that stack's record names. A malformed entry is skipped; one whose stack
+ * name is redacted (`outputReads[].sourceStack` persists as the mask or a
+ * `{{resolve:` reference when secret-derived) is `redacted`, since the record
+ * it names cannot be found.
  */
-function sourcesOf(state: unknown): { stackName: string; region: string }[] {
+function sourcesOf(state: unknown): ({ stackName: string; region: string } | 'redacted')[] {
   if (state === null || typeof state !== 'object') return [];
-  const out: { stackName: string; region: string }[] = [];
+  const out: ({ stackName: string; region: string } | 'redacted')[] = [];
   for (const list of [
     (state as { imports?: unknown }).imports,
     (state as { outputReads?: unknown }).outputReads,
@@ -236,11 +231,22 @@ function sourcesOf(state: unknown): { stackName: string; region: string }[] {
         sourceRegion?: unknown;
       };
       if (typeof sourceStack !== 'string' || typeof sourceRegion !== 'string') continue;
-      if (sourceStack === '' || sourceStack.includes('{{resolve:')) continue;
-      out.push({ stackName: sourceStack, region: sourceRegion });
+      if (sourceStack === SECRET_MASK || sourceStack.includes('{{resolve:')) out.push('redacted');
+      else if (sourceStack !== '') out.push({ stackName: sourceStack, region: sourceRegion });
     }
   }
   return out;
+}
+
+/** A record read: its state, no record at that key, or a read that failed. */
+type RecordRead = { state: unknown } | 'absent' | 'error';
+
+/** One record of a producer's tree, with how far from the producer it is. */
+interface TreeNode {
+  stackName: string;
+  region: string;
+  state: unknown;
+  depth: number;
 }
 
 /**
@@ -248,13 +254,14 @@ function sourcesOf(state: unknown): { stackName: string; region: string }[] {
  * `buildCrossStackResolver` builds, against the PRODUCER it was read from:
  * that record, its nested-stack children (`<parent>~<id>`, the union a nested
  * tree's masking takes in `cdkd state show`), and the stacks it reads across
- * (`imports` / `outputReads`), transitively. Each record is read, and each
- * tree summarized, once per resolver: one GET per child or source record per
- * run, whichever output was served, which a local command can pay.
+ * (`imports` / `outputReads`), transitively. Record READS are memoized, once
+ * per resolver; each judgement walks the tree afresh from its producer with
+ * one visited set, so a cycle (`outputReads` can cross-read) neither waits
+ * on itself nor leaves a cut summary behind. One GET per child or source
+ * record per run, whichever output was served, which a local command can pay.
  */
 export class ProducerSecretReader {
-  private readonly reads = new Map<string, Promise<unknown>>();
-  private readonly trees = new Map<string, Promise<TreeSummary>>();
+  private readonly reads = new Map<string, Promise<RecordRead>>();
   private readonly getState: (
     stackName: string,
     region: string
@@ -269,20 +276,23 @@ export class ProducerSecretReader {
     this.debug = debug;
   }
 
-  /** A record's state, `undefined` when it is missing or cannot be read. */
-  private read(stackName: string, region: string): Promise<unknown> {
+  /** A record, read once per resolver. */
+  private read(stackName: string, region: string): Promise<RecordRead> {
     const key = producerRecordKey(stackName, region);
     let read = this.reads.get(key);
     if (read === undefined) {
       read = Promise.resolve()
         .then(() => this.getState(stackName, region))
         .then(
-          (got) => got?.state ?? undefined,
-          (err: unknown) => {
+          (got): RecordRead =>
+            got === null || got === undefined || got.state === undefined
+              ? 'absent'
+              : { state: got.state },
+          (err: unknown): RecordRead => {
             this.debug(
               `state read failed for ${displayIdent(stackName)} (${displayIdent(region)}) while checking a cross-stack value for secrets: ${displaySafe(describeAwsFailure(err).detail)}`
             );
-            return undefined;
+            return 'error';
           }
         );
       this.reads.set(key, read);
@@ -291,66 +301,86 @@ export class ProducerSecretReader {
   }
 
   /**
-   * The summary of `stackName`'s tree, once per record. `path` holds the
-   * records being summarized above this one: a cycle (which deploy order
-   * makes impossible for `imports`) contributes nothing rather than waiting
-   * on itself.
+   * The summary of producer `stackName`'s tree, breadth first:
+   * - a nested child that is missing or unreadable leaves its row's recorded
+   *   outputs unverified;
+   * - a re-export source that is unreadable, redacted or past the depth bound
+   *   makes the tree `opaque` (fail closed); one with NO record is outside
+   *   cdkd (moved to CloudFormation by `cdkd export`, say) and is skipped, as
+   *   `--from-cfn-stack` values are.
    */
-  private tree(
-    stackName: string,
-    region: string,
-    state: unknown,
-    path: ReadonlySet<string>
-  ): Promise<TreeSummary> {
-    const key = producerRecordKey(stackName, region);
-    if (path.has(key) || path.size >= MAX_NESTED_DEPTH) return Promise.resolve(emptySummary());
-    let tree = this.trees.get(key);
-    if (tree === undefined) {
-      tree = this.summarize(stackName, region, state, new Set([...path, key]));
-      this.trees.set(key, tree);
-    }
-    return tree;
-  }
-
-  private async summarize(
-    stackName: string,
-    region: string,
-    state: unknown,
-    path: ReadonlySet<string>
-  ): Promise<TreeSummary> {
+  private async summarize(stackName: string, region: string, state: unknown): Promise<TreeSummary> {
     const summary = emptySummary();
-    const own = producerSecretNeedles(state);
-    for (const v of own.segments) summary.segments.add(v);
-    for (const v of own.typed) summary.typed.add(v);
-    for (const v of own.named) summary.named.add(v);
-    const resources =
-      state !== null && typeof state === 'object'
-        ? (state as { resources?: unknown }).resources
-        : undefined;
-    const rows =
-      resources !== null && typeof resources === 'object' && !Array.isArray(resources)
-        ? Object.entries(resources)
-        : [];
-    const nested = rows.map(async ([logicalId, record]) => {
-      if (record === null || typeof record !== 'object') return;
-      const r = record as { resourceType?: unknown; attributes?: unknown };
-      if (r.resourceType !== NESTED_STACK_TYPE) return;
-      const childName = `${stackName}~${logicalId}`;
-      const child = await this.read(childName, region);
-      if (child !== undefined) {
-        mergeInto(summary, await this.tree(childName, region, child, path));
-        return;
-      }
-      for (const { leaf } of namedLeaves('', r.attributes)) {
-        if (isPlaintext(leaf)) summary.unverified.add(leaf);
-      }
-    });
-    const sources = sourcesOf(state).map(async (source) => {
-      const got = await this.read(source.stackName, source.region);
-      if (got === undefined) summary.opaque = true;
-      else mergeInto(summary, await this.tree(source.stackName, source.region, got, path));
-    });
-    await Promise.all([...nested, ...sources]);
+    const visited = new Set([producerRecordKey(stackName, region)]);
+    let frontier: TreeNode[] = [{ stackName, region, state, depth: 0 }];
+    while (frontier.length > 0) {
+      const next: TreeNode[] = [];
+      // `visited` is tested and set before each await, so no record is
+      // walked twice and no walk waits on another.
+      const claim = (name: string, at: string): boolean => {
+        const key = producerRecordKey(name, at);
+        if (visited.has(key)) return false;
+        visited.add(key);
+        return true;
+      };
+      await Promise.all(
+        frontier.map(async (node) => {
+          const own = producerSecretNeedles(node.state);
+          for (const v of own.segments) summary.segments.add(v);
+          for (const v of own.typed) summary.typed.add(v);
+          for (const v of own.named) summary.named.add(v);
+          const deeper = node.depth + 1;
+          const resources =
+            node.state !== null && typeof node.state === 'object'
+              ? (node.state as { resources?: unknown }).resources
+              : undefined;
+          const rows =
+            resources !== null && typeof resources === 'object' && !Array.isArray(resources)
+              ? Object.entries(resources)
+              : [];
+          const nested = rows.map(async ([logicalId, record]) => {
+            if (record === null || typeof record !== 'object') return;
+            const r = record as { resourceType?: unknown; attributes?: unknown };
+            if (r.resourceType !== NESTED_STACK_TYPE) return;
+            const childName = `${node.stackName}~${logicalId}`;
+            if (!claim(childName, node.region)) return;
+            const child =
+              deeper <= MAX_NESTED_DEPTH ? await this.read(childName, node.region) : 'error';
+            if (typeof child === 'object') {
+              next.push({
+                stackName: childName,
+                region: node.region,
+                state: child.state,
+                depth: deeper,
+              });
+              return;
+            }
+            for (const { leaf } of namedLeaves('', r.attributes)) {
+              if (isPlaintext(leaf)) summary.unverified.add(leaf);
+            }
+          });
+          const sources = sourcesOf(node.state).map(async (source) => {
+            if (source === 'redacted' || deeper > MAX_NESTED_DEPTH) {
+              summary.opaque = true;
+              return;
+            }
+            if (!claim(source.stackName, source.region)) return;
+            const got = await this.read(source.stackName, source.region);
+            if (got === 'error') summary.opaque = true;
+            else if (got !== 'absent') {
+              next.push({
+                stackName: source.stackName,
+                region: source.region,
+                state: got.state,
+                depth: deeper,
+              });
+            }
+          });
+          await Promise.all([...nested, ...sources]);
+        })
+      );
+      frontier = next;
+    }
     return summary;
   }
 
@@ -361,7 +391,7 @@ export class ProducerSecretReader {
     state: unknown,
     served: string
   ): Promise<ProducerSecretVerdict | undefined> {
-    return verdictOf(await this.tree(stackName, region, state, new Set()), served);
+    return verdictOf(await this.summarize(stackName, region, state), served);
   }
 
   /**
@@ -376,8 +406,9 @@ export class ProducerSecretReader {
     exportName: string,
     served: string
   ): Promise<ProducerSecretVerdict | undefined> {
-    const state = await this.read(producerStack, producerRegion);
-    if (state === undefined || state === null) return 'unreadable';
+    const got = await this.read(producerStack, producerRegion);
+    if (typeof got !== 'object') return 'unreadable';
+    const state = got.state;
     const verdict = await this.judge(producerStack, producerRegion, state, served);
     if (verdict === 'secret') return verdict;
     const outputs = (state as { outputs?: unknown }).outputs;
