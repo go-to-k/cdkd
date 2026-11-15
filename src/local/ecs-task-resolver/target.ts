@@ -162,7 +162,7 @@ function extractTaskDefinitionProperties(
   if (networkMode === 'awsvpc') {
     warnings.push(
       `NetworkMode 'awsvpc' on '${logicalId}' is mapped to docker bridge locally — ` +
-        'docker cannot emulate ENI-per-task. AWS SDK calls still reach public endpoints via the developer network.'
+        'docker cannot emulate ENI-per-task, so the task gets no VPC subnet or security group, and its traffic leaves through the host network.'
     );
   }
 
