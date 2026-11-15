@@ -6855,6 +6855,7 @@
         "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-reserved-concurrency",
+        "lambda-runtime-config",
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "lambda-versioning",
@@ -7147,6 +7148,10 @@
         ],
         "lambda-reserved-concurrency": [
           "l2"
+        ],
+        "lambda-runtime-config": [
+          "l2",
+          "literal"
         ],
         "lambda-snapstart": [
           "l2",

@@ -1,0 +1,22 @@
+{
+  "name": "cdkd-integ-lambda-runtime-config",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd Lambda Function RuntimeConfig (issue #6352) deploy/UPDATE/removal/destroy integ",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-lambda": "3.1169.0",
+    "@aws-sdk/client-lambda-core": "3.1169.0",
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

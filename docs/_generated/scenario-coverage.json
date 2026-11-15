@@ -1753,6 +1753,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-runtime-config",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-snapstart",
       "annotated": true,
       "scenarios": []
@@ -3960,6 +3965,7 @@
     "lambda-microvm-image",
     "lambda-network-connector",
     "lambda-reserved-concurrency",
+    "lambda-runtime-config",
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "list-parameters",

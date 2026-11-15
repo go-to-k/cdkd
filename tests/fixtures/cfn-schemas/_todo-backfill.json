@@ -24,8 +24,7 @@
   ],
   "types": {
     "AWS::Lambda::Function": [
-      "AcceleratorConfig",
-      "RuntimeConfig"
+      "AcceleratorConfig"
     ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"

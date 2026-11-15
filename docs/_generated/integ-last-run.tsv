@@ -64,7 +64,7 @@ codebuild-project	2026-11-06T22:05:30Z	PASS	130	verify.sh	#5924 codebuild split 
 codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 errors, 0 orphans, 0 hooks left (#5627 Triggers; pre-fix red at Phase 1)
 codecommit	2026-11-06T21:49:33Z	PASS	155	verify.sh	#5920 codecommit-repository split head; rc ok, orph clean
 codedeploy-lambda-deployment-group	2026-11-04T05:26:26Z	PASS	111	verify.sh	batch 3 (rc=0, [verify] PASS, destroy 7 deleted 0 errors); account clean
-cognito	2026-11-01T08:00:57Z	PASS	255	verify.sh	rc ok, orph clean, #2762 key+issuer, pre-fix probe red at own arm
+cognito	2026-11-15T17:41:38Z	PASS	283	verify.sh	rc ok, orph clean; #6352 aws-sdk 3.1169.0 bump + arm H verbose-pointer fix
 cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
@@ -232,11 +232,11 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-15T16:33:50Z	PASS	126	verify.sh	rc ok, orph clean; broad run for #6343 deploy-flow change
+lambda	2026-11-15T17:41:38Z	PASS	108	verify.sh	rc ok, orph clean; #6352 aws-sdk 3.1169.0 bump
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
-lambda-config-field-removal	2026-11-06T18:47:48Z	PASS	131	verify.sh	#5901 lambda-function split head; rc ok, orph clean
+lambda-config-field-removal	2026-11-15T17:41:38Z	PASS	152	verify.sh	rc ok, orph clean; #6352 lambda-function RuntimeConfig wiring
 lambda-destinations	2026-11-10T15:32:23Z	PASS	100	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-11-05T03:23:13Z	PASS	125	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 lambda-env-removal	2026-11-07T14:58:13Z	PASS	112	verify.sh	#6013 deploy-engine update-in-place split head; rc ok, orph clean
@@ -249,6 +249,7 @@ lambda-log-retention	2026-11-04T05:45:58Z	PASS	91	verify.sh	1104 sweep b5; rc ok
 lambda-microvm-image	2026-11-05T03:14:59Z	PASS	827	verify.sh	rc 0, all phases ok; deleted leftover log group /aws/lambda-microvms/cdkd-integ-microvm-image; orph clean
 lambda-network-connector	2026-10-30T10:53:30Z	PASS	979	verify.sh	rc 0, orph clean; PR #5123 e1e18f02a ElasticIpConfiguration refusal; probe red at 'deploy declaring ElasticIpConfiguration SUCCEEDED'
 lambda-reserved-concurrency	2026-11-04T06:31:22Z	PASS	50	verify.sh	rc ok, orph clean
+lambda-runtime-config	2026-11-15T17:41:38Z	PASS	115	verify.sh	rc ok, orph clean; #6352 RuntimeConfig create/alias/removal, runtime + ECR swept
 lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
 lambda-url-authtype-replay	2026-11-05T03:01:10Z	PASS	130	verify.sh	rc 0, live URL stayed IAM-guarded in all phases; orph clean
 lambda-versioning	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 4 del 0 err, 0 orph
@@ -363,7 +364,7 @@ ref-shape-vector-namespace-attachment	2026-11-13T19:37:31Z	PASS	120	verify.sh	rc
 refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 refactor-lambda-version	2026-11-12T11:22:31Z	PASS	477	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
-remove-protection	2026-11-10T16:42:03Z	PASS	764	verify.sh	rc ok, orph clean
+remove-protection	2026-11-15T17:41:38Z	PASS	773	verify.sh	rc ok, orph clean; #6352 Cognito DcrConfiguration kept-on-omission
 remove-protection-compensation	2026-11-08T03:59:38Z	PASS	267	verify.sh	#6039 split head with the #6045 CC-route fixture; rc ok, orph clean
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
