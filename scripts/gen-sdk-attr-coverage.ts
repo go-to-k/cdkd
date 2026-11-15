@@ -776,7 +776,8 @@ function main(): void {
         'sdk-attr-coverage: FAIL — SDK provider read-only Arn/ARN/Url/URL attribute gap(s) detected.\n' +
           'Each attribute below is neither cached by the provider create/update (under its\n' +
           'exact CFn readOnlyProperties name) nor handled by constructAttribute, so\n' +
-          `Fn::GetAtt would HARD-FAIL at deploy (the #1179 class).\n${GAP_REMEDY}\n\n`
+          'Fn::GetAtt would HARD-FAIL at deploy (`Arn` / `Url`, the #1179 class) or fall\n' +
+          `back to a wrong value with a warning (\`ARN\` / \`URL\`, #6238).\n${GAP_REMEDY}\n\n`
       );
       for (const t of gaps) process.stderr.write(`  ${t.resourceType}: ${t.gaps.join(', ')}\n`);
       process.exit(1);
