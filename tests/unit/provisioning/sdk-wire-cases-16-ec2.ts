@@ -764,6 +764,7 @@ export const CASES_16_EC2: TypeCase[] = [
           Tags: TAGS,
         },
         expectedSilent: {
+          'update-remove:MapPublicIpOnLaunch': 'CloudFormation keeps the live value on property removal (measured A/B, go-to-k/cdkd#6342)',
           'update-remove:EnableDns64': 'CloudFormation preserves the live DNS64 value on property removal (measured, go-to-k/cdkd#5632)',
           'update-remove:AssignIpv6AddressOnCreation': 'a removal leaves the live value, as for EnableDns64 (go-to-k/cdkd#5632)',
           'update-remove:PrivateDnsNameOptionsOnLaunch': 'a removal leaves the live value, as for EnableDns64 (go-to-k/cdkd#5632)',
