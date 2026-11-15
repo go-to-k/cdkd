@@ -19,10 +19,11 @@ import {
  * `eu-west-1` is `regionalSend`.
  */
 
-const { mockSend, regionalSend, mockAutoScalingSend } = vi.hoisted(() => ({
+const { mockSend, regionalSend, mockAutoScalingSend, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   regionalSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
+  warnSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -59,7 +60,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -68,7 +69,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: warnSpy,
       error: vi.fn(),
     }),
   };
@@ -76,6 +77,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
+import { protectedDeleteMessage } from '../../../src/provisioning/providers/dynamodb-globaltable/protection-preflight.js';
 import { replicaDeleteGoneWait } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
@@ -141,6 +144,7 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
     mockSend.mockReset();
     regionalSend.mockReset();
     mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
     mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
     replicaDeleteGoneWait.pollIntervalMs = 0;
   });
@@ -159,7 +163,7 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
     expect(error?.message).toMatch(
       /deletion protection enabled in us-east-1; cdkd changed nothing, so no replica was dropped/
     );
-    expect(error?.message).toContain('Re-run cdkd destroy --remove-protection');
+    expect(error?.message).toContain('Re-run the destroy with --remove-protection');
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect(writes(mockSend)).toEqual([]);
     expect(writes(regionalSend)).toEqual([]);
@@ -178,9 +182,49 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
       );
 
     expect(error?.message).toMatch(/deletion protection enabled in eu-west-1; cdkd changed nothing/);
-    // Not a destroy: a deploy's replacement or removal delete cannot take the flag.
-    expect(error?.message).toContain('a deploy never removes it');
-    expect(error?.message).not.toContain('--remove-protection');
+    // Not a destroy: the remedy names no destroy re-run.
+    expect(error?.message).toContain('Turn deletion protection off in those regions');
+    expect(error?.message).not.toContain('Re-run the destroy');
+    expect(writes(mockSend)).toEqual([]);
+    expect(writes(regionalSend)).toEqual([]);
+    expect(mockAutoScalingSend).not.toHaveBeenCalled();
+  });
+
+  it('a THROTTLED replica read is rethrown before any write, so the destroy loop reads again', async () => {
+    sourceTable(false);
+    regionalTable(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+
+    await expect(
+      new DynamoDBGlobalTableProvider().delete('T', TABLE, RESOURCE_TYPE, undefined, {
+        stackDestroy: true,
+      })
+    ).rejects.toThrow();
+
+    // Reading a throttle as "not protected" would reopen the partial strip.
+    expect(writes(mockSend)).toEqual([]);
+    expect(writes(regionalSend)).toEqual([]);
+    expect(mockAutoScalingSend).not.toHaveBeenCalled();
+  });
+
+  it('a replica that reads ResourceNotFound is skipped, not refused', async () => {
+    sourceTable(false);
+    regionalTable(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+
+    await expect(
+      new DynamoDBGlobalTableProvider().delete('T', TABLE, RESOURCE_TYPE)
+    ).resolves.toBeUndefined();
+
+    expect(writes(mockSend)).toContain(DeleteTableCommand.name);
+  });
+
+  it('an interrupt during the replica read is rethrown before any write', async () => {
+    sourceTable(false);
+    regionalTable(new InterruptedWaitError('DescribeTable'));
+
+    await expect(
+      new DynamoDBGlobalTableProvider().delete('T', TABLE, RESOURCE_TYPE)
+    ).rejects.toThrow(/interrupted by user/);
+
     expect(writes(mockSend)).toEqual([]);
     expect(writes(regionalSend)).toEqual([]);
   });
@@ -195,6 +239,10 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
       })
     ).resolves.toBeUndefined();
 
+    // Proceeding is announced, naming the region it could not read.
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Could not read DeletionProtectionEnabled on the eu-west-1 replica'
+    );
     // The drop and the DeleteTable both went out.
     expect(
       mockSend.mock.calls.some((c) => (c[0] as Sent).input['ReplicaUpdates']?.[0]?.Delete)
@@ -211,5 +259,14 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
     ).resolves.toBeUndefined();
 
     expect(writes(mockSend)).toContain(DeleteTableCommand.name);
+  });
+
+  it('a re-entry after an earlier attempt dropped a replica does not claim none was dropped', () => {
+    const text = protectedDeleteMessage('T', TABLE, ['us-east-1'], true, ['eu-west-1']);
+    expect(text).toContain('an earlier attempt already dropped the replica in eu-west-1');
+    expect(text).not.toContain('no replica was dropped');
+    expect(protectedDeleteMessage('T', TABLE, ['us-east-1'], true, [])).toContain(
+      'no replica was dropped'
+    );
   });
 });

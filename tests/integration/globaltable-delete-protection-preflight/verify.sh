@@ -48,7 +48,6 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
-cd "$(dirname "$0")"
 
 STACK="CdkdGlobalTableDeleteProtectionPreflight"
 TABLE="CdkdGlobalTableDeleteProtectionPreflight"
@@ -105,19 +104,21 @@ destroy_refused() {
     echo "FAIL: ${phase}: the destroy succeeded, expected a refusal" >&2
     exit 1
   fi
+  # Survival FIRST: it is the data-safety property, and a wording mismatch
+  # must not hide whether the replica was stripped.
+  [ "$(replica_listed)" = "1" ] \
+    || { cat "${log}" >&2; echo "FAIL: ${phase}: the ${REPLICA_REGION} replica was dropped by a refused destroy" >&2; exit 1; }
+  aws dynamodb describe-table --table-name "${TABLE}" --region "${REPLICA_REGION}" >/dev/null \
+    || { echo "FAIL: ${phase}: the ${REPLICA_REGION} copy is gone after a refused destroy" >&2; exit 1; }
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null \
+    || { echo "FAIL: ${phase}: the state record is gone after a refused destroy" >&2; exit 1; }
+  echo "    OK: both copies and the state record survive"
   if ! grep -qF -- "${expected}" "${log}"; then
     cat "${log}" >&2
     echo "FAIL: ${phase}: the refusal does not say '${expected}'" >&2
     exit 1
   fi
   echo "    OK: ${phase} refused: ${expected}"
-  [ "$(replica_listed)" = "1" ] \
-    || { echo "FAIL: ${phase}: the ${REPLICA_REGION} replica was dropped by a refused destroy" >&2; exit 1; }
-  aws dynamodb describe-table --table-name "${TABLE}" --region "${REPLICA_REGION}" >/dev/null \
-    || { echo "FAIL: ${phase}: the ${REPLICA_REGION} copy is gone after a refused destroy" >&2; exit 1; }
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null \
-    || { echo "FAIL: ${phase}: the state record is gone after a refused destroy" >&2; exit 1; }
-  echo "    OK: both copies and the state record survive"
 }
 
 echo "==> Phase 1: deploy (${REGION} + replica in ${REPLICA_REGION})"

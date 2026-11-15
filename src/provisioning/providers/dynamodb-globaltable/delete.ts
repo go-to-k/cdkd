@@ -446,7 +446,8 @@ export async function deleteGlobalTableResource(
               logicalId,
               shownTable,
               protectedRegions,
-              context?.stackDestroy === true
+              context?.stackDestroy === true,
+              [...droppedReplicaRegions]
             ),
             resourceType,
             logicalId,
