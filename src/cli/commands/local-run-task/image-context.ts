@@ -11,7 +11,7 @@ import {
   type EcsImageResolutionContext,
 } from '../../../local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
-import { matchStacks } from '../../stack-matcher.js';
+import { matchStacks, nestedOwnerOfLogicalId } from '../../stack-matcher.js';
 import { stackForPathFormTarget } from '../../cdk-path.js';
 import { loadBootstrapContainerRepo } from '../local-state-loader.js';
 import type { LocalStateProvider } from '../../../local/local-state-provider.js';
@@ -297,6 +297,16 @@ export function taskRoleRecordIsEmulatorSide(): boolean {
  * @internal exported for unit tests.
  */
 export function pickCandidateStack(
+  parsed: { stackPattern: string | null; isPath: boolean; pathOrId: string },
+  target: string,
+  stacks: StackInfo[]
+): StackInfo | undefined {
+  const picked = pickNamedCandidateStack(parsed, target, stacks);
+  // The nested stack owning a logical-ID target, as `resolveEcsTaskTarget` resolves it.
+  return picked && nestedOwnerOfLogicalId(parsed, picked, stacks);
+}
+
+function pickNamedCandidateStack(
   parsed: { stackPattern: string | null; isPath: boolean; pathOrId: string },
   target: string,
   stacks: StackInfo[]

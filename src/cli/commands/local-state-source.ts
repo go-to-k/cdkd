@@ -262,7 +262,16 @@ export function withDeployedStackName(
   pseudo: PseudoParameters | undefined,
   options: { fromCfnStack?: string | boolean | undefined },
   stackName: string
-): PseudoParameters & { stackName: string } {
+): PseudoParameters {
+  // A CDK nested stack's CloudFormation name is generated
+  // (`<parent>-<id>NestedStack...-<suffix>`), never its `<parent>~<id>`
+  // record name nor the top-level `--from-cfn-stack <name>`: leave it
+  // unresolved there (go-to-k/cdk-local#986). cdkd's own deploy names the
+  // nested stack by its record name, so `--from-state` keeps it.
+  const fromCfnStack = options.fromCfnStack;
+  if (fromCfnStack !== undefined && fromCfnStack !== false && stackName.includes('~')) {
+    return { ...pseudo };
+  }
   return {
     ...pseudo,
     stackName: resolveCfnStackName(options.fromCfnStack ?? false, stackName),

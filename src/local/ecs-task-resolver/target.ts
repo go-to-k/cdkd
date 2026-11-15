@@ -57,7 +57,7 @@ export function resolveEcsTaskTarget(
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
   }
   const parsed = parseEcsTarget(target);
-  const stack = ownerOfLogicalId(parsed, pickStack(parsed, stacks, target), stacks);
+  const stack = pickStack(parsed, stacks, target);
   const resources = stack.template.Resources ?? {};
   const listed = resourcesWithNestedStacks(stack, stacks);
 
@@ -289,23 +289,6 @@ function notFoundError(
 }
 
 /**
- * A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
- * resource of the picked stack OR of a CDK nested stack deployed under it
- * (go-to-k/cdk-local#986): the owner, when exactly one nested stack has it.
- */
-function ownerOfLogicalId(
-  parsed: { isPath: boolean; pathOrId: string },
-  stack: StackInfo,
-  stacks: StackInfo[]
-): StackInfo {
-  if (parsed.isPath || stack.template.Resources?.[parsed.pathOrId] !== undefined) return stack;
-  const owners = withNestedDescendants([stack], stacks).filter(
-    (s) => s !== stack && s.template.Resources?.[parsed.pathOrId] !== undefined
-  );
-  return owners.length === 1 ? owners[0]! : stack;
-}
-
-/**
  * `stack`'s resources followed by those of the CDK nested stacks deployed
  * under it, for the not-found message's candidate list.
  */
@@ -317,9 +300,23 @@ function resourcesWithNestedStacks(
     string,
     TemplateResource
   >;
-  for (const s of withNestedDescendants([stack], stacks)) {
+  const descendants = withNestedDescendants([stack], stacks);
+  const owners = new Map<string, StackInfo[]>();
+  for (const s of descendants) {
+    for (const logicalId of Object.keys(s.template.Resources ?? {})) {
+      const list = owners.get(logicalId);
+      if (list) list.push(s);
+      else owners.set(logicalId, [s]);
+    }
+  }
+  for (const s of descendants) {
     for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
-      if (!(logicalId in merged)) merged[logicalId] = resource;
+      // A bare ID selects `stack`'s own resource, or the one nested stack that
+      // has it; an ID two nested stacks share selects neither, so list each
+      // copy in the `<nested stack>:<LogicalId>` form that does.
+      const shared = owners.get(logicalId)!;
+      const bare = s === stack || (shared.length === 1 && !shared.includes(stack));
+      merged[bare ? logicalId : `${s.stackName}:${logicalId}`] = resource;
     }
   }
   return merged;

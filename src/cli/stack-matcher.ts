@@ -19,6 +19,7 @@
  * every selected stack, for a caller that must see two stacks sharing one
  * physical name (a Stage deployed twice) and refuse (#5175).
  */
+import { withNestedDescendants, type NestedStackOrigin } from 'cdk-local/internal';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { globMatches, pathGlobMatches } from '../utils/glob-match.js';
 import { CdkdError } from '../utils/error-handler.js';
@@ -29,7 +30,9 @@ export interface StackLike {
   stackName: string;
   displayName?: string;
   /** Set on a CDK nested stack the `cdkd local` commands list (go-to-k/cdk-local#986). */
-  nestedStack?: unknown;
+  nestedStack?: NestedStackOrigin | undefined;
+  /** The stack's template, when the caller has one: lets a logical ID reach a nested stack. */
+  template?: { Resources?: Record<string, unknown> } | undefined;
   /**
    * The CDK Stage the stack was read from, or `undefined` for a top-level
    * stack of the app's own assembly. `--all` selects top-level stacks only.
@@ -236,6 +239,37 @@ export type TargetStackSelection<T> =
  * ambiguous, not the first clone (#5175).
  */
 export function selectTargetStack<T extends StackLike>(
+  parsed: { stackPattern: string | null; pathOrId: string; isPath: boolean },
+  target: string,
+  stacks: readonly T[]
+): TargetStackSelection<T> {
+  const selection = selectNamedStack(parsed, target, stacks);
+  return selection.kind === 'found'
+    ? { kind: 'found', stack: nestedOwnerOfLogicalId(parsed, selection.stack, stacks) }
+    : selection;
+}
+
+/**
+ * A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
+ * resource of `stack` OR of a CDK nested stack deployed under it
+ * (go-to-k/cdk-local#986): that nested stack, when exactly one has the ID.
+ * Two nested stacks built from one construct share their logical IDs, so the
+ * ID stays on `stack` and its not-found list names each as
+ * `<nested stack>:<LogicalId>`.
+ */
+export function nestedOwnerOfLogicalId<T extends StackLike>(
+  parsed: { pathOrId: string; isPath: boolean },
+  stack: T,
+  stacks: readonly T[]
+): T {
+  const has = (s: T): boolean =>
+    s.template?.Resources !== undefined && Object.hasOwn(s.template.Resources, parsed.pathOrId);
+  if (parsed.isPath || stack.template === undefined || has(stack)) return stack;
+  const owners = withNestedDescendants([stack], stacks).filter((s) => s !== stack && has(s));
+  return owners.length === 1 ? owners[0]! : stack;
+}
+
+function selectNamedStack<T extends StackLike>(
   parsed: { stackPattern: string | null; pathOrId: string; isPath: boolean },
   target: string,
   stacks: readonly T[]

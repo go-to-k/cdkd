@@ -28,7 +28,16 @@
 
 set -euo pipefail
 
-# --- strict gone-probe helpers (copied from the canonical block) -------------
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
@@ -76,9 +85,11 @@ SERVER_LOG=""
 
 # Every state key under the parent's name and the `<Stack>~*` children's.
 state_keys() {
-  aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "cdkd/${STACK}" \
-    --query 'Contents[].Key' --output text 2>/dev/null \
-    | tr '\t' '\n' | grep -E "^cdkd/${STACK}(~[^/]*)*/${REGION}/(state|lock)\.json$" || true
+  local out
+  out="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "cdkd/${STACK}" \
+    --query 'Contents[].Key' --output text)" || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' \
+    | grep -E "^cdkd/${STACK}(~[^/]*)*/${REGION}/(state|lock)\.json$" || true
 }
 
 cleanup() {
@@ -124,7 +135,11 @@ echo "[verify] step 2b: reading the real bucket / queue"
 CHILD_KEYS="$(state_keys | grep -E '/state\.json$' | grep -v "^${STATE_KEY}\$" || true)"
 echo "[verify]   child state records:"
 echo "${CHILD_KEYS}" | sed 's/^/[verify]     /'
-[ -n "${CHILD_KEYS}" ] || { echo "[verify] FAIL: no <Stack>~* child state record"; exit 1; }
+# Inner and Inner~Deeper: one record per nested stack, the second keyed by the chain.
+CHILD_COUNT="$(printf '%s\n' "${CHILD_KEYS}" | grep -c '~' || true)"
+[ "${CHILD_COUNT}" -eq 2 ] || { echo "[verify] FAIL: expected 2 <Stack>~* child state records, got ${CHILD_COUNT}"; exit 1; }
+printf '%s\n' "${CHILD_KEYS}" | grep -qE '~[^/]+~[^/]+/' \
+  || { echo "[verify] FAIL: no <Stack>~<Inner>~<Deeper> record for the 2-level nested stack"; exit 1; }
 
 # physicalId of the first resource of a type, searching parent then children.
 physical_of() { # usage: physical_of <resource type>

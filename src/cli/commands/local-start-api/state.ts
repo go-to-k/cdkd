@@ -151,7 +151,12 @@ export async function loadStateForRoutedStacks(
   // collide between siblings (see local-state-source.ts for the
   // rationale). Bare `--from-cfn-stack` is safe because each routed
   // stack uses its own cdkd stack name.
-  rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
+  // A CDK nested stack counts with its top-level stack, which an explicit
+  // `--from-cfn-stack <name>` names (go-to-k/cdk-local#986).
+  rejectExplicitCfnStackWithMultipleStacks(
+    options,
+    new Set([...reachableStackNames].map((name) => name.split('~')[0])).size
+  );
   // One load per (stack, routed set), grouped as cdk-local groups its own
   // multi-workload commands (go-to-k/cdk-local#905): each stack's shared names
   // for `UNNAMED_WORKLOAD` (`Parameters` exceptions only; the plain stack load

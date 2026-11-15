@@ -92,6 +92,11 @@ cdkd local invoke Handler
 A stack inside a CDK `Stage` is addressed by its full display path, for example
 `MyStage/MyStack/MyApi/Handler`.
 
+`invoke` and `run-task` require a target. On the other commands it is
+optional. Without one, `start-api` serves every API it finds, and
+`start-service`, `start-alb`, `start-cloudfront`, `start-web-function`,
+`start-microvm` and the two AgentCore commands open a picker when you run them in an interactive terminal.
+
 ### A resource in a nested stack
 
 A resource inside a CDK `NestedStack` is named like the parent's own, at any
@@ -110,11 +115,6 @@ cdkd local invoke MyStack:Handler1234ABCD            # logical ID in the nested 
 | Messages | A nested stack is named `<parent>~<logical ID>`, the name of its state record. |
 | `--from-state` | Reads the nested stack's own record; a value the parent passes in resolves from the parent's record. |
 | `--from-cfn-stack` | Reads the deployed nested stack through its parent; `--from-cfn-stack <name>` names the top-level stack. |
-
-`invoke` and `run-task` require a target. On the other commands it is
-optional. Without one, `start-api` serves every API it finds, and
-`start-service`, `start-alb`, `start-cloudfront`, `start-web-function`,
-`start-microvm` and the two AgentCore commands open a picker when you run them in an interactive terminal.
 
 ## Where values come from
 

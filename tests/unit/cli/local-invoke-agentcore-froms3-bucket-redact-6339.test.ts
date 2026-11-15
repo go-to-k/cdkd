@@ -137,7 +137,9 @@ describe('invoke-agentcore fromS3: a judged bucket is not printed by the downloa
     }) as never);
     const err = await download(true);
     expect(err.message).toMatch(/S3 GetObject for s3:\/\/<cross-stack value withheld>\/.* failed: AccessDenied: x+/);
-    expect(err.message).toContain(`arn:aws:s3:::<cross-stack value withheld>[... truncated`);
+    // cdk-local withholds the bucket BEFORE its cap (cdk-local 0.168.3, go-to-k/cdk-local#985),
+    // so the cap now cuts the placeholder, never the bucket.
+    expect(err.message).toContain('arn:aws:s3:::<cross-s[... truncated');
     expect(err.message).not.toContain(BUCKET.slice(0, 8));
   });
 
