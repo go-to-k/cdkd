@@ -46,8 +46,7 @@ import { readEnabledMfas } from './mfa-request.js';
  *   `EmailVerificationMessage`, `EmailVerificationSubject`, and
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
  *   the write does not name gets its DEFAULT name, so omission could reset a
- *   custom one). Only its custom levels are echoed: see `customAcrLevels`.
- * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
+ *   custom one). Only its custom levels are echoed: see `customAcrLevels`. * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
  *   `CUSTOMER_MANAGED_KEY` `KeyConfiguration` went to `AWS_OWNED_KEY`, its
  *   `KmsKeyArn` dropped. Echoed apart from this list, like the SES
  *   `EmailConfiguration`, because an `AWS_OWNED_KEY` one is what omission
@@ -82,7 +81,9 @@ export const USER_POOL_ECHO_MEMBERS = [
  * `SmsConfiguration` (with an SNS role), `EmailConfiguration`
  * (`COGNITO_DEFAULT`) and `MfaConfiguration` (`OFF`, `OPTIONAL` and `ON`, the
  * factor configuration included) were each measured unchanged, and
- * `IssuerConfiguration` (`UPDATED`, us-east-1 2026-11-01, issue #2762). Two
+ * `IssuerConfiguration` (`UPDATED`, us-east-1 2026-11-01, issue #2762), and
+ * `DcrConfiguration` (`Enabled` on an `ESSENTIALS` pool, us-east-1
+ * 2026-11-16, issue #6352). Two
  * exceptions are ECHOED, each measured to RESET on omission (see
  * {@link userPoolDeletionProtectionUpdate}): a `DEVELOPER` (SES)
  * `EmailConfiguration` goes to `COGNITO_DEFAULT` (issue #4149), and a
@@ -99,6 +100,7 @@ export const USER_POOL_KEPT_ON_OMISSION = [
   'UserPoolTier',
   'KeyConfiguration',
   'IssuerConfiguration',
+  'DcrConfiguration',
 ] as const satisfies ReadonlyArray<keyof UserPoolType & keyof UpdateUserPoolCommandInput>;
 
 /**
