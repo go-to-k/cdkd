@@ -571,6 +571,7 @@ export function producerSecretArgvReason(judgement: Judgement): string {
     return `resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}, ${tail}`;
   }
   if (judgement.detail !== undefined) {
+    // cdkd-raw-beside-safe: `tail` is this function's own literal sentence.
     return `resolved a cross-stack value cdkd could not check for secrets: ${displaySafe(judgement.detail)}, ${tail}`;
   }
   return `resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets, ${tail}`;
