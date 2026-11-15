@@ -1280,7 +1280,7 @@ describe('buildCrossStackResolver', () => {
       // The source as text, the only field cdk-local's own post-pass renders
       // (start-service / start-alb; go-to-k/cdkd#6339).
       const UNREADABLE_SOURCE_DETAIL =
-        'the producer re-exports from Source (us-east-1), whose state cdkd could not read (retry; or a newer-schema record needs a cdkd upgrade)';
+        'the producer re-exports from Source (us-east-1), whose state cdkd could not read; retry, or upgrade cdkd for a newer-schema record';
       const reExporter = {
         stackName: 'ReExporter',
         resources: {},

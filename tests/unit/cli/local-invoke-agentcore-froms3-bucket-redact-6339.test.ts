@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { resetEmbedConfig, setEmbedConfig } from 'cdk-local';
+import { S3Client, S3ServiceException } from '@aws-sdk/client-s3';
 
 /**
  * go-to-k/cdkd#6339: a fromS3 bucket read from a judged cross-stack value
@@ -10,14 +11,19 @@ import { resetEmbedConfig, setEmbedConfig } from 'cdk-local';
  * wording is what the assertions read.
  */
 
+const DEFAULT_FETCH = async (_loc: unknown): Promise<Uint8Array> => new Uint8Array([1, 2, 3]);
 const fetchControl = vi.hoisted(() => ({
-  fetch: async (_loc: unknown): Promise<Uint8Array> => new Uint8Array([1, 2, 3]),
+  // `undefined`: cdk-local's own S3 read runs, against the stubbed client.
+  fetch: undefined as ((loc: unknown) => Promise<Uint8Array>) | undefined,
 }));
 vi.mock('../../../src/local/agentcore-s3-bundle.js', async () => {
   const real = await vi.importActual<typeof import('cdk-local/internal')>('cdk-local/internal');
   return {
     downloadAndExtractS3Bundle: vi.fn((loc: never, opts: Record<string, unknown> = {}) =>
-      real.downloadAndExtractS3Bundle(loc, { ...opts, fetchObject: fetchControl.fetch })
+      real.downloadAndExtractS3Bundle(loc, {
+        ...opts,
+        ...(fetchControl.fetch !== undefined && { fetchObject: fetchControl.fetch }),
+      })
     ),
   };
 });
@@ -34,6 +40,7 @@ const KEY = 'bundles/agent.zip';
 const lines: string[] = [];
 beforeEach(() => {
   lines.length = 0;
+  fetchControl.fetch = DEFAULT_FETCH;
   const record = (message: string): void => {
     lines.push(message);
   };
@@ -50,8 +57,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetEmbedConfig();
-  fetchControl.fetch = async () => new Uint8Array([1, 2, 3]);
   vi.mocked(downloadAndExtractS3Bundle).mockClear();
+  vi.restoreAllMocks();
 });
 
 async function download(judged: boolean): Promise<Error> {
@@ -114,5 +121,38 @@ describe('invoke-agentcore fromS3: a judged bucket is not printed by the downloa
     };
     const err = await download(false);
     expect(err.message).toContain(`arn:aws:s3:::${BUCKET}/${KEY}`);
+  });
+
+  it("judged: cdk-local's wrapped AccessDenied, cut mid-bucket by its truncation, names no part of it", async () => {
+    fetchControl.fetch = undefined;
+    // Pad so cdk-local's 512-character cap falls inside the resource ARN's bucket.
+    const lead = 'x'.repeat(512 - 'arn:aws:s3:::'.length - 8);
+    vi.spyOn(S3Client.prototype, 'send').mockImplementation((async () => {
+      throw new S3ServiceException({
+        name: 'AccessDenied',
+        $fault: 'client',
+        $metadata: {},
+        message: `${lead}arn:aws:s3:::${BUCKET}/${KEY}`,
+      });
+    }) as never);
+    const err = await download(true);
+    expect(err.message).toMatch(/S3 GetObject for s3:\/\/<cross-stack value withheld>\/.* failed: AccessDenied: x+/);
+    expect(err.message).toContain(`arn:aws:s3:::<cross-stack value withheld>[... truncated`);
+    expect(err.message).not.toContain(BUCKET.slice(0, 8));
+  });
+
+  it('control: the same wrapped AccessDenied keeps an unjudged bucket prefix', async () => {
+    fetchControl.fetch = undefined;
+    const lead = 'x'.repeat(512 - 'arn:aws:s3:::'.length - 8);
+    vi.spyOn(S3Client.prototype, 'send').mockImplementation((async () => {
+      throw new S3ServiceException({
+        name: 'AccessDenied',
+        $fault: 'client',
+        $metadata: {},
+        message: `${lead}arn:aws:s3:::${BUCKET}/${KEY}`,
+      });
+    }) as never);
+    const err = await download(false);
+    expect(err.message).toContain(`arn:aws:s3:::${BUCKET.slice(0, 8)}[... truncated`);
   });
 });

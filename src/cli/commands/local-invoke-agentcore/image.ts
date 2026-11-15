@@ -363,12 +363,26 @@ export interface JudgedS3Source {
 
 const WITHHELD_BUCKET = '<cross-stack value withheld>';
 
-/** Replace every occurrence of a judged bucket in a thrown error's text. */
+/**
+ * Replace every occurrence of a judged bucket in a thrown error's text, and a
+ * leading part of it cut off where cdk-local truncates a long AWS message.
+ */
 function withholdBucketInError(err: unknown, bucket: string): void {
   if (!(err instanceof Error) || bucket.length === 0) return;
-  err.message = err.message.split(bucket).join(WITHHELD_BUCKET);
-  if (typeof err.stack === 'string') err.stack = err.stack.split(bucket).join(WITHHELD_BUCKET);
+  const withhold = (text: string): string => {
+    let out = text.split(bucket).join(WITHHELD_BUCKET);
+    for (let k = bucket.length - 1; k > 0; k -= 1) {
+      const cut = `${bucket.slice(0, k)}${TRUNCATION_MARK}`;
+      if (out.includes(cut)) out = out.split(cut).join(`${WITHHELD_BUCKET}${TRUNCATION_MARK}`);
+    }
+    return out;
+  };
+  err.message = withhold(err.message);
+  if (typeof err.stack === 'string') err.stack = withhold(err.stack);
 }
+
+/** What cdk-local appends where it cuts a long AWS service message. */
+const TRUNCATION_MARK = '[... truncated';
 
 /**
  * Resolve a fromS3 bundle's intrinsic `Code.S3.Bucket` to a literal bucket

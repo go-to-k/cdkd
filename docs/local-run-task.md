@@ -420,14 +420,18 @@ by name, any custom-resource attribute, nested stack outputs and re-exports.
 Each branch of an `Fn::If` is read, so an output whose other branch reads a
 secret is judged a secret too.
 
-A value cdkd cannot check fails closed, and the refusal names the reason:
+A value cdkd cannot check fails closed, and the refusal names the reason.
+Some of the reasons:
 
-- a call above that fails, such as a missing permission (it names the call
-  and the stack);
+- a `ListStackResources`, `DescribeStacks` or `GetTemplate` call that fails,
+  such as for a missing permission (the refusal names the call and the stack);
 - a template that is not JSON (a YAML template cannot be read);
 - a re-export whose export name is computed, or an export the producer no
   longer declares;
 - a producer tree past the 32-level bound or past 256 stacks.
+
+A failed `ListExports` call is different: cdkd warns, and the value does not
+resolve at all, so it is handled like any other unresolved value (see above).
 
 #### Limits
 
