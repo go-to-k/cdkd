@@ -59,6 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { createMaskedLogSinks } from '../../../src/provisioning/masked-retry-logger.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import {
   createSecretMasker,
   SECRET_MASK,
@@ -637,11 +638,18 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
     });
 
     it('masks the name-change line, both names', async () => {
-      await update({ BucketName: SHORT_ID }, { BucketName: SHORT });
+      // go-to-k/cdkd#6370: the arm now refuses; its message is masked too.
+      const error = (await update({ BucketName: SHORT_ID }, { BucketName: SHORT }).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      )) as Error;
 
       const text = transcript();
       expect(text).toContain('Bucket name changed');
       expectMasked(text, SHORT, SHORT_ID);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(error.message).toContain('cannot be changed after creation');
+      expectMasked(error.message, SHORT, SHORT_ID);
     });
 
     it('masks the template-path refusals it throws', async () => {

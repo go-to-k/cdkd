@@ -777,10 +777,10 @@ export async function updateInPlace(
   // A replacement does, but only one that is EVIDENCED: `wasReplaced`
   // AND a physical id that actually changed, so the capture below reads
   // a resource built from the bag cdkd sent. The flag alone is not
-  // trusted: `S3BucketProvider.update` answers `wasReplaced: true` with
-  // the OLD id when the bound `BucketName` differs from it — exactly
-  // this class's shape, a name bound to a placeholder — having created
-  // nothing, and the capture would then read the old bucket. Both
+  // trusted: `S3BucketProvider.update` used to answer `wasReplaced: true`
+  // with the OLD id, having created nothing (it refuses since #6370), and
+  // a provider answering that way again would make the capture read the
+  // old resource. Both
   // half-signals (the flag with the same id, a new id without the
   // flag, the update-unsupported fallback re-creating under the same
   // name) KEEP the refusal: the fail-closed reading.

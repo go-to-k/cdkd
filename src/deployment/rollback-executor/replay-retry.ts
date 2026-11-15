@@ -293,8 +293,7 @@ export async function createWithRollbackRetry(
  *   unless the update replaced under a CHANGED physical id, where they describe
  *   the resource it removed and are dropped (the deploy engine's update path
  *   likewise carries old attributes only for a resource that was not
- *   replaced). A `wasReplaced` answer under the SAME id keeps them: the S3
- *   bucket provider answers that way having replaced nothing;
+ *   replaced). A `wasReplaced` answer under the SAME id keeps them;
  * - `wasReplaced: true`: the returned set REPLACES them, as on the deploy
  *   engine's update path — they describe a resource the update removed, so a
  *   key the new set lacks must not survive from it;
