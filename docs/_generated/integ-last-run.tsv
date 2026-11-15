@@ -270,7 +270,7 @@ local-invoke-from-cfn-stack-multi-stack	2026-11-15T15:45:32Z	PASS	115	verify.sh	
 local-invoke-from-state	2026-11-15T13:15:22Z	PASS	225	verify.sh	rc ok, orph clean, docker clean
 local-invoke-java	2026-11-05T06:48:29Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-layers	2026-11-05T06:48:04Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 passed
-local-invoke-nested-stack-from-state	2026-11-15T16:54:28Z	PASS	203	verify.sh	rc ok, orph clean (2nd run; 1st run left the CDK default ApiGateway CloudWatch role, fixed with cloudWatchRole:false)
+local-invoke-nested-stack-from-state	2026-11-15T17:58:02Z	PASS	176	verify.sh	rc ok, orph clean, cloudwatchRoleArn null before/after (nested-stack local targets branch)
 local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 passed (provided.* + go1.x rejection)
 local-invoke-python	2026-11-12T09:17:14Z	PASS	23	verify.sh	rc ok, orph clean (PR 6136)
 local-invoke-ruby	2026-11-05T06:47:04Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
