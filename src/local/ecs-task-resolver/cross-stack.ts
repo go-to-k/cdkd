@@ -4,10 +4,10 @@ import {
   producerSecretArgvReason,
   producerSecretCheckOf,
   producerSecretValueFromReason,
-  strongerVerdict,
+  strongerJudgement,
+  type Judgement,
   type JudgedValue,
   type ProducerSecretCheck,
-  type ProducerSecretVerdict,
 } from '../cross-stack-secrets.js';
 import {
   substituteAgainstStateAsync,
@@ -282,7 +282,7 @@ interface ResolvedSeen {
   /** A value that is the secret mask. */
   masked: boolean;
   /** The producer-secret verdict on the values read, `secret` over the fail-closed ones. */
-  producerSecret: ProducerSecretVerdict | undefined;
+  producerSecret: Judgement | undefined;
 }
 
 /**
@@ -296,11 +296,14 @@ function watchResolved(
   const seen: ResolvedSeen = { masked: false, producerSecret: undefined };
   const inner = context.crossStackResolver;
   if (!inner) return { context, seen };
-  const watch = ({ value, verdict }: JudgedValue): string | undefined => {
+  const watch = ({ value, verdict, source }: JudgedValue): string | undefined => {
     if (value === undefined) return value;
     if (value === SECRET_MASK) seen.masked = true;
     // `secret` outranks the fail-closed verdicts when one element reads several values.
-    seen.producerSecret = strongerVerdict(seen.producerSecret, verdict);
+    seen.producerSecret = strongerJudgement(
+      seen.producerSecret,
+      verdict === undefined ? undefined : { verdict, source }
+    );
     return value;
   };
   // The judged variants when the resolver carries them: each call's verdict is

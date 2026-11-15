@@ -7,6 +7,7 @@ import {
   producerSecretCheckOf,
   producerSecretNeedles,
   ProducerSecretReader,
+  strongerJudgement,
   strongerVerdict,
 } from '../../../src/local/cross-stack-secrets.js';
 
@@ -72,7 +73,7 @@ describe('ProducerSecretReader.judge', () => {
     async () => null,
     () => undefined
   );
-  const judge = (v: string) => reader.judge('P', 'us-east-1', state, v);
+  const judge = async (v: string) => (await reader.judge('P', 'us-east-1', state, v))?.verdict;
 
   it('matches an id segment or a typed leaf whole, or inside a value from four characters', async () => {
     expect(await judge('abcd')).toBe('secret');
@@ -94,7 +95,7 @@ describe('ProducerSecretReader.judge', () => {
         },
       },
     };
-    expect(await tenChars.judge('P', 'r', db, 'pw10charsX')).toBe('secret');
+    expect((await tenChars.judge('P', 'r', db, 'pw10charsX'))?.verdict).toBe('secret');
     expect(await tenChars.judge('P', 'r', db, 'u:pw10charsX@h')).toBeUndefined();
     // Seven characters: no secret, even whole.
     expect(await tenChars.judge('P', 'r', db, 'sevench')).toBeUndefined();
@@ -116,7 +117,9 @@ describe('ProducerSecretReader.judge', () => {
       },
       (m) => lines.push(m)
     );
-    expect(await failing.judgeIndexed('Bad\u001bStack', 'us-east-1', 'E', 'v')).toBe('unreadable');
+    expect(await failing.judgeIndexed('Bad\u001bStack', 'us-east-1', 'E', 'v')).toEqual({
+      verdict: 'unreadable',
+    });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/state read failed for /);
     expect(lines[0]).not.toContain('\u001b');
@@ -130,6 +133,15 @@ describe('strongerVerdict', () => {
     expect(strongerVerdict(undefined, 'stale')).toBe('stale');
     expect(strongerVerdict('unreadable', undefined)).toBe('unreadable');
     expect(strongerVerdict(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('strongerJudgement', () => {
+  it("keeps the winning verdict's blocking source", () => {
+    const blocked = { verdict: 'unreadable' as const, source: 'Q (us-east-1)' };
+    expect(strongerJudgement(blocked, undefined)).toBe(blocked);
+    expect(strongerJudgement(blocked, { verdict: 'secret' })).toEqual({ verdict: 'secret' });
+    expect(strongerJudgement({ verdict: 'secret' }, blocked)).toEqual({ verdict: 'secret' });
   });
 });
 

@@ -1315,6 +1315,7 @@ describe('buildCrossStackResolver', () => {
         expect(await output(built, 'ReExporter', 'Bucket')).toEqual({
           value: 'producer-bucket',
           verdict: 'unreadable',
+          source: 'Source (us-east-1)',
         });
         const redacted = {
           ...reader,
@@ -1325,9 +1326,49 @@ describe('buildCrossStackResolver', () => {
         expect(await output(second, 'Reader', 'Key')).toEqual({
           value: plaintext,
           verdict: 'unreadable',
+          source: 'a stack whose name is recorded redacted',
         });
         second.dispose();
         built.dispose();
+      });
+
+      describe('a source recorded under a folded region, its record under the raw spelling', () => {
+        const folded = {
+          ...reader,
+          outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        it("recovers the case-variant record and judges by the source's records", async () => {
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([
+            { stackName: 'Reader', region: 'us-east-1' },
+            { stackName: 'Source', region: 'US-EAST-1' },
+          ]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) =>
+            stack === 'Reader'
+              ? { state: folded, etag: 'e' }
+              : stack === 'Source' && region === 'US-EAST-1'
+                ? { state: source, etag: 'e' }
+                : null
+          );
+          expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+          built.dispose();
+        });
+
+        it('fails closed when the case-variant record cannot be read', async () => {
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) => {
+            if (stack === 'Source' && region === 'US-EAST-1') throw new Error('AccessDenied');
+            return stack === 'Reader' ? { state: folded, etag: 'e' } : null;
+          });
+          expect(await output(built, 'Reader', 'Key')).toEqual({
+            value: plaintext,
+            verdict: 'unreadable',
+            source: 'Source (us-east-1)',
+          });
+          built.dispose();
+        });
       });
 
       it('skips a source with no record (moved out of cdkd), judging the rest', async () => {

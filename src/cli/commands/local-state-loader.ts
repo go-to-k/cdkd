@@ -708,7 +708,8 @@ export async function buildCrossStackResolver(
   // index carries the value alone, so its producer record is read for it.
   const secrets = new ProducerSecretReader(
     (stackName, region) => stateBackend.getState(stackName, region),
-    (message) => logger.debug(`${prefix}: ${message}`)
+    (message) => logger.debug(`${prefix}: ${message}`),
+    () => stateBackend.listStacks()
   );
 
   // Each arm returns the value with its producer's verdict (go-to-k/cdkd#6337);
@@ -727,12 +728,12 @@ export async function buildCrossStackResolver(
           const served = servedOutputValue(value);
           return {
             value: served,
-            verdict: await secrets.judgeIndexed(
+            ...(await secrets.judgeIndexed(
               entry.producerStack,
               entry.producerRegion,
               exportName,
               served
-            ),
+            )),
           };
         }
       } catch (err) {
@@ -776,7 +777,7 @@ export async function buildCrossStackResolver(
             const served = servedOutputValue(got.state.outputs[exportName]);
             return {
               value: served,
-              verdict: await secrets.judge(ref.stackName, region, got.state, served),
+              ...(await secrets.judge(ref.stackName, region, got.state, served)),
             };
           }
         } catch (err) {
@@ -843,7 +844,7 @@ export async function buildCrossStackResolver(
         const served = servedOutputValue(outputs[outputName]);
         return {
           value: served,
-          verdict: await secrets.judge(producerStack, recordRegion, got.state, served),
+          ...(await secrets.judge(producerStack, recordRegion, got.state, served)),
         };
       };
       try {

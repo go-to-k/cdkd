@@ -20,6 +20,7 @@ import { secretSegmentsOfState } from '../provisioning/secret-physical-id.js';
 import { producerRecordKey } from '../state/record-keys.js';
 import { importableOutputKeys } from '../types/state.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../utils/stringify.js';
 import type { CrossStackResolver } from './state-resolver.js';
@@ -33,10 +34,21 @@ import type { CrossStackResolver } from './state-resolver.js';
  */
 export type ProducerSecretVerdict = 'secret' | 'unreadable' | 'stale';
 
+/**
+ * A verdict, with the upstream stack that blocked the check when an
+ * unreadable re-export source did (`Q (us-east-1)`, rendered for display;
+ * a stack name and region only, never a value).
+ */
+export interface Judgement {
+  verdict: ProducerSecretVerdict;
+  source?: string | undefined;
+}
+
 /** A value one resolver call returned, with its producer's verdict. */
 export interface JudgedValue {
   value: string | undefined;
   verdict?: ProducerSecretVerdict | undefined;
+  source?: string | undefined;
 }
 
 /** The judged variants a cdkd-built resolver carries beside cdk-local's contract. */
@@ -62,6 +74,16 @@ export function producerSecretCheckOf(
     resolveGetStackOutputJudged: (stack, region, output) =>
       judgedOutput.call(resolver, stack, region, output),
   };
+}
+
+/** `a` or `b`, whichever weighs more, keeping the winner's blocking source. */
+export function strongerJudgement(
+  a: Judgement | undefined,
+  b: Judgement | undefined
+): Judgement | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return strongerVerdict(a.verdict, b.verdict) === a.verdict ? a : b;
 }
 
 /** `a` or `b`, whichever weighs more: `secret` over the fail-closed verdicts. */
@@ -171,8 +193,11 @@ interface TreeSummary {
   named: Set<string>;
   /** Output leaves of nested rows whose child record could not be read. */
   unverified: Set<string>;
-  /** A stack the tree re-exports from could not be read: nothing it serves is judged. */
-  opaque: boolean;
+  /**
+   * The first stack the tree re-exports from that could not be read (for
+   * display): nothing the tree serves is judged then.
+   */
+  opaqueSource: string | undefined;
 }
 
 const emptySummary = (): TreeSummary => ({
@@ -180,17 +205,22 @@ const emptySummary = (): TreeSummary => ({
   typed: new Set(),
   named: new Set(),
   unverified: new Set(),
-  opaque: false,
+  opaqueSource: undefined,
 });
 
 /** The verdict `summary` gives `served`. */
-function verdictOf(summary: TreeSummary, served: string): ProducerSecretVerdict | undefined {
-  for (const s of summary.segments) if (holds(served, s, SEGMENT_SUBSTRING_FLOOR)) return 'secret';
-  for (const t of summary.typed) if (holds(served, t, SEGMENT_SUBSTRING_FLOOR)) return 'secret';
-  for (const n of summary.named) if (holds(served, n, NAMED_LEAF_FLOOR)) return 'secret';
-  if (summary.opaque) return 'unreadable';
+function verdictOf(summary: TreeSummary, served: string): Judgement | undefined {
+  const secret: Judgement = { verdict: 'secret' };
+  for (const s of summary.segments) if (holds(served, s, SEGMENT_SUBSTRING_FLOOR)) return secret;
+  for (const t of summary.typed) if (holds(served, t, SEGMENT_SUBSTRING_FLOOR)) return secret;
+  for (const n of summary.named) if (holds(served, n, NAMED_LEAF_FLOOR)) return secret;
+  if (summary.opaqueSource !== undefined) {
+    return { verdict: 'unreadable', source: summary.opaqueSource };
+  }
   // A parent output can embed the child's in a longer one (`Fn::Join`).
-  for (const u of summary.unverified) if (holds(served, u, NAMED_LEAF_FLOOR)) return 'unreadable';
+  for (const u of summary.unverified) {
+    if (holds(served, u, NAMED_LEAF_FLOOR)) return { verdict: 'unreadable' };
+  }
   return undefined;
 }
 
@@ -269,13 +299,60 @@ export class ProducerSecretReader {
     region: string
   ) => Promise<{ state: unknown } | null | undefined>;
   private readonly debug: (message: string) => void;
+  private readonly listStacks:
+    | (() => Promise<readonly { stackName: string; region?: string | undefined }[]>)
+    | undefined;
+  private listed:
+    | Promise<readonly { stackName: string; region?: string | undefined }[] | 'error'>
+    | undefined;
 
   public constructor(
     getState: (stackName: string, region: string) => Promise<{ state: unknown } | null | undefined>,
-    debug: (message: string) => void
+    debug: (message: string) => void,
+    /** The state records, for a re-export source's region case recovery. */
+    listStacks?: () => Promise<readonly { stackName: string; region?: string | undefined }[]>
   ) {
     this.getState = getState;
     this.debug = debug;
+    this.listStacks = listStacks;
+  }
+
+  /**
+   * A re-export source's record. `outputReads[].sourceRegion` is persisted
+   * FOLDED when the template names a Region, while the record key keeps the
+   * deploy's spelling (`--region US-EAST-1`), so a miss at the exact key is
+   * retried at a case-variant record, both sides folded, as the loader's
+   * `Fn::GetStackOutput` and index-miss scan do. A case-variant record that
+   * still cannot be read, or a listing that fails, is `error` (fail closed).
+   */
+  private async readSource(stackName: string, region: string): Promise<RecordRead> {
+    const exact = await this.read(stackName, region);
+    if (exact !== 'absent' || this.listStacks === undefined) return exact;
+    const list = this.listStacks;
+    this.listed ??= Promise.resolve()
+      .then(() => list())
+      .catch((err: unknown) => {
+        this.debug(
+          `state listing failed while checking a cross-stack value for secrets: ${displaySafe(describeAwsFailure(err).detail)}`
+        );
+        return 'error' as const;
+      });
+    const refs = await this.listed;
+    if (refs === 'error') return 'error';
+    const folded = canonicalizeRegion(region);
+    const variants = refs.filter(
+      (ref) =>
+        ref.stackName === stackName &&
+        ref.region !== undefined &&
+        ref.region !== region &&
+        canonicalizeRegion(ref.region) === folded
+    );
+    if (variants.length === 0) return 'absent';
+    for (const ref of variants) {
+      const got = await this.read(stackName, ref.region!);
+      if (typeof got === 'object') return got;
+    }
+    return 'error';
   }
 
   /** A record, read once per resolver. */
@@ -362,13 +439,18 @@ export class ProducerSecretReader {
             }
           });
           const sources = sourcesOf(node.state).map(async (source) => {
-            if (source === 'redacted' || deeper > MAX_NESTED_DEPTH) {
-              summary.opaque = true;
+            if (source === 'redacted') {
+              summary.opaqueSource ??= 'a stack whose name is recorded redacted';
+              return;
+            }
+            const shown = `${displayIdent(source.stackName)} (${displayIdent(source.region)})`;
+            if (deeper > MAX_NESTED_DEPTH) {
+              summary.opaqueSource ??= shown;
               return;
             }
             if (!claim(source.stackName, source.region)) return;
-            const got = await this.read(source.stackName, source.region);
-            if (got === 'error') summary.opaque = true;
+            const got = await this.readSource(source.stackName, source.region);
+            if (got === 'error') summary.opaqueSource ??= shown;
             else if (got !== 'absent') {
               next.push({
                 stackName: source.stackName,
@@ -392,7 +474,7 @@ export class ProducerSecretReader {
     region: string,
     state: unknown,
     served: string
-  ): Promise<ProducerSecretVerdict | undefined> {
+  ): Promise<Judgement | undefined> {
     return verdictOf(await this.summarize(stackName, region, state), served);
   }
 
@@ -407,14 +489,14 @@ export class ProducerSecretReader {
     producerRegion: string,
     exportName: string,
     served: string
-  ): Promise<ProducerSecretVerdict | undefined> {
+  ): Promise<Judgement | undefined> {
     const got = await this.read(producerStack, producerRegion);
     // No record left at the key the index names: the entry outlived it.
-    if (got === 'absent') return 'stale';
-    if (got === 'error') return 'unreadable';
+    if (got === 'absent') return { verdict: 'stale' };
+    if (got === 'error') return { verdict: 'unreadable' };
     const state = got.state;
     const verdict = await this.judge(producerStack, producerRegion, state, served);
-    if (verdict === 'secret') return verdict;
+    if (verdict?.verdict === 'secret') return verdict;
     const outputs = (state as { outputs?: unknown }).outputs;
     const current =
       outputs !== null &&
@@ -422,30 +504,41 @@ export class ProducerSecretReader {
       importableOutputKeys(state as Parameters<typeof importableOutputKeys>[0]).includes(exportName)
         ? servedOutputValue((outputs as Record<string, unknown>)[exportName])
         : undefined;
-    return current !== served ? 'stale' : verdict;
+    return current !== served ? { verdict: 'stale' } : verdict;
   }
 }
 
-/** The argv refusal for a value with `verdict`. */
-export function producerSecretArgvReason(verdict: ProducerSecretVerdict): string {
+/** Where an unreadable source is named, what the operator can do about it. */
+function sourceRemedy(source: string): string {
+  return `the producer re-exports from ${source}, whose state cdkd could not read (retry; a record written by a newer cdkd needs a cdkd upgrade)`;
+}
+
+/** The argv refusal for a value with `judgement`. */
+export function producerSecretArgvReason(judgement: Judgement): string {
   const tail =
     'which cdkd will not put on the docker run command line; pass the value through Environment or Secrets instead';
-  if (verdict === 'secret') {
+  if (judgement.verdict === 'secret') {
     return `resolved a cross-stack value holding a secret of the producer stack, ${tail}`;
   }
-  if (verdict === 'stale') {
+  if (judgement.verdict === 'stale') {
     return `resolved a cross-stack value the producer stack no longer exports (a stale exports index entry), so cdkd could not check it for secrets, ${tail}`;
+  }
+  if (judgement.source !== undefined) {
+    return `resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}, ${tail}`;
   }
   return `resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets, ${tail}`;
 }
 
-/** Why a `Secrets` `ValueFrom` resolving to a value with `verdict` is dropped. */
-export function producerSecretValueFromReason(verdict: ProducerSecretVerdict): string {
-  if (verdict === 'secret') {
+/** Why a `Secrets` `ValueFrom` resolving to a value with `judgement` is dropped. */
+export function producerSecretValueFromReason(judgement: Judgement): string {
+  if (judgement.verdict === 'secret') {
     return 'ValueFrom resolved a cross-stack value holding a secret of the producer stack, rather than naming a Secrets Manager secret or an SSM parameter';
   }
-  if (verdict === 'stale') {
+  if (judgement.verdict === 'stale') {
     return 'ValueFrom resolved a cross-stack value the producer stack no longer exports (a stale exports index entry), which cdkd could not check for secrets';
+  }
+  if (judgement.source !== undefined) {
+    return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}`;
   }
   return "ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets";
 }

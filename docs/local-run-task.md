@@ -376,7 +376,10 @@ like a secret in the consumer's own state:
 A value cdkd cannot check is handled the same way. That covers a state record
 cdkd cannot read, and an exports-index entry the producer no longer exports.
 In every case, passing the value through `Environment` instead keeps it
-resolving.
+resolving. One unreadable upstream record withholds every value of the
+producer that re-exports from it, as does an upstream whose stack name is
+recorded redacted (`***`). The refusal names that upstream stack: retry, or
+upgrade cdkd when a newer version wrote the record.
 A value recorded as the secret mask (`***`) is refused in `Command`,
 `EntryPoint` or a health-check command.
 

@@ -851,8 +851,8 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
       const value = (producerState.outputs as Record<string, string>)[name];
       if (value === undefined) return { value };
       if (value === unreadable) return { value, verdict: 'unreadable' };
-      const verdict = await reader.judge('Producer', 'us-east-1', producerState, value);
-      return verdict === undefined ? { value } : { value, verdict };
+      const judgement = await reader.judge('Producer', 'us-east-1', producerState, value);
+      return { value, ...judgement };
     };
     const importName = (exportName: string): string => exportName.replace(/^Producer-/, '');
     return {
@@ -1071,6 +1071,66 @@ describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () 
     });
     expect(dockerArgs(task)).toContain(value);
     expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+  });
+
+  it('names an unreadable upstream source, and no value, in the argv refusal and the ValueFrom warning', async () => {
+    const blocked: CrossStackResolver = {
+      resolveImportJudged: async () => ({
+        value: 'producer-bucket',
+        verdict: 'unreadable',
+        source: 'Upstream (us-east-1)',
+      }),
+      resolveGetStackOutputJudged: async () => ({ value: undefined }),
+      resolveImport: async () => 'producer-bucket',
+      resolveGetStackOutput: async () => undefined,
+    } as CrossStackResolver;
+    const stack = buildStack({
+      Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
+      Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Bucket' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: blocked });
+    expect(dockerArgs(task)).not.toContain('producer-bucket');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value cdkd could not check for secrets: the producer re-exports from Upstream \(us-east-1\), whose state cdkd could not read \(retry; a record written by a newer cdkd needs a cdkd upgrade\)/
+    );
+    const warning = task.containers[0]!.warnings.find((w) => w.startsWith("Secret 'TOKEN' dropped:"));
+    expect(warning).toMatch(/re-exports from Upstream \(us-east-1\), whose state cdkd could not read/);
+    expect(warning).not.toContain('producer-bucket');
+  });
+
+  it('refuses a re-exported secret whose source record keeps a raw region spelling', async () => {
+    const reExporter = {
+      resources: {},
+      outputs: { Key: plaintext },
+      outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+    };
+    const reader = new ProducerSecretReader(
+      async (stack, region) =>
+        stack === 'Source' && region === 'US-EAST-1' ? { state: producerState } : null,
+      () => undefined,
+      async () => [{ stackName: 'Source', region: 'US-EAST-1' }]
+    );
+    const judged = async (): Promise<JudgedValue> => ({
+      value: plaintext,
+      ...(await reader.judge('ReExporter', 'us-east-1', reExporter, plaintext)),
+    });
+    const resolver = {
+      resolveImportJudged: judged,
+      resolveGetStackOutputJudged: judged,
+      resolveImport: async () => plaintext,
+      resolveGetStackOutput: async () => plaintext,
+    } as CrossStackResolver;
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--key', { 'Fn::ImportValue': 'ReExporter-Key' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: resolver });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
   });
 
   it('a resolver without the check is not judged (the --from-cfn-stack one)', async () => {
