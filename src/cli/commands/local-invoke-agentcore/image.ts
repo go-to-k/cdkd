@@ -418,11 +418,15 @@ export async function buildAgentCoreImageContext(
   options: LocalInvokeAgentCoreOptions
 ): Promise<{ context: ImageResolutionContext | undefined; loaded: LocalStateRecord | undefined }> {
   const logger = getLogger();
+  // Loaded first: an env-agnostic stack has no synth region, and the state
+  // record's region is where it was deployed (go-to-k/cdkd#6325).
+  const loaded = await stateProvider.load(candidate.stackName, candidate.region);
   const region = canonicalizeRegion(
     options.region ??
       namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
       candidate.region ??
+      loaded?.region ??
       emulatorDefaultRegion()
   );
 
@@ -447,7 +451,6 @@ export async function buildAgentCoreImageContext(
   const pseudo = derivePseudoParametersFromRegion(region, accountId);
   if (pseudo) context.pseudoParameters = pseudo;
 
-  const loaded = await stateProvider.load(candidate.stackName, candidate.region);
   if (loaded) {
     context.stateResources = loaded.resources;
     if (stateProvider.resolveTemplateSsmParameters) {

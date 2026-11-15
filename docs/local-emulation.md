@@ -359,6 +359,12 @@ state record (`--from-state` / `--from-cfn-stack`), then your AWS profile's
 region is used for the `--assume-role` STS call. With no region anywhere, the
 container gets none.
 
+With `--from-state` or `--from-cfn-stack`, on `local invoke`, `local run-task`
+and `local invoke-agentcore`, `${AWS::Region}`, `${AWS::Partition}` and
+`${AWS::URLSuffix}` in a template value take the region from `AWS_REGION`,
+`AWS_DEFAULT_REGION` or the stack's `env.region`, else from the loaded state
+record's region.
+
 `local run-task`, `local start-service` and `local start-alb` give every task
 container its region the same way: `AWS_REGION`, `AWS_DEFAULT_REGION`,
 `--stack-region` or the stack's own `env.region`, the loaded state record's

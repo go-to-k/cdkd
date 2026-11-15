@@ -55,6 +55,11 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
         // Issue #6307: a `Ref` to an SSM-typed template parameter. cdkd state
         // records no parameter values, so --from-state reads SSM for it.
         PARAM_VALUE: ssm.StringParameter.valueForStringParameter(this, SSM_PARAMETER_NAME),
+        // Issue #6325: pseudo parameters of this env-agnostic stack. With no
+        // region named (the profile's only), they take the state record's.
+        REGION_VALUE: cdk.Aws.REGION,
+        PARTITION_ARN: cdk.Fn.sub('arn:${AWS::Partition}:s3:::${B}', { B: bucket.bucketName }),
+        SUFFIX_HOST: cdk.Fn.sub('s3.${AWS::URLSuffix}'),
       },
       timeout: cdk.Duration.seconds(10),
     });
