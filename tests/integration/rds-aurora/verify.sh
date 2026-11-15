@@ -2011,9 +2011,11 @@ printf '%s\n' "${DESTROY_2B_PLAIN}" >&2
 # (go-to-k/cdkd#2319), and the same class also covers the final-snapshot
 # refusal "isn't currently in the available state" (#5184), so the member
 # refusal itself is read on the wrap's --verbose debug line. Both lines are
-# the provider's own DeleteDBCluster catch-wrap.
-if ! grep -qE "Failed to delete DBCluster SecurityCluster: InvalidDBClusterStateFault\. Re-run with --verbose" <<<"${DESTROY_2B_PLAIN}"; then
-  echo "FAIL: phase 2b destroy failed, but not with the DeleteDBCluster catch-wrap (InvalidDBClusterStateFault + --verbose pointer) -- the arm did not reach the compensation" >&2
+# the provider's own DeleteDBCluster catch-wrap. This destroy IS --verbose,
+# so the wrap carries no "Re-run with --verbose" pointer (go-to-k/cdkd#6162):
+# the class ends the line.
+if ! grep -qE "Failed to delete DBCluster SecurityCluster: InvalidDBClusterStateFault\.$" <<<"${DESTROY_2B_PLAIN}"; then
+  echo "FAIL: phase 2b destroy failed, but not with the DeleteDBCluster catch-wrap (InvalidDBClusterStateFault, class only) -- the arm did not reach the compensation" >&2
   exit 1
 fi
 if ! grep -qE "Failed to delete DBCluster SecurityCluster: .*(still contains DB instances|non-deleting state)" <<<"${DESTROY_2B_PLAIN}"; then
@@ -2065,8 +2067,9 @@ assert_failed_event_class_only_2B() { # usage: <logicalId> <wrap prefix>
     echo "FAIL: phase 2b: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
     exit 1
   fi
-  if ! grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${msg}"; then
-    echo "FAIL: phase 2b: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+  # The destroy is --verbose, so no "Re-run with --verbose" pointer (#6162).
+  if ! grep -qE "$2: [A-Za-z0-9]+\.$" <<<"${msg}"; then
+    echo "FAIL: phase 2b: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>.' (#2319, #6162); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
   # Every FAILED event this destroy wrote for it, not only the last.

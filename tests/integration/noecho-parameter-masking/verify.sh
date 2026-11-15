@@ -1327,8 +1327,10 @@ assert_gone "${REJECT_NAME} exists after its rejected create" \
 # The durable sink: every deployments/*.jsonl object, with a floor so a scan
 # that read nothing cannot pass, and at least one carrying the rejection --
 # by its class only (go-to-k/cdkd#2319): SSM's text, which quotes the value,
-# must not be persisted even masked.
-CLASS_ONLY_RE="Failed to create SSM parameter NoEchoReject: [A-Za-z0-9]+\\. Re-run with --verbose for AWS's own message\\."
+# must not be persisted even masked. The probe deploy is --verbose, so the
+# message carries no "Re-run with --verbose" pointer (go-to-k/cdkd#6162): the
+# class ends the JSON string.
+CLASS_ONLY_RE="Failed to create SSM parameter NoEchoReject: [A-Za-z0-9]+\\.\""
 EVENT_KEYS=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
   --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key')
 EVENTS_SCANNED=0
@@ -1361,7 +1363,7 @@ if [ "${EVENTS_SCANNED}" -lt 2 ]; then
   exit 1
 fi
 if [ "${EVENTS_REJECTION}" -lt 1 ]; then
-  echo "FAIL: no deployment-events object carries the Tier validation rejection as 'Failed to create SSM parameter NoEchoReject: <ErrorClass>. Re-run with --verbose for AWS's own message.' -- the failed resource's event was not among what the scan read, or its message is not class-only (go-to-k/cdkd#2319)" >&2
+  echo "FAIL: no deployment-events object carries the Tier validation rejection as 'Failed to create SSM parameter NoEchoReject: <ErrorClass>.' -- the failed resource's event was not among what the scan read, or its message is not class-only (go-to-k/cdkd#2319)" >&2
   exit 1
 fi
 echo "    OK: no deployment-events object carries the value (${EVENTS_SCANNED} objects, ${EVENTS_REJECTION} with the rejection)"
