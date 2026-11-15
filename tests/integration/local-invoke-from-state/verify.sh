@@ -546,7 +546,11 @@ case "${REGION}" in cn-*) URL_SUFFIX="amazonaws.com.cn" ;; esac
 PROFILE_DIR="$(mktemp -d)"
 PROFILE_ERR="${PROFILE_DIR}/stderr"
 RESULT_PROFILE="$(
-  eval "$(aws configure export-credentials --format env)"
+  creds="$(aws configure export-credentials --format env)" || {
+    echo "[verify] FAIL: aws configure export-credentials failed" >&2
+    exit 1
+  }
+  eval "${creds}"
   printf '[default]\nregion = %s\n' "${REGION}" >"${PROFILE_DIR}/config"
   : >"${PROFILE_DIR}/no-credentials"
   unset AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE

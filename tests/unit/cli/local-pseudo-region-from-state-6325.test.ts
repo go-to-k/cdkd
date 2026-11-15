@@ -32,6 +32,12 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
 
 import { resolveInvokeTemplateEnv } from '../../../src/cli/commands/local-invoke/command.js';
 import { buildEcsImageResolutionContext } from '../../../src/cli/commands/local-run-task/image-context.js';
+import { buildAgentCoreImageContext } from '../../../src/cli/commands/local-invoke-agentcore.js';
+import {
+  recordEmulatorDefaultRegion,
+  resetEmulatorDefaultRegionForTests,
+} from '../../../src/utils/emulator-default-region.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const ENV = {
@@ -82,6 +88,28 @@ const taskStack = (region: string | undefined) =>
     },
   });
 
+/** A task whose ONLY intrinsic is an image `Fn::Sub` naming pseudo parameters. */
+const imageOnlyTaskStack = () =>
+  stack(undefined, {
+    Task: {
+      Type: 'AWS::ECS::TaskDefinition',
+      Properties: {
+        ContainerDefinitions: [
+          {
+            Name: 'app',
+            Image: {
+              'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/repo:latest',
+            },
+          },
+        ],
+      },
+    },
+  });
+
+const NO_REGION_WARNING = 'could not determine the target region';
+const warnedNoRegion = (warn: ReturnType<typeof vi.spyOn>) =>
+  warn.mock.calls.some((args) => String(args[0]).includes(NO_REGION_WARNING));
+
 /** A `--from-state` provider whose record was deployed to `recordRegion`. */
 function provider(recordRegion: string) {
   return {
@@ -108,6 +136,8 @@ afterEach(() => {
     else process.env[k] = saved[k];
   }
   stateSource.createLocalStateProvider.mockReset();
+  resetEmulatorDefaultRegionForTests();
+  vi.restoreAllMocks();
 });
 
 describe('local invoke --from-state: an env-agnostic stack takes the state record region (#6325)', () => {
@@ -127,6 +157,19 @@ describe('local invoke --from-state: an env-agnostic stack takes the state recor
       ARN: 'arn:aws:s3:::my-bucket',
       HOST: 's3.amazonaws.com',
     });
+  });
+
+  it('does not warn that the region could not be determined', async () => {
+    stateSource.createLocalStateProvider.mockReturnValue(provider('eu-west-1'));
+    const warn = vi.spyOn(getLogger(), 'warn');
+    await invoke(undefined);
+    expect(warnedNoRegion(warn)).toBe(false);
+  });
+
+  it("the record region outranks the --aws-emulator run's default region (mixed mode)", async () => {
+    recordEmulatorDefaultRegion('eu-south-1');
+    stateSource.createLocalStateProvider.mockReturnValue(provider('eu-west-1'));
+    expect((await invoke(undefined)).env['R']).toBe('eu-west-1');
   });
 
   it('derives the partition and suffix from that region too', async () => {
@@ -164,6 +207,55 @@ describe('local run-task --from-state: an env-agnostic stack takes the state rec
   it('a stack region still outranks the record', async () => {
     const { context } = await buildEcsImageResolutionContext(
       taskStack('us-west-2'),
+      provider('eu-west-1') as never,
+      { fromState: true } as never
+    );
+    expect(context?.pseudoParameters?.region).toBe('us-west-2');
+    process.env['AWS_REGION'] = 'ap-northeast-1';
+    const { context: named } = await buildEcsImageResolutionContext(
+      taskStack(undefined),
+      provider('eu-west-1') as never,
+      { fromState: true } as never
+    );
+    expect(named?.pseudoParameters?.region).toBe('ap-northeast-1');
+  });
+
+  it('an image Fn::Sub naming only pseudo parameters loads the record for its region', async () => {
+    const p = provider('eu-west-1');
+    const warn = vi.spyOn(getLogger(), 'warn');
+    const { context } = await buildEcsImageResolutionContext(
+      imageOnlyTaskStack(),
+      p as never,
+      { fromState: true } as never
+    );
+    expect(p.load).toHaveBeenCalled();
+    expect(context?.pseudoParameters).toMatchObject({
+      accountId: '111111111111',
+      region: 'eu-west-1',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(warnedNoRegion(warn)).toBe(false);
+  });
+});
+
+describe('local invoke-agentcore --from-state: an env-agnostic stack takes the state record region (#6325)', () => {
+  it('the image context pseudo parameters carry the record region and the account', async () => {
+    const { context } = await buildAgentCoreImageContext(
+      stack(undefined, {}),
+      provider('cn-north-1') as never,
+      { fromState: true } as never
+    );
+    expect(context?.pseudoParameters).toMatchObject({
+      accountId: '111111111111',
+      region: 'cn-north-1',
+      partition: 'aws-cn',
+      urlSuffix: 'amazonaws.com.cn',
+    });
+  });
+
+  it('a stack region still outranks the record', async () => {
+    const { context } = await buildAgentCoreImageContext(
+      stack('us-west-2', {}),
       provider('eu-west-1') as never,
       { fromState: true } as never
     );

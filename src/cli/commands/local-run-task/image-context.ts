@@ -151,8 +151,13 @@ export async function buildEcsImageResolutionContext(
   // resolver the caller builds afterwards (issue #1836).
   let stateRecordRegion: string | undefined;
 
+  // An image `Fn::Sub` naming only pseudo parameters loads the record too, for
+  // its region (go-to-k/cdkd#6325).
   const wantsState =
-    needs.needsStateResources || needs.needsEnvOrSecretSubstitution || wantsStateForTaskRole;
+    needs.needsStateResources ||
+    needs.needsEnvOrSecretSubstitution ||
+    needs.needsPseudoParameters ||
+    wantsStateForTaskRole;
   if (stateProvider && wantsState) {
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
