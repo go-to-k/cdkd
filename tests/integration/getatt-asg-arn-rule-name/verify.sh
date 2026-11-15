@@ -118,7 +118,8 @@ echo "    OK: the custom-bus rule exists under that name"
 # unchanged template: the output must be re-resolved to the live ARN (not the
 # planted value, not the group name), and the record must hold the ARN again.
 # Before the fix the resolver's AutoScalingGroupARN arm found nothing to heal
-# with and refused the deploy.
+# with: the no-change deploy warned `Cannot resolve Fn::GetAtt` and kept the
+# planted output, which the grep and the output check below both catch.
 echo "==> Heal phase: strip the ASG record's ARN out of band, redeploy unchanged"
 STATE_DOC="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 ASG_ID="$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .key] | if length == 1 then .[0] else error("expected one ASG record") end' <<<"${STATE_DOC}")"
