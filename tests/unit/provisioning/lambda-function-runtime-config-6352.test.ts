@@ -240,6 +240,24 @@ describe('AWS::Lambda::Function RuntimeConfig (#6352)', () => {
       expect(sentOfType(GetFunctionCommand).length).toBeGreaterThan(0);
     });
 
+    it('keeps the member AWS reported when the other is missing', async () => {
+      mockSettledFunction({ Runtime: 'custom', RuntimeConfig: { RuntimeArn: RUNTIME_ARN } });
+
+      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+
+      expect((state as Record<string, unknown>)['RuntimeConfig']).toEqual({
+        RuntimeArn: RUNTIME_ARN,
+      });
+    });
+
+    it('omits the key when AWS reports an empty block', async () => {
+      mockSettledFunction({ Runtime: 'custom', RuntimeConfig: {} });
+
+      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+
+      expect(state as Record<string, unknown>).not.toHaveProperty('RuntimeConfig');
+    });
+
     it('omits the key when AWS reports none', async () => {
       mockSettledFunction({ Runtime: 'nodejs22.x' });
 

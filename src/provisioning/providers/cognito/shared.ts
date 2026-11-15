@@ -46,7 +46,8 @@ import { readEnabledMfas } from './mfa-request.js';
  *   `EmailVerificationMessage`, `EmailVerificationSubject`, and
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
  *   the write does not name gets its DEFAULT name, so omission could reset a
- *   custom one). Only its custom levels are echoed: see `customAcrLevels`. * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
+ *   custom one). Only its custom levels are echoed: see `customAcrLevels`.
+ * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
  *   `CUSTOMER_MANAGED_KEY` `KeyConfiguration` went to `AWS_OWNED_KEY`, its
  *   `KmsKeyArn` dropped. Echoed apart from this list, like the SES
  *   `EmailConfiguration`, because an `AWS_OWNED_KEY` one is what omission

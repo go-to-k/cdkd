@@ -142,8 +142,17 @@ cleanup() {
   fi
   aws lambda delete-function --function-name "${FN}" --region "${REGION}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}" >/dev/null 2>&1
+  # The runtime sweep runs once the function is gone, so it never races a
+  # function that still names the runtime.
+  local i out
+  for i in $(seq 1 20); do
+    out="$(aws lambda get-function --function-name "${FN}" --region "${REGION}" 2>&1)"
+    if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then break; fi
+    sleep 3
+  done
   if [ -d node_modules ]; then
-    node runtime.mjs teardown-prefix "${RT_PREFIX}" >/dev/null
+    node runtime.mjs teardown-prefix "${RT_PREFIX}" >/dev/null \
+      || echo "WARN: runtime sweep under ${RT_PREFIX} failed; the next run's pre-run cleanup retries it" >&2
   fi
   aws ecr delete-repository --repository-name "${REPO}" --region "${REGION}" --force >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -176,7 +185,7 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
 aws ecr create-repository --repository-name "${REPO}" --region "${REGION}" >/dev/null
 aws ecr set-repository-policy --repository-name "${REPO}" --region "${REGION}" --policy-text \
-  '{"Version":"2012-10-17","Statement":[{"Sid":"LambdaRuntimeRead","Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"]}]}' >/dev/null
+  "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"LambdaRuntimeRead\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":[\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],\"Condition\":{\"StringEquals\":{\"aws:SourceAccount\":\"${ACCOUNT}\"}}}]}" >/dev/null
 aws ecr get-login-password --region "${REGION}" | docker login --username AWS --password-stdin "${REGISTRY}" >/dev/null
 docker buildx build --platform linux/arm64 --provenance=false \
   -t "${REGISTRY}/${REPO}:v1" --push runtime-image
@@ -249,6 +258,14 @@ esac
 aws ecr delete-repository --repository-name "${REPO}" --region "${REGION}" --force >/dev/null
 assert_gone "ECR repository ${REPO} still exists" aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}"
 echo "    runtime ${RT_STATE}, repository deleted"
+
+# Both invokes created the function's log group, which destroy does not own.
+aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}"
+LEFT_LG="$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${FN}" \
+  --region "${REGION}" --query 'logGroups[].logGroupName' --output text)"
+if [ -n "${LEFT_LG}" ]; then
+  echo "FAIL: log group(s) left after teardown: ${LEFT_LG}" >&2; exit 1
+fi
 
 trap - EXIT INT TERM
 echo "[verify] PASS — Lambda Function RuntimeConfig (issue #6352), all 4 phases passed"
