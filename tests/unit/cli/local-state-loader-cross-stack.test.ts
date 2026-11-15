@@ -93,6 +93,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 });
 
 import { buildCrossStackResolver } from '../../../src/cli/commands/local-state-loader.js';
+import { producerSecretCheckOf } from '../../../src/local/cross-stack-secrets.js';
 
 /** The config the S3 client was actually built with (issue #1836 round 3). */
 const awsClientsConfig = (): Record<string, unknown> =>
@@ -1030,6 +1031,508 @@ describe('buildCrossStackResolver', () => {
 
       expect(await resolver.resolveGetStackOutput('Producer', 'US-EAST-1', 'Out')).toBeUndefined();
       dispose();
+    });
+  });
+
+  describe("a producer stack's secret (go-to-k/cdkd#6337)", () => {
+    const plaintext = 'da2-plaintextproducerkey';
+    const producerState = {
+      stackName: 'Producer',
+      resources: {
+        ApiKey: {
+          physicalId: `apiid123|${plaintext}`,
+          resourceType: 'AWS::AppSync::ApiKey',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'AKIAEXAMPLE',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: {},
+          attributes: { SecretAccessKey: 'plaintext-secret-access-key' },
+          dependencies: [],
+        },
+      },
+      outputs: {
+        Key: plaintext,
+        'Producer-Key': plaintext,
+        Secret: 'plaintext-secret-access-key',
+        'Producer-Secret': 'plaintext-secret-access-key',
+        Bucket: 'producer-bucket',
+        'Producer-Bucket': 'producer-bucket',
+      },
+      // The record shape a deploy writes: the alias set the index mirrors.
+      exportNames: ['Producer-Key', 'Producer-Secret', 'Producer-Bucket'],
+    };
+    type Built = NonNullable<Awaited<ReturnType<typeof buildCrossStackResolver>>>;
+    async function makeResolver(): Promise<Built> {
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.verifyBucketExistsMock.mockResolvedValue(undefined);
+      mocks.listStacksMock.mockResolvedValue([{ stackName: 'Producer', region: 'us-east-1' }]);
+      const built = await buildCrossStackResolver('us-east-1', { statePrefix: 'cdkd' });
+      if (!built) throw new Error('expected resolver build to succeed');
+      return built;
+    }
+    const checkOf = (built: Built) => {
+      const check = producerSecretCheckOf(built.resolver);
+      if (!check) throw new Error('expected the judged variants');
+      return check;
+    };
+    const imported = (built: Built, name: string) => checkOf(built).resolveImportJudged(name);
+    const output = (built: Built, stack: string, name: string) =>
+      checkOf(built).resolveGetStackOutputJudged(stack, 'us-east-1', name);
+    const indexEntry = (name: 'Producer-Key' | 'Producer-Secret' | 'Producer-Bucket') => ({
+      value: producerState.outputs[name],
+      producerStack: 'Producer',
+      producerRegion: 'us-east-1',
+    });
+    const stateOf =
+      (records: Record<string, unknown>) =>
+      async (stack: string): Promise<{ state: unknown; etag: string } | null> =>
+        Object.hasOwn(records, stack) ? { state: records[stack], etag: 'e' } : null;
+
+    it('the exports-index fast path reads the producer record and judges each value', async () => {
+      const built = await makeResolver();
+      mocks.lookupMock.mockImplementation(async (name: string) =>
+        indexEntry(name as 'Producer-Key')
+      );
+      mocks.getStateMock.mockImplementation(stateOf({ Producer: producerState }));
+
+      expect(await imported(built, 'Producer-Key')).toEqual({ value: plaintext, verdict: 'secret' });
+      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
+      expect(await imported(built, 'Producer-Secret')).toEqual({
+        value: 'plaintext-secret-access-key',
+        verdict: 'secret',
+      });
+      // Both polarities: the same producer's non-secret export is not flagged.
+      expect(await imported(built, 'Producer-Bucket')).toEqual({ value: 'producer-bucket' });
+      // The contract method serves the value alone.
+      expect(await built.resolver.resolveImport('Producer-Key')).toBe(plaintext);
+      // One record read for every lookup.
+      expect(mocks.getStateMock).toHaveBeenCalledTimes(1);
+      built.dispose();
+    });
+
+    it.each([
+      ['has no record', () => mocks.getStateMock.mockResolvedValue(null), 'stale'],
+      [
+        'cannot be read',
+        () => mocks.getStateMock.mockRejectedValue(new Error('AccessDenied')),
+        'unreadable',
+      ],
+    ])('the fast path fails closed on a producer record that %s', async (_l, prime, verdict) => {
+      const built = await makeResolver();
+      mocks.lookupMock.mockResolvedValue(indexEntry('Producer-Bucket'));
+      prime();
+      expect(await imported(built, 'Producer-Bucket')).toEqual({
+        value: 'producer-bucket',
+        verdict,
+      });
+      built.dispose();
+    });
+
+    it('the fast path calls a value the producer record no longer exports stale', async () => {
+      const built = await makeResolver();
+      mocks.lookupMock.mockResolvedValue({
+        value: 'old-value-from-before',
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+      });
+      mocks.getStateMock.mockImplementation(stateOf({ Producer: producerState }));
+      expect(await imported(built, 'Producer-Bucket')).toEqual({
+        value: 'old-value-from-before',
+        verdict: 'stale',
+      });
+      built.dispose();
+    });
+
+    it('the index-miss scan and Fn::GetStackOutput judge the secret, not the bucket', async () => {
+      const built = await makeResolver();
+      mocks.lookupMock.mockResolvedValue(undefined);
+      mocks.getStateMock.mockImplementation(stateOf({ Producer: producerState }));
+      expect(await imported(built, 'Producer-Bucket')).toEqual({ value: 'producer-bucket' });
+      expect(await imported(built, 'Producer-Key')).toEqual({ value: plaintext, verdict: 'secret' });
+      expect(await output(built, 'Producer', 'Bucket')).toEqual({ value: 'producer-bucket' });
+      expect(await output(built, 'Producer', 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
+      expect(await built.resolver.resolveGetStackOutput('Producer', 'us-east-1', 'Key')).toBe(
+        plaintext
+      );
+      built.dispose();
+    });
+
+    describe('a nested child stack holding the secret', () => {
+      const childKey = 'da2-childstackplaintextkey';
+      const parent = {
+        stackName: 'Producer',
+        resources: {
+          Child: {
+            physicalId: 'arn:cdkd-local:us-east-1:123:nested-stack/Producer/Child',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: { 'Outputs.ApiKeyOut': childKey, 'Outputs.BucketOut': 'child-bucket' },
+            dependencies: [],
+          },
+        },
+        outputs: {
+          'Producer-Key': childKey,
+          'Producer-Bucket': 'child-bucket',
+          Joined: `key=${childKey}`,
+        },
+      };
+      const child = {
+        stackName: 'Producer~Child',
+        resources: {
+          ApiKey: {
+            physicalId: `apiid|${childKey}`,
+            resourceType: 'AWS::AppSync::ApiKey',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: { ApiKeyOut: childKey, BucketOut: 'child-bucket' },
+      };
+
+      it("judges a parent export of a child's secret from the child's record", async () => {
+        const built = await makeResolver();
+        mocks.lookupMock.mockResolvedValue(undefined);
+        mocks.getStateMock.mockImplementation(stateOf({ Producer: parent, 'Producer~Child': child }));
+        expect(await imported(built, 'Producer-Key')).toEqual({ value: childKey, verdict: 'secret' });
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Producer~Child', 'us-east-1');
+        expect(await imported(built, 'Producer-Bucket')).toEqual({ value: 'child-bucket' });
+        built.dispose();
+      });
+
+      it("fails closed on the row's outputs when the child record cannot be read", async () => {
+        const built = await makeResolver();
+        mocks.lookupMock.mockResolvedValue(undefined);
+        mocks.getStateMock.mockImplementation(stateOf({ Producer: parent }));
+        // Through the scan and through Fn::GetStackOutput, whole and embedded.
+        expect(await imported(built, 'Producer-Key')).toEqual({
+          value: childKey,
+          verdict: 'unreadable',
+        });
+        expect(await output(built, 'Producer', 'Producer-Key')).toEqual({
+          value: childKey,
+          verdict: 'unreadable',
+        });
+        expect(await output(built, 'Producer', 'Joined')).toEqual({
+          value: `key=${childKey}`,
+          verdict: 'unreadable',
+        });
+        built.dispose();
+      });
+
+      it("judges another producer's equal value by that producer's own records", async () => {
+        const p = {
+          stackName: 'P',
+          resources: {
+            Child: {
+              physicalId: 'arn:cdkd-local:us-east-1:123:nested-stack/P/Child',
+              resourceType: 'AWS::CloudFormation::Stack',
+              properties: {},
+              attributes: { 'Outputs.Region': 'us-east-1' },
+              dependencies: [],
+            },
+          },
+          outputs: { Region: 'us-east-1' },
+        };
+        const q = { stackName: 'Q', resources: {}, outputs: { Region: 'us-east-1' } };
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ P: p, Q: q }));
+        // Served from P, whose child is unreadable: fails closed.
+        expect(await output(built, 'P', 'Region')).toEqual({
+          value: 'us-east-1',
+          verdict: 'unreadable',
+        });
+        // The same value from Q, read after: judged by Q's records alone.
+        expect(await output(built, 'Q', 'Region')).toEqual({ value: 'us-east-1' });
+        built.dispose();
+      });
+    });
+
+    it('a short value under a secret-like name refuses no export, in any producer', async () => {
+      const p = {
+        stackName: 'P',
+        resources: {
+          Policy: {
+            physicalId: 'pol',
+            resourceType: 'Custom::Thing',
+            properties: {},
+            attributes: { PasswordPolicy: 'strict', ClientSecretEnabled: 'true' },
+            dependencies: [],
+          },
+        },
+        outputs: { Mode: 'strict', Flag: 'true' },
+      };
+      const q = { stackName: 'Q', resources: {}, outputs: { Mode: 'strict' } };
+      const built = await makeResolver();
+      mocks.getStateMock.mockImplementation(stateOf({ P: p, Q: q }));
+      expect(await output(built, 'P', 'Mode')).toEqual({ value: 'strict' });
+      expect(await output(built, 'P', 'Flag')).toEqual({ value: 'true' });
+      expect(await output(built, 'Q', 'Mode')).toEqual({ value: 'strict' });
+      built.dispose();
+    });
+
+    describe('a value re-exported from another stack', () => {
+      const source = { ...producerState, stackName: 'Source' };
+      const reExporter = {
+        stackName: 'ReExporter',
+        resources: {},
+        outputs: { Key: plaintext, Bucket: 'producer-bucket' },
+        imports: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', exportName: 'Producer-Key' }],
+      };
+      const reader = {
+        stackName: 'Reader',
+        resources: {},
+        outputs: { Key: plaintext },
+        outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+      };
+
+      it.each([
+        ['Fn::ImportValue (imports)', 'ReExporter'],
+        ['Fn::GetStackOutput (outputReads)', 'Reader'],
+      ])("judges a value re-exported through %s by the source's records", async (_l, stack) => {
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(
+          stateOf({ Source: source, ReExporter: reExporter, Reader: reader })
+        );
+        expect(await output(built, stack, 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'us-east-1');
+        if (stack === 'ReExporter') {
+          expect(await output(built, stack, 'Bucket')).toEqual({ value: 'producer-bucket' });
+        }
+        built.dispose();
+      });
+
+      it('fails closed when the source record cannot be read, or its name is redacted', async () => {
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(async (stack: string) => {
+          if (stack === 'Source') throw new Error('AccessDenied');
+          return stack === 'ReExporter' ? { state: reExporter, etag: 'e' } : null;
+        });
+        expect(await output(built, 'ReExporter', 'Bucket')).toEqual({
+          value: 'producer-bucket',
+          verdict: 'unreadable',
+          source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+        });
+        const redacted = {
+          ...reader,
+          outputReads: [{ sourceStack: '***', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const second = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ Reader: redacted }));
+        expect(await output(second, 'Reader', 'Key')).toEqual({
+          value: plaintext,
+          verdict: 'unreadable',
+          source: { reason: 'redacted' },
+        });
+        second.dispose();
+        built.dispose();
+      });
+
+      describe('a source recorded under a folded region, its record under the raw spelling', () => {
+        const folded = {
+          ...reader,
+          outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        it("recovers the case-variant record and judges by the source's records", async () => {
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([
+            { stackName: 'Reader', region: 'us-east-1' },
+            { stackName: 'Source', region: 'US-EAST-1' },
+          ]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) =>
+            stack === 'Reader'
+              ? { state: folded, etag: 'e' }
+              : stack === 'Source' && region === 'US-EAST-1'
+                ? { state: source, etag: 'e' }
+                : null
+          );
+          expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+          built.dispose();
+        });
+
+        it("reads the variant's nested children under the variant's own spelling", async () => {
+          const childKey = 'da2-variantchildkey00000';
+          const parentSource = {
+            stackName: 'Source',
+            resources: {
+              Child: {
+                physicalId: 'arn:cdkd-local:US-EAST-1:123:nested-stack/Source/Child',
+                resourceType: 'AWS::CloudFormation::Stack',
+                properties: {},
+                attributes: { 'Outputs.KeyOut': childKey },
+                dependencies: [],
+              },
+            },
+            outputs: { Key: childKey },
+          };
+          const childRecord = {
+            stackName: 'Source~Child',
+            resources: {
+              ApiKey: {
+                physicalId: `apiid|${childKey}`,
+                resourceType: 'AWS::AppSync::ApiKey',
+                properties: {},
+                attributes: {},
+                dependencies: [],
+              },
+            },
+            outputs: { KeyOut: childKey },
+          };
+          const readsChild = { ...folded, outputs: { Key: childKey } };
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) => {
+            if (stack === 'Reader') return { state: readsChild, etag: 'e' };
+            if (region !== 'US-EAST-1') return null;
+            if (stack === 'Source') return { state: parentSource, etag: 'e' };
+            return stack === 'Source~Child' ? { state: childRecord, etag: 'e' } : null;
+          });
+          // Judged from the child's record (secret), not left unverified.
+          expect(await output(built, 'Reader', 'Key')).toEqual({ value: childKey, verdict: 'secret' });
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source~Child', 'US-EAST-1');
+          built.dispose();
+        });
+
+        it('fails closed when the case-variant record cannot be read', async () => {
+          const built = await makeResolver();
+          mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+          mocks.getStateMock.mockImplementation(async (stack: string, region: string) => {
+            if (stack === 'Source' && region === 'US-EAST-1') throw new Error('AccessDenied');
+            return stack === 'Reader' ? { state: folded, etag: 'e' } : null;
+          });
+          expect(await output(built, 'Reader', 'Key')).toEqual({
+            value: plaintext,
+            verdict: 'unreadable',
+            source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+          });
+          built.dispose();
+        });
+      });
+
+      it('skips a source whose only case variant is gone by the time it is read', async () => {
+        const folded = {
+          ...reader,
+          outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const built = await makeResolver();
+        mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
+        mocks.getStateMock.mockImplementation(stateOf({ Reader: folded }));
+        expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext });
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+        built.dispose();
+      });
+
+      it('fails closed past the re-export depth bound', async () => {
+        // S0 re-exports from S1, ... S32 from S33: 33 levels.
+        const records: Record<string, unknown> = {};
+        for (let i = 0; i <= 33; i += 1) {
+          records[`S${i}`] = {
+            stackName: `S${i}`,
+            resources: {},
+            outputs: { V: 'v' },
+            ...(i < 33 && {
+              imports: [{ sourceStack: `S${i + 1}`, sourceRegion: 'us-east-1', exportName: 'V' }],
+            }),
+          };
+        }
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf(records));
+        expect(await output(built, 'S0', 'V')).toEqual({
+          value: 'v',
+          verdict: 'unreadable',
+          source: { reason: 'too-deep', shown: 'S33 (us-east-1)' },
+        });
+        built.dispose();
+      });
+
+      it('skips a source with no record (moved out of cdkd), judging the rest', async () => {
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ ReExporter: reExporter }));
+        expect(await output(built, 'ReExporter', 'Bucket')).toEqual({ value: 'producer-bucket' });
+        built.dispose();
+      });
+
+      describe('cross-reading stacks (outputReads can form a cycle)', () => {
+        const key = 'da2-cyclekeyplaintext000';
+        const c = {
+          stackName: 'C',
+          resources: {
+            ApiKey: {
+              physicalId: `apiid|${key}`,
+              resourceType: 'AWS::AppSync::ApiKey',
+              properties: {},
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: { Key: key },
+          outputReads: [{ sourceStack: 'B', sourceRegion: 'us-east-1', outputName: 'V' }],
+        };
+        const b = {
+          stackName: 'B',
+          resources: {},
+          outputs: { V: 'b-value', Key: key },
+          outputReads: [{ sourceStack: 'C', sourceRegion: 'us-east-1', outputName: 'Key' }],
+        };
+        const a = {
+          stackName: 'A',
+          resources: {},
+          outputs: { Key: key, V: 'a-value' },
+          outputReads: [
+            { sourceStack: 'B', sourceRegion: 'us-east-1', outputName: 'V' },
+            { sourceStack: 'C', sourceRegion: 'us-east-1', outputName: 'Key' },
+          ],
+        };
+        const within = <T>(p: Promise<T>): Promise<T | 'HUNG'> =>
+          Promise.race([p, new Promise<'HUNG'>((r) => setTimeout(() => r('HUNG'), 2000))]);
+
+        it('judges stacks of one cycle concurrently without waiting on itself', async () => {
+          const built = await makeResolver();
+          mocks.getStateMock.mockImplementation(stateOf({ A: a, B: b, C: c }));
+          const both = await within(
+            Promise.all([output(built, 'A', 'Key'), output(built, 'B', 'Key'), output(built, 'C', 'Key')])
+          );
+          expect(both).toEqual([
+            { value: key, verdict: 'secret' },
+            { value: key, verdict: 'secret' },
+            { value: key, verdict: 'secret' },
+          ]);
+          expect(await within(output(built, 'A', 'V'))).toEqual({ value: 'a-value' });
+          built.dispose();
+        });
+
+        it("judges a re-exporter by the whole cycle, whichever was judged first", async () => {
+          const built = await makeResolver();
+          mocks.getStateMock.mockImplementation(stateOf({ B: b, C: c }));
+          expect(await within(output(built, 'C', 'Key'))).toEqual({ value: key, verdict: 'secret' });
+          expect(await within(output(built, 'B', 'Key'))).toEqual({ value: key, verdict: 'secret' });
+          built.dispose();
+        });
+      });
+
+      it('ends a re-export cycle instead of waiting on itself', async () => {
+        const a = {
+          stackName: 'A',
+          resources: {},
+          outputs: { V: 'a-value' },
+          imports: [{ sourceStack: 'B', sourceRegion: 'us-east-1', exportName: 'b' }],
+        };
+        const b = {
+          stackName: 'B',
+          resources: {},
+          outputs: { V: 'b-value' },
+          imports: [{ sourceStack: 'A', sourceRegion: 'us-east-1', exportName: 'a' }],
+        };
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(stateOf({ A: a, B: b }));
+        expect(await output(built, 'A', 'V')).toEqual({ value: 'a-value' });
+        built.dispose();
+      });
     });
   });
 

@@ -360,10 +360,43 @@ the flags. On this command they resolve the following:
 
 Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see
-below). The secret check reads the consumer stack's own state only:
-a value another stack exports, read through `Fn::ImportValue` or
-`Fn::GetStackOutput`, goes on the command line as exported, unless it was
-recorded as the secret mask (`***`), which is refused.
+below).
+
+Under `--from-state` the secret check also covers a value another stack
+exports, read through `Fn::ImportValue` or `Fn::GetStackOutput`. cdkd reads
+the producer stack's state, its nested stacks' state, and the state of every
+stack the producer itself reads across stacks. A value holding one of their
+secrets (an `AWS::AppSync::ApiKey`'s key, a secret attribute above) is treated
+like a secret in the consumer's own state:
+
+- refused in `Command`, `EntryPoint` or a health-check command;
+- resolved off the command line in `Environment`;
+- dropped as a `Secrets` `ValueFrom`.
+
+A value cdkd cannot check is handled the same way. That covers a state record
+cdkd cannot read, and an exports-index entry the producer no longer exports.
+In every case, passing the value through `Environment` instead keeps it
+resolving. One upstream record cdkd cannot use withholds every value of the
+producer that re-exports from it, and the refusal says why:
+
+- unreadable: it names the upstream stack and region. Retry, or upgrade cdkd
+  when a newer version wrote the record.
+- recorded masked: the upstream's stack name is stored as `***`, so cdkd
+  cannot find its state.
+- too deep: the upstream lies beyond the 32-level re-export bound.
+A value recorded as the secret mask (`***`) is refused in `Command`,
+`EntryPoint` or a health-check command.
+
+The check does not cover:
+
+- a secret the producer received as a stack parameter, which its state does
+  not record as one;
+- a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`);
+- a value the producer re-exports from a stack cdkd does not manage, or read
+  cross-account (`RoleArn`) or through the CloudFormation fallback, which its
+  state does not record;
+- `--from-cfn-stack`, where an exported value goes on the command line as
+  exported.
 
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.

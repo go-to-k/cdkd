@@ -14,6 +14,7 @@ import {
   resolveEcsTaskTarget,
 } from '../../../src/local/ecs-task-resolver.js';
 import type { ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
+import { type JudgedValue, ProducerSecretReader } from '../../../src/local/cross-stack-secrets.js';
 import { argvValue } from '../../../src/local/ecs-task-resolver/container.js';
 import { buildDockerRunArgs } from '../../../src/local/ecs-task-runner/docker-run-args.js';
 import type { CrossStackResolver } from '../../../src/local/state-resolver.js';
@@ -801,5 +802,361 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         /Container 'cli' Command\[1\]: resolved to a CloudFormation dynamic reference.*Environment variable or a Secrets entry/
       );
     });
+  });
+});
+
+describe("a producer stack's secret read across stacks (go-to-k/cdkd#6337)", () => {
+  const plaintext = 'da2-plaintextproducerkey';
+  /** The producer's state: an exported AppSync ApiKey, its key in the id. */
+  const producerState = {
+    resources: {
+      ApiKey: {
+        physicalId: `apiid123|${plaintext}`,
+        resourceType: 'AWS::AppSync::ApiKey',
+        properties: {},
+        attributes: { ApiKey: plaintext },
+        dependencies: [],
+      },
+      Db: {
+        physicalId: 'db',
+        resourceType: 'Custom::Database',
+        properties: {},
+        // A 10-character secret under a secret-like name, beside short
+        // ordinary values under such names.
+        attributes: { DbPassword: 'pw10charsX', PasswordPolicy: 'strict', SecretEnabled: 'true' },
+        dependencies: [],
+      },
+    },
+    outputs: {
+      Key: plaintext,
+      KeyArn: `arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/${plaintext}`,
+      Bucket: 'producer-bucket',
+      Pw: 'pw10charsX',
+      Mode: 'strict',
+      Flag: 'true',
+      Url: 'postgres://u:pw10charsX@db.example',
+    },
+  };
+  /**
+   * A cdkd-built resolver's shape: the judged variants beside the contract,
+   * each judging the value against the producer state with the real reader.
+   * `unreadable` names a value the producer state could not vouch for.
+   */
+  function producerResolver(unreadable?: string): CrossStackResolver {
+    const reader = new ProducerSecretReader(
+      async () => null,
+      () => undefined
+    );
+    const judged = async (name: string): Promise<JudgedValue> => {
+      const value = (producerState.outputs as Record<string, string>)[name];
+      if (value === undefined) return { value };
+      if (value === unreadable) return { value, verdict: 'unreadable' };
+      const judgement = await reader.judge('Producer', 'us-east-1', producerState, value);
+      return { value, ...judgement };
+    };
+    const importName = (exportName: string): string => exportName.replace(/^Producer-/, '');
+    return {
+      resolveImportJudged: (exportName: string) => judged(importName(exportName)),
+      resolveGetStackOutputJudged: (_stack: string, _region: string, output: string) =>
+        judged(output),
+      resolveImport: async (exportName: string) =>
+        (await judged(importName(exportName))).value,
+      resolveGetStackOutput: async (_stack: string, _region: string, output: string) =>
+        (await judged(output)).value,
+    } as CrossStackResolver;
+  }
+
+  it.each([
+    ['Fn::ImportValue', { 'Fn::ImportValue': 'Producer-Key' }],
+    ['Fn::GetStackOutput', { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Key' } }],
+    ['a Fn::Join of Fn::ImportValue', { 'Fn::Join': ['', ['--key=', { 'Fn::ImportValue': 'Producer-Key' }]] }],
+    ['an export holding the key inside a longer value (its ARN)', { 'Fn::ImportValue': 'Producer-KeyArn' }],
+  ])('refuses %s of a producer secret on the Command argv', async (_label, element) => {
+    const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+      stateResources: {},
+    });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(JSON.stringify(task.containers[0])).not.toContain(plaintext);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it('refuses it on EntryPoint and HealthCheck.Command too', async () => {
+    const stack = buildStack({
+      EntryPoint: ['sh', { 'Fn::ImportValue': 'Producer-Key' }],
+      HealthCheck: { Command: ['CMD', { 'Fn::ImportValue': 'Producer-Key' }] },
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(task.containers[0]!.unresolvedCommandElements?.map((u) => u.field)).toEqual([
+      'EntryPoint',
+      'HealthCheck.Command',
+    ]);
+  });
+
+  it("still puts the same producer's non-secret export on the argv", async () => {
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task)).toContain('producer-bucket');
+    expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+  });
+
+  it('serves it in Environment value-less, off the argv, and a non-secret one inline', async () => {
+    const stack = buildStack({
+      Environment: [
+        { Name: 'API_KEY', Value: { 'Fn::ImportValue': 'Producer-Key' } },
+        { Name: 'BUCKET', Value: { 'Fn::ImportValue': 'Producer-Bucket' } },
+      ],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    // CloudFormation accepts a secret export in Environment: it still resolves.
+    expect(task.containers[0]!.environment['API_KEY']).toBe(plaintext);
+    expect(task.containers[0]!.resolvedDynamicReferenceKeys).toEqual(['API_KEY']);
+    const args = dockerArgs(task);
+    expect(args.join(' ')).not.toContain(plaintext);
+    expect(envFlags(args)).toContain('API_KEY');
+    expect(envFlags(args)).toContain('BUCKET=producer-bucket');
+  });
+
+  it('drops a Secrets ValueFrom that resolves to a producer secret, naming no value', async () => {
+    const stack = buildStack({
+      Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Key' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(task.containers[0]!.secrets).toEqual([]);
+    expect(task.containers[0]!.droppedSecretNames).toEqual(['TOKEN']);
+    expect(JSON.stringify(task)).not.toContain(plaintext);
+    expect(task.containers[0]!.warnings).toContainEqual(
+      expect.stringMatching(/^Secret 'TOKEN' dropped: ValueFrom resolved a cross-stack value holding a secret/)
+    );
+    expect(task.warnings).toContainEqual(
+      expect.stringMatching(/^Container 'cli': Secret 'TOKEN' dropped: ValueFrom resolved a cross-stack/)
+    );
+  });
+
+  it('refuses on the argv, and drops as a ValueFrom, a value whose producer state was unreadable', async () => {
+    const stack = buildStack({
+      Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
+      Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Bucket' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver('producer-bucket'),
+    });
+    expect(dockerArgs(task)).not.toContain('producer-bucket');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value whose producer stack's state cdkd could not read/
+    );
+    expect(task.containers[0]!.secrets).toEqual([]);
+    expect(task.containers[0]!.warnings).toContainEqual(
+      expect.stringMatching(/^Secret 'TOKEN' dropped: ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read/)
+    );
+  });
+
+  it.each([
+    ['secret first', ['Producer-Key', 'Producer-Bucket']],
+    ['secret second', ['Producer-Bucket', 'Producer-Key']],
+  ])('refuses one element reading a secret and a non-secret import (%s)', async (_l, names) => {
+    const element = {
+      'Fn::Join': [':', names.map((n) => ({ 'Fn::ImportValue': n }))],
+    };
+    const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+      stateResources: {},
+    });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it.each([
+    ['secret first', ['Producer-Key', 'Producer-Bucket']],
+    ['secret second', ['Producer-Bucket', 'Producer-Key']],
+  ])('names the secret over an unreadable value in one element (%s)', async (_l, names) => {
+    const element = {
+      'Fn::Join': [':', names.map((n) => ({ 'Fn::ImportValue': n }))],
+    };
+    const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+      stateResources: {},
+    });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver('producer-bucket'),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it('serves an unreadable value in Environment value-less', async () => {
+    const stack = buildStack({
+      Environment: [{ Name: 'BUCKET', Value: { 'Fn::ImportValue': 'Producer-Bucket' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver('producer-bucket'),
+    });
+    expect(task.containers[0]!.environment['BUCKET']).toBe('producer-bucket');
+    expect(task.containers[0]!.resolvedDynamicReferenceKeys).toEqual(['BUCKET']);
+    const args = dockerArgs(task);
+    expect(args).not.toContain('BUCKET=producer-bucket');
+    expect(envFlags(args)).toContain('BUCKET');
+  });
+
+  it('refuses a 10-character secret-named value exported whole', async () => {
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--pw', { 'Fn::ImportValue': 'Producer-Pw' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task).join(' ')).not.toContain('pw10charsX');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it.each([
+    ['a short value under a secret-like name (strict)', 'Producer-Mode', 'strict'],
+    ['a short value under a secret-like name (true)', 'Producer-Flag', 'true'],
+    [
+      'a longer export holding a 10-character secret-named value',
+      'Producer-Url',
+      'postgres://u:pw10charsX@db.example',
+    ],
+  ])('still resolves %s onto the argv', async (_l, exportName, value) => {
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--v', { 'Fn::ImportValue': exportName }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: producerResolver(),
+    });
+    expect(dockerArgs(task)).toContain(value);
+    expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+  });
+
+  it.each([
+    [
+      'unreadable',
+      { reason: 'unreadable', shown: 'Upstream (us-east-1)' },
+      /the producer re-exports from Upstream \(us-east-1\), whose state cdkd could not read \(retry; or a newer-schema record needs a cdkd upgrade\)/,
+    ],
+    [
+      'redacted',
+      { reason: 'redacted' },
+      /the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state/,
+    ],
+    [
+      'too-deep',
+      { reason: 'too-deep', shown: 'Upstream (us-east-1)' },
+      /the producer re-exports from Upstream \(us-east-1\), beyond the 32-level re-export bound/,
+    ],
+  ])('names an %s upstream source, and no value, in the argv refusal and the ValueFrom warning', async (_l, source, message) => {
+    const blocked = {
+      resolveImportJudged: async () => ({ value: 'producer-bucket', verdict: 'unreadable', source }),
+      resolveGetStackOutputJudged: async () => ({ value: undefined }),
+      resolveImport: async () => 'producer-bucket',
+      resolveGetStackOutput: async () => undefined,
+    } as unknown as CrossStackResolver;
+    const stack = buildStack({
+      Command: ['--bucket', { 'Fn::ImportValue': 'Producer-Bucket' }],
+      Secrets: [{ Name: 'TOKEN', ValueFrom: { 'Fn::ImportValue': 'Producer-Bucket' } }],
+    });
+    const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+    await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: blocked });
+    expect(dockerArgs(task)).not.toContain('producer-bucket');
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value cdkd could not check for secrets: /
+    );
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(message);
+    const warning = task.containers[0]!.warnings.find((w) => w.startsWith("Secret 'TOKEN' dropped:"));
+    expect(warning).toMatch(message);
+    expect(warning).not.toContain('producer-bucket');
+  });
+
+  it('refuses a re-exported secret whose source record keeps a raw region spelling', async () => {
+    const reExporter = {
+      resources: {},
+      outputs: { Key: plaintext },
+      outputReads: [{ sourceStack: 'Source', sourceRegion: 'us-east-1', outputName: 'Key' }],
+    };
+    const reader = new ProducerSecretReader(
+      async (stack, region) =>
+        stack === 'Source' && region === 'US-EAST-1' ? { state: producerState } : null,
+      () => undefined,
+      async () => [{ stackName: 'Source', region: 'US-EAST-1' }]
+    );
+    const judged = async (): Promise<JudgedValue> => ({
+      value: plaintext,
+      ...(await reader.judge('ReExporter', 'us-east-1', reExporter, plaintext)),
+    });
+    const resolver = {
+      resolveImportJudged: judged,
+      resolveGetStackOutputJudged: judged,
+      resolveImport: async () => plaintext,
+      resolveGetStackOutput: async () => plaintext,
+    } as CrossStackResolver;
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['--key', { 'Fn::ImportValue': 'ReExporter-Key' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: resolver });
+    expect(dockerArgs(task).join(' ')).not.toContain(plaintext);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Command\[1\]: resolved a cross-stack value holding a secret of the producer stack/
+    );
+  });
+
+  it('a resolver without the check is not judged (the --from-cfn-stack one)', async () => {
+    const plain: CrossStackResolver = {
+      resolveImport: vi.fn().mockResolvedValue('not-judged-value'),
+      resolveGetStackOutput: vi.fn().mockResolvedValue(undefined),
+    };
+    const task = resolveEcsTaskTarget(
+      'TD',
+      [buildStack({ Command: ['run', { 'Fn::ImportValue': 'X' }] })],
+      { stateResources: {} }
+    );
+    await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: plain });
+    expect(task.containers[0]!.command).toEqual(['run', 'not-judged-value']);
   });
 });
