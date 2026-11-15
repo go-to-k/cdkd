@@ -54,6 +54,7 @@ import {
   preFixBaselineUncomparedDriftKeys,
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
+import { stripSiblingManagedPolicyArns } from '../../../provisioning/iam-sibling-managed-policies.js';
 
 /** What {@link compareDriftReadback} reads from `runDriftForStack`'s scope. */
 interface CompareDriftReadbackArgs {
@@ -70,6 +71,8 @@ interface CompareDriftReadbackArgs {
   secrets: RecordedSecretValues;
   printing: RecordedSecretValues;
   aws: Record<string, unknown>;
+  /** The sibling context the readback was given (`buildReadCurrentStateContext`). */
+  readContext?: ReadCurrentStateContext;
 }
 
 /**
@@ -93,6 +96,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     secrets,
     printing,
     aws,
+    readContext,
   } = args;
   // Providers can declare state property paths they cannot read back
   // from AWS (e.g. Lambda `Code`, Secrets Manager `SecretString`). The
@@ -358,6 +362,18 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     normalized.aws,
     resource.resourceType
   );
+  // go-to-k/cdkd#6324: a managed policy a sibling `AWS::IAM::ManagedPolicy`
+  // attaches to this IAM principal is that resource's, not the principal's.
+  // The readback already dropped it; the BASELINE drops it here, so one
+  // captured after the sibling's attach (or before this fix) compares clean.
+  const siblingStripped = stripSiblingManagedPolicyArns(
+    resource.resourceType,
+    resource.physicalId,
+    protocolNormalized.baseline,
+    protocolNormalized.aws,
+    resource.properties,
+    readContext
+  );
   // Issue #1784: the provider's own BOTH-SIDES canonicalizer, for a
   // difference no ignore-path can express — a member of an ARRAY ELEMENT.
   // `calculateResourceDrift` compares arrays wholesale, so the only
@@ -383,11 +399,11 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     ? {
         baseline: provider.canonicalizeDriftProperties(
           resource.resourceType,
-          protocolNormalized.baseline
+          siblingStripped.baseline
         ),
-        aws: provider.canonicalizeDriftProperties(resource.resourceType, protocolNormalized.aws),
+        aws: provider.canonicalizeDriftProperties(resource.resourceType, siblingStripped.aws),
       }
-    : protocolNormalized;
+    : siblingStripped;
   // Issue #3573: the provider's PAIR canonicalizer, for a rule that reads
   // one side to decide the other -- a readback shape change absorbed only
   // against a baseline written in the legacy shape. After the per-side

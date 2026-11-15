@@ -511,13 +511,14 @@ export async function runDriftForStack(
       await withPrintingSecrets(printing, async () => {
         try {
           let aws: Record<string, unknown> | ResourceNotFound | undefined;
+          const readContext = buildReadCurrentStateContext(state, logicalId);
           if (provider.readCurrentState) {
             aws = await provider.readCurrentState(
               resource.physicalId,
               logicalId,
               resource.resourceType,
               resource.properties ?? {},
-              buildReadCurrentStateContext(state, logicalId)
+              readContext
             );
             readReturned = true;
             noteReadReturned();
@@ -588,6 +589,7 @@ export async function runDriftForStack(
             secrets,
             printing,
             aws,
+            readContext,
           });
         } catch (err) {
           // A type with NO read path is not a failure. When the Cloud Control

@@ -12,6 +12,10 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { collectInlinePolicyNamesManagedBySiblings } from '../iam-role-provider.js';
+import {
+  collectManagedPolicyArnsAttachedBySiblings,
+  withoutSiblingAttachedArns,
+} from '../../iam-sibling-managed-policies.js';
 import type { ResourceNotFound, ResourceIdentityVerdict } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import {
@@ -222,7 +226,12 @@ export async function readUserCurrentState(
     const arns = (attached.AttachedPolicies ?? [])
       .map((p) => p.PolicyArn)
       .filter((arn): arn is string => !!arn);
-    result['ManagedPolicyArns'] = arns;
+    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy`'s `Users` attach.
+    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
+      arns,
+      collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Users'),
+      properties
+    );
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
@@ -282,7 +291,12 @@ export async function readGroupCurrentState(
     const arns = (attached.AttachedPolicies ?? [])
       .map((p) => p.PolicyArn)
       .filter((arn): arn is string => !!arn);
-    result['ManagedPolicyArns'] = arns;
+    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy`'s `Groups` attach.
+    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
+      arns,
+      collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Groups'),
+      properties
+    );
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }

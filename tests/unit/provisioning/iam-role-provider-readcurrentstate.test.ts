@@ -575,6 +575,66 @@ describe('IAMRoleProvider.readCurrentState', () => {
       ]);
     });
 
+    // go-to-k/cdkd#6324: the managed-policy analogue.
+    describe('a sibling AWS::IAM::ManagedPolicy attached via Roles', () => {
+      const MP = 'arn:aws:iam::123456789012:policy/Stack-Mp-ABC';
+      const BASIC = 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole';
+      const OOB = 'arn:aws:iam::aws:policy/AWSDenyAll';
+      function readWith(
+        attached: string[],
+        declared: string[] | undefined,
+        siblings: NonNullable<import('../../../src/types/resource.js').ReadCurrentStateContext['siblings']>
+      ) {
+        mockSend.mockReset();
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof GetRoleCommand) return Promise.resolve({ Role: { RoleName: 'MyRole', Path: '/' } });
+          if (cmd instanceof ListAttachedRolePoliciesCommand) {
+            return Promise.resolve({ AttachedPolicies: attached.map((PolicyArn) => ({ PolicyArn })) });
+          }
+          if (cmd instanceof ListRolePoliciesCommand) return Promise.resolve({ PolicyNames: [], IsTruncated: false });
+          return Promise.resolve({ Tags: [], IsTruncated: false });
+        });
+        return provider
+          .readCurrentState(
+            'MyRole',
+            'MyRole',
+            'AWS::IAM::Role',
+            declared === undefined ? {} : { ManagedPolicyArns: declared },
+            { siblings }
+          )
+          .then((r) => bagOf(r)?.['ManagedPolicyArns']);
+      }
+      const mpSibling = (roles: unknown, physicalId: string | null = MP) => ({
+        Mp: {
+          resourceType: 'AWS::IAM::ManagedPolicy',
+          ...(physicalId !== null && { physicalId }),
+          properties: { Roles: roles },
+        },
+      });
+
+      it('excludes its ARN, keeping the declared and out-of-band ones', async () => {
+        expect(await readWith([MP, BASIC, OOB], [BASIC], mpSibling(['MyRole']))).toEqual([BASIC, OOB]);
+      });
+
+      it('excludes it on a role declaring no ManagedPolicyArns at all', async () => {
+        expect(await readWith([MP], undefined, mpSibling(['MyRole']))).toEqual([]);
+      });
+
+      it('keeps its ARN when the role ALSO declares it', async () => {
+        expect(await readWith([MP, BASIC], [MP, BASIC], mpSibling(['MyRole']))).toEqual([MP, BASIC]);
+      });
+
+      it.each([
+        ['attached to another role', mpSibling(['OtherRole'])],
+        ['with no recorded ARN', mpSibling(['MyRole'], null)],
+        ['listing the role in Users, not Roles', { Mp: { resourceType: 'AWS::IAM::ManagedPolicy', physicalId: MP, properties: { Users: ['MyRole'] } } }],
+        ['of another type', { Mp: { resourceType: 'AWS::IAM::Policy', physicalId: MP, properties: { Roles: ['MyRole'] } } }],
+        ['with a non-list Roles', mpSibling('MyRole')],
+      ])('keeps its ARN for a sibling %s', async (_label, siblings) => {
+        expect(await readWith([MP, BASIC], [BASIC], siblings)).toEqual([MP, BASIC]);
+      });
+    });
+
     it('no-op without context (backward-compatible for callers that do not pass it)', async () => {
       // deploy-engine's kickOffObservedCapture doesn't pass context (the
       // sibling Policy resource may not be deployed yet at capture time);

@@ -17,6 +17,10 @@ import {
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
 import { collectInlinePolicyNamesManagedBySiblings } from '../iam-role-provider.js';
+import {
+  collectManagedPolicyArnsAttachedBySiblings,
+  withoutSiblingAttachedArns,
+} from '../../iam-sibling-managed-policies.js';
 import { isRoleName, roleIdentityToken } from './shared.js';
 
 /**
@@ -167,7 +171,9 @@ export async function readRoleIdIfExists(
  *    accepted by `create()`, but state typically stores the parsed object
  *    after intrinsic resolution.)
  *  - `ManagedPolicyArns` — array of ARN strings from
- *    `ListAttachedRolePolicies`.
+ *    `ListAttachedRolePolicies`, minus the ARN of a sibling
+ *    `AWS::IAM::ManagedPolicy` attached via its `Roles` (go-to-k/cdkd#6324)
+ *    unless the role's own template declares it too.
  *  - `Policies` — inline policies surfaced as `[{PolicyName, PolicyDocument}]`.
  *    `ListRolePolicies` for names + `GetRolePolicy` per name for the
  *    body (URL-decoded + JSON-parsed). Ordering is reconciled against
@@ -238,7 +244,13 @@ export async function readCurrentState(
     const arns = (attached.AttachedPolicies ?? [])
       .map((p) => p.PolicyArn)
       .filter((arn): arn is string => !!arn);
-    result['ManagedPolicyArns'] = arns;
+    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy` attaching
+    // itself via `Roles: [role]` is managed by that resource, not the role.
+    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
+      arns,
+      collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Roles'),
+      properties
+    );
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }

@@ -1488,6 +1488,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-sibling-managed-policy-drift",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-user-group-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -3919,6 +3924,7 @@
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "iam-secret-derived-principals",
+    "iam-sibling-managed-policy-drift",
     "iam-user-group-fix-forward-orphan",
     "import-noecho-parameter",
     "import-reimport-masked-attrs",
