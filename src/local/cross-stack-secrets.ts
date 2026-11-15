@@ -49,6 +49,12 @@ export type OpaqueSource =
 export interface Judgement {
   verdict: ProducerSecretVerdict;
   source?: OpaqueSource | undefined;
+  /**
+   * Why a resolver cdkd did not build (cdk-local's `--from-cfn-stack` one)
+   * could not check the value: a stack-and-call text, never a value
+   * (go-to-k/cdkd#6339). Rendered only when there is no {@link source}.
+   */
+  detail?: string | undefined;
 }
 
 /** A value one resolver call returned, with its producer's verdict. */
@@ -56,6 +62,16 @@ export interface JudgedValue {
   value: string | undefined;
   verdict?: ProducerSecretVerdict | undefined;
   source?: OpaqueSource | undefined;
+  /**
+   * {@link source} as text, for cdk-local's own post-pass (`start-service` /
+   * `start-alb`), which reads `detail` and never `source` (go-to-k/cdkd#6339).
+   */
+  detail?: string | undefined;
+}
+
+/** `judged` with its re-export source also carried as cdk-local's `detail`. */
+export function withSourceDetail(judged: JudgedValue): JudgedValue {
+  return judged.source === undefined ? judged : { ...judged, detail: sourceRemedy(judged.source) };
 }
 
 /** The judged variants a cdkd-built resolver carries beside cdk-local's contract. */
@@ -546,6 +562,9 @@ export function producerSecretArgvReason(judgement: Judgement): string {
   if (judgement.source !== undefined) {
     return `resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}, ${tail}`;
   }
+  if (judgement.detail !== undefined) {
+    return `resolved a cross-stack value cdkd could not check for secrets: ${judgement.detail}, ${tail}`;
+  }
   return `resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets, ${tail}`;
 }
 
@@ -559,6 +578,9 @@ export function producerSecretValueFromReason(judgement: Judgement): string {
   }
   if (judgement.source !== undefined) {
     return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}`;
+  }
+  if (judgement.detail !== undefined) {
+    return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${judgement.detail}`;
   }
   return "ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets";
 }

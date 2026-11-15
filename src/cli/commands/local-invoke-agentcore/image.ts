@@ -296,13 +296,28 @@ export async function resolveAgentCoreCodeImageFromS3(
     }
   }
 
-  const bundle = await downloadAndExtractS3Bundle(location, {
-    // Mixed mode: real S3 only when THIS runtime excepts S3 (#6179).
-    workload: { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
-    ...(region !== undefined && { region }),
-    ...(options.profile !== undefined && { profile: options.profile }),
-    ...(credentials !== undefined && { credentials }),
-  });
+  const bucketJudged = (s3Source as JudgedS3Source).bucketJudged === true;
+  let bundle: Awaited<ReturnType<typeof downloadAndExtractS3Bundle>>;
+  try {
+    bundle = await downloadAndExtractS3Bundle(location, {
+      // Mixed mode: real S3 only when THIS runtime excepts S3 (#6179).
+      workload: {
+        logicalId: resolved.logicalId,
+        cdkPath: readCdkPathOrUndefined(resolved.resource),
+      },
+      ...(region !== undefined && { region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+      ...(credentials !== undefined && { credentials }),
+      // A judged bucket is still downloaded from, but cdk-local's log line and
+      // errors print `<cross-stack value withheld>` in its place (go-to-k/cdkd#6339).
+      ...(bucketJudged && { redactBucket: true }),
+    });
+  } catch (err) {
+    // `redactBucket` covers cdk-local's OWN text; an S3 AccessDenied message it
+    // relays can still name `arn:aws:s3:::<bucket>/<key>` as the resource.
+    if (bucketJudged) withholdBucketInError(err, location.bucket);
+    throw err;
+  }
   try {
     return await buildAgentCoreCodeImage({
       sourceDir: bundle.dir,
@@ -338,13 +353,21 @@ function findFileAssetByObjectKey(
 /**
  * A fromS3 source whose bucket name {@link resolveFromS3BucketIntrinsic} read
  * from a cross-stack value holding a producer stack's secret, or one cdkd could
- * not check (go-to-k/cdkd#6341). cdkd's own resolution line does not print it;
- * the bundle download (cdk-local's `downloadAndExtractS3Bundle`) still names
- * `s3://<bucket>/<key>` in its log line and errors until a cdk-local release
- * with a display override (go-to-k/cdk-local#982) lets this mark be passed on.
+ * not check (go-to-k/cdkd#6341). cdkd's own resolution line does not print it,
+ * and {@link resolveAgentCoreCodeImageFromS3} passes cdk-local's `redactBucket`
+ * so the bundle download's log line and errors do not either (go-to-k/cdkd#6339).
  */
 export interface JudgedS3Source {
   bucketJudged?: true;
+}
+
+const WITHHELD_BUCKET = '<cross-stack value withheld>';
+
+/** Replace every occurrence of a judged bucket in a thrown error's text. */
+function withholdBucketInError(err: unknown, bucket: string): void {
+  if (!(err instanceof Error) || bucket.length === 0) return;
+  err.message = err.message.split(bucket).join(WITHHELD_BUCKET);
+  if (typeof err.stack === 'string') err.stack = err.stack.split(bucket).join(WITHHELD_BUCKET);
 }
 
 /**

@@ -1277,6 +1277,10 @@ describe('buildCrossStackResolver', () => {
 
     describe('a value re-exported from another stack', () => {
       const source = { ...producerState, stackName: 'Source' };
+      // The source as text, the only field cdk-local's own post-pass renders
+      // (start-service / start-alb; go-to-k/cdkd#6339).
+      const UNREADABLE_SOURCE_DETAIL =
+        'the producer re-exports from Source (us-east-1), whose state cdkd could not read (retry; or a newer-schema record needs a cdkd upgrade)';
       const reExporter = {
         stackName: 'ReExporter',
         resources: {},
@@ -1316,6 +1320,7 @@ describe('buildCrossStackResolver', () => {
           value: 'producer-bucket',
           verdict: 'unreadable',
           source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+          detail: UNREADABLE_SOURCE_DETAIL,
         });
         const redacted = {
           ...reader,
@@ -1327,6 +1332,8 @@ describe('buildCrossStackResolver', () => {
           value: plaintext,
           verdict: 'unreadable',
           source: { reason: 'redacted' },
+          detail:
+            'the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state',
         });
         second.dispose();
         built.dispose();
@@ -1409,6 +1416,7 @@ describe('buildCrossStackResolver', () => {
             value: plaintext,
             verdict: 'unreadable',
             source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+            detail: UNREADABLE_SOURCE_DETAIL,
           });
           built.dispose();
         });
@@ -1446,6 +1454,7 @@ describe('buildCrossStackResolver', () => {
           value: 'v',
           verdict: 'unreadable',
           source: { reason: 'too-deep', shown: 'S33 (us-east-1)' },
+          detail: 'the producer re-exports from S33 (us-east-1), beyond the 32-level re-export bound',
         });
         built.dispose();
       });

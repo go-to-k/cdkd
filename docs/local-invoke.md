@@ -284,15 +284,15 @@ value. A `{{resolve:...}}` lookup that fails stops the invoke before the
 container starts. An entry in the `--env-vars` file overrides any of the four
 kinds.
 
-Under `--from-state`, cdkd checks a value another stack exports, read through
-`Fn::ImportValue` or `Fn::GetStackOutput`, against the producer stack's state.
-A value holding one of its secrets (an `AWS::AppSync::ApiKey`'s key, an
-`AWS::IAM::AccessKey`'s `SecretAccessKey`) still reaches the container. It is
-passed off the `docker run` command line, as a `-e KEY` argument with no
-value. So is a value cdkd cannot check: a producer record it cannot read, or
-an exports-index entry the producer no longer exports. The check is the one
-[`cdkd local run-task`](local-run-task.md#environment-variables-and-secrets)
-applies, with the same limits.
+Under either state flag, cdkd checks a value another stack exports, read
+through `Fn::ImportValue` (or, under `--from-state`, `Fn::GetStackOutput`),
+for the producer stack's secrets. A value holding one (an
+`AWS::AppSync::ApiKey`'s key, an `AWS::IAM::AccessKey`'s `SecretAccessKey`)
+still reaches the container. It is passed off the `docker run` command line,
+as a `-e KEY` argument with no value. So is a value cdkd cannot check, such as
+a producer stack it cannot read. The check is the one
+[`cdkd local run-task`](local-run-task.md#values-another-stack-exports)
+applies, with the same IAM reads under `--from-cfn-stack` and the same limits.
 
 cdkd also sets the variables the Lambda runtime normally provides, so that
 the handler's `context` object looks real: `AWS_LAMBDA_FUNCTION_NAME`,
