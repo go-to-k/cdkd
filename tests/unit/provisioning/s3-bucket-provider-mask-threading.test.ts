@@ -59,6 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { createMaskedLogSinks } from '../../../src/provisioning/masked-retry-logger.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import {
   createSecretMasker,
   SECRET_MASK,
@@ -646,6 +647,7 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
       const text = transcript();
       expect(text).toContain('Bucket name changed');
       expectMasked(text, SHORT, SHORT_ID);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
       expect(error.message).toContain('cannot be changed after creation');
       expectMasked(error.message, SHORT, SHORT_ID);
     });
