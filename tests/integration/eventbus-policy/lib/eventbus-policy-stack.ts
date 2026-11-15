@@ -37,8 +37,12 @@ export class EventbusPolicyStack extends cdk.Stack {
 
     const update = process.env.CDKD_TEST_UPDATE === 'true';
 
+    // go-to-k/cdkd#6323: the bus itself changes in the same update as the
+    // BusPolicy statement, so its re-captured baseline holds the policy the
+    // sibling wrote BEFORE the Condition was added.
     const bus = new events.EventBus(this, 'Bus', {
       eventBusName: 'cdkd-integ-buspolicy-bus',
+      ...(update ? { description: 'cdkd integ bus, updated' } : {}),
     });
 
     new events.CfnEventBusPolicy(this, 'BusPolicy', {

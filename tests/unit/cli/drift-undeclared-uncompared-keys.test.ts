@@ -8,7 +8,7 @@ import { undeclaredUncomparedDriftKeys } from '../../../src/cli/commands/drift.j
  * stack, or outside cdkd. `cdkd drift` never compares it, so `--revert` can
  * never delete another writer's notifications.
  */
-describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741)', () => {
+describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323)', () => {
   it('skips an undeclared bucket NotificationConfiguration', () => {
     expect(undeclaredUncomparedDriftKeys('AWS::S3::Bucket', { BucketName: 'b' })).toEqual([
       'NotificationConfiguration',
@@ -32,7 +32,26 @@ describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741)', () => {
     ).toEqual([]);
   });
 
+  // go-to-k/cdkd#6323: a sibling AWS::Events::EventBusPolicy writes the bus's
+  // policy; the bus's own baseline goes stale on its next update.
+  it('skips an undeclared event bus Policy', () => {
+    expect(undeclaredUncomparedDriftKeys('AWS::Events::EventBus', { Name: 'bus' })).toEqual([
+      'Policy',
+    ]);
+    expect(undeclaredUncomparedDriftKeys('AWS::Events::EventBus', {})).toEqual(['Policy']);
+  });
+
+  it('keeps comparing a Policy the event bus declares', () => {
+    expect(
+      undeclaredUncomparedDriftKeys('AWS::Events::EventBus', {
+        Name: 'bus',
+        Policy: { Version: '2012-10-17', Statement: [] },
+      })
+    ).toEqual([]);
+  });
+
   it.each([
+    ['AWS::Events::EventBusPolicy'],
     ['AWS::SQS::Queue'],
     ['Custom::S3BucketNotifications'],
     ['AWS::S3::BucketPolicy'],

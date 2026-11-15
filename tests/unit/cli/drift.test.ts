@@ -630,6 +630,106 @@ describe('cdkd drift', () => {
     );
   });
 
+  describe('an undeclared event bus Policy (go-to-k/cdkd#6323)', () => {
+    // Live repro shape: a bus update re-captured the policy a sibling
+    // AWS::Events::EventBusPolicy had written; the sibling's next statement
+    // change (an added Condition) landed after it, so the baseline is stale.
+    const statement = (condition: boolean): Record<string, unknown> => ({
+      Sid: 'stmt',
+      Effect: 'Allow',
+      Principal: { AWS: 'arn:aws:iam::123456789012:root' },
+      Action: 'events:PutEvents',
+      Resource: 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus',
+      ...(condition
+        ? { Condition: { StringEquals: { 'aws:PrincipalAccount': '123456789012' } } }
+        : {}),
+    });
+    const policy = (condition: boolean): Record<string, unknown> => ({
+      Version: '2012-10-17',
+      Statement: [statement(condition)],
+    });
+    const bus = (properties: Record<string, unknown> = { Name: 'my-bus' }): ResourceState =>
+      makeResource({
+        physicalId: 'my-bus',
+        resourceType: 'AWS::Events::EventBus',
+        properties,
+        observedProperties: {
+          Name: 'my-bus',
+          Description: 'v1',
+          Policy: policy(false),
+        },
+      });
+    const busPolicy: ResourceState = makeResource({
+      physicalId: 'stmt',
+      resourceType: 'AWS::Events::EventBusPolicy',
+      properties: { EventBusName: 'my-bus', StatementId: 'stmt', Statement: statement(true) },
+    });
+    const liveBus = (description: string): Record<string, unknown> => ({
+      Name: 'my-bus',
+      Description: description,
+      Policy: policy(true),
+    });
+
+    it('does not report the sibling-written policy as drift', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Bus: bus(), BusPolicy: busPolicy }));
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::Events::EventBus'
+          ? { readCurrentState: async () => liveBus('v1') }
+          : { readCurrentState: async () => ({ ...busPolicy.properties }) }
+      );
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(output).not.toContain('Policy.Statement');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('still compares a Policy the bus itself declares', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({ Bus: bus({ Name: 'my-bus', Policy: policy(false) }) })
+      );
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => liveBus('v1') });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('Policy.Statement');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('--revert of another drifted key sends the live policy back unchanged', async () => {
+      // The destructive half: the revert must never write the stale baseline
+      // policy (no Condition) over the live one.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Bus: bus() }));
+      const updateMock = vi.fn<
+        (
+          logicalId: string,
+          physicalId: string,
+          resourceType: string,
+          newProperties: Record<string, unknown>,
+          previousProperties: Record<string, unknown>
+        ) => Promise<{ physicalId: string; wasReplaced: boolean }>
+      >(async () => ({ physicalId: 'my-bus', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => liveBus('changed out of band'),
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      const [logicalId, , , newProps] = updateMock.mock.calls[0]!;
+      expect(logicalId).toBe('Bus');
+      expect(newProps['Description']).toBe('v1');
+      expect(newProps['Policy']).toEqual(policy(true));
+    });
+  });
+
   it('still reports drift on an undeclared key captured with a REAL value that later changed', async () => {
     // The observed baseline's extra power over CFn drift stays: an AWS-side
     // default captured with a real value at deploy time IS compared, so a

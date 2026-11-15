@@ -163,7 +163,7 @@ eventbridge-archive	2026-11-02T20:49:02Z	PASS	75	verify.sh	PR #5676 here-string 
 eventbridge-input-transformer	2026-11-07T00:18:06Z	PASS	70	verify.sh	#5937 eventbridge-rule split head; rc ok, orph clean
 eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head; rc ok, orph clean
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
-eventbus-policy	2026-11-10T16:10:19Z	PASS	75	verify.sh	rc ok, orph clean
+eventbus-policy	2026-11-15T05:34:32Z	PASS	90	verify.sh	rc ok, orph clean; #6323 Phase 3a drift clean + revert keeps Condition (pre-fix RED at 3a)
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
 export	2026-11-05T11:34:13Z	PASS	231	verify.sh	rc ok, orph clean
 export-nested-stack	2026-11-05T03:54:55Z	PASS	186	verify.sh	rc ok, orph clean; fixture ran vp run build, CFn stacks gone

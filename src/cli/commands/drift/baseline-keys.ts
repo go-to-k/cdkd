@@ -20,9 +20,19 @@ import { coerceCfnBoolean } from '../../../provisioning/config-shape.js';
  * before any of them runs and still holds a non-empty value
  * (`readNotification` always emits `EventBridgeConfiguration`), so
  * {@link undeclaredEmptyObservedKeys} does not skip it.
+ *
+ * `AWS::Events::EventBus` `Policy` (go-to-k/cdkd#6323): an
+ * `AWS::Events::EventBusPolicy` (CDK's `bus.addToResourcePolicy(...)`, or any
+ * `PutPermission` caller) writes the bus's resource policy, and
+ * `DescribeEventBus` returns it. The bus's baseline is empty on create, but a
+ * later update of the bus re-captures whatever policy the sibling wrote; the
+ * sibling's next statement change then reads as drift, and `--revert` wrote the
+ * stale document back, undoing the sibling's change (a removed `Condition`
+ * widened access).
  */
 const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::S3::Bucket': ['NotificationConfiguration'],
+  'AWS::Events::EventBus': ['Policy'],
 };
 
 /**
