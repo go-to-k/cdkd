@@ -9,7 +9,7 @@ paths:
 
 # sdk-attr-coverage critic
 
-`vp run gen:sdk-attr-coverage` builds the matrix; `vp run audit:sdk-attr-coverage:check` fails CI on drift AND on an unresolvable `Arn` / `Url` attribute ([#1187](https://github.com/go-to-k/cdkd/issues/1187)). Family: [layout-scripts.md](layout-scripts.md).
+`vp run gen:sdk-attr-coverage` builds the matrix; `vp run audit:sdk-attr-coverage:check` fails CI on drift AND on an unresolvable ARN / URL attribute ([#1187](https://github.com/go-to-k/cdkd/issues/1187)). Family: [layout-scripts.md](layout-scripts.md).
 
 - **Why it matters**: a cross-resource `Fn::GetAtt` reads `resource.attributes[<CFnName>]` in `constructAttribute` (`deployment/intrinsic-resolver/getatt.ts`) and never calls `getAttribute`, so an ARN under a non-CFn key HARD-FAILS the resolver's shape guard.
 - An `Arn` / `Url` / `ARN` / `URL` read-only attribute is a `gap` iff NEITHER cached NOR `constructAttribute`-handled NOR allow-listed. Only `Arn` / `Url` hard-fail the guard; the rest fall back with a warning (#6238). Stored keys pool per FILE, so a `buildAttributes()` helper counts — but a `case '<Attr>':` label in `getAttribute` is deliberately NOT collected.

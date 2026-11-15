@@ -13,8 +13,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 ## Summary
 
 - SDK-backed types classified: **140**
-- Covered (every Arn/Url readOnly resolvable): **72**
-- No Arn/Url readOnly attribute: **68**
+- Covered (every Arn/ARN/Url/URL readOnly resolvable): **72**
+- No Arn/ARN/Url/URL readOnly attribute: **68**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
 
@@ -28,11 +28,11 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Latent gaps
 
-None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cached or constructAttribute-resolvable.
+None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed type is cached or constructAttribute-resolvable.
 
-## Full classification (types with an Arn/Url readOnly)
+## Full classification (types with an Arn/ARN/Url/URL readOnly)
 
-| Resource type | Bucket | Arn/Url attributes (status) |
+| Resource type | Bucket | Arn/ARN/Url/URL attributes (status) |
 | --- | --- | --- |
 | `AWS::ApiGatewayV2::Api` | covered | `ExecuteApiArn` (cached) |
 | `AWS::AppSync::ApiKey` | covered | `Arn` (cached) |

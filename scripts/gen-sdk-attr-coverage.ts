@@ -22,8 +22,8 @@
  * provider handles it" without verifying the SDK provider's create/update
  * attribute-key names.
  *
- * WHY ONLY `Arn` / `Url` SUFFIXES
- * -------------------------------
+ * WHY ONLY `Arn` / `Url` SUFFIXES (AND `ARN` / `URL`)
+ * ---------------------------------------------------
  * The resolver resolves a `Fn::GetAtt` through three layers, in order:
  *   1. cached `resource.attributes[<name>]` (written by the SDK provider's
  *      create/update),
@@ -39,8 +39,10 @@
  * critically, are legitimately left uncached by many providers (resolved live
  * via `getAttribute` for `cdkd orphan`, or never referenced) — flagging every
  * one would be almost all false positives. So this critic scopes to the
- * deploy-BREAKING `Arn` / `Url` class only; broader wrong-key detection stays a
- * manual-review concern.
+ * deploy-BREAKING `Arn` / `Url` class, plus the upper-case `ARN` / `URL`
+ * spellings: the guard does not test those, so one falls back with a warning
+ * to the physical id, an ARN- or URL-named wrong value (#6238). Broader
+ * wrong-key detection stays a manual-review concern.
  *
  * RESOLVABLE = CACHED-BY-PROVIDER **OR** COVERED-BY-constructAttribute
  * -------------------------------------------------------------------
@@ -96,12 +98,12 @@
  *
  * CLASSIFICATION (per SDK-backed type with a cached schema)
  * ---------------------------------------------------------
- *   - no-arn-attr    — the type has no `Arn`/`Url` read-only attribute to worry
+ *   - no-arn-attr    — the type has no `Arn`/`ARN`/`Url`/`URL` read-only attribute to worry
  *                      about.
- *   - covered        — every `Arn`/`Url` read-only attribute is cached by the
+ *   - covered        — every `Arn`/`ARN`/`Url`/`URL` read-only attribute is cached by the
  *                      provider OR the type is handled by `constructAttribute`
  *                      OR allow-listed.
- *   - gap            — an `Arn`/`Url` read-only attribute that is neither cached
+ *   - gap            — an `Arn`/`ARN`/`Url`/`URL` read-only attribute that is neither cached
  *                      nor constructAttribute-covered nor allow-listed. The
  *                      `--check` critic hard-fails on any of these.
  *
@@ -151,7 +153,7 @@ const OUT_JSON = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.json');
 const OUT_MD = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.md');
 
 /**
- * Allow-list of (type -> read-only `Arn`/`Url` attributes) that are NOT a gap
+ * Allow-list of (type -> read-only `Arn`/`ARN`/`Url`/`URL` attributes) that are NOT a gap
  * even though they are neither cached by the provider nor referenced in
  * `constructAttribute`. Each entry carries a one-line rationale.
  */
@@ -262,7 +264,7 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
  * the file. Scoped to the whole file rather than just create/update because a
  * provider may build attributes via a `buildAttributes()` helper (issue #1179).
  * Over-collection is harmless in the usual case: the classifier only intersects
- * this set with a type's `Arn`/`Url` read-only names, and a camelCase SDK-input
+ * this set with a type's `Arn`/`ARN`/`Url`/`URL` read-only names, and a camelCase SDK-input
  * key cannot collide with a PascalCase CFn `*Arn` name.
  *
  * What that does NOT say — and an earlier revision did, wrongly — is that an
@@ -394,8 +396,9 @@ export const GAP_REMEDY =
 
 /**
  * A read-only attribute whose absence would HARD-FAIL the resolver's guard —
- * or, spelled `ARN` / `URL`, which the guard does not test, fall back SILENTLY
- * to the physical id (#6238: the ASG's `AutoScalingGroupARN`).
+ * or, spelled `ARN` / `URL`, which the guard does not test, fall back with a
+ * warning to the physical id, a wrong value (#6238: the ASG's
+ * `AutoScalingGroupARN`).
  */
 const isArnOrUrlAttr = (name: string): boolean => /(?:Arn|ARN|Url|URL)$/.test(name);
 
@@ -415,7 +418,7 @@ export interface TypeClassification {
 }
 
 /**
- * Classify one SDK-backed type's `Arn`/`Url` read-only attributes. Pure +
+ * Classify one SDK-backed type's `Arn`/`ARN`/`Url`/`URL` read-only attributes. Pure +
  * exported so unit tests can drive it with synthetic inputs.
  *
  * Takes NO `primaryIdentifier`: that field describes the Cloud Control
@@ -624,8 +627,8 @@ export function renderMarkdown(report: SdkAttrCoverageReport): string {
   lines.push('## Summary');
   lines.push('');
   lines.push(`- SDK-backed types classified: **${report.summary.classifiedCount}**`);
-  lines.push(`- Covered (every Arn/Url readOnly resolvable): **${report.summary.covered}**`);
-  lines.push(`- No Arn/Url readOnly attribute: **${report.summary.noArnAttr}**`);
+  lines.push(`- Covered (every Arn/ARN/Url/URL readOnly resolvable): **${report.summary.covered}**`);
+  lines.push(`- No Arn/ARN/Url/URL readOnly attribute: **${report.summary.noArnAttr}**`);
   lines.push(`- **Latent gaps (blocks CI): ${report.summary.gap}**`);
   lines.push(
     `- Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): ` +
@@ -654,11 +657,11 @@ export function renderMarkdown(report: SdkAttrCoverageReport): string {
   }
   const gapTypes = report.types.filter((t) => t.bucket === 'gap');
   if (gapTypes.length > 0) {
-    lines.push('## Latent gaps (UNRESOLVABLE Arn/Url readOnly) — BLOCKS CI');
+    lines.push('## Latent gaps (UNRESOLVABLE Arn/ARN/Url/URL readOnly) — BLOCKS CI');
     lines.push('');
     lines.push(GAP_REMEDY.replace(/\n/g, ' '));
     lines.push('');
-    lines.push('| Resource type | Unresolvable Arn/Url attributes |');
+    lines.push('| Resource type | Unresolvable Arn/ARN/Url/URL attributes |');
     lines.push('| --- | --- |');
     for (const t of gapTypes) {
       lines.push(`| \`${t.resourceType}\` | ${t.gaps.map((g) => `\`${g}\``).join(', ')} |`);
@@ -667,13 +670,13 @@ export function renderMarkdown(report: SdkAttrCoverageReport): string {
   } else {
     lines.push('## Latent gaps');
     lines.push('');
-    lines.push('None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cached or constructAttribute-resolvable.');
+    lines.push('None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed type is cached or constructAttribute-resolvable.');
     lines.push('');
   }
 
-  lines.push('## Full classification (types with an Arn/Url readOnly)');
+  lines.push('## Full classification (types with an Arn/ARN/Url/URL readOnly)');
   lines.push('');
-  lines.push('| Resource type | Bucket | Arn/Url attributes (status) |');
+  lines.push('| Resource type | Bucket | Arn/ARN/Url/URL attributes (status) |');
   lines.push('| --- | --- | --- |');
   for (const t of report.types) {
     if (t.arnAttributes.length === 0) continue;
@@ -770,7 +773,7 @@ function main(): void {
     const gaps = findGaps(report);
     if (gaps.length > 0) {
       process.stderr.write(
-        'sdk-attr-coverage: FAIL — SDK provider read-only Arn/Url attribute gap(s) detected.\n' +
+        'sdk-attr-coverage: FAIL — SDK provider read-only Arn/ARN/Url/URL attribute gap(s) detected.\n' +
           'Each attribute below is neither cached by the provider create/update (under its\n' +
           'exact CFn readOnlyProperties name) nor handled by constructAttribute, so\n' +
           `Fn::GetAtt would HARD-FAIL at deploy (the #1179 class).\n${GAP_REMEDY}\n\n`
