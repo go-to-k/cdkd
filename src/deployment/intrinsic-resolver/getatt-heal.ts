@@ -270,7 +270,7 @@ export function serveHealedAttribute(
  *    this attribute is served from that read.
  * 3. SETTLE — otherwise construct again under a context carrying the heal's
  *    outcome, so the fallback decides exactly as it always has (refuse an
- *    `*Arn` / `*Url` shape, refuse under `--strict-getatt`, else warn and
+ *    `*Arn` / `*ARN` / `*Url` / `*URL` shape, refuse under `--strict-getatt`, else warn and
  *    return the physical id) and words a refusal from what was observed.
  *
  * The phase rides a DERIVED context, never a field of this resolver: one

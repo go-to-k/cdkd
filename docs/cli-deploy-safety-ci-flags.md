@@ -92,7 +92,7 @@ value for it and exports nothing, and the deploy exits `0`.
 
 With `--strict-getatt`, every substituted physical ID is an error, whatever
 the attribute's name. That includes a substitute that happens to look like an
-ARN for an attribute ending in `Arn`.
+ARN for an attribute ending in `Arn` or `ARN`.
 
 An Output that cannot be resolved also fails the deploy. Without the flag it
 would break other stacks' `Fn::ImportValue` with "export not found" long after

@@ -456,7 +456,7 @@ export interface DeployEngineOptions {
   /**
    * `--strict-getatt` (issue #1111) — promote every unknown-attribute
    * `Fn::GetAtt` physicalId fallback (any suffix, not just the always-fatal
-   * `*Arn` / `*Url` shape mismatches) to a hard error, and fail the deploy
+   * `*Arn` / `*ARN` / `*Url` / `*URL` shape mismatches) to a hard error, and fail the deploy
    * when a stack Output cannot be resolved (default: warn and store no
    * value). Threaded into the engine's `IntrinsicFunctionResolver` at
    * construction and consulted by `resolveOutputs`. Nested-stack child

@@ -169,7 +169,7 @@
       "arnAttributes": [
         {
           "name": "AutoScalingGroupARN",
-          "status": "construct-attribute"
+          "status": "cached"
         }
       ],
       "gaps": []

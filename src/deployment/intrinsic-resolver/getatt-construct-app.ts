@@ -442,7 +442,12 @@ export async function constructAttributeForAppTypes(
   // AutoScaling group. go-to-k/cdkd#6242: CloudFormation's ARN attribute is
   // spelled `AutoScalingGroupARN`; the provider records the same ARN under
   // `Arn`. Its upper-case suffix also slipped past the physical-id fallback's
-  // `*Arn` guard, which then served the group NAME.
+  // `*Arn` guard then (it tests `*ARN` too since #6268), which served the
+  // group NAME. A record lacking `Arn` heals through `ASGProvider.import()`.
+  // The sdk-attr-coverage critic lists AutoScalingGroupARN as `cached` only
+  // because `import()` writes that key; `create()` / `update()` record `Arn`
+  // alone, so deleting this arm would leave the critic green while every
+  // created group's reference fell to the refusal below.
   if (
     resourceType === 'AWS::AutoScaling::AutoScalingGroup' &&
     attributeName === 'AutoScalingGroupARN'

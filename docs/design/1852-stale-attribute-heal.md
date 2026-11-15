@@ -37,7 +37,7 @@ deploy that updates nothing never does.
 ## Decision: heal lazily, on a miss, through the provider's `import()`
 
 The heal runs only when a resolution is about to take the resolver's physical-id
-fallback (`guardedPhysicalIdFallback`: a refusal for an `*Arn` / `*Url` name or
+fallback (`guardedPhysicalIdFallback`: a refusal for an `*Arn` / `*ARN` / `*Url` / `*URL` name or
 under `--strict-getatt`, a warn-and-return otherwise) or is about to refuse a
 placeholder ARN — and, since issue #3627, when it reaches one of the resolver's
 heal-first arms (`healBeforeConstructing`). Nothing else costs an AWS call: a

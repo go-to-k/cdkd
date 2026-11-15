@@ -30,18 +30,18 @@
  *   2. `constructAttribute`'s per-type handlers (build the value from the
  *      physical id + account + region, etc.),
  *   3. `guardedPhysicalIdFallback` — returns the physical id, EXCEPT it
- *      HARD-THROWS for a `*Arn` name whose fallback is not `arn:`-shaped or a
- *      `*Url` name whose fallback is not `http(s)://`-shaped.
- * So a read-only `*Arn` / `*Url` attribute that is NEITHER cached by the
+ *      HARD-THROWS for a `*Arn` / `*ARN` name whose fallback is not
+ *      `arn:`-shaped or a `*Url` / `*URL` name whose fallback is not
+ *      `http(s)://`-shaped.
+ * So a read-only `*Arn` / `*ARN` / `*Url` / `*URL` attribute that is NEITHER cached by the
  * provider NOR handled by `constructAttribute` is a guaranteed deploy break the
  * moment it is `Fn::GetAtt`'d. Non-ARN/URL read-only attributes degrade to a
  * warn-and-return of the physical id (a silent wrong value, not a crash) and,
  * critically, are legitimately left uncached by many providers (resolved live
  * via `getAttribute` for `cdkd orphan`, or never referenced) — flagging every
  * one would be almost all false positives. So this critic scopes to the
- * deploy-BREAKING `Arn` / `Url` class, plus the upper-case `ARN` / `URL`
- * spellings: the guard does not test those, so one falls back with a warning
- * to the physical id, an ARN- or URL-named wrong value (#6238). Broader
+ * deploy-BREAKING `Arn` / `Url` class in both spellings (`ARN` / `URL`:
+ * #6238 counted them here, #6268 made the guard test them too). Broader
  * wrong-key detection stays a manual-review concern.
  *
  * RESOLVABLE = CACHED-BY-PROVIDER **OR** COVERED-BY-constructAttribute
@@ -395,10 +395,8 @@ export const GAP_REMEDY =
   'tracking issue.';
 
 /**
- * A read-only attribute whose absence would HARD-FAIL the resolver's guard —
- * or, spelled `ARN` / `URL`, which the guard does not test, fall back with a
- * warning to the physical id, a wrong value (#6238: the ASG's
- * `AutoScalingGroupARN`).
+ * A read-only attribute whose absence would HARD-FAIL the resolver's guard,
+ * in either spelling (#6268: the ASG's `AutoScalingGroupARN`).
  */
 const isArnOrUrlAttr = (name: string): boolean => /(?:Arn|ARN|Url|URL)$/.test(name);
 

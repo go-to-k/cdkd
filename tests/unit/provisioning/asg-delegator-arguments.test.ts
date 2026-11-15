@@ -98,6 +98,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['deleteOnce', 'delete', 'deleteOnce', 5],
   ['getAttribute', 'read-state', 'getAttribute', 4],
   ['readCurrentState', 'read-state', 'readCurrentState', 3],
+  ['import', 'read-state', 'importGroup', 1],
   ['buildLaunchTemplate', 'core', 'buildLaunchTemplate', 1],
   ['buildTags', 'core', 'buildTags', 2],
   ['joinVpcZoneIdentifier', 'core', 'joinVpcZoneIdentifier', 1],

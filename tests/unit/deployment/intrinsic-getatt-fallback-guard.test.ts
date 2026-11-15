@@ -115,18 +115,42 @@ describe('IntrinsicFunctionResolver - unknown-attribute fallback shape guard (is
     ).rejects.toThrow(/"my-widget-name" is not a URL \(http\(s\):\/\/\.\.\.\)/);
   });
 
-  // Issue #6238: the guard stays `Arn` / `Url`-only on purpose (the
-  // sdk-attr-coverage critic counts `ARN` too): an uncovered one warns and
-  // knowingly returns the physicalId, a WRONG value, rather than refusing.
-  it('an upper-case ARN-suffixed attribute still warns and returns the physicalId (does not throw)', async () => {
-    const result = await resolver.resolve(
-      { 'Fn::GetAtt': ['Widget', 'AutoScalingGroupARN'] },
-      mkContext('my-asg-name')
-    );
-    expect(result).toBe('my-asg-name');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Unknown attribute AutoScalingGroupARN')
-    );
+  // Issue #6268: CloudFormation spells several attributes `*ARN` / `*URL`;
+  // a name physical id is no more their value than an `*Arn` one's.
+  it('throws on an upper-case ARN-suffixed attribute when the physicalId is not an ARN', async () => {
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'ResourceARN'] }, mkContext('my-widget-name'))
+    ).rejects.toThrow(/"my-widget-name" is not an ARN \(arn:\.\.\.\)/);
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('Unknown attribute'));
+  });
+
+  it('throws on an upper-case URL-suffixed attribute when the physicalId is not an http(s) URL', async () => {
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'EndpointURL'] }, mkContext('my-widget-name'))
+    ).rejects.toThrow(/"my-widget-name" is not a URL \(http\(s\):\/\/\.\.\.\)/);
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('Unknown attribute'));
+  });
+
+  it('keeps the fallback for an upper-case ARN / URL attribute whose physicalId already has that shape', async () => {
+    const arn = 'arn:aws:example:us-east-1:123456789012:widget/my-widget';
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'WidgetARN'] }, mkContext(arn))
+    ).resolves.toBe(arn);
+    const url = 'https://example.us-east-1.amazonaws.com/my-widget';
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'WidgetURL'] }, mkContext(url))
+    ).resolves.toBe(url);
+  });
+
+  // The suffix is matched case-sensitively in its two CloudFormation
+  // spellings, never a bare lower-case `arn` / `url` tail of a longer word.
+  it('a name merely ending in lower-case "arn" / "url" keeps the warn-and-return fallback', async () => {
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'Yarn'] }, mkContext('my-widget-name'))
+    ).resolves.toBe('my-widget-name');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Widget', 'Hurl'] }, mkContext('my-widget-name'))
+    ).resolves.toBe('my-widget-name');
   });
 
   it('keeps the fallback when the physicalId already IS a URL', async () => {

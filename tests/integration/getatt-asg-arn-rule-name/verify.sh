@@ -5,8 +5,10 @@
 # Measured against CloudFormation: AutoScalingGroupARN resolved to the group
 # NAME and RuleName to the whole rule ARN. Asserts each output equals the
 # value AWS / CloudFormation reports (the plain rule name, on a custom bus
-# too), then destroys clean. No UPDATE phase: neither attribute changes on an
-# in-place update. The ASG has capacity 0, so no instance runs.
+# too). A heal phase (issue #6268) then strips the ASG record's ARN out of
+# band and redeploys the unchanged template, which must re-read it through
+# ASGProvider.import(). Then destroys clean. No UPDATE phase: neither attribute
+# changes on an in-place update. The ASG has capacity 0, so no instance runs.
 
 set -euo pipefail
 
@@ -109,6 +111,50 @@ expect_eq "RuleCustomName output" "$(output_of RuleCustomName)" "${STACK}-custom
 expect_eq "RuleDefaultName output" "$(output_of RuleDefaultName)" "${STACK}-default"
 aws events describe-rule --region "${REGION}" --name "${STACK}-custom" --event-bus-name "${BUS_NAME}" >/dev/null
 echo "    OK: the custom-bus rule exists under that name"
+
+# go-to-k/cdkd#6268: a record lacking the group ARN heals through
+# `ASGProvider.import()`. Strip `Arn` / `AutoScalingGroupARN` from the ASG
+# record and replace the stored AsgArn output out of band, then redeploy the
+# unchanged template: the output must be re-resolved to the live ARN (not the
+# planted value, not the group name), and the record must hold the ARN again.
+# Before the fix the resolver's AutoScalingGroupARN arm found nothing to heal
+# with: the no-change deploy warned `Cannot resolve Fn::GetAtt` and kept the
+# planted output, which the grep and the output check below both catch.
+echo "==> Heal phase: strip the ASG record's ARN out of band, redeploy unchanged"
+STATE_DOC="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+ASG_ID="$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::AutoScaling::AutoScalingGroup") | .key] | if length == 1 then .[0] else error("expected one ASG record") end' <<<"${STATE_DOC}")"
+PLANTED="planted-by-verify-6268"
+STRIPPED="$(jq -c --arg id "${ASG_ID}" --arg v "${PLANTED}" \
+  'del(.resources[$id].attributes.Arn, .resources[$id].attributes.AutoScalingGroupARN) | .outputs.AsgArn = $v' <<<"${STATE_DOC}")"
+printf '%s' "${STRIPPED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+LANDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+if [ "$(jq -r --arg id "${ASG_ID}" '.resources[$id].attributes | (has("Arn") or has("AutoScalingGroupARN"))' <<<"${LANDED}")" != "false" ] \
+  || [ "$(jq -r '.outputs.AsgArn' <<<"${LANDED}")" != "${PLANTED}" ]; then
+  echo "FAIL: the stripped state document did not land in S3" >&2
+  exit 1
+fi
+echo "    OK: record ${ASG_ID} holds no ARN; AsgArn output is '${PLANTED}'"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
+# Narrowed to THIS group's own refusal / fallback line. Sentinel (testing.md):
+# any OTHER line naming the attribute also fails, so a reworded refusal cannot
+# slip past the parsed pattern; and the log must name the stack, or an empty
+# log would pass the absence check.
+ASG_REFUSAL="Cannot resolve Fn::GetAtt \\[${ASG_ID}, AutoScalingGroupARN\\]|Unknown attribute AutoScalingGroupARN"
+if ! grep -qF "${STACK}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the heal-phase deploy log never names ${STACK} -- the absence check below would be vacuous" >&2
+  exit 1
+fi
+if grep -E "${ASG_REFUSAL}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the heal-phase deploy refused or fell back on ${ASG_ID}.AutoScalingGroupARN (see above)" >&2
+  exit 1
+fi
+if grep -F "AutoScalingGroupARN" "${DEPLOY_LOG}"; then
+  echo "FAIL: an unrecognised line names AutoScalingGroupARN (refusal wording drifted?) -- see above" >&2
+  exit 1
+fi
+expect_eq "AsgArn output after the heal" "$(output_of AsgArn)" "${LIVE_ASG_ARN}"
+HEALED_ARN="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "${ASG_ID}" '.resources[$id].attributes.Arn // empty')"
+expect_eq "record ${ASG_ID} attributes.Arn after the heal" "${HEALED_ARN}" "${LIVE_ASG_ARN}"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
