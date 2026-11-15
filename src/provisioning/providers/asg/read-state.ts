@@ -6,8 +6,12 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
-import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
-import type { ResourceNotFound } from '../../../types/resource.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../../import-helpers.js';
+import type {
+  ResourceImportInput,
+  ResourceImportResult,
+  ResourceNotFound,
+} from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import {
   isFoldableMetricsEntry,
@@ -121,6 +125,43 @@ export async function getAttribute(
     default:
       return '';
   }
+}
+
+/**
+ * `cdkd import` and the stale-attribute heal (go-to-k/cdkd#6268): find the
+ * group by the caller's id, else by the template's `AutoScalingGroupName`,
+ * and return the attributes `create()` records — `Arn` (which the resolver's
+ * `AutoScalingGroupARN` arm reads from a record) and `LaunchTemplateID` — plus
+ * `AutoScalingGroupARN` itself, the key the heal serves. Neither id is searched
+ * for: a group with no name in the template needs `--resource`.
+ *
+ * `null` only for an empty describe list (the group is gone) or a group whose
+ * name is not the id asked about; a describe error, `ValidationError`
+ * included, propagates, as it proves nothing about absence (go-to-k/cdkd#4283).
+ */
+export async function importGroup(
+  this: ASGProvider,
+  input: ResourceImportInput
+): Promise<ResourceImportResult | null> {
+  if (input.resourceType !== 'AWS::AutoScaling::AutoScalingGroup') return null;
+  const groupName = resolveExplicitPhysicalId(input, 'AutoScalingGroupName');
+  if (groupName === undefined) return null;
+  const group = await this.describeGroup(groupName);
+  // An exact match only: the id is RECORDED as the physical id every later
+  // write sends as `AutoScalingGroupName`, and the heal refuses an answer for
+  // a different id.
+  if (group?.AutoScalingGroupName !== groupName) return null;
+  const attributes: Record<string, unknown> = {};
+  if (group.AutoScalingGroupARN) {
+    attributes['Arn'] = group.AutoScalingGroupARN;
+    // The heal serves a re-read value under the name the `Fn::GetAtt` asked
+    // for, never through the resolver's `Arn` arm: both keys, one value.
+    attributes['AutoScalingGroupARN'] = group.AutoScalingGroupARN;
+  }
+  if (group.LaunchTemplate?.LaunchTemplateId) {
+    attributes['LaunchTemplateID'] = group.LaunchTemplate.LaunchTemplateId;
+  }
+  return { physicalId: groupName, attributes };
 }
 
 /**

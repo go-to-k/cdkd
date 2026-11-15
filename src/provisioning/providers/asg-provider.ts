@@ -18,6 +18,8 @@ import type {
   UpdateContext,
   SecretMasker,
   ResourceNotFound,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
@@ -57,6 +59,7 @@ import {
   canonicalizeDriftProperties,
   canonicalizeDriftPair,
   getAttribute,
+  importGroup,
   readCurrentState,
 } from './asg/read-state.js';
 import {
@@ -360,6 +363,10 @@ export class ASGProvider implements ResourceProvider {
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
+  }
+
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importGroup.call(this, input);
   }
 
   buildLaunchTemplate(

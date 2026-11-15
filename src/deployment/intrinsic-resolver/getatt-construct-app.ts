@@ -442,7 +442,8 @@ export async function constructAttributeForAppTypes(
   // AutoScaling group. go-to-k/cdkd#6242: CloudFormation's ARN attribute is
   // spelled `AutoScalingGroupARN`; the provider records the same ARN under
   // `Arn`. Its upper-case suffix also slipped past the physical-id fallback's
-  // `*Arn` guard, which then served the group NAME.
+  // `*Arn` guard then (it tests `*ARN` too since #6268), which served the
+  // group NAME. A record lacking `Arn` heals through `ASGProvider.import()`.
   if (
     resourceType === 'AWS::AutoScaling::AutoScalingGroup' &&
     attributeName === 'AutoScalingGroupARN'

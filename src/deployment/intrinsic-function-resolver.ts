@@ -95,7 +95,7 @@ export interface IntrinsicFunctionResolverOptions {
   /**
    * `--strict-getatt` (issue #1111): when true, EVERY unknown-attribute
    * physicalId fallback in `constructAttribute` (any suffix, not just the
-   * always-fatal `*Arn` / `*Url` shape mismatches) becomes a hard error
+   * always-fatal `*Arn` / `*ARN` / `*Url` / `*URL` shape mismatches) becomes a hard error
    * instead of a warn-and-return. Default false (warn-and-return, counted
    * via {@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
    */

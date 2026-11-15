@@ -204,7 +204,7 @@ a denied call quotes the caller's account, role and session.
 | --- | --- |
 | `cdkd deploy --dry-run` | Re-reads, records nothing |
 | `cdkd diff` | Re-reads and previews the value, never writes it; its message starts `This preview re-read the attributes from AWS, but ...` |
-| `cdkd drift`, `cdkd export` | Never re-read; report an `*Arn` / `*Url` reference as unresolved, and resolve any other attribute to the physical ID with a warning |
+| `cdkd drift`, `cdkd export` | Never re-read; report an `*Arn` / `*ARN` / `*Url` / `*URL` reference as unresolved, and resolve any other attribute to the physical ID with a warning |
 
 ## Related
 

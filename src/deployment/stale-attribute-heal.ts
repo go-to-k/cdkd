@@ -11,7 +11,7 @@
  * resource's own properties do not change.
  *
  * The heal is LAZY: it runs only when a resolution is about to take the
- * resolver's physical-id fallback (a refusal for an `*Arn` / `*Url` name, a
+ * resolver's physical-id fallback (a refusal for an `*Arn` / `*Url` name or its upper-case spelling, a
  * warn-and-return otherwise), or reaches one of the resolver's heal-first
  * arms (issue #3627: DynamoDB `StreamArn`, IAM `RoleId`, IAM `Arn`), re-reads the resource through its provider's
  * read-only `import()` ONCE per deploy, serves the value from that read, and

@@ -483,6 +483,7 @@ with no `--resource`, or with `--auto`.
 | API Gateway v2 | `AWS::ApiGatewayV2::Api` |
 | AppConfig | `AWS::AppConfig::Environment` (explicit `--resource <id>=<ApplicationId>\|<EnvironmentId>` only) |
 | AppSync | `AWS::AppSync::GraphQLApi` |
+| Auto Scaling | `AWS::AutoScaling::AutoScalingGroup` (by `AutoScalingGroupName`; a group without one needs `--resource <id>=<groupName>`) |
 | Bedrock AgentCore | `AWS::BedrockAgentCore::Browser`, `AWS::BedrockAgentCore::CodeInterpreter` |
 | Budgets | `AWS::Budgets::Budget` |
 | CloudFront | `AWS::CloudFront::Distribution` |
@@ -553,7 +554,6 @@ The plan reports these types as `unsupported` and skips them.
 | Resource type | Why |
 | --- | --- |
 | `AWS::CloudFormation::Stack` | A plain import cannot adopt a nested stack. Use `--migrate-from-cloudformation`, which walks the tree. |
-| `AWS::AutoScaling::AutoScalingGroup` | cdkd can create, update, delete and detect drift on the type, but cannot import it. |
 | `AWS::EMR::InstanceGroupConfig`, `AWS::EMR::InstanceFleetConfig` | Each is part of a cluster and has no name of its own. |
 
 ## Related
