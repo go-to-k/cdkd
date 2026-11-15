@@ -1322,6 +1322,18 @@ describe('buildCrossStackResolver', () => {
           source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
           detail: UNREADABLE_SOURCE_DETAIL,
         });
+        // The Fn::ImportValue arm carries the same detail (go-to-k/cdkd#6339).
+        mocks.lookupMock.mockResolvedValueOnce({
+          value: 'producer-bucket',
+          producerStack: 'ReExporter',
+          producerRegion: 'us-east-1',
+        });
+        expect(await imported(built, 'Bucket')).toEqual({
+          value: 'producer-bucket',
+          verdict: 'unreadable',
+          source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+          detail: UNREADABLE_SOURCE_DETAIL,
+        });
         const redacted = {
           ...reader,
           outputReads: [{ sourceStack: '***', sourceRegion: 'us-east-1', outputName: 'Key' }],

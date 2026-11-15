@@ -94,9 +94,13 @@ describe('invoke-agentcore fromS3: a judged bucket is not printed by the downloa
 
   it('judged: an S3 message naming the bucket in its resource ARN is withheld too', async () => {
     fetchControl.fetch = async () => {
-      throw new Error(
+      const denied = new Error(
         `User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized to perform: s3:GetObject on resource: "arn:aws:s3:::${BUCKET}/${KEY}"`
       );
+      // V8 formats `stack` on first read; read it now, as a logger might,
+      // so a later message edit does not reach it on its own.
+      void denied.stack;
+      throw denied;
     };
     const err = await download(true);
     expect(err.message).toContain(`arn:aws:s3:::<cross-stack value withheld>/${KEY}`);
