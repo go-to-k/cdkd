@@ -1287,8 +1287,15 @@ set -e
 # Validate` plugin) lints the TEMPLATE, where the value is the parameter's
 # `Default`, and warns `Tier: '<value>' is not one of [...]`. That is the CDK
 # library reporting template text, measured on the first live run, not a cdkd
-# surface; the value is in cdk.out in the clear by construction.
-P2_CDKD_OUT=$(grep -vE "^WARNING Tier: '.*' is not one of \[.*\] \(CloudFormation Validate\)$" <<< "${DEPLOY_OUT_P2}" || true)
+# surface; the value is in cdk.out in the clear by construction. aws-cdk-lib
+# 2.277.0 words the same warning from the parameter's side, `Parameters/
+# NoEchoToken/Default: ... default '<value>' is not one of the allowed values
+# for property 'Tier' when resolved at Resources/NoEchoReject/Properties/Tier`;
+# both exact shapes are excluded, nothing else.
+P2_CDKD_OUT=$(grep -vE \
+  -e "^WARNING Tier: '.*' is not one of \[.*\] \(CloudFormation Validate\)$" \
+  -e "^WARNING Parameters/NoEchoToken/Default: .* is not one of the allowed values for property 'Tier' when resolved at Resources/NoEchoReject/Properties/Tier \(CloudFormation Validate\)$" \
+  <<< "${DEPLOY_OUT_P2}" || true)
 if [[ "${P2_CDKD_OUT}" == *"${TOKEN}"* ]] || [[ "${P2_CDKD_OUT}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 2 deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
   exit 1
