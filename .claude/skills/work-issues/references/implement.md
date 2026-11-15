@@ -161,7 +161,8 @@ A subagent's Bash bypasses the PreToolUse hooks.
 
 - **Name the §5-8 stage files and `/check` minus step 4, never your own
   command list** — fix rounds too (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
-  serially** — concurrent suites trip the 600s watchdog in untouched files.
+  serially, and start ANY vitest of yours only while no lane's is running** —
+  concurrent suites trip the 600s watchdog in untouched files.
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument.
 - A lane is killed at 600s of silence inside a tool call: background long runs
