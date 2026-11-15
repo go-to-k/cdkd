@@ -169,7 +169,8 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         dependencies: [],
       },
       ApiKey: {
-        physicalId: 'da2-xyz',
+        // `<apiId>|<apiKeyId>`: the key id IS the x-api-key value.
+        physicalId: 'apiid123|da2-plaintext-api-key',
         resourceType: 'AWS::AppSync::ApiKey',
         properties: {},
         attributes: { ApiKey: 'da2-plaintext-api-key', ApiKeyId: 'da2-plaintext-api-key' },
@@ -221,6 +222,100 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       const task = resolve(['run', { 'Fn::GetAtt': ['Cr', 'Name'] }]);
       expect(task.containers[0]!.command).toEqual(['run', 'cr-name']);
       expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+    });
+
+    // go-to-k/cdkd#6330: a Ref resolves to the recorded physical id, which for
+    // an AppSync ApiKey is `<apiId>|<key>`.
+    describe('a Ref to a record whose physical id holds a secret', () => {
+      it.each([
+        ['a Ref', { Ref: 'ApiKey' }],
+        ['a dot-less Fn::Sub placeholder', { 'Fn::Sub': 'x-api-key: ${ApiKey}' }],
+        ['a dot-less placeholder of an array-form Fn::Sub', { 'Fn::Sub': ['${ApiKey}-${Suffix}', { Suffix: 'x' }] }],
+        ['a Ref in an array-form Fn::Sub variable', { 'Fn::Sub': ['k=${K}', { K: { Ref: 'ApiKey' } }] }],
+        ['a Ref nested in Fn::Join', { 'Fn::Join': ['', ['k=', { Ref: 'ApiKey' }]] }],
+      ])('refuses %s', (_label, element) => {
+        const task = resolve(['run', element]);
+        expect(task.containers[0]!.command).toEqual(['run', '']);
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+          /Command\[1\]: references ApiKey, whose physical id holds a secret, .*pass the value through Environment or Secrets instead/
+        );
+      });
+
+      it('refuses it in EntryPoint and HealthCheck.Command too', () => {
+        const task = resolveEcsTaskTarget(
+          'TD',
+          [buildStack({ EntryPoint: [{ Ref: 'ApiKey' }], HealthCheck: { Command: ['CMD', { Ref: 'ApiKey' }] } })],
+          { stateResources: secretState }
+        );
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(/EntryPoint\[0\]: references ApiKey/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(/HealthCheck\.Command\[1\]: references ApiKey/);
+      });
+
+      it('refuses an ApiKey recorded under its ARN', () => {
+        const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', { Ref: 'ApiKey' }] })], {
+          stateResources: {
+            ApiKey: {
+              ...secretState['ApiKey']!,
+              physicalId: 'arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/da2-plaintext-api-key',
+            },
+          },
+        });
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+        expect(() => assertEcsTaskCommandsResolved(task)).toThrow(/Command\[1\]: references ApiKey/);
+      });
+
+      it('does not treat an escaped ${!ApiKey} literal as a Ref', () => {
+        const task = resolve(['echo', { 'Fn::Sub': 'literal ${!ApiKey}' }]);
+        for (const u of task.containers[0]!.unresolvedCommandElements ?? []) {
+          expect(u.reason).not.toMatch(/references ApiKey/);
+        }
+        expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+      });
+
+      it('does not treat a name the variable map defines as a Ref', () => {
+        const task = resolve(['echo', { 'Fn::Sub': ['${ApiKey}', { ApiKey: 'not-the-key' }] }]);
+        expect(task.containers[0]!.command).toEqual(['echo', 'not-the-key']);
+        expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+      });
+
+      it('still resolves a Ref to a record whose physical id is no secret, beside a pseudo parameter', () => {
+        const task = resolveEcsTaskTarget(
+          'TD',
+          [
+            buildStack({
+              Command: ['run', { Ref: 'Key' }, { 'Fn::Sub': '${AWS::Region}/${Key}' }, { Ref: 'AWS::Region' }],
+            }),
+          ],
+          { stateResources: secretState, pseudoParameters: { region: 'us-east-1' } }
+        );
+        expect(task.containers[0]!.command).toEqual(['run', 'AKIAEXAMPLE', 'us-east-1/AKIAEXAMPLE', 'us-east-1']);
+        expect(() => assertEcsTaskCommandsResolved(task)).not.toThrow();
+      });
+
+      it('still resolves it in Environment, passed value-less off the argv', () => {
+        const task = resolveEcsTaskTarget(
+          'TD',
+          [
+            buildStack({
+              Environment: [
+                { Name: 'API_KEY', Value: { Ref: 'ApiKey' } },
+                { Name: 'API_KEY_ATTR', Value: { 'Fn::GetAtt': ['ApiKey', 'ApiKey'] } },
+                { Name: 'KEY_ID', Value: { Ref: 'Key' } },
+              ],
+            }),
+          ],
+          { stateResources: secretState }
+        );
+        const c = task.containers[0]!;
+        expect(c.environment).toEqual({
+          API_KEY: 'apiid123|da2-plaintext-api-key',
+          API_KEY_ATTR: 'da2-plaintext-api-key',
+          KEY_ID: 'AKIAEXAMPLE',
+        });
+        expect(c.resolvedDynamicReferenceKeys).toEqual(['API_KEY', 'API_KEY_ATTR']);
+      });
     });
   });
 
@@ -286,6 +381,29 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
         /Command\[1\]: reads the secret attribute Key\.SecretAccessKey/
       );
+    });
+
+    it('refuses a nested cross-stack element that also Refs a same-stack ApiKey (go-to-k/cdkd#6330)', async () => {
+      const state: Record<string, ResourceState> = {
+        ApiKey: {
+          physicalId: 'apiid123|da2-plaintext-api-key',
+          resourceType: 'AWS::AppSync::ApiKey',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      };
+      const element = { 'Fn::Join': [':', [{ 'Fn::ImportValue': 'Producer-Bucket' }, { Ref: 'ApiKey' }]] };
+      const task = resolveEcsTaskTarget('TD', [buildStack({ Command: ['run', element] })], {
+        stateResources: state,
+      });
+      await applyCrossStackResolverToTask(task, {
+        resources: state,
+        crossStackResolver: resolver('producer-bucket'),
+      });
+      expect(task.containers[0]!.command).toEqual(['run', '']);
+      expect(JSON.stringify(task.containers[0])).not.toMatch(/plaintext/);
+      expect(() => assertEcsTaskCommandsResolved(task)).toThrow(/Command\[1\]: references ApiKey/);
     });
 
     it('refuses a producer output recorded as the secret mask (go-to-k/cdkd#6270)', async () => {

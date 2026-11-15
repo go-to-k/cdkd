@@ -2,6 +2,7 @@ import { containsDynamicReference, EcsTaskResolutionError } from 'cdk-local/inte
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
+import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
 import { substituteAgainstState, type SubstitutionContext } from '../state-resolver.js';
@@ -86,7 +87,12 @@ export function parseContainerDefinition(
         });
         if (sub.kind === 'literal') {
           defineOwnKey(environment, key, String(sub.value));
-          if (sensitive) plaintextEnvKeys.push(key);
+          // A value read from a secret in state (the remedy the argv refusal
+          // names) is passed value-less too, or `-e KEY=<secret>` puts it on
+          // the argv after all (go-to-k/cdkd#6330).
+          if (sensitive || secretAttributeRead(value, subContext.resources) !== undefined) {
+            plaintextEnvKeys.push(key);
+          }
           continue;
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
@@ -321,9 +327,10 @@ function resolveArgvArray(
  * state, or `undefined` when it reads none. State records some secrets in
  * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, the attributes
  * {@link isSecretValuedAttribute} names) and a `NoEcho` custom resource's
- * attribute as the mask; an argv element lands on the `docker run` command
- * line, positional and unredacted, so either one is refused rather than
- * served (go-to-k/cdkd#6271).
+ * attribute as the mask, and some physical ids embed one
+ * ({@link secretPhysicalIdSegment}); an argv element lands on the `docker run`
+ * command line, positional and unredacted, so each is refused rather than
+ * served (go-to-k/cdkd#6271, go-to-k/cdkd#6330).
  */
 export function secretAttributeRead(
   element: unknown,
@@ -340,6 +347,18 @@ export function secretAttributeRead(
     ) {
       return (
         `reads the secret attribute ${logicalId}.${attribute}, which cdkd will not put on the docker run command line; ` +
+        'pass the value through Environment or Secrets instead'
+      );
+    }
+  }
+  // A `Ref` (or a dot-less `${Id}` of `Fn::Sub`) resolves to the recorded
+  // physical id, which for an `AWS::AppSync::ApiKey` holds the key itself
+  // (go-to-k/cdkd#6330).
+  for (const logicalId of refReads(element)) {
+    const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
+    if (record && secretPhysicalIdSegment(record.resourceType, record.physicalId) !== undefined) {
+      return (
+        `references ${logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
         'pass the value through Environment or Secrets instead'
       );
     }
@@ -415,6 +434,38 @@ function getAttReads(node: unknown, out: [string, string][] = []): [string, stri
       }
     }
     getAttReads(value, out);
+  }
+  return out;
+}
+
+/**
+ * Every logical ID an intrinsic reads through `Ref` or a dot-less `${Id}`
+ * placeholder of `Fn::Sub`, at any depth. Pseudo parameters (`AWS::...`),
+ * an escaped `${!Literal}` and a name the array form's variable map defines
+ * are no reads of a record.
+ */
+function refReads(node: unknown, out: string[] = []): string[] {
+  if (node === null || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const item of node) refReads(item, out);
+    return out;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Ref') {
+      if (typeof value === 'string' && !value.startsWith('AWS::')) out.push(value);
+    } else if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      const variables = Array.isArray(value) ? value[1] : undefined;
+      const isVariable = (name: string): boolean =>
+        variables !== null && typeof variables === 'object' && Object.hasOwn(variables, name);
+      if (typeof template === 'string') {
+        for (const m of template.matchAll(/\$\{([^}!]+)\}/g)) {
+          const ref = m[1]!;
+          if (!ref.includes('.') && !ref.startsWith('AWS::') && !isVariable(ref)) out.push(ref);
+        }
+      }
+    }
+    refReads(value, out);
   }
   return out;
 }
