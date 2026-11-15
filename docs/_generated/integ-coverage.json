@@ -317,6 +317,7 @@
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-rest-api",
         "destroy-nested-cross-region",
+        "local-invoke-nested-stack-from-state",
         "noecho-restapi-body-mac",
         "schema-v16-to-v17-migration",
         "wafv2"
@@ -348,6 +349,9 @@
         ],
         "destroy-nested-cross-region": [
           "l1",
+          "literal"
+        ],
+        "local-invoke-nested-stack-from-state": [
           "literal"
         ],
         "noecho-restapi-body-mac": [
@@ -873,6 +877,7 @@
         "generated-name-lifecycle",
         "import-nested-stack",
         "list-parameters",
+        "local-invoke-nested-stack-from-state",
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
@@ -913,6 +918,9 @@
           "literal"
         ],
         "list-parameters": [
+          "literal"
+        ],
+        "local-invoke-nested-stack-from-state": [
           "literal"
         ],
         "nested-stack": [
@@ -4876,6 +4884,7 @@
         "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
+        "local-invoke-nested-stack-from-state",
         "local-run-task",
         "local-run-task-awsvpc",
         "local-run-task-cdkd-assets",
@@ -4916,6 +4925,10 @@
         ],
         "local-engine-role-identity": [
           "l1"
+        ],
+        "local-invoke-nested-stack-from-state": [
+          "l2",
+          "literal"
         ],
         "local-run-task": [
           "l2"
@@ -6856,6 +6869,7 @@
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-layers",
+        "local-invoke-nested-stack-from-state",
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby",
@@ -7182,6 +7196,10 @@
         ],
         "local-invoke-layers": [
           "l2"
+        ],
+        "local-invoke-nested-stack-from-state": [
+          "l2",
+          "literal"
         ],
         "local-invoke-provided": [
           "l1",
@@ -8098,6 +8116,7 @@
         "kms-encryption",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
+        "local-invoke-nested-stack-from-state",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
         "local-start-microvm-from-state",
@@ -8245,6 +8264,10 @@
         ],
         "local-invoke-from-state": [
           "l2"
+        ],
+        "local-invoke-nested-stack-from-state": [
+          "l2",
+          "literal"
         ],
         "local-start-cloudfront": [
           "l2"
@@ -8896,6 +8919,7 @@
         "lambda-destinations",
         "lambda-event-invoke-config-update",
         "lambda-url-authtype-replay",
+        "local-invoke-nested-stack-from-state",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -9060,6 +9084,10 @@
         ],
         "lambda-url-authtype-replay": [
           "l1"
+        ],
+        "local-invoke-nested-stack-from-state": [
+          "l2",
+          "literal"
         ],
         "microservices": [
           "l2"

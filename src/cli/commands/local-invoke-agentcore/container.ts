@@ -233,7 +233,7 @@ export async function rebuildAgentCoreContainer(args: {
   startGuard: ContainerStartGuard;
   resolvedTarget: string;
   options: LocalInvokeAgentCoreOptions;
-  synthesizer: Synthesizer;
+  synthesizer: Pick<Synthesizer, 'synthesize'>;
   synthOpts: SynthesisOptions;
   profileCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }

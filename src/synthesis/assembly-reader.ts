@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { NestedStackOrigin } from 'cdk-local/internal';
 import { isAbsolute, join } from 'node:path';
 import type {
   AssemblyManifest,
@@ -130,6 +131,13 @@ export interface StackInfo {
    * `AWS::CloudFormation::Stack` resources.
    */
   nestedTemplates?: Record<string, string> | undefined;
+
+  /**
+   * Set by cdk-local's `expandNestedStacks` on the `StackInfo` it builds for a
+   * CDK nested stack, for the `cdkd local` commands: the parent it is
+   * deployed under. Never set on what cdkd's own synthesis returns.
+   */
+  nestedStack?: NestedStackOrigin | undefined;
 
   /**
    * CDK annotation messages (`Annotations.addError` / `addWarning` /

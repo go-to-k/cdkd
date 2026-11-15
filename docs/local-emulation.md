@@ -97,6 +97,25 @@ optional. Without one, `start-api` serves every API it finds, and
 `start-service`, `start-alb`, `start-cloudfront`, `start-web-function`,
 `start-microvm` and the two AgentCore commands open a picker when you run them in an interactive terminal.
 
+### A resource in a nested stack
+
+A resource inside a CDK `NestedStack` is named like the parent's own, at any
+depth:
+
+```bash
+cdkd local invoke MyStack/MyNested/Handler           # display path
+cdkd local invoke MyStack/MyNested/Deeper/Handler    # a nested stack in a nested stack
+cdkd local invoke MyStack:Handler1234ABCD            # logical ID in the nested template
+```
+
+| Topic | Behavior |
+| --- | --- |
+| Stack count | A stack with nested stacks is one stack, so the bare name still works. |
+| Selecting a stack | `--stack MyStack` also selects its nested stacks, so `start-api` serves an API in one. |
+| Messages | A nested stack is named `<parent>~<logical ID>`, the name of its state record. |
+| `--from-state` | Reads the nested stack's own record; a value the parent passes in resolves from the parent's record. |
+| `--from-cfn-stack` | Reads the deployed nested stack through its parent; `--from-cfn-stack <name>` names the top-level stack. |
+
 ## Where values come from
 
 A local command runs before anything is deployed, so some environment values

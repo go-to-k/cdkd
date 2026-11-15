@@ -1,4 +1,5 @@
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import { withNestedDescendants } from 'cdk-local/internal';
 import type { TemplateResource } from '../../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../cli/cdk-path.js';
 import {
@@ -86,6 +87,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
 
   const template = stack.template;
   const resources = template.Resources ?? {};
+  const listed = resourcesWithNestedStacks(stack, stacks);
 
   let match: { logicalId: string; resource: TemplateResource } | undefined;
 
@@ -101,7 +103,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     );
 
     if (lambdaMatches.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, listed);
     }
     if (lambdaMatches.length > 1) {
       throw new LocalInvokeResolutionError(
@@ -115,7 +117,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   } else {
     const resource = resources[parsed.pathOrId];
     if (!resource) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, listed);
     }
     match = { logicalId: parsed.pathOrId, resource };
   }
@@ -201,4 +203,38 @@ function notFoundError(
     }
   }
   return new LocalInvokeResolutionError(msg.trimEnd());
+}
+
+/**
+ * `stack`'s resources followed by those of the CDK nested stacks deployed
+ * under it, for the not-found message's candidate list.
+ */
+function resourcesWithNestedStacks(
+  stack: StackInfo,
+  stacks: StackInfo[]
+): Record<string, TemplateResource> {
+  const merged: Record<string, TemplateResource> = Object.create(null) as Record<
+    string,
+    TemplateResource
+  >;
+  const descendants = withNestedDescendants([stack], stacks);
+  const owners = new Map<string, StackInfo[]>();
+  for (const s of descendants) {
+    for (const logicalId of Object.keys(s.template.Resources ?? {})) {
+      const list = owners.get(logicalId);
+      if (list) list.push(s);
+      else owners.set(logicalId, [s]);
+    }
+  }
+  for (const s of descendants) {
+    for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
+      // A bare ID selects `stack`'s own resource, or the one nested stack that
+      // has it; an ID two nested stacks share selects neither, so list each
+      // copy in the `<nested stack>:<LogicalId>` form that does.
+      const shared = owners.get(logicalId)!;
+      const bare = s === stack || shared.length === 1;
+      merged[bare ? logicalId : `${s.stackName}:${logicalId}`] = resource;
+    }
+  }
+  return merged;
 }

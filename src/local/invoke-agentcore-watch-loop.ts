@@ -84,7 +84,7 @@ export interface RunAgentCoreWatchLoopArgs {
   /** Original CDK target string (display path / logical id) so the resolver can re-pick the stack on reload. */
   resolvedTarget: string;
   resolved: ResolvedAgentCoreRuntime;
-  synthesizer: Synthesizer;
+  synthesizer: Pick<Synthesizer, 'synthesize'>;
   synthOpts: SynthesisOptions;
   stacks: StackInfo[];
   /**

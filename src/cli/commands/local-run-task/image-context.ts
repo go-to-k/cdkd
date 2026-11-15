@@ -11,7 +11,7 @@ import {
   type EcsImageResolutionContext,
 } from '../../../local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
-import { matchStacks } from '../../stack-matcher.js';
+import { matchStacks, nestedOwnerOfLogicalId } from '../../stack-matcher.js';
 import { stackForPathFormTarget } from '../../cdk-path.js';
 import { loadBootstrapContainerRepo } from '../local-state-loader.js';
 import type { LocalStateProvider } from '../../../local/local-state-provider.js';
@@ -301,11 +301,23 @@ export function pickCandidateStack(
   target: string,
   stacks: StackInfo[]
 ): StackInfo | undefined {
+  const picked = pickNamedCandidateStack(parsed, target, stacks);
+  // The nested stack owning a logical-ID target, as `resolveEcsTaskTarget` resolves it.
+  return picked && nestedOwnerOfLogicalId(parsed, picked, stacks);
+}
+
+function pickNamedCandidateStack(
+  parsed: { stackPattern: string | null; isPath: boolean; pathOrId: string },
+  target: string,
+  stacks: StackInfo[]
+): StackInfo | undefined {
   const byPrefix = stackForPathFormTarget(parsed, target, stacks);
   if (byPrefix) return byPrefix;
   const { stackPattern } = parsed;
   if (stackPattern === null) {
-    if (stacks.length === 1) return stacks[0];
+    // A stack with CDK nested stacks is one stack (go-to-k/cdk-local#986).
+    const top = stacks.filter((s) => s.nestedStack === undefined);
+    if (top.length === 1) return top[0];
     return undefined;
   }
   // By identity: two Stage stacks sharing a physical name are not unique,
