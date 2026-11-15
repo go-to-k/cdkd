@@ -189,7 +189,7 @@ getatt-rds-docdb-attributes	2026-11-14T19:24:51Z	PASS	1600	verify.sh	rc ok, orph
 getatt-vpc-managed-policy	2026-11-13T18:14:58Z	PASS	96	verify.sh	rc ok, orph clean; pre-fix build FAILs it (#6232)
 getstackoutput-crossregion	2026-11-04T20:19:14Z	PASS	342	verify.sh	re-run after Phase 6a v12+ lower-bound fix: 6a and all later phases pass; rc ok, orph clean us-east-1+us-west-2
 globaltable-fix-forward-orphan	2026-11-10T17:32:16Z	PASS	180	verify.sh	rc ok, orph clean; own bucket
-globaltable-keyschema-replace	2026-11-15T19:36:57Z	PASS	101	verify.sh	rc ok, orph clean (#6363)
+globaltable-keyschema-replace	2026-11-15T20:16:11Z	PASS	106	verify.sh	rc ok, orph clean; #6365 replaced row
 globaltable-template-baseline-drift	2026-11-05T03:19:21Z	PASS	69	verify.sh	#5789/#5790 template-bag baseline drift; red-then-green proof (pre-fix binary FAIL Phase 3 [Replicas], fix binary all 5 phases PASS); orph clean (re-run after review fix f3c52eda2)
 glue-securityconfig-replace	2026-10-30T00:18:42Z	PASS	60	verify.sh	rc ok, orph clean
 glue-update-hardening	2026-11-10T16:06:52Z	PASS	335	verify.sh	rc ok, orph clean
@@ -233,7 +233,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-15T17:41:38Z	PASS	108	verify.sh	rc ok, orph clean; #6352 aws-sdk 3.1169.0 bump
+lambda	2026-11-15T20:16:11Z	PASS	141	verify.sh	rc ok, orph clean; #6365 broad
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
