@@ -198,7 +198,7 @@ echo "[verify] step 5 ok: every live parameter value equals the oracle"
 
 echo "[verify] step 6: a second cdkd deploy changes nothing"
 (cd "${TEST_DIR}" && ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}") 2>&1 | tee "${WORK}/deploy2.log"
-if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy2.log" | grep -qE '✓ .* (created|updated|deleted)'; then
+if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy2.log" | grep -qE '✓ .* (created|updated|replaced|deleted)'; then
   echo "[verify] FAIL: the deploy after the heal still changed resources"
   exit 1
 fi

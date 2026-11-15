@@ -125,7 +125,15 @@ echo "    OK: table untouched"
 echo "==> Phase 4: --replace --force-stateful-recreation replaces the table"
 # Before #6363 this phase failed with Phase 2's refusal again.
 CDKD_TEST_UPDATE=sk node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --yes --replace --force-stateful-recreation
+  --region "${REGION}" --yes --replace --force-stateful-recreation 2>&1 | tee "${LOG_DIR}/phase4.log"
+# Issue #6365: the row of this fallback replacement says `replaced`, not
+# `updated`. ANSI colour is stripped before matching.
+PHASE4_ROW="$(sed -E 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/phase4.log" | grep -F 'TableCD117FA1 (AWS::DynamoDB::GlobalTable)' | grep -F '✓' || true)"
+case "${PHASE4_ROW}" in
+  *replaced*) echo "    OK: Phase 4 row: ${PHASE4_ROW}" ;;
+  '') echo "FAIL: Phase 4: no result row for TableCD117FA1 in the deploy output" >&2; exit 1 ;;
+  *) echo "FAIL: Phase 4: the replacement's row does not say replaced: ${PHASE4_ROW}" >&2; exit 1 ;;
+esac
 [ "$(key_schema)" = "pk,sk" ] || { echo "FAIL: Phase 4: KeySchema is '$(key_schema)', expected 'pk,sk'" >&2; exit 1; }
 RECORDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
   let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => {

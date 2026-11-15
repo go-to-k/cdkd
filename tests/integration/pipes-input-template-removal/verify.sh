@@ -183,7 +183,7 @@ CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-
 # the run summary, which says "created" / "updated" / "deleted" on a no-op too.
 # The phase-2 sentinel above proves the same pattern still matches cdkd's output.
 PHASE3_CHANGES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE3_LOG}" \
-  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|deleted)' || true)
+  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|replaced|deleted)' || true)
 rm -f "${PHASE2_LOG}" "${PHASE3_LOG}"
 if [[ -n "${PHASE3_CHANGES}" ]]; then
   echo "FAIL: the unchanged re-deploy reported resource changes. Offending lines:"

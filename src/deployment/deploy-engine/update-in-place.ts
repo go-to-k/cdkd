@@ -963,19 +963,21 @@ export async function updateInPlace(
   // old-resource delete makes the row partial too (`provisionResource` counts
   // it); the line names every reason.
   const replacedSkip = engine.replacementRun.replacedDeleteSkips.get(logicalId);
+  // go-to-k/cdkd#6365: a fallback or provider-side replacement says so on its row.
+  const rowVerb = result.wasReplaced === true ? 'replaced' : undefined;
   const shownPartial =
     updatePartial !== undefined && replacedSkip !== undefined
       ? `${updatePartial}; ${replacedSkip}`
       : (updatePartial ?? replacedSkip);
   if (shownPartial !== undefined) {
     engine.logger.warn(
-      safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
+      safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType, rowVerb)} ` +
         safeMsg`${updatePartialMessage(shownPartial)}`
     );
     if (updatePartial !== undefined) return { updatePartial };
     return;
   }
   engine.logger.info(
-    safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`
+    safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType, rowVerb)}`
   );
 }
