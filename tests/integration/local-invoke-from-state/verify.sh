@@ -40,6 +40,8 @@
 #      parameter, a `Ref` to an SSM-typed template parameter. Dropped without
 #      --from-state; resolved under it (step 4), and under --role-arn too
 #      (step 4e), where the read runs as the caller: the role has no SSM grant.
+#   3/4 (issue #6336): STACK_NAME_SUB (`${AWS::StackName}-sub`) is dropped
+#      without --from-state and is "${STACK}-sub" under it.
 #   4j (issue #6325): the region only in the AWS profile (no AWS_REGION): the
 #      env-agnostic stack's ${AWS::Region} / ${AWS::Partition} /
 #      ${AWS::URLSuffix} env values take the state record's region.
@@ -232,6 +234,10 @@ grep -q '"accountTag":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
   exit 1
 }
+grep -q '"stackNameSub":"unset"' <<<"${RESULT_PR1}" || {
+  echo "[verify] FAIL: expected STACK_NAME_SUB to be dropped without --from-state, got: ${RESULT_PR1}"
+  exit 1
+}
 grep -q '"paramValue":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected PARAM_VALUE to be dropped without --from-state, got: ${RESULT_PR1}"
   exit 1
@@ -250,6 +256,11 @@ grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR2}" || {
 }
 grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
+  exit 1
+}
+# Issue #6336: `${AWS::StackName}` is the deployed stack name.
+grep -qF "\"stackNameSub\":\"${STACK}-sub\"" <<<"${RESULT_PR2}" || {
+  echo "[verify] FAIL: expected STACK_NAME_SUB=${STACK}-sub under --from-state (#6336), got: ${RESULT_PR2}"
   exit 1
 }
 # Issue #6307: the `Ref` to the SSM-typed parameter, read from SSM.

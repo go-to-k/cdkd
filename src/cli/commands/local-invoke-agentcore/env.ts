@@ -55,6 +55,7 @@ import {
 } from '../../../utils/caller-credentials.js';
 import { readEnvOverridesFile } from './event-input.js';
 import type { LocalInvokeAgentCoreOptions } from './types.js';
+import { withDeployedStackName } from '../local-state-source.js';
 
 /**
  * Build the container env + the set of env keys to keep off the `docker run`
@@ -147,9 +148,13 @@ async function buildContainerEnvWith(
           workload,
         }),
     };
-    const pseudo =
-      imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
-    if (pseudo) subContext.pseudoParameters = pseudo;
+    subContext.pseudoParameters =
+      imageContext?.pseudoParameters ??
+      withDeployedStackName(
+        derivePseudoParametersFromRegion(loaded.region),
+        options,
+        resolved.stack.stackName
+      );
     if (imageContext?.stateParameters) subContext.parameters = imageContext.stateParameters;
     if (imageContext?.stateSensitiveParameters?.length) {
       subContext.sensitiveParameters = new Set(imageContext.stateSensitiveParameters);

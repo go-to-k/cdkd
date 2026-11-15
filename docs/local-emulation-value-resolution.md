@@ -113,6 +113,7 @@ Both flags are off by default, and you cannot combine them.
 | `Fn::GetAtt` | The attribute recorded at deploy time | Only where the command can read it back |
 | `Fn::Sub`, `Fn::Join` | Resolved piece by piece | Resolved piece by piece |
 | `AWS::AccountId`, `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix` | STS `GetCallerIdentity` and the resolved region | Same |
+| `AWS::StackName` | The deployed stack name (an explicit `--from-cfn-stack <name>`, else the stack's) | Same |
 | `Fn::ImportValue` | The producing stack's state, same account and region | `ListExports` |
 | `Fn::GetStackOutput` | The named stack's outputs, same account | Not resolved |
 | `Ref` to an SSM-typed parameter | SSM `GetParameters` | Same |

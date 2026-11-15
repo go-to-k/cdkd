@@ -60,6 +60,8 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
         REGION_VALUE: cdk.Aws.REGION,
         PARTITION_ARN: cdk.Fn.sub('arn:${AWS::Partition}:s3:::${B}', { B: bucket.bucketName }),
         SUFFIX_HOST: cdk.Fn.sub('s3.${AWS::URLSuffix}'),
+        // Issue #6336: `AWS::StackName`, resolved to the deployed stack name.
+        STACK_NAME_SUB: cdk.Fn.sub('${AWS::StackName}-sub'),
       },
       timeout: cdk.Duration.seconds(10),
     });

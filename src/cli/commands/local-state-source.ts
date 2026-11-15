@@ -30,6 +30,7 @@ import {
   type LocalStateProviderFactory,
   type LocalStateSourceOptions as LocalStateSourceOptionsBase,
 } from 'cdk-local';
+import { resolveCfnStackName } from 'cdk-local';
 import { awsEmulatorRealServices, getActiveWorkloadAwsWiring } from 'cdk-local/internal';
 import { createMixedModeFromStateProvider } from '../../local/mixed-mode-state.js';
 import {
@@ -248,4 +249,21 @@ export function createLocalStateProvider(
     cdkdExtraStateProviders,
     behavior
   );
+}
+
+/**
+ * A pseudo-parameter bag with `AWS::StackName` added: the deployed name of the
+ * stack that owns the value — an explicit `--from-cfn-stack <name>`, else the
+ * synthesized physical name — as cdk-local's own builders fill it
+ * (go-to-k/cdkd#6336). A missing bag (no region known) still carries the name.
+ */
+export function withDeployedStackName<T extends object>(
+  pseudo: T | undefined,
+  options: { fromCfnStack?: string | boolean | undefined },
+  stackName: string
+): T & { stackName: string } {
+  return {
+    ...(pseudo ?? ({} as T)),
+    stackName: resolveCfnStackName(options.fromCfnStack ?? false, stackName),
+  };
 }

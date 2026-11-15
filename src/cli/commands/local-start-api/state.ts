@@ -4,6 +4,7 @@ import { describeLocalAwsFailureForWarn } from '../../../utils/local-aws-failure
 import {
   createLocalStateProvider,
   rejectExplicitCfnStackWithMultipleStacks,
+  withDeployedStackName,
 } from '../local-state-source.js';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
 import type { StackState } from '../../../types/state.js';
@@ -210,7 +211,7 @@ export async function loadStateForRoutedStacks(
       const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
-        if (pseudo) bundle.pseudoParameters = pseudo;
+        bundle.pseudoParameters = withDeployedStackName(pseudo, options, stack.stackName);
         // A `Ref` to an SSM-typed template parameter (go-to-k/cdkd#6307), read
         // by the provider for THIS load's workload, so mixed mode routes it by
         // that workload's exceptions.

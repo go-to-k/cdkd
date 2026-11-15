@@ -276,6 +276,7 @@ Each entry of the function's `Environment.Variables` is handled by its kind:
 | Literal | Passed through | Passed through |
 | Intrinsic (`Ref`, `Fn::GetAtt`, `Fn::Sub`, `Fn::Join`, `Fn::ImportValue`) | Dropped with a warning | The deployed value, or dropped with a warning |
 | Pseudo parameter (`${AWS::AccountId}`, `${AWS::Region}`, `${AWS::Partition}`, `${AWS::URLSuffix}`) | Dropped with a warning | Resolved from STS and the region |
+| `${AWS::StackName}` | Dropped with a warning | The deployed stack name |
 | `{{resolve:...}}` dynamic reference | Looked up with your credentials | Looked up with your credentials |
 
 An intrinsic is dropped under a state flag when the source cannot supply its
