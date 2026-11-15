@@ -230,20 +230,20 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
     return undefined;
   };
 
-  // AWS Emulator (go-to-k/cdkd#6252): its own `emulator` user is allowed
-  // everything WITHOUT any IAM policy, so a GetFederationToken session — the
-  // user's policies intersected with the role's — is allowed nothing, and
-  // every call the workload makes would be denied.
+  // AWS Emulator (go-to-k/cdkd#6252, #6347): it evaluates IAM policies only
+  // on IAM and STS calls, so session policies on a GetFederationToken session
+  // would deny nothing the workload calls — the emulation would reproduce no
+  // missing permission and only change the identity to a federated user.
   if (
     args.emulateRoleVia === undefined &&
     !args.realAws &&
     mixedModeEmulatorOverride() !== undefined
   ) {
     return cannot(
-      "in AWS Emulator a sts:GetFederationToken session is allowed nothing (the emulator's own user has no " +
-        "IAM policies). Let the role's trust policy allow the emulator's identity, for example the account " +
-        'root (arn:aws:iam::000000000000:root), and redeploy, or pass --emulate-role-via <arn> naming an ' +
-        'emulator role you can assume'
+      'AWS Emulator checks IAM policies only on IAM and STS calls, so session policies there would not ' +
+        "show a missing permission. To run as the role, let the role's trust policy allow the emulator's " +
+        'identity, for example the account root (arn:aws:iam::000000000000:root), and redeploy; run under ' +
+        'the role on real AWS to find a missing permission'
     );
   }
 
@@ -349,11 +349,17 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
         args.emulateRoleVia === undefined
           ? ' A GetFederationToken session cannot call IAM, nor STS except GetCallerIdentity.'
           : '';
+      // go-to-k/cdkd#6347: the emulator enforces no session policy on a
+      // service call, so the "allow only what both allow" promise is void there.
+      const emulatorNote =
+        !args.realAws && mixedModeEmulatorOverride() !== undefined
+          ? ' AWS Emulator checks IAM policies only on IAM and STS calls, so it does not enforce these session policies on other services: run under the role on real AWS to find a missing permission.'
+          : '';
       // cdkd-raw-beside-safe: `args.flag` is a caller LITERAL, `via` embeds
       // the only user value through `displayIdent`, and the rest are counts
       // and cdkd's literals.
       logger.warn(
-        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
+        safeMsg`${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so cdkd EMULATES its permissions: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}${emulatorNote}`
       );
     }
     return {
