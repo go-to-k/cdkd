@@ -383,6 +383,9 @@ The check does not cover:
 - a secret the producer received as a stack parameter, which its state does
   not record as one;
 - a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`);
+- a value the producer re-exports from a stack cdkd does not manage, or read
+  cross-account (`RoleArn`) or through the CloudFormation fallback, which its
+  state does not record;
 - `--from-cfn-stack`, where an exported value goes on the command line as
   exported.
 
