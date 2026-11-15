@@ -285,9 +285,9 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(envFlags(args)).toEqual(expect.arrayContaining(['SAK', 'CHILD', 'BUCKET=child-bucket']));
     });
 
-    it('drops a Secrets ValueFrom that reads any secret attribute, naming no value', () => {
+    it('drops a Secrets ValueFrom whose recorded value is a secret, naming no value', () => {
       const secrets = [
-        { Name: 'SAK', ValueFrom: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] } },
+        { Name: 'KEY', ValueFrom: { 'Fn::GetAtt': ['ApiKey', 'ApiKey'] } },
         { Name: 'MASKED', ValueFrom: { 'Fn::GetAtt': ['Cr', 'Token'] } },
         { Name: 'CHILD', ValueFrom: { 'Fn::GetAtt': ['Child', 'Outputs.Key'] } },
       ];
@@ -296,10 +296,39 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       expect(c.secrets).toEqual([]);
       expect(JSON.stringify(c)).not.toMatch(/plaintext|\*\*\*/);
       expect(c.warnings).toEqual([
-        expect.stringMatching(/^Secret 'SAK' dropped: ValueFrom reads Key\.SecretAccessKey, which holds a secret/),
+        expect.stringMatching(/^Secret 'KEY' dropped: ValueFrom reads ApiKey\.ApiKey, which holds a secret/),
         expect.stringMatching(/^Secret 'MASKED' dropped: ValueFrom reads Cr\.Token, which holds a secret/),
         expect.stringMatching(/^Secret 'CHILD' dropped: ValueFrom reads Child\.Outputs\.Key, which holds a secret/),
       ]);
+    });
+
+    // CDK's `ecs.Secret.fromSecretsManager(secret)` with the secret in a nested
+    // stack: the output's NAME matches the secret heuristic, its value is the ARN.
+    it('resolves a nested-stack secret ARN output as a ValueFrom and a Host.SourcePath, whatever its name', () => {
+      const state: Record<string, ResourceState> = {
+        Nested: {
+          physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/nested/1',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+          attributes: {
+            'Outputs.AppDbStackDbSecret1234ABCDRef': 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf',
+            'Outputs.SecretDirRef': '/tmp/secret-dir',
+          },
+          dependencies: [],
+        },
+      };
+      const stack = buildStack({
+        Secrets: [{ Name: 'DB', ValueFrom: { 'Fn::GetAtt': ['Nested', 'Outputs.AppDbStackDbSecret1234ABCDRef'] } }],
+        MountPoints: [{ SourceVolume: 'v', ContainerPath: '/data' }],
+      });
+      const td = stack.template.Resources!['TD']!.Properties as Record<string, unknown>;
+      td['Volumes'] = [{ Name: 'v', Host: { SourcePath: { 'Fn::GetAtt': ['Nested', 'Outputs.SecretDirRef'] } } }];
+      const task = resolveEcsTaskTarget('TD', [stack], { stateResources: state });
+      expect(task.containers[0]!.secrets).toEqual([
+        { name: 'DB', valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf' },
+      ]);
+      expect(task.containers[0]!.warnings).toEqual([]);
+      expect(dockerArgs(task)).toContain('/tmp/secret-dir:/data');
     });
 
     it('still resolves a non-secret attribute of the same custom resource', () => {

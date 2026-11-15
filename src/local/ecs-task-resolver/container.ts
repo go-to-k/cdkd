@@ -341,7 +341,7 @@ export function secretAttributeRead(
   element: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
-  const hit = secretRead(element, stateResources);
+  const hit = secretRead(element, stateResources, { byName: true });
   if (hit === undefined) return undefined;
   if (hit.attribute === undefined) {
     return (
@@ -357,7 +357,7 @@ export function secretAttributeRead(
 
 /**
  * Why a `Secrets[].ValueFrom` must not be resolved: one reading a secret from
- * state (any read {@link secretAttributeRead} refuses) would resolve to that
+ * state ({@link secretValueRead}) would resolve to that
  * secret, which the secrets resolver then names in its lookup line and its
  * refusal. A `ValueFrom` is a Secrets Manager or SSM parameter ARN, never such
  * a value (go-to-k/cdkd#6330).
@@ -374,12 +374,16 @@ export function secretValueFromReason(
 /**
  * The secret read `value` makes from state, named as `LogicalId` or
  * `LogicalId.Attribute` (never the value), or `undefined` when it reads none.
+ * For a value that is a NAME or a PATH (a `ValueFrom`, a `Host.SourcePath`):
+ * only the rules a recorded value backs apply, never the attribute-name
+ * heuristic, since CDK's nested-stack secret reaches a `ValueFrom` as
+ * `Outputs.<...>Secret<hash>Ref`, an ARN.
  */
 export function secretValueRead(
   value: unknown,
   stateResources: SubstitutionContext['resources']
 ): string | undefined {
-  const hit = secretRead(value, stateResources);
+  const hit = secretRead(value, stateResources, { byName: false });
   if (hit === undefined) return undefined;
   return hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
 }
@@ -396,8 +400,8 @@ function mayHoldSegment(stored: unknown, segment: string): boolean {
 
 /**
  * The first read of a secret from state, or `undefined`. An `Fn::GetAtt` (or
- * a dotted `${Id.Attr}`) counts when the attribute's name or type says it is
- * one, it is recorded as the mask, it is a nested stack's output the record
+ * a dotted `${Id.Attr}`) counts when the attribute's type says it is one (or
+ * its name, under `byName`), it is recorded as the mask, it is a nested stack's output the record
  * names in `secretNamedAttributes` (a child's secret passed up), or the
  * record's physical id embeds a secret ({@link secretPhysicalIdSegment}) and
  * the recorded value may hold it ({@link mayHoldSegment}) (the ApiKey's `Arn`
@@ -406,7 +410,8 @@ function mayHoldSegment(stored: unknown, segment: string): boolean {
  */
 function secretRead(
   element: unknown,
-  stateResources: SubstitutionContext['resources']
+  stateResources: SubstitutionContext['resources'],
+  options: { byName: boolean }
 ): { logicalId: string; attribute?: string } | undefined {
   const recordOf = (logicalId: string) =>
     Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
@@ -419,7 +424,7 @@ function secretRead(
     const secretNamed = (record as { secretNamedAttributes?: unknown } | undefined)
       ?.secretNamedAttributes;
     if (
-      isSensitiveAttributeName(attribute) ||
+      (options.byName && isSensitiveAttributeName(attribute)) ||
       isSecretValuedAttribute(record?.resourceType, attribute) ||
       stored === SECRET_MASK ||
       (record?.resourceType === 'AWS::CloudFormation::Stack' &&
