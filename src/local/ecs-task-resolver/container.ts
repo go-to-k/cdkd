@@ -340,10 +340,15 @@ export function secretAttributeRead(
     const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
     const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
+    // An attribute carrying the record's secret physical-id segment (an
+    // ApiKey's `Arn` ends in the key), or one whose value cannot be checked
+    // for it (go-to-k/cdkd#6330).
+    const segment = secretPhysicalIdSegment(record?.resourceType, record?.physicalId);
     if (
       isSensitiveAttributeName(attribute) ||
       isSecretValuedAttribute(record?.resourceType, attribute) ||
-      stored === SECRET_MASK
+      stored === SECRET_MASK ||
+      (segment !== undefined && (typeof stored !== 'string' || stored.includes(segment)))
     ) {
       return (
         `reads the secret attribute ${logicalId}.${attribute}, which cdkd will not put on the docker run command line; ` +

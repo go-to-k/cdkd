@@ -126,7 +126,9 @@ export async function applyCrossStackResolverToTask(
           // marked resolved and its "dropped" warning cleared.
           defineOwnKey(container.environment, key, String(sub.value));
           resolvedEnvKeys.add(key);
-          if (resolvedToken) {
+          // A same-stack secret read beside the import is kept off the argv,
+          // as the sync pass does (go-to-k/cdkd#6330).
+          if (resolvedToken || secretAttributeRead(value, context.resources) !== undefined) {
             container.resolvedDynamicReferenceKeys = [
               ...(container.resolvedDynamicReferenceKeys ?? []),
               key,

@@ -13,7 +13,9 @@ import {
   EcsTaskResolutionError,
   resolveEcsTaskTarget,
 } from '../../../src/local/ecs-task-resolver.js';
+import type { ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 import { argvValue } from '../../../src/local/ecs-task-resolver/container.js';
+import { buildDockerRunArgs } from '../../../src/local/ecs-task-runner/docker-run-args.js';
 import type { CrossStackResolver } from '../../../src/local/state-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
@@ -52,7 +54,28 @@ function bucketState(): Record<string, ResourceState> {
   };
 }
 
-const bucketCommand = ['s3api', 'head-bucket', '--bucket', { Ref: 'B08E7C7AF' }];
+/** The `docker run` argv the runner builds for the task's first container. */
+function dockerArgs(task: ResolvedEcsTask): string[] {
+  const container = task.containers[0]!;
+  return buildDockerRunArgs({
+    task,
+    container,
+    image: 'img',
+    network: 'net',
+    volumeByName: new Map(),
+    secrets: [],
+    plaintextEnvKeys: container.resolvedDynamicReferenceKeys ?? [],
+    envOverrides: undefined,
+    containerHost: '127.0.0.1',
+    roleArn: undefined,
+    platformOverride: undefined,
+    region: 'us-east-1',
+  }).args;
+}
+
+const envFlags = (args: string[]): string[] => args.flatMap((a, i) => (args[i - 1] === '-e' ? [a] : []));
+
+const bucketCommand =['s3api', 'head-bucket', '--bucket', { Ref: 'B08E7C7AF' }];
 
 describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
   it('substitutes a Ref element of Command against state, keeping its position', () => {
@@ -173,7 +196,11 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         physicalId: 'apiid123|da2-plaintext-api-key',
         resourceType: 'AWS::AppSync::ApiKey',
         properties: {},
-        attributes: { ApiKey: 'da2-plaintext-api-key', ApiKeyId: 'da2-plaintext-api-key' },
+        attributes: {
+          ApiKey: 'da2-plaintext-api-key',
+          ApiKeyId: 'da2-plaintext-api-key',
+          Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/da2-plaintext-api-key',
+        },
         dependencies: [],
       },
       Cr: {
@@ -200,7 +227,10 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         { 'Fn::Sub': ['${Key.SecretAccessKey}-${Suffix}', { Suffix: 'x' }] },
         'Key.SecretAccessKey',
       ],
-      ['an attribute recorded as the mask', { 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
+      // go-to-k/cdkd#6330: the ApiKey's `Arn` ends in the key.
+      ['an attribute holding the secret physical-id segment', { 'Fn::GetAtt': ['ApiKey', 'Arn'] }, 'ApiKey.Arn'],
+      ['such an attribute inside Fn::Sub', { 'Fn::Sub': 'arn=${ApiKey.Arn}' }, 'ApiKey.Arn'],
+      ['an attribute recorded as the mask',{ 'Fn::Join': ['', ['t=', { 'Fn::GetAtt': ['Cr', 'Token'] }]] }, 'Cr.Token'],
     ])('refuses %s', (_label, element, named) => {
       const task = resolve(['run', element]);
       expect(task.containers[0]!.command).toEqual(['run', '']);
@@ -302,6 +332,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
               Environment: [
                 { Name: 'API_KEY', Value: { Ref: 'ApiKey' } },
                 { Name: 'API_KEY_ATTR', Value: { 'Fn::GetAtt': ['ApiKey', 'ApiKey'] } },
+                { Name: 'API_KEY_ARN', Value: { 'Fn::GetAtt': ['ApiKey', 'Arn'] } },
                 { Name: 'KEY_ID', Value: { Ref: 'Key' } },
               ],
             }),
@@ -312,9 +343,32 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         expect(c.environment).toEqual({
           API_KEY: 'apiid123|da2-plaintext-api-key',
           API_KEY_ATTR: 'da2-plaintext-api-key',
+          API_KEY_ARN: 'arn:aws:appsync:us-east-1:123456789012:apis/apiid123/apikeys/da2-plaintext-api-key',
           KEY_ID: 'AKIAEXAMPLE',
         });
-        expect(c.resolvedDynamicReferenceKeys).toEqual(['API_KEY', 'API_KEY_ATTR']);
+        expect(c.resolvedDynamicReferenceKeys).toEqual(['API_KEY', 'API_KEY_ATTR', 'API_KEY_ARN']);
+        const args = dockerArgs(task);
+        expect(args.join(' ')).not.toMatch(/plaintext/);
+        expect(envFlags(args)).toEqual(expect.arrayContaining(['API_KEY', 'API_KEY_ATTR', 'API_KEY_ARN', 'KEY_ID=AKIAEXAMPLE']));
+      });
+
+      it('keeps a cross-stack Environment value that Refs a same-stack ApiKey off the argv', async () => {
+        const env = [
+          { Name: 'K', Value: { 'Fn::Join': [':', [{ 'Fn::ImportValue': 'Producer-Bucket' }, { Ref: 'ApiKey' }]] } },
+          { Name: 'B', Value: { 'Fn::ImportValue': 'Producer-Bucket' } },
+        ];
+        const task = resolveEcsTaskTarget('TD', [buildStack({ Environment: env })], { stateResources: secretState });
+        await applyCrossStackResolverToTask(task, {
+          resources: secretState,
+          crossStackResolver: {
+            resolveImport: vi.fn().mockResolvedValue('producer-bucket'),
+            resolveGetStackOutput: vi.fn().mockResolvedValue(undefined),
+          },
+        });
+        expect(task.containers[0]!.environment['K']).toBe('producer-bucket:apiid123|da2-plaintext-api-key');
+        const args = dockerArgs(task);
+        expect(args.join(' ')).not.toMatch(/plaintext/);
+        expect(envFlags(args)).toEqual(expect.arrayContaining(['K', 'B=producer-bucket']));
       });
     });
   });
