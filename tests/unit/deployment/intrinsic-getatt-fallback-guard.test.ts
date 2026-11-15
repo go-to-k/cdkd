@@ -116,7 +116,8 @@ describe('IntrinsicFunctionResolver - unknown-attribute fallback shape guard (is
   });
 
   // Issue #6238: the guard stays `Arn` / `Url`-only on purpose (the
-  // sdk-attr-coverage critic counts `ARN` too): an uncovered one warns.
+  // sdk-attr-coverage critic counts `ARN` too): an uncovered one warns and
+  // knowingly returns the physicalId, a WRONG value, rather than refusing.
   it('an upper-case ARN-suffixed attribute still warns and returns the physicalId (does not throw)', async () => {
     const result = await resolver.resolve(
       { 'Fn::GetAtt': ['Widget', 'AutoScalingGroupARN'] },

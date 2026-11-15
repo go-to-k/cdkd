@@ -172,7 +172,7 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         physicalId: 'da2-xyz',
         resourceType: 'AWS::AppSync::ApiKey',
         properties: {},
-        attributes: { ApiKey: 'da2-plaintext-api-key' },
+        attributes: { ApiKey: 'da2-plaintext-api-key', ApiKeyId: 'da2-plaintext-api-key' },
         dependencies: [],
       },
       Cr: {
