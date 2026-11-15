@@ -192,6 +192,8 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
       ['a credential-named attribute', { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }, 'Key.SecretAccessKey'],
       ['a dotted-string Fn::GetAtt', { 'Fn::GetAtt': 'Key.SecretAccessKey' }, 'Key.SecretAccessKey'],
       ['a secret-valued attribute inside Fn::Sub', { 'Fn::Sub': 'x-api-key: ${ApiKey.ApiKey}' }, 'ApiKey.ApiKey'],
+      // go-to-k/cdkd#6238: `ApiKeyId` is the same key, under CloudFormation's other name.
+      ['the API key read as ApiKeyId', { 'Fn::GetAtt': ['ApiKey', 'ApiKeyId'] }, 'ApiKey.ApiKeyId'],
       [
         'a secret attribute inside an array-form Fn::Sub (CDK emits it with variables)',
         { 'Fn::Sub': ['${Key.SecretAccessKey}-${Suffix}', { Suffix: 'x' }] },

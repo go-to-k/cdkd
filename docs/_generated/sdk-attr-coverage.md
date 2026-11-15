@@ -13,8 +13,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 ## Summary
 
 - SDK-backed types classified: **140**
-- Covered (every Arn/Url readOnly resolvable): **67**
-- No Arn/Url readOnly attribute: **73**
+- Covered (every Arn/Url readOnly resolvable): **72**
+- No Arn/Url readOnly attribute: **68**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
 
@@ -39,6 +39,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::AppSync::DataSource` | covered | `DataSourceArn` (cached) |
 | `AWS::AppSync::GraphQLApi` | covered | `Arn` (cached), `GraphQLEndpointArn` (ctor), `GraphQLUrl` (cached), `RealtimeUrl` (cached) |
 | `AWS::AppSync::Resolver` | covered | `ResolverArn` (cached) |
+| `AWS::AutoScaling::AutoScalingGroup` | covered | `AutoScalingGroupARN` (ctor) |
 | `AWS::BedrockAgentCore::Browser` | covered | `BrowserArn` (cached) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | covered | `CodeInterpreterArn` (cached) |
 | `AWS::BedrockAgentCore::Evaluator` | covered | `EvaluatorArn` (cached) |
@@ -48,7 +49,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::CloudWatch::Alarm` | covered | `Arn` (cached) |
 | `AWS::CodeBuild::Project` | covered | `Arn` (cached) |
 | `AWS::CodeCommit::Repository` | covered | `Arn` (cached) |
-| `AWS::Cognito::UserPool` | covered | `Arn` (cached) |
+| `AWS::Cognito::UserPool` | covered | `Arn` (cached), `ProviderURL` (cached) |
 | `AWS::DLM::LifecyclePolicy` | covered | `Arn` (cached) |
 | `AWS::DynamoDB::GlobalTable` | covered | `Arn` (cached), `StreamArn` (cached) |
 | `AWS::DynamoDB::Table` | covered | `Arn` (cached), `StreamArn` (cached) |
@@ -63,12 +64,14 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | covered | `TargetGroupArn` (cached) |
 | `AWS::Events::EventBus` | covered | `Arn` (cached) |
 | `AWS::Events::Rule` | covered | `Arn` (cached) |
+| `AWS::FSx::FileSystem` | covered | `ResourceARN` (cached) |
 | `AWS::IAM::Group` | covered | `Arn` (cached) |
 | `AWS::IAM::InstanceProfile` | covered | `Arn` (cached) |
 | `AWS::IAM::ManagedPolicy` | covered | `PolicyArn` (cached) |
 | `AWS::IAM::Role` | covered | `Arn` (cached) |
 | `AWS::IAM::User` | covered | `Arn` (cached) |
 | `AWS::Kinesis::Stream` | covered | `Arn` (cached) |
+| `AWS::Kinesis::StreamConsumer` | covered | `ConsumerARN` (cached) |
 | `AWS::KinesisFirehose::DeliveryStream` | covered | `Arn` (cached) |
 | `AWS::KMS::Key` | covered | `Arn` (cached) |
 | `AWS::Lambda::EventSourceMapping` | covered | `EventSourceMappingArn` (cached) |
@@ -87,8 +90,10 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::RDS::DBProxyEndpoint` | covered | `DBProxyEndpointArn` (cached) |
 | `AWS::RDS::DBProxyTargetGroup` | covered | `TargetGroupArn` (cached) |
 | `AWS::RDS::DBSubnetGroup` | covered | `DBSubnetGroupArn` (cached) |
-| `AWS::S3::Bucket` | covered | `Arn` (cached) |
+| `AWS::S3::Bucket` | covered | `Arn` (cached), `WebsiteURL` (cached) |
 | `AWS::S3Express::DirectoryBucket` | covered | `Arn` (cached) |
+| `AWS::S3Tables::Table` | covered | `TableARN` (cached) |
+| `AWS::S3Tables::TableBucket` | covered | `TableBucketARN` (cached) |
 | `AWS::S3Vectors::VectorBucket` | covered | `VectorBucketArn` (cached) |
 | `AWS::Scheduler::Schedule` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::HttpNamespace` | covered | `Arn` (cached) |

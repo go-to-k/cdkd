@@ -392,8 +392,12 @@ export const GAP_REMEDY =
   'the `create()` line that already mints the value and, for a REAL gap, a\n' +
   'tracking issue.';
 
-/** A read-only attribute whose absence would HARD-FAIL the resolver's guard. */
-const isArnOrUrlAttr = (name: string): boolean => name.endsWith('Arn') || name.endsWith('Url');
+/**
+ * A read-only attribute whose absence would HARD-FAIL the resolver's guard —
+ * or, spelled `ARN` / `URL`, which the guard does not test, fall back SILENTLY
+ * to the physical id (#6238: the ASG's `AutoScalingGroupARN`).
+ */
+const isArnOrUrlAttr = (name: string): boolean => /(?:Arn|ARN|Url|URL)$/.test(name);
 
 export type Bucket = 'no-arn-attr' | 'covered' | 'gap';
 
