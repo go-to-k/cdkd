@@ -492,7 +492,7 @@ function resolveAssumeRoleArnUncached(
       "--assume-role passed without an ARN, but the runtime's RoleArn is not a literal ARN in the template " +
         (loaded
           ? 'and could not be resolved from the deployed stack state. '
-          : 'and no --from-cfn-stack state is available to resolve it. ') +
+          : 'and no --from-state or --from-cfn-stack state is available to resolve it. ') +
         "Pass the ARN explicitly: --assume-role '<arn>'. " +
         "Falling back to the developer's shell credentials."
     );

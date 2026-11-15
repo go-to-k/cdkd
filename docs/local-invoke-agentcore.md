@@ -281,8 +281,8 @@ resource needs a deployed stack to resolve it, which is what the state flags,
 `--from-state` and `--from-cfn-stack`, provide.
 [Local Execution](local-emulation.md) explains where values come from. The rules are the same ones
 [`cdkd local invoke`](local-invoke.md) applies to a Lambda function. Under
-`--from-state`, that includes keeping a secret another stack exports off the
-`docker run` command line.
+either state flag, that includes keeping a secret another stack exports off
+the `docker run` command line.
 
 A state flag also resolves the image. When the runtime's `ContainerUri`
 refers to an ECR repository in the same stack, cdkd uses the deployed image
@@ -304,10 +304,11 @@ of source code. cdkd runs both.
 | Container image | `AgentRuntimeArtifact.fromAsset`, `fromEcrRepository`, `fromImageUri` | Built from the Docker asset, or pulled |
 | Source code | `AgentRuntimeArtifact.fromCodeAsset`, `fromS3` | Built from source for the declared runtime |
 
-A `fromS3` bucket name read from another stack's export under `--from-state`
-is not printed in cdkd's line naming the resolved bucket when the export holds
-a secret or cdkd cannot check it. The bundle download still prints the
-`s3://<bucket>/<key>` location, and so do its errors.
+A `fromS3` bucket name read from another stack's export is not printed when
+the export holds a secret of the producer stack or cdkd cannot check it. The
+bundle is still downloaded from that bucket. cdkd's line about the resolved
+bucket leaves the name out, and the download line and the errors the download
+throws show `<cross-stack value withheld>` in its place.
 
 ### `CodeConfiguration` builds
 

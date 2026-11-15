@@ -41,13 +41,13 @@ export function watchResolved(
   const seen: ResolvedSeen = { masked: false, producerSecret: undefined };
   const inner = context.crossStackResolver;
   if (!inner) return { context, seen };
-  const watch = ({ value, verdict, source }: JudgedValue): string | undefined => {
+  const watch = ({ value, verdict, source, detail }: JudgedValue): string | undefined => {
     if (value === undefined) return value;
     if (value === SECRET_MASK) seen.masked = true;
     // `secret` outranks the fail-closed verdicts when one element reads several values.
     seen.producerSecret = strongerJudgement(
       seen.producerSecret,
-      verdict === undefined ? undefined : { verdict, source }
+      verdict === undefined ? undefined : { verdict, source, detail }
     );
     return value;
   };

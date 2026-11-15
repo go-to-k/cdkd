@@ -94,6 +94,11 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 
 import { buildCrossStackResolver } from '../../../src/cli/commands/local-state-loader.js';
 import { producerSecretCheckOf } from '../../../src/local/cross-stack-secrets.js';
+import {
+  applyCrossStackResolverToTask,
+  resolveEcsTaskTarget,
+} from '../../../src/local/ecs-task-resolver.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 /** The config the S3 client was actually built with (issue #1836 round 3). */
 const awsClientsConfig = (): Record<string, unknown> =>
@@ -1277,6 +1282,10 @@ describe('buildCrossStackResolver', () => {
 
     describe('a value re-exported from another stack', () => {
       const source = { ...producerState, stackName: 'Source' };
+      // The source as text, the only field cdk-local's own post-pass renders
+      // (start-service / start-alb; go-to-k/cdkd#6339).
+      const UNREADABLE_SOURCE_DETAIL =
+        'the producer re-exports from Source (us-east-1), whose state cdkd could not read; retry, or upgrade cdkd for a newer-schema record';
       const reExporter = {
         stackName: 'ReExporter',
         resources: {},
@@ -1316,6 +1325,19 @@ describe('buildCrossStackResolver', () => {
           value: 'producer-bucket',
           verdict: 'unreadable',
           source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+          detail: UNREADABLE_SOURCE_DETAIL,
+        });
+        // The Fn::ImportValue arm carries the same detail (go-to-k/cdkd#6339).
+        mocks.lookupMock.mockResolvedValueOnce({
+          value: 'producer-bucket',
+          producerStack: 'ReExporter',
+          producerRegion: 'us-east-1',
+        });
+        expect(await imported(built, 'Bucket')).toEqual({
+          value: 'producer-bucket',
+          verdict: 'unreadable',
+          source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+          detail: UNREADABLE_SOURCE_DETAIL,
         });
         const redacted = {
           ...reader,
@@ -1327,8 +1349,60 @@ describe('buildCrossStackResolver', () => {
           value: plaintext,
           verdict: 'unreadable',
           source: { reason: 'redacted' },
+          detail:
+            'the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state',
         });
         second.dispose();
+        built.dispose();
+      });
+
+      it("keeps an unchecked secret-ARN Secrets ValueFrom through run-task's post-pass, dropping an unchecked non-ARN one (go-to-k/cdkd#6339)", async () => {
+        const dbArn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf';
+        const exporter = {
+          ...reExporter,
+          outputs: { ...reExporter.outputs, DbArn: dbArn },
+        };
+        const built = await makeResolver();
+        mocks.getStateMock.mockImplementation(async (stack: string) => {
+          if (stack === 'Source') throw new Error('AccessDenied');
+          return stack === 'ReExporter' ? { state: exporter, etag: 'e' } : null;
+        });
+        mocks.lookupMock.mockImplementation(async (name: string) => ({
+          value: exporter.outputs[name as keyof typeof exporter.outputs],
+          producerStack: 'ReExporter',
+          producerRegion: 'us-east-1',
+        }));
+        const stack: StackInfo = {
+          stackName: 'Consumer',
+          displayName: 'Consumer',
+          artifactId: 'Consumer',
+          template: {
+            Resources: {
+              TD: {
+                Type: 'AWS::ECS::TaskDefinition',
+                Properties: {
+                  Family: 'fam',
+                  NetworkMode: 'bridge',
+                  ContainerDefinitions: [
+                    {
+                      Name: 'app',
+                      Image: 'busybox:latest',
+                      Secrets: [
+                        { Name: 'DB', ValueFrom: { 'Fn::ImportValue': 'DbArn' } },
+                        { Name: 'OTHER', ValueFrom: { 'Fn::ImportValue': 'Bucket' } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          dependencyNames: [],
+        };
+        const task = resolveEcsTaskTarget('TD', [stack], { stateResources: {} });
+        await applyCrossStackResolverToTask(task, { resources: {}, crossStackResolver: built.resolver });
+        expect(task.containers[0]!.secrets).toEqual([{ name: 'DB', valueFrom: dbArn }]);
+        expect(task.containers[0]!.droppedSecretNames).toEqual(['OTHER']);
         built.dispose();
       });
 
@@ -1409,6 +1483,7 @@ describe('buildCrossStackResolver', () => {
             value: plaintext,
             verdict: 'unreadable',
             source: { reason: 'unreadable', shown: 'Source (us-east-1)' },
+            detail: UNREADABLE_SOURCE_DETAIL,
           });
           built.dispose();
         });
@@ -1446,6 +1521,7 @@ describe('buildCrossStackResolver', () => {
           value: 'v',
           verdict: 'unreadable',
           source: { reason: 'too-deep', shown: 'S33 (us-east-1)' },
+          detail: 'the producer re-exports from S33 (us-east-1), beyond the 32-level re-export bound',
         });
         built.dispose();
       });

@@ -363,42 +363,6 @@ Where the table says a value is dropped or warned about, an element of
 `Command`, `EntryPoint` or a health-check command is refused instead (see
 below).
 
-Under `--from-state` the secret check also covers a value another stack
-exports, read through `Fn::ImportValue` or `Fn::GetStackOutput`. cdkd reads
-the producer stack's state, its nested stacks' state, and the state of every
-stack the producer itself reads across stacks. A value holding one of their
-secrets (an `AWS::AppSync::ApiKey`'s key, a secret attribute above) is treated
-like a secret in the consumer's own state:
-
-- refused in `Command`, `EntryPoint` or a health-check command;
-- resolved off the command line in `Environment`;
-- dropped as a `Secrets` `ValueFrom`.
-
-A value cdkd cannot check is handled the same way. That covers a state record
-cdkd cannot read, and an exports-index entry the producer no longer exports.
-In every case, passing the value through `Environment` instead keeps it
-resolving. One upstream record cdkd cannot use withholds every value of the
-producer that re-exports from it, and the refusal says why:
-
-- unreadable: it names the upstream stack and region. Retry, or upgrade cdkd
-  when a newer version wrote the record.
-- recorded masked: the upstream's stack name is stored as `***`, so cdkd
-  cannot find its state.
-- too deep: the upstream lies beyond the 32-level re-export bound.
-A value recorded as the secret mask (`***`) is refused in `Command`,
-`EntryPoint` or a health-check command.
-
-The check does not cover:
-
-- a secret the producer received as a stack parameter, which its state does
-  not record as one;
-- a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`);
-- a value the producer re-exports from a stack cdkd does not manage, or read
-  cross-account (`RoleArn`) or through the CloudFormation fallback, which its
-  state does not record;
-- `--from-cfn-stack`, where an exported value goes on the command line as
-  exported.
-
 These references resolve in `Environment`, `Secrets`, and in each element of
 `Command`, `EntryPoint` and a health-check command.
 
@@ -409,6 +373,83 @@ value, prints a warning that names it, and continues the run. An element of
 deployed) stops the run before any container starts, and the error names the
 container and the element's index: running without the argument would run a
 different command than the deployed task.
+
+### Values another stack exports
+
+The secret check also covers a value another stack exports, read through
+`Fn::ImportValue` (or, under `--from-state`, `Fn::GetStackOutput`). A value
+holding a secret of the producer stack (an `AWS::AppSync::ApiKey`'s key, a
+secret attribute above) is treated like a secret in the consumer's own state:
+
+- refused in `Command`, `EntryPoint` or a health-check command;
+- resolved off the command line in `Environment`;
+- dropped as a `Secrets` `ValueFrom`.
+
+A value cdkd cannot check is handled the same way, with one exception: as a
+`Secrets` `ValueFrom`, it is kept when it is a well-formed Secrets Manager or
+SSM parameter ARN, since an ARN names the secret rather than holding it. In
+every case, passing the value through `Environment` instead keeps it
+resolving. A value recorded as
+the secret mask (`***`) is refused in `Command`, `EntryPoint` or a
+health-check command.
+
+#### Under `--from-state`
+
+cdkd reads the producer stack's state, its nested stacks' state, and the state
+of every stack the producer itself reads across stacks. A value it cannot check
+is one whose state record it cannot read, or an exports-index entry the
+producer no longer exports. One upstream record cdkd cannot use withholds
+every value of the producer that re-exports from it, and the refusal says why:
+
+- unreadable: it names the upstream stack and region. Retry, or upgrade cdkd
+  when a newer version wrote the record.
+- recorded masked: the upstream's stack name is stored as `***`, so cdkd
+  cannot find its state.
+- too deep: the upstream lies beyond the 32-level re-export bound.
+
+#### Under `--from-cfn-stack`
+
+cdkd makes these CloudFormation calls to judge the value:
+
+| Call | What it reads |
+| --- | --- |
+| `cloudformation:ListExports` | The export's value, and the stack that exports it. The value itself needs only this call. |
+| `cloudformation:ListStackResources` | That stack's resources and its nested stacks' resources (an `AWS::AppSync::ApiKey`'s physical ID ends in the key). |
+| `cloudformation:DescribeStacks` | That stack's outputs, to find the output behind the export. |
+| `cloudformation:GetTemplate` | That stack's template (and each nested stack's), to trace what the output reads. |
+
+The trace follows `NoEcho` parameters, attributes that are secret by type or
+by name, any custom-resource attribute, nested stack outputs and re-exports.
+Each branch of an `Fn::If` is read, so an output whose other branch reads a
+secret is judged a secret too.
+
+A value cdkd cannot check fails closed, and the refusal names the reason.
+Some of the reasons:
+
+- a `ListStackResources`, `DescribeStacks` or `GetTemplate` call that fails,
+  such as for a missing permission (the refusal names the call and the stack);
+- a template that is not JSON (a YAML template cannot be read);
+- a re-export whose export name is computed, or an export the producer no
+  longer declares;
+- a producer tree past the 32-level bound or past 256 stacks.
+
+A failed `ListExports` call is different: cdkd warns, and the value does not
+resolve at all, so it is handled like any other unresolved value (see above).
+
+#### Limits
+
+The check does not cover:
+
+- under `--from-state`, a secret the producer received as a stack parameter,
+  which its state does not record as one; under `--from-cfn-stack`, one
+  received as a parameter that is not `NoEcho`;
+- a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`);
+- under `--from-state`, a value the producer re-exports from a stack cdkd does
+  not manage, or reads cross-account (`RoleArn`) or through the CloudFormation
+  fallback, which its state does not record.
+
+Under `--from-cfn-stack`, `Fn::GetStackOutput` has no CloudFormation
+equivalent and does not resolve.
 
 ### Secrets
 

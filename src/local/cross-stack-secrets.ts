@@ -49,6 +49,12 @@ export type OpaqueSource =
 export interface Judgement {
   verdict: ProducerSecretVerdict;
   source?: OpaqueSource | undefined;
+  /**
+   * Why a resolver cdkd did not build (cdk-local's `--from-cfn-stack` one)
+   * could not check the value: a stack-and-call text, never a value
+   * (go-to-k/cdkd#6339). Rendered only when there is no {@link source}.
+   */
+  detail?: string | undefined;
 }
 
 /** A value one resolver call returned, with its producer's verdict. */
@@ -56,6 +62,21 @@ export interface JudgedValue {
   value: string | undefined;
   verdict?: ProducerSecretVerdict | undefined;
   source?: OpaqueSource | undefined;
+  /**
+   * {@link source} as text, for cdk-local's own post-pass (`start-service` /
+   * `start-alb`), which reads `detail` and never `source` (go-to-k/cdkd#6339).
+   */
+  detail?: string | undefined;
+}
+
+/**
+ * `judged` with its re-export source also carried as cdk-local's `detail`,
+ * worded without parentheses: cdk-local renders it inside a pair of its own.
+ */
+export function withSourceDetail(judged: JudgedValue): JudgedValue {
+  return judged.source === undefined
+    ? judged
+    : { ...judged, detail: sourceRemedy(judged.source, true) };
 }
 
 /** The judged variants a cdkd-built resolver carries beside cdk-local's contract. */
@@ -523,14 +544,17 @@ export class ProducerSecretReader {
 }
 
 /** Why the re-export source blocked the check, and what the operator can do. */
-function sourceRemedy(source: OpaqueSource): string {
+function sourceRemedy(source: OpaqueSource, bare = false): string {
   if (source.reason === 'redacted') {
     return 'the producer re-exports from a stack whose name is recorded masked, so cdkd cannot find its state';
   }
   if (source.reason === 'too-deep') {
     return `the producer re-exports from ${source.shown}, beyond the ${MAX_NESTED_DEPTH}-level re-export bound`;
   }
-  return `the producer re-exports from ${source.shown}, whose state cdkd could not read (retry; or a newer-schema record needs a cdkd upgrade)`;
+  const remedy = bare
+    ? '; retry, or upgrade cdkd for a newer-schema record'
+    : ' (retry; or a newer-schema record needs a cdkd upgrade)';
+  return `the producer re-exports from ${source.shown}, whose state cdkd could not read${remedy}`;
 }
 
 /** The argv refusal for a value with `judgement`. */
@@ -546,6 +570,10 @@ export function producerSecretArgvReason(judgement: Judgement): string {
   if (judgement.source !== undefined) {
     return `resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}, ${tail}`;
   }
+  if (judgement.detail !== undefined) {
+    // cdkd-raw-beside-safe: `tail` is this function's own literal sentence.
+    return `resolved a cross-stack value cdkd could not check for secrets: ${displaySafe(judgement.detail)}, ${tail}`;
+  }
   return `resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets, ${tail}`;
 }
 
@@ -559,6 +587,9 @@ export function producerSecretValueFromReason(judgement: Judgement): string {
   }
   if (judgement.source !== undefined) {
     return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${sourceRemedy(judgement.source)}`;
+  }
+  if (judgement.detail !== undefined) {
+    return `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${displaySafe(judgement.detail)}`;
   }
   return "ValueFrom resolved a cross-stack value whose producer stack's state cdkd could not read to check it for secrets";
 }

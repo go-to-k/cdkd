@@ -385,10 +385,9 @@ In the last case cdkd drops the variable and prints a warning.
 
 Each replica is run the way [`cdkd local run-task`](local-run-task.md) runs a
 task. That page's rules for images, secrets, secret names, volumes and the
-order containers start in apply here too, with one exception: a value another
-stack exports, read through `Fn::ImportValue` or `Fn::GetStackOutput`, is not
-checked for the producer stack's secrets, and goes on the `docker run` command
-line as exported.
+order containers start in apply here too, including the check of
+[values another stack exports](local-run-task.md#values-another-stack-exports)
+for the producer stack's secrets.
 
 With finch on macOS or Windows, cdkd refuses to start a task that has a
 `Secrets` entry, because finch would expose the secret's value. cdkd makes

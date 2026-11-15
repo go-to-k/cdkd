@@ -4,11 +4,14 @@
  */
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  producerSecretArgvReason,
   producerSecretCheckOf,
   producerSecretNeedles,
+  producerSecretValueFromReason,
   ProducerSecretReader,
   strongerJudgement,
   strongerVerdict,
+  withSourceDetail,
 } from '../../../src/local/cross-stack-secrets.js';
 
 describe('producerSecretNeedles', () => {
@@ -166,5 +169,39 @@ describe('producerSecretCheckOf', () => {
       })
     ).toBeUndefined();
     expect(producerSecretCheckOf(undefined)).toBeUndefined();
+  });
+});
+
+describe("a fail-closed verdict's detail (go-to-k/cdkd#6339)", () => {
+  const source = { reason: 'too-deep' as const, shown: 'Q (us-east-1)' };
+  const bound = 'the producer re-exports from Q (us-east-1), beyond the 32-level re-export bound';
+
+  it("carries cdkd's re-export source as the detail cdk-local's post-pass renders", () => {
+    expect(withSourceDetail({ value: 'v', verdict: 'unreadable', source })).toEqual({
+      value: 'v',
+      verdict: 'unreadable',
+      source,
+      detail: bound,
+    });
+    const plain = { value: 'v', verdict: 'unreadable' as const };
+    expect(withSourceDetail(plain)).toBe(plain);
+  });
+
+  it("names a foreign resolver's detail when there is no source, and the source over it", () => {
+    const detail = 'GetTemplate of P failed: AccessDenied: no';
+    expect(producerSecretArgvReason({ verdict: 'unreadable', detail })).toContain(
+      `could not check for secrets: ${detail}, which cdkd will not put`
+    );
+    expect(producerSecretValueFromReason({ verdict: 'unreadable', detail })).toBe(
+      `ValueFrom resolved a cross-stack value cdkd could not check for secrets: ${detail}`
+    );
+    expect(producerSecretArgvReason({ verdict: 'unreadable', source, detail })).toContain(bound);
+    expect(producerSecretArgvReason({ verdict: 'unreadable', source, detail })).not.toContain(detail);
+    const hostile = 'GetTemplate of P failed: \u001b[31mred';
+    expect(producerSecretArgvReason({ verdict: 'unreadable', detail: hostile })).not.toContain('\u001b');
+    expect(producerSecretValueFromReason({ verdict: 'unreadable', detail: hostile })).not.toContain('\u001b');
+    expect(producerSecretArgvReason({ verdict: 'unreadable' })).toContain(
+      "whose producer stack's state cdkd could not read"
+    );
   });
 });

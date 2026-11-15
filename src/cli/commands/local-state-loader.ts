@@ -49,6 +49,7 @@ import {
   type ProducerSecretCheck,
   ProducerSecretReader,
   servedOutputValue,
+  withSourceDetail,
 } from '../../local/cross-stack-secrets.js';
 import { quotedOrDescribed } from '../../utils/pasteable-command.js';
 import { regionShown } from '../region-options.js';
@@ -900,7 +901,11 @@ export async function buildCrossStackResolver(
     },
   };
   const resolver: CrossStackResolver & ProducerSecretCheck = {
-    ...judged,
+    // cdk-local's post-pass names a re-export source only through `detail`.
+    resolveImportJudged: async (exportName) =>
+      withSourceDetail(await judged.resolveImportJudged(exportName)),
+    resolveGetStackOutputJudged: async (stack, region, output) =>
+      withSourceDetail(await judged.resolveGetStackOutputJudged(stack, region, output)),
     resolveImport: async (exportName) => (await judged.resolveImportJudged(exportName)).value,
     resolveGetStackOutput: async (stack, region, output) =>
       (await judged.resolveGetStackOutputJudged(stack, region, output)).value,
