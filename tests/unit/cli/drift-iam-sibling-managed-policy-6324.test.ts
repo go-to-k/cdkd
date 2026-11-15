@@ -88,7 +88,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
-import { stripSiblingManagedPolicyArns } from '../../../src/provisioning/iam-sibling-managed-policies.js';
+import { stripSiblingOwnedMembers } from '../../../src/provisioning/iam-sibling-managed-policies.js';
 
 const ROLE = 'my-role';
 const LAMBDA_BASIC = 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole';
@@ -317,7 +317,7 @@ describe('cdkd drift on a role a sibling AWS::IAM::ManagedPolicy attaches to (go
   });
 });
 
-describe('stripSiblingManagedPolicyArns (go-to-k/cdkd#6324)', () => {
+describe('stripSiblingOwnedMembers (go-to-k/cdkd#6324)', () => {
   const context = {
     siblings: {
       Mp: { resourceType: 'AWS::IAM::ManagedPolicy', physicalId: SIBLING, properties: { Roles: [ROLE] } },
@@ -327,7 +327,7 @@ describe('stripSiblingManagedPolicyArns (go-to-k/cdkd#6324)', () => {
   it('drops the sibling ARN from both bags without mutating either', () => {
     const baseline = { ManagedPolicyArns: [SIBLING, LAMBDA_BASIC] };
     const aws = { ManagedPolicyArns: [LAMBDA_BASIC, SIBLING, OUT_OF_BAND] };
-    const out = stripSiblingManagedPolicyArns('AWS::IAM::Role', ROLE, baseline, aws, {}, context);
+    const out = stripSiblingOwnedMembers('AWS::IAM::Role', ROLE, baseline, aws, {}, context);
     expect(out.baseline).toEqual({ ManagedPolicyArns: [LAMBDA_BASIC] });
     expect(out.aws).toEqual({ ManagedPolicyArns: [LAMBDA_BASIC, OUT_OF_BAND] });
     expect(baseline.ManagedPolicyArns).toEqual([SIBLING, LAMBDA_BASIC]);
@@ -343,7 +343,7 @@ describe('stripSiblingManagedPolicyArns (go-to-k/cdkd#6324)', () => {
   ])('returns both bags by identity for %s', (_label, type, ctx) => {
     const baseline = { ManagedPolicyArns: [SIBLING] };
     const aws = { ManagedPolicyArns: [SIBLING] };
-    const out = stripSiblingManagedPolicyArns(type, ROLE, baseline, aws, {}, ctx);
+    const out = stripSiblingOwnedMembers(type, ROLE, baseline, aws, {}, ctx);
     expect(out.baseline).toBe(baseline);
     expect(out.aws).toBe(aws);
   });

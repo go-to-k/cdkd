@@ -98,6 +98,21 @@ An event bus's `Policy` is handled the same way. Unless your template sets
 another tool writes those statements. So `--revert` and `--accept` leave the
 live policy alone, and a console edit to it is not reported.
 
+IAM attachment lists follow the same rule. Drift does not compare these lists
+unless your template sets them on the resource itself: a user's `Groups`, the
+`ManagedPolicyArns` of a role, user or group, and a managed policy's `Roles`,
+`Users` and `Groups`. Another resource in the stack can write each of them: an
+`AWS::IAM::UserToGroupAddition` adds users to a group, an
+`AWS::IAM::ManagedPolicy` attaches itself through its `Roles` / `Users` /
+`Groups`, and a role attaches a policy through its own `ManagedPolicyArns`.
+When your template does set the list, drift compares it but leaves out the
+members such a resource in the same stack currently writes, unless your
+template lists them too. So `--revert` neither removes nor re-adds those
+members. A member such a resource has since stopped writing can still show as
+drift on a declared list. As in
+CloudFormation, an out-of-band change to a list your template does not set is
+not reported.
+
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.
 Drift does not report that difference while your template leaves `Enabled`

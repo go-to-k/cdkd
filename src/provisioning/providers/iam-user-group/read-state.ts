@@ -13,8 +13,10 @@ import {
 } from '@aws-sdk/client-iam';
 import { collectInlinePolicyNamesManagedBySiblings } from '../iam-role-provider.js';
 import {
+  collectGroupsAddedBySiblings,
   collectManagedPolicyArnsAttachedBySiblings,
   withoutSiblingAttachedArns,
+  withoutSiblingOwned,
 } from '../../iam-sibling-managed-policies.js';
 import type { ResourceNotFound, ResourceIdentityVerdict } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
@@ -241,7 +243,15 @@ export async function readUserCurrentState(
       new ListGroupsForUserCommand({ UserName: physicalId })
     );
     const names = (groups.Groups ?? []).map((g) => g.GroupName).filter((n): n is string => !!n);
-    result['Groups'] = names;
+    // go-to-k/cdkd#6328: a group a sibling `AWS::IAM::UserToGroupAddition`
+    // adds the user to is that resource's membership, not the user's.
+    result['Groups'] = withoutSiblingOwned(
+      names,
+      collectGroupsAddedBySiblings(physicalId, context),
+      properties,
+      'Groups',
+      true
+    );
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }

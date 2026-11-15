@@ -8,7 +8,7 @@ import { undeclaredUncomparedDriftKeys } from '../../../src/cli/commands/drift.j
  * stack, or outside cdkd. `cdkd drift` never compares it, so `--revert` can
  * never delete another writer's notifications.
  */
-describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323)', () => {
+describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323, #6328)', () => {
   it('skips an undeclared bucket NotificationConfiguration', () => {
     expect(undeclaredUncomparedDriftKeys('AWS::S3::Bucket', { BucketName: 'b' })).toEqual([
       'NotificationConfiguration',
@@ -48,6 +48,33 @@ describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323)', () =
         Policy: { Version: '2012-10-17', Statement: [] },
       })
     ).toEqual([]);
+  });
+
+  // go-to-k/cdkd#6328: IAM attachment lists a SIBLING writes (a
+  // UserToGroupAddition, a ManagedPolicy's lists, a principal's
+  // ManagedPolicyArns) are compared only where the template declares them.
+  it.each([
+    ['AWS::IAM::User', { UserName: 'u' }, ['Groups', 'ManagedPolicyArns']],
+    ['AWS::IAM::User', { Groups: ['g'] }, ['ManagedPolicyArns']],
+    ['AWS::IAM::User', { ManagedPolicyArns: [] }, ['Groups']],
+    ['AWS::IAM::User', { Groups: [], ManagedPolicyArns: ['a'] }, []],
+    ['AWS::IAM::Role', { RoleName: 'r' }, ['ManagedPolicyArns']],
+    ['AWS::IAM::Role', { ManagedPolicyArns: ['a'] }, []],
+    ['AWS::IAM::Group', {}, ['ManagedPolicyArns']],
+    ['AWS::IAM::Group', { ManagedPolicyArns: ['a'] }, []],
+    ['AWS::IAM::ManagedPolicy', { PolicyDocument: {} }, ['Groups', 'Roles', 'Users']],
+    ['AWS::IAM::ManagedPolicy', { Roles: ['r'] }, ['Groups', 'Users']],
+    ['AWS::IAM::ManagedPolicy', { Roles: ['r'], Users: [], Groups: ['g'] }, []],
+  ])('%s with %j skips %j', (resourceType, properties, expected) => {
+    expect(undeclaredUncomparedDriftKeys(resourceType, properties)).toEqual(expected);
+  });
+
+  it.each([
+    // The membership resource and the inline policy carry no such list.
+    ['AWS::IAM::UserToGroupAddition'],
+    ['AWS::IAM::Policy'],
+  ])('skips nothing on %s (IAM)', (resourceType) => {
+    expect(undeclaredUncomparedDriftKeys(resourceType, {})).toEqual([]);
   });
 
   it.each([

@@ -34,7 +34,7 @@ import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
-import { stripSiblingManagedPolicyArns } from '../../../provisioning/iam-sibling-managed-policies.js';
+import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -376,11 +376,11 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // readback; sent without it, `update()` would read the member as
     // REMOVED. Identity for a provider without the hook.
     //
-    // go-to-k/cdkd#6324: first, the same sibling-attached managed policy
-    // ARNs detection dropped from the baseline leave the desired bag too;
+    // go-to-k/cdkd#6324 / #6328: first, the same sibling-owned list members
+    // detection dropped from the baseline leave the desired bag too;
     // the readback (the previous side) never carried them, so `update()`
-    // neither detaches nor re-attaches them.
-    desiredProperties = stripSiblingManagedPolicyArns(
+    // neither removes nor re-adds them.
+    desiredProperties = stripSiblingOwnedMembers(
       outcome.resourceType,
       stateResource.physicalId,
       desiredProperties,

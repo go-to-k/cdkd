@@ -5659,6 +5659,7 @@
           "l2"
         ],
         "iam-sibling-managed-policy-drift": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -6437,6 +6438,7 @@
           "literal"
         ],
         "iam-sibling-managed-policy-drift": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -6460,6 +6462,7 @@
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-sibling-managed-policy-drift",
         "infra-security"
       ],
       "signals": {
@@ -6472,6 +6475,10 @@
           "literal"
         ],
         "iam-secret-derived-principals": [
+          "l1",
+          "literal"
+        ],
+        "iam-sibling-managed-policy-drift": [
           "l1",
           "literal"
         ],

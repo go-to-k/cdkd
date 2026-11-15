@@ -29,10 +29,25 @@ import { coerceCfnBoolean } from '../../../provisioning/config-shape.js';
  * sibling's next statement change then reads as drift, and `--revert` wrote the
  * stale document back, undoing the sibling's change (a removed `Condition`
  * widened access).
+ *
+ * IAM attachment lists (go-to-k/cdkd#6328): a user's `Groups` (an
+ * `AWS::IAM::UserToGroupAddition` writes it), a role / user / group's
+ * `ManagedPolicyArns` (an `AWS::IAM::ManagedPolicy`'s `Roles` / `Users` /
+ * `Groups` writes it), and a managed policy's `Roles` / `Users` / `Groups` (a
+ * principal's `ManagedPolicyArns` writes it). The baseline read races that
+ * sibling's write, so it can record the sibling's member; when the sibling
+ * later stops writing it (its list shrinks), drift reported the stale member
+ * and `--revert` RE-GRANTED it against the template. A DECLARED list is still
+ * compared, and the sibling's members are then stripped on both sides
+ * (`stripSiblingOwnedMembers`).
  */
 const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::S3::Bucket': ['NotificationConfiguration'],
   'AWS::Events::EventBus': ['Policy'],
+  'AWS::IAM::User': ['Groups', 'ManagedPolicyArns'],
+  'AWS::IAM::Role': ['ManagedPolicyArns'],
+  'AWS::IAM::Group': ['ManagedPolicyArns'],
+  'AWS::IAM::ManagedPolicy': ['Groups', 'Roles', 'Users'],
 };
 
 /**

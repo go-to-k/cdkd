@@ -692,6 +692,59 @@ describe('IAMManagedPolicyProvider', () => {
       const result = await provider.readCurrentState(ARN, 'MyManagedPolicy', 'AWS::IAM::ManagedPolicy');
       expect(result).toBe(RESOURCE_NOT_FOUND);
     });
+
+    // go-to-k/cdkd#6328: a principal attaching this policy through its OWN
+    // ManagedPolicyArns owns that attachment, not the policy.
+    describe('a sibling principal attaching the policy through its ManagedPolicyArns', () => {
+      function readWith(
+        entities: { roles?: string[]; users?: string[]; groups?: string[] },
+        properties: Record<string, unknown>,
+        siblings: Record<string, { resourceType: string; physicalId?: string; properties: Record<string, unknown> }>
+      ) {
+        mockSend.mockResolvedValueOnce({ Policy: { PolicyName: 'MyManagedPolicy', Path: '/' } });
+        mockSend.mockResolvedValueOnce({
+          PolicyRoles: (entities.roles ?? []).map((RoleName) => ({ RoleName })),
+          PolicyUsers: (entities.users ?? []).map((UserName) => ({ UserName })),
+          PolicyGroups: (entities.groups ?? []).map((GroupName) => ({ GroupName })),
+          IsTruncated: false,
+        });
+        mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
+        return provider
+          .readCurrentState(ARN, 'MyManagedPolicy', 'AWS::IAM::ManagedPolicy', properties, { siblings })
+          .then((r) => bagOf(r));
+      }
+
+      it('excludes each principal kind that attaches it, keeping declared and out-of-band ones', async () => {
+        const r = await readWith(
+          { roles: ['declared', 'attacher', 'oob'], users: ['u-attacher'], groups: ['g-attacher'] },
+          { Roles: ['declared'] },
+          {
+            R: { resourceType: 'AWS::IAM::Role', physicalId: 'attacher', properties: { ManagedPolicyArns: [ARN] } },
+            U: { resourceType: 'AWS::IAM::User', physicalId: 'u-attacher', properties: { ManagedPolicyArns: [ARN] } },
+            G: { resourceType: 'AWS::IAM::Group', physicalId: 'g-attacher', properties: { ManagedPolicyArns: [ARN] } },
+          }
+        );
+        expect(r!['Roles']).toEqual(['declared', 'oob']);
+        expect(r!['Users']).toEqual([]);
+        expect(r!['Groups']).toEqual([]);
+      });
+
+      it('keeps a principal the policy ALSO lists', async () => {
+        const r = await readWith({ roles: ['both'] }, { Roles: ['both'] }, {
+          R: { resourceType: 'AWS::IAM::Role', physicalId: 'both', properties: { ManagedPolicyArns: [ARN] } },
+        });
+        expect(r!['Roles']).toEqual(['both']);
+      });
+
+      it.each([
+        ['attaching ANOTHER policy', { resourceType: 'AWS::IAM::Role', physicalId: 'r', properties: { ManagedPolicyArns: ['arn:aws:iam::123456789012:policy/other'] } }],
+        ['of the wrong kind (a user named like the role)', { resourceType: 'AWS::IAM::User', physicalId: 'r', properties: { ManagedPolicyArns: [ARN] } }],
+        ['with no physical id', { resourceType: 'AWS::IAM::Role', properties: { ManagedPolicyArns: [ARN] } }],
+      ])('keeps the role for a sibling %s', async (_l, sibling) => {
+        const r = await readWith({ roles: ['r'] }, {}, { S: sibling });
+        expect(r!['Roles']).toEqual(['r']);
+      });
+    });
   });
 
   describe('import', () => {
