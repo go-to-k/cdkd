@@ -392,7 +392,8 @@ export async function updateInScope(
     throw new ProvisioningError(
       `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
         `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
-        `replacement required`,
+        `the template is invalid: declare the attribute in AttributeDefinitions or drop it ` +
+        `from the key schema (a replacement cannot apply it either)`,
       resourceType,
       logicalId,
       physicalId

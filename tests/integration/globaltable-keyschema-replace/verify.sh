@@ -45,7 +45,6 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
-
 STACK="CdkdGlobalTableKeySchemaReplace"
 TABLE="CdkdGlobalTableKeySchemaReplace"
 REGION="${AWS_REGION:-us-east-1}"
