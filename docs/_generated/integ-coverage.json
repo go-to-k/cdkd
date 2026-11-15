@@ -1345,6 +1345,7 @@
         "dynamodb-globaltable-implied-stream",
         "dynamodb-globaltable-replica-settings",
         "globaltable-fix-forward-orphan",
+        "globaltable-keyschema-replace",
         "globaltable-template-baseline-drift",
         "lambda",
         "rollback-replay-effective-props"
@@ -1365,6 +1366,10 @@
         ],
         "globaltable-fix-forward-orphan": [
           "l1"
+        ],
+        "globaltable-keyschema-replace": [
+          "l2",
+          "literal"
         ],
         "globaltable-template-baseline-drift": [
           "l1",

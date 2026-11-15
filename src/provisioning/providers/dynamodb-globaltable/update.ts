@@ -6,7 +6,10 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 
-import { ProvisioningError } from '../../../utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../utils/error-handler.js';
 import { planTagDiff, tagPlanWarning } from '../../tag-list.js';
 import {
   coerceCfnBoolean,
@@ -70,10 +73,14 @@ import type { MaskedLogSinks } from '../../masked-retry-logger.js';
  *   7. TimeToLiveSpecification toggle.
  *
  * Immutable properties (TableName / KeySchema / AttributeDefinitions
- * removals / LocalSecondaryIndexes changes) throw `ProvisioningError`
- * naming the offending field — the deploy engine's diff classifier
- * should catch these as REPLACEMENT before ever calling `update()`,
- * but the guard is defense-in-depth.
+ * removals / LocalSecondaryIndexes changes) throw
+ * `ResourceUpdateNotSupportedError` naming the offending field. Only
+ * `TableName` is create-only in the schema, so a KeySchema change and an
+ * added or changed LSI list always reach these guards (CloudFormation
+ * classifies them as "Some interruptions", not as Replacement). The typed
+ * error is what lets `--replace` turn the refusal into a replacement
+ * (`update-in-place.ts`). A plain `ProvisioningError` made the remedy the
+ * message prints a no-op (go-to-k/cdkd#6363).
  */
 export async function update(
   this: DynamoDBGlobalTableProvider,
@@ -195,8 +202,9 @@ export async function updateInScope(
   }
 
   // ─── Immutable property guards (defense-in-depth) ───────────────────
-  // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
-  // and the bare `--replace` they used to name was wrong twice over.
+  // Issue [#2610] sites 5-7. The refusals below advise a replacement, and the
+  // bare `--replace` they used to name was wrong twice over. (The fourth, the
+  // AttributeDefinitions removal, prints the same remedy since #6363.)
   //
   // 1. `AWS::DynamoDB::GlobalTable` is in `STATEFUL_TYPES`, so the deploy
   //    engine's `--replace` fallback refuses a second time with
@@ -309,11 +317,10 @@ export async function updateInScope(
       physicalName: physicalId,
     }))
   ) {
-    throw new ProvisioningError(
-      log.mask(`TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(`TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`)
     );
   }
   if (
@@ -321,11 +328,10 @@ export async function updateInScope(
     previousProperties['KeySchema'] !== undefined &&
     !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
   ) {
-    throw new ProvisioningError(
-      log.mask(`KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(`KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`)
     );
   }
   // go-to-k/cdkd#5489: an ADDED or REMOVED whole list is a change too. Before,
@@ -345,13 +351,12 @@ export async function updateInScope(
       lsiListOrEmpty(previousProperties['LocalSecondaryIndexes'])
     )
   ) {
-    throw new ProvisioningError(
-      log.mask(
-        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`
-      ),
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      log.mask(
+        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`
+      )
     );
   }
   // AttributeDefinitions: additions are allowed (needed for new GSIs).
@@ -379,13 +384,12 @@ export async function updateInScope(
     (a) => a.AttributeName !== undefined && desiredKeyAttrNames.has(a.AttributeName)
   );
   if (removedButStillReferenced.length > 0) {
-    throw new ProvisioningError(
-      `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
-        `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
-        `replacement required`,
+    throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      physicalId
+      `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
+        `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
+        (await replaceRemedy())
     );
   }
 

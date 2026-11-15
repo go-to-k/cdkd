@@ -1411,6 +1411,11 @@
       "scenarios": []
     },
     {
+      "name": "globaltable-keyschema-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "globaltable-template-baseline-drift",
       "annotated": false,
       "scenarios": []
@@ -3931,6 +3936,7 @@
     "getatt-rds-docdb-attributes",
     "getatt-vpc-managed-policy",
     "globaltable-fix-forward-orphan",
+    "globaltable-keyschema-replace",
     "globaltable-template-baseline-drift",
     "glue-securityconfig-replace",
     "guardduty-detector-update",
