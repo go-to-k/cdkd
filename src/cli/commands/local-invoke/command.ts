@@ -28,10 +28,10 @@ import {
 } from '../../../local/lambda-resolver.js';
 import { resolveEnvVars } from '../../../local/env-resolver.js';
 import {
-  substituteEnvVarsFromStateAsync,
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
 } from '../../../local/state-resolver.js';
+import { substituteEnvVarsJudgedAsync } from '../../../local/cross-stack-watch.js';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { foldRegionOption } from '../../region-options.js';
 import {
@@ -605,7 +605,8 @@ export interface InvokeTemplateEnvResult {
   /**
    * Keys whose VALUE must stay off the `docker run` argv (a value-less
    * `-e KEY`): a decrypted SecureString, a value resolved at the cross-stack
-   * boundary, and a resolved CloudFormation dynamic reference.
+   * boundary, a cross-stack value holding a producer stack's secret (or one
+   * cdkd could not check), and a resolved CloudFormation dynamic reference.
    */
   sensitiveEnvKeys: Set<string>;
   /** The loaded state, when a state-source flag loaded one (the `--assume-role` hint path). */
@@ -757,7 +758,9 @@ async function resolveInvokeTemplateEnvWith(
             subContext.crossStackResolver = resolver;
           }
         }
-        const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+        // A producer stack's secret read through the cross-stack resolver joins
+        // the audit's `sensitiveKeys` too (go-to-k/cdkd#6341).
+        const { env, audit } = await substituteEnvVarsJudgedAsync(templateEnv, subContext);
         templateEnv = env;
         stateAudit = audit;
         const label = stateProvider.label;

@@ -12,6 +12,7 @@ Index: [code-layout.md](code-layout.md).
 - **`start-api`** - route discovery / matching / event building, the warm `container-pool.ts`, `http-server.ts`, authorizers, CORS, stage, watcher, and the boot-time SSRF warning in `rest-v1-integrations.ts` (REST v1 dispatch and VTL run in cdk-local). `route-matcher.ts` precedence: full, greedy `{proxy+}`, `$default`; literal segments break ties. `sigv4-verify.ts` checks the signature only, and warn-and-pass is the DEFAULT (`--strict-sigv4` opts out).
 - **Path-form targets** (`invoke`, `run-task` — its resolver AND its state-source candidate — and `start-api`'s stack hint) pick the stack through `stackForPathFormTarget` / `stackForConstructPath` (`src/cli/cdk-path.ts`), never the first segment, which is the Stage id for a Stage stack; only a head no stack path prefixes falls through to `matchStacks`. A second copy drifts (go-to-k/cdkd#3953).
 - **`run-task`** - task and secrets resolvers, `ecs-network.ts` (exports live ONLY for the runner), `ecs-task-runner.ts`.
+- **Producer secrets (`--from-state`)** - `cross-stack-secrets.ts` judges each value the cross-stack resolver serves; `cross-stack-watch.ts` reads that verdict for `run-task`, `invoke` and `invoke-agentcore`, so no site re-spells it.
 - **`start-service` / `start-alb` / `start-cloudfront` / `start-agentcore` / `start-web-function` / `start-microvm`** - thin consumers of cdk-local factories or `runEcsServiceEmulator`, threading cdkd's `--from-state` factory through `extraStateProviders`, consulted on every state-backed path, Lambda targets and start-cloudfront included (go-to-k/cdk-local#699). No Docker-context check on the ECS commands: the engine contains its images (go-to-k/cdkd#3652).
 - **Intrinsic helpers** - `intrinsic-lambda-arn.ts` returns a discriminated union so each call site wraps the unsupported case in its own error class. `intrinsic-image.ts` is NOT a bare re-export: `derivePseudoParametersFromRegion` applies `canonicalizeRegion` first, since cdk-local echoes the region unfolded into `${AWS::Region}`.
 - **`local-aws-wiring.ts`** - cdk-local's endpoint / CA / credential / `--aws-emulator` wiring (and #6150's mixed mode): activated before `--role-arn`, applied in `runDetached` and the ECS runner.
@@ -54,15 +55,11 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   decides which directory is resolved and which is contained for a value that
   is then BIND-MOUNTED, and `(assetOutdir, logicalId)` made the bound
   `path.resolve('<logicalId>')` under the cwd. Required-ness caught only a
-  DROP. **What the bag buys**: an ordering mistake is a compile error and a
-  dropped member names itself; what is left is a deliberate mis-naming, which a
-  reader can see. **What it does not**: the swap is UNORDERABLE, not
-  inexpressible — a caller can still write
-  `{ manifestDir: assetOutdir, assetOutdir: manifestDir }`, and
-  `local-asset-code-path-containment.test.ts` is what catches that, by driving
-  both call sites against a STAGE manifest where the two directories differ.
-  `asset-code-resolve-options-shape.test.ts` pins only what no behavioural test
-  sees — the arity, and that the interface sits IMMEDIATELY above its function.
+  DROP. The bag makes an ordering mistake a compile error, but a caller can
+  still write `{ manifestDir: assetOutdir, assetOutdir: manifestDir }`:
+  `local-asset-code-path-containment.test.ts` catches that, driving both call
+  sites against a STAGE manifest where the two directories differ.
+  `asset-code-resolve-options-shape.test.ts` pins the arity and placement.
   The absolute arm's verdict comes from
   `absoluteAssemblyPathEscape`, which lives beside `resolveAssemblyPath` so the
   containment rule is not re-spelled (`path.join` cannot answer for an absolute

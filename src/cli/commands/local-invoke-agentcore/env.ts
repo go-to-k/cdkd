@@ -35,10 +35,8 @@ import {
 import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-reference.js';
 import { type ResolvedAgentCoreRuntime } from '../../../local/agentcore-resolver.js';
 import { resolveEnvVars } from '../../../local/env-resolver.js';
-import {
-  substituteEnvVarsFromStateAsync,
-  type SubstitutionContext,
-} from '../../../local/state-resolver.js';
+import { type SubstitutionContext } from '../../../local/state-resolver.js';
+import { substituteEnvVarsJudgedAsync } from '../../../local/cross-stack-watch.js';
 import {
   derivePseudoParametersFromRegion,
   type ImageResolutionContext,
@@ -161,13 +159,14 @@ async function buildContainerEnvWith(
     }
     const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
     if (resolver) subContext.crossStackResolver = resolver;
-    const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+    const { env, audit } = await substituteEnvVarsJudgedAsync(templateEnv, subContext);
     templateEnv = env;
     for (const key of audit.resolvedKeys) {
       logger.debug(`${stateProvider.label}: substituted env var ${key}`);
     }
-    // Decrypted SecureString SSM values and values resolved at the cross-stack
-    // boundary: keep them off the `docker run` argv.
+    // Decrypted SecureString SSM values, values resolved at the cross-stack
+    // boundary, and a producer stack's secret read through the cross-stack
+    // resolver (go-to-k/cdkd#6341): keep them off the `docker run` argv.
     for (const key of audit.sensitiveKeys) sensitiveEnvKeys.add(key);
     for (const { key, reason } of audit.unresolved) {
       logger.warn(

@@ -31,6 +31,8 @@ import {
 import { pullImage } from '../../../local/docker-runner.js';
 import { buildContainerImage } from '../../../local/docker-image-builder.js';
 import { parseEcrUri, pullEcrImage } from '../../../local/ecr-puller.js';
+import { producerSecretCheckOf } from '../../../local/cross-stack-secrets.js';
+import { watchResolved } from '../../../local/cross-stack-watch.js';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -334,6 +336,18 @@ function findFileAssetByObjectKey(
 }
 
 /**
+ * A fromS3 source whose bucket name {@link resolveFromS3BucketIntrinsic} read
+ * from a cross-stack value holding a producer stack's secret, or one cdkd could
+ * not check (go-to-k/cdkd#6341). cdkd's own resolution line does not print it;
+ * the bundle download (cdk-local's `downloadAndExtractS3Bundle`) still names
+ * `s3://<bucket>/<key>` in its log line and errors until a cdk-local release
+ * with a display override (go-to-k/cdk-local#982) lets this mark be passed on.
+ */
+export interface JudgedS3Source {
+  bucketJudged?: true;
+}
+
+/**
  * Resolve a fromS3 bundle's intrinsic `Code.S3.Bucket` to a literal bucket
  * name in place on `resolved.codeArtifact.s3Source.bucket`. Uses the SAME
  * state-substitution machinery env vars use under `--from-cfn-stack`, so
@@ -378,8 +392,11 @@ export async function resolveFromS3BucketIntrinsic(
     );
   const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
   if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
+  // A producer stack's secret (or a value cdkd could not check) read here is
+  // still the bucket the download needs, but it is not logged (go-to-k/cdkd#6341).
+  const watched = watchResolved(subContext, producerSecretCheckOf(crossStackResolver));
 
-  const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, subContext);
+  const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, watched.context);
   if (result.kind !== 'literal') {
     throw new CdkdError(
       `Could not resolve AgentCore Runtime '${resolved.logicalId}' fromS3 Code.S3.Bucket intrinsic ` +
@@ -397,8 +414,11 @@ export async function resolveFromS3BucketIntrinsic(
     );
   }
   s3Source.bucket = result.value;
+  if (watched.seen.producerSecret !== undefined) (s3Source as JudgedS3Source).bucketJudged = true;
   getLogger().info(
-    `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} resolved to ${result.value}`
+    watched.seen.producerSecret === undefined
+      ? `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} resolved to ${result.value}`
+      : `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} (a cross-stack value cdkd does not print: it holds a secret of the producer stack, or one cdkd could not check)`
   );
 }
 
