@@ -352,6 +352,45 @@ describe('container argv intrinsics (go-to-k/cdkd#6271)', () => {
         expect(envFlags(args)).toEqual(expect.arrayContaining(['API_KEY', 'API_KEY_ATTR', 'API_KEY_ARN', 'KEY_ID=AKIAEXAMPLE']));
       });
 
+      it('drops a Secrets ValueFrom that reads the key, naming no value, and keeps an ARN one', async () => {
+        const state: Record<string, ResourceState> = {
+          ...secretState,
+          Sm: {
+            physicalId: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf',
+            resourceType: 'AWS::SecretsManager::Secret',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        };
+        const secrets = [
+          { Name: 'BY_REF', ValueFrom: { Ref: 'ApiKey' } },
+          { Name: 'BY_ARN', ValueFrom: { 'Fn::GetAtt': ['ApiKey', 'Arn'] } },
+          { Name: 'CROSS', ValueFrom: { 'Fn::Join': [':', [{ 'Fn::ImportValue': 'P' }, { Ref: 'ApiKey' }]] } },
+          { Name: 'DB', ValueFrom: { Ref: 'Sm' } },
+        ];
+        const task = resolveEcsTaskTarget('TD', [buildStack({ Secrets: secrets })], { stateResources: state });
+        await applyCrossStackResolverToTask(task, {
+          resources: state,
+          crossStackResolver: {
+            resolveImport: vi.fn().mockResolvedValue('producer'),
+            resolveGetStackOutput: vi.fn().mockResolvedValue(undefined),
+          },
+        });
+        const c = task.containers[0]!;
+        expect(c.secrets).toEqual([
+          { name: 'DB', valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-AbCdEf' },
+        ]);
+        expect(JSON.stringify(c)).not.toMatch(/plaintext/);
+        expect(c.warnings).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^Secret 'BY_REF' dropped: ValueFrom reads ApiKey, which holds a secret/),
+            expect.stringMatching(/^Secret 'BY_ARN' dropped: ValueFrom reads ApiKey\.Arn, which holds a secret/),
+            expect.stringMatching(/^Secret 'CROSS' dropped: ValueFrom reads ApiKey, which holds a secret/),
+          ])
+        );
+      });
+
       it('keeps a cross-stack Environment value that Refs a same-stack ApiKey off the argv', async () => {
         const env = [
           { Name: 'K', Value: { 'Fn::Join': [':', [{ 'Fn::ImportValue': 'Producer-Bucket' }, { Ref: 'ApiKey' }]] } },

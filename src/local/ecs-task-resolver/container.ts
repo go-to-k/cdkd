@@ -124,6 +124,11 @@ export function parseContainerDefinition(
       // parameters; without it, drop the secret and warn — the user's
       // workaround is `fromSecretCompleteArn` (literal ARN at synth time).
       if (subContext) {
+        const reason = secretValueFromReason(valueFromRaw, subContext.resources);
+        if (reason !== undefined) {
+          droppedSecretKeys.push({ key: sName, reason });
+          continue;
+        }
         const sub = substituteAgainstState(valueFromRaw, subContext);
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           secrets.push({ name: sName, valueFrom: sub.value });
@@ -340,33 +345,73 @@ export function secretAttributeRead(
     const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
     const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
-    // An attribute carrying the record's secret physical-id segment (an
-    // ApiKey's `Arn` ends in the key), or one whose value cannot be checked
-    // for it (go-to-k/cdkd#6330).
-    const segment = secretPhysicalIdSegment(record?.resourceType, record?.physicalId);
     if (
       isSensitiveAttributeName(attribute) ||
       isSecretValuedAttribute(record?.resourceType, attribute) ||
-      stored === SECRET_MASK ||
-      (segment !== undefined && (typeof stored !== 'string' || stored.includes(segment)))
+      stored === SECRET_MASK
     ) {
-      return (
-        `reads the secret attribute ${logicalId}.${attribute}, which cdkd will not put on the docker run command line; ` +
-        'pass the value through Environment or Secrets instead'
-      );
+      return secretAttributeReason(`${logicalId}.${attribute}`);
     }
   }
-  // A `Ref` (or a dot-less `${Id}` of `Fn::Sub`) resolves to the recorded
-  // physical id, which for an `AWS::AppSync::ApiKey` holds the key itself
-  // (go-to-k/cdkd#6330).
-  for (const logicalId of refReads(element)) {
+  const hit = secretPhysicalIdRead(element, stateResources);
+  if (hit === undefined) return undefined;
+  if (hit.attribute !== undefined)
+    return secretAttributeReason(`${hit.logicalId}.${hit.attribute}`);
+  return (
+    `references ${hit.logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
+    'pass the value through Environment or Secrets instead'
+  );
+}
+
+/**
+ * Why a `Secrets[].ValueFrom` must not be resolved: one reading a record
+ * whose physical id embeds a secret would resolve to that secret, which the
+ * secrets resolver then names in its lookup line and its refusal. A
+ * `ValueFrom` is a Secrets Manager or SSM parameter ARN, never such a value
+ * (go-to-k/cdkd#6330).
+ */
+export function secretValueFromReason(
+  valueFrom: unknown,
+  stateResources: SubstitutionContext['resources']
+): string | undefined {
+  const hit = secretPhysicalIdRead(valueFrom, stateResources);
+  if (hit === undefined) return undefined;
+  const read = hit.attribute === undefined ? hit.logicalId : `${hit.logicalId}.${hit.attribute}`;
+  return `ValueFrom reads ${read}, which holds a secret rather than naming a Secrets Manager secret or an SSM parameter`;
+}
+
+function secretAttributeReason(read: string): string {
+  return (
+    `reads the secret attribute ${read}, which cdkd will not put on the docker run command line; ` +
+    'pass the value through Environment or Secrets instead'
+  );
+}
+
+/**
+ * The first read of a record whose physical id embeds a secret
+ * ({@link secretPhysicalIdSegment}; an `AWS::AppSync::ApiKey`'s is
+ * `<apiId>|<key>`), or `undefined` (go-to-k/cdkd#6330). A `Ref` (or a dot-less
+ * `${Id}` of `Fn::Sub`) resolves to the physical id itself; an `Fn::GetAtt`
+ * counts when the recorded value holds the segment (the ApiKey's `Arn` ends
+ * in the key) or cannot be checked for it.
+ */
+function secretPhysicalIdRead(
+  element: unknown,
+  stateResources: SubstitutionContext['resources']
+): { logicalId: string; attribute?: string } | undefined {
+  const segmentOf = (logicalId: string): string | undefined => {
     const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
-    if (record && secretPhysicalIdSegment(record.resourceType, record.physicalId) !== undefined) {
-      return (
-        `references ${logicalId}, whose physical id holds a secret, which cdkd will not put on the docker run command line; ` +
-        'pass the value through Environment or Secrets instead'
-      );
-    }
+    return record ? secretPhysicalIdSegment(record.resourceType, record.physicalId) : undefined;
+  };
+  for (const [logicalId, attribute] of getAttReads(element)) {
+    const segment = segmentOf(logicalId);
+    if (segment === undefined) continue;
+    const recorded = stateResources[logicalId]!.attributes;
+    const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
+    if (typeof stored !== 'string' || stored.includes(segment)) return { logicalId, attribute };
+  }
+  for (const logicalId of refReads(element)) {
+    if (segmentOf(logicalId) !== undefined) return { logicalId };
   }
   return undefined;
 }

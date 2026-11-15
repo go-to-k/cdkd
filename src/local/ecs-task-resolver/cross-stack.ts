@@ -5,7 +5,12 @@ import {
   type CrossStackResolver,
   type SubstitutionContext,
 } from '../state-resolver.js';
-import { argvValue, computedAttributeRead, secretAttributeRead } from './container.js';
+import {
+  argvValue,
+  computedAttributeRead,
+  secretAttributeRead,
+  secretValueFromReason,
+} from './container.js';
 import { isCrossStackIntrinsic } from './needs.js';
 import { pickString } from './pick.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask, UnresolvedCommandElement } from './types.js';
@@ -149,6 +154,8 @@ export async function applyCrossStackResolverToTask(
         if (typeof valueFromRaw === 'string' && valueFromRaw.length > 0) continue;
         if (container.secrets.some((s) => s.name === sName)) continue;
         if (!isCrossStackIntrinsic(valueFromRaw)) continue;
+        // The sync pass dropped it with its reason (go-to-k/cdkd#6330).
+        if (secretValueFromReason(valueFromRaw, secretContext.resources) !== undefined) continue;
         const sub = await substituteAgainstStateAsync(valueFromRaw, secretContext);
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
