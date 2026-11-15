@@ -194,12 +194,16 @@ describe('GlobalTable delete refuses BEFORE any write when a copy is protected (
     sourceTable(false);
     regionalTable(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
 
-    await expect(
-      new DynamoDBGlobalTableProvider().delete('T', TABLE, RESOURCE_TYPE, undefined, {
-        stackDestroy: true,
-      })
-    ).rejects.toThrow();
+    const error = await new DynamoDBGlobalTableProvider()
+      .delete('T', TABLE, RESOURCE_TYPE, undefined, { stackDestroy: true })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
 
+    // Still retryable, so the destroy loop re-enters and reads again.
+    expect(error).toBeInstanceOf(Error);
+    expect(isMarkedNonRetryable(error)).toBe(false);
     // Reading a throttle as "not protected" would reopen the partial strip.
     expect(writes(mockSend)).toEqual([]);
     expect(writes(regionalSend)).toEqual([]);
