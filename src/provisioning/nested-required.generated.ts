@@ -1139,6 +1139,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::Lambda::Function',
     new Map<string, readonly string[]>([
+      ['AcceleratorConfig', ['AcceleratorMemorySize']],
       ['CapacityProviderConfig', ['LambdaManagedInstancesCapacityProviderConfig']],
       [
         'CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig',
@@ -1147,6 +1148,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['DurableConfig', ['ExecutionTimeout']],
       ['EphemeralStorage', ['Size']],
       ['FileSystemConfigs', ['Arn', 'LocalMountPath']],
+      ['RuntimeConfig', ['RuntimeAlias', 'RuntimeArn']],
       ['RuntimeManagementConfig', ['UpdateRuntimeOn']],
       ['SnapStart', ['ApplyOn']],
       ['Tags', ['Key']],

@@ -1,7 +1,8 @@
 {
   "resourceType": "AWS::Lambda::Function",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-15",
   "properties": [
+    "AcceleratorConfig",
     "Architectures",
     "Arn",
     "CapacityProviderConfig",
@@ -27,6 +28,7 @@
     "ReservedConcurrentExecutions",
     "Role",
     "Runtime",
+    "RuntimeConfig",
     "RuntimeManagementConfig",
     "SnapStart",
     "SnapStartResponse",
@@ -90,6 +92,9 @@
       "LocalMountPath",
       "S3FilesConfig"
     ],
+    "AcceleratorConfig": [
+      "AcceleratorMemorySize"
+    ],
     "TenancyConfig": [
       "TenantIsolationMode"
     ],
@@ -133,6 +138,10 @@
     "Environment": [
       "Variables"
     ],
+    "RuntimeConfig": [
+      "RuntimeAlias",
+      "RuntimeArn"
+    ],
     "EphemeralStorage": [
       "Size"
     ]
@@ -167,6 +176,9 @@
       "LocalMountPath",
       "S3FilesConfig",
       "S3FilesConfig.DirectS3Read"
+    ],
+    "AcceleratorConfig": [
+      "AcceleratorMemorySize"
     ],
     "TenancyConfig": [
       "TenantIsolationMode"
@@ -211,6 +223,10 @@
     "Environment": [
       "Variables"
     ],
+    "RuntimeConfig": [
+      "RuntimeAlias",
+      "RuntimeArn"
+    ],
     "EphemeralStorage": [
       "Size"
     ]
@@ -227,6 +243,7 @@
       "SnapStart": "object",
       "FileSystemConfigs": "array",
       "FunctionName": "scalar",
+      "AcceleratorConfig": "object",
       "Runtime": "scalar",
       "KmsKeyArn": "scalar",
       "PublishToLatestPublished": "scalar",
@@ -247,6 +264,7 @@
       "LoggingConfig": "object",
       "RecursiveLoop": "scalar",
       "Environment": "object",
+      "RuntimeConfig": "object",
       "Arn": "scalar",
       "EphemeralStorage": "object",
       "Architectures": "array"
@@ -304,6 +322,9 @@
       "S3ObjectStorageMode": "scalar",
       "ImageUri": "scalar"
     },
+    "AcceleratorConfig": {
+      "AcceleratorMemorySize": "scalar"
+    },
     "S3FilesConfig": {
       "DirectS3Read": "scalar"
     },
@@ -320,6 +341,10 @@
       "S3FilesConfig": "object",
       "Arn": "scalar",
       "LocalMountPath": "scalar"
+    },
+    "RuntimeConfig": {
+      "RuntimeAlias": "scalar",
+      "RuntimeArn": "scalar"
     },
     "Tag": {
       "Value": "scalar",
@@ -352,9 +377,16 @@
     "SnapStart": [
       "ApplyOn"
     ],
+    "AcceleratorConfig": [
+      "AcceleratorMemorySize"
+    ],
     "FileSystemConfig": [
       "Arn",
       "LocalMountPath"
+    ],
+    "RuntimeConfig": [
+      "RuntimeAlias",
+      "RuntimeArn"
     ],
     "Tag": [
       "Key"
@@ -367,6 +399,9 @@
     ]
   },
   "nestedRequired": {
+    "AcceleratorConfig": [
+      "AcceleratorMemorySize"
+    ],
     "CapacityProviderConfig": [
       "LambdaManagedInstancesCapacityProviderConfig"
     ],
@@ -383,6 +418,10 @@
       "Arn",
       "LocalMountPath"
     ],
+    "RuntimeConfig": [
+      "RuntimeAlias",
+      "RuntimeArn"
+    ],
     "RuntimeManagementConfig": [
       "UpdateRuntimeOn"
     ],
@@ -397,6 +436,7 @@
     ]
   },
   "propertyShapes": {
+    "AcceleratorConfig": "object",
     "Architectures": "array",
     "CapacityProviderConfig": "object",
     "CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig": "object",
@@ -415,6 +455,7 @@
     "ImageConfig.EntryPoint": "array",
     "Layers": "array",
     "LoggingConfig": "object",
+    "RuntimeConfig": "object",
     "RuntimeManagementConfig": "object",
     "SnapStart": "object",
     "SnapStartResponse": "object",
@@ -427,6 +468,8 @@
     "VpcConfig.SubnetIds": "array"
   },
   "propertyTypes": {
+    "AcceleratorConfig": "object",
+    "AcceleratorConfig.AcceleratorMemorySize": "integer",
     "Architectures": "array",
     "Architectures[]": "string",
     "Arn": "string",
@@ -487,6 +530,9 @@
     "ReservedConcurrentExecutions": "integer",
     "Role": "string",
     "Runtime": "string",
+    "RuntimeConfig": "object",
+    "RuntimeConfig.RuntimeAlias": "string",
+    "RuntimeConfig.RuntimeArn": "string",
     "RuntimeManagementConfig": "object",
     "RuntimeManagementConfig.RuntimeVersionArn": "string",
     "RuntimeManagementConfig.UpdateRuntimeOn": "string",

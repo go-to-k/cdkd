@@ -2489,7 +2489,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TracingConfig',
         'VpcConfig',
       ]),
-      sdkUnwired: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>([
+        ['AcceleratorConfig', 'not yet implemented by cdkd'],
+        ['RuntimeConfig', 'not yet implemented by cdkd'],
+      ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnapStartResponse']),
       primaryIdentifier: new Set<string>(['FunctionName']),
