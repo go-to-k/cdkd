@@ -260,7 +260,9 @@ assert_gone "ECR repository ${REPO} still exists" aws ecr describe-repositories 
 echo "    runtime ${RT_STATE}, repository deleted"
 
 # Both invokes created the function's log group, which destroy does not own.
-aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}"
+LG_OUT="$(aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}" 2>&1)" \
+  || grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${LG_OUT}" \
+  || { echo "FAIL: delete-log-group /aws/lambda/${FN}: ${LG_OUT}" >&2; exit 1; }
 LEFT_LG="$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${FN}" \
   --region "${REGION}" --query 'logGroups[].logGroupName' --output text)"
 if [ -n "${LEFT_LG}" ]; then

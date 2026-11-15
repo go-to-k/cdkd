@@ -1344,9 +1344,11 @@ fi
 # PRE-FLIGHT refusal never carries even though its text quotes the same AWS
 # sentence -- so neither line can be satisfied by a refusal that sent nothing.
 # The thrown wrap names AWS's error by its class only (go-to-k/cdkd#2319); the
-# sentence itself is on the wrap's --verbose debug line.
-if ! grep -qE "Failed to update PreflightWebAuthnOnPool: Failed to update Cognito User Pool PreflightWebAuthnOnPool: [A-Za-z]+\. Re-run with --verbose" "${PREFLIGHT_LOG}"; then
-  echo "FAIL: arm H did not fail with the UpdateUserPool catch-wrap (error class + --verbose pointer) for PreflightWebAuthnOnPool" >&2
+# sentence itself is on the wrap's --verbose debug line. This run IS
+# --verbose, so the summary carries no "Re-run with --verbose" pointer
+# (go-to-k/cdkd#6162): the class must end the line.
+if ! grep -qE "Failed to update PreflightWebAuthnOnPool: Failed to update Cognito User Pool PreflightWebAuthnOnPool: [A-Za-z]+\.$" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm H did not fail with the UpdateUserPool catch-wrap (error class only) for PreflightWebAuthnOnPool" >&2
   grep -i "PreflightWebAuthnOnPool" "${PREFLIGHT_LOG}" >&2 || true
   exit 1
 fi
