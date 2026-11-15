@@ -45,6 +45,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 import {
+  type JudgedValue,
   type ProducerSecretCheck,
   ProducerSecretReader,
   servedOutputValue,
@@ -701,19 +702,19 @@ export async function buildCrossStackResolver(
     statePrefix: opts.statePrefix,
   };
 
-  // go-to-k/cdkd#6337: what each served value's producer state (and its
-  // nested children's) says is a secret, read by cdkd's own post-pass beside
-  // cdk-local's contract. The exports index carries the value alone, so its
-  // producer record is read for it; one that cannot be read leaves the value
-  // unverified, which the argv refuses (fail closed).
+  // go-to-k/cdkd#6337: what each served value's producer state (its nested
+  // children's and the stacks it re-exports from included) says is a secret,
+  // read by cdkd's own post-pass beside cdk-local's contract. The exports
+  // index carries the value alone, so its producer record is read for it.
   const secrets = new ProducerSecretReader(
     (stackName, region) => stateBackend.getState(stackName, region),
     (message) => logger.debug(`${prefix}: ${message}`)
   );
 
-  const resolver: CrossStackResolver & ProducerSecretCheck = {
-    producerSecretOf: (value) => secrets.producerSecretOf(value),
-    async resolveImport(exportName: string): Promise<string | undefined> {
+  // Each arm returns the value with its producer's verdict (go-to-k/cdkd#6337);
+  // cdk-local's contract methods below return the value alone.
+  const judged: ProducerSecretCheck = {
+    async resolveImportJudged(exportName: string): Promise<JudgedValue> {
       // Fast path: consult the persistent exports index.
       try {
         const entry = await exportIndex.lookup(exportName);
@@ -724,8 +725,15 @@ export async function buildCrossStackResolver(
           // intrinsic resolver flattens these in practice but the index
           // value is the source of truth here, so we mirror its shape.
           const served = servedOutputValue(value);
-          await secrets.noteIndexed(entry.producerStack, entry.producerRegion, exportName, served);
-          return served;
+          return {
+            value: served,
+            verdict: await secrets.judgeIndexed(
+              entry.producerStack,
+              entry.producerRegion,
+              exportName,
+              served
+            ),
+          };
         }
       } catch (err) {
         logger.debug(
@@ -743,7 +751,7 @@ export async function buildCrossStackResolver(
         logger.debug(
           `${prefix}: failed to list stacks during Fn::ImportValue fallback for '${exportName}': ${describeAwsFailure(err).detail}`
         );
-        return undefined;
+        return { value: undefined };
       }
       // Issue #1836: the same-region scope filter folds BOTH sides. The caller's
       // `consumerRegion` is the RECORD's own spelling (`local-invoke/command.ts` passes
@@ -766,8 +774,10 @@ export async function buildCrossStackResolver(
           // bound a local env var to a stack that exports nothing of that name.
           if (importableOutputKeys(got.state).includes(exportName)) {
             const served = servedOutputValue(got.state.outputs[exportName]);
-            await secrets.noteProducer(ref.stackName, region, got.state, served);
-            return served;
+            return {
+              value: served,
+              verdict: await secrets.judge(ref.stackName, region, got.state, served),
+            };
           }
         } catch (err) {
           logger.debug(
@@ -776,18 +786,18 @@ export async function buildCrossStackResolver(
           continue;
         }
       }
-      return undefined;
+      return { value: undefined };
     },
-    async resolveGetStackOutput(
+    async resolveGetStackOutputJudged(
       producerStack: string,
       producerRegion: string,
       outputName: string
-    ): Promise<string | undefined> {
+    ): Promise<JudgedValue> {
       const readOutput = async (
         got: { state: StackState } | null | undefined,
         recordRegion: string
-      ): Promise<string | undefined> => {
-        if (!got) return undefined;
+      ): Promise<JudgedValue> => {
+        if (!got) return { value: undefined };
         // Issue #3207. This is the `Fn::GetStackOutput` arm; its
         // `Fn::ImportValue` sibling above is already covered because it tests
         // membership through `importableOutputKeys`, which fails closed. Here
@@ -820,19 +830,21 @@ export async function buildCrossStackResolver(
               `${prefix}: ${malformedLocalOutputsWarning(producerStack, recordRegion, refusalRecovery)}`
             );
           }
-          return undefined;
+          return { value: undefined };
         }
         const outputs = got.state.outputs;
-        if (!outputs) return undefined;
+        if (!outputs) return { value: undefined };
         // `Object.hasOwn`, not `in`: `outputName` is template-controlled, and on
         // a healthy bag `in` still walks the prototype chain, so an
         // `OutputName: 'toString'` answered TRUE and resolved a FUNCTION. Same
         // defence, and the same reason, as the deploy-side resolver's
         // `Fn::GetStackOutput` arm (issue #2767).
-        if (!Object.hasOwn(outputs, outputName)) return undefined;
+        if (!Object.hasOwn(outputs, outputName)) return { value: undefined };
         const served = servedOutputValue(outputs[outputName]);
-        await secrets.noteProducer(producerStack, recordRegion, got.state, served);
-        return served;
+        return {
+          value: served,
+          verdict: await secrets.judge(producerStack, recordRegion, got.state, served),
+        };
       };
       try {
         // EXACT spelling first, for the same reason `loadStateForStack`'s
@@ -870,21 +882,27 @@ export async function buildCrossStackResolver(
             await stateBackend.getState(producerStack, region),
             region
           );
-          if (recovered !== undefined) {
+          if (recovered.value !== undefined) {
             logger.debug(
               `${prefix}: Fn::GetStackOutput '${producerStack}.${outputName}' resolved from the case-variant state record '${region}' (no record spells '${producerRegion}' exactly).`
             );
             return recovered;
           }
         }
-        return undefined;
+        return { value: undefined };
       } catch (err) {
         logger.debug(
           `${prefix}: state read failed for Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}): ${describeAwsFailure(err).detail}`
         );
-        return undefined;
+        return { value: undefined };
       }
     },
+  };
+  const resolver: CrossStackResolver & ProducerSecretCheck = {
+    ...judged,
+    resolveImport: async (exportName) => (await judged.resolveImportJudged(exportName)).value,
+    resolveGetStackOutput: async (stack, region, output) =>
+      (await judged.resolveGetStackOutputJudged(stack, region, output)).value,
   };
 
   return {

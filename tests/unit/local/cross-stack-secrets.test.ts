@@ -6,11 +6,12 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   producerSecretCheckOf,
   producerSecretNeedles,
-  ProducerSecretLedger,
+  ProducerSecretReader,
+  strongerVerdict,
 } from '../../../src/local/cross-stack-secrets.js';
 
 describe('producerSecretNeedles', () => {
-  it('collects id segments and secret attribute leaves, not the mask or a reference', () => {
+  it('collects id segments, typed leaves and long name-judged leaves', () => {
     const needles = producerSecretNeedles({
       resources: {
         ApiKey: {
@@ -30,6 +31,7 @@ describe('producerSecretNeedles', () => {
             Password: '***',
             Token: '{{resolve:secretsmanager:s}}',
             ClientSecret: { Nested: ['nested-secret-value'] },
+            PasswordPolicy: 'strict',
             SecretArn: 'arn:aws:secretsmanager:::secret:x',
             MasterUserSecret: { SecretArn: 'arn:aws:secretsmanager:::secret:db-AbCd' },
           },
@@ -38,65 +40,90 @@ describe('producerSecretNeedles', () => {
       },
     });
     expect(needles.segments).toEqual(['da2-key-segment']);
+    expect(needles.typed).toEqual(['da2-key-segment']);
     // `MasterUserSecret.SecretArn` is an ARN by its dotted name, as the
-    // same-stack check reads it.
-    expect(new Set(needles.leaves)).toEqual(
-      new Set(['da2-key-segment', 'secret-access-key-value', 'nested-secret-value'])
+    // same-stack check reads it; `strict` is too short to be a credential.
+    expect(new Set(needles.named)).toEqual(
+      new Set(['secret-access-key-value', 'nested-secret-value'])
     );
   });
 
   it('reads a malformed state as holding nothing', () => {
-    const none = { segments: [], leaves: [] };
+    const none = { segments: [], typed: [], named: [] };
     expect(producerSecretNeedles(null)).toEqual(none);
     expect(producerSecretNeedles({ resources: [] })).toEqual(none);
     expect(producerSecretNeedles({ resources: { A: { attributes: 'x' } } })).toEqual(none);
   });
 });
 
-describe('ProducerSecretLedger matching', () => {
-  const ledger = new ProducerSecretLedger();
-  ledger.noteProducerState({
+describe('ProducerSecretReader.judge', () => {
+  const state = {
     resources: {
       K: { resourceType: 'AWS::AppSync::ApiKey', physicalId: 'a|abcd' },
+      S: { resourceType: 'AWS::IVS::StreamKey', physicalId: 's', attributes: { Value: 'wxyz' } },
       N: {
-        resourceType: 'AWS::CloudFormation::Stack',
+        resourceType: 'Custom::Thing',
         physicalId: 'n',
-        attributes: {
-          'Outputs.PasswordPolicy': 'strict',
-          'Outputs.ClientSecret': 'a-long-client-secret-value',
-        },
+        attributes: { ClientSecret: 'a-long-client-secret-value', PasswordPolicy: 'strict' },
       },
     },
+  };
+  const reader = new ProducerSecretReader(
+    async () => null,
+    () => undefined
+  );
+  const judge = (v: string) => reader.judge('P', 'us-east-1', state, v);
+
+  it('matches an id segment or a typed leaf whole, or inside a value from four characters', async () => {
+    expect(await judge('abcd')).toBe('secret');
+    expect(await judge('x-abcd-y')).toBe('secret');
+    expect(await judge('k=wxyz')).toBe('secret');
   });
-  it('matches an id segment whole, or inside a value from four characters', () => {
-    expect(ledger.producerSecretOf('abcd')).toBe('secret');
-    expect(ledger.producerSecretOf('x-abcd-y')).toBe('secret');
+
+  it('matches a name-judged leaf only from sixteen characters, whole or inside', async () => {
+    expect(await judge('strict')).toBeUndefined();
+    expect(await judge('mode=strict')).toBeUndefined();
+    expect(await judge('a-long-client-secret-value')).toBe('secret');
+    expect(await judge('k=a-long-client-secret-value')).toBe('secret');
+    expect(await judge('public')).toBeUndefined();
   });
-  it('matches an attribute leaf whole, and inside a value only from sixteen characters', () => {
-    expect(ledger.producerSecretOf('strict')).toBe('secret');
-    expect(ledger.producerSecretOf('mode=strict')).toBeUndefined();
-    expect(ledger.producerSecretOf('k=a-long-client-secret-value')).toBe('secret');
+
+  it('renders a failed read in the debug line without its raw detail', async () => {
+    const lines: string[] = [];
+    const failing = new ProducerSecretReader(
+      async () => {
+        throw new Error('denied \u001b[31mred\u001b[0m');
+      },
+      (m) => lines.push(m)
+    );
+    expect(await failing.judgeIndexed('Bad\u001bStack', 'us-east-1', 'E', 'v')).toBe('unreadable');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/state read failed for /);
+    expect(lines[0]).not.toContain('\u001b');
   });
-  it('reports a noted unverified value as such, and nothing else', () => {
-    ledger.noteUnverified('maybe');
-    expect(ledger.producerSecretOf('maybe')).toBe('unverified');
-    expect(ledger.producerSecretOf('other')).toBeUndefined();
+});
+
+describe('strongerVerdict', () => {
+  it('ranks secret over the fail-closed verdicts, and either over none', () => {
+    expect(strongerVerdict('unreadable', 'secret')).toBe('secret');
+    expect(strongerVerdict('secret', 'stale')).toBe('secret');
+    expect(strongerVerdict(undefined, 'stale')).toBe('stale');
+    expect(strongerVerdict('unreadable', undefined)).toBe('unreadable');
+    expect(strongerVerdict(undefined, undefined)).toBeUndefined();
   });
 });
 
 describe('producerSecretCheckOf', () => {
-  it('reads the check off a resolver that carries it, and nothing off one that does not', () => {
-    const ledger = new ProducerSecretLedger();
-    ledger.noteProducerState({
-      resources: { K: { resourceType: 'AWS::AppSync::ApiKey', physicalId: 'a|da2-secretkey' } },
-    });
+  it('reads the judged variants off a resolver that carries them, and nothing otherwise', async () => {
     const resolver = {
-      resolveImport: async () => undefined,
-      resolveGetStackOutput: async () => undefined,
-      producerSecretOf: (v: string) => ledger.producerSecretOf(v),
+      resolveImport: async () => 'v',
+      resolveGetStackOutput: async () => 'v',
+      resolveImportJudged: async () => ({ value: 'v', verdict: 'secret' as const }),
+      resolveGetStackOutputJudged: async () => ({ value: 'w' }),
     };
-    expect(producerSecretCheckOf(resolver)?.producerSecretOf('da2-secretkey')).toBe('secret');
-    expect(producerSecretCheckOf(resolver)?.producerSecretOf('public')).toBeUndefined();
+    const check = producerSecretCheckOf(resolver);
+    expect(await check?.resolveImportJudged('E')).toEqual({ value: 'v', verdict: 'secret' });
+    expect(await check?.resolveGetStackOutputJudged('S', 'r', 'O')).toEqual({ value: 'w' });
     expect(
       producerSecretCheckOf({
         resolveImport: async () => undefined,

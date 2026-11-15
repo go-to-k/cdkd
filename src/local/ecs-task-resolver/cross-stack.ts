@@ -4,6 +4,8 @@ import {
   producerSecretArgvReason,
   producerSecretCheckOf,
   producerSecretValueFromReason,
+  strongerVerdict,
+  type JudgedValue,
   type ProducerSecretCheck,
   type ProducerSecretVerdict,
 } from '../cross-stack-secrets.js';
@@ -279,7 +281,7 @@ export async function applyCrossStackResolverToTask(
 interface ResolvedSeen {
   /** A value that is the secret mask. */
   masked: boolean;
-  /** The producer-secret verdict on the values read, `secret` over `unverified`. */
+  /** The producer-secret verdict on the values read, `secret` over the fail-closed ones. */
   producerSecret: ProducerSecretVerdict | undefined;
 }
 
@@ -294,21 +296,28 @@ function watchResolved(
   const seen: ResolvedSeen = { masked: false, producerSecret: undefined };
   const inner = context.crossStackResolver;
   if (!inner) return { context, seen };
-  const watch = (v: string | undefined): string | undefined => {
-    if (v === undefined) return v;
-    if (v === SECRET_MASK) seen.masked = true;
-    // `secret` outranks `unverified` when one element reads several values.
-    const verdict = producerSecrets?.producerSecretOf(v);
-    if (verdict === 'secret' || seen.producerSecret === undefined) {
-      seen.producerSecret = verdict ?? seen.producerSecret;
-    }
-    return v;
+  const watch = ({ value, verdict }: JudgedValue): string | undefined => {
+    if (value === undefined) return value;
+    if (value === SECRET_MASK) seen.masked = true;
+    // `secret` outranks the fail-closed verdicts when one element reads several values.
+    seen.producerSecret = strongerVerdict(seen.producerSecret, verdict);
+    return value;
   };
-  const resolver: CrossStackResolver = {
-    resolveImport: async (exportName) => watch(await inner.resolveImport(exportName)),
-    resolveGetStackOutput: async (stack, region, output) =>
-      watch(await inner.resolveGetStackOutput(stack, region, output)),
-  };
+  // The judged variants when the resolver carries them: each call's verdict is
+  // its own producer's, never another call's for an equal value.
+  const resolver: CrossStackResolver = producerSecrets
+    ? {
+        resolveImport: async (exportName) =>
+          watch(await producerSecrets.resolveImportJudged(exportName)),
+        resolveGetStackOutput: async (stack, region, output) =>
+          watch(await producerSecrets.resolveGetStackOutputJudged(stack, region, output)),
+      }
+    : {
+        resolveImport: async (exportName) =>
+          watch({ value: await inner.resolveImport(exportName) }),
+        resolveGetStackOutput: async (stack, region, output) =>
+          watch({ value: await inner.resolveGetStackOutput(stack, region, output) }),
+      };
   return { context: { ...context, crossStackResolver: resolver }, seen };
 }
 
