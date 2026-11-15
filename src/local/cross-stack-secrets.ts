@@ -17,7 +17,7 @@ import { secretSegmentsOfState } from '../provisioning/secret-physical-id.js';
 import { producerRecordKey } from '../state/record-keys.js';
 import { importableOutputKeys } from '../types/state.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../utils/stringify.js';
 import type { CrossStackResolver } from './state-resolver.js';
 
@@ -228,7 +228,7 @@ export class ProducerSecretReader implements ProducerSecretCheck {
           (got) => got?.state ?? undefined,
           (err: unknown) => {
             this.debug(
-              `state read failed for ${displayIdent(stackName)} (${displayIdent(region)}) while checking a cross-stack value for secrets: ${describeAwsFailure(err).detail}`
+              `state read failed for ${displayIdent(stackName)} (${displayIdent(region)}) while checking a cross-stack value for secrets: ${displaySafe(describeAwsFailure(err).detail)}`
             );
             return undefined;
           }
