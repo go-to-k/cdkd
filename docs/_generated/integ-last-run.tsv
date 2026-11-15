@@ -264,7 +264,7 @@ local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, 
 local-invoke-buildkit	2026-11-05T06:49:09Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; BuildKit features all fired
 local-invoke-container	2026-11-13T07:02:34Z	PASS	40	verify.sh	rc ok, docker sweep clean (#6192)
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
-local-invoke-from-cfn-stack	2026-11-13T05:08:51Z	PASS	115	verify.sh	rc ok, orph clean, #6160
+local-invoke-from-cfn-stack	2026-11-15T03:12:13Z	PASS	105	verify.sh	rc ok, orph clean, docker sweep clean; cdk-local 0.168.0
 local-invoke-from-cfn-stack-multi-stack	2026-11-05T06:54:12Z	PASS	112	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-from-state	2026-11-14T17:45:26Z	PASS	251	verify.sh	rc ok, orph clean, docker sweep clean; #6307 paramValue
 local-invoke-java	2026-11-05T06:48:29Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
