@@ -406,7 +406,7 @@ assert_gone "the refused rollback created the PREFIXED ${PREFIXED_A}" \
 # is the refusal's own opening, independent of it. Sentinel without marker =
 # the wording drifted (or another refusal fired) -- never read as "no refusal".
 REFUSAL_SENTINEL="Cannot reverse the replacement of NamedRole (AWS::IAM::Role)"
-REFUSAL_NAME_MARKER="deleted the old resource (${ROLE_A})"
+REFUSAL_NAME_MARKER="AWS reports a resource under the old physical id (${ROLE_A})"
 REFUSAL_ID_MARKER="but not the one this stack recorded (its RoleId differs)"
 REFUSED_TEXT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/refused.log")"
 if ! grep -qF "${REFUSAL_SENTINEL}" <<<"${REFUSED_TEXT}"; then

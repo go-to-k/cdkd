@@ -12,7 +12,6 @@
  * meets the same answer) and `'unknown'` (an error, no usable old id, or a
  * read that did not answer in time — a re-run reads again).
  */
-import type { ResourceProvider } from '../../types/resource.js';
 import { isDeleteStarted, isRefusedByName } from '../../provisioning/delete-started.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { withReplayDeletePrinting, type ReplayOpScope } from './replay-scope.js';
@@ -47,12 +46,14 @@ export type ReplacedSurvivorVerdict =
   | 'foreign';
 
 /**
- * go-to-k/cdkd#6393: per type, the recorded attribute holding an identity
- * AWS mints per resource (so a same-named successor carries another one), read
- * live through the provider's `getAttribute`. A type whose physical id is
- * already AWS-minted (a KMS key id) needs none; one whose every id is
- * name-derived (an SNS topic ARN) has none to compare. Add a type only with
- * an attribute its SDK provider records at create and answers live.
+ * go-to-k/cdkd#6393: per type, the recorded attribute holding the identity
+ * AWS mints per resource (so a same-named successor carries another one),
+ * whose value is exactly the token that type's SDK provider's
+ * `resourceIdentity` reads live (#4655). A type whose physical id is already
+ * AWS-minted (a KMS key id) needs none; one whose every id is name-derived
+ * (an SNS topic ARN) has none to compare. Add a type only when its SDK
+ * provider records the attribute at create and its `resourceIdentity` token
+ * equals it.
  */
 export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
   'AWS::IAM::Role': 'RoleId',
@@ -113,35 +114,41 @@ async function readSurvivor(
     if (read === undefined) return 'unreadable';
     if (typeof read !== 'object' || read === null || Array.isArray(read)) return 'unknown';
     if (Object.keys(read).length === 0) return 'unreadable';
-    return (await isForeignSurvivor(s, provider, physicalId, oldType)) ? 'foreign' : 'exists';
+    return await identityVerdict(s, physicalId, oldType);
   } catch {
     return 'unknown';
   }
 }
 
 /**
- * go-to-k/cdkd#6393: whether the live resource under the old physical id is
- * provably NOT the one the old record describes. Only a recorded, unmasked
- * identity and a live answer of the same kind can prove it; anything less (no
- * table entry, nothing recorded, no `getAttribute`, a failed or empty read)
- * answers `false`, keeping the existence-only verdict it had before.
+ * go-to-k/cdkd#6393: the live resource under the old physical id, judged
+ * against the identity the old record carries: `'foreign'` only when both
+ * are known and differ, `'gone'` when the identity read finds nothing (it
+ * went between the two reads). Anything less (no table entry, nothing
+ * recorded or a masked value, no `resourceIdentity`, a failed or undecided
+ * read) answers `'exists'`, the existence-only verdict it had before.
+ *
+ * Read through the TYPE's provider, not the record's route: a Cloud Control
+ * record's provider has no `resourceIdentity`, and the token is the type's.
  */
-async function isForeignSurvivor(
+async function identityVerdict(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
-  provider: { getAttribute?: ResourceProvider['getAttribute'] },
   physicalId: string,
   oldType: string
-): Promise<boolean> {
+): Promise<'exists' | 'gone' | 'foreign'> {
   const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType];
-  if (key === undefined || typeof provider.getAttribute !== 'function') return false;
+  if (key === undefined) return 'exists';
   const recorded = s.op.previousState?.attributes?.[key];
-  if (typeof recorded !== 'string' || recorded === '' || recorded.includes('***')) return false;
+  if (typeof recorded !== 'string' || recorded === '' || recorded.includes('***')) return 'exists';
   try {
+    const provider = s.ctx.providerRegistry.getProvider(oldType);
+    if (typeof provider.resourceIdentity !== 'function') return 'exists';
     const live = await withReplayDeletePrinting(s, () =>
-      provider.getAttribute!(physicalId, oldType, key, s.op.logicalId)
+      provider.resourceIdentity!(physicalId, oldType, { expectedRegion: s.ctx.region })
     );
-    return typeof live === 'string' && live !== '' && live !== recorded;
+    if (live === RESOURCE_NOT_FOUND) return 'gone';
+    return typeof live === 'string' && live !== '' && live !== recorded ? 'foreign' : 'exists';
   } catch {
-    return false;
+    return 'exists';
   }
 }

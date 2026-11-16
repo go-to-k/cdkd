@@ -232,6 +232,8 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
         resourceType: ROLE,
         oldResourceMaySurvive: verdict,
         previousState: {
+          // Recorded on Cloud Control: the identity is read through the
+          // TYPE's SDK provider anyway, since the CC route has no read for it.
           ...rec('topic-old', { provisionedBy: 'cc-api', resourceType: ROLE }),
           attributes: { RoleId: recordedRoleId },
         },
@@ -240,11 +242,19 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
       Topic: rec('topic-new', { resourceType: ROLE }),
     });
     let liveRoleId: () => Promise<unknown>;
+    let identityReads: string[];
     beforeEach(() => {
       liveRoleId = async () => 'AROA-OLD';
-      provider['getAttribute'] = vi.fn(async (_id: string, _t: string, name: string) =>
-        name === 'RoleId' ? liveRoleId() : undefined
-      );
+      identityReads = [];
+      // The route the record names answers existence but has no identity
+      // read, as CloudControlProvider; the type's SDK provider has one.
+      const sdk = {
+        resourceIdentity: vi.fn(async (physicalId: string) => {
+          identityReads.push(physicalId);
+          return liveRoleId();
+        }),
+      };
+      (ctx.providerRegistry as unknown as { getProvider: (t: string) => unknown }).getProvider = () => sdk;
     });
 
     it.each(['kept', 'deferred'] as const)(
@@ -254,10 +264,13 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
         const s = roleState();
         const result = await replayRollback([roleOp(verdict, 'AROA-OLD')], s, 'S', ctx);
         expect(result.failures).toBe(1);
+        expect(identityReads).toEqual(['topic-old']);
         expect(provider.delete).not.toHaveBeenCalled();
         expect(provider.create).not.toHaveBeenCalled();
         expect(s['Topic']!.physicalId).toBe('topic-new');
-        expect(JSON.stringify(result)).not.toContain('AROA-STRANGER');
+        const text = JSON.stringify(result) + warns.join('\n');
+        expect(text).not.toContain('AROA-STRANGER');
+        expect(text).not.toContain('delete the old resource by hand');
       }
     );
 
@@ -272,6 +285,7 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
           throw new Error('AccessDenied');
         },
       ],
+      ['the identity read cannot name it', 'AROA-OLD', async () => undefined],
     ] as const)('re-adopts as before when %s', async (_label, recorded, live) => {
       liveRoleId = live;
       const s = roleState();
@@ -280,9 +294,16 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
       expect(s['Topic']!.physicalId).toBe('topic-old');
     });
 
+    it('re-creates when the identity read finds the role gone after the existence read', async () => {
+      liveRoleId = async () => RESOURCE_NOT_FOUND;
+      const s = roleState();
+      await replayRollback([roleOp('deferred', 'AROA-OLD')], s, 'S', ctx);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+    });
+
     it('never asks for an identity on a type the table does not list', async () => {
       await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], state(), 'S', ctx);
-      expect(provider['getAttribute']).not.toHaveBeenCalled();
+      expect(identityReads).toEqual([]);
     });
   });
 
