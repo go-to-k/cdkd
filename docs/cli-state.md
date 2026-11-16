@@ -248,6 +248,25 @@ The plain listing reads no record. `--long`
 costs two extra S3 requests per stack, one for the record and one for its
 lock. `--tree` costs one.
 
+### `--json` on its own
+
+`--json` without `--long` or `--tree` prints an array with one object per stack,
+sorted by stack name and then region. The array is empty when the bucket holds
+no record.
+
+```json
+[
+  { "stackName": "MyStack", "region": "us-east-1" }
+]
+```
+
+| Field | Value |
+| --- | --- |
+| `stackName` | The stack's physical name. |
+| `region` | The record's region, or `null` for a legacy record without one. |
+
+Both fields are always present.
+
 ### `--long`
 
 `--long` prints a block per stack with its resource count, the time the record
@@ -399,7 +418,7 @@ The array is empty for a stack with no resources.
 | --- | --- | --- |
 | `logicalId` | string | The resource's logical id in the template. |
 | `resourceType` | string | The CloudFormation resource type. |
-| `physicalId` | string | The resource's physical id. See "Physical ids that contain `|`" below. |
+| `physicalId` | string | The resource's physical id. See the section on physical ids with a pipe character below. |
 | `dependencies` | array of strings | The logical ids the resource depends on. An empty array when the record holds none. |
 | `attributes` | object | The attributes cdkd recorded, such as `Arn`, keyed by name. Values are as stored, so they can be strings, numbers or nested values. An empty object when the record holds none. |
 
