@@ -357,7 +357,8 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // Admitted with AWS::EC2::SecurityGroup (go-to-k/cdkd#6454).
       mode: 'sdk-coverage' as const,
       physicalIdForm:
-        'both layers store the bare key id (a UUID, not the key ARN): the schema ' +
+        'both layers store the bare key id, not the key ARN (observed as a UUID; a ' +
+        'multi-region `mrk-...` id was not exercised): the schema ' +
         'primaryIdentifier is KeyId and the KMS provider records the CreateKey KeyId',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types',
