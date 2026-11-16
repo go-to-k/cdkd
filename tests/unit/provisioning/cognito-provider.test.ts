@@ -371,8 +371,6 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('throws ResourceUpdateNotSupportedError when an existing custom attribute is removed', async () => {
-      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
-
       await expect(
         provider.update(
           'MyUserPool',
@@ -387,11 +385,11 @@ describe('CognitoUserPoolProvider', () => {
           }
         )
       ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+      // Refused before the first write (go-to-k/cdkd#6375).
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('throws ResourceUpdateNotSupportedError when an existing custom attribute is modified', async () => {
-      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
-
       await expect(
         provider.update(
           'MyUserPool',
@@ -401,11 +399,11 @@ describe('CognitoUserPoolProvider', () => {
           { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] }
         )
       ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+      // Refused before the first write (go-to-k/cdkd#6375).
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('the immutable-Schema rejection points at --replace --force-stateful-recreation (UserPool is stateful)', async () => {
-      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
-
       await expect(
         provider.update(
           'MyUserPool',
@@ -420,11 +418,11 @@ describe('CognitoUserPoolProvider', () => {
           }
         )
       ).rejects.toThrow(/--replace --force-stateful-recreation/);
+      // Refused before the first write (go-to-k/cdkd#6375).
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('throws on a Schema entry with no Name (malformed template), not a silent skip', async () => {
-      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
-
       await expect(
         provider.update(
           'MyUserPool',
@@ -434,6 +432,117 @@ describe('CognitoUserPoolProvider', () => {
           { Schema: [] }
         )
       ).rejects.toThrow(/Schema attribute with no Name/);
+      // Refused before the first write (go-to-k/cdkd#6375).
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    describe('a rollback revert dropping a custom attribute the forward deploy added (go-to-k/cdkd#6375)', () => {
+      // The live repro: the forward deploy added `level` and raised the
+      // password minimum; a later failure rolled it back. Before the fix the
+      // revert applied the old password policy, THEN refused the schema, so
+      // state kept the forward record over a pool holding the old settings.
+      const forward = {
+        Policies: { PasswordPolicy: { MinimumLength: 12 } },
+        Schema: [
+          { Name: 'team', AttributeDataType: 'String', Mutable: true },
+          { Name: 'level', AttributeDataType: 'Number' },
+        ],
+      };
+      const reverted = {
+        Policies: { PasswordPolicy: { MinimumLength: 8 } },
+        Schema: [{ Name: 'team', AttributeDataType: 'String', Mutable: true }],
+      };
+      const sent = (name: string): Array<Record<string, unknown>> =>
+        mockSend.mock.calls
+          .filter((c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name === name)
+          .map((c: unknown[]) => (c[0] as { input: Record<string, unknown> }).input);
+
+      beforeEach(() => {
+        mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+          Promise.resolve(
+            command.constructor.name === 'DescribeUserPoolCommand'
+              ? { UserPool: { Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123' } }
+              : {}
+          )
+        );
+      });
+      afterEach(() => {
+        mockSend.mockReset();
+      });
+
+      it('applies the rest, keeps the attribute, and records the Schema the pool holds', async () => {
+        const result = await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          reverted,
+          forward,
+          { replayingState: true }
+        );
+
+        expect(sent('UpdateUserPoolCommand')[0]?.['Policies']).toMatchObject({
+          PasswordPolicy: { MinimumLength: 8 },
+        });
+        expect(sent('AddCustomAttributesCommand')).toEqual([]);
+        expect(result.effectiveProperties?.['Schema']).toEqual(forward.Schema);
+        expect(result.effectiveProperties?.['Policies']).toEqual(reverted.Policies);
+        expect(childLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("removed attribute 'level'")
+        );
+      });
+
+      it('still adds what the revert adds, and records the old attributes first, then the added ones', async () => {
+        // A revert that both drops `level` and brings `tier` back: `tier` is
+        // sent, `level` is kept, and the recorded order is the one a template
+        // listing the old attributes first would diff equal against.
+        const tier = { Name: 'tier', AttributeDataType: 'String', Mutable: true };
+        const result = await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { ...reverted, Schema: [...reverted.Schema, tier] },
+          forward,
+          { replayingState: true }
+        );
+
+        expect(sent('AddCustomAttributesCommand')).toEqual([
+          { UserPoolId: 'us-east-1_abc123', CustomAttributes: [tier] },
+        ]);
+        expect(result.effectiveProperties?.['Schema']).toEqual([...forward.Schema, tier]);
+      });
+
+      it('drift --revert keeps the refusal: its previous side is the AWS-shaped readback', async () => {
+        // `readCurrentState` returns `SchemaAttributes` verbatim: every
+        // standard attribute, custom ones as `custom:<name>`. Recording that
+        // would leave a Schema no template matches.
+        const readback = {
+          ...reverted,
+          Schema: [
+            { Name: 'sub', AttributeDataType: 'String', Mutable: false, Required: true },
+            { Name: 'email', AttributeDataType: 'String', Mutable: true, Required: false },
+            { Name: 'custom:team', AttributeDataType: 'String', Mutable: true, Required: false },
+          ],
+        };
+        await expect(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            forward,
+            readback,
+            { desiredFromAwsReadback: true }
+          )
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+        expect(sent('UpdateUserPoolCommand')).toEqual([]);
+        expect(sent('AddCustomAttributesCommand')).toEqual([]);
+      });
+
+      it('on the template path refuses before sending the password policy', async () => {
+        await expect(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', reverted, forward)
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+        expect(sent('UpdateUserPoolCommand')).toEqual([]);
+      });
     });
 
     it('should send a renamed UserPoolName as PoolName (issue #5358)', async () => {

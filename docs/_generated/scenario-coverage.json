@@ -730,6 +730,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-schema-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cognito-userpool-user-ref",
       "annotated": false,
       "scenarios": []
@@ -1810,6 +1815,11 @@
     },
     {
       "name": "list-parameters",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-aws-emulator",
       "annotated": false,
       "scenarios": []
     },
@@ -3881,6 +3891,7 @@
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
     "cognito-lambda-triggers",
+    "cognito-schema-rollback",
     "cognito-userpool-user-ref",
     "created-before-failure-revert",
     "cross-backend-same-stack",
@@ -3981,6 +3992,7 @@
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "list-parameters",
+    "local-aws-emulator",
     "local-engine-role-identity",
     "local-start-agentcore",
     "local-start-alb",

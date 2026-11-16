@@ -432,22 +432,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   reconcileSchemaCustomAttributes(
-    logicalId: string,
     physicalId: string,
-    resourceType: string,
-    newSchema: SchemaAttributeType[] | undefined,
-    oldSchema: SchemaAttributeType[] | undefined,
-    deletionProtected = false
+    addedCustom: SchemaAttributeType[]
   ): Promise<void> {
-    return reconcileSchemaCustomAttributes.call(
-      this,
-      logicalId,
-      physicalId,
-      resourceType,
-      newSchema,
-      oldSchema,
-      deletionProtected
-    );
+    return reconcileSchemaCustomAttributes.call(this, physicalId, addedCustom);
   }
 
   replacementRemedy(physicalId: string, deletionProtected: boolean): string {

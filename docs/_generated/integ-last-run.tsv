@@ -69,6 +69,7 @@ cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on 
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-resource-server	2026-11-06T16:30:27Z	PASS	105	verify.sh	#5878 cloud-control split head; rc ok, orph clean
+cognito-schema-rollback	2026-11-16T03:49:33Z	PASS	68	verify.sh	rc ok, orph clean; red on pre-fix build
 cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-11-04T21:27:03Z	PASS	25	verify.sh	rc 0, orphans clean
@@ -260,6 +261,7 @@ launchtemplate-asg-inplace	2026-11-06T17:25:56Z	PASS	225	verify.sh	#5897 asg spl
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
+local-aws-emulator	2026-11-16T03:44:27Z	PASS	45	verify.sh	rc ok, hostile AWS_REGION/AWS_ENDPOINT_URL_S3 ignored, emulator container + run dir removed
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-engine-role-identity	2026-11-13T05:08:51Z	PASS	85	verify.sh	rc ok, orph clean, #6160
 local-invoke	2026-11-13T05:08:51Z	PASS	30	verify.sh	rc ok, #6160

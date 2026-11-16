@@ -415,6 +415,7 @@
         "cc-api-fallback-transitions",
         "drift-revert",
         "export",
+        "local-aws-emulator",
         "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
@@ -442,6 +443,10 @@
           "l1"
         ],
         "export": [
+          "l2",
+          "literal"
+        ],
+        "local-aws-emulator": [
           "l2",
           "literal"
         ],
@@ -498,6 +503,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-aws-emulator",
         "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
@@ -512,6 +518,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-aws-emulator": [
+          "l2"
         ],
         "local-invoke-stage": [
           "l2"
@@ -540,6 +549,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-aws-emulator",
         "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
@@ -552,6 +562,9 @@
           "l1"
         ],
         "export": [
+          "l2"
+        ],
+        "local-aws-emulator": [
           "l2"
         ],
         "local-invoke-stage": [
@@ -582,6 +595,7 @@
         "apigatewayv2-update-removal",
         "drift-revert",
         "export",
+        "local-aws-emulator",
         "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
@@ -601,6 +615,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-aws-emulator": [
+          "l2"
         ],
         "local-invoke-stage": [
           "l1",
@@ -877,6 +894,7 @@
         "generated-name-lifecycle",
         "import-nested-stack",
         "list-parameters",
+        "local-aws-emulator",
         "local-invoke-nested-stack-from-state",
         "nested-stack",
         "nested-stack-3level",
@@ -918,6 +936,9 @@
           "literal"
         ],
         "list-parameters": [
+          "literal"
+        ],
+        "local-aws-emulator": [
           "literal"
         ],
         "local-invoke-nested-stack-from-state": [
@@ -1179,6 +1200,7 @@
         "cognito-identity-pool",
         "cognito-lambda-triggers",
         "cognito-resource-server",
+        "cognito-schema-rollback",
         "cognito-userpool-user-ref",
         "import-attribute-readback-final",
         "propagation-races-2",
@@ -1217,6 +1239,9 @@
           "literal"
         ],
         "cognito-resource-server": [
+          "l2"
+        ],
+        "cognito-schema-rollback": [
           "l2"
         ],
         "cognito-userpool-user-ref": [
@@ -1412,6 +1437,7 @@
         "import-attribute-readback",
         "import-heal-prefix-record",
         "lambda",
+        "local-aws-emulator",
         "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
         "multi-resource",
@@ -1501,6 +1527,10 @@
         ],
         "lambda": [
           "l2"
+        ],
+        "local-aws-emulator": [
+          "l2",
+          "literal"
         ],
         "local-invoke-from-cfn-stack": [
           "l2"
@@ -6868,6 +6898,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "lambda-versioning",
+        "local-aws-emulator",
         "local-engine-role-identity",
         "local-invoke",
         "local-invoke-buildkit",
@@ -7170,6 +7201,10 @@
           "l2"
         ],
         "lambda-versioning": [
+          "l2",
+          "literal"
+        ],
+        "local-aws-emulator": [
           "l2",
           "literal"
         ],
@@ -8123,6 +8158,7 @@
         "infra-security",
         "intrinsic-functions",
         "kms-encryption",
+        "local-aws-emulator",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
         "local-invoke-nested-stack-from-state",
@@ -8265,6 +8301,10 @@
           "l2"
         ],
         "kms-encryption": [
+          "l2",
+          "literal"
+        ],
+        "local-aws-emulator": [
           "l2",
           "literal"
         ],
@@ -8901,6 +8941,7 @@
         "cc-getatt-readback",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
+        "cognito-schema-rollback",
         "composite-stack",
         "conditions-update-2",
         "cross-backend-same-stack",
@@ -8928,6 +8969,7 @@
         "lambda-destinations",
         "lambda-event-invoke-config-update",
         "lambda-url-authtype-replay",
+        "local-aws-emulator",
         "local-invoke-nested-stack-from-state",
         "microservices",
         "migrate-from-cfn",
@@ -9000,6 +9042,9 @@
         ],
         "cloudwatch-anomaly-detector": [
           "l2"
+        ],
+        "cognito-schema-rollback": [
+          "l1"
         ],
         "composite-stack": [
           "l2",
@@ -9093,6 +9138,10 @@
         ],
         "lambda-url-authtype-replay": [
           "l1"
+        ],
+        "local-aws-emulator": [
+          "l2",
+          "literal"
         ],
         "local-invoke-nested-stack-from-state": [
           "l2",
