@@ -65,9 +65,11 @@ DEPLOY_LOG=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # The topic's generated name starts with the stack name; read the live list.
+# A failed list returns non-zero, so it never reads as "no topic".
 topics_of_stack() {
-  aws sns list-topics --region "${REGION}" --query 'Topics[].TopicArn' --output text \
-    | tr '\t' '\n' | grep ":${STACK}-" || true
+  local out
+  out="$(aws sns list-topics --region "${REGION}" --query 'Topics[].TopicArn' --output text)" || return 1
+  tr '\t' '\n' <<<"${out}" | grep ":${STACK}-" || true
 }
 
 cleanup() {
@@ -151,8 +153,9 @@ if grep -q 'UnknownError' "${DEPLOY_LOG}"; then
 fi
 echo "    OK: the failure names ${PARAM_PATH}, its template parameter and ${REGION}"
 assert_gone "a state file was written by the failed deploy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-if [ -n "$(topics_of_stack)" ]; then
-  echo "FAIL: the failed deploy created a topic: $(topics_of_stack)" >&2
+TOPICS="$(topics_of_stack)" || { echo "FAIL: sns list-topics failed; cannot tell whether a topic was created" >&2; exit 1; }
+if [ -n "${TOPICS}" ]; then
+  echo "FAIL: the failed deploy created a topic: ${TOPICS}" >&2
   exit 1
 fi
 echo "    OK: nothing was created and no state was written"
