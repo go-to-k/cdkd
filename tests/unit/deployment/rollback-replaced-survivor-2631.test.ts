@@ -222,6 +222,91 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     });
   });
 
+  // go-to-k/cdkd#6393: a same-named resource someone else created after the
+  // old one went is not the stack's. An AWS-minted identity the old record
+  // carries (an IAM role's RoleId) must match the live one to re-adopt.
+  describe('a survivor whose recorded identity differs (#6393)', () => {
+    const ROLE = 'AWS::IAM::Role';
+    const roleOp = (verdict: 'kept' | 'deferred', recordedRoleId: unknown) =>
+      op({
+        resourceType: ROLE,
+        oldResourceMaySurvive: verdict,
+        previousState: {
+          // Recorded on Cloud Control: the identity is read through the
+          // TYPE's SDK provider anyway, since the CC route has no read for it.
+          ...rec('topic-old', { provisionedBy: 'cc-api', resourceType: ROLE }),
+          attributes: { RoleId: recordedRoleId },
+        },
+      });
+    const roleState = (): Record<string, ResourceState> => ({
+      Topic: rec('topic-new', { resourceType: ROLE }),
+    });
+    let liveRoleId: () => Promise<unknown>;
+    let identityReads: string[];
+    beforeEach(() => {
+      liveRoleId = async () => 'AROA-OLD';
+      identityReads = [];
+      // The route the record names answers existence but has no identity
+      // read, as CloudControlProvider; the type's SDK provider has one.
+      const sdk = {
+        resourceIdentity: vi.fn(async (physicalId: string) => {
+          identityReads.push(physicalId);
+          return liveRoleId();
+        }),
+      };
+      (ctx.providerRegistry as unknown as { getProvider: (t: string) => unknown }).getProvider = () => sdk;
+    });
+
+    it.each(['kept', 'deferred'] as const)(
+      'refuses a %s op, sending nothing, when the live RoleId is another role',
+      async (verdict) => {
+        liveRoleId = async () => 'AROA-STRANGER';
+        const s = roleState();
+        const result = await replayRollback([roleOp(verdict, 'AROA-OLD')], s, 'S', ctx);
+        expect(result.failures).toBe(1);
+        expect(identityReads).toEqual(['topic-old']);
+        expect(provider.delete).not.toHaveBeenCalled();
+        expect(provider.create).not.toHaveBeenCalled();
+        expect(s['Topic']!.physicalId).toBe('topic-new');
+        const text = JSON.stringify(result) + warns.join('\n');
+        expect(text).not.toContain('AROA-STRANGER');
+        expect(text).not.toContain('delete the old resource by hand');
+      }
+    );
+
+    it.each([
+      ['the live RoleId matches', 'AROA-OLD', async (): Promise<unknown> => 'AROA-OLD'],
+      ['the record carries no RoleId', undefined, async (): Promise<unknown> => 'AROA-STRANGER'],
+      ['the recorded RoleId is masked', '***', async (): Promise<unknown> => 'AROA-STRANGER'],
+      [
+        'the identity read fails',
+        'AROA-OLD',
+        async (): Promise<unknown> => {
+          throw new Error('AccessDenied');
+        },
+      ],
+      ['the identity read cannot name it', 'AROA-OLD', async (): Promise<unknown> => undefined],
+    ] as const)('re-adopts as before when %s', async (_label, recorded, live) => {
+      liveRoleId = live;
+      const s = roleState();
+      const result = await replayRollback([roleOp('deferred', recorded)], s, 'S', ctx);
+      expect(result.failures).toBe(0);
+      expect(s['Topic']!.physicalId).toBe('topic-old');
+    });
+
+    it('re-creates when the identity read finds the role gone after the existence read', async () => {
+      liveRoleId = async () => RESOURCE_NOT_FOUND;
+      const s = roleState();
+      await replayRollback([roleOp('deferred', 'AROA-OLD')], s, 'S', ctx);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('never asks for an identity on a type the table does not list', async () => {
+      await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], state(), 'S', ctx);
+      expect(identityReads).toEqual([]);
+    });
+  });
+
   it('a deferred re-adopt whose new copy is retained records only the retained reason', async () => {
     const events: Array<Record<string, unknown>> = [];
     ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);

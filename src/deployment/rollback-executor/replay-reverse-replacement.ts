@@ -43,7 +43,7 @@ import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
-import { probeReplacedSurvivor } from './replaced-survivor.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES, probeReplacedSurvivor } from './replaced-survivor.js';
 import type { MarkedRecreateScope } from './replay-reverse-replacement/failures.js';
 import { recreateOldResource } from './replay-reverse-replacement/recreate.js';
 import { finishReverseReplacement } from './replay-reverse-replacement/finish.js';
@@ -175,6 +175,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // Alive but `'unconfirmed'`: an accepted delete may still be running
     // (a read of a `deleting` RDS instance answers like a live one), and
     // re-adopting it would delete the new copy for a resource about to go.
+    // go-to-k/cdkd#6393: someone else's resource holds the old id now;
+    // re-adopting it would make it the stack's, re-creating would collide.
+    if (survivor === 'foreign') throw foreignSurvivorRefusal(s, oldType);
     if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
     }
@@ -647,6 +650,42 @@ function survivorUnprovenRefusal(
           (remedy.offered
             ? ` To keep the new resource in its place instead, re-run with the command below, ` +
               `then delete the old resource by hand if it still exists.`
+            : '') +
+          `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
+          remedy.line,
+        'REPLACED_SURVIVOR_UNPROVEN'
+      )
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#6393: the refusal for a live resource under the old physical
+ * id that is not the stack's (`'foreign'`). Its own text: the old resource is
+ * gone, so nothing here may tell the user to delete what is under its id.
+ */
+function foreignSurvivorRefusal(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
+  oldType: string
+): Error {
+  const { op, ctx, mask } = s;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  const oldShown = refusalPhysicalId(mask(String(op.previousState?.physicalId)));
+  const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
+  return ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(oldType)}): AWS reports a resource under the old physical id ` +
+          `(${oldShown}), but not the one this stack recorded (its ` +
+          `${SURVIVOR_IDENTITY_ATTRIBUTES[oldType] ?? 'identity'} differs), so another resource ` +
+          `took that name after the stack's was deleted. Re-adopting it would make it this ` +
+          `stack's, and re-creating the old one would collide with it. Nothing was sent and the ` +
+          `journal is kept. If that resource is not meant to be there, remove it, then re-run ` +
+          `${rerun}, which re-creates the old one.` +
+          (remedy.offered
+            ? ` To keep the new resource in its place instead, re-run with the command below; ` +
+              `leave the other resource alone.`
             : '') +
           `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
           remedy.line,

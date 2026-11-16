@@ -32,7 +32,32 @@ export function replacedDeleteFailureVerdict(error: unknown): 'kept' | 'unconfir
 /** How long the read may take; no SDK client here sets a request timeout. */
 export const REPLACED_SURVIVOR_PROBE_TIMEOUT_MS = 30_000;
 
-export type ReplacedSurvivorVerdict = 'exists' | 'gone' | 'unreadable' | 'unknown' | 'interrupted';
+export type ReplacedSurvivorVerdict =
+  | 'exists'
+  | 'gone'
+  | 'unreadable'
+  | 'unknown'
+  | 'interrupted'
+  /**
+   * go-to-k/cdkd#6393: AWS reports a resource under the old physical id, but
+   * an AWS-minted identity the old record carries differs from it: another
+   * resource took the name after the stack's was deleted. Never re-adopted.
+   */
+  | 'foreign';
+
+/**
+ * go-to-k/cdkd#6393: per type, the recorded attribute holding the identity
+ * AWS mints per resource (so a same-named successor carries another one),
+ * whose value is exactly the token that type's SDK provider's
+ * `resourceIdentity` reads live (#4655). A type whose physical id is already
+ * AWS-minted (a KMS key id) needs none; one whose every id is name-derived
+ * (an SNS topic ARN) has none to compare. Add a type only when its SDK
+ * provider records the attribute at create and its `resourceIdentity` token
+ * equals it.
+ */
+export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
+  'AWS::IAM::Role': 'RoleId',
+};
 
 /** How often a running read checks for an interrupted rollback. */
 const INTERRUPT_POLL_MS = 250;
@@ -88,8 +113,42 @@ async function readSurvivor(
     // `undefined` is the contract's "not implemented" for this type.
     if (read === undefined) return 'unreadable';
     if (typeof read !== 'object' || read === null || Array.isArray(read)) return 'unknown';
-    return Object.keys(read).length > 0 ? 'exists' : 'unreadable';
+    if (Object.keys(read).length === 0) return 'unreadable';
+    return await identityVerdict(s, physicalId, oldType);
   } catch {
     return 'unknown';
+  }
+}
+
+/**
+ * go-to-k/cdkd#6393: the live resource under the old physical id, judged
+ * against the identity the old record carries: `'foreign'` only when both
+ * are known and differ, `'gone'` when the identity read finds nothing (it
+ * went between the two reads). Anything less (no table entry, nothing
+ * recorded or a masked value, no `resourceIdentity`, a failed or undecided
+ * read) answers `'exists'`, the existence-only verdict it had before.
+ *
+ * Read through the TYPE's provider, not the record's route: a Cloud Control
+ * record's provider has no `resourceIdentity`, and the token is the type's.
+ */
+async function identityVerdict(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
+  physicalId: string,
+  oldType: string
+): Promise<'exists' | 'gone' | 'foreign'> {
+  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType];
+  if (key === undefined) return 'exists';
+  const recorded = s.op.previousState?.attributes?.[key];
+  if (typeof recorded !== 'string' || recorded === '' || recorded.includes('***')) return 'exists';
+  try {
+    const provider = s.ctx.providerRegistry.getProvider(oldType);
+    if (typeof provider.resourceIdentity !== 'function') return 'exists';
+    const live = await withReplayDeletePrinting(s, () =>
+      provider.resourceIdentity!(physicalId, oldType, { expectedRegion: s.ctx.region })
+    );
+    if (live === RESOURCE_NOT_FOUND) return 'gone';
+    return typeof live === 'string' && live !== '' && live !== recorded ? 'foreign' : 'exists';
+  } catch {
+    return 'exists';
   }
 }

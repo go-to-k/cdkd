@@ -18,9 +18,14 @@
 # test runs only when the old role is GONE, so after each failed --no-rollback
 # deploy below the old role is first asserted alive and then deleted by hand
 # (out of band): the rollback reads it as gone and must re-create it under the
-# right name. The #4010 squatter phase this fixture used to carry is gone:
-# with the old role never deleted by cdkd, a role under its name is what the
-# rollback reads as the old one, so no re-create collides with it.
+# right name.
+#
+# go-to-k/cdkd#6393 (the #4010 squatter, restored): a role created out of band
+# under the deleted old role's name answers the rollback's existence read, so
+# before the fix the rollback re-adopted that stranger as the stack's role.
+# The read now compares the RoleId the stack recorded with the live one; a
+# squatter carries another, so the rollback refuses (REPLACED_SURVIVOR_UNPROVEN)
+# and sends nothing.
 #
 # What this asserts:
 #   PHASE 1 (baseline, default flag = prefix skipped):
@@ -31,6 +36,12 @@
 #        RoleId), state keeps it as NamedRole's superseded resource, the log
 #        says it was not deleted, and the journal segment records
 #        skipPrefix=true. Then `-a` is deleted by hand.
+#   PHASE 3 (a squatter took the old name -> REFUSED, #6393 / #4010):
+#     3. Create a squatter role OUT OF BAND under `cdkd-integ-rbrw-a`.
+#        `cdkd rollback` must fail; the squatter survives with its own RoleId,
+#        the new role `-b` survives, state still names `-b`, the journal is
+#        kept, and the refusal names `cdkd-integ-rbrw-a` and says its RoleId
+#        differs. Then the squatter is deleted.
 #   PHASE 4 (the re-create succeeds under the deploy's name):
 #     4. `cdkd rollback`: it reads `-a` as gone and re-creates it; exit 0,
 #        `cdkd-integ-rbrw-a` is the stack's role again (template description,
@@ -115,6 +126,8 @@ PREFIXED_A="${STACK}-${ROLE_A}"
 PREFIXED_B="${STACK}-${ROLE_B}"
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 ROLE_DESCRIPTION="cdkd-integ rollback-explicit-name-rewrite subject"
+SQUATTER_DESCRIPTION="cdkd-integ rollback-explicit-name-rewrite squatter"
+TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-explicit-name-rewrite"
@@ -239,6 +252,7 @@ delete_role_best_effort() { # usage: delete_role_best_effort <role-name>
 
 aggressive_cleanup() {
   echo "[verify] aggressive cleanup: sweeping every role name the run can mint"
+  # ROLE_A is also the step-3 squatter's name.
   (
   set +eu
   local name q_url
@@ -340,6 +354,74 @@ if [ "${J_SKIP}" != "true" ]; then
 fi
 delete_old_role_out_of_band "${ROLE_A}"
 echo "[verify] step 2 ok: ${ROLE_B} created, ${ROLE_A} kept by the failed deploy then deleted by hand, journal records skipPrefix=true"
+
+# ---------------------------------------------------------------------------
+# PHASE 3: a squatter took the old role's name -> refused (#6393 / #4010)
+# ---------------------------------------------------------------------------
+echo "[verify] step 3: create a squatter role ${ROLE_A} out of band, then cdkd rollback (expect REFUSAL)"
+SQUATTER_ID="$(aws iam create-role --role-name "${ROLE_A}" --assume-role-policy-document "${TRUST}" \
+  --description "${SQUATTER_DESCRIPTION}" --query 'Role.RoleId' --output text)"
+if [ -z "${SQUATTER_ID}" ] || [ "${SQUATTER_ID}" = "${ROLE_A_ID_V1}" ]; then
+  echo "[verify] FAIL: the squatter's RoleId '${SQUATTER_ID}' is empty or equals the deleted role's ${ROLE_A_ID_V1}"
+  exit 1
+fi
+# IAM is eventually consistent: a read that does not see the squatter yet
+# would take the gone arm and collide on the re-create instead of refusing.
+aws iam wait role-exists --role-name "${ROLE_A}"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/refused.log" 2>&1
+REFUSED_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/refused.log" || true
+if [ "${REFUSED_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: cdkd rollback SUCCEEDED with a squatter on ${ROLE_A} -- it took a stranger's role as the stack's (go-to-k/cdkd#6393)"
+  exit 1
+fi
+# AWS, state and journal before the wording.
+SQUATTER_ID_AFTER="$(role_id "${ROLE_A}")" || { echo "[verify] FAIL: the squatter ${ROLE_A} is gone after the refused rollback"; exit 1; }
+if [ "${SQUATTER_ID_AFTER}" != "${SQUATTER_ID}" ]; then
+  echo "[verify] FAIL: ${ROLE_A} has RoleId ${SQUATTER_ID_AFTER} after the refused rollback (expected the squatter's ${SQUATTER_ID}: untouched)"
+  exit 1
+fi
+if [ "$(role_description "${ROLE_A}")" != "${SQUATTER_DESCRIPTION}" ]; then
+  echo "[verify] FAIL: the refused rollback changed the squatter ${ROLE_A}"
+  exit 1
+fi
+if [ "$(role_description "${ROLE_B}")" != "${ROLE_DESCRIPTION}" ]; then
+  echo "[verify] FAIL: the refused rollback deleted the live new role ${ROLE_B}"
+  exit 1
+fi
+REFUSED_STATE_ID="$(state_role_id)"
+if [ "${REFUSED_STATE_ID}" != "${ROLE_B}" ]; then
+  echo "[verify] FAIL: state records NamedRole as ${REFUSED_STATE_ID} after the refused rollback (expected ${ROLE_B}, unchanged)"
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: the refused rollback dropped the journal"
+  exit 1
+fi
+assert_gone "the refused rollback created the PREFIXED ${PREFIXED_A}" \
+  aws iam get-role --role-name "${PREFIXED_A}"
+# The parsed marker names the old role and its differing RoleId; the sentinel
+# is the refusal's own opening, independent of it. Sentinel without marker =
+# the wording drifted (or another refusal fired) -- never read as "no refusal".
+REFUSAL_SENTINEL="Cannot reverse the replacement of NamedRole (AWS::IAM::Role)"
+REFUSAL_NAME_MARKER="AWS reports a resource under the old physical id (${ROLE_A})"
+REFUSAL_ID_MARKER="but not the one this stack recorded (its RoleId differs)"
+REFUSED_TEXT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/refused.log")"
+if ! grep -qF "${REFUSAL_SENTINEL}" <<<"${REFUSED_TEXT}"; then
+  echo "[verify] FAIL: rollback exited ${REFUSED_RC} without the reverse-replacement refusal (output above)"
+  exit 1
+fi
+REFUSAL_LINE="$(grep -F "${REFUSAL_SENTINEL}" <<<"${REFUSED_TEXT}")"
+if ! grep -qF "${REFUSAL_NAME_MARKER}" <<<"${REFUSAL_LINE}" || ! grep -qF "${REFUSAL_ID_MARKER}" <<<"${REFUSAL_LINE}"; then
+  echo "[verify] FAIL: the refusal does not name ${ROLE_A} and say its RoleId differs (wording drifted, or another refusal fired):"
+  printf '%s\n' "${REFUSAL_LINE}" | sed 's/^/  /'
+  exit 1
+fi
+aws iam delete-role --role-name "${ROLE_A}"
+wait_role_gone "squatter ${ROLE_A} still readable ~20s after delete-role" "${ROLE_A}"
+echo "[verify] step 3 ok: refused naming ${ROLE_A} (RoleId differs), squatter and ${ROLE_B} untouched, journal kept; squatter deleted"
 
 # ---------------------------------------------------------------------------
 # PHASE 4: the re-create succeeds under the deploy's name
