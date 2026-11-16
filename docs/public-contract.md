@@ -24,7 +24,7 @@ cdkd deploy MyStack; echo "exit $?"      # a covered exit code
 | Release | May contain |
 | --- | --- |
 | Patch | Bug fixes that keep every covered item as documented. |
-| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump; dropping an end-of-life Node.js major; deprecations. |
+| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump, migrated automatically; dropping an end-of-life Node.js major; deprecations. |
 | Major | Anything that removes or changes a covered item, including a changed default. |
 
 A bug fix can still change behaviour that contradicts these docs. The docs
@@ -57,28 +57,28 @@ names, their types and their meaning.
 | --- | --- |
 | `cdkd diff --json` | [cdkd diff: JSON output](cli-diff-json.md) |
 | `cdkd drift --json` | [cdkd drift: JSON output](cli-drift-json.md) |
-| `cdkd state list --json` | [`cdkd state list`](cli-state.md#cdkd-state-list) |
-| `cdkd events --run <id> --json` | [Deployment Event Format](deployment-events-format.md): one object per event |
-| Which commands keep stdout to the document | [Output streams](cli-reference-output.md) |
+| `cdkd state list --long --json`, `--tree --json` | [`cdkd state list`](cli-state.md#cdkd-state-list) |
+| `cdkd events <stack> --run <id> --json` | [Deployment Event Format](deployment-events-format.md): an array, one object per event |
+| Which commands print only the document to stdout | [Output streams](cli-reference-output.md) |
 
 A minor release may add a field, and may add a value to a field that holds
 one of a set of values. A script should ignore fields it does not know.
 Removing or renaming a field, changing its type, or changing what an existing
 value means needs a major release.
 
-A field that no page documents is not covered.
+An output or a field that this table's pages do not document is not covered.
 
 ### The state bucket and the state schema
 
 The bucket layout in
 [What is in the bucket](state-management.md#what-is-in-the-bucket) and the
 fields in [What a state record contains](state-management.md#what-a-state-record-contains)
-are covered. A minor release may add an object to the bucket or a field to a
-record, and keeps every existing key and field meaning what it did.
+are covered. Outside a state schema bump, a minor release only adds objects
+to the bucket and fields to a record.
 
 A state schema bump lands in a minor release and migrates automatically: a
-newer cdkd reads every older record and saves it in the new version the next
-time it writes, with no command to run.
+newer cdkd reads every older record and saves it in the current format the
+next time it writes, with no command to run.
 
 From v1.0.0, a cdkd release can read a record that a newer release wrote
 when that record's schema bump only added fields, and it does not write such
@@ -117,17 +117,19 @@ These environment variables are covered:
 | `CDKD_CR_AUTHZ_MAX_RETRIES` | [Slow deploys, throttling and retries](troubleshooting-slow-deploys.md) |
 | `CDKD_ACM_POLL_ATTEMPTS`, `CDKD_ACM_POLL_INTERVAL_MS` | [Failures during a deploy](troubleshooting-deploy.md) |
 | `CDKD_ALLOW_SECRETS_ON_ARGV` | [Local Execution](local-emulation.md) |
+| `CDKD_SHADOW_READY_TIMEOUT_MS` | [`cdkd local start-service`](local-start-service.md) |
 
-A covered key or variable keeps its name and meaning. The default of a poll
-or retry variable is not covered, and neither is the report
-`CDKD_PHASE_TIMINGS` prints. A `CDKD_*` variable that no page above documents,
-including one cdkd sets for itself, is not covered.
+A covered key or variable keeps its name and meaning. The default of a poll,
+retry or timeout variable is not covered, and neither is the report
+`CDKD_PHASE_TIMINGS` prints. A `cdk.json` key or `CDKD_*` variable that is not
+in these two tables, including one cdkd sets for itself, is not covered.
 
 ### Bootstrap resources
 
 The resources in
 [What bootstrap creates](cli-bootstrap.md#what-bootstrap-creates) are
-covered: their default names and the configuration listed there.
+covered: what bootstrap creates and the default names. A minor release may
+tighten their configuration, such as a bucket policy.
 
 Within a major version, upgrading cdkd never requires re-running
 `cdkd bootstrap` for existing deploys to keep working. A minor release may
@@ -143,27 +145,25 @@ release. Do not import them from a program.
 
 ## Supported runtimes
 
-### Node.js
-
-cdkd needs Node.js 22.12 or later (`engines` in the package is
-`>=22.12.0`).
+| Runtime | Supported | Note |
+| --- | --- | --- |
+| Node.js | 22.12 or later (`engines`: `>=22.12.0`) | Node.js 22 reaches end of life on 2027-04-30. |
+| AWS CDK | Cloud assemblies synthesized by AWS CDK v2 (`aws-cdk-lib` v2) | See the schema note below. |
 
 Dropping a Node.js major that has reached end of life is a minor release, and
-its release notes say so. Node.js 22 reaches end of life on 2027-04-30.
+its release notes say so.
 
-### AWS CDK
-
-cdkd supports cloud assemblies synthesized by AWS CDK v2 (`aws-cdk-lib` v2).
-A cloud assembly whose schema version is newer than the cdkd release knows is
-outside the supported range: cdkd does not check the version, so such an
-assembly may deploy, fail or behave differently, and the result is not
-covered by this page.
+A cloud assembly whose schema version is newer than the one the cdkd release
+declares to the CDK app is outside the supported range. cdkd does not check
+the version of the assembly it reads, so such an assembly may deploy, fail or
+behave differently, and the result is not covered by this page.
 
 ## Experimental features
 
 From v1.0.0, a feature that these docs explicitly mark as experimental is
 outside this promise. A minor release can change or remove it, and the
-release notes call that out. No command or feature is marked experimental.
+release notes call that out. These docs currently mark no command or feature
+as experimental.
 
 ## Deprecation
 
@@ -178,7 +178,7 @@ time between the deprecation and the removal beyond that.
   message wording, and the formatted views printed without `--json`.
 - `--verbose` output and anything written to stderr.
 - Timing and performance, including how many AWS calls a command makes.
-- Fields, objects and variables that no public page documents.
+- Outputs, fields and objects that the linked pages do not document, and keys or variables not in the tables above.
 - The modules inside the npm package (see [The CLI is the interface](#the-cli-is-the-interface)).
 - The order in which a deploy or destroy works through a stack's resources.
 
