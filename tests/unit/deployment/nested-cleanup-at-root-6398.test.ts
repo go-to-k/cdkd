@@ -11,7 +11,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { deployWithoutChanges } from '../../../src/deployment/deploy-engine/deploy-flow/no-change.js';
-import { PERSIST_DROPPED_ATTEMPTS } from '../../../src/deployment/deploy-engine/nested-cleanup.js';
+import {
+  PERSIST_DROPPED_ATTEMPTS,
+  queueNestedCleanup,
+} from '../../../src/deployment/deploy-engine/nested-cleanup.js';
 import {
   NestedCleanupQueue,
   withNestedCleanupQueue,
@@ -419,6 +422,23 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
 
     expect(deletesOf('CRev-old')).toBe(1);
     expect(live.has('CRev-old')).toBe(false);
+  });
+
+  // A child that replaced nothing and carries nothing queues no entry, so the
+  // root pays no lock round-trip or state read for it (everyday speed).
+  it('a child with nothing to delete queues no entry', async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    child.replacementRun.deferredReplacedDeletes = new Map();
+    const pass = vi.fn(async () => undefined);
+    const queued = withNestedCleanupQueue(queue, () =>
+      queueNestedCleanup(child, CHILD, {}, pass)
+    );
+    expect(queued).toBe(false);
+    const info = vi.fn();
+    await queue.runAll({ interrupted: () => false }, { info, warn: vi.fn() });
+    expect(info).not.toHaveBeenCalled();
+    expect(pass).not.toHaveBeenCalled();
   });
 
   it('without a root queue a child runs its cleanup itself, as before', async () => {

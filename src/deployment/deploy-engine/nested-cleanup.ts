@@ -96,6 +96,14 @@ export function queueNestedCleanup(
   ) => Promise<void>
 ): boolean {
   if (engine.options.parentStackInfo === undefined) return false;
+  // Nothing to delete: no queue entry, so a deploy whose children replaced
+  // nothing pays no lock round-trip or state read per child at the root.
+  if (
+    (engine.replacementRun.deferredReplacedDeletes?.size ?? 0) === 0 &&
+    supersededResourcesOf(host).length === 0
+  ) {
+    return false;
+  }
   const queue = getNestedCleanupQueue();
   if (queue === undefined) return false;
   return queue.enqueue({

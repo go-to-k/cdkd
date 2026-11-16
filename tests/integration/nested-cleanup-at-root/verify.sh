@@ -22,7 +22,7 @@
 #      exists, g2 is gone; then that no nested cleanup ran. (With --replace the
 #      schedule is replaced delete-first, whose data loss is not this issue's;
 #      its rollback re-create is go-to-k/cdkd#6423.)
-#   3. Rename again without the failing queue, --replace. Assert it succeeds,
+#   3. Rename again with --replace (B's schedule is replaced). Assert it succeeds,
 #      the schedule lives in g2, g1 is gone, and the root ran A's cleanup only
 #      after B's schedule moved.
 #   4. Destroy + assert the groups, the schedule, the target queue and every
@@ -243,7 +243,7 @@ assert_gone "old group ${G1} still exists after the replacement" aws scheduler g
 echo "    schedule moved to ${G2}; ${G1} deleted"
 # Ordering: the root ran the nested cleanup after child B's schedule moved.
 # Sentinel: both lines must be present, or the order check reads nothing.
-SCHEDULE_LINE="$(grep -nE 'Replacing Schedule[0-9A-F]+ \(AWS::Scheduler::Schedule\)' <<<"${P3_PLAIN}" | tail -n 1 | cut -d: -f1 || true)"
+SCHEDULE_LINE="$(grep -nE 'Schedule[0-9A-F]+ \(AWS::Scheduler::Schedule\) (was )?replaced|replacing \(DELETE → CREATE\)' <<<"${P3_PLAIN}" | grep -F 'Schedule' | tail -n 1 | cut -d: -f1 || true)"
 # Child A's stack is `<parent>~ChildANestedStack...` (its logical id carries a CDK hash).
 CLEANUP_LINE="$(grep -nF "Deleting the replaced resources of nested stack ${STACK}~ChildA" <<<"${P3_PLAIN}" | head -n 1 | cut -d: -f1 || true)"
 if [ -z "${SCHEDULE_LINE}" ]; then
