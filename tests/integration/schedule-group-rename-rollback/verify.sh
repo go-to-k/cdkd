@@ -16,6 +16,9 @@
 #   2. Rename the group to cdkd-sgrr-g2 without --replace. Assert the deploy
 #      fails on the schedule's GroupName refusal, the schedule still exists in
 #      g1, g2 is gone, and state names g1 again.
+#   2b. Deploy the rename with --replace plus a resource AWS refuses after the
+#      schedule. Assert the rollback restores the schedule in g1 (issue #6423:
+#      it must revert the target role's trust before re-creating it).
 #   3. Deploy the rename with --replace. Assert the schedule now lives in g2
 #      and g1 is gone.
 #   4. Destroy + assert the group, the schedule and the cdkd state are gone.
@@ -89,6 +92,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
   fi
   [ -n "${P2_LOG:-}" ] && rm -f "${P2_LOG}"
+  [ -n "${P2B_LOG:-}" ] && rm -f "${P2B_LOG}"
   set -eu
 }
 
@@ -182,6 +186,46 @@ if ! grep -qF "is deleted after the rest of the deploy succeeds" <<<"${P2_PLAIN}
   exit 1
 fi
 rm -f "${P2_LOG}"
+
+# --- Phase 2b: rename with --replace, then a failure -> rolls back --------
+# go-to-k/cdkd#6423: the schedule is replaced delete-first after its target
+# role's trust moved to g2; the rollback must revert the role before
+# re-creating the schedule in g1, or AWS refuses the re-create.
+echo "==> Phase 2b: rename with --replace while a later resource fails (must roll back cleanly)"
+P2B_LOG="$(mktemp -t cdkd-sgrr-p2b.XXXXXX)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_FAIL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace >"${P2B_LOG}" 2>&1
+P2B_RC=$?
+set -e
+cat "${P2B_LOG}"
+P2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P2B_LOG}")"
+if [ "${P2B_RC}" -eq 0 ]; then
+  echo "FAIL: Phase 2b deploy succeeded, but FailingQueue should have been refused" >&2
+  exit 1
+fi
+# Sentinel: the schedule was replaced before the failure, or this phase tests nothing.
+if ! grep -qE 'Schedule[0-9A-F]+ \(AWS::Scheduler::Schedule\) (was )?replaced|replacing \(DELETE → CREATE\)' <<<"${P2B_PLAIN}"; then
+  echo "FAIL: Phase 2b never replaced the schedule; the rollback order was not exercised" >&2
+  exit 1
+fi
+# Data first: the schedule is back in g1, g2 is gone.
+if gone_probe aws scheduler get-schedule --name "${SCHEDULE}" --group-name "${G1}" --region "${REGION}"; then
+  echo "FAIL: schedule ${SCHEDULE} is not back in ${G1} after the rollback (issue #6423: re-created before its role reverted)" >&2
+  exit 1
+fi
+assert_gone "group ${G2} left behind by the Phase 2b rollback" aws scheduler get-schedule-group --name "${G2}" --region "${REGION}"
+STATE_G="$(state_group_id)"
+if [ "${STATE_G}" != "${G1}" ]; then
+  echo "FAIL: state names group '${STATE_G}' after the Phase 2b rollback, expected ${G1}" >&2
+  exit 1
+fi
+if grep -qE 'Rollback failed for Schedule[0-9A-F]+' <<<"${P2B_PLAIN}"; then
+  echo "FAIL: the schedule's rollback failed (issue #6423)" >&2
+  exit 1
+fi
+echo "    schedule restored in ${G1}; ${G2} removed"
+rm -f "${P2B_LOG}"
 
 # --- Phase 3: rename with --replace --------------------------------------
 echo "==> Phase 3: rename the group with --replace"

@@ -51,7 +51,7 @@ export function planRollback(
 ): RollbackPlanItem[] {
   const { createOps, otherOps } = partitionOps(operations);
   const ordered: CompletedOperation[] = [
-    ...[...otherOps].reverse(),
+    ...orderDeleteFirstAfterDependencies([...otherOps].reverse()),
     ...sortRollbackCreates(createOps, stateResources),
   ];
   return ordered.map((op) => {
@@ -137,6 +137,43 @@ export function revertReferences(
     for (const id of record.dependencies) if (typeof id === 'string') refs.add(id);
   }
   return refs;
+}
+
+/**
+ * go-to-k/cdkd#6423: step 1 in reverse completion order, except that a
+ * delete-first reversal (`oldDeletedBeforeCreate`: the forward deleted the old
+ * resource and created the new one under its id) runs after the reverts of
+ * the ops its old record depends on. Its re-create reads its dependencies as
+ * AWS holds them then, and a dependency this deploy updated earlier (a
+ * schedule's role, whose trust names the schedule's group) reverts later in
+ * reverse completion order: re-created first, AWS refuses it against the
+ * dependency's NEW configuration. Moved to just after the last such op; the
+ * dependency order the forward needed is the one the re-create needs.
+ */
+export function orderDeleteFirstAfterDependencies(
+  ops: readonly CompletedOperation[]
+): CompletedOperation[] {
+  const out = [...ops];
+  for (const op of ops) {
+    if (op.changeType !== 'UPDATE' || op.oldDeletedBeforeCreate !== true) continue;
+    const deps = new Set(
+      (Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []).filter(
+        (id): id is string => typeof id === 'string' && id !== op.logicalId
+      )
+    );
+    if (deps.size === 0) continue;
+    const from = out.indexOf(op);
+    let last = -1;
+    out.forEach((other, at) => {
+      if (other !== op && deps.has(other.logicalId)) last = at;
+    });
+    if (last <= from) continue;
+    out.splice(from, 1);
+    // `last` shifted down by one with the removal: inserting there places the
+    // op right after that dependency.
+    out.splice(last, 0, op);
+  }
+  return out;
 }
 
 export function partitionOps(operations: CompletedOperation[]): {

@@ -27,11 +27,23 @@ export class ScheduleGroupRenameRollbackStack extends cdk.Stack {
       scheduleGroupName: update ? 'cdkd-sgrr-g2' : 'cdkd-sgrr-g1',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
-    new scheduler.Schedule(this, 'Schedule', {
+    const schedule = new scheduler.Schedule(this, 'Schedule', {
       scheduleName: 'cdkd-sgrr-schedule',
       scheduleGroup: group,
       schedule: scheduler.ScheduleExpression.rate(cdk.Duration.hours(1)),
       target: new targets.SqsSendMessage(queue),
     });
+
+    // go-to-k/cdkd#6423: CDKD_TEST_FAIL=true adds a queue AWS refuses, created
+    // after the schedule. Under --replace the schedule is replaced delete-first
+    // after its target role's trust moved to the new group, so the rollback
+    // must revert the role before re-creating the schedule.
+    if (process.env.CDKD_TEST_FAIL === 'true') {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        // Out of range (max 1209600): AWS refuses the create.
+        messageRetentionPeriod: 9999999,
+      });
+      failing.node.addDependency(schedule);
+    }
   }
 }
