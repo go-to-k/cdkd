@@ -51,7 +51,12 @@ import {
   parseParameterOverrides,
   resolveTemplateParameters,
   rootParameterValues,
+  ssmParameterReader,
 } from './parameters.js';
+import {
+  findMissingSsmParameters,
+  missingSsmParametersMessage,
+} from './ssm-parameter-preflight.js';
 import {
   buildCdkdStateStackTree,
   cdkd2cfnStackName,
@@ -349,12 +354,23 @@ export async function exportCommand(
         ec2Client: awsClients.ec2,
       });
 
+    // A missing SSM parameter an SSM-typed Parameter names fails the IMPORT
+    // changeset (go-to-k/cdkd#6410); refuse it here, `--dry-run` included,
+    // and beside the blocked resources so one run names both.
+    const missingSsm = await findMissingSsmParameters(
+      template,
+      options.parameter,
+      ssmParameterReader(awsClients.ssm)
+    );
+    const missingSsmMessage =
+      missingSsm.length > 0 ? missingSsmParametersMessage(missingSsm, region) : undefined;
     // `blocked` resources are genuinely unfixable (missing state, unknown
     // never-importable types, a type CFn refuses for IMPORT, etc.) — nothing
     // the user can do at runtime resolves them. Hard-fail in both dry-run and
     // real-run paths; printing the plan here is unhelpful because there is no
     // path forward.
     if (blocked.length > 0) {
+      if (missingSsmMessage !== undefined) logger.error(missingSsmMessage);
       logger.error('The following resources block migration:');
       for (const line of groupBlockedReasons(blocked)) {
         logger.error(line);
@@ -364,6 +380,7 @@ export async function exportCommand(
           blockedMigrationTail(blocked)
       );
     }
+    if (missingSsmMessage !== undefined) throw new Error(missingSsmMessage);
 
     // Acquire the lock before any AWS write. Dry-run skips the lock so it
     // is a pure read.

@@ -26,7 +26,7 @@ cdkd export MyStack --dry-run
 The preview prints the import plan and everything that would block the export.
 It changes nothing and does not ask for confirmation.
 
-Five things are worth knowing before you export. Each entry links to its
+Six things are worth knowing before you export. Each entry links to its
 full description.
 
 - **Lambda-backed Custom Resources.** The export stops, because CloudFormation
@@ -44,6 +44,12 @@ full description.
   [Context values passed with `-c`](cli-export-template.md#context-values-passed-with-c).
 - **A failed or interrupted deploy.** cdkd asks before it exports such a
   stack. Finish the deploy or roll it back first.
+- **No `cdk bootstrap` in the account and region.** CloudFormation reads the
+  stack's `BootstrapVersion` parameter from `/cdk-bootstrap/<qualifier>/version`,
+  which `cdk bootstrap` creates and `cdkd deploy` never needs. The export, and
+  its preview, stop and name the parameter. Run `cdk bootstrap` first; the
+  stack's next `cdk deploy` needs it too. See
+  [Template Parameters](cli-export-template.md#template-parameters).
 
 Two things need no preparation:
 

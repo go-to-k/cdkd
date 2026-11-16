@@ -35,6 +35,23 @@ cdkd export MyStack --parameter Environment=prod --parameter InstanceCount=2
 Most exports need no `--parameter`. A template that CDK generates usually
 declares only `BootstrapVersion`, and that Parameter has a default.
 
+An SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) holds the NAME of
+an SSM parameter, which CloudFormation reads when it creates the changeset.
+cdkd reads each one first, the preview included, and stops when one does not
+exist. `BootstrapVersion` reads `/cdk-bootstrap/<qualifier>/version`, which
+only `cdk bootstrap` creates, so an account and region where the stack was
+deployed with cdkd alone needs `cdk bootstrap` before the export:
+
+```text
+Refusing to export: CloudFormation reads the SSM parameter each template parameter below names when it creates the IMPORT changeset, and it does not exist in 'us-east-1'. Nothing was changed; re-run after:
+  'BootstrapVersion': SSM parameter /cdk-bootstrap/hnb659fds/version is created by 'cdk bootstrap', which the exported stack's next 'cdk deploy' needs too. Run it for this account and region.
+```
+
+For any other SSM-typed Parameter, create the SSM parameter, or pass
+`--parameter Key=<name>` naming one that exists. A read that fails for another
+reason, such as a denied `ssm:GetParameter`, does not stop the export:
+CloudFormation reads the parameter with the same credentials and decides.
+
 Two mistakes are errors:
 
 - A Parameter that has neither a `--parameter` value nor a `Default`. The

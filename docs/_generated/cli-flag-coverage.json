@@ -96,6 +96,7 @@
         "getstackoutput-crossregion",
         "import-noecho-parameter",
         "lambda",
+        "local-aws-emulator",
         "loggroup-never-expire-guard",
         "nested-stack-deep",
         "noecho-parameter-masking",
