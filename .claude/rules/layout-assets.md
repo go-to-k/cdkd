@@ -51,12 +51,8 @@ paths:
   primitives the resolvers call, with ~20 call sites between them, so
   converting them is its own change rather than a rider on a resolver's. Do
   not restate the invariant as whole-program until they are done.
-  The surviving `??` fallbacks here (two in `buildDockerImage`, one in
-  `AssetPublisher`) all NARROW onto the manifest directory. `src/local/` holds two more that feed the same resolvers
-  (`invoke-agentcore-watch-loop.ts`, `lambda-resolver.ts`); they narrow too, so
-  THAT claim holds whole-program and only its COUNT is limited to the files
-  this page governs — the opposite direction from the invariant above, whose
-  claim is whole-program while its enforcement is not.
+  Every `??` fallback feeding these resolvers, here and in `src/local/`,
+  NARROWS onto the manifest directory.
   **The containment arm is the RELATIVE one only** (issue
   [#3532](https://github.com/go-to-k/cdkd/issues/3532)): an ABSOLUTE value is
   honoured and WARNED about when it leaves `assetOutdir`, because
@@ -101,6 +97,11 @@ paths:
   Every path judgement there goes through `assemblyPathEscape`
   ([layout-utils.md](layout-utils.md)), which picks the absolute or relative
   arm; a warn-only caller must not re-derive that branch.
+- **legacy-synthesizer-assets.ts** (+ `cdk-toolkit-bucket.ts`) —
+  `LegacyStackSynthesizer` stacks (#6421): an IN-MEMORY manifest from
+  `aws:cdk:asset` metadata, its bucket decided AFTER asset-mode resolution,
+  and the parameters bound as template `Default`s — never
+  `DeployEngineOptions.parameters`, whose presence means a nested child.
 - **asset-storage.ts** — cdkd-owned asset storage (issue
   [#1002](https://github.com/go-to-k/cdkd/issues/1002)). Custom bucket / repo
   names are validated BEFORE any AWS call and carried in the marker; differing
