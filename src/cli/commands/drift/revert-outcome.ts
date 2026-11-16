@@ -35,6 +35,7 @@ import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
 import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
+import { stripSiblingOwnedSgRules } from '../../../provisioning/sg-sibling-rules.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -380,13 +381,26 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // detection dropped from the baseline leave the desired bag too;
     // the readback (the previous side) never carried them, so `update()`
     // neither removes nor re-adds them.
+    //
+    // go-to-k/cdkd#6418: and a security-group rule a sibling standalone
+    // `SecurityGroupIngress` / `SecurityGroupEgress` authorizes, which the
+    // readback dropped too, so `update()` neither revokes nor re-authorizes it.
+    const siblingContext = buildReadCurrentStateContext(report.state, outcome.logicalId);
     desiredProperties = stripSiblingOwnedMembers(
       outcome.resourceType,
       stateResource.physicalId,
       desiredProperties,
       outcome.awsProperties,
       stateResource.properties,
-      buildReadCurrentStateContext(report.state, outcome.logicalId)
+      siblingContext
+    ).baseline;
+    desiredProperties = stripSiblingOwnedSgRules(
+      outcome.resourceType,
+      stateResource.physicalId,
+      desiredProperties,
+      outcome.awsProperties,
+      stateResource.properties,
+      siblingContext
     ).baseline;
     if (provider.canonicalizeDriftPair) {
       desiredProperties = (

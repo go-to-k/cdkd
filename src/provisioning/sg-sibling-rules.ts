@@ -1,0 +1,165 @@
+/**
+ * go-to-k/cdkd#6418: security-group rules a SIBLING standalone
+ * `AWS::EC2::SecurityGroupIngress` / `AWS::EC2::SecurityGroupEgress` of the
+ * same stack authorizes on a group, the rule-list analogue of
+ * `stripSiblingOwnedMembers` (go-to-k/cdkd#6324).
+ *
+ * CDK never inlines a security-group-to-security-group rule
+ * (`SecurityGroup.canInlineRule` is false), so `a.connections.allowFrom(b, ...)`
+ * is a standalone rule resource while a CIDR rule of the same group stays in its
+ * `SecurityGroupIngress` list. `DescribeSecurityGroups` reports both, so a group
+ * whose template DECLARES an inline list read the sibling's rule as drift on
+ * every fresh stack, and `cdkd drift --revert` REVOKED it (the group's
+ * `update()` revokes what the previous side holds and the desired side lacks).
+ * The #1498 undeclared-empty fold covers only a group declaring no list.
+ *
+ * CloudFormation's drift (measured, us-east-1): the stack's own sibling rules
+ * leave the group `IN_SYNC`, while a rule nothing in the stack declares reads as
+ * an `ADD`. So only a rule a sibling RECORD owns is dropped; every other extra
+ * rule stays compared. A rule the group's own template also declares inline
+ * stays compared too: the group then owns it as well.
+ *
+ * Applied on BOTH drift sides: the readback drops it (`readCurrentState`), and
+ * {@link stripSiblingOwnedSgRules} drops it from the recorded baseline, so a
+ * baseline captured after the sibling's write (a later UPDATE of the group, or a
+ * record written before this fix) compares clean without a redeploy.
+ *
+ * Identity is what AWS keeps one rule for: group, protocol, port range and peer.
+ * `Description` is left out (AWS holds one rule whatever the description), and
+ * so is the peer's owner id, which AWS reports on every same-account group pair
+ * while a template rarely declares it; a group id names one group in any
+ * account. A sibling whose identity cannot be compared (a redacted value,
+ * unreadable ports, a `GroupName`-addressed rule) owns nothing, which fails
+ * CLOSED: its rule stays reported.
+ */
+import type { ReadCurrentStateContext } from '../types/resource.js';
+import { isRedactedRecordedValue } from './redacted-delete-address.js';
+import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
+
+type SgDirection = 'ingress' | 'egress';
+type CfnSgRule = Record<string, unknown>;
+
+const RULE_TYPE: Readonly<Record<SgDirection, string>> = {
+  ingress: 'AWS::EC2::SecurityGroupIngress',
+  egress: 'AWS::EC2::SecurityGroupEgress',
+};
+
+const LIST_KEY: Readonly<Record<SgDirection, 'SecurityGroupIngress' | 'SecurityGroupEgress'>> = {
+  ingress: 'SecurityGroupIngress',
+  egress: 'SecurityGroupEgress',
+};
+
+/** The peer keys each direction spells, in identity order. */
+const PEER_KEYS: Readonly<Record<SgDirection, readonly string[]>> = {
+  ingress: [
+    'CidrIp',
+    'CidrIpv6',
+    'SourceSecurityGroupId',
+    'SourceSecurityGroupName',
+    'SourcePrefixListId',
+  ],
+  egress: ['CidrIp', 'CidrIpv6', 'DestinationSecurityGroupId', 'DestinationPrefixListId'],
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * `rule`'s identity in `direction`, or `undefined` when it cannot be compared:
+ * not an object, unreadable ports, or a redacted value in an identity key.
+ */
+export function sgRuleOwnershipIdentity(rule: unknown, direction: SgDirection): string | undefined {
+  if (!isPlainRecord(rule)) return undefined;
+  const keys = ['IpProtocol', 'FromPort', 'ToPort', ...PEER_KEYS[direction]];
+  if (keys.some((key) => isRedactedRecordedValue(rule[key]))) return undefined;
+  const from = cfnIngressPortValue(rule['FromPort']);
+  const to = cfnIngressPortValue(rule['ToPort']);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+  return JSON.stringify([
+    sgProtocolKey(rule['IpProtocol']),
+    from,
+    to,
+    ...PEER_KEYS[direction].map((key) => rule[key] ?? null),
+  ]);
+}
+
+/**
+ * The identities of every rule in `direction` that a sibling standalone rule
+ * record of the stack authorizes on `groupId`, minus those the group's own
+ * `properties` (its template) also declare inline. Empty without a context or a
+ * group id.
+ */
+export function siblingOwnedSgRuleIdentities(
+  groupId: string | undefined,
+  direction: SgDirection,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): Set<string> {
+  const owned = new Set<string>();
+  if (typeof groupId !== 'string' || groupId === '') return owned;
+  for (const sibling of Object.values(context?.siblings ?? {})) {
+    if (sibling.resourceType !== RULE_TYPE[direction]) continue;
+    const props = sibling.properties;
+    if (!isPlainRecord(props) || props['GroupId'] !== groupId) continue;
+    const identity = sgRuleOwnershipIdentity(props, direction);
+    if (identity !== undefined) owned.add(identity);
+  }
+  if (owned.size === 0) return owned;
+  const inline = properties?.[LIST_KEY[direction]];
+  if (Array.isArray(inline)) {
+    for (const entry of inline) {
+      const identity = sgRuleOwnershipIdentity(entry, direction);
+      if (identity !== undefined) owned.delete(identity);
+    }
+  }
+  return owned;
+}
+
+/** `rules` without the ones `owned` names. Order is kept. */
+export function withoutSiblingOwnedSgRules(
+  rules: readonly CfnSgRule[],
+  owned: ReadonlySet<string>,
+  direction: SgDirection
+): CfnSgRule[] {
+  if (owned.size === 0) return [...rules];
+  return rules.filter((rule) => {
+    const identity = sgRuleOwnershipIdentity(rule, direction);
+    return identity === undefined || !owned.has(identity);
+  });
+}
+
+/**
+ * For an `AWS::EC2::SecurityGroup`, `baseline` and `aws` without the inline
+ * rules a sibling standalone rule record owns (see the module comment).
+ * Non-mutating; each bag is returned by identity when it has nothing to drop.
+ *
+ * Dropping from the BASELINE is safe for `drift --revert`, which sends this
+ * baseline as the desired side against the readback: the readback has dropped
+ * the same rules, so `update()` sees them on neither side and neither revokes
+ * nor re-authorizes them.
+ */
+export function stripSiblingOwnedSgRules(
+  resourceType: string,
+  physicalId: string | undefined,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): { baseline: Record<string, unknown>; aws: Record<string, unknown> } {
+  if (resourceType !== 'AWS::EC2::SecurityGroup') return { baseline, aws };
+  let out = { baseline, aws };
+  for (const direction of ['ingress', 'egress'] as const) {
+    const owned = siblingOwnedSgRuleIdentities(physicalId, direction, properties, context);
+    if (owned.size === 0) continue;
+    const key = LIST_KEY[direction];
+    const strip = (bag: Record<string, unknown>): Record<string, unknown> => {
+      const list = bag[key];
+      if (!Array.isArray(list)) return bag;
+      const kept = withoutSiblingOwnedSgRules(list as CfnSgRule[], owned, direction);
+      return kept.length === list.length ? bag : { ...bag, [key]: kept };
+    };
+    out = { baseline: strip(out.baseline), aws: strip(out.aws) };
+  }
+  return out;
+}

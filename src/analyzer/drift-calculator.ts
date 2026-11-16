@@ -151,6 +151,11 @@ export function calculateResourceDrift(
  * cluster setting) is still compared, so a console-side change to it still
  * surfaces as drift.
  *
+ * A DECLARED key is compared, so a group's non-empty inline rule list is not
+ * skipped here: the rules a sibling `AWS::EC2::SecurityGroupIngress` /
+ * `SecurityGroupEgress` owns are dropped from it instead
+ * (`provisioning/sg-sibling-rules.ts`, go-to-k/cdkd#6418).
+ *
  * Returned keys are fed into `calculateResourceDrift`'s `ignorePaths`, so
  * they are excluded as whole subtrees from detection — and therefore from
  * `--revert` / `--accept`, which operate on the detected changes.
