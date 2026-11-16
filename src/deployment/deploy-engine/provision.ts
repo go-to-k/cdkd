@@ -52,6 +52,7 @@ import { provisionDelete } from './delete.js';
 import { provisionCreate } from './create.js';
 import { awaitNoEchoMacsFor } from './noecho-macs.js';
 import { provisionUpdate } from './update.js';
+import { warnUnhonoredCreationPolicy } from './update-policy.js';
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
@@ -633,7 +634,12 @@ export async function provisionResourceBody(
               counts,
               progress
             )
-          );
+          ).then((outcome) => {
+            // go-to-k/cdkd#6437: log only, once the create succeeded -- no
+            // exit-code or `--strict` effect.
+            warnUnhonoredCreationPolicy(engine.logger, logicalId, template?.Resources?.[logicalId]);
+            return outcome;
+          });
         case 'UPDATE':
           return withPriorAttempts(priorAttempts, () =>
             provisionUpdate(

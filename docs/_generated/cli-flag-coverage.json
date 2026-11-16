@@ -22,6 +22,7 @@
     "--no-cfn-fallback",
     "--no-local-custom-resources",
     "--no-rollback",
+    "--no-update-policy",
     "--no-wait",
     "--output",
     "--pin-cc-api",
@@ -44,6 +45,7 @@
     "--state-prefix",
     "--strict",
     "--strict-getatt",
+    "--update-policy",
     "--use-cdk-bootstrap-assets",
     "--verbose",
     "--yes"
@@ -2209,6 +2211,12 @@
       ]
     },
     {
+      "flag": "--update-policy",
+      "integs": [
+        "launchtemplate-asg-inplace"
+      ]
+    },
+    {
       "flag": "--use-cdk-bootstrap-assets",
       "integs": [
         "asset-migration"
@@ -2692,6 +2700,7 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--no-local-custom-resources",
+    "--no-update-policy",
     "--strict"
   ],
   "unknownFlagsInIntegs": [
@@ -2963,6 +2972,7 @@
     "--max-items",
     "--max-records",
     "--max-results",
+    "--max-size",
     "--max-time",
     "--memory",
     "--memory-swap",

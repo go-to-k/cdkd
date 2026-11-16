@@ -39,6 +39,10 @@
 #      phase clears the placement group, keeps the policy (CloudFormation A/B)
 #      and adds AvailabilityZoneIds (the subnets' zone ids, live and recorded);
 #      the Asg record is provisionedBy=sdk after phases 1 and 3.
+#   5. Issue #6437: a MaxSize raised out of band before Phase 2 survives the
+#      Phase 2 update under --update-policy (the template declares
+#      IgnoreUnmodifiedGroupSizeProperties), and Phase 3, without the flag,
+#      resets it to the template's 0.
 # Then destroys and confirms a clean teardown.
 #
 # desiredCapacity is 0 so no EC2 instances launch (cheap deploy, fast destroy).
@@ -140,6 +144,13 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# The ASG's live MaxSize (issue #6437 leg).
+asg_max_size() {
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$1" --region "${REGION}" \
+    --query 'AutoScalingGroups[0].MaxSize' --output text
+}
 
 # Read the ASG's live LaunchTemplate.Version. CDK auto-names the ASG, so resolve
 # it from state by type. The physical id IS the ASG name.
@@ -359,11 +370,22 @@ if [ "$(printf '%s' "${ASG_AZ_IDS}" | tr ',' '\n' | grep -c .)" != "2" ]; then
 fi
 echo "    resolved ASG zone ids: ${ASG_AZ_IDS}"
 
+# Issue #6437 leg: raise MaxSize out of band (a scheduled action's job; desired
+# stays 0, so no instance launches). The template keeps MaxSize 0 and declares
+# UpdatePolicy.AutoScalingScheduledAction.IgnoreUnmodifiedGroupSizeProperties.
+aws autoscaling update-auto-scaling-group --auto-scaling-group-name "${ASG_NAME}" \
+  --max-size 1 --region "${REGION}"
+if [ "$(asg_max_size "${ASG_NAME}")" != "1" ]; then
+  echo "FAIL: could not raise the ASG's MaxSize to 1 out of band (issue #6437 leg)" >&2
+  exit 1
+fi
+
 # --- Phase 2: UPDATE (change only instanceType -> LT v2) --------------
-echo "==> Phase 2: UPDATE (instanceType t3.micro -> t3.small; LT v1 -> v2)"
+echo "==> Phase 2: UPDATE (instanceType t3.micro -> t3.small; LT v1 -> v2) with --update-policy"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --update-policy \
   --yes
 
 LT_V2=$(lt_latest_version)
@@ -388,6 +410,14 @@ echo "    OK: ASG LaunchTemplate.Version == 2 in the SAME deploy (issue #985 fix
 # The four non-default properties are still templated in Phase 2 — they must
 # pass through unchanged (kept fields are never spuriously reset).
 assert_nondefault_props "Phase 2 (props kept)" "${ASG_NAME}"
+# Issue #6437: under --update-policy the group update sent no unchanged size,
+# so the out-of-band MaxSize survives.
+MAX_2=$(asg_max_size "${ASG_NAME}")
+if [ "${MAX_2}" != "1" ]; then
+  echo "FAIL: Phase 2: MaxSize is '${MAX_2}', expected the out-of-band 1 kept (--update-policy, IgnoreUnmodifiedGroupSizeProperties, issue #6437)" >&2
+  exit 1
+fi
+echo "    OK: Phase 2: MaxSize 1 kept under --update-policy (issue #6437)"
 assert_2762_props_live "Phase 2 (props kept)"
 
 # --- Phase 3: REMOVAL (drop the four ASG props) ------
@@ -448,6 +478,14 @@ if [ "${ENABLED_METRICS_R}" != "GroupDesiredCapacity GroupMinSize" ]; then
   exit 1
 fi
 echo "    OK: Phase 3: EnabledMetrics == GroupDesiredCapacity GroupMinSize (issue #4013)"
+# Issue #6437: Phase 3 passes no --update-policy (the default skips the
+# policy), so the update re-sends the template's MaxSize 0.
+MAX_3=$(asg_max_size "${ASG_NAME}")
+if [ "${MAX_3}" != "0" ]; then
+  echo "FAIL: Phase 3: MaxSize is '${MAX_3}', expected the template's 0 re-sent (UpdatePolicy skipped by default, issue #6437)" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: MaxSize reset to 0 without --update-policy (issue #6437)"
 
 # Issue #2762 (real CloudFormation A/B): a removed PlacementGroup is cleared
 # (CloudFormation sends PlacementGroup ""), a removed InstanceLifecyclePolicy is

@@ -47,6 +47,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   loadCdkJson: vi.fn(() => null),
   resolveApp: vi.fn(() => 'fake-app-cmd'),
   resolveCaptureObservedState: vi.fn(() => false),
+  resolveUpdatePolicy: vi.fn(() => undefined),
   resolveAutoAssetStorage: vi.fn(() => false),
   resolveSkipPrefix: vi.fn(() => false),
   resolveStateBucketWithDefaultAndSource: vi.fn(async (...args: unknown[]) => {

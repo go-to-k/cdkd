@@ -118,6 +118,12 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
     const cfnAsg = asg.node.defaultChild as autoscaling.CfnAutoScalingGroup;
     // A stable logical id, so verify.sh reads THIS record's provisionedBy.
     cfnAsg.overrideLogicalId('Asg');
+    // Issue #6437 leg: in every phase, so only verify.sh's `--update-policy`
+    // differs between the Phase 2 and Phase 3 deploys. The L2 already declares
+    // it by default; set explicitly so the leg does not hang on that default.
+    cfnAsg.cfnOptions.updatePolicy = {
+      autoScalingScheduledAction: { ignoreUnmodifiedGroupSizeProperties: true },
+    };
 
     // Issue #2762 leg. The placement group stays in every phase, so the removal
     // phase drops only the group's reference to it. Spread works with any

@@ -6,8 +6,8 @@ description: "cdkd deploy tuning flags: per-resource warn and timeout budgets, p
 # cdkd deploy: tuning
 
 These `cdkd deploy` flags change how long one resource may run, what cdkd
-names resources, how much it records for drift detection, and how it orders
-VPC work. None of them change what the template means. For the full list of
+names resources, how much it records for drift detection, how it orders VPC
+work, and whether it honors a template's `UpdatePolicy`. For the full list of
 deploy flags, see [cdkd deploy](cli-deploy.md#options).
 
 ```bash
@@ -20,6 +20,9 @@ cdkd deploy MyStack --prefix-user-supplied-names
 
 # skip the drift baseline
 cdkd deploy MyStack --no-capture-observed-state
+
+# honor the template's UpdatePolicy
+cdkd deploy MyStack --update-policy
 
 # keep CDK's VPC route ordering
 cdkd deploy MyStack --no-aggressive-vpc-parallel
@@ -36,6 +39,7 @@ cdkd deploy MyStack --strict
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that runs longer than this. Repeatable. |
 | `--prefix-user-supplied-names` | `false` | Prefix physical names you declared with the stack name. |
 | `--no-capture-observed-state` | capture on | Skip recording each resource's current AWS properties as the drift baseline. |
+| `--update-policy`, `--no-update-policy` | skipped | Honor, or skip, the `UpdatePolicy` attributes cdkd supports. |
 | `--no-aggressive-vpc-parallel` | relaxation on | Keep CDK's `DependsOn` edges from VPC Lambdas onto private-subnet routes. |
 | `--strict` | `false` | Also fail when a stack carries CDK warning annotations. |
 | `--ignore-errors` | `false` | Print CDK annotations but never fail the run. |
@@ -290,6 +294,36 @@ cdkd state refresh-observed MyStack
   runs again, and another resource holds its value in a property that cannot
   change in place, cdkd reads that resource back to decide whether it must be
   replaced. cdkd compares the result in memory and never stores it.
+
+## `--update-policy`
+
+A template's `UpdatePolicy` is skipped by default; it is honored with
+`--update-policy`. Skipped, cdkd applies each update in one step.
+`--no-update-policy` skips it even when `cdk.json` turns it on.
+
+```bash
+cdkd deploy MyStack --update-policy
+```
+
+| Policy | With `--update-policy` |
+| --- | --- |
+| `AutoScalingScheduledAction` (`IgnoreUnmodifiedGroupSizeProperties: true`) | An Auto Scaling group update sends only the size properties the template changed. |
+| Any other `UpdatePolicy` | Still skipped. |
+
+To turn it on for a whole project, set it in `cdk.json`:
+
+```json
+{
+  "context": {
+    "cdkd": { "updatePolicy": true }
+  }
+}
+```
+
+The command-line flag wins over `cdk.json`. With neither set, cdkd skips
+the policy and prints a one-line hint on each SDK-provider update of a
+resource whose policy `--update-policy` would honor. See
+[`UpdatePolicy` is opt-in](supported-features.md#updatepolicy-is-opt-in).
 
 ## `--no-aggressive-vpc-parallel`
 

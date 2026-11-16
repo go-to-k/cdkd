@@ -24,7 +24,7 @@ import { withNestedStackContext } from '../../../provisioning/nested-stack-conte
 import { DeployEngine, type DeployEngineOptions } from '../../../deployment/deploy-engine.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
-import { resolveCaptureObservedState } from '../../config-loader.js';
+import { resolveCaptureObservedState, resolveUpdatePolicy } from '../../config-loader.js';
 import { createPrefixMigrationGate } from '../prefix-migration-check.js';
 import { composeStateLoadedGates, crossPrefixEngineOptions } from '../cross-prefix-gate.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../types/state.js';
@@ -372,6 +372,8 @@ export async function deployStackInScope(
     // engine (post-resolution audit) and the nested-stack context
     // (child-template rewrite). Undefined in legacy mode.
     const assetRedirect = stackRedirects.get(stackInfo);
+    // go-to-k/cdkd#6437: undefined (neither flag, no cdk.json key) is the default.
+    const updatePolicy = resolveUpdatePolicy(options.updatePolicy);
 
     const deployEngineOptions: DeployEngineOptions = {
       concurrency: options.concurrency,
@@ -409,6 +411,7 @@ export async function deployStackInScope(
       producerLookup,
       ...(stackInfo.account && { consumerAccount: stackInfo.account }),
       captureObservedState: resolveCaptureObservedState(options.captureObservedState),
+      ...(updatePolicy !== undefined && { updatePolicy }),
       ...(options.resourceWarnAfter?.globalMs !== undefined && {
         resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
       }),

@@ -87,6 +87,7 @@ const AUDITED_MEMBERS = [
   'resourceTimeoutByType',
   'unsettledRevertWait', // a wait bound, the same for every child (#5505)
   'captureObservedState',
+  'updatePolicy', // a run-wide on/off naming no resource; a child honors the parent's choice (#6437)
   'assetRedirect',
   'inheritedSecrets',
   'inheritedPhysicalNameCopies', // overwritten from THIS row's bag, ungated (#4819)

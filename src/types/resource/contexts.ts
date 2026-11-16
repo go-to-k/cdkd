@@ -246,6 +246,17 @@ export interface UpdateContext extends SecretMaskingContext {
   replayingState?: boolean;
 
   /**
+   * go-to-k/cdkd#6437: the resource's template `UpdatePolicy` attribute, as
+   * written (intrinsics unresolved). Set ONLY by `cdkd deploy`'s in-place
+   * update when `--update-policy` (or `cdk.json context.cdkd.updatePolicy:
+   * true`) is on and the template declares one. Absent on every other caller —
+   * the rollback reverts, `cdkd drift --revert` — and absent means "do what
+   * cdkd did before UpdatePolicy support": a provider reading it must treat
+   * absence as that, never as a policy of its own.
+   */
+  updatePolicy?: Readonly<Record<string, unknown>> | undefined;
+
+  /**
    * Region recorded in the stack state for the resource being updated
    * (`StackState.region`), issue #2301 item 1.
    *

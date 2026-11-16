@@ -24,6 +24,8 @@ export interface DeployCommandOptions {
   wait: boolean;
   fullWait?: boolean;
   captureObservedState: boolean;
+  /** `--update-policy` / `--no-update-policy`; undefined when neither was passed (#6437). */
+  updatePolicy?: boolean;
   prefixUserSuppliedNames: boolean;
   aggressiveVpcParallel: boolean;
   exclusively: boolean;

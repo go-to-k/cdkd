@@ -26,6 +26,7 @@ import {
   loadUserCdkJson,
   resolveApp,
   resolveCaptureObservedState,
+  resolveUpdatePolicy,
   resolveSkipPrefix,
   resolveAutoAssetStorage,
   resolveUseCdkBootstrapAssets,
@@ -1110,6 +1111,42 @@ describe('config-loader', () => {
         JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
       );
       expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+  });
+
+  describe('resolveUpdatePolicy (go-to-k/cdkd#6437)', () => {
+    const withCdkJson = (updatePolicy: unknown) => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { updatePolicy } } })
+      );
+    };
+
+    it('--update-policy wins over cdk.json false', () => {
+      withCdkJson(false);
+      expect(resolveUpdatePolicy(true)).toBe(true);
+    });
+
+    it('--no-update-policy wins over cdk.json true', () => {
+      withCdkJson(true);
+      expect(resolveUpdatePolicy(false)).toBe(false);
+    });
+
+    it('falls through to the cdk.json boolean when neither flag was passed', () => {
+      withCdkJson(true);
+      expect(resolveUpdatePolicy(undefined)).toBe(true);
+      withCdkJson(false);
+      expect(resolveUpdatePolicy(undefined)).toBe(false);
+    });
+
+    it('stays undefined (the default) with no flag and no cdk.json key', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveUpdatePolicy(undefined)).toBeUndefined();
+    });
+
+    it('ignores a non-boolean cdk.json value', () => {
+      withCdkJson('true');
+      expect(resolveUpdatePolicy(undefined)).toBeUndefined();
     });
   });
 

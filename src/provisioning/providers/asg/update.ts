@@ -19,6 +19,7 @@ import { protectedReplacementAdvice } from '../../replacement-protection-advice.
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../../masked-retry-logger.js';
 import { zoneMembers } from './shared.js';
+import { ignoresUnmodifiedGroupSize } from './update-policy.js';
 
 /**
  * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
@@ -339,12 +340,22 @@ export async function update(
         }
       );
 
+    // go-to-k/cdkd#6437: `UpdatePolicy.AutoScalingScheduledAction
+    // .IgnoreUnmodifiedGroupSizeProperties`, handed over only under
+    // `--update-policy`. A scheduled action resizes the group outside the
+    // template, so re-sending an UNCHANGED size would undo it; CloudFormation
+    // then sends only the size properties the template changed.
+    const ignoreUnmodifiedSize = ignoresUnmodifiedGroupSize(context?.updatePolicy);
+    const sendSize = (key: 'MinSize' | 'MaxSize' | 'DesiredCapacity'): boolean =>
+      properties[key] != null &&
+      !(ignoreUnmodifiedSize && sizeUnchanged(properties[key], previousProperties[key]));
+
     await this.getClient().send(
       new UpdateAutoScalingGroupCommand({
         AutoScalingGroupName: physicalId,
-        ...(properties['MinSize'] != null && { MinSize: Number(properties['MinSize']) }),
-        ...(properties['MaxSize'] != null && { MaxSize: Number(properties['MaxSize']) }),
-        ...(properties['DesiredCapacity'] != null && {
+        ...(sendSize('MinSize') && { MinSize: Number(properties['MinSize']) }),
+        ...(sendSize('MaxSize') && { MaxSize: Number(properties['MaxSize']) }),
+        ...(sendSize('DesiredCapacity') && {
           DesiredCapacity: Number(properties['DesiredCapacity']),
         }),
         ...(launchTemplate && { LaunchTemplate: launchTemplate }),
@@ -429,4 +440,14 @@ export async function update(
     if (error instanceof ResourceUpdateNotSupportedError) throw error;
     throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, mask);
   }
+}
+
+/**
+ * A size property the template did not change (`"2"` and `2` are one value).
+ * A recorded `{{resolve:...}}` / masked value reads as NaN, so a size given as
+ * a dynamic reference always counts as changed and is re-sent: the safe side,
+ * since the recorded text cannot be compared with the resolved number.
+ */
+function sizeUnchanged(desired: unknown, previous: unknown): boolean {
+  return previous != null && Number(desired) === Number(previous);
 }
