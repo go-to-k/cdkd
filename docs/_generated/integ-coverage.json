@@ -8676,6 +8676,7 @@
         "sns-subscription-update",
         "sns-topic-attr-removal",
         "sqs-fifo-unnamed",
+        "ssm-typed-parameter-not-found",
         "stack-id-uuid",
         "tags-propagation",
         "throttle-wide-dag",
@@ -8863,6 +8864,10 @@
         ],
         "sqs-fifo-unnamed": [
           "l1",
+          "literal"
+        ],
+        "ssm-typed-parameter-not-found": [
+          "l2",
           "literal"
         ],
         "stack-id-uuid": [
@@ -9456,6 +9461,7 @@
         "select-out-of-bounds",
         "shared-stackname-multi-region",
         "ssm-generated-name-grant",
+        "ssm-typed-parameter-not-found",
         "stack-id-uuid",
         "stale-attribute-heal",
         "state-info-command",
@@ -9879,6 +9885,9 @@
         ],
         "ssm-generated-name-grant": [
           "l2",
+          "literal"
+        ],
+        "ssm-typed-parameter-not-found": [
           "literal"
         ],
         "stack-id-uuid": [

@@ -261,7 +261,7 @@ launchtemplate-asg-inplace	2026-11-06T17:25:56Z	PASS	225	verify.sh	#5897 asg spl
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
-local-aws-emulator	2026-11-16T03:44:27Z	PASS	45	verify.sh	rc ok, hostile AWS_REGION/AWS_ENDPOINT_URL_S3 ignored, emulator container + run dir removed
+local-aws-emulator	2026-11-16T05:30:35Z	PASS	50	verify.sh	rc ok, phase 2b misplaced-flag refusal (#6382), emulator container + run dir removed, docker sweep clean
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-engine-role-identity	2026-11-13T05:08:51Z	PASS	85	verify.sh	rc ok, orph clean, #6160
 local-invoke	2026-11-13T05:08:51Z	PASS	30	verify.sh	rc ok, #6160
@@ -449,6 +449,7 @@ sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eve
 sqs-fifo-unnamed	2026-11-11T08:49:53Z	PASS	70	verify.sh	rc ok, orph clean; pre-fix probe red at phase-1 InvalidParameterValue (#6100)
 ssm-generated-name-grant	2026-11-14T08:27:58Z	PASS	154	verify.sh	rc ok, orph clean, e394ec742
 ssm-secure-dynamic-ref	2026-11-04T20:24:16Z	PASS	95	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket; 0 surviving versions
+ssm-typed-parameter-not-found	2026-11-16T04:54:02Z	PASS	60	verify.sh	rc ok, orph clean
 stack-copy-create-tokens	2026-11-10T16:05:59Z	PASS	1940	verify.sh	rc ok, orph clean
 stack-id-uuid	2026-11-13T03:29:59Z	PASS	88	verify.sh	rc ok, orph clean
 stack-lock-renewal	2026-11-10T18:34:22Z	PASS	391	verify.sh	rc ok, orph clean

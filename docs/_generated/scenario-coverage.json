@@ -2925,6 +2925,11 @@
       ]
     },
     {
+      "name": "ssm-typed-parameter-not-found",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "stack-copy-create-tokens",
       "annotated": true,
       "scenarios": []
@@ -4096,6 +4101,7 @@
     "sqs-esm-max-concurrency",
     "sqs-fifo-unnamed",
     "ssm-generated-name-grant",
+    "ssm-typed-parameter-not-found",
     "stack-id-uuid",
     "stack-lock-renewal",
     "stage-assets",
