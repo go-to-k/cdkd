@@ -609,6 +609,15 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // operation`. The conflicting writer typically finishes within
   // milliseconds, so a retry recovers.
   'concurrent update operation',
+  // Lambda: an UpdateFunctionConfiguration / UpdateFunctionCode sent while the
+  // function's PREVIOUS update is still `LastUpdateStatus: InProgress` is
+  // refused with `ResourceConflictException: The operation cannot be performed
+  // at this time. An update is in progress for resource: <arn>`. cdkd waits
+  // after its own updates, so the in-flight one came from outside the run (a
+  // console change, another pipeline, an interrupted deploy) and settles in
+  // seconds (go-to-k/cdkd#6401). Matched by message, never by the exception
+  // name: Lambda raises `ResourceConflictException` for a name collision too.
+  'An update is in progress for resource',
   // Lambda EventSourceMapping: on destroy, DeleteEventSourceMapping can
   // throw `ResourceInUseException` ("Cannot delete the event source
   // mapping because it is in use") while the ESM is briefly locked by its
