@@ -2528,6 +2528,11 @@
       "scenarios": []
     },
     {
+      "name": "replace-snapshot-failed-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replace-squatter-refusal",
       "annotated": false,
       "scenarios": []
@@ -4133,6 +4138,7 @@
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",
+    "replace-snapshot-failed-rollback",
     "replace-squatter-refusal",
     "replaced-delete-failed-rollback",
     "replacement-immutable-name",

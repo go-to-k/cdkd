@@ -592,6 +592,39 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(deletesOf('CRev-old')).toBe(0);
   });
 
+  // go-to-k/cdkd#6445: an in-memory deferral (a custom resource needing this
+  // run's NoEcho values) has no superseded entry; the queued pass still refuses
+  // an id a re-read child record names.
+  it.each([
+    [true, 0],
+    [false, 1],
+  ])(
+    'an in-memory deferral is not deleted while a re-read child record names its id (held: %s)',
+    async (held, deletes) => {
+      const child = childEngine();
+      const queue = new NestedCleanupQueue();
+
+      await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+      // Shape it as an in-memory deferral: no superseded entry anywhere.
+      child.replacementRun.supersededEntries.delete('CRev');
+      const stored = store.get(CHILD)!;
+      const { supersededResources: _dropped, ...rest } = stored.state;
+      store.set(CHILD, { ...stored, state: rest as StackState });
+      if (held) {
+        store.get(CHILD)!.state.resources['Other'] = record('CRev-old', REVISION, {});
+      }
+
+      await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+      expect(deletesOf('CRev-old')).toBe(deletes);
+      expect(
+        printed.warn.some(
+          (l) => l.includes('Old CRev of nested stack') && l.includes('names its physical id again')
+        )
+      ).toBe(held);
+    }
+  );
+
   it('a carried entry no longer listed in the persisted child state is not deleted', async () => {
     const child = childEngine();
     const queue = new NestedCleanupQueue();

@@ -14,10 +14,12 @@
  * re-create itself is covered through `cdkd rollback` in
  * `rollback-renamed-reversal-order-5064.test.ts`, and through the automatic
  * rollback by the second describe below: a renamed DB instance under
- * `UpdateReplacePolicy: Snapshot`, whose delete stays INLINE (the snapshot is
- * taken before the delete), so the rollback re-creates it ahead of its
- * dependent. A role has no natural non-deferrable shape: a NoEcho-masked
- * record keeps the delete inline but cannot be re-created by the replay.
+ * `UpdateReplacePolicy: Snapshot`, classed here as a type snapshotted BEFORE
+ * its delete, whose delete stays INLINE (go-to-k/cdkd#6445), so the rollback
+ * re-creates it ahead of its dependent. The real pre-delete-snapshot types
+ * (EBS volume, Redshift cluster, ElastiCache replication group) have no name
+ * key a renamed reversal reads, and an RDS instance's own atomic snapshot now
+ * defers its delete. A role has no natural non-deferrable shape.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
@@ -52,6 +54,24 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
 }));
+
+// go-to-k/cdkd#6445: the second describe's DB instance stands in for a type
+// snapshotted before its delete, the one Snapshot shape whose replaced delete
+// stays inline. The snapshot itself is a no-op here.
+const preDeleteSnapshots = vi.hoisted(() => [] as string[]);
+vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/provisioning/final-snapshot.js')>();
+  const atomic = new Set(actual.ATOMIC_FINAL_SNAPSHOT_TYPES);
+  atomic.delete('AWS::RDS::DBInstance');
+  return {
+    ...actual,
+    ATOMIC_FINAL_SNAPSHOT_TYPES: atomic,
+    PRE_DELETE_SNAPSHOT_TYPES: new Set([...actual.PRE_DELETE_SNAPSHOT_TYPES, 'AWS::RDS::DBInstance']),
+    createPreDeleteFinalSnapshot: vi.fn(async (_type: string, physicalId: string) => {
+      preDeleteSnapshots.push(physicalId);
+    }),
+  };
+});
 
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
@@ -401,8 +421,8 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
 
 
 // A replacement whose old-resource delete stays INLINE (go-to-k/cdkd#6374):
-// `UpdateReplacePolicy: Snapshot` takes its snapshot before the delete, so the
-// delete is not deferred, the op journals no survivor verdict, and the
+// `UpdateReplacePolicy: Snapshot` on a type snapshotted before its delete (the
+// mock above), so the delete is not deferred (go-to-k/cdkd#6445), the op journals no survivor verdict, and the
 // automatic rollback re-creates the renamed old resource ahead of the
 // dependent that reverts onto it.
 describe('the automatic rollback re-creates an inline-deleted renamed replacement first (go-to-k/cdkd#5064)', () => {
@@ -419,6 +439,7 @@ describe('the automatic rollback re-creates an inline-deleted renamed replacemen
     warned.length = 0;
     calls = [];
     dbs = new Set([OLD_DB]);
+    preDeleteSnapshots.length = 0;
   });
 
   const dbProps = (id: string) => ({ DBInstanceIdentifier: id, DBInstanceClass: 'db.t4g.micro' });
@@ -572,8 +593,9 @@ describe('the automatic rollback re-creates an inline-deleted renamed replacemen
       `update Targets -> ${NEW_DB}`,
       'create Fail',
     ]);
-    // The inline delete took its final snapshot first.
-    expect((provider.delete.mock.calls[0] as unknown[])[4]).toHaveProperty('finalSnapshotIdentifier');
+    // The final snapshot of the old instance was taken before its inline delete.
+    expect(preDeleteSnapshots[0]).toBe(OLD_DB);
+    expect(provider.delete).toHaveBeenCalled();
     expect(calls.slice(forward.length)).toEqual([
       'create Db',
       `update Targets -> ${OLD_DB}`,

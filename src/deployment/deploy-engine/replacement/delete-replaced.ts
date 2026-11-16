@@ -12,9 +12,12 @@ import {
   SUPERSEDED_KEPT_REMEDY,
   addSuperseded,
   canRecordSuperseded,
+  deleteNeedsThisRunsNoEchoValues,
+  isInlinePolicyType,
   removeSuperseded,
   retryWhileInUse,
 } from '../../superseded-resources.js';
+import { ATOMIC_FINAL_SNAPSHOT_TYPES } from '../../../provisioning/final-snapshot.js';
 import { green } from '../../../utils/colors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -43,10 +46,12 @@ import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
  * rollback finds the old resource whole (`'deferred'`) and takes it back.
  * The old record is kept in state until then (`recordSupersededForDeferral`,
  * go-to-k/cdkd#5111), so a deploy killed first leaves it for the next deploy
- * or `cdkd destroy`. The delete runs inline instead where that record cannot
- * be written (`canRecordSuperseded`), and under `UpdateReplacePolicy:
- * Snapshot`: the caller may already have taken the snapshot, and a later
- * delete would let the data move past it.
+ * or `cdkd destroy`; a custom resource whose delete needs this run's NoEcho
+ * values waits in memory only (go-to-k/cdkd#6445). Under
+ * `UpdateReplacePolicy: Snapshot` the deferred delete takes the final
+ * snapshot, for a type whose delete call takes it (RDS and the like; a type
+ * snapshotted before its delete is go-to-k/cdkd#6463). Where the delete
+ * still runs inline, and why, is `deferToCleanupPhase`'s.
  *
  * A failure
  * or a skip warns rather than fails the resource (issue #1762): the new
@@ -302,12 +307,32 @@ export async function deleteReplacedAfterCreate(
 }
 
 /**
- * go-to-k/cdkd#6374: whether this delete waits for the cleanup phase, and
- * when it does, its record is already written. Only inside a deploy (the
- * deferred map and the live state are set), never under a Snapshot policy
- * that takes its snapshot before the delete (see `deleteReplacedAfterCreate`),
- * and only once the old record is on the live state: a deferral the state
- * does not carry would be lost to a deploy killed before it ran.
+ * go-to-k/cdkd#6374: whether this delete waits for the cleanup phase. Only
+ * inside a deploy (the deferred map is set), and only once the deploy can
+ * still send it after a kill: its old record is on the live state, so the
+ * next deploy or `cdkd destroy` deletes it. The exception is a delete that
+ * reads this run's re-resolved NoEcho values (a custom resource or a nested
+ * stack, go-to-k/cdkd#6445): those never go to state, so it waits in memory
+ * only, and a hard kill before the cleanup phase leaves the old copy
+ * untracked.
+ *
+ * `UpdateReplacePolicy: Snapshot` defers for an atomic type
+ * (`ATOMIC_FINAL_SNAPSHOT_TYPES`: RDS and the like), whose delete call takes
+ * the snapshot from the identifier the deferral carries (go-to-k/cdkd#6445).
+ * A type snapshotted BEFORE its delete (`PRE_DELETE_SNAPSHOT_TYPES`) still
+ * deletes right away: the caller has already taken the snapshot, and a later
+ * delete would let the data move past it. Moving that snapshot into the
+ * deferred delete is go-to-k/cdkd#6463.
+ *
+ * Two cases delete right away by the maintainer's decision
+ * (go-to-k/cdkd#6445):
+ *
+ *   - An IAM inline policy: both policies attached for the rest of the deploy
+ *     would grant the union of their permissions, and deferring buys nothing,
+ *     since the rollback journal re-creates the policy document exactly.
+ *   - An old physical id another record of this deploy holds: a recorded
+ *     deferral could make a later run delete that record's live resource,
+ *     and the other resource must be able to move off the id.
  */
 function deferToCleanupPhase(
   run: ReplacementRunState,
@@ -321,15 +346,40 @@ function deferToCleanupPhase(
   }
 ): boolean {
   if (run.deferredReplacedDeletes === undefined) return false;
-  if (updateReplacePolicy === 'Snapshot' && deps.options.skipFinalSnapshot !== true) return false;
-  if (isStandaloneInlinePolicyType(oldResource.resourceType)) return false;
+  if (
+    updateReplacePolicy === 'Snapshot' &&
+    deps.options.skipFinalSnapshot !== true &&
+    !ATOMIC_FINAL_SNAPSHOT_TYPES.has(oldResource.resourceType)
+  ) {
+    return false;
+  }
+  // All four inline-policy types, `AWS::IAM::Policy` included: no other arm
+  // may defer one, in memory or in state.
+  if (isInlinePolicyType(oldResource.resourceType)) return false;
+  if (oldIdHeldByAnotherRecord(deps, logicalId, oldResource)) return false;
   recordSupersededForDeferral(run, deps, logicalId, oldResource, {
     updateReplacePolicy,
     finalSnapshotIdentifier: context.finalSnapshotIdentifier,
     noEchoDeleteValues: context.noEchoDeleteValues,
     inlinePolicyClaimed: undefined,
   });
-  return run.supersededEntries.get(logicalId)?.state === oldResource;
+  if (run.supersededEntries.get(logicalId)?.state === oldResource) return true;
+  return deleteNeedsThisRunsNoEchoValues(oldResource, context.noEchoDeleteValues);
+}
+
+/**
+ * Whether ANOTHER record of this deploy holds the old physical id. (This
+ * row's own record still names the old id until the row completes; an equal
+ * new id never reaches here.)
+ */
+function oldIdHeldByAnotherRecord(
+  deps: ReplacementDeps,
+  logicalId: string,
+  oldResource: ResourceState
+): boolean {
+  return Object.entries(deps.deployStateResources()).some(
+    ([id, record]) => id !== logicalId && record?.physicalId === oldResource.physicalId
+  );
 }
 
 /**
@@ -357,13 +407,12 @@ export function recordSupersededForDeferral(
     !canRecordSuperseded(oldResource, {
       noEchoDeleteValues: context.noEchoDeleteValues,
       inlinePolicyClaimed: context.inlinePolicyClaimed,
+      // The record this deploy loaded from state, masked (go-to-k/cdkd#6445).
+      persistedRecord: true,
     }) ||
     // Never an id ANOTHER record of this deploy holds: a later run would
-    // delete that live resource. (This row's own record still names the old
-    // id until the row completes; an equal new id never reaches here.)
-    Object.entries(deps.deployStateResources()).some(
-      ([id, record]) => id !== logicalId && record?.physicalId === oldResource.physicalId
-    )
+    // delete that live resource.
+    oldIdHeldByAnotherRecord(deps, logicalId, oldResource)
   ) {
     return;
   }

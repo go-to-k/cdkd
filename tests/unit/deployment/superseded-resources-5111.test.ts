@@ -694,9 +694,28 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     expect(canRecordSuperseded(record(OLD_TG, TG, {}), { noEchoDeleteValues: new Map() })).toBe(
       false
     );
+    // A rollback's record may be one its run wrote: a NoEcho mask refuses.
     expect(
       canRecordSuperseded({ ...record(OLD_TG, TG, {}), noEchoLeaves: [['Secret']] }, {})
     ).toBe(false);
+    // go-to-k/cdkd#6445: a deploy's replaced record, as state holds it, is
+    // recorded unless its delete reads this run's re-resolved values (a custom
+    // resource, a nested stack).
+    const persisted = { persistedRecord: true };
+    expect(
+      canRecordSuperseded({ ...record(OLD_TG, TG, {}), noEchoLeaves: [['Secret']] }, persisted)
+    ).toBe(true);
+    for (const type of ['Custom::Thing', 'AWS::CloudFormation::CustomResource', 'AWS::CloudFormation::Stack']) {
+      expect(
+        canRecordSuperseded({ ...record('cr-old', type, {}), noEchoLeaves: [['Secret']] }, persisted)
+      ).toBe(false);
+      // Control: the same type with no mask is recorded.
+      expect(canRecordSuperseded(record('cr-old', type, {}), persisted)).toBe(true);
+    }
+    expect(
+      canRecordSuperseded(record(OLD_TG, TG, {}), { ...persisted, noEchoDeleteValues: new Map() })
+    ).toBe(false);
+    expect(canRecordSuperseded(record('p', 'AWS::IAM::Policy', {}), persisted)).toBe(false);
   });
 
   it('records one entry per resource', () => {

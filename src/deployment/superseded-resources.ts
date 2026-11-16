@@ -15,6 +15,7 @@ import type { ResourceDeleteResult, ResourceProvider } from '../types/resource.j
 import type { ResourceState, StackState, SupersededResourceRecord } from '../types/state.js';
 import { reportDeleteGuards } from './delete-guard-scope.js';
 import { deleteSkipReason } from './delete-outcome.js';
+import { readsNoEchoDeleteValues } from './noecho-delete-reresolution.js';
 
 /**
  * The well-formed entries of `state.supersededResources`. A malformed entry
@@ -130,19 +131,73 @@ export function addSuperseded(
 /**
  * Whether a deferred delete of `record` can be recorded for a later run
  * (go-to-k/cdkd#5111): only when that run can send the delete with the
- * context this run had. Not for a record holding a NoEcho mask (its delete
- * needs values only this run re-resolved) nor an IAM inline policy (its
- * delete asks this run's records whether another writer took the name, #4821);
- * those keep the in-memory deferral and its warning.
+ * context this run had.
+ *
+ * A record holding a NoEcho mask is recorded only for a deploy's deferral of
+ * the record state already holds (`persistedRecord`, go-to-k/cdkd#6445), and
+ * never when its delete reads this run's re-resolved values
+ * ({@link deleteNeedsThisRunsNoEchoValues}): every other provider's delete
+ * gets the record's properties, mask included, and its `noEchoLeaves`, which
+ * a later run sends exactly as this one would. That record is masked, and the
+ * deploy's persist path scrubs the entry as it does an orphan's. A rollback's
+ * record may be one this run wrote, so without `persistedRecord` a NoEcho mask
+ * still refuses. A delete that needs this run's values is never persisted: a
+ * secret value never goes to state.
+ *
+ * Not an IAM inline policy either: its delete asks this run's records whether
+ * another writer took the name (#4821). Its replacement deletes the old
+ * policy right away and never defers (go-to-k/cdkd#6445): both policies
+ * attached for the rest of the deploy would grant the union of their
+ * permissions, and deferring buys nothing, since the rollback journal
+ * re-creates the policy document exactly.
  */
 export function canRecordSuperseded(
   record: ResourceState,
-  deleteContext: { noEchoDeleteValues?: unknown; inlinePolicyClaimed?: unknown }
+  deleteContext: {
+    noEchoDeleteValues?: unknown;
+    inlinePolicyClaimed?: unknown;
+    /** A deploy's replaced record, as loaded from state (go-to-k/cdkd#6445). */
+    persistedRecord?: boolean;
+  }
 ): boolean {
-  if (deleteContext.noEchoDeleteValues !== undefined) return false;
+  if (deleteNeedsThisRunsNoEchoValues(record, deleteContext.noEchoDeleteValues)) return false;
+  if (
+    deleteContext.persistedRecord !== true &&
+    Array.isArray(record.noEchoLeaves) &&
+    record.noEchoLeaves.length > 0
+  ) {
+    return false;
+  }
   if (deleteContext.inlinePolicyClaimed !== undefined) return false;
-  if (Array.isArray(record.noEchoLeaves) && record.noEchoLeaves.length > 0) return false;
   return !INLINE_POLICY_TYPES.has(record.resourceType);
+}
+
+/**
+ * go-to-k/cdkd#6445: whether the delete of `record` reads values only this
+ * run re-resolved (`DeleteContext.noEchoDeleteValues`, go-to-k/cdkd#4682): a
+ * custom resource's, or a nested stack's handing them to its child, when the
+ * record holds a NoEcho mask or this run re-resolved one. A later run has
+ * no such values (the superseded retry and `cdkd destroy` send none), so its
+ * handler would be skipped. Such a delete is deferred in memory only.
+ */
+export function deleteNeedsThisRunsNoEchoValues(
+  record: Pick<ResourceState, 'resourceType' | 'noEchoLeaves'>,
+  noEchoDeleteValues: unknown
+): boolean {
+  if (noEchoDeleteValues !== undefined) return true;
+  return (
+    readsNoEchoDeleteValues(record.resourceType) &&
+    Array.isArray(record.noEchoLeaves) &&
+    record.noEchoLeaves.length > 0
+  );
+}
+
+/**
+ * go-to-k/cdkd#6445: the IAM inline policy types, whose replaced delete never
+ * defers: both policies attached would grant the union of their permissions.
+ */
+export function isInlinePolicyType(resourceType: string): boolean {
+  return INLINE_POLICY_TYPES.has(resourceType);
 }
 
 const INLINE_POLICY_TYPES = new Set([

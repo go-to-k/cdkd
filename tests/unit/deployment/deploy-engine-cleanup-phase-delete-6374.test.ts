@@ -3,9 +3,10 @@
  * waits for the deploy's cleanup phase, as CloudFormation deletes replaced
  * resources only after every other change succeeded. A failed deploy never
  * sends it, journals `oldResourceMaySurvive: 'deferred'`, and the automatic
- * rollback re-adopts the old resource it finds whole. Where the old record
- * cannot be kept in state until then (`canRecordSuperseded`), or a Snapshot
- * policy takes its snapshot first, the delete stays inline.
+ * rollback re-adopts the old resource it finds whole. go-to-k/cdkd#6445: a
+ * record holding a NoEcho mask, and an `UpdateReplacePolicy: Snapshot` whose
+ * delete call takes the snapshot, defer too; the cases that stay inline are in
+ * `deploy-engine-replaced-delete-6445.test.ts`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -464,21 +465,89 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     }
   );
 
-  it('deletes inline when the old record cannot be kept in state (a NoEcho mask)', async () => {
+  // go-to-k/cdkd#6445 case 1, tier (a): a NoEcho mask on a record whose delete
+  // reads no NoEcho value defers like any other, and is kept in state.
+  it('defers a record holding a NoEcho mask, and records it in state with its mask positions', async () => {
     const result = await deploy({ oldRecord: { noEchoLeaves: [['Code']] } });
 
-    // Inside the DAG, before the dependent moved.
     expect(order.filter((o) => o !== 'save')).toEqual([
       'create rev-new',
-      'delete rev-old',
       'update prod',
+      'delete rev-old',
     ]);
-    expect(printed.info.some((l) => l.includes('Deleting old Revision (rev-old)...'))).toBe(true);
-    expect(printed.info.some((l) => l.includes('is deleted after the rest of the deploy'))).toBe(false);
+    const rowSave = saved.find((s) => s.resources['Revision']?.physicalId === 'rev-new')!;
+    const entries = supersededResourcesOf(rowSave);
+    expect(entries.map((e) => [e.logicalId, e.state.physicalId])).toEqual([['Revision', 'rev-old']]);
+    expect(entries[0]!.state.noEchoLeaves).toEqual([['Code']]);
+    // The deferred delete is handed the mask positions, as the inline one was.
+    expect(vi.mocked(provider.delete).mock.calls[0]![4]).toHaveProperty('recordedNoEchoLeaves', [['Code']]);
     expect(supersededResourcesOf(result.state)).toEqual([]);
   });
 
-  it('deletes inline under UpdateReplacePolicy: Snapshot, and defers under --skip-final-snapshot', async () => {
+  it('a failed deploy re-adopts a deferred record holding a NoEcho mask (go-to-k/cdkd#6445)', async () => {
+    endpointFails = true;
+
+    await expect(
+      deploy({ engine: makeEngine({ noRollback: false }), oldRecord: { noEchoLeaves: [['Code']] } })
+    ).rejects.toThrow();
+
+    expect(oldDeletes()).toBe(0);
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+    expect([...live]).toEqual(['rev-old']);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(saved.at(-1)!.resources['Revision']!.noEchoLeaves).toEqual([['Code']]);
+    expect(saved.at(-1)!.supersededResources).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#6445 case 1, tier (b): a custom resource holding a NoEcho
+  // mask is deferred in memory only, so state lists no superseded entry; the
+  // in-process rollback still re-adopts it, even with no read to answer.
+  it('a failed deploy re-adopts an in-memory deferred custom resource holding a NoEcho mask, sending it no Delete', async () => {
+    endpointFails = true;
+    delete (provider as { readCurrentState?: unknown }).readCurrentState;
+
+    await expect(
+      deploy({
+        engine: makeEngine({ noRollback: false }),
+        revisionType: 'Custom::Revision',
+        oldRecord: { noEchoLeaves: [['Code']] },
+      })
+    ).rejects.toThrow();
+
+    expect(oldDeletes()).toBe(0);
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+    // Never in state, at any save.
+    expect(saved.every((s) => supersededResourcesOf(s).length === 0)).toBe(true);
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(printed.info.some((l) => l.includes('was not deleted yet') && l.includes('re-adopting it'))).toBe(
+      true
+    );
+  });
+
+  // go-to-k/cdkd#6445 case 1, tier (b), the nested-stack arm: a nested stack
+  // hands its child the NoEcho delete values, so it defers in memory too.
+  it('a replaced nested stack holding a NoEcho mask is deferred in memory only, and its delete waits for the cleanup phase', async () => {
+    const result = await deploy({
+      // A nested stack is stateful: the replacement needs the consent.
+      engine: makeEngine({ forceStatefulRecreation: true }),
+      revisionType: 'AWS::CloudFormation::Stack',
+      oldRecord: { noEchoLeaves: [['Code']] },
+    });
+
+    expect(order.filter((o) => o !== 'save')).toEqual([
+      'create rev-new',
+      'update prod',
+      'delete rev-old',
+    ]);
+    expect(saved.every((s) => supersededResourcesOf(s).length === 0)).toBe(true);
+    expect(saved.length).toBeGreaterThan(0);
+    expect(supersededResourcesOf(result.state)).toEqual([]);
+  });
+
+  // go-to-k/cdkd#6445 case 3: the deferred delete takes the final snapshot.
+  it('defers under UpdateReplacePolicy: Snapshot, handing the snapshot identifier to the deferred delete and to state', async () => {
     const DB = 'AWS::RDS::DBInstance';
     await deploy({
       engine: makeEngine({ forceStatefulRecreation: true }),
@@ -487,13 +556,19 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     });
     expect(order.filter((o) => o !== 'save')).toEqual([
       'create rev-new',
-      'delete rev-old',
       'update prod',
+      'delete rev-old',
     ]);
-    // The snapshot identifier reached the inline delete.
-    expect(vi.mocked(provider.delete).mock.calls[0]![4]).toHaveProperty('finalSnapshotIdentifier');
+    const context = vi.mocked(provider.delete).mock.calls[0]![4] as Record<string, unknown>;
+    expect(context['finalSnapshotIdentifier']).toEqual(expect.stringContaining('rev-old'));
+    expect(context['deletionPolicy']).toBe('Snapshot');
+    // Kept in state with the same identifier and policy, for a deploy killed first.
+    const rowSave = saved.find((s) => s.resources['Revision']?.physicalId === 'rev-new')!;
+    const [entry] = supersededResourcesOf(rowSave);
+    expect(entry!.finalSnapshotIdentifier).toBe(context['finalSnapshotIdentifier']);
+    expect(entry!.updateReplacePolicy).toBe('Snapshot');
 
-    // Control: the same replacement with no snapshot to take waits for the cleanup phase.
+    // Control: --skip-final-snapshot defers too, with no identifier.
     order = [];
     live = new Set(['rev-old']);
     vi.mocked(provider.delete).mockClear();
@@ -507,14 +582,42 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       'update prod',
       'delete rev-old',
     ]);
+    expect(vi.mocked(provider.delete).mock.calls[0]![4]).not.toHaveProperty('finalSnapshotIdentifier');
+  });
+
+  it('a failed deploy under UpdateReplacePolicy: Snapshot re-adopts the old instance and takes no snapshot (go-to-k/cdkd#6445)', async () => {
+    endpointFails = true;
+
+    await expect(
+      deploy({
+        engine: makeEngine({ noRollback: false, forceStatefulRecreation: true }),
+        revisionType: 'AWS::RDS::DBInstance',
+        updateReplacePolicy: 'Snapshot',
+      })
+    ).rejects.toThrow();
+
+    expect(oldDeletes()).toBe(0);
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+    // Only the new copy is deleted: no snapshot of the old one is taken. (The
+    // new copy's delete follows its own DeletionPolicy, absent here, which is
+    // CloudFormation's Snapshot default for an RDS instance.)
+    const deletes = vi.mocked(provider.delete).mock.calls;
+    expect(deletes.map((c) => c[1])).toEqual(['rev-new']);
+    const snapshotId = (deletes[0]![4] as { finalSnapshotIdentifier?: string }).finalSnapshotIdentifier;
+    expect(snapshotId ?? '').not.toContain('rev-old');
+    expect([...live]).toEqual(['rev-old']);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(saved.at(-1)!.supersededResources).toBeUndefined();
   });
 
   // The failed deploy's notice for a cleanup-phase delete never sent: an info
   // line, whose remedy reads whether the old record is kept in state.
+  // go-to-k/cdkd#6445: one kept in memory only warns, since nothing else
+  // tracks it.
   it.each([
     [true, 'cdkd keeps it in state, and the next deploy deletes it'],
     [false, 'it is no longer tracked in state, so delete it manually'],
-  ])('an unsent cleanup-phase delete prints an info line, never a warn (kept in state: %s)', (kept, remedy) => {
+  ])('an unsent cleanup-phase delete prints an info line while state keeps it, else a warning (kept in state: %s)', (kept, remedy) => {
     const engine = makeEngine();
     const run = engine.replacementRun;
     run.deferredReplacedDeletes = new Map([
@@ -540,10 +643,14 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
 
     warnUnretriedReplacedDeletes(run, engine.replacementDeps(), 'failed');
 
-    expect(printed.info).toContain(
-      `  Old Revision (rev-old) was not deleted: the deploy failed first. A rollback of the deploy adopts it again; otherwise ${remedy}`
-    );
-    expect(printed.warn).toEqual([]);
+    const line = `Old Revision (rev-old) was not deleted: the deploy failed first. A rollback of the deploy adopts it again; otherwise ${remedy}`;
+    if (kept) {
+      expect(printed.info).toContain(`  ${line}`);
+      expect(printed.warn).toEqual([]);
+    } else {
+      expect(printed.warn).toContain(`  ⚠ ${line}`);
+      expect(printed.info.some((l) => l.includes(line))).toBe(false);
+    }
     expect(run.deferredReplacedDeletes).toBeUndefined();
   });
 

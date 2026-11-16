@@ -4,31 +4,26 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import type { Construct } from 'constructs';
 
 /**
- * go-to-k/cdkd#2631: a replacement whose delete of the OLD resource fails,
- * followed by a failure later in the same deploy, is rolled back WITHOUT
- * re-creating the old resource while it is still alive.
+ * go-to-k/cdkd#2631 / #6445: a replacement followed by a failure later in the
+ * same deploy is rolled back WITHOUT re-creating the old resource while it is
+ * still alive.
  *
  * - `Target` is a managed policy whose `ManagedPolicyName` (create-only) is
  *   `cdkd-rdfr-target-${TARGET_SUFFIX ?? 'a'}`, so `TARGET_SUFFIX=b` replaces
- *   it: the new policy is created first, then the old one's delete runs.
- * - `Holder` is a role `Target` is attached to, so the old policy's delete
- *   detaches it before `DeletePolicy` (go-to-k/cdkd#4946).
+ *   it: the new policy is created first, and the old one's delete waits for
+ *   the deploy's cleanup phase (go-to-k/cdkd#6374).
+ * - `Holder` is a role `Target` is attached to, so an inline delete of the old
+ *   policy would detach it before `DeletePolicy`.
  * - `BREAK=true` adds `Breaker`, a managed policy that depends on `Target`.
  * - `Target`'s `Description` is the NoEcho parameter `TargetNote`, so its
- *   state record holds a NoEcho value (`noEchoLeaves`). That keeps the old
- *   policy's delete INLINE, right after the new one is created: a replacement
- *   otherwise defers that delete to the deploy's cleanup phase, which a failed
- *   deploy never reaches (go-to-k/cdkd#6374), and there would be no refused
- *   delete for the rollback to meet. A record holding a NoEcho value cannot be
- *   left for a later run, whose delete may need the value only this run holds.
+ *   state record holds a NoEcho value (`noEchoLeaves`). Such a record defers
+ *   its delete too, and is kept in state as superseded until then
+ *   (go-to-k/cdkd#6445): its delete reads no NoEcho value.
  *
  * verify.sh deploys `TARGET_SUFFIX=b BREAK=true` as a role that may not
- * delete `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`: the old
- * policy's delete is refused, and `Breaker`'s create then fails the deploy
- * before the post-deploy retry of that delete (go-to-k/cdkd#4900). The
- * automatic rollback must find the old policy alive and, since its delete had
- * already detached it from `Holder`, refuse rather than re-adopt that stripped
- * policy (go-to-k/cdkd#4946) or re-create it (which collides on its name).
+ * delete `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`: `Breaker`'s
+ * create fails the deploy before the cleanup phase, so the old policy is never
+ * sent its delete, and the automatic rollback re-adopts it, still on `Holder`.
  *
  * go-to-k/cdkd#4911: `CERT_MODE=dns|email` adds `Cert`, an ACM certificate
  * whose `ValidationMethod` is the mode. That key is not create-only, so
