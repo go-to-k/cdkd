@@ -72,6 +72,12 @@
       ]
     },
     {
+      "flag": "--aws-emulator",
+      "integs": [
+        "local-aws-emulator"
+      ]
+    },
+    {
       "flag": "--concurrency",
       "integs": [
         "throttle-wide-dag",
@@ -338,6 +344,7 @@
         "lambda-url-authtype-replay",
         "lambda-web-function-revision-replace",
         "list-parameters",
+        "local-aws-emulator",
         "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
@@ -872,6 +879,7 @@
         "lambda-web-function-revision-replace",
         "launchtemplate-asg-inplace",
         "list-parameters",
+        "local-aws-emulator",
         "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
@@ -1682,6 +1690,7 @@
     {
       "flag": "--stack",
       "integs": [
+        "local-aws-emulator",
         "local-invoke-nested-stack-from-state",
         "local-invoke-stage"
       ]
@@ -2594,7 +2603,6 @@
   "uncovered": [
     "--allow-unsupported-types",
     "--asset-publish-concurrency",
-    "--aws-emulator",
     "--context",
     "--emulate-role-via",
     "--ignore-errors",
@@ -2660,6 +2668,7 @@
     "--bucket",
     "--budget-name",
     "--build-arg",
+    "--cacert",
     "--cache-cluster-id",
     "--cache-subnet-group-name",
     "--caller-reference",
@@ -2869,6 +2878,8 @@
     "--max-records",
     "--max-results",
     "--max-time",
+    "--memory",
+    "--memory-swap",
     "--message",
     "--message-body",
     "--message-group-id",
@@ -3112,6 +3123,7 @@
     "--type-name",
     "--update-runtime-on",
     "--usage-plan-id",
+    "--user",
     "--user-name",
     "--user-pool-id",
     "--username",
