@@ -123,6 +123,9 @@ describe('resolveEcsTaskTarget', () => {
     const r = resolveEcsTaskTarget('TD', [stack]);
     expect(r.networkMode).toBe('awsvpc');
     expect(r.warnings.some((w) => /awsvpc/i.test(w))).toBe(true);
+    // The warning is printed under --aws-emulator and with forwarded
+    // AWS_ENDPOINT_URL* too, where SDK calls do NOT reach public endpoints.
+    expect(r.warnings.some((w) => /public endpoint/i.test(w))).toBe(false);
   });
 
   it('Issue #544 — warns when ProxyConfiguration (App Mesh / Envoy) is declared', () => {
