@@ -129,6 +129,17 @@ describe('CustomResourceProvider delete: Custom::S3AutoDeleteObjects on an untag
     );
   });
 
+  it("reports DELETED on S3's answer alone, whatever the handler's Reason says", async () => {
+    // The other polarity of "the Reason is never read": a FAILED whose Reason
+    // names something else entirely is still decided by the tag-set read.
+    wire({ Status: 'FAILED', Reason: 'Task timed out after 3.00 seconds' }, awsError('NoSuchTagSet'));
+
+    const result = await deleteAs(AUTO_DELETE, { BucketName: BUCKET });
+
+    expect(deleteSkipReason(result)).toBeUndefined();
+    expect(taggingCalls()).toEqual([{ Bucket: BUCKET }]);
+  });
+
   it("still SKIPS when the bucket HAS tags, whatever the handler's Reason says", async () => {
     // The Reason is never read: a handler claiming NoSuchTagSet over a tagged
     // bucket is not believed.

@@ -23,6 +23,15 @@
 set -euo pipefail
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
@@ -131,12 +140,23 @@ echo "    auto-delete tag is the bucket's only tag"
 echo "==> Phase 2: re-deploy autoDeleteObjects=false (must exit 0, objects kept)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-RC=$?
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${SCRATCH}/phase2.log"
+RC=${PIPESTATUS[0]}
 set -e
 if [ "${RC}" -ne 0 ]; then
   echo "FAIL: Phase 2 deploy exited ${RC} (issue #6422: the CR Delete's NoSuchTagSet left it unaddressed)" >&2; exit 1
 fi
+# rc 0 alone would also pass through another arm (a backing Lambda already gone
+# drops the record too), so assert the #6422 line. Sentinel: the line's head,
+# independent of the parsed marker, catches a reword of the marker.
+sed 's/\x1b\[[0-9;]*m//g' "${SCRATCH}/phase2.log" > "${SCRATCH}/phase2.plain"
+if ! grep -qF 'carries no tags, so it is not tagged for auto-delete' "${SCRATCH}/phase2.plain"; then
+  if grep -qF "${CR_LOGICAL_ID} (Custom::S3AutoDeleteObjects): the handler answered FAILED" "${SCRATCH}/phase2.plain"; then
+    echo "FAIL: Phase 2 printed the #6422 line in a wording this fixture does not parse — update the marker" >&2; exit 1
+  fi
+  echo "FAIL: Phase 2 exited 0 without the #6422 untagged-bucket arm (no 'carries no tags' line)" >&2; exit 1
+fi
+echo "    deploy exited 0 through the untagged-bucket arm"
 
 TAG_OUT="$(aws s3api get-bucket-tagging --bucket "${BUCKET}" --region "${REGION}" 2>&1 >/dev/null || true)"
 if ! grep -q 'NoSuchTagSet' <<<"${TAG_OUT}"; then
