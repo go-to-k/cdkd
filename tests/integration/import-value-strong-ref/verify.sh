@@ -11,6 +11,10 @@
 #      as `version: 3` (dropping the imports[] field), then attempt
 #      producer destroy → expect SUCCESS (gradual activation, v3
 #      consumer not yet recording imports). Restore v4 state after.
+#   3e. Orphan the Consumer's state and `cdkd import` it back → its
+#       state.imports[] is recorded and producer destroy is refused (#6400).
+#   3f. Strip Consumer's imports[] and run a no-change Consumer deploy → the
+#       deploy restores imports[] and producer destroy is refused (#6400).
 #   4. Destroy Consumer first, then Producer — both succeed.
 #   5. Verify exports index is empty / has no stale entries.
 #
@@ -161,7 +165,11 @@ fi
 echo ""
 echo "==> Step 2: Attempt producer destroy → expect refusal (strong-ref check)"
 set +e
-DESTROY_OUTPUT=$(${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+# `-e`: a destroy also takes the stacks that depend on its target, dependents
+# first (CDK parity, #6116), which would remove the consumer instead of
+# exercising the strong-reference refusal. Every producer destroy below that
+# asserts the refusal (or its absence) passes it.
+DESTROY_OUTPUT=$(${CDKD} destroy ${PRODUCER} -e --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
 DESTROY_RC=$?
 set -e
 if [[ "${DESTROY_RC}" -eq 0 ]]; then
@@ -207,7 +215,7 @@ echo "    consumer state downgraded to v3 (✓)"
 echo ""
 echo "==> Step 3a: Producer destroy now proceeds (no imports[] to refuse against)"
 set +e
-${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
+${CDKD} destroy ${PRODUCER} -e --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 V3_DESTROY_RC=$?
 set -e
 if [[ "${V3_DESTROY_RC}" -ne 0 ]]; then
@@ -236,13 +244,10 @@ fi
 
 echo ""
 echo "==> Step 3c: Destroy v3 consumer + re-deploy (v3 → v4 transition test)"
-# A v3-era consumer becomes v4 on its NEXT change-triggered deploy
-# (cdkd skips state-save on no-change deploys, so a clean redeploy
-# of an unchanged consumer doesn't promote the schema by itself —
-# the user-facing migration story is "consumers re-deploy as part
-# of their normal change cycle", which is what we simulate here by
-# destroying + recreating). Real-world upgraders will get the same
-# promotion the first time any of their consumer's resources change.
+# A v3-era consumer is re-recorded on its next deploy: a change-triggered
+# one rewrites the record, and a no-change one saves it too because the
+# import it resolves is missing from the record (go-to-k/cdkd#6400, Step
+# 3f below). Here it is destroyed + recreated, the fresh-record route.
 ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 ${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 CONSUMER_STATE_V4=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
@@ -261,7 +266,7 @@ echo "    consumer state promoted v3 → v4 with imports[]=${V4_IMPORTS} entries
 echo ""
 echo "==> Step 3d: Strong-ref enforcement now applies again"
 set +e
-DESTROY_OUTPUT=$(${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+DESTROY_OUTPUT=$(${CDKD} destroy ${PRODUCER} -e --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
 DESTROY_RC=$?
 set -e
 if [[ "${DESTROY_RC}" -eq 0 ]]; then
@@ -270,6 +275,77 @@ if [[ "${DESTROY_RC}" -eq 0 ]]; then
   exit 1
 fi
 echo "    producer destroy refused again after consumer redeploy (exit ${DESTROY_RC}) (✓)"
+
+# go-to-k/cdkd#6400: the two routes that used to leave a consumer record with
+# no imports[] while the consumer still read the producer's export.
+consumer_imports_count() {
+  local body
+  body=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -) || return 1
+  echo "${body}" | python3 -c 'import sys, json; print(len(json.load(sys.stdin).get("imports", [])))'
+}
+assert_producer_destroy_refused() {
+  local out rc
+  set +e
+  out=$(${CDKD} destroy ${PRODUCER} -e --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]] || ! grep -q 'StackHasActiveImportsError' <<<"${out}"; then
+    echo "FAIL: producer destroy was not refused with StackHasActiveImportsError $1 (exit ${rc})"
+    echo "${out}"
+    exit 1
+  fi
+  echo "    producer destroy refused $1 (exit ${rc}) (✓)"
+}
+
+echo ""
+echo "==> Step 3e: cdkd import of the consumer records its imports[] (#6400)"
+PARAM_LOGICAL_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | python3 -c '
+import sys, json
+r = json.load(sys.stdin)["resources"]
+ids = [k for k, v in r.items() if v.get("resourceType") == "AWS::SSM::Parameter"]
+assert len(ids) == 1, ids
+print(ids[0])
+')
+${CDKD} state orphan ${CONSUMER} --stack-region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes
+AWS_REGION="${AWS_REGION}" ${CDKD} import ${CONSUMER} --state-bucket "${STATE_BUCKET}" --yes \
+  --resource "${PARAM_LOGICAL_ID}=/cdkd-integ/import-value-strong-ref/imported-bucket-arn"
+IMPORTED_IMPORTS=$(consumer_imports_count)
+if [[ "${IMPORTED_IMPORTS}" -lt 1 ]]; then
+  echo "FAIL: consumer state.imports[] is empty after cdkd import (got ${IMPORTED_IMPORTS})"
+  exit 1
+fi
+echo "    imported consumer state.imports[]: ${IMPORTED_IMPORTS} entries (✓)"
+assert_producer_destroy_refused "after the consumer was imported"
+
+echo ""
+echo "==> Step 3f: a no-change consumer deploy restores a missing imports[] (#6400)"
+# The record an older cdkd import wrote: same version, no imports[].
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+s.pop("imports", None)
+sys.stdout.write(json.dumps(s, indent=2))
+' > /tmp/cdkd-consumer-no-imports.json
+aws s3 cp /tmp/cdkd-consumer-no-imports.json "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" --content-type application/json >/dev/null
+rm -f /tmp/cdkd-consumer-no-imports.json
+STRIPPED_IMPORTS=$(consumer_imports_count)
+if [[ "${STRIPPED_IMPORTS}" -ne 0 ]]; then
+  echo "FAIL: the stripped consumer record still lists ${STRIPPED_IMPORTS} import(s)"
+  exit 1
+fi
+NOOP_OUTPUT=$(${CDKD} deploy ${CONSUMER} -e --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+echo "${NOOP_OUTPUT}"
+if ! grep -q 'No changes detected' <<<"${NOOP_OUTPUT}"; then
+  echo "FAIL: the consumer deploy was expected to be a no-change deploy"
+  exit 1
+fi
+HEALED_IMPORTS=$(consumer_imports_count)
+if [[ "${HEALED_IMPORTS}" -lt 1 ]]; then
+  echo "FAIL: a no-change consumer deploy did not restore state.imports[] (got ${HEALED_IMPORTS})"
+  exit 1
+fi
+echo "    no-change deploy restored state.imports[]: ${HEALED_IMPORTS} entries (✓)"
+assert_producer_destroy_refused "after the no-change consumer deploy"
 
 echo ""
 echo "==> Step 4: Clean up — destroy Consumer then Producer"

@@ -81,8 +81,8 @@ import {
  * THE RULE IS "EVERY SAVE EXCEPT THE TERMINAL SUCCESS ONE", and it is stated
  * that way rather than as "every non-success save" because the latter is loose
  * in both directions: the diff-clean no-change save in `doDeploy` is a SUCCESS
- * outcome and unions anyway (nothing was re-resolved, so the union is an
- * identity there and one rule beats an exception), while
+ * outcome and unions anyway (usually an identity there, and one rule beats an
+ * exception; it saves at all when the union GROWS, `crossStackReadsAdded`), while
  * `persistStateAfterOutputFailure` looks like a success save — provisioning
  * was clean — and is not one.
  *
@@ -126,6 +126,53 @@ export function crossStackReadsForPartialSave(
    */
   normalizeName: (name: string) => string
 ): Pick<StackState, 'imports' | 'outputReads'> {
+  const { importKey, outputReadKey } = crossStackReadKeys(normalizeName);
+  const imports = unionCrossStackReads(previous.imports, recordedImports, importKey);
+  const outputReads = unionCrossStackReads(
+    previous.outputReads,
+    recordedOutputReads,
+    outputReadKey
+  );
+  return {
+    // Omitted rather than written empty, matching what every one of these save
+    // sites did before: an absent field and an empty array are different
+    // records to a reader that predates the field.
+    ...(imports.length > 0 && { imports }),
+    ...(outputReads.length > 0 && { outputReads }),
+  };
+}
+
+/**
+ * Whether this session resolved a cross-stack read `previous` does not list
+ * (go-to-k/cdkd#6400): the no-change save's trigger for a record an older
+ * `cdkd import` wrote without them. Keyed exactly as
+ * {@link crossStackReadsForPartialSave} keys its union, so "added" means the
+ * union that save would write GROWS — the union never drops an entry.
+ */
+export function crossStackReadsAdded(
+  previous: StackState,
+  recordedImports: readonly StateImportEntry[],
+  recordedOutputReads: readonly StateOutputReadEntry[],
+  normalizeName: (name: string) => string
+): boolean {
+  const { importKey, outputReadKey } = crossStackReadKeys(normalizeName);
+  const grows = <T>(
+    held: readonly T[] | undefined,
+    recorded: readonly T[],
+    key: (e: T) => string
+  ) =>
+    unionCrossStackReads(held, recorded, key).length > unionCrossStackReads(held, [], key).length;
+  return (
+    grows(previous.imports, recordedImports, importKey) ||
+    grows(previous.outputReads, recordedOutputReads, outputReadKey)
+  );
+}
+
+/** The identity keys {@link crossStackReadsForPartialSave} dedups on. */
+function crossStackReadKeys(normalizeName: (name: string) => string): {
+  importKey: (e: StateImportEntry) => string;
+  outputReadKey: (e: StateOutputReadEntry) => string;
+} {
   // The stack segment is normalized for `outputReads` and NOT for `imports`,
   // matching exactly which fields the persist redaction rewrites. Normalizing
   // both was tried and is wrong in the direction that DROPS a record:
@@ -154,19 +201,7 @@ export function crossStackReadsForPartialSave(
       canonicalizeRegion(e.sourceRegion),
       normalizeName(e.outputName)
     );
-  const imports = unionCrossStackReads(previous.imports, recordedImports, importKey);
-  const outputReads = unionCrossStackReads(
-    previous.outputReads,
-    recordedOutputReads,
-    outputReadKey
-  );
-  return {
-    // Omitted rather than written empty, matching what every one of these save
-    // sites did before: an absent field and an empty array are different
-    // records to a reader that predates the field.
-    ...(imports.length > 0 && { imports }),
-    ...(outputReads.length > 0 && { outputReads }),
-  };
+  return { importKey, outputReadKey };
 }
 
 /**
@@ -182,14 +217,18 @@ function unionCrossStackReads<T>(
 ): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
-  for (const entry of [...(previous ?? []), ...recorded]) {
+  // A hand-edited `imports: {}` is no list: read as none rather than throwing
+  // from the spread.
+  for (const entry of [...(Array.isArray(previous) ? previous : []), ...recorded]) {
     // `previous` comes from persisted JSON, and `parseState` only CASTS — it
     // does not validate the element shape. A `null` / non-object element in a
     // hand-edited `state.imports` would make `identity` throw where the old
-    // code copied the array verbatim. Every call site sits inside a try/catch
-    // whose catch only warns, so the blast radius was a skipped save rather
-    // than a crash, but a save skipped for this reason is a strong-reference
-    // record silently not written.
+    // code copied the array verbatim. Every SAVE call site sits inside a
+    // try/catch whose catch only warns, so the blast radius was a skipped save
+    // rather than a crash, but a save skipped for this reason is a
+    // strong-reference record silently not written. `crossStackReadsAdded` is
+    // evaluated outside any save, on every no-change deploy, so its caller
+    // catches too (go-to-k/cdkd#6400).
     if (entry === null || typeof entry !== 'object') continue;
     const key = identity(entry);
     if (seen.has(key)) continue;

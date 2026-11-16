@@ -2452,6 +2452,7 @@
         "import-reimport-masked-attrs",
         "import-retain-destroy",
         "import-secret-observed",
+        "import-value-strong-ref",
         "inplace-attr-propagation",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",

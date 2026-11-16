@@ -3,7 +3,7 @@ import { supersededResourcesOf } from '../../superseded-resources.js';
 import { redactOutputs } from '../masking.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { settleJournalAfterSuccess } from '../rollback.js';
-import { crossStackReadsForPartialSave } from '../../deploy-engine.js';
+import { crossStackReadsAdded, crossStackReadsForPartialSave } from '../../deploy-engine.js';
 import { skippedOutputsEqual } from '../../../analyzer/skipped-outputs.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -293,6 +293,27 @@ export async function deployWithoutChanges(
       currentState.resources
     );
 
+    // go-to-k/cdkd#6400: this run resolved a cross-stack read the record does
+    // not list (a record an older `cdkd import` wrote without them). The
+    // record's `imports` is what refuses a producer destroy, so it is saved
+    // here rather than waiting for a deploy with a resource change.
+    // Evaluated on every no-change deploy and outside the save's try, so a
+    // record whose lists it cannot read must not fail an unchanged deploy: it
+    // reads as "nothing added".
+    let readsAdded = false;
+    try {
+      readsAdded = crossStackReadsAdded(
+        currentState,
+        engine.recordedImports,
+        engine.recordedOutputReads,
+        engine.crossStackReadKeyNormalizer()
+      );
+    } catch (err) {
+      engine.logger.debug(
+        safeMsg`Could not compare the record's cross-stack reads with this deploy's: ${err instanceof Error ? err.name : typeof err}`
+      );
+    }
+
     // go-to-k/cdkd#4479: the record changed (a first record, another
     // verdict, or one to clear) on a run with no resource change, so it is
     // saved here with no provider call; the save below also keeps it
@@ -348,7 +369,8 @@ export async function deployWithoutChanges(
       terminationProtectionChanged ||
       ssmNamesHealed ||
       nestedSsmNamesMarked ||
-      healedAttributesPending
+      healedAttributesPending ||
+      readsAdded
     ) {
       // A first deploy with nothing to create still writes its record here.
       await resolveStackInstanceId();
