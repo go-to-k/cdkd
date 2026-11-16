@@ -617,6 +617,32 @@ async function executeDeploymentBody(
     throw outputError;
   }
 
+  // The record a successful deploy returns, built after the cleanup phase
+  // (whose drops it carries through `stackInstanceIdCarriedFrom`); also what
+  // a cleanup phase that threw persists, as every output already resolved.
+  const successState = (): StackState => ({
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    region: engine.stackRegion,
+    stackName: currentState.stackName,
+    resources: newResources,
+    ...orphansCarriedFrom(currentState),
+    ...stackInstanceIdCarriedFrom(currentState),
+    outputs,
+    // Always written, `[]` included: on this path the bag was re-resolved,
+    // so the set is KNOWN (issue #2193). Absent would read as "not known".
+    exportNames: [...engine.outputsRun.resolvedExportNames],
+    // This pass's skipped set, omitted when empty (issue #2740). Copied,
+    // like the `exportNames` / `imports` spreads beside it.
+    ...(engine.outputsRun.skippedOutputs && {
+      skippedOutputs: { ...engine.outputsRun.skippedOutputs },
+    }),
+    ...(engine.recordedImports.length > 0 && { imports: [...engine.recordedImports] }),
+    ...(engine.recordedOutputReads.length > 0 && {
+      outputReads: [...engine.recordedOutputReads],
+    }),
+    lastModified: Date.now(),
+  });
+
   // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
   // still-unupdated dependent refused inside the DAG. After the outputs
   // resolved (go-to-k/cdkd#6398): an output failure writes a rollback journal
@@ -686,7 +712,10 @@ async function executeDeploymentBody(
           currentState,
           newResources,
           currentEtag,
-          pendingMigration
+          pendingMigration,
+          // The outputs resolved: the record carries them, not the previous
+          // deploy's, which may name an old resource the pass deleted.
+          { state: successState, after: 'the cleanup phase failed' }
         );
         await writeRollbackJournalSegment(
           engine.rollbackDeps(),
@@ -713,28 +742,7 @@ async function executeDeploymentBody(
   );
 
   return {
-    state: {
-      version: STATE_SCHEMA_VERSION_CURRENT,
-      region: engine.stackRegion,
-      stackName: currentState.stackName,
-      resources: newResources,
-      ...orphansCarriedFrom(currentState),
-      ...stackInstanceIdCarriedFrom(currentState),
-      outputs,
-      // Always written, `[]` included: on this path the bag was re-resolved,
-      // so the set is KNOWN (issue #2193). Absent would read as "not known".
-      exportNames: [...engine.outputsRun.resolvedExportNames],
-      // This pass's skipped set, omitted when empty (issue #2740). Copied,
-      // like the `exportNames` / `imports` spreads beside it.
-      ...(engine.outputsRun.skippedOutputs && {
-        skippedOutputs: { ...engine.outputsRun.skippedOutputs },
-      }),
-      ...(engine.recordedImports.length > 0 && { imports: [...engine.recordedImports] }),
-      ...(engine.recordedOutputReads.length > 0 && {
-        outputReads: [...engine.recordedOutputReads],
-      }),
-      lastModified: Date.now(),
-    },
+    state: successState(),
     actualCounts,
     completedOperations,
   };
@@ -769,39 +777,47 @@ export async function persistStateAfterOutputFailure(
   currentState: StackState,
   newResources: Record<string, ResourceState>,
   currentEtag: string | undefined,
-  pendingMigration: boolean
+  pendingMigration: boolean,
+  /**
+   * go-to-k/cdkd#6398: a cleanup phase that threw after the outputs resolved
+   * persists the success-path record (`state`) instead, under its own wording.
+   */
+  override?: { state: () => StackState; after: string }
 ): Promise<void> {
-  const buildState = (): StackState => ({
-    version: STATE_SCHEMA_VERSION_CURRENT,
-    region: engine.stackRegion,
-    stackName: currentState.stackName,
-    resources: newResources,
-    outputs: currentState.outputs,
-    ...exportNamesCarriedFrom(currentState),
-    ...skippedOutputsCarriedFrom(currentState),
-    ...orphansCarriedFrom(currentState),
-    ...stackInstanceIdCarriedFrom(currentState),
-    // Issue #2057: the UNION, like every other non-success save. This one
-    // used to write `[...engine.recordedImports]` WHOLESALE, copying the
-    // SUCCESS path's shape onto a path that is not one — provisioning
-    // succeeded, but output resolution threw, and the caller writes a
-    // rollback journal segment and rethrows, so `cdkd rollback` reads
-    // exactly this record. A deploy that no longer re-resolves a
-    // cross-stack read (the reference moved, or the resource holding it had
-    // no diff this run) therefore came through here with an EMPTY
-    // `recordedOutputReads`, the field was omitted, and the producer region
-    // the previous record carried was erased from under a
-    // `properties.Value` that still holds the producer's region-less
-    // spelling. `producerRegionsFromState` then returned `[]` and the replay
-    // resolved it locally.
-    ...crossStackReadsForPartialSave(
-      currentState,
-      engine.recordedImports,
-      engine.recordedOutputReads,
-      engine.crossStackReadKeyNormalizer()
-    ),
-    lastModified: Date.now(),
-  });
+  const after = override?.after ?? 'output resolution failure';
+  const buildState =
+    override?.state ??
+    ((): StackState => ({
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: engine.stackRegion,
+      stackName: currentState.stackName,
+      resources: newResources,
+      outputs: currentState.outputs,
+      ...exportNamesCarriedFrom(currentState),
+      ...skippedOutputsCarriedFrom(currentState),
+      ...orphansCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(currentState),
+      // Issue #2057: the UNION, like every other non-success save. This one
+      // used to write `[...engine.recordedImports]` WHOLESALE, copying the
+      // SUCCESS path's shape onto a path that is not one — provisioning
+      // succeeded, but output resolution threw, and the caller writes a
+      // rollback journal segment and rethrows, so `cdkd rollback` reads
+      // exactly this record. A deploy that no longer re-resolves a
+      // cross-stack read (the reference moved, or the resource holding it had
+      // no diff this run) therefore came through here with an EMPTY
+      // `recordedOutputReads`, the field was omitted, and the producer region
+      // the previous record carried was erased from under a
+      // `properties.Value` that still holds the producer's region-less
+      // spelling. `producerRegionsFromState` then returned `[]` and the replay
+      // resolved it locally.
+      ...crossStackReadsForPartialSave(
+        currentState,
+        engine.recordedImports,
+        engine.recordedOutputReads,
+        engine.crossStackReadKeyNormalizer()
+      ),
+      lastModified: Date.now(),
+    }));
   try {
     const expectedEtag = pendingMigration ? undefined : currentEtag;
     await engine.stateBackend.saveState(
@@ -813,10 +829,10 @@ export async function persistStateAfterOutputFailure(
         migrateLegacy: pendingMigration,
       }
     );
-    engine.logger.debug('State saved after output resolution failure');
+    engine.logger.debug(safeMsg`State saved after ${after}`);
   } catch (saveError) {
     engine.logger.debug(
-      safeMsg`Retrying state save after output resolution failure (ETag mismatch): ${asIsMessage(describeAwsFailure(saveError).detail)}`
+      safeMsg`Retrying state save after ${after} (ETag mismatch): ${asIsMessage(describeAwsFailure(saveError).detail)}`
     );
     try {
       const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
@@ -829,10 +845,10 @@ export async function persistStateAfterOutputFailure(
           ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
         }
       );
-      engine.logger.debug('State saved after output resolution failure (retry succeeded)');
+      engine.logger.debug(safeMsg`State saved after ${after} (retry succeeded)`);
     } catch (retryError) {
       engine.logger.warn(
-        safeMsg`Failed to save state after output resolution failure: ${asIsMessage(describeAwsFailure(retryError).detail)} — resources were provisioned but not recorded; run deploy again to reconcile.`
+        safeMsg`Failed to save state after ${after}: ${asIsMessage(describeAwsFailure(retryError).detail)} — resources were provisioned but not recorded; run deploy again to reconcile.`
       );
     }
   }

@@ -27,10 +27,18 @@ import type {
   SupersededResourceRecord,
 } from '../../../src/types/state.js';
 
-const printed = vi.hoisted(() => ({ info: [] as string[], warn: [] as string[] }));
+const printed = vi.hoisted(() => ({
+  info: [] as string[],
+  warn: [] as string[],
+  /** An info line containing this throws, to make a pass throw at a seam. */
+  throwOn: undefined as string | undefined,
+}));
 vi.mock('../../../src/utils/logger.js', async () => {
   const sink = (level: 'info' | 'warn') =>
     vi.fn((message: unknown) => {
+      if (printed.throwOn !== undefined && String(message).includes(printed.throwOn)) {
+        throw new Error('cleanup pass threw');
+      }
       printed[level].push(String(message));
     });
   const fns = {
@@ -74,6 +82,22 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
     printAbove: (write: () => void) => write(),
   }),
 }));
+
+// Each journal segment the engine writes: its reason (5th argument).
+const journaled = vi.hoisted(() => ({ reasons: [] as unknown[] }));
+vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/rollback.js')>();
+  return {
+    ...actual,
+    writeRollbackJournalSegment: vi.fn(
+      async (...args: Parameters<typeof actual.writeRollbackJournalSegment>) => {
+        journaled.reasons.push(args[4]);
+        return actual.writeRollbackJournalSegment(...args);
+      }
+    ),
+  };
+});
 
 // go-to-k/cdkd#6398 review: wrapped, so a test can make the root's output pass throw.
 vi.mock('../../../src/deployment/deploy-engine/outputs.js', async (importOriginal) => {
@@ -126,6 +150,8 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     vi.clearAllMocks();
     printed.info.length = 0;
     printed.warn.length = 0;
+    printed.throwOn = undefined;
+    journaled.reasons.length = 0;
     live = new Set();
     order = [];
     store = new Map();
@@ -262,7 +288,13 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     engine: DeployEngine,
     stackName: string,
     prefix: string,
-    opts: { nested?: boolean; superseded?: SupersededResourceRecord[] } = {}
+    opts: {
+      nested?: boolean;
+      superseded?: SupersededResourceRecord[];
+      /** Template outputs, and the previous record's. */
+      outputs?: Record<string, unknown>;
+      previousOutputs?: Record<string, unknown>;
+    } = {}
   ): Promise<{
     completedOperations: CompletedOperation[];
     state: StackState;
@@ -323,13 +355,16 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
         propertyChanges: [{ path: 'Version', oldValue: '1', newValue: '2', requiresReplacement: false }],
       } as unknown as ResourceChange);
     }
-    const template = { Resources: resources } as unknown as CloudFormationTemplate;
+    const template = {
+      Resources: resources,
+      ...(opts.outputs !== undefined && { Outputs: opts.outputs }),
+    } as unknown as CloudFormationTemplate;
     const currentState = {
       version: 12,
       stackName,
       region: 'us-east-1',
       resources: records,
-      outputs: {},
+      outputs: opts.previousOutputs ?? {},
       ...(opts.superseded !== undefined && { supersededResources: opts.superseded }),
       lastModified: 0,
     } as unknown as StackState;
@@ -796,6 +831,25 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(
       printed.info.some((l) => l.includes('Old CRev (CRev-old) was not deleted: the deploy failed first'))
     ).toBe(true);
+  });
+
+  it("a cleanup pass that throws persists this deploy's resolved outputs and journals the deploy", async () => {
+    const root = makeEngine('R');
+    // The pass throws at its first line, after the outputs resolved.
+    printed.throwOn = 'Deleting the old resource of';
+
+    await expect(
+      deployStack(root, ROOT, 'R', {
+        outputs: { Url: { Value: 'https://new.example' } },
+        previousOutputs: { Url: 'https://old.example', Gone: 'stale' },
+      })
+    ).rejects.toThrow('cleanup pass threw');
+
+    const last = saves.filter((w) => w.stack === ROOT).at(-1)!;
+    expect(last.state.outputs).toEqual({ Url: 'https://new.example' });
+    expect(last.state.exportNames).toEqual([]);
+    expect(last.state.resources['RRev']!.physicalId).toBe('RRev-new');
+    expect(journaled.reasons).toEqual(['no-rollback-failure']);
   });
 
   it('an interrupted root runs no queued child cleanup', async () => {
