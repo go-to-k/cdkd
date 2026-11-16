@@ -617,7 +617,9 @@ export class ExportIndexStore {
     const results = await Promise.all(
       inRegion.map(async (ref) => {
         try {
-          const got = await this.stateBackend.getState(ref.stackName, ref.region ?? this.region);
+          const got = await this.stateBackend.getState(ref.stackName, ref.region ?? this.region, {
+            readOnly: true,
+          });
           return { ref, state: got?.state };
         } catch (err) {
           this.logger.warn(

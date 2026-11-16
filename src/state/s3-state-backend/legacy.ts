@@ -8,7 +8,9 @@ import type { S3StateBackend } from '../s3-state-backend.js';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   STATE_SCHEMA_VERSIONS_READABLE,
+  classifyStateRecordAccess,
   describeRegionValueKind,
+  markReadOnlyState,
   stackInstanceIdCarriedFrom,
   type StackState,
 } from '../../types/state.js';
@@ -271,7 +273,8 @@ export async function legacyBelongsToRegion(
 export async function tryGetLegacy(
   this: S3StateBackend,
   stackName: string,
-  region: string
+  region: string,
+  options: StateReadOptions = {}
 ): Promise<{ state: StackState; etag: string } | null> {
   try {
     const response = await this.s3Client.send(
@@ -287,7 +290,7 @@ export async function tryGetLegacy(
     }
 
     const bodyString = await response.Body.transformToString();
-    const state = this.parseStateBody(bodyString, stackName);
+    const state = this.parseStateBody(bodyString, stackName, options);
 
     // Region gate: the same `stackName` may have lived in a different region
     // before the user changed `env.region`. We do NOT want to silently load
@@ -355,6 +358,17 @@ export async function tryGetLegacy(
   }
 }
 
+/** How a caller loads a record (go-to-k/cdkd#6440). */
+export interface StateReadOptions {
+  /**
+   * The caller never saves this record: a newer record that names a
+   * `minReaderVersion` this binary reads is returned (marked read-only)
+   * instead of refused. Off by default, so every writer fails closed at its
+   * load.
+   */
+  readOnly?: boolean;
+}
+
 /**
  * Parse a state body and validate the schema version. Future-proofs against
  * a binary that predates schema version `N` reading a `version: N+1` blob:
@@ -364,7 +378,8 @@ export async function tryGetLegacy(
 export function parseStateBody(
   this: S3StateBackend,
   bodyString: string,
-  stackName: string
+  stackName: string,
+  options: StateReadOptions = {}
 ): StackState {
   let root: unknown;
   try {
@@ -432,7 +447,23 @@ export function parseStateBody(
   const parsed = root as StackState;
 
   const v = parsed.version;
-  if (v !== undefined && !STATE_SCHEMA_VERSIONS_READABLE.includes(v)) {
+  const access = classifyStateRecordAccess(
+    v,
+    (parsed as { minReaderVersion?: unknown }).minReaderVersion
+  );
+  if (access.kind === 'read-only') {
+    // go-to-k/cdkd#6440: a newer writer that only ADDED fields. A caller that
+    // only reads gets the record, marked so no save can follow; every other
+    // caller is refused HERE, at its load, before it changes anything in AWS.
+    if (options.readOnly === true) return markReadOnlyState(parsed, access.version);
+    throw new StateError(
+      `State for stack ${this.displayName(stackName)} was written by a newer cdkd ` +
+        `(state schema version ${access.version}). This cdkd binary can read it but must not ` +
+        `write it: a write would drop the fields it does not know. ` +
+        `Upgrade cdkd to a version that supports schema ${access.version}.`
+    );
+  }
+  if (access.kind === 'unsupported') {
     // `displaySafe` rather than `String(v)`: the value is an unchecked cast, so
     // a string one reached the terminal verbatim (issue #3003) and one whose
     // coercion throws — an object whose `toString` is not callable — made the

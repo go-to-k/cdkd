@@ -98,7 +98,7 @@ describe('Fn::ImportValue binds the producer in the consumer region first (#5176
     );
     expect(result).toBe('east-queue');
     // Exactly the one extra read, of this region's record of that name.
-    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1']]);
+    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1', { readOnly: true }]]);
     expect(state.listStacks).toHaveBeenCalledTimes(0);
     expect(recorded).toEqual([
       { sourceStack: 'Db', sourceRegion: 'us-east-1', exportName: EXPORT },
@@ -118,7 +118,7 @@ describe('Fn::ImportValue binds the producer in the consumer region first (#5176
       })
     );
     expect(result).toBe('west-queue');
-    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1']]);
+    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1', { readOnly: true }]]);
   });
 
   it('keeps a cross-region import when this region\'s record does not export the name', async () => {
@@ -152,7 +152,7 @@ describe('Fn::ImportValue binds the producer in the consumer region first (#5176
     );
     expect(result).toBe('west-queue');
     // The first read is this region's, and it ends the scan.
-    expect(state.getState.mock.calls).toEqual([['Db', 'us-west-2']]);
+    expect(state.getState.mock.calls).toEqual([['Db', 'us-west-2', { readOnly: true }]]);
   });
 
   it('the scan still finds a producer only another region holds', async () => {
@@ -179,6 +179,6 @@ describe('Fn::ImportValue binds the producer in the consumer region first (#5176
       })
     );
     expect(result).toBe('west-queue');
-    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1']]);
+    expect(state.getState.mock.calls).toEqual([['Db', 'us-east-1', { readOnly: true }]]);
   });
 });

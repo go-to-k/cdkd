@@ -203,6 +203,9 @@ describe('ExportIndexStore', () => {
       expect(parsed.exports['Topic']).toBeDefined();
       // Different region excluded
       expect(parsed.exports['Should']).toBeUndefined();
+      // The rebuild reads each record read-only (older-reader tolerance, #6440).
+      expect(backend.getState).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
+      expect(backend.getState).toHaveBeenCalledWith('Other', 'us-east-1', { readOnly: true });
     });
 
     it('rebuild ingests the EXPORTS only from a v9 record, and every key from a pre-v9 one (#2193)', async () => {

@@ -300,6 +300,8 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
     expect(held && held.kind === 'held' ? held.by : '').toContain('eu-west-1');
     expect(await ask('AWS::SQS::Queue', 'global-name')).toBeUndefined();
     expect(stateBackend.listStacks).toHaveBeenCalledTimes(1);
+    // The foreign-holder scan reads each record read-only (#6440).
+    expect(stateBackend.getState).toHaveBeenCalledWith('Self', 'eu-west-1', { readOnly: true });
   });
 
   it("counts another record's rollback-orphan records as holders", async () => {

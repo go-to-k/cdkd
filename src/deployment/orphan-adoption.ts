@@ -533,7 +533,8 @@ export interface SiblingStateReader {
   listStacks(): Promise<readonly { stackName: string; region?: string }[]>;
   getState(
     stackName: string,
-    region: string
+    region: string,
+    options?: { readOnly?: boolean }
   ): Promise<{ state: { resources: Record<string, { physicalId: string }> } } | null>;
 }
 
@@ -602,7 +603,7 @@ export function makeSiblingClaimReader(params: {
       // in `orphan-adoption-wiring.test.ts`.
       if (ref.region === undefined) continue;
       try {
-        const sibling = await stateBackend.getState(ref.stackName, ref.region);
+        const sibling = await stateBackend.getState(ref.stackName, ref.region, { readOnly: true });
         if (!sibling) continue;
         // The sibling's record is a hand-editable file this stack does not
         // own, so its shape is checked here rather than trusted

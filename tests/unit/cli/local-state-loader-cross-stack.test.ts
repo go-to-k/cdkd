@@ -388,7 +388,7 @@ describe('buildCrossStackResolver', () => {
       // Only the same-region stack should have been queried for state —
       // the cross-region one is filtered out before getState fires.
       expect(mocks.getStateMock).toHaveBeenCalledTimes(1);
-      expect(mocks.getStateMock).toHaveBeenCalledWith('LocalProducer', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('LocalProducer', 'us-east-1', { readOnly: true });
       dispose();
     });
 
@@ -501,7 +501,7 @@ describe('buildCrossStackResolver', () => {
       const got = await resolver.resolveGetStackOutput('Producer', 'us-east-1', 'OutputName');
 
       expect(got).toBe('literal-value');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
       dispose();
     });
 
@@ -594,7 +594,7 @@ describe('buildCrossStackResolver', () => {
       expect(got).toBe('west-value');
       // Must have been queried in us-west-2 (NOT the resolver's
       // consumerRegion of us-east-1).
-      expect(mocks.getStateMock).toHaveBeenCalledWith('WestProducer', 'us-west-2');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('WestProducer', 'us-west-2', { readOnly: true });
       dispose();
     });
   });
@@ -643,7 +643,7 @@ describe('buildCrossStackResolver', () => {
       // The regression: a raw `!==` skipped this ref and returned undefined, so
       // the env var was dropped although the producer's state was right there.
       expect(await resolver.resolveImport('SharedExport')).toBe('producer-value');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'us-east-1', { readOnly: true });
       dispose();
     });
 
@@ -653,7 +653,7 @@ describe('buildCrossStackResolver', () => {
 
       expect(await resolver.resolveImport('SharedExport')).toBe('producer-value');
       // Keyed by the REF's own spelling — a folded key names no S3 object.
-      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'US-EAST-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'US-EAST-1', { readOnly: true });
       expect(mocks.getStateMock).not.toHaveBeenCalledWith('ProducerStack', 'us-east-1');
       dispose();
     });
@@ -663,7 +663,7 @@ describe('buildCrossStackResolver', () => {
       primeProducer('us-east-1');
 
       expect(await resolver.resolveImport('SharedExport')).toBe('producer-value');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('ProducerStack', 'us-east-1', { readOnly: true });
       dispose();
     });
 
@@ -946,7 +946,7 @@ describe('buildCrossStackResolver', () => {
       expect(got).toBe('producer-value');
       // The retry key is the RECORD's own spelling, not a folded copy — a folded
       // key would 404 on an upper-cased record.
-      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
       dispose();
     });
 
@@ -959,7 +959,7 @@ describe('buildCrossStackResolver', () => {
       const got = await resolver.resolveGetStackOutput('Producer', 'us-east-1', 'Out');
 
       expect(got).toBe('upper-record-value');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'US-EAST-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'US-EAST-1', { readOnly: true });
       dispose();
     });
 
@@ -1105,7 +1105,7 @@ describe('buildCrossStackResolver', () => {
       mocks.getStateMock.mockImplementation(stateOf({ Producer: producerState }));
 
       expect(await imported(built, 'Producer-Key')).toEqual({ value: plaintext, verdict: 'secret' });
-      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
       expect(await imported(built, 'Producer-Secret')).toEqual({
         value: 'plaintext-secret-access-key',
         verdict: 'secret',
@@ -1204,7 +1204,7 @@ describe('buildCrossStackResolver', () => {
         mocks.lookupMock.mockResolvedValue(undefined);
         mocks.getStateMock.mockImplementation(stateOf({ Producer: parent, 'Producer~Child': child }));
         expect(await imported(built, 'Producer-Key')).toEqual({ value: childKey, verdict: 'secret' });
-        expect(mocks.getStateMock).toHaveBeenCalledWith('Producer~Child', 'us-east-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Producer~Child', 'us-east-1', { readOnly: true });
         expect(await imported(built, 'Producer-Bucket')).toEqual({ value: 'child-bucket' });
         built.dispose();
       });
@@ -1308,7 +1308,7 @@ describe('buildCrossStackResolver', () => {
           stateOf({ Source: source, ReExporter: reExporter, Reader: reader })
         );
         expect(await output(built, stack, 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
-        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'us-east-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'us-east-1', { readOnly: true });
         if (stack === 'ReExporter') {
           expect(await output(built, stack, 'Bucket')).toEqual({ value: 'producer-bucket' });
         }
@@ -1425,7 +1425,7 @@ describe('buildCrossStackResolver', () => {
                 : null
           );
           expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext, verdict: 'secret' });
-          expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1', { readOnly: true });
           built.dispose();
         });
 
@@ -1468,7 +1468,7 @@ describe('buildCrossStackResolver', () => {
           });
           // Judged from the child's record (secret), not left unverified.
           expect(await output(built, 'Reader', 'Key')).toEqual({ value: childKey, verdict: 'secret' });
-          expect(mocks.getStateMock).toHaveBeenCalledWith('Source~Child', 'US-EAST-1');
+          expect(mocks.getStateMock).toHaveBeenCalledWith('Source~Child', 'US-EAST-1', { readOnly: true });
           built.dispose();
         });
 
@@ -1498,7 +1498,7 @@ describe('buildCrossStackResolver', () => {
         mocks.listStacksMock.mockResolvedValue([{ stackName: 'Source', region: 'US-EAST-1' }]);
         mocks.getStateMock.mockImplementation(stateOf({ Reader: folded }));
         expect(await output(built, 'Reader', 'Key')).toEqual({ value: plaintext });
-        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('Source', 'US-EAST-1', { readOnly: true });
         built.dispose();
       });
 

@@ -81,7 +81,7 @@ async function protectedRootOf(
     const parentRegion: string =
       typeof record.parentRegion === 'string' ? record.parentRegion : region;
     name = parent;
-    record = (await backend.getState(parent, parentRegion))?.state;
+    record = (await backend.getState(parent, parentRegion, { readOnly: true }))?.state;
   }
   return undefined;
 }

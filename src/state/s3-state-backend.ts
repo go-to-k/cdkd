@@ -122,6 +122,7 @@ import {
   legacyBelongsToRegion,
   tryGetLegacy,
   parseStateBody,
+  type StateReadOptions,
 } from './s3-state-backend/legacy.js';
 export {
   LEGACY_KEY_DEPTH,
@@ -356,9 +357,15 @@ export class S3StateBackend {
     return rawObjectExists.call(this, key);
   }
 
+  /**
+   * `options.readOnly` (go-to-k/cdkd#6440): the caller never saves this
+   * record, so a newer one that names a `minReaderVersion` this binary reads
+   * is returned, marked read-only, instead of refused.
+   */
   getState(
     stackName: string,
-    region: string
+    region: string,
+    options: StateReadOptions = {}
   ): Promise<{
     state: StackState;
     etag: string;
@@ -377,7 +384,7 @@ export class S3StateBackend {
      */
     divergentBodyRegion?: unknown;
   } | null> {
-    return getState.call(this, stackName, region);
+    return getState.call(this, stackName, region, options);
   }
 
   saveState(
@@ -953,13 +960,18 @@ export class S3StateBackend {
   /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
   tryGetLegacy(
     stackName: string,
-    region: string
+    region: string,
+    options: StateReadOptions = {}
   ): Promise<{ state: StackState; etag: string } | null> {
-    return tryGetLegacy.call(this, stackName, region);
+    return tryGetLegacy.call(this, stackName, region, options);
   }
 
   /** @internal Body in `./s3-state-backend/`; formerly `private` (go-to-k/cdkd#5835). */
-  parseStateBody(bodyString: string, stackName: string): StackState {
-    return parseStateBody.call(this, bodyString, stackName);
+  parseStateBody(
+    bodyString: string,
+    stackName: string,
+    options: StateReadOptions = {}
+  ): StackState {
+    return parseStateBody.call(this, bodyString, stackName, options);
   }
 }

@@ -113,7 +113,7 @@ export async function printStackShow(
   }
 
   const [stateResult, lockInfo] = await Promise.all([
-    setup.stateBackend.getState(stackName, ref.region),
+    setup.stateBackend.getState(stackName, ref.region, { readOnly: true }),
     setup.lockManager.getLockInfo(stackName, ref.region),
   ]);
 
@@ -232,7 +232,8 @@ function renderStateBlock(
   //
   // `Version` takes none, and is the one field here whose type IS enforced:
   // `S3StateBackend.parseStateBody` refuses any value but a readable schema
-  // number or `undefined` before a renderer sees the record, so a hand-edited
+  // number, `undefined`, or a newer safe integer whose record names a readable
+  // `minReaderVersion` (go-to-k/cdkd#6440) before a renderer sees the record, so a hand-edited
   // one fails THERE rather than reaching this row. A guard here would be
   // unreachable by that route and could only be pinned by a test that mocks the
   // read away. What that failure SAYS goes through `displaySafe`, so a value

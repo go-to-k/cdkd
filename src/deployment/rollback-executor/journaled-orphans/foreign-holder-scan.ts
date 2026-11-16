@@ -72,7 +72,7 @@ export function makeForeignHolderScan(
         const region = ref.region;
         let state: StackState | undefined;
         try {
-          state = (await stateBackend.getState(ref.stackName, region))?.state;
+          state = (await stateBackend.getState(ref.stackName, region, { readOnly: true }))?.state;
         } catch {
           unreadable ??= named('it could not be read');
           return;

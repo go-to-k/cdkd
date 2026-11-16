@@ -188,7 +188,7 @@ describe('NestedStackProvider moved bodies run end to end through the delegators
       expect(options.parameters).toEqual({ Size: '3', Names: 'a,b' });
       expect(engine.ctor[0]![6]).toBe('us-east-1');
       expect(engine.deploy.map(([name]) => name)).toEqual(['Parent~Child']);
-      expect(getState).toHaveBeenCalledWith('Parent~Child', 'us-east-1');
+      expect(getState).toHaveBeenCalledWith('Parent~Child', 'us-east-1', { readOnly: true });
       expect(result.physicalId).toBe(
         'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child'
       );

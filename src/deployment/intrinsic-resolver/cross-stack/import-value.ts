@@ -27,7 +27,8 @@ async function sameRegionExportEntry(
   try {
     const local = await context.stateBackend!.getState(
       entry.producerStack,
-      resolver.resolverRegion
+      resolver.resolverRegion,
+      { readOnly: true }
     );
     if (!local || !importableOutputKeys(local.state).includes(exportName)) return undefined;
     return {
@@ -225,7 +226,9 @@ export async function resolveImportValue(
         );
         continue;
       }
-      const stateData = await context.stateBackend.getState(refStack, lookupRegion);
+      const stateData = await context.stateBackend.getState(refStack, lookupRegion, {
+        readOnly: true,
+      });
       if (!stateData) {
         resolver.logger.debug(
           `No state found for stack: ${displayMasked(resolver, refStack, context)} (${displayMasked(resolver, lookupRegion, context)})`

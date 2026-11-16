@@ -185,7 +185,7 @@ describe('cdkd state resources', () => {
     ]);
     mockGetState.mockResolvedValue(makeState({}));
     await runStateResources(['resources', 'MyStack', '--stack-region', 'us-east-1']);
-    expect(mockGetState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mockGetState).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
   });
 
   it('emits nothing when the stack has zero resources (default)', async () => {

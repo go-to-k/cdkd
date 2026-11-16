@@ -13,6 +13,7 @@ The S3 state record is the user contract: **migration must be transparent** — 
 ```typescript
 interface StackState {
   version: 1 | 2 | ... | 17; // each bump is its fields' `vN+`; 17 only with `noEchoValueMacs`
+  minReaderVersion?: StateSchemaVersion; // no bump (#6440): absent = version; bump rule: state-schema-internals
   stackName: string;
   region?: string; // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
@@ -107,7 +108,7 @@ Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy
 
 ## `provisionedBy` (v7+)
 
-`'sdk'` or `'cc-api'`. Absent = SDK-managed then, NOT pinned: rule 2 gates on a RECORDED `'cc-api'`, so absent re-enters the matrix.
+Absent re-enters the matrix: rule 2 needs a RECORDED `'cc-api'`.
 
 Routing matrix (`ProviderRegistry.getProviderFor`):
 
@@ -123,7 +124,7 @@ Routing matrix (`ProviderRegistry.getProviderFor`):
 
 ## `outputReads` (v8+)
 
-The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region yes, cross-account `RoleArn` never), omitted when empty. Informational, no destroy refusal. `undefined` = no consumers known.
+The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region yes, cross-account `RoleArn` never), omitted when empty. Informational, no destroy refusal.
 
 ## `observedBaselineRefused` (v10+)
 
@@ -149,7 +150,7 @@ Per member path (closed vocabulary: `GlobalSecondaryIndexes`, `Tags`, `DesiredSh
 
 ## `observedProperties` (v3+)
 
-Set per create / update by a fire-and-forget `readCurrentState`, drained by the final save; `cdkd import` sets it at once. Drift reads it (else `properties`).
+Set per create / update by a fire-and-forget `readCurrentState`, drained by the final save; import sets it. Drift reads it (else `properties`).
 
 ## Rollback journal (NOT part of the state schema)
 

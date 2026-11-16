@@ -8,6 +8,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   hasReadableExportSet,
   isReadableBag,
+  readOnlyStateVersionOf,
 } from '../../../types/state.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
 import {
@@ -51,7 +52,9 @@ export async function loadStateOrEmpty(
   found: boolean;
 }> {
   const refactorMarker = readRefactorMarkerOnce(stateBackend);
-  const result = await stateBackend.getState(stackName, region);
+  // Read-only (go-to-k/cdkd#6440): a diff never saves, so a newer record that
+  // only added fields is previewed; the deploy it previews refuses it (below).
+  const result = await stateBackend.getState(stackName, region, { readOnly: true });
   // The refactor marker (go-to-k/cdkd#5212) refuses a deploy of a stack an
   // unfinished move involves, record or not, so the preview says so too.
   const markerRefusal = refactorMarkerRefusalMessage(
@@ -184,6 +187,16 @@ export async function loadStateOrEmpty(
       );
     }
     if (markerRefusal !== undefined) deployRefusals.push(markerRefusal);
+    // A newer cdkd's record (go-to-k/cdkd#6440): this binary previews it but
+    // `cdkd deploy` refuses it at its load, so the preview says so.
+    const newerVersion = readOnlyStateVersionOf(result.state);
+    if (newerVersion !== undefined) {
+      deployRefusals.push(
+        `The state record was written by a newer cdkd (state schema version ${newerVersion}). ` +
+          `This preview read it; 'cdkd deploy' with this cdkd binary refuses to write it. ` +
+          `Upgrade cdkd to a version that supports schema ${newerVersion}.`
+      );
+    }
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves
     // five commands and holds no stack identity — but a LOUD wrong answer

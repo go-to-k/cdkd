@@ -415,10 +415,12 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers always emit the current version, `version: 15`. Readers accept every
+Writers emit `stateSchemaVersionFor(state)`: `version: 17` for a state that
+holds a `noEchoValueMacs` entry, `version: 16` otherwise. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
-with an "Upgrade cdkd" error.
+with an "Upgrade cdkd" error, unless the record names a `minReaderVersion` it
+reads ([below](#minreaderversion-reading-a-newer-record-read-only)).
 
 | Version | What it added |
 | --- | --- |
@@ -443,6 +445,111 @@ with an "Upgrade cdkd" error.
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
 `imports` in the [schema reference](#stackstate-state-json).
+
+### `minReaderVersion`: reading a newer record read-only
+
+Issue [#6440](https://github.com/go-to-k/cdkd/issues/6440). `StackState.minReaderVersion` is the oldest
+schema version whose reader can READ the record correctly by ignoring the
+fields it does not know. It is not a version bump: ABSENT means it equals
+`version`, which is the strictest reading, so dropping it loses nothing. A
+writer omits it when it equals `version`, and this binary always omits it:
+`saveState` strips any value a state carries, because the record it writes
+holds only the fields of the version it stamps.
+
+`classifyStateRecordAccess(version, minReaderVersion)` (`src/types/state.ts`)
+decides what a binary may do with a record:
+
+| `version` | `minReaderVersion` | Access |
+| --- | --- | --- |
+| absent, or a version this binary reads | ignored | read and write |
+| a safe integer above `STATE_SCHEMA_VERSION_CURRENT` | a version this binary reads | read-only |
+| anything else | anything | refused ("Unsupported state schema version") |
+
+**Read-only loads are opt-in.** `getState(stack, region)` refuses a read-only
+record at `parseStateBody` with "written by a newer cdkd ... Upgrade cdkd", so
+every writer fails at its load, before any AWS call. Only a caller that passes
+`{ readOnly: true }` gets the record, marked with the enumerable symbol
+`READ_ONLY_STATE_MARK`: a `{ ...state }` copy carries it, and `JSON.stringify`
+skips it. `saveState` refuses a marked state, or one whose `version` is above
+this binary's newest (a `structuredClone` copy loses the mark but keeps the
+version), before any S3 call. The callers that opt in read a record they never
+save:
+
+- `cdkd diff` (`loadStateOrEmpty`, which adds a deploy-refusal reason, and the
+  nested-child walk in `build-tree.ts`)
+- `cdkd state show`, `state resources` and `state list`; `state info` reads the
+  raw `version` itself
+- cross-stack reads of another stack: `Fn::GetStackOutput` (same account and
+  `RoleArn`), `Fn::ImportValue`, the producer-state reads behind
+  `referenceProvenance`, and the export-index rebuild
+- deletion-safety scans of OTHER stacks: the active-import consumer scan
+  (`scanActiveConsumers`, behind `cdkd destroy`'s export-in-use refusal and
+  the deploy's check before it removes an export), the downstream-consumer
+  scan of `--recreate-via-*` (`findDownstreamConsumers`), the sibling scan of
+  orphan adoption and the foreign-holder scan of a journaled orphan
+- a nested stack's parent reading the child's outputs
+  (`readChildOutputsAsAttributes`), and the parent-chain reads of
+  `state destroy`'s termination-protection check (`protectedRootOf`, which
+  reads each parent's `terminationProtection`), `cdkd drift`'s producer
+  regions and `cdkd rollback`'s child preview
+- `cdkd local`'s state loader
+
+Every other caller keeps the default and fails closed. The refusal is PER
+RECORD, at that record's load:
+
+- A nested child is loaded by its own deploy, inside the parent's. `version` is
+  computed from each record's content (`stateSchemaVersionFor`), so a child can
+  be newer than its parent (today a child holding a `NoEcho` value MAC is 17
+  under a 16 parent). An older binary deploying such a parent fails at the
+  child's load, after the parent's earlier resources ran, and the parent's
+  failure path handles it like any other failed nested row. Refusing at the
+  parent's load would cost one S3 read per child on every deploy.
+- A multi-stack deploy applies each stack in turn, so earlier stacks are
+  deployed before a later stack's newer record refuses. Asset publishing
+  (content-addressed uploads) can run before the engine's load too.
+
+This is how an unsupported record already behaves; the read-only class adds no
+new partial-deploy path.
+
+**The rule for a future bump.** Classify each new field by what an older binary
+does with it:
+
+1. **No bump.** Reading it as absent is correct, and a write that drops it
+   loses nothing a later reader needs. The field is ignorable in both directions.
+2. **Bump, `minReaderVersion` unchanged.** A reader that ignores the field still
+   reads the record correctly, but a write that drops it loses information.
+   Stamp the new `version` and keep `minReaderVersion` at the version the
+   record would otherwise be. Older binaries, from the release that includes
+   issue #6440 on, read it read-only.
+3. **Bump, `minReaderVersion` = the new version.** A reader that ignores the
+   field would read the record WRONGLY (a changed meaning, or a value a reader
+   must act on). Omit `minReaderVersion`; older binaries refuse the record.
+   Two classes always land here, even when reading around them is correct:
+   - **A field a reader must withhold, mask or redact, or metadata that marks
+     values as secret.** An older binary does not know to withhold it, and a
+     read-only load hands it on: `cdkd state show --json` prints a field it
+     does not know verbatim; a dependent stack's deploy resolves
+     `Fn::GetStackOutput` / `Fn::ImportValue` from a newer producer's record
+     and writes the value into its own `state.json` and into AWS; and the
+     export-index rebuild writes a newer record's outputs into the exports
+     index.
+   - **A field that holds a physical id, a protection flag or another claim
+     that a read-only caller above acts on** (the deletion-safety scans and
+     the parent-chain reads in the list above), which an older binary would
+     otherwise miss.
+
+The fields `minReaderVersion` names must hold for every record the writer
+stamps with that version, so a writer computes it from the record, as
+`stateSchemaVersionFor` computes `version`.
+
+**Separate gates stay separate.** The exports index (`indexVersion`), the
+create-token ledger (`create-tokens.json`) and the rollback journal
+(`journalVersion`) carry their own version numbers and their own refusals. They
+are separate objects, so a `state.json` bump changes none of them: a binary
+reading a newer record read-only still reads them as it does today. A change to
+one of their formats needs its own compatibility decision. The ledger and the
+journal are read only by the deploy, destroy and rollback that also write the
+record, which refuse a newer record first.
 
 ### Legacy layout (`version: 1`) — read path only
 

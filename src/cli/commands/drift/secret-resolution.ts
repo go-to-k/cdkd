@@ -470,7 +470,7 @@ export async function driftProducerRegionEvidence(
   const parentRegion = typeof state.parentRegion === 'string' ? state.parentRegion : region;
   let parent: Awaited<ReturnType<S3StateBackend['getState']>>;
   try {
-    parent = await stateBackend.getState(parentName, parentRegion);
+    parent = await stateBackend.getState(parentName, parentRegion, { readOnly: true });
   } catch (error) {
     noteUnreadableAncestor(
       parentName,

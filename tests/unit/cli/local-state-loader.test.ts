@@ -249,7 +249,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
       // The regression this pins: the raw `===` returned `undefined` here and
       // never issued a getState at all (silent fall-back, exit 0).
       expect(result?.region).toBe('us-east-1');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
     });
 
     it('leaves an already-canonical --stack-region byte-identical', async () => {
@@ -261,7 +261,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
       });
 
       expect(result?.region).toBe('us-east-1');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
     });
 
     it('keys getState with the RECORD spelling when the record is the upper-cased side', async () => {
@@ -276,7 +276,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
       });
 
       expect(result?.region).toBe('US-EAST-1');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
       // The feared shape of an over-eager fix: keying the read off the folded
       // FLAG, which names an object that does not exist.
       expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'us-east-1');
@@ -308,7 +308,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
       });
 
       expect(result?.region).toBe('US-EAST-1');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
     });
 
     it('quotes the --stack-region hole when the stack spans regions with no synth match (go-to-k/cdkd#4295)', async () => {
@@ -371,7 +371,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
       });
 
       expect(result?.region).toBe('us-east-1');
-      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+      expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
     });
 
     /**
@@ -402,7 +402,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
         });
 
         expect(result?.region).toBe('us-east-1');
-        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
         // The shape a fold-only `find` emits: the FIRST canonical-equal ref,
         // i.e. a record the user did not name.
         expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'US-EAST-1');
@@ -417,7 +417,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
         });
 
         expect(result?.region).toBe('US-EAST-1');
-        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
         expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'us-east-1');
       });
 
@@ -473,7 +473,7 @@ describe('loadStateForStack — globalClients lifecycle', () => {
         });
 
         expect(result?.region).toBe('us-east-1');
-        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+        expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
         expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'US-EAST-1');
       });
 

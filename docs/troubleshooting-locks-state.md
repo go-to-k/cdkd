@@ -239,6 +239,16 @@ and the fix is to upgrade cdkd. Do not restore a backup.
 StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
 ```
 
+A command that writes state can also stop on a record a newer cdkd wrote whose
+newer version only added fields. Read-only commands such as `cdkd diff` and
+`cdkd state show` still read that record
+([Reading a newer record read-only](state-management-schema-versions.md#reading-a-newer-record-read-only)).
+The fix is the same: upgrade cdkd.
+
+```
+StateError: State for stack MyStack was written by a newer cdkd (state schema version 18). This cdkd binary can read it but must not write it: a write would drop the fields it does not know. Upgrade cdkd to a version that supports schema 18.
+```
+
 ## State and Resources Don't Match
 
 Someone deleted or changed a resource outside cdkd, for example in the AWS

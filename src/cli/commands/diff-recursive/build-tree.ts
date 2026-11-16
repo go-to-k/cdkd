@@ -317,7 +317,7 @@ export async function buildDiffTree(args: {
           region,
           nestedTemplates,
           readRecord: async (name, childRegion) =>
-            (await stateBackend.getState(name, childRegion))?.state,
+            (await stateBackend.getState(name, childRegion, { readOnly: true }))?.state,
         });
   for (const row of nestedSsmCheck?.forcedRows ?? []) logger.info(nestedSsmNameRowNote(row));
   for (const row of nestedSsmCheck?.deferredRows ?? []) logger.info(nestedSsmNameDeferredNote(row));

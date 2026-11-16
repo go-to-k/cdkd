@@ -37,7 +37,7 @@ export async function scanActiveConsumers(
       // same-name stack in a different region is NOT self.
       if (ref.stackName === producerStack && region === producerRegion) return null;
       try {
-        const got = await ctx.stateBackend.getState(ref.stackName, region);
+        const got = await ctx.stateBackend.getState(ref.stackName, region, { readOnly: true });
         const imports = got?.state.imports;
         if (!imports || imports.length === 0) return null;
         // The region is compared CANONICALIZED (go-to-k/cdkd#3746), the rule

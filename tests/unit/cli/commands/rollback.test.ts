@@ -3219,7 +3219,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     info.mockClear();
     replayProvider.update.mockReset();
     replayProvider.update.mockResolvedValue({ physicalId: 'arn:child', wasReplaced: false });
-    installSetup({
+    const backend = installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       getState: vi.fn().mockImplementation(async (name: string) =>
         name === 'S'
@@ -3270,6 +3270,8 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(lines.some((l) => l.includes('Db'))).toBe(true);
     // The r9 segment has no child record: the plan says the revert will fail.
     expect(lines.some((l) => l.includes('no journal record for this run'))).toBe(true);
+    // The child preview reads the child's record read-only (#6440).
+    expect(backend.getState).toHaveBeenCalledWith('S~Child', 'us-east-1', { readOnly: true });
   });
 
   it('the nested-child plan lists an op of an id cdkd import adopted as left alone (go-to-k/cdkd#4523)', async () => {

@@ -256,7 +256,8 @@ resource, keyed by its logical ID from the template.
 
 | Field | Meaning |
 | --- | --- |
-| `version` | The [schema version](state-management-schema-versions.md); currently `16` |
+| `version` | The [schema version](state-management-schema-versions.md): `17` for a record holding a `NoEcho` value MAC, else `16` |
+| `minReaderVersion` | The oldest schema version that can [read the record read-only](state-management-schema-versions.md#reading-a-newer-record-read-only); absent means `version` |
 | `stackName`, `region` | The stack, and the region its resources are in |
 | `resources` | One entry per resource, keyed by logical ID |
 | `outputs` | Each stack output's name and resolved value |

@@ -187,7 +187,7 @@ describe('each browse view prints what its command prints (go-to-k/cdkd#5199)', 
       setup.dispose();
     }
     expect(cap.text()).toContain('bucket-in-eu-west-1');
-    expect(mockGetState).toHaveBeenCalledWith('Alpha', 'eu-west-1');
+    expect(mockGetState).toHaveBeenCalledWith('Alpha', 'eu-west-1', { readOnly: true });
   });
 
   it('lists the stacks sorted, as cdkd state list does', async () => {

@@ -14,10 +14,12 @@ import {
   HeadBucketCommand,
 } from '@aws-sdk/client-s3';
 import {
+  readOnlyStateVersionOf,
   stackInstanceIdCarriedFrom,
   stateSchemaVersionFor,
   type StackState,
 } from '../../types/state.js';
+import type { StateReadOptions } from './legacy.js';
 import { notifyStateSaved } from '../create-token-ledger.js';
 import {
   displayIdent,
@@ -178,7 +180,8 @@ export async function rawObjectExists(this: S3StateBackend, key: string): Promis
 export async function getState(
   this: S3StateBackend,
   stackName: string,
-  region: string
+  region: string,
+  options: StateReadOptions = {}
 ): Promise<{
   state: StackState;
   etag: string;
@@ -237,7 +240,7 @@ export async function getState(
     }
 
     const bodyString = await response.Body.transformToString();
-    const parsed = this.parseStateBody(bodyString, stackName);
+    const parsed = this.parseStateBody(bodyString, stackName, options);
     const { state, divergentBodyRegion } = this.adoptKeyRegion(
       parsed,
       region,
@@ -275,7 +278,7 @@ export async function getState(
   }
 
   // 2. Fall back to legacy key when it exists AND its region matches.
-  const legacy = await this.tryGetLegacy(stackName, region);
+  const legacy = await this.tryGetLegacy(stackName, region, options);
   if (legacy) {
     // A WARN, so it prints at default verbosity on the same `state show` /
     // `state resources` path the refusals around it were guarded for -- and
@@ -330,13 +333,30 @@ export async function saveState(
     deferCleanup?: (cleanup: Promise<void>) => void;
   } = {}
 ): Promise<string> {
+  // go-to-k/cdkd#6440: a state derived from a record loaded READ-ONLY (a
+  // newer writer's) is never written — the write would drop the fields this
+  // binary does not know. Checked before any S3 call. Every writer already
+  // refuses at its load; this is the backstop.
+  const newerVersion = readOnlyStateVersionOf(state);
+  if (newerVersion !== undefined) {
+    throw new StateError(
+      `Refusing to save state for stack ${this.displayName(stackName)}: it was read from a record ` +
+        `written by a newer cdkd (state schema version ${newerVersion}), ` +
+        `which this cdkd binary can read but must not write. ` +
+        `Upgrade cdkd to a version that supports schema ${newerVersion}.`
+    );
+  }
   await this.ensureClientForBucket();
   const newKey = this.getStateKey(stackName, region);
   const { expectedEtag, migrateLegacy } = options;
 
   // Normalize the body: schema version + region are load-bearing on disk.
+  // `minReaderVersion` is dropped: this binary writes exactly the fields of
+  // the version it stamps, so the oldest reader is that version, which is
+  // what an ABSENT field means (go-to-k/cdkd#6440).
+  const { minReaderVersion: _minReaderVersion, ...stateFields } = state;
   const body: StackState = {
-    ...state,
+    ...stateFields,
     ...stackInstanceIdCarriedFrom(state),
     // go-to-k/cdkd#6146: 17 only for a state carrying NoEcho value MACs.
     version: stateSchemaVersionFor(state),

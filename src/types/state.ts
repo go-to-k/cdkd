@@ -252,7 +252,9 @@
  * state carrying NoEcho value MACs, `STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS`
  * (16) otherwise. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
- * version, rather than silently mishandling the new format.
+ * version, rather than silently mishandling the new format — unless the
+ * record names a `minReaderVersion` it knows, which it then reads read-only
+ * (`classifyStateRecordAccess`, go-to-k/cdkd#6440).
  */
 export type StateSchemaVersion =
   | 1
@@ -326,6 +328,80 @@ export function stateSchemaVersionFor(state: {
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
 ];
+
+/**
+ * What this binary may do with a record, from its `version` and
+ * `minReaderVersion` (go-to-k/cdkd#6440):
+ *
+ * - `writable` — `version` is one this binary reads (or absent, the legacy
+ *   unversioned record). `minReaderVersion` is ignored.
+ * - `read-only` — `version` is a newer schema, but the record names a
+ *   `minReaderVersion` this binary reads: the newer writer only ADDED fields
+ *   an older reader can ignore. Reading it is correct; writing it would drop
+ *   those fields, so no save may follow.
+ * - `unsupported` — anything else; the record is refused outright.
+ *
+ * Only binaries from the release that includes go-to-k/cdkd#6440 consult
+ * `minReaderVersion`. Earlier ones refuse every newer `version`, which is the
+ * fail-closed answer.
+ */
+export type StateRecordAccess =
+  | { kind: 'writable' }
+  | { kind: 'read-only'; version: number }
+  | { kind: 'unsupported' };
+
+export function classifyStateRecordAccess(
+  version: unknown,
+  minReaderVersion: unknown
+): StateRecordAccess {
+  if (version === undefined) return { kind: 'writable' };
+  // `includes` compares with SameValueZero, so no value is coerced to reach it.
+  if ((STATE_SCHEMA_VERSIONS_READABLE as readonly unknown[]).includes(version)) {
+    return { kind: 'writable' };
+  }
+  if (
+    typeof version === 'number' &&
+    Number.isSafeInteger(version) &&
+    version > STATE_SCHEMA_VERSION_CURRENT &&
+    (STATE_SCHEMA_VERSIONS_READABLE as readonly unknown[]).includes(minReaderVersion)
+  ) {
+    return { kind: 'read-only', version };
+  }
+  return { kind: 'unsupported' };
+}
+
+/**
+ * The mark a read-only load puts on the record it returns (go-to-k/cdkd#6440).
+ * An ENUMERABLE symbol key, so every `{ ...state }` a writer derives carries
+ * it into `saveState`, which refuses it; `JSON.stringify` skips symbol keys,
+ * so it never reaches S3.
+ */
+export const READ_ONLY_STATE_MARK: unique symbol = Symbol('cdkd.readOnlyStateVersion');
+
+/** Mark `state` as loaded read-only from a record written at schema `version`. */
+export function markReadOnlyState<T extends object>(state: T, version: number): T {
+  Object.defineProperty(state, READ_ONLY_STATE_MARK, {
+    value: version,
+    enumerable: true,
+    configurable: true,
+    writable: false,
+  });
+  return state;
+}
+
+/**
+ * The newer schema version a state about to be SAVED derives from, or
+ * `undefined` when it may be written: the read-only mark, else a `version`
+ * above this binary's newest (a copy that lost the mark, e.g. through
+ * `structuredClone`, still carries the record's `version`).
+ */
+export function readOnlyStateVersionOf(state: object): number | undefined {
+  const marked = (state as { [READ_ONLY_STATE_MARK]?: unknown })[READ_ONLY_STATE_MARK];
+  if (typeof marked === 'number') return marked;
+  const version = (state as { version?: unknown }).version;
+  if (typeof version === 'number' && version > STATE_SCHEMA_VERSION_CURRENT) return version;
+  return undefined;
+}
 
 // The record shapes and their helpers live in the sibling `state/`
 // directory; this entry re-exports every one of them, so callers keep
