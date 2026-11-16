@@ -40,6 +40,8 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   loadCdkJson: vi.fn(() => null),
   resolveApp: vi.fn(() => 'fake-app-cmd'),
   resolveCaptureObservedState: vi.fn(() => false),
+  // Identity, so the go-to-k/cdkd#6437 cases below see the CLI value reach the engine.
+  resolveUpdatePolicy: vi.fn((cliValue?: boolean) => cliValue),
   resolveAutoAssetStorage: vi.fn(() => false),
   resolveSkipPrefix: vi.fn(() => false),
   resolveStateBucketWithDefaultAndSource: vi.fn(async () => ({
@@ -346,5 +348,53 @@ describe('deploy --outputs-file (#5819)', () => {
     const { exitCode } = await runDeploy(['--all', '--yes', '-O', file]);
     expect(exitCode).toBe(2);
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ StackA: { Url: 'u' } });
+  });
+});
+
+describe('deploy --update-policy reaches each stack engine (go-to-k/cdkd#6437)', () => {
+  beforeEach(() => {
+    engineResults.clear();
+    engineOutputs.clear();
+    failingStacks.clear();
+    cancelledStacks.clear();
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    synthError.value = undefined;
+    process.env['CDKD_NO_LIVE'] = '1';
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_LIVE'];
+  });
+
+  async function engineOptions(argv: string[]): Promise<Record<string, unknown>[]> {
+    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    const { error } = await runDeploy(['--all', '--yes', ...argv]);
+    expect(error).toBeUndefined();
+    const calls = vi.mocked(DeployEngine).mock.calls;
+    expect(calls).toHaveLength(2);
+    return calls.map((c) => c[5] as unknown as Record<string, unknown>);
+  }
+
+  it('--update-policy: resolved from the CLI value and handed to every engine', async () => {
+    const { resolveUpdatePolicy } = await import('../../../src/cli/config-loader.js');
+    for (const options of await engineOptions(['--update-policy'])) {
+      expect(options['updatePolicy']).toBe(true);
+    }
+    expect(vi.mocked(resolveUpdatePolicy)).toHaveBeenCalledWith(true);
+  });
+
+  it('--no-update-policy: handed as false', async () => {
+    for (const options of await engineOptions(['--no-update-policy'])) {
+      expect(options['updatePolicy']).toBe(false);
+    }
+  });
+
+  it('neither flag: the resolver sees undefined and the engines get no key', async () => {
+    const { resolveUpdatePolicy } = await import('../../../src/cli/config-loader.js');
+    for (const options of await engineOptions([])) {
+      expect(options).not.toHaveProperty('updatePolicy');
+    }
+    expect(vi.mocked(resolveUpdatePolicy)).toHaveBeenCalledWith(undefined);
   });
 });

@@ -9,6 +9,7 @@ import {
 } from '../../../provisioning/resource-name.js';
 import { replacementNameGeneration } from '../../../state/name-generation.js';
 import { updateInPlace } from '../update-in-place.js';
+import { warnUnhonoredCreationPolicy } from '../update-policy.js';
 import { extractAllDependencies } from '../record-shape.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -245,11 +246,12 @@ export async function finishUpdate(
         lostWithParent,
         nameGenerationFields,
       });
-    return markRestored(
-      await (nextGeneration === undefined
-        ? replace()
-        : withNameGeneration({ logicalId, generation: nextGeneration }, replace))
-    );
+    const replaced = await (nextGeneration === undefined
+      ? replace()
+      : withNameGeneration({ logicalId, generation: nextGeneration }, replace));
+    // go-to-k/cdkd#6437: the replacement created the resource anew.
+    warnUnhonoredCreationPolicy(engine.logger, logicalId, template?.Resources?.[logicalId]);
+    return markRestored(replaced);
   }
   // go-to-k/cdkd#4749: the plan refused every ServiceToken change it could
   // judge; this one sees the RESOLVED token, so a token reading a resource

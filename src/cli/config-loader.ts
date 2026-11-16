@@ -203,6 +203,26 @@ export function resolveCaptureObservedState(cliValue: boolean): boolean {
 }
 
 /**
+ * Resolve the `--update-policy` / `--no-update-policy` pair (go-to-k/cdkd#6437).
+ * Both flags are declared, with no default, so Commander reports `undefined`
+ * when neither was passed. Priority: CLI > `cdk.json
+ * context.cdkd.updatePolicy` (boolean) > `undefined`.
+ *
+ * `undefined` is kept distinct from `false`: the deploy engine reads it as the
+ * DEFAULT (skip today, honor from v1 — go-to-k/cdkd#6443), and only the
+ * default prints the "pass --update-policy" hint; an explicit `false` is
+ * silent.
+ */
+export function resolveUpdatePolicy(cliValue: boolean | undefined): boolean | undefined {
+  if (typeof cliValue === 'boolean') return cliValue;
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['updatePolicy'];
+  if (typeof v === 'boolean') return v;
+  return undefined;
+}
+
+/**
  * Resolve the effective `--use-cdk-bootstrap-assets` value (issue #1002
  * PR 2, design §4.2): pin legacy asset destinations for one app even when
  * the region's bootstrap marker exists — for apps deployed via both

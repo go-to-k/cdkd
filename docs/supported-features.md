@@ -19,20 +19,48 @@ locally.
 
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
-| `UpdatePolicy` | ⚠️ Ignored | Applies the update directly, in one step |
+| `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (`AutoScalingScheduledAction`) |
+| `CreationPolicy` | ⚠️ Not waited on | Creates or replaces the resource and logs a warning |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
-### `UpdatePolicy` is ignored
+### `UpdatePolicy` is opt-in
 
-cdkd does not process `UpdatePolicy`, which covers
-`CodeDeployLambdaAliasUpdate` and the Auto Scaling rolling-update policies.
-It applies the update in one step instead.
+`UpdatePolicy` is skipped by default; it is honored with `--update-policy`.
+Skipped, cdkd applies an update in one step. Pass `--update-policy` to
+`cdkd deploy`, or set
+`"context": { "cdkd": { "updatePolicy": true } }` in `cdk.json`, to honor the
+policies cdkd supports. `--no-update-policy` turns it off for one deploy when
+`cdk.json` turns it on.
 
-For example, a Lambda alias with a CodeDeploy update policy switches to the
-new version at once. CloudFormation would shift traffic to it gradually
-through CodeDeploy. cdkd skips this on purpose, to keep dev and test deploys
-fast. The CodeDeploy application and deployment group resources themselves
-deploy normally.
+With `--update-policy`, cdkd honors:
+
+- `AutoScalingScheduledAction` with `IgnoreUnmodifiedGroupSizeProperties: true`
+  on an Auto Scaling group: an update sends only the `MinSize`, `MaxSize` and
+  `DesiredCapacity` values the template changed, so a size a scheduled action
+  set is kept. A size given as a dynamic reference (`{{resolve:...}}`) is
+  always sent. The CDK `AutoScalingGroup` construct declares this policy
+  unless `ignoreUnmodifiedSizeProperties` is `false`. This applies when the
+  group is updated through cdkd's SDK provider; an update routed through
+  Cloud Control logs a warning that cdkd does not apply the policy there.
+
+Every other `UpdatePolicy` is skipped, with or without the flag: cdkd applies
+the update in one step.
+
+`EnableVersionUpgrade` (OpenSearch domain) and `UseOnlineResharding`
+(ElastiCache replication group) need no flag: cdkd changes an OpenSearch
+domain's engine version and a replication group's shard count in place.
+
+When a template declares a policy that `--update-policy` would honor and
+neither flag nor the `cdk.json` key is set, cdkd prints a one-line hint on
+each update of that resource through its SDK provider.
+
+### `CreationPolicy` is not waited on
+
+`cfn-signal` sends its signal to a CloudFormation stack, and a cdkd deploy has
+none. When cdkd creates or replaces a resource that declares a
+`CreationPolicy`, it logs a warning and treats the resource as created
+without waiting for signals. The warning does not change the exit code or
+fail `--strict`.
 
 ### Waiting for slow resources
 
@@ -128,7 +156,8 @@ routed.
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
 | DeletionPolicy: Retain | ✅ | Skips deletion of the retained resource |
 | UpdateReplacePolicy: Retain | ✅ | Keeps the old resource on replacement |
-| UpdatePolicy | ⚠️ Ignored | See [above](#what-behaves-differently-from-cloudformation) |
+| UpdatePolicy | ⚠️ Opt-in, partial | See [`UpdatePolicy` is opt-in](#updatepolicy-is-opt-in) |
+| CreationPolicy | ⚠️ Not waited on | See [`CreationPolicy` is not waited on](#creationpolicy-is-not-waited-on) |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | `isCompleteHandler` / `onEventHandler` async pattern detection |
 

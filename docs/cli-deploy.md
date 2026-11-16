@@ -102,6 +102,7 @@ These six flags are explained on this page.
 | `--resource-timeout <duration>` | `30m` | Abort one slow resource operation. See [Per-resource timeout](cli-deploy-tuning.md#per-resource-timeout). |
 | `--prefix-user-supplied-names` | `false` | Prefix declared physical names with the stack name. See [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names). |
 | `--no-capture-observed-state` | capture on | Skip recording the drift baseline. See [`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state). |
+| `--update-policy`, `--no-update-policy` | skipped | Honor, or skip, the `UpdatePolicy` attributes cdkd supports. See [`--update-policy`](cli-deploy-tuning.md#update-policy). |
 | `--no-aggressive-vpc-parallel` | relaxation on | Keep CDK's defensive VPC route ordering. See [`--no-aggressive-vpc-parallel`](cli-deploy-tuning.md#no-aggressive-vpc-parallel). |
 | `--strict`, `--ignore-errors` | `false` | Fail on CDK warning annotations, or never fail on annotations. See [CDK annotation messages](cli-deploy-tuning.md#cdk-annotation-messages). |
 

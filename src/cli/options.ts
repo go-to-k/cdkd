@@ -619,6 +619,22 @@ export const deployOptions = [
       'rich drift detection — falls back to comparing against template ' +
       'properties (the pre-v3 behavior).'
   ),
+  // go-to-k/cdkd#6437: a flag PAIR with NO default, so Commander leaves
+  // `updatePolicy` undefined when neither is passed and
+  // `resolveUpdatePolicy` can fall through to cdk.json. Neither = skip today;
+  // the v1 release (go-to-k/cdkd#6443) flips that default to honor and keeps
+  // both flags, so no script passing either one breaks.
+  new Option(
+    '--update-policy',
+    "Honor the template's UpdatePolicy attributes cdkd supports " +
+      '(today: AutoScalingScheduledAction.IgnoreUnmodifiedGroupSizeProperties). ' +
+      'Skipped by default. Per-app: cdk.json context.cdkd.updatePolicy: true.'
+  ),
+  new Option(
+    '--no-update-policy',
+    'Skip UpdatePolicy attributes (the default). Overrules ' +
+      'cdk.json context.cdkd.updatePolicy: true.'
+  ),
   new Option(
     '--prefix-user-supplied-names',
     'Opt in to LEGACY behavior: prepend the stack name to physical names the ' +

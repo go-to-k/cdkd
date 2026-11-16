@@ -118,6 +118,21 @@ export interface DeployEngineOptions {
   captureObservedState?: boolean;
 
   /**
+   * go-to-k/cdkd#6437: `--update-policy` (`true`) / `--no-update-policy`
+   * (`false`), or `cdk.json context.cdkd.updatePolicy`. `true` hands a
+   * resource's template `UpdatePolicy` to its provider's `update()` as
+   * `UpdateContext.updatePolicy`; anything else hands nothing, so the update is
+   * byte-identical to a build without this option.
+   *
+   * `undefined` is the DEFAULT and is deliberately left undefined (never
+   * defaulted in the constructor): today it SKIPS, like `false`, but it also
+   * prints the one-line hint (`deploy-engine/update-policy.ts`), and the v1
+   * release (go-to-k/cdkd#6443) flips it to HONOR. Performance gave way to
+   * parity there for the templates that ask for a slower rollout only.
+   */
+  updatePolicy?: boolean;
+
+  /**
    * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
    * deploy region is in cdkd-assets mode and the stack has redirected
    * assets. The engine uses it for the §7 step 3 post-resolution audit:

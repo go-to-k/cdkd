@@ -46,6 +46,7 @@ import { type ResourceState, hasUnverifiableParameterRefusal } from '../../types
 import { recordedTypedPayloadLeavesOf } from '../../provisioning/custom-resource-payload-types.js';
 import { customResourcePayloadLeaves } from './custom-resource-payload-leaves.js';
 import { unsettledMarkSinks } from './update-in-place/unsettled-marks.js';
+import { updatePolicyContext, warnUnhonoredCreationPolicy } from './update-policy.js';
 import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
 import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
@@ -418,6 +419,16 @@ export async function updateInPlace(
     conditions,
     stateResources
   );
+  // go-to-k/cdkd#6437: absent unless `--update-policy` is on. Taken once,
+  // outside the retry, so its hint line prints once per update.
+  const updatePolicy = updatePolicyContext(
+    engine.options.updatePolicy,
+    engine.logger,
+    logicalId,
+    resourceType,
+    template?.Resources?.[logicalId],
+    updateDecision.provisionedBy
+  );
   try {
     result = await engine.withRetry(
       () =>
@@ -478,6 +489,7 @@ export async function updateInPlace(
               ...unsettledMarkSinks(engine, logicalId, resolvedProps, currentResource),
               ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
               ...(unsettledItems.size > 0 && { unsettledItems }),
+              ...updatePolicy,
             }
           )
         ),
@@ -613,6 +625,8 @@ export async function updateInPlace(
       const fallbackOutcome = await (fallbackGeneration === undefined
         ? replaceFallback()
         : withNameGeneration({ logicalId, generation: fallbackGeneration }, replaceFallback));
+      // go-to-k/cdkd#6437: the fallback's replacement created the resource.
+      warnUnhonoredCreationPolicy(engine.logger, logicalId, template?.Resources?.[logicalId]);
       // go-to-k/cdkd#5380: the replacement now holds the record, so a mark the
       // failed update made describes the resource it replaced. Only once its
       // create succeeded: a fallback that throws leaves the old resource, which
