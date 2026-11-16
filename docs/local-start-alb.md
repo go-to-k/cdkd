@@ -277,13 +277,17 @@ the guard: a request without a token still gets a `401`, but a token is
 admitted without verification. When only the client id cannot be resolved,
 the token's signature, issuer and expiry are verified and its audience is not.
 
-A listener rule that carries an authentication action, or may carry one, is
-never dropped, so its requests never fall through to an unguarded rule or to
-the default action. When cdkd cannot determine part of such a rule, it warns
+A listener rule that carries an authentication action, or may carry one, and
+is attached to a listener in the same stack is never dropped, so its requests
+never fall through to an unguarded rule or to the default action. A rule
+attached to another stack's listener, through a literal ARN, an
+`Fn::ImportValue` or a `Ref` to a parameter, is not served, with a warning.
+When cdkd cannot determine part of a rule on a listener in the stack, it warns
 at startup and widens the rule instead:
 
 - **A condition it cannot evaluate** is dropped, and the rule answers `503`
-  over its remaining conditions, or over every request when none is left.
+  over its remaining conditions, or over every request when none is left. A
+  rule with no condition to route on answers `503` to every request.
 - **An action it cannot serve** makes the rule answer `503`. This covers an
   authentication action followed by a `forward` to a target group outside the
   stack, or by an action type that is not served.

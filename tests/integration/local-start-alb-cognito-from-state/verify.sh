@@ -230,6 +230,13 @@ CODE="$(http_code)" || CODE="curl-failed"
 [ "${CODE}" = "401" ] || fail "no state, no Authorization: expected 401, got ${CODE} (body: $(cat "${BODY_FILE}"))"
 if grep -q 'secret' "${BODY_FILE}"; then fail "no state, no Authorization: the fixed-response body was served"; fi
 echo "    no state, no Authorization -> 401"
+# The other polarity: without state the guard cannot verify a signature, so a
+# tampered token is admitted (JWKS pass-through). Phase 4 pins that the same
+# token is refused once state resolves the guard.
+CODE="$(http_code "Authorization: Bearer ${TOKEN_TAMPERED}")" || CODE="curl-failed"
+[ "${CODE}" = "200" ] || fail "no state, tampered token: expected 200 (pass-through), got ${CODE} (body: $(cat "${BODY_FILE}"))"
+grep -q 'secret' "${BODY_FILE}" || fail "no state, tampered token: the fixed-response body was not served"
+echo "    no state, tampered token -> 200 (pass-through)"
 stop_server
 
 echo "==> Phase 4: start-alb --from-state resolves the pool ARN and client id from state"
