@@ -65,7 +65,7 @@ const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 const REGISTER_PROVIDERS_FILE = resolve(repoRoot, 'src/provisioning/register-providers.ts');
-const PROVIDER_REGISTRY_FILE = resolve(repoRoot, 'src/provisioning/provider-registry.ts');
+const STICKY_EXEMPT_FILE = resolve(repoRoot, 'src/provisioning/provider-registry/sticky-exempt.ts');
 const UNSUPPORTED_TYPES_FILE = resolve(repoRoot, 'src/provisioning/unsupported-types.ts');
 const OUT_FILE = resolve(
   repoRoot,
@@ -314,7 +314,7 @@ export const renderSdkUnwired = (
 
 /**
  * The `'cc-broken'` members of `STICKY_CC_MIGRATION_EXEMPT`, read from
- * `provider-registry.ts` as TEXT (issue #3713): a type whose Cloud Control
+ * `provider-registry/sticky-exempt.ts` as TEXT (issue #3713): a type whose Cloud Control
  * handler cannot manage it must not receive an unrecognized property, so it
  * folds into `ccRouteUnavailable`. Text rather than an import because this
  * script stays bootstrap-free; `property-coverage-cc-fallback-binding.test.ts`
@@ -326,7 +326,7 @@ export function parseCcBrokenTypes(registrySource: string): Set<string> {
     /STICKY_CC_MIGRATION_EXEMPT[^=]*=\s*new Map(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
       registrySource
     );
-  if (!table) throw new Error('could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry.ts');
+  if (!table) throw new Error('could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry/sticky-exempt.ts');
   const entries = table[1]!.split(/\n {2}\[/).slice(1);
   if (entries.length === 0) throw new Error('STICKY_CC_MIGRATION_EXEMPT parsed to zero entries');
   const broken = new Set<string>();
@@ -454,7 +454,7 @@ function main(): void {
     }
   }
 
-  const ccBroken = parseCcBrokenTypes(readFileSync(PROVIDER_REGISTRY_FILE, 'utf8'));
+  const ccBroken = parseCcBrokenTypes(readFileSync(STICKY_EXEMPT_FILE, 'utf8'));
   const sdkNonProvisionable = parseSdkNonProvisionableTypes(
     readFileSync(UNSUPPORTED_TYPES_FILE, 'utf8')
   );
