@@ -10,6 +10,8 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
 
 const mockLoggerError = vi.hoisted(() => vi.fn());
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
+const modeFailure = vi.hoisted(() => ({ value: undefined as Error | undefined }));
 const stateForDiff = vi.hoisted(() => ({ value: null as StackState | null, reads: 0 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -17,7 +19,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: mockLoggerError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -68,7 +70,10 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
   createLazyAssetModeContext: () => ({
     accountId: async () => '123456789012',
-    resolveMode: async () => ({ mode: 'cdkd-assets', marker: { assetBucket: 'cdkd-asset-bucket' } }),
+    resolveMode: async () => {
+      if (modeFailure.value) throw modeFailure.value;
+      return { mode: 'cdkd-assets', marker: { assetBucket: 'cdkd-asset-bucket' } };
+    },
   }),
 }));
 
@@ -92,9 +97,9 @@ async function runDiffJson(argv: string[]): Promise<string> {
   }
 }
 
-describe('cdkd diff: LegacyStackSynthesizer asset parameters (issue #6421)', () => {
-  it('shows no change for a property the deploy resolved from the bound parameters', async () => {
-    mockSynthesize.mockResolvedValue({
+/** A fresh synthesized legacy stack per call: binding mutates its template. */
+function synthResult(): unknown {
+  return {
       stacks: [
         {
           stackName: 'S',
@@ -141,7 +146,12 @@ describe('cdkd diff: LegacyStackSynthesizer asset parameters (issue #6421)', () 
           },
         },
       ],
-    });
+    };
+}
+
+describe('cdkd diff: LegacyStackSynthesizer asset parameters (issue #6421)', () => {
+  it('shows no change for a property the deploy resolved from the bound parameters', async () => {
+    mockSynthesize.mockResolvedValue(synthResult());
     stateForDiff.value = {
       stackName: 'S',
       region: 'us-east-1',
@@ -162,5 +172,21 @@ describe('cdkd diff: LegacyStackSynthesizer asset parameters (issue #6421)', () 
       changes: Array<{ logicalId: string; changeType?: string }>;
     }>;
     expect(payload[0]?.changes.filter((c) => c.changeType !== 'NO_CHANGE')).toEqual([]);
+  }, 30_000);
+
+  it('warns and shows the values unresolved when the parameters cannot be bound', async () => {
+    // A fresh copy of the same stack; the recorded state persists from above.
+    mockSynthesize.mockResolvedValue(synthResult());
+    modeFailure.value = new Error('marker unreadable');
+    try {
+      const stdout = await runDiffJson(['S', '--state-bucket', 'b', '--json']);
+      const payload = JSON.parse(stdout) as Array<{ changes: Array<{ changeType?: string }> }>;
+      expect(payload[0]?.changes.some((c) => c.changeType !== 'NO_CHANGE')).toBe(true);
+      expect(mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Could not bind the LegacyStackSynthesizer asset parameters of stack S'
+      );
+    } finally {
+      modeFailure.value = undefined;
+    }
   }, 30_000);
 });

@@ -7,6 +7,11 @@ import { AssetError } from '../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { lookupCdkToolkitBucket } from './cdk-toolkit-bucket.js';
+import {
+  ASSET_SUPPORT_VERSION,
+  getCdkdAssetBucketName,
+  getCdkdContainerRepoName,
+} from './asset-storage/names.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { injectiveKey } from '../state/record-keys.js';
 import {
@@ -128,7 +133,17 @@ export interface LegacyAssetPlan {
   parameters: Record<string, string>;
   /** Repositories the publish must create when missing (the CLI creates them). */
   repositoriesToEnsure: Set<string>;
+  /**
+   * The repositories that are the synthesizer's OWN default — `aws-cdk/assets`
+   * with the source hash as tag — and so need no unrecognized-destination
+   * warning. A repository or tag the metadata chose otherwise is warned about
+   * like a manifest-chosen one.
+   */
+  recognizedRepositories: Set<string>;
 }
+
+/** `LegacyStackSynthesizer`'s default image repository (`ASSETS_ECR_REPOSITORY_NAME`). */
+export const LEGACY_DEFAULT_IMAGE_REPOSITORY = 'aws-cdk/assets';
 
 /** An entry's `id` for a message, when it is a string. */
 function entryLabel(entry: LegacyAssetEntry): string {
@@ -154,6 +169,13 @@ function requireString(entry: LegacyAssetEntry, field: string): string {
  * - file / zip: object key `assets/<sourceHash><ext>` (`.zip` for a zip, the
  *   path's own extension otherwise), under `assets/<id>/` when the id is not
  *   the source hash; parameters bucket, `<prefix>||<baseName>`, source hash.
+ *   With `rootKeys` (cdkd asset storage) the key is `<sourceHash><ext>` at the
+ *   bucket root and the prefix empty: cdkd's own content-addressed layout,
+ *   which `cdkd gc`'s content-hash pass recognises wherever a state value
+ *   carries it, where a `assets/`-prefixed key is protected only by an exact
+ *   match and a key inside an array (a BucketDeployment's
+ *   `SourceObjectKeys`) would read as unreferenced. The CDK CLI's layout is
+ *   kept in the CDK toolkit bucket, which `cdk gc` owns.
  * - container-image: repository `repositoryName ?? cdk/<id>`, tag
  *   `imageTag ?? sourceHash`; a parameter only when the entry names
  *   `imageNameParameter` (modern aws-cdk-lib bakes the image URI into the
@@ -166,12 +188,19 @@ function requireString(entry: LegacyAssetEntry, field: string): string {
  */
 export function buildLegacyAssetPlan(
   entries: readonly LegacyAssetEntry[],
-  target: { fileBucket: string | undefined; accountId: string; region: string }
+  target: {
+    fileBucket: string | undefined;
+    accountId: string;
+    region: string;
+    /** Content-addressed keys at the bucket root (cdkd asset storage). */
+    rootKeys?: boolean;
+  }
 ): LegacyAssetPlan {
   const files = nullPrototypeRecord<FileAsset>();
   const dockerImages: AssetManifest['dockerImages'] = nullPrototypeRecord();
   const parameters = nullPrototypeRecord<string>();
   const repositoriesToEnsure = new Set<string>();
+  const recognizedRepositories = new Set<string>();
 
   for (const entry of entries) {
     switch (entry.packaging) {
@@ -189,7 +218,7 @@ export function buildLegacyAssetPlan(
         }
         const extension = entry.packaging === 'zip' ? '.zip' : extname(assetPath);
         const baseName = `${sourceHash}${extension}`;
-        const s3Prefix = id === sourceHash ? 'assets/' : `assets/${id}/`;
+        const s3Prefix = target.rootKeys ? '' : id === sourceHash ? 'assets/' : `assets/${id}/`;
         files[sourceHash] = {
           displayName: id,
           source: { path: assetPath, packaging: entry.packaging },
@@ -247,6 +276,9 @@ export function buildLegacyAssetPlan(
           },
         };
         repositoriesToEnsure.add(repositoryName);
+        if (repositoryName === LEGACY_DEFAULT_IMAGE_REPOSITORY && imageTag === sourceHash) {
+          recognizedRepositories.add(repositoryName);
+        }
         if (image.imageNameParameter) {
           const { urlSuffix } = derivePartitionAndUrlSuffix(target.region);
           parameters[image.imageNameParameter] =
@@ -268,6 +300,7 @@ export function buildLegacyAssetPlan(
     manifest: { version: 'legacy-synthesizer', files, dockerImages },
     parameters: { ...parameters },
     repositoriesToEnsure,
+    recognizedRepositories,
   };
 }
 
@@ -303,6 +336,23 @@ export function bindLegacyAssetParameters(
   return bound;
 }
 
+/**
+ * The mode a `--dry-run` reports for a region whose asset storage the real
+ * deploy would auto-create (#1007): the default cdkd names, which is what
+ * auto-creation writes.
+ */
+export function predictedAutoCreatedAssetMode(accountId: string, region: string): AssetMode {
+  return {
+    mode: 'cdkd-assets',
+    marker: {
+      assetBucket: getCdkdAssetBucketName(accountId, region),
+      containerRepo: getCdkdContainerRepoName(accountId, region),
+      assetSupportVersion: ASSET_SUPPORT_VERSION,
+      createdAt: new Date(0).toISOString(),
+    },
+  };
+}
+
 const toolkitBucketCache = new Map<string, Promise<string>>();
 
 /** Test seam: the per-process toolkit-bucket memo. */
@@ -329,7 +379,16 @@ export function resetLegacyToolkitBucketCache(): void {
  */
 export async function prepareLegacyStackAssets(
   stack: Pick<StackInfo, 'stackName' | 'template' | 'legacyAssets' | 'assetManifestPath'>,
-  opts: { assetMode: AssetMode; accountId: string; region: string }
+  opts: {
+    /**
+     * The region's mode, or a function resolving it: a stack with only image
+     * assets needs no bucket, so it never reads (or auto-creates) asset
+     * storage for nothing.
+     */
+    assetMode: AssetMode | (() => Promise<AssetMode>);
+    accountId: string;
+    region: string;
+  }
 ): Promise<LegacyAssetPlan | undefined> {
   const legacy = stack.legacyAssets;
   if (!legacy || legacy.entries.length === 0) return undefined;
@@ -341,9 +400,13 @@ export async function prepareLegacyStackAssets(
     );
   }
   let fileBucket: string | undefined;
+  let rootKeys = false;
   if (legacyEntriesNeedFileBucket(legacy.entries)) {
-    if (opts.assetMode.mode === 'cdkd-assets') {
-      fileBucket = opts.assetMode.marker.assetBucket;
+    const assetMode =
+      typeof opts.assetMode === 'function' ? await opts.assetMode() : opts.assetMode;
+    if (assetMode.mode === 'cdkd-assets') {
+      fileBucket = assetMode.marker.assetBucket;
+      rootKeys = true;
     } else {
       const key = injectiveKey(opts.accountId, opts.region);
       let pending = toolkitBucketCache.get(key);
@@ -360,6 +423,7 @@ export async function prepareLegacyStackAssets(
     fileBucket,
     accountId: opts.accountId,
     region: opts.region,
+    rootKeys,
   });
   bindLegacyAssetParameters(stack.template, plan.parameters);
   return plan;
@@ -381,9 +445,16 @@ export function createLegacyAssetParameterBinder(context: LazyAssetModeContext):
   return async (stack, region, override) => {
     if (!stack.legacyAssets) return undefined;
     const accountId = await context.accountId();
-    const assetMode = override?.assetMode ?? (await context.resolveMode(region));
-    await prepareLegacyStackAssets(stack, { assetMode, accountId, region });
-    return assetMode;
+    // Resolved only when a file asset needs a bucket; `undefined` back means
+    // no mode was consulted (no bucket is named).
+    let resolved: AssetMode | undefined;
+    await prepareLegacyStackAssets(stack, {
+      assetMode: async () =>
+        (resolved = override?.assetMode ?? (await context.resolveMode(region))),
+      accountId,
+      region,
+    });
+    return resolved;
   };
 }
 
@@ -396,6 +467,7 @@ export function createLegacyAssetParameterBinder(context: LazyAssetModeContext):
 export async function bindLegacyStackAssetParameters(
   stack: Pick<StackInfo, 'stackName' | 'template' | 'legacyAssets' | 'assetManifestPath'>,
   region: string,
+  /** `useCdkBootstrapAssets` as the command resolves it (cdk.json included). */
   opts: Omit<LazyAssetModeOptions, 'suppressLegacyNotice'>
 ): Promise<void> {
   if (!stack.legacyAssets) return;

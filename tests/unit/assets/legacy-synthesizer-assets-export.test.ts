@@ -49,7 +49,7 @@ describe('bindLegacyStackAssetParameters', () => {
       { stateBackend: {} as never, stsRegion: 'us-east-1' }
     );
     expect(t.Parameters!['BucketP']!.Default).toBe('cdkd-b');
-    expect(t.Parameters!['KeyP']!.Default).toBe('assets/||h.zip');
+    expect(t.Parameters!['KeyP']!.Default).toBe('||h.zip');
     expect(contextFactory).toHaveBeenCalledWith(
       expect.objectContaining({ suppressLegacyNotice: true, stsRegion: 'us-east-1' })
     );

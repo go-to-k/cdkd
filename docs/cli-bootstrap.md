@@ -206,9 +206,15 @@ and supplies the parameters, as the AWS CDK CLI does.
 
 | Asset | Where cdkd publishes it |
 | --- | --- |
-| File or directory, cdkd-assets mode | The cdkd-owned asset bucket, under `assets/` |
+| File or directory, cdkd-assets mode | The cdkd-owned asset bucket, keyed by content hash like any other asset |
 | File or directory, legacy mode | The `BucketName` output of the `CDKToolkit` stack, under `assets/` |
 | Docker image | The repository the synthesizer names (`aws-cdk/assets` by default), created when missing |
+
+A repository other than the default `aws-cdk/assets` prints the same warning
+as an unrecognized destination in an asset manifest. A stack whose legacy
+assets are all images reads no asset storage and needs no bucket. Under
+`--dry-run`, a region whose asset storage the real deploy would create shows
+the cdkd bucket that deploy will use.
 
 In legacy mode the asset bucket comes from the `CDKToolkit` stack, so a custom
 qualifier or bucket name is found. A toolkit stack under another name is not:

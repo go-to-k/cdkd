@@ -281,12 +281,13 @@ async function publishAssetsCommand(
         if (stack.legacyAssets) {
           logger.info(safeMsg`\nPublishing assets for stack: ${describeStack(stack)}`);
           const stackRegion = await regionForStack(stack);
-          const modeResolver = useCdkBootstrapAssets ? null : await getModeResolver();
-          const assetMode: AssetMode = modeResolver
-            ? await modeResolver.resolve(stack.region || rawNamedRegion || stackRegion)
-            : { mode: 'legacy' };
           const plan = await prepareLegacyStackAssets(stack, {
-            assetMode,
+            assetMode: async (): Promise<AssetMode> => {
+              const modeResolver = useCdkBootstrapAssets ? null : await getModeResolver();
+              return modeResolver
+                ? modeResolver.resolve(stack.region || rawNamedRegion || stackRegion)
+                : { mode: 'legacy' };
+            },
             accountId,
             region: stackRegion,
           });
@@ -299,7 +300,8 @@ async function publishAssetsCommand(
                 nodePrefix: `${stack.stackName}:`,
                 cdkOutputDir: stack.legacyAssets.assemblyDir,
                 ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
-                destinationsChosenByCdkd: true,
+                bucketsChosenByCdkd: true,
+                recognizedRepositories: plan.recognizedRepositories,
                 repositoriesToEnsure: plan.repositoriesToEnsure,
               })
             : [];

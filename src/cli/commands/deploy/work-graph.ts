@@ -8,6 +8,7 @@ import {
 } from '../../../assets/asset-redirect.js';
 import {
   legacyPlanAssetCount,
+  predictedAutoCreatedAssetMode,
   prepareLegacyStackAssets,
 } from '../../../assets/legacy-synthesizer-assets.js';
 import { WorkGraph } from '../../../deployment/work-graph.js';
@@ -40,6 +41,12 @@ export async function addStacksToWorkGraph(args: {
     pool: readonly StackInfo[]
   ) => Set<StackInfo>;
   inferredCrossStackDeps: Map<StackInfo, Set<StackInfo>>;
+  /**
+   * `--dry-run` where the real deploy would auto-create a region's missing
+   * asset storage (#1007): a legacy-synthesizer stack's parameters then show
+   * the default cdkd bucket the real deploy binds (#6421).
+   */
+  dryRunPredictsAutoCreatedStorage?: boolean;
 }): Promise<void> {
   const {
     targetStacks,
@@ -56,6 +63,7 @@ export async function addStacksToWorkGraph(args: {
     workGraph,
     dependencyStacks,
     inferredCrossStackDeps,
+    dryRunPredictsAutoCreatedStorage = false,
   } = args;
   for (const stack of targetStacks) {
     const stackNodeId = `stack:${graphKey(stack)}`;
@@ -124,11 +132,17 @@ export async function addStacksToWorkGraph(args: {
     // --skip-assets (the CDK CLI computes them regardless).
     if (stack.legacyAssets) {
       const assetRegion = stackRegions.get(stack) ?? deployStackRegion(stack, baseRegion);
-      const assetMode = await assetModeResolver.resolve(
-        stack.region || rawNamedRegion || assetRegion
-      );
       const plan = await prepareLegacyStackAssets(stack, {
-        assetMode,
+        assetMode: async () => {
+          const mode = await assetModeResolver.resolve(
+            stack.region || rawNamedRegion || assetRegion
+          );
+          // A dry run never auto-creates storage (no marker reads as legacy),
+          // but the real deploy would, and bind the cdkd bucket: show that.
+          return mode.mode === 'legacy' && dryRunPredictsAutoCreatedStorage
+            ? predictedAutoCreatedAssetMode(accountId, assetRegion)
+            : mode;
+        },
         accountId,
         region: assetRegion,
       });
@@ -140,7 +154,8 @@ export async function addStacksToWorkGraph(args: {
           nodePrefix: `${graphKey(stack)}:`,
           cdkOutputDir: stack.legacyAssets.assemblyDir,
           ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
-          destinationsChosenByCdkd: true,
+          bucketsChosenByCdkd: true,
+          recognizedRepositories: plan.recognizedRepositories,
           repositoriesToEnsure: plan.repositoriesToEnsure,
         });
         for (const id of nodeIds) {

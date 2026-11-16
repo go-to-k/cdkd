@@ -16,11 +16,12 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 
 const addAssetsToGraph = vi.hoisted(() => vi.fn());
 const addManifestToGraph = vi.hoisted(() => vi.fn());
+const executeNode = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
   AssetPublisher: vi.fn().mockImplementation(() => ({
     addAssetsToGraph,
     addManifestToGraph,
-    executeNode: vi.fn(async () => undefined),
+    executeNode,
   })),
 }));
 
@@ -157,7 +158,7 @@ describe('cdkd publish-assets: LegacyStackSynthesizer stack (issue #6421)', () =
     expect(addManifestToGraph.mock.calls[0]![2]).toMatchObject({
       cdkOutputDir: '/tmp/cdk.out',
       region: 'us-east-1',
-      destinationsChosenByCdkd: true,
+      bucketsChosenByCdkd: true,
     });
     expect(cfnSend).not.toHaveBeenCalled();
     expect(addAssetsToGraph).not.toHaveBeenCalled();
@@ -172,5 +173,16 @@ describe('cdkd publish-assets: LegacyStackSynthesizer stack (issue #6421)', () =
     mode.value = { mode: 'cdkd-assets', marker: { assetBucket: 'cdkd-asset-bucket' } };
     await runPublish(['Legacy', '--use-cdk-bootstrap-assets']);
     expect(publishedBuckets()).toEqual(['cdk-toolkit-bucket']);
+  });
+
+  it('runs the publish nodes the plan adds and reports the count', async () => {
+    addManifestToGraph.mockImplementation((graph: { addNode: (n: unknown) => void }) => {
+      const id = `asset-publish:Legacy:file:${HASH}`;
+      graph.addNode({ id, type: 'asset-publish', dependencies: new Set(), state: 'pending', data: {} });
+      return [id];
+    });
+    await runPublish(['Legacy']);
+    expect(executeNode).toHaveBeenCalledTimes(1);
+    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/Published 1 asset\(s\)/);
   });
 });

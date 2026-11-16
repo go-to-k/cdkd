@@ -24,7 +24,11 @@ import {
   type LockRecoveryContext,
 } from '../../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../../config-loader.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../../config-loader.js';
 import { describeStack, renderNoStackMatch } from '../../stack-matcher.js';
 import { type TemplateFormat } from '../../yaml-cfn.js';
 import { type ExportOptions } from './plan-types.js';
@@ -277,6 +281,7 @@ export async function exportCommand(
       await bindLegacyStackAssetParameters(legacyAssetStack, targetRegion, {
         stateBackend,
         stsRegion: effectiveRegion.region,
+        useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(),
         ...(options.profile && { profile: options.profile }),
       });
     }

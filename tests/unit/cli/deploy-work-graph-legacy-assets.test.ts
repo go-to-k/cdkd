@@ -1,4 +1,12 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+const warnDestination = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/assets/manifest-passthrough-warnings.js', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('../../../src/assets/manifest-passthrough-warnings.js')
+  >()),
+  warnUnrecognizedAssetDestination: warnDestination,
+}));
 import { addStacksToWorkGraph } from '../../../src/cli/commands/deploy/work-graph.js';
 import { AssetPublisher } from '../../../src/assets/asset-publisher.js';
 import { WorkGraph } from '../../../src/deployment/work-graph.js';
@@ -57,14 +65,23 @@ function legacyStack(): StackInfo {
   } as StackInfo;
 }
 
-async function run(stack: StackInfo, options: Partial<DeployCommandOptions>) {
+const CDKD_MODE = {
+  mode: 'cdkd-assets',
+  marker: { assetBucket: 'cdkd-assets-bucket', containerRepo: 'cdkd-container-assets' },
+};
+let resolve = vi.fn();
+beforeEach(() => {
+  resolve = vi.fn().mockResolvedValue(CDKD_MODE);
+  warnDestination.mockClear();
+});
+
+async function run(
+  stack: StackInfo,
+  options: Partial<DeployCommandOptions>,
+  extra: { dryRunPredictsAutoCreatedStorage?: boolean } = {}
+) {
   const workGraph = new WorkGraph();
-  const assetModeResolver = {
-    resolve: vi.fn().mockResolvedValue({
-      mode: 'cdkd-assets',
-      marker: { assetBucket: 'cdkd-assets-bucket', containerRepo: 'cdkd-container-assets' },
-    }),
-  } as unknown as AssetModeResolver;
+  const assetModeResolver = { resolve } as unknown as AssetModeResolver;
   await addStacksToWorkGraph({
     targetStacks: [stack],
     graphKey: (s) => s.stackName,
@@ -80,6 +97,7 @@ async function run(stack: StackInfo, options: Partial<DeployCommandOptions>) {
     workGraph,
     dependencyStacks: () => new Set(),
     inferredCrossStackDeps: new Map(),
+    ...extra,
   });
   return workGraph;
 }
@@ -113,7 +131,7 @@ describe('addStacksToWorkGraph: LegacyStackSynthesizer assets', () => {
         destinations: {
           'legacy-synthesizer': {
             bucketName: 'cdkd-assets-bucket',
-            objectKey: `assets/${HASH}.zip`,
+            objectKey: `${HASH}.zip`,
           },
         },
       },
@@ -125,7 +143,8 @@ describe('addStacksToWorkGraph: LegacyStackSynthesizer assets', () => {
 
     const params = stack.template.Parameters!;
     expect(params[BUCKET_PARAM]!.Default).toBe('cdkd-assets-bucket');
-    expect(params[KEY_PARAM]!.Default).toBe(`assets/||${HASH}.zip`);
+    // cdkd's content-addressed root key, which `cdkd gc` recognises.
+    expect(params[KEY_PARAM]!.Default).toBe(`||${HASH}.zip`);
     expect(params[HASH_PARAM]!.Default).toBe(HASH);
   });
 
@@ -150,5 +169,40 @@ describe('addStacksToWorkGraph: LegacyStackSynthesizer assets', () => {
       'cdkd-asset-img',
       true
     );
+  });
+
+  it('warns about no bucket cdkd chose, and judges an image repository by name', async () => {
+    const stack = legacyStack();
+    stack.legacyAssets!.entries.push({
+      packaging: 'container-image',
+      id: 'custom',
+      path: 'asset.custom',
+      sourceHash: 'custom',
+      repositoryName: 'prod/app',
+      imageTag: 'v2',
+    });
+    await run(stack, {});
+    const calls = warnDestination.mock.calls.map(([arg]) => arg as { kind: string; name: string; recognized: boolean });
+    expect(calls.filter((c) => c.kind === 'bucket')).toEqual([]);
+    expect(calls.filter((c) => c.kind === 'repository')).toEqual([
+      { kind: 'repository', name: 'aws-cdk/assets', recognized: true },
+      { kind: 'repository', name: 'prod/app', recognized: false },
+    ]);
+  });
+
+  it('under --dry-run where storage would be auto-created, binds the default cdkd bucket', async () => {
+    resolve.mockResolvedValue({ mode: 'legacy' });
+    const stack = legacyStack();
+    await run(stack, { dryRun: true }, { dryRunPredictsAutoCreatedStorage: true });
+    expect(stack.template.Parameters![BUCKET_PARAM]!.Default).toBe(
+      'cdkd-assets-123456789012-us-east-1'
+    );
+  });
+
+  it('resolves no asset mode for an image-only legacy stack', async () => {
+    const stack = legacyStack();
+    stack.legacyAssets!.entries.splice(0, 1);
+    await run(stack, {});
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

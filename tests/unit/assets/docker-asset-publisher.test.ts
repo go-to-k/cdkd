@@ -873,6 +873,29 @@ describe('DockerAssetPublisher', () => {
       });
     });
 
+    it('tolerates a repository another node created first, and rethrows any other Describe error', async () => {
+      const notFound = Object.assign(new Error('nope'), { name: 'RepositoryNotFoundException' });
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeRepositories') throw notFound;
+        if (cmd._type === 'CreateRepository') {
+          throw Object.assign(new Error('exists'), { name: 'RepositoryAlreadyExistsException' });
+        }
+        if (cmd._type === 'DescribeImages') return { imageDetails: [{}] };
+        return {};
+      });
+      await publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true);
+      expect(typesSent()).toEqual(['DescribeRepositories', 'CreateRepository', 'DescribeImages']);
+
+      mockEcrSend.mockReset();
+      mockEcrSend.mockImplementation(() => {
+        throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+      });
+      await expect(
+        publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true)
+      ).rejects.toThrow(/denied/);
+      expect(typesSent()).toEqual(['DescribeRepositories']);
+    });
+
     it('leaves an existing repository alone and does not ask without the flag', async () => {
       mockEcrSend.mockImplementation((cmd: { _type?: string }) =>
         cmd._type === 'DescribeRepositories'

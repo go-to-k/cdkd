@@ -690,6 +690,11 @@ export async function deployCommand(
       workGraph,
       dependencyStacks,
       inferredCrossStackDeps,
+      dryRunPredictsAutoCreatedStorage:
+        options.dryRun === true &&
+        autoAssetStorage &&
+        !options.skipAssets &&
+        !useCdkBootstrapAssets,
     });
 
     const summary = workGraph.summary();

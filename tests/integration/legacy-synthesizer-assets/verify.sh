@@ -10,11 +10,16 @@
 # Phases:
 #   0. Premise: the synthesized assembly has no asset manifest for the stack and
 #      its template carries the no-default AssetParameters.
-#   1. Deploy (v1). The Lambda's recorded Code is a real `assets/<hash>.zip`
-#      object (the `||`-split key parameter resolved) that EXISTS in the bound
-#      bucket; invoking the Lambda returns the v1 code marker and the v1 file
-#      asset's content, read through the DATA_URL the file asset's parameters
-#      built, in the SAME bucket.
+#      The v1 and v2 asset objects are deleted from both candidate buckets
+#      first, so every publish below is a real upload (the buckets persist
+#      across runs, and an existing object would skip the publish).
+#   1. Deploy (v1). The Lambda's recorded Code names the EXPECTED bucket --
+#      the cdkd asset bucket from the region's bootstrap marker (key
+#      `<hash>.zip` at its root), else the CDKToolkit stack's BucketName
+#      (`assets/<hash>.zip`, CDK CLI layout) -- and that object exists; the
+#      `||`-split key parameter resolved. Invoking the Lambda returns the v1
+#      code marker and the v1 file asset's content, read through the DATA_URL
+#      the file asset's parameters built, in the SAME bucket.
 #   2. UPDATE (CDKD_TEST_UPDATE=true switches both assets to v2 sources): new
 #      keys are published and the Lambda runs the v2 code and reads the v2 file.
 #   3. Destroy: the function and state.json are gone.
@@ -67,11 +72,18 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 OUT_FILE="$(mktemp)"
+V2_OUT="$(mktemp -d)"
+
+FN_NAME=""
 
 # Lambda auto-creates /aws/lambda/<fn> on invoke and nothing deletes it. The
-# guard keeps an empty or foreign STACK from widening the listing.
+# guard keeps an empty or foreign STACK from widening the listing; the exact
+# group of the function this run invoked goes too, whatever its name.
 sweep_log_groups() {
   ( set +eu
+    if [ -n "${FN_NAME}" ]; then
+      aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
     case "${STACK}" in
       CdkdLegacySynthesizerAssets?*)
         for lg in $(aws logs describe-log-groups --region "${REGION}" \
@@ -91,6 +103,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${OUT_FILE}"
+  rm -rf "${V2_OUT}"
   destroy_rc=0
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -139,14 +152,44 @@ recorded_code() {
     | "\(.value.properties.Code.S3Bucket) \(.value.properties.Code.S3Key) \(.value.physicalId)"' <<<"${state}"
 }
 
-# Deploy-phase assertions: the recorded code object exists, the Lambda runs the
-# expected code and reads the expected file asset from the same bucket.
+# The bucket and key prefix the legacy assets must go to: the cdkd asset
+# bucket (root keys) when the region has a bootstrap marker, else the
+# CDKToolkit stack's bucket (`assets/` keys). Sets EXPECTED_BUCKET / KEY_PREFIX.
+expected_destination() {
+  local marker
+  if marker=$(aws s3 cp "s3://${STATE_BUCKET}/cdkd-bootstrap/${REGION}.json" - 2>/dev/null); then
+    EXPECTED_BUCKET=$(jq -r '.assetBucket' <<<"${marker}")
+    KEY_PREFIX=""
+  else
+    EXPECTED_BUCKET=$(aws cloudformation describe-stacks --stack-name CDKToolkit --region "${REGION}" \
+      --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text) || return 1
+    KEY_PREFIX="assets/"
+  fi
+  [ -n "${EXPECTED_BUCKET}" ] && [ "${EXPECTED_BUCKET}" != "None" ]
+}
+
+# The object names (`<hash><ext>`) of the stack's legacy assets in a synthesized
+# assembly directory, one per line.
+asset_object_names() { # usage: asset_object_names <outdir>
+  jq -r '.[][] | select(.type == "aws:cdk:asset") | .data
+    | "\(.sourceHash)\(if .packaging == "zip" then ".zip" else ((.path | capture("(?<e>\\.[^.]*)$").e) // "") end)"' \
+    "$1/${STACK}.metadata.json"
+}
+
+# Deploy-phase assertions: the recorded code object is in the expected bucket
+# and exists, the Lambda runs the expected code and reads the expected file
+# asset from the same bucket.
 check_phase() { # usage: check_phase <code-marker> <data-content>
   local want_marker="$1" want_data="$2" line bucket key fn body marker data data_url
   line=$(recorded_code) || { echo "FAIL: could not read ${STATE_KEY}" >&2; exit 1; }
   read -r bucket key fn <<<"${line}"
-  if ! [[ "${key}" =~ ^assets/[0-9a-f]{64}\.zip$ ]]; then
-    echo "FAIL: recorded Code.S3Key '${key}' is not assets/<hash>.zip - the S3VersionKey parameter was not bound" >&2
+  expected_destination || { echo "FAIL: could not determine the expected asset bucket" >&2; exit 1; }
+  if [ "${bucket}" != "${EXPECTED_BUCKET}" ]; then
+    echo "FAIL: recorded Code.S3Bucket '${bucket}', expected '${EXPECTED_BUCKET}' (marker bucket in cdkd-assets mode, else CDKToolkit's)" >&2
+    exit 1
+  fi
+  if ! [[ "${key}" =~ ^${KEY_PREFIX}[0-9a-f]{64}\.zip$ ]]; then
+    echo "FAIL: recorded Code.S3Key '${key}' is not ${KEY_PREFIX}<hash>.zip - the S3VersionKey parameter was not bound" >&2
     exit 1
   fi
   aws s3api head-object --bucket "${bucket}" --key "${key}" --region "${REGION}" >/dev/null || {
@@ -169,8 +212,8 @@ check_phase() { # usage: check_phase <code-marker> <data-content>
     echo "FAIL: file asset content '${data}', expected '${want_data}'. Response: ${body}" >&2
     exit 1
   fi
-  if ! [[ "${data_url}" =~ ^s3://${bucket}/assets/[0-9a-f]{64}\.txt$ ]]; then
-    echo "FAIL: DATA_URL '${data_url}' is not s3://${bucket}/assets/<hash>.txt" >&2
+  if ! [[ "${data_url}" =~ ^s3://${bucket}/${KEY_PREFIX}[0-9a-f]{64}\.txt$ ]]; then
+    echo "FAIL: DATA_URL '${data_url}' is not s3://${bucket}/${KEY_PREFIX}<hash>.txt" >&2
     exit 1
   fi
   echo "    OK: Lambda runs ${want_marker} and read ${want_data} from ${data_url}"
@@ -192,6 +235,25 @@ if [ "${NO_DEFAULT_PARAMS}" -ne 6 ]; then
   exit 1
 fi
 echo "    OK: no asset manifest; ${NO_DEFAULT_PARAMS} no-default AssetParameters in the template"
+
+# Fresh uploads: delete this fixture's v1 + v2 objects (content hashes unique
+# to it) from whichever candidate bucket exists.
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" synth "${STACK}" --region "${REGION}" --output "${V2_OUT}" >/dev/null
+OBJECT_NAMES="$(asset_object_names cdk.out)
+$(asset_object_names "${V2_OUT}")"
+if [ "$(grep -c . <<<"${OBJECT_NAMES}")" -ne 4 ]; then
+  echo "FAIL: premise: expected 4 asset objects (2 assets x 2 versions), got: ${OBJECT_NAMES}" >&2
+  exit 1
+fi
+# Before the first deploy no marker may exist yet (the deploy auto-creates an
+# empty bucket then) and no CDKToolkit stack either: nothing to purge.
+if expected_destination; then
+  while read -r name; do
+    [ -n "${name}" ] || continue
+    aws s3api delete-object --bucket "${EXPECTED_BUCKET}" --key "${KEY_PREFIX}${name}" --region "${REGION}" >/dev/null
+  done <<<"${OBJECT_NAMES}"
+  echo "    OK: purged this fixture's asset objects from ${EXPECTED_BUCKET}"
+fi
 
 # --- Phase 1: deploy --------------------------------------------------------
 echo "==> Phase 1: deploy (v1 assets)"
@@ -229,6 +291,7 @@ echo "    OK: state file is gone"
 
 trap - EXIT INT TERM
 rm -f "${OUT_FILE}"
+rm -rf "${V2_OUT}"
 sweep_log_groups
 
 echo ""

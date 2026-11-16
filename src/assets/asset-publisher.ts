@@ -156,12 +156,18 @@ export class AssetPublisher {
       /** See {@link addAssetsToGraph}; defaults to `cdkOutputDir`. */
       assetOutdir?: string;
       /**
-       * Destinations cdkd CHOSE rather than read from a manifest (the legacy
-       * plan's toolkit / cdkd bucket and the synthesizer's fixed repository):
-       * the unrecognized-destination warning, which exists to name a
-       * manifest-chosen destination, does not apply.
+       * Every file destination's bucket was CHOSEN by cdkd rather than read
+       * from a manifest (the legacy plan's toolkit / cdkd bucket): the
+       * unrecognized-destination warning, which exists to name a
+       * manifest-chosen bucket, does not apply to it.
        */
-      destinationsChosenByCdkd?: boolean;
+      bucketsChosenByCdkd?: boolean;
+      /**
+       * Repository names to treat as recognized beside the bootstrap shapes —
+       * a legacy plan's synthesizer default. Any other repository still warns:
+       * a legacy entry's `repositoryName` is assembly-chosen.
+       */
+      recognizedRepositories?: ReadonlySet<string>;
       /** Docker repositories to create when missing (legacy image assets). */
       repositoriesToEnsure?: ReadonlySet<string>;
     }
@@ -170,7 +176,7 @@ export class AssetPublisher {
     const assetOutdir = options.assetOutdir ?? cdkOutputDir;
     const prefix = options.nodePrefix || '';
     const redirect = options.redirect;
-    const warnDestinations = options.destinationsChosenByCdkd !== true;
+    const warnBuckets = options.bucketsChosenByCdkd !== true;
     const nodeIds: string[] = [];
 
     // File assets: single publish node
@@ -190,7 +196,7 @@ export class AssetPublisher {
       // The DESTINATION half of go-to-k/cdkd#3497, judged AFTER the redirect so
       // a cdkd-managed target is silent. Warn, never refuse: a custom
       // bootstrap is a legitimate configuration.
-      for (const dest of warnDestinations ? Object.values(asset.destinations) : []) {
+      for (const dest of warnBuckets ? Object.values(asset.destinations) : []) {
         // The destination's OWN region, not the deploy region.
         // `buildAssetRedirectMap` deliberately skips a cross-region
         // destination, so it arrives here unrewritten, and judging
@@ -242,7 +248,7 @@ export class AssetPublisher {
       // Before the graph runs, so no resource is created first (go-to-k/cdkd#6138).
       refuseDockerAssetUnderAwsEmulator(rawAsset.displayName || hash);
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
-      for (const dest of warnDestinations ? Object.values(asset.destinations) : []) {
+      for (const dest of Object.values(asset.destinations)) {
         // `dest.region` unflattened, self-consistently — the same note as the
         // file-asset arm above, repeated rather than cross-referenced because a
         // future edit that flattens only one side would come in HERE, and the
@@ -254,6 +260,7 @@ export class AssetPublisher {
           name,
           recognized:
             isDefaultBootstrapRepoName(name, options.accountId, destRegion) ||
+            options.recognizedRepositories?.has(name) === true ||
             (redirect !== undefined && [...redirect.repos.values()].includes(name)),
         });
       }

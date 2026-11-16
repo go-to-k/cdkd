@@ -8,6 +8,14 @@ const { mockCfnSend, mockCfnDestroy } = vi.hoisted(() => ({
   mockCfnDestroy: vi.fn(),
 }));
 
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: vi.fn().mockImplementation(() => ({
+    send: vi.fn(async () => ({ Account: '123456789012' })),
+    destroy: vi.fn(),
+  })),
+  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+}));
+
 vi.mock('@aws-sdk/client-cloudformation', () => ({
   CloudFormationClient: vi.fn().mockImplementation(() => ({
     send: mockCfnSend,
@@ -17,6 +25,7 @@ vi.mock('@aws-sdk/client-cloudformation', () => ({
 }));
 
 import {
+  bindLegacyStackAssetParameters,
   bindLegacyAssetParameters,
   buildLegacyAssetPlan,
   createLegacyAssetParameterBinder,
@@ -26,6 +35,7 @@ import {
   type LegacyAssetEntry,
   type LegacyFileAssetEntry,
 } from '../../../src/assets/legacy-synthesizer-assets.js';
+import { lookupCdkToolkitBucket } from '../../../src/assets/cdk-toolkit-bucket.js';
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -276,9 +286,12 @@ describe('prepareLegacyStackAssets', () => {
       region: REGION,
     });
     expect(mockCfnSend).not.toHaveBeenCalled();
-    expect(Object.values(plan!.manifest.files[ZIP_HASH]!.destinations)[0]!.bucketName).toBe(
-      marker.assetBucket
-    );
+    // Root content-addressed keys in cdkd storage (what `cdkd gc` recognises).
+    expect(Object.values(plan!.manifest.files[ZIP_HASH]!.destinations)[0]).toMatchObject({
+      bucketName: marker.assetBucket,
+      objectKey: `${ZIP_HASH}.zip`,
+    });
+    expect(s.template.Parameters![zipEntry.s3KeyParameter]!.Default).toBe(`||${ZIP_HASH}.zip`);
     expect(s.template.Parameters![zipEntry['s3BucketParameter'] as string]!.Default).toBe(
       marker.assetBucket
     );
@@ -313,6 +326,45 @@ describe('prepareLegacyStackAssets', () => {
         region: REGION,
       })
     ).rejects.toThrow(/cdk bootstrap aws:\/\/123456789012\/us-east-1.*cdkd bootstrap/);
+  });
+
+  it('does not memoize a failed toolkit lookup: the next stack asks again', async () => {
+    mockCfnSend.mockRejectedValueOnce(new Error('Throttling: Rate exceeded'));
+    mockCfnSend.mockResolvedValueOnce({
+      Stacks: [{ Outputs: [{ OutputKey: 'BucketName', OutputValue: 'after-retry' }] }],
+    });
+    const opts = { assetMode: { mode: 'legacy' } as const, accountId: ACCOUNT, region: REGION };
+    await expect(prepareLegacyStackAssets(stack(), opts)).rejects.toThrow(/Throttling/);
+    const s = stack();
+    await prepareLegacyStackAssets(s, opts);
+    expect(mockCfnSend).toHaveBeenCalledTimes(2);
+    expect(s.template.Parameters![zipEntry.s3BucketParameter]!.Default).toBe('after-retry');
+  });
+
+  it('resolves no asset mode for a stack whose only legacy assets are images', async () => {
+    const assetMode = vi.fn();
+    const plan = await prepareLegacyStackAssets(
+      {
+        stackName: 'Img',
+        template: { Resources: {} },
+        legacyAssets: {
+          assemblyDir: '/x',
+          entries: [
+            {
+              packaging: 'container-image',
+              id: 'i',
+              path: 'asset.i',
+              sourceHash: 'i',
+              repositoryName: 'aws-cdk/assets',
+              imageTag: 'i',
+            },
+          ],
+        },
+      },
+      { assetMode, accountId: ACCOUNT, region: REGION }
+    );
+    expect(assetMode).not.toHaveBeenCalled();
+    expect([...plan!.recognizedRepositories]).toEqual(['aws-cdk/assets']);
   });
 
   it('refuses a stack that carries a publishable asset manifest as well', async () => {
@@ -409,5 +461,67 @@ describe('AssemblyReader: aws:cdk:asset metadata', () => {
     expect(
       legacyAssetEntriesFromMetadata({ '/S': [{ type: 'aws:cdk:logicalId', data: 'X' }] })
     ).toEqual([]);
+  });
+});
+
+describe('lookupCdkToolkitBucket', () => {
+  it('wraps an error other than a missing stack, naming the stack and region', async () => {
+    mockCfnSend.mockRejectedValueOnce(
+      Object.assign(new Error('User is not authorized to perform: DescribeStacks'), {
+        name: 'AccessDenied',
+      })
+    );
+    await expect(lookupCdkToolkitBucket(REGION, ACCOUNT)).rejects.toThrow(
+      /Could not read the CDKToolkit stack in us-east-1.*not authorized/
+    );
+  });
+
+  it('refuses a toolkit stack without a BucketName output', async () => {
+    mockCfnSend.mockResolvedValueOnce({ Stacks: [{ Outputs: [{ OutputKey: 'Other' }] }] });
+    await expect(lookupCdkToolkitBucket(REGION, ACCOUNT)).rejects.toThrow(
+      /needs the CDKToolkit stack's asset bucket in us-east-1, and none was found/
+    );
+  });
+});
+
+describe('bindLegacyStackAssetParameters with the real lazy context', () => {
+  it('binds the CDK toolkit bucket under useCdkBootstrapAssets, reading no marker', async () => {
+    mockCfnSend.mockResolvedValue({
+      Stacks: [{ Outputs: [{ OutputKey: 'BucketName', OutputValue: 'pinned-toolkit' }] }],
+    });
+    const getState = vi.fn();
+    const t = legacyTemplate();
+    await bindLegacyStackAssetParameters(
+      { stackName: 'L', template: t, legacyAssets: { entries: [zipEntry], assemblyDir: '/x' } },
+      REGION,
+      { stateBackend: { getState } as never, stsRegion: REGION, useCdkBootstrapAssets: true }
+    );
+    expect(t.Parameters![zipEntry.s3BucketParameter]!.Default).toBe('pinned-toolkit');
+    expect(t.Parameters![zipEntry.s3KeyParameter]!.Default).toBe(`assets/||${ZIP_HASH}.zip`);
+    expect(getState).not.toHaveBeenCalled();
+  });
+});
+
+describe('AssemblyReader: inline aws:cdk:asset metadata', () => {
+  it('reads entries from the artifact metadata in manifest.json too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'legacy-inline-'));
+    writeFileSync(join(dir, 'Legacy.template.json'), JSON.stringify(legacyTemplate()));
+    writeFileSync(
+      join(dir, 'manifest.json'),
+      JSON.stringify({
+        version: '55.0.0',
+        artifacts: {
+          Legacy: {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            properties: { templateFile: 'Legacy.template.json' },
+            metadata: { '/Legacy': [{ type: 'aws:cdk:asset', data: fileEntry }] },
+          },
+        },
+      })
+    );
+    const reader = new AssemblyReader();
+    const [info] = reader.getAllStacks(dir, reader.readManifest(dir));
+    expect(info!.legacyAssets).toEqual({ entries: [fileEntry], assemblyDir: dir });
   });
 });

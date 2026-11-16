@@ -69,14 +69,20 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   // the redirect resolver above is mocked whole.
   createLazyAssetModeContext: () => ({
     accountId: async () => '111111111111',
-    resolveMode: async () => ({
-      mode: 'cdkd-assets',
-      marker: { assetBucket: 'cdkd-assets-111111111111-us-east-1' },
-    }),
+    resolveMode: async () => legacyAssetMode.value,
   }),
 }));
+const legacyAssetMode = vi.hoisted(() => ({
+  value: {
+    mode: 'cdkd-assets',
+    marker: { assetBucket: 'cdkd-assets-111111111111-us-east-1' },
+  } as unknown,
+}));
+const mockLookupCdkToolkitBucket = vi.hoisted(() =>
+  vi.fn(async () => 'cdk-hnb659fds-assets-111111111111-us-east-1')
+);
 vi.mock('../../../src/assets/cdk-toolkit-bucket.js', () => ({
-  lookupCdkToolkitBucket: vi.fn(async () => 'cdk-hnb659fds-assets-111111111111-us-east-1'),
+  lookupCdkToolkitBucket: mockLookupCdkToolkitBucket,
 }));
 
 // Mock AWS clients. The `sts` field is needed by
@@ -652,7 +658,10 @@ describe('cdkd import', () => {
     expect(noticeCall).toBeDefined();
   });
 
-  it('binds LegacyStackSynthesizer asset parameters: cdkd storage live, the CDK toolkit bucket in state (#6421)', async () => {
+  async function importLegacyStack(): Promise<{
+    state: Record<string, unknown>;
+    tmpl: CloudFormationTemplate;
+  }> {
     const tmpl = {
       ...template({
         MyBucket: {
@@ -688,20 +697,49 @@ describe('cdkd import', () => {
     mockGetProvider.mockImplementation(() => ({
       import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
     }));
-
     await runImport(['import', '--app', 'x', '--yes']);
-
     const [, , state] = mockSaveState.mock.calls[0] as unknown as [
       string,
       string,
       { resources: Record<string, { properties: Record<string, unknown> }> },
     ];
+    return { state: state.resources['MyBucket']!.properties, tmpl };
+  }
+
+  it('binds LegacyStackSynthesizer asset parameters: cdkd storage live, the CDK toolkit bucket in state (#6421)', async () => {
+    const { state, tmpl } = await importLegacyStack();
     // #1652's reason: state holds what a CloudFormation-deployed resource
     // holds, so the next deploy repoints it to cdkd storage.
-    expect(state.resources['MyBucket']!.properties['DataBucket']).toBe(
-      'cdk-hnb659fds-assets-111111111111-us-east-1'
-    );
+    expect(state['DataBucket']).toBe('cdk-hnb659fds-assets-111111111111-us-east-1');
     expect(tmpl.Parameters!['BucketP']!.Default).toBe('cdkd-assets-111111111111-us-east-1');
+  });
+
+  it('records the cdkd storage values when no CDK toolkit stack answers (#6421)', async () => {
+    const { AssetError } = await import('../../../src/utils/error-handler.js');
+    const { resetLegacyToolkitBucketCache } = await import(
+      '../../../src/assets/legacy-synthesizer-assets.js'
+    );
+    resetLegacyToolkitBucketCache();
+    mockLookupCdkToolkitBucket.mockRejectedValueOnce(new AssetError('no CDKToolkit stack'));
+    const { state } = await importLegacyStack();
+    expect(state['DataBucket']).toBe('cdkd-assets-111111111111-us-east-1');
+    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Recording the cdkd asset storage values for the LegacyStackSynthesizer assets of stack S'
+    );
+  });
+
+  it('records the toolkit bucket in state and template alike in legacy mode (#6421)', async () => {
+    legacyAssetMode.value = { mode: 'legacy' };
+    try {
+      const { state, tmpl } = await importLegacyStack();
+      expect(state['DataBucket']).toBe('cdk-hnb659fds-assets-111111111111-us-east-1');
+      expect(tmpl.Parameters!['BucketP']!.Default).toBe('cdk-hnb659fds-assets-111111111111-us-east-1');
+    } finally {
+      legacyAssetMode.value = {
+        mode: 'cdkd-assets',
+        marker: { assetBucket: 'cdkd-assets-111111111111-us-east-1' },
+      };
+    }
   });
 
   it("ends on a cdkd diff that carries the run's --aws-emulator (go-to-k/cdkd#6245)", async () => {
