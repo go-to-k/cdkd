@@ -34,6 +34,10 @@ import {
   tagListsMatch,
 } from './sg-support.js';
 import { SUBNET_PRIVATE_DNS_MEMBERS, cidrPrefixLength } from './subnet-support.js';
+import {
+  siblingOwnedSgRuleIdentities,
+  withoutSiblingOwnedSgRules,
+} from '../../sg-sibling-rules.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 export async function readVpcCurrentState(
@@ -304,7 +308,8 @@ export async function readRouteTableCurrentState(
 export async function readSecurityGroupCurrentState(
   this: EC2Provider,
   physicalId: string,
-  properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(
     new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
@@ -353,7 +358,16 @@ export async function readSecurityGroupCurrentState(
   const stateIngress = Array.isArray(properties?.['SecurityGroupIngress'])
     ? (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>)
     : undefined;
-  const ingressRules = flattenIpPermissions(sg.IpPermissions ?? [], 'ingress');
+  //
+  // go-to-k/cdkd#6418: a rule a sibling standalone `SecurityGroupIngress` /
+  // `SecurityGroupEgress` record of the stack authorizes is that resource's,
+  // not this group's, unless the group's own template declares it too
+  // (`sg-sibling-rules.ts`).
+  const ingressRules = withoutSiblingOwnedSgRules(
+    flattenIpPermissions(sg.IpPermissions ?? [], 'ingress'),
+    siblingOwnedSgRuleIdentities(physicalId, 'ingress', properties, context),
+    'ingress'
+  );
   result['SecurityGroupIngress'] = reconcileSgRules(ingressRules, stateIngress, 'ingress');
 
   // Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation
@@ -364,7 +378,11 @@ export async function readSecurityGroupCurrentState(
   const stateEgress = Array.isArray(properties?.['SecurityGroupEgress'])
     ? (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>)
     : undefined;
-  let egressRules = flattenIpPermissions(sg.IpPermissionsEgress ?? [], 'egress');
+  let egressRules = withoutSiblingOwnedSgRules(
+    flattenIpPermissions(sg.IpPermissionsEgress ?? [], 'egress'),
+    siblingOwnedSgRuleIdentities(physicalId, 'egress', properties, context),
+    'egress'
+  );
   if (stateEgress === undefined) {
     egressRules = egressRules.filter((r) => !isDefaultEgressRule(r));
   }

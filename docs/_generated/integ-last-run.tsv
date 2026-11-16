@@ -118,6 +118,7 @@ docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #61
 drift-revert	2026-11-16T08:22:27Z	PASS	431	verify.sh	rc ok, orph clean (#6374 sweep)
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
 drift-revert-vpc	2026-11-05T11:30:20Z	PASS	333	verify.sh	rc ok, VPC/NAT/EIP gone, orph clean
+drift-sg-sibling-rules	2026-11-16T11:53:34Z	PASS	131	verify.sh	rc ok, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 errors, 0 orphans (4 phases incl. #4701 rename; no leaked scalable targets)
@@ -400,6 +401,7 @@ rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback spl
 route53	2026-11-06T18:52:34Z	PASS	564	verify.sh	#5900 route53 split head; rc ok, orph clean
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
+s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
 s3-bucket-policy-existing	2026-11-11T12:32:42Z	PASS	65	verify.sh	rc ok, orph clean; pre-fix probe RED at Phase 2 refusal (#6109)
 s3-cloudfront	2026-11-06T21:05:12Z	PASS	278	verify.sh	#5917 cloudfront-distribution split head; rc ok, orph clean
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean

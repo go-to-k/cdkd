@@ -55,6 +55,7 @@ import {
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
+import { stripSiblingOwnedSgRules } from '../../../provisioning/sg-sibling-rules.js';
 
 /** What {@link compareDriftReadback} reads from `runDriftForStack`'s scope. */
 interface CompareDriftReadbackArgs {
@@ -368,11 +369,21 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // that resource's. The readback already dropped it; the BASELINE drops it
   // here, so one captured after the sibling's write (or before the fix)
   // compares clean.
-  const siblingStripped = stripSiblingOwnedMembers(
+  const memberStripped = stripSiblingOwnedMembers(
     resource.resourceType,
     resource.physicalId,
     protocolNormalized.baseline,
     protocolNormalized.aws,
+    resource.properties,
+    readContext
+  );
+  // go-to-k/cdkd#6418: likewise a security-group rule a sibling standalone
+  // `SecurityGroupIngress` / `SecurityGroupEgress` authorizes.
+  const siblingStripped = stripSiblingOwnedSgRules(
+    resource.resourceType,
+    resource.physicalId,
+    memberStripped.baseline,
+    memberStripped.aws,
     resource.properties,
     readContext
   );
