@@ -57,7 +57,13 @@ names, their types and their meaning.
 | --- | --- |
 | `cdkd diff --json` | [cdkd diff: JSON output](cli-diff-json.md) |
 | `cdkd drift --json` | [cdkd drift: JSON output](cli-drift-json.md) |
+| `cdkd list --long --json`, `--show-dependencies --json` | [The structured document](cli-list.md#the-structured-document) |
+| `cdkd state info --json` | [`cdkd state info`](cli-state.md#cdkd-state-info) |
+| `cdkd state list --json` | [`--json` on its own](cli-state.md#json-on-its-own) |
 | `cdkd state list --long --json`, `--tree --json` | [`cdkd state list`](cli-state.md#cdkd-state-list) |
+| `cdkd state resources --json` | [`cdkd state resources`](cli-state.md#cdkd-state-resources) |
+| `cdkd state show --json` | [`cdkd state show`](cli-state.md#cdkd-state-show): `{state, lock}`, the [state record](state-management.md#what-a-state-record-contains) and its lock |
+| `cdkd events <stack> --json` | [The run list](cli-events.md#the-run-list) |
 | `cdkd events <stack> --run <id> --json` | [Deployment Event Format](deployment-events-format.md): an array, one object per event |
 | Which commands print only the document to stdout | [Output streams](cli-reference-output.md) |
 
