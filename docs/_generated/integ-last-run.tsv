@@ -239,7 +239,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-16T19:45:59Z	PASS	135	verify.sh	rc 0, destroy 0 errors, 0 orphans; run from sibling worktree at same sha d21b99b5f
+lambda	2026-11-16T20:13:52Z	PASS	135	verify.sh	rc ok, orph clean (#6437 PR #6453, rebased onto #6456)
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
@@ -261,7 +261,7 @@ lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
 lambda-url-authtype-replay	2026-11-05T03:01:10Z	PASS	130	verify.sh	rc 0, live URL stayed IAM-guarded in all phases; orph clean
 lambda-versioning	2026-11-16T08:22:27Z	PASS	58	standard	rc ok, orph clean (#6374 sweep)
 lambda-web-function-revision-replace	2026-11-11T19:34:00Z	PASS	497	verify.sh	rc ok, destroy 7 deleted 0 err, orph clean (#6117 set)
-launchtemplate-asg-inplace	2026-11-16T19:28:52Z	PASS	236	verify.sh	rc ok, orph clean (#6437 PR #6453)
+launchtemplate-asg-inplace	2026-11-16T20:13:52Z	PASS	240	verify.sh	rc ok, orph clean; #6437 arm ok (PR #6453, rebased onto #6456)
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 legacy-synthesizer-assets	2026-11-16T14:29:32Z	PASS	99	verify.sh	rc ok, orph clean; us-east-2 legacy-mode (CDKToolkit assets/) 105s PASS too
