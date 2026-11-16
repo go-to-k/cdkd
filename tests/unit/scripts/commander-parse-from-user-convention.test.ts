@@ -700,6 +700,8 @@ const KNOWN_DARK: Record<string, number> = {
   'tests/unit/cli/export-non-interactive-confirm.test.ts': 1,
   // `dryRunArgs()` / `realRunArgs()` call results passed to `runExport`.
   'tests/unit/cli/export-plan-record-display.test.ts': 1,
+  // `args(...)` call results passed to `runExport`.
+  'tests/unit/cli/export-ssm-parameter-preflight-wiring-6410.test.ts': 1,
   // `STACK` is a template literal, which may begin with `-`.
   'tests/unit/cli/force-unlock-display.test.ts': 1,
   // `realArgs`, a conditional slice of the wrapper's parameter.

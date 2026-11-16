@@ -23,6 +23,9 @@
 #      Assert the table was updated in place (CreationDateTime unchanged), the
 #      GSI and memory reached the emulator, and a local invoke sees the new
 #      env value.
+#   4b. `cdkd export --dry-run --aws-emulator` refuses the stack while the
+#      emulator has no `cdk bootstrap` SSM parameter, naming it
+#      (go-to-k/cdkd#6410), and passes once the parameter exists.
 #   5. `cdkd destroy --aws-emulator`: the custom resources' Delete handlers run
 #      locally again, and every resource plus the state record is gone.
 #
@@ -110,6 +113,7 @@ UPDATE_LOG="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-update.$$.log"
 DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-destroy.$$.log"
 INVOKE_LOG="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-invoke.$$.log"
 API_LOG="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-api.$$.log"
+EXPORT_LOG="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-export.$$.log"
 EVENT_FILE="${TMPDIR:-/tmp}/cdkd-local-aws-emulator-event.$$.json"
 API_PID=""
 CLEANED_UP=0
@@ -154,7 +158,7 @@ cleanup_body() { (
       ;;
     *) echo "WARN: teardown sweep refused: PORT '${PORT}' is not a port number" >&2 ;;
   esac
-  rm -f "${DEPLOY_LOG}" "${UPDATE_LOG}" "${DESTROY_LOG}" "${INVOKE_LOG}" "${API_LOG}" "${EVENT_FILE}"
+  rm -f "${DEPLOY_LOG}" "${UPDATE_LOG}" "${DESTROY_LOG}" "${INVOKE_LOG}" "${API_LOG}" "${EXPORT_LOG}" "${EVENT_FILE}"
   exit 0
 ) }
 trap cleanup EXIT
@@ -378,6 +382,39 @@ if ! grep -qF "{\"table\":\"${TABLE}\",\"stored\":\"v2\",\"version\":\"v2\"}" "$
   exit 1
 fi
 echo "    OK: updated in place; GSI + memory reached the emulator; local invoke sees v2"
+
+# --- Phase 4b: export --dry-run without CDK bootstrap (go-to-k/cdkd#6410) -----
+# The emulator starts without `cdk bootstrap`, so the stack's BootstrapVersion
+# parameter names an SSM parameter that does not exist. CloudFormation would
+# fail the IMPORT changeset on it; the preview must refuse it by name first.
+echo "==> Phase 4b: export --dry-run refuses the missing BootstrapVersion SSM parameter"
+BOOTSTRAP_PARAM="/cdk-bootstrap/hnb659fds/version"
+assert_gone "SSM parameter ${BOOTSTRAP_PARAM} exists before the export preview" aws ssm get-parameter --name "${BOOTSTRAP_PARAM}"
+if CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" export "${STACK}" --aws-emulator="${EMU}" --dry-run >"${EXPORT_LOG}" 2>&1; then
+  echo "FAIL: export --dry-run passed with ${BOOTSTRAP_PARAM} missing" >&2
+  tail -30 "${EXPORT_LOG}" >&2
+  exit 1
+fi
+strip_ansi "${EXPORT_LOG}"
+if ! grep -qF "'BootstrapVersion': SSM parameter ${BOOTSTRAP_PARAM} is created by 'cdk bootstrap'" "${EXPORT_LOG}"; then
+  echo "FAIL: export --dry-run failed without naming ${BOOTSTRAP_PARAM}" >&2
+  tail -30 "${EXPORT_LOG}" >&2
+  exit 1
+fi
+aws ssm put-parameter --name "${BOOTSTRAP_PARAM}" --type String --value 30 >/dev/null
+# The preview still stops on the types the emulator's registry has no schema
+# for (go-to-k/cdkd#6411), so this arm asserts only that the parameter is no
+# longer named, on a run that printed the blocked list, which comes after the
+# SSM check (the sentinel).
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" export "${STACK}" --aws-emulator="${EMU}" --dry-run >"${EXPORT_LOG}" 2>&1 || true
+strip_ansi "${EXPORT_LOG}"
+grep -qF 'The following resources block migration:' "${EXPORT_LOG}" || { echo "FAIL: export --dry-run did not reach the SSM check after ${BOOTSTRAP_PARAM} was created" >&2; tail -30 "${EXPORT_LOG}" >&2; exit 1; }
+if grep -qF "SSM parameter ${BOOTSTRAP_PARAM}" "${EXPORT_LOG}"; then
+  echo "FAIL: export --dry-run still names ${BOOTSTRAP_PARAM} after it was created" >&2
+  tail -30 "${EXPORT_LOG}" >&2
+  exit 1
+fi
+echo "    OK: the preview names the missing parameter, and stops naming it once it exists"
 
 # --- Phase 5: destroy -----------------------------------------------------------
 echo "==> Phase 5: destroy --aws-emulator"
