@@ -612,9 +612,10 @@ macro expansion, before anything is published or provisioned (issue
 A nested stack's cleanup phase runs at the end of the whole stack tree's
 deploy, as CloudFormation's does. A child's replaced resources stay recorded
 in its state while the rest of the tree deploys, because a sibling or the
-parent may still reference them through a parameter. The top-level stack
-deletes its own first, then each child's in the order the children finished,
-each under that child's lock (issue
+parent may still reference them through a parameter. Once its outputs
+resolved, the top-level stack deletes each child's in the order the children
+finished, each under that child's lock, and then its own, so a child's old
+resource goes before the parent's old resource it used (issue
 [#6398](https://github.com/go-to-k/cdkd/issues/6398)). A top-level deploy that
 fails sends none of these deletes, and its rollback takes the old resources
 back.

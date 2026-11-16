@@ -248,17 +248,18 @@ echo "    schedule moved to ${G2}; ${G1} deleted"
 # Ordering: the root ran the nested cleanup after child B's schedule moved.
 # Sentinel: both lines must be present, or the order check reads nothing.
 SCHEDULE_LINE="$(grep -nE 'Replacing Schedule[0-9A-F]+ \(AWS::Scheduler::Schedule\)' <<<"${P3_PLAIN}" | tail -n 1 | cut -d: -f1 || true)"
-CLEANUP_LINE="$(grep -nF 'Deleting the replaced resources of nested stack' <<<"${P3_PLAIN}" | head -n 1 | cut -d: -f1 || true)"
+# Child A's stack is `<parent>~ChildANestedStack...` (its logical id carries a CDK hash).
+CLEANUP_LINE="$(grep -nF "Deleting the replaced resources of nested stack ${STACK}~ChildA" <<<"${P3_PLAIN}" | head -n 1 | cut -d: -f1 || true)"
 if [ -z "${SCHEDULE_LINE}" ]; then
   echo "FAIL: Phase 3 never replaced child B's schedule" >&2
   exit 1
 fi
 if [ -z "${CLEANUP_LINE}" ]; then
-  echo "FAIL: Phase 3 printed no nested-stack cleanup line" >&2
+  echo "FAIL: Phase 3 printed no cleanup line naming child A's nested stack" >&2
   exit 1
 fi
 if [ "${CLEANUP_LINE}" -le "${SCHEDULE_LINE}" ]; then
-  echo "FAIL: the nested cleanup (line ${CLEANUP_LINE}) ran before child B's schedule moved (line ${SCHEDULE_LINE})" >&2
+  echo "FAIL: child A's cleanup (line ${CLEANUP_LINE}) ran before child B's schedule moved (line ${SCHEDULE_LINE})" >&2
   exit 1
 fi
 echo "    the old group was deleted at the root's cleanup, after the schedule moved"

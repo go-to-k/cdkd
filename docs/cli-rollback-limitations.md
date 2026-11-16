@@ -16,6 +16,9 @@ When the failed deploy replaced a resource, the rollback takes the old
 resource back and deletes the new one. A create-first replacement deletes the
 old resource only after the rest of the deploy succeeds, so after a failed
 deploy it is still in AWS: the rollback adopts it again, and its data is kept.
+In a nested stack the delete waits for the whole stack tree's deploy, so a
+top-level deploy that fails after a child finished still finds the child's old
+resource, and its revert of the child adopts it again.
 The plan labels such an operation `reverse-replace`.
 
 Four cases delete the old resource right after the new one is created: a

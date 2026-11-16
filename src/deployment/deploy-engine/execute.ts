@@ -438,60 +438,6 @@ async function executeDeploymentBody(
         throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
-
-    // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
-    // still-unupdated dependent refused inside the DAG.
-    if (engine.interrupted) {
-      warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'interrupted');
-      nestedCleanups?.abandon('interrupted');
-    } else {
-      // go-to-k/cdkd#5111: a deploy that deleted or replaced anything may have
-      // just removed what used a carried entry (a deleted load balancer's
-      // listeners go asynchronously), so it waits out an "in use" refusal as
-      // its own retry does; any other deploy sends once.
-      const releasedSomething =
-        deleteChanges.size > 0 ||
-        completedOperations.some(
-          (op) =>
-            op.changeType === 'UPDATE' &&
-            op.previousState !== undefined &&
-            op.physicalId !== undefined &&
-            op.physicalId !== op.previousState.physicalId
-        );
-      const cleanup = (
-        carried: readonly SupersededResourceRecord[],
-        counts: { updated: number; updatePartial: number }
-      ): Promise<void> =>
-        runCleanupPhase(engine, {
-          stackName,
-          counts,
-          completedOperations,
-          host: currentState,
-          carried,
-          resources: newResources,
-          releasedSomething,
-        });
-      // go-to-k/cdkd#6398: a nested child's cleanup waits for the ROOT
-      // deploy's success; the root runs its own first, then its children's.
-      const queued = queueNestedCleanup(engine, stackName, currentState, (stillOwed, counts) =>
-        cleanup(carriedSuperseded.filter(stillOwed), counts)
-      );
-      if (queued) {
-        engine.logger.debug(
-          safeMsg`Cleanup of ${stackName} waits for the root stack's deploy to succeed`
-        );
-      } else {
-        await cleanup(carriedSuperseded, actualCounts);
-      }
-      if (nestedCleanups !== undefined) {
-        const { updatePartial } = await nestedCleanups.runAll(
-          { interrupted: () => engine.interrupted },
-          engine.logger
-        );
-        actualCounts.updatePartial += updatePartial;
-        actualCounts.nestedUpdatePartial += updatePartial;
-      }
-    }
   } catch (error) {
     // go-to-k/cdkd#5380: again here, for a mark a provider made after its
     // resource's own failure was recorded (the per-resource deadline abandons
@@ -636,6 +582,11 @@ async function executeDeploymentBody(
       outputs
     );
   } catch (outputError) {
+    // go-to-k/cdkd#6398: the cleanup phase runs only once the outputs
+    // resolved, so the journal written below never sits over deletes already
+    // made; the deferred deletes are left for a rollback or the next deploy.
+    warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'failed');
+    nestedCleanups?.abandon('failed');
     // go-to-k/cdkd#6343: every provider call succeeded, so each stopped write did.
     pruneStoppedSiblingMembersBestEffort(
       engine.logger,
@@ -664,6 +615,90 @@ async function executeDeploymentBody(
       currentEtag === undefined
     );
     throw outputError;
+  }
+
+  // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
+  // still-unupdated dependent refused inside the DAG. After the outputs
+  // resolved (go-to-k/cdkd#6398): an output failure writes a rollback journal
+  // segment, which must not describe deletes already made.
+  if (engine.interrupted) {
+    warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'interrupted');
+    nestedCleanups?.abandon('interrupted');
+  } else {
+    // go-to-k/cdkd#5111: a deploy that deleted or replaced anything may have
+    // just removed what used a carried entry (a deleted load balancer's
+    // listeners go asynchronously), so it waits out an "in use" refusal as
+    // its own retry does; any other deploy sends once.
+    const releasedSomething =
+      deleteChanges.size > 0 ||
+      completedOperations.some(
+        (op) =>
+          op.changeType === 'UPDATE' &&
+          op.previousState !== undefined &&
+          op.physicalId !== undefined &&
+          op.physicalId !== op.previousState.physicalId
+      );
+    const cleanup = (
+      carried: readonly SupersededResourceRecord[],
+      counts: { updated: number; updatePartial: number }
+    ): Promise<void> =>
+      runCleanupPhase(engine, {
+        stackName,
+        counts,
+        completedOperations,
+        host: currentState,
+        carried,
+        resources: newResources,
+        releasedSomething,
+      });
+    // go-to-k/cdkd#6398: the ROOT runs its descendants' queued passes first,
+    // in the order they finished, then its own: a child's old resource goes
+    // before the parent's old resource it used (an old instance before the
+    // old subnet a parameter handed it), dependents first as within a stack.
+    if (nestedCleanups !== undefined) {
+      const { updatePartial } = await nestedCleanups.runAll(
+        { interrupted: () => engine.interrupted },
+        engine.logger
+      );
+      actualCounts.updatePartial += updatePartial;
+      actualCounts.nestedUpdatePartial += updatePartial;
+    }
+    // A nested child's cleanup waits for the ROOT deploy's success instead.
+    const queued = queueNestedCleanup(engine, stackName, currentState, (stillOwed, counts) =>
+      cleanup(carriedSuperseded.filter(stillOwed), counts)
+    );
+    if (queued) {
+      engine.logger.debug(
+        safeMsg`Cleanup of ${stackName} waits for the root stack's deploy to succeed`
+      );
+    } else {
+      try {
+        await cleanup(carriedSuperseded, actualCounts);
+      } catch (cleanupError) {
+        // A pass that threw fails the deploy as it did inside the DAG, but
+        // every change and output landed, so it ends as an output failure
+        // does: state persisted, a journal segment for `cdkd rollback`
+        // carrying each op's re-stamped verdict, no automatic rollback.
+        warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'failed');
+        await persistStateAfterOutputFailure(
+          engine,
+          stackName,
+          currentState,
+          newResources,
+          currentEtag,
+          pendingMigration
+        );
+        await writeRollbackJournalSegment(
+          engine.rollbackDeps(),
+          stackName,
+          completedOperations,
+          failedOperations,
+          'no-rollback-failure',
+          currentEtag === undefined
+        );
+        throw cleanupError;
+      }
+    }
   }
 
   // go-to-k/cdkd#6308: a record no provider call rewrote (a NO_CHANGE row, a

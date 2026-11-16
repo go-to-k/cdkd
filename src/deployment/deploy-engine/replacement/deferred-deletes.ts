@@ -168,15 +168,23 @@ export async function retryDeferredReplacedDeletes(
 /**
  * The deploy failed or was interrupted before the retry: each deferred delete
  * gets the warning its inline failure would have printed (go-to-k/cdkd#4900).
+ * `'cleanup-failed'`: a nested child's pass, queued for the root's success,
+ * could not run although the deploy succeeded (go-to-k/cdkd#6398), so no
+ * rollback follows to take a cleanup-phase entry back.
  */
 export function warnUnretriedReplacedDeletes(
   run: ReplacementRunState,
   deps: ReplacementDeps,
-  why: 'failed' | 'interrupted'
+  why: 'failed' | 'interrupted' | 'cleanup-failed'
 ): void {
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
-  const cause = why === 'failed' ? 'the deploy failed first' : 'the deploy was interrupted';
+  const cause =
+    why === 'failed'
+      ? 'the deploy failed first'
+      : why === 'interrupted'
+        ? 'the deploy was interrupted'
+        : "its nested stack's cleanup could not run";
   // go-to-k/cdkd#5111: a recorded one stays in state for the next deploy; one
   // `canRecordSuperseded` kept in memory only is no longer tracked.
   const noteFor = (logicalId: string): string =>
@@ -185,20 +193,26 @@ export function warnUnretriedReplacedDeletes(
       : `not retried: ${cause}; it is no longer tracked in state, so delete it manually`;
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
-      entry.cleanupPhase === true
-        ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
-          // deploy re-adopts it. An info line, as nothing went wrong with it.
-          deps.logger.info(
-            safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
+      why === 'cleanup-failed' && entry.failureMessage === undefined
+        ? // go-to-k/cdkd#6398: never sent, and the deploy succeeded, so no
+          // rollback takes it back.
+          deps.logger.warn(
+            safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'It is no longer tracked in state, so delete it manually'}`
           )
-        : deps.logger.warn(
-            entry.failureMessage === undefined
-              ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
-                // update sends the new id an Update with the old properties
-                // (#6120): tracked again only when the handler answers this id.
-                safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
-              : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
-          )
+        : entry.cleanupPhase === true
+          ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
+            // deploy re-adopts it. An info line, as nothing went wrong with it.
+            deps.logger.info(
+              safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
+            )
+          : deps.logger.warn(
+              entry.failureMessage === undefined
+                ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
+                  // update sends the new id an Update with the old properties
+                  // (#6120): tracked again only when the handler answers this id.
+                  safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
+                : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
+            )
     );
   }
 }

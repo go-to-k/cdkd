@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { deployWithoutChanges } from '../../../src/deployment/deploy-engine/deploy-flow/no-change.js';
+import { PERSIST_DROPPED_ATTEMPTS } from '../../../src/deployment/deploy-engine/nested-cleanup.js';
 import {
   NestedCleanupQueue,
   withNestedCleanupQueue,
@@ -74,6 +75,18 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
+// go-to-k/cdkd#6398 review: wrapped, so a test can make the root's output pass throw.
+vi.mock('../../../src/deployment/deploy-engine/outputs.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/outputs.js')>();
+  return {
+    ...actual,
+    resolveOutputs: vi.fn(async (...args: Parameters<typeof actual.resolveOutputs>) => {
+      return actual.resolveOutputs(...args);
+    }),
+  };
+});
+
 /** A type `canRecordSuperseded` accepts: its delete is deferred. */
 const REVISION = 'AWS::Lambda::WebFunctionRevision';
 const ENDPOINT = 'AWS::Lambda::WebFunctionEndpoint';
@@ -99,6 +112,14 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
   let nestedRuns: Map<string, () => Promise<unknown>>;
   /** Physical ids whose delete AWS refuses. */
   let refuse: Set<string>;
+  /** Physical ids whose delete the provider skips (the old resource survives). */
+  let skip: Set<string>;
+  /** Stacks whose lock cannot be taken. */
+  let lockFails: Set<string>;
+  /** Stacks whose state read throws. */
+  let readFails: Set<string>;
+  /** Decides whether a conditional save is refused as an ETag conflict. */
+  let refuseSave: (stack: string, expectedEtag: string | undefined) => boolean;
   let etagSeq: number;
 
   beforeEach(() => {
@@ -113,6 +134,10 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     failing = new Set();
     nestedRuns = new Map();
     refuse = new Set();
+    skip = new Set();
+    lockFails = new Set();
+    readFails = new Set();
+    refuseSave = () => false;
     etagSeq = 0;
     provider = {
       create: vi.fn(async (logicalId: string) => {
@@ -131,6 +156,7 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
       delete: vi.fn(async (_logicalId: string, physicalId: string) => {
         order.push(`delete ${physicalId}`);
         if (refuse.has(physicalId)) throw new Error('ResourceInUseException: still in use');
+        if (skip.has(physicalId)) return { outcome: 'skipped', reason: 'the handler kept it' };
         live.delete(physicalId);
         return undefined;
       }),
@@ -156,6 +182,7 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     };
     const backend = {
       getState: vi.fn(async (stack: string) => {
+        if (readFails.has(stack)) throw new Error('AccessDenied: s3:GetObject');
         const held = store.get(stack);
         return held === undefined ? null : structuredClone(held);
       }),
@@ -166,6 +193,15 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
           state: StackState,
           options?: { expectedEtag?: string }
         ) => {
+          if (refuseSave(stack, options?.expectedEtag)) {
+            const conflict = new Error('At least one of the pre-conditions you specified did not hold');
+            conflict.name = 'PreconditionFailed';
+            saves.push({ stack, state: structuredClone(state), expectedEtag: options?.expectedEtag });
+            throw Object.assign(new Error('State has been modified by another process.'), {
+              name: 'StateError',
+              cause: conflict,
+            });
+          }
           const etag = `e${++etagSeq}`;
           store.set(stack, { state: structuredClone(state), etag });
           saves.push({ stack, state: structuredClone(state), expectedEtag: options?.expectedEtag });
@@ -181,6 +217,7 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     };
     const lockManager = {
       acquireLockWithRetry: vi.fn(async (stack: string) => {
+        if (lockFails.has(stack)) throw new Error('LockError: held by another deploy');
         locks.push(`lock ${stack}`);
       }),
       releaseLock: vi.fn(async (stack: string) => {
@@ -226,7 +263,11 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     stackName: string,
     prefix: string,
     opts: { nested?: boolean; superseded?: SupersededResourceRecord[] } = {}
-  ): Promise<{ completedOperations: CompletedOperation[]; state: StackState }> {
+  ): Promise<{
+    completedOperations: CompletedOperation[];
+    state: StackState;
+    actualCounts: { updatePartial: number; nestedUpdatePartial: number };
+  }> {
     const rev = `${prefix}Rev`;
     const end = `${prefix}End`;
     const nest = `${prefix}Nest`;
@@ -305,7 +346,11 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
       undefined,
       undefined,
       'etag-0'
-    )) as unknown as { completedOperations: CompletedOperation[]; state: StackState };
+    )) as unknown as {
+      completedOperations: CompletedOperation[];
+      state: StackState;
+      actualCounts: { updatePartial: number; nestedUpdatePartial: number };
+    };
     // As `deploy-flow.ts`'s final save, which writes the returned state.
     await engine.stateBackend.saveState(stackName, 'us-east-1', engine.withParentInfo(result.state));
     return result;
@@ -348,7 +393,7 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(order.indexOf('delete CRev-old')).toBeGreaterThan(order.indexOf('update CEnd-id'));
   });
 
-  it('the root runs the queued child deletes after its own DAG and its own cleanup', async () => {
+  it('the root runs the queued child deletes after its own DAG, before its own cleanup', async () => {
     const root = makeEngine('R');
     const child = childEngine();
     nestedRuns.set('RNest', () => deployStack(child, CHILD, 'C'));
@@ -360,8 +405,9 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     // Every update of the tree, the root's last one included, came first.
     expect(at('delete CRev-old')).toBeGreaterThan(at('update REnd-id'));
     expect(at('delete CRev-old')).toBeGreaterThan(at('update CEnd-id'));
-    // The root's own cleanup first, then the child's.
-    expect(at('delete CRev-old')).toBeGreaterThan(at('delete RRev-old'));
+    // The child's first (dependents first across the stack boundary), then the root's own.
+    expect(deletesOf('RRev-old')).toBe(1);
+    expect(at('delete CRev-old')).toBeLessThan(at('delete RRev-old'));
     // Under the child's lock, taken again for the pass.
     expect(locks).toEqual([`lock ${CHILD}`, `release ${CHILD}`]);
     // The root's line names the child stack.
@@ -531,7 +577,8 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     const at = (step: string): number => order.indexOf(step);
     expect(deletesOf('GRev-old')).toBe(1);
     expect(at('delete GRev-old')).toBeGreaterThan(at('update REnd-id'));
-    expect(at('delete GRev-old')).toBeGreaterThan(at('delete RRev-old'));
+    expect(at('delete GRev-old')).toBeLessThan(at('delete RRev-old'));
+    expect(at('delete CRev-old')).toBeLessThan(at('delete RRev-old'));
     expect(at('delete CRev-old')).toBeGreaterThan(at('update REnd-id'));
     // Children in completion order: the grandchild finished first.
     expect(at('delete GRev-old')).toBeLessThan(at('delete CRev-old'));
@@ -599,6 +646,156 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     const written = saves.slice(savesBefore);
     expect(written.map((s) => s.stack)).toEqual([CHILD]);
     expect(written[0]!.state.supersededResources).toBeUndefined();
+  });
+
+  it("a child pass whose delete is skipped counts in the root's summary", async () => {
+    const root = makeEngine('R');
+    const child = childEngine();
+    nestedRuns.set('RNest', () => deployStack(child, CHILD, 'C'));
+    skip.add('CRev-old');
+
+    const result = await deployStack(root, ROOT, 'R', { nested: true });
+
+    expect(deletesOf('CRev-old')).toBe(1);
+    expect(result.actualCounts.updatePartial).toBe(1);
+    expect(result.actualCounts.nestedUpdatePartial).toBe(1);
+  });
+
+  it.each([
+    ['the child lock cannot be taken', (): void => void lockFails.add(CHILD), 'Could not lock nested stack'],
+    ['the child state cannot be read', (): void => void readFails.add(CHILD), 'Could not read the state of nested stack'],
+  ] as const)('when %s, no delete or write is sent and the entry counts partial', async (_l, arrange, line) => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const savesBefore = saves.length;
+    arrange();
+
+    const outcome = await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(0);
+    expect(saves.length).toBe(savesBefore);
+    expect(outcome.updatePartial).toBe(1);
+    expect(printed.warn.some((l) => l.includes(line))).toBe(true);
+    // The per-resource line says what was left, and that state keeps it.
+    expect(
+      printed.warn.some(
+        (l) =>
+          l.includes("Old CRev (CRev-old) was not deleted: its nested stack's cleanup could not run") &&
+          l.includes('cdkd keeps it in state')
+      )
+    ).toBe(true);
+  });
+
+  it('a child record gone by the cleanup counts its entries partial', async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    store.delete(CHILD);
+
+    const outcome = await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(0);
+    expect(outcome.updatePartial).toBe(1);
+  });
+
+  it('a queued pass that throws is reported and counted through its fail path', async () => {
+    const queue = new NestedCleanupQueue();
+    const fail = vi.fn(() => ({ updatePartial: 2 }));
+    queue.enqueue({
+      stackName: CHILD,
+      run: async () => {
+        throw new Error('boom');
+      },
+      abandon: vi.fn(),
+      fail,
+    });
+    const warn = vi.fn();
+
+    const outcome = await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn });
+
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(outcome.updatePartial).toBe(2);
+    expect(String(warn.mock.calls[0]?.[0])).toContain(`The cleanup of nested stack ${CHILD} failed`);
+  });
+
+  it('an ETag conflict on the write-back re-reads and writes again', async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const before = store.get(CHILD)!;
+    let refused = 0;
+    // Another writer moved the record once, between the read and the write.
+    refuseSave = (stack, expectedEtag) => {
+      if (stack !== CHILD || expectedEtag !== before.etag || refused > 0) return false;
+      refused++;
+      store.set(CHILD, { state: structuredClone(before.state), etag: 'moved' });
+      return true;
+    };
+    const savesBefore = saves.length;
+
+    const outcome = await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    const written = saves.slice(savesBefore);
+    expect(written.map((w) => w.expectedEtag)).toEqual([before.etag, 'moved']);
+    expect(supersededResourcesOf(store.get(CHILD)!.state)).toEqual([]);
+    expect(outcome.updatePartial).toBe(0);
+    expect(printed.warn).toEqual([]);
+  });
+
+  it('an ETag conflict on every write-back warns with the ids and counts them partial', async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const savesBefore = saves.length;
+    refuseSave = (stack) => stack === CHILD;
+
+    const outcome = await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(1);
+    expect(saves.slice(savesBefore)).toHaveLength(PERSIST_DROPPED_ATTEMPTS);
+    expect(outcome.updatePartial).toBe(1);
+    expect(
+      printed.warn.some(
+        (l) => l.includes(`the state of nested stack ${CHILD}`) && l.includes('CRev (CRev-old)')
+      )
+    ).toBe(true);
+  });
+
+  it('a root whose outputs fail sends none of the cleanup deletes', async () => {
+    const root = makeEngine('R');
+    const child = childEngine();
+    nestedRuns.set('RNest', () => deployStack(child, CHILD, 'C'));
+    // Only the root's own output pass fails: the child's ran inside the DAG.
+    let rootOutputs = false;
+    const update = provider.update;
+    provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
+      const out = await update(...args);
+      if (args[0] === 'REnd') rootOutputs = true;
+      return out;
+    }) as unknown as ResourceProvider['update'];
+    const { resolveOutputs } = await import('../../../src/deployment/deploy-engine/outputs.js');
+    const real = vi.mocked(resolveOutputs).getMockImplementation()!;
+    vi.mocked(resolveOutputs).mockImplementation(async (...args) => {
+      if (rootOutputs) throw new Error('Output Url could not be resolved');
+      return real(...args);
+    });
+
+    try {
+      await expect(deployStack(root, ROOT, 'R', { nested: true })).rejects.toThrow(
+        'Output Url could not be resolved'
+      );
+    } finally {
+      vi.mocked(resolveOutputs).mockImplementation(real);
+    }
+
+    expect(order).toContain('update CEnd-id');
+    expect(deletesOf('CRev-old')).toBe(0);
+    expect(deletesOf('RRev-old')).toBe(0);
+    expect(locks).toEqual([]);
+    expect(
+      printed.info.some((l) => l.includes('Old CRev (CRev-old) was not deleted: the deploy failed first'))
+    ).toBe(true);
   });
 
   it('an interrupted root runs no queued child cleanup', async () => {

@@ -16,7 +16,8 @@ import { asIsMessage, displayStackName, safeMsg } from '../utils/display-safe.js
  * Bound by the ROOT engine (no `parentStackInfo`) around its
  * `executeDeployment`, and read by every descendant engine: a child never
  * rebinds, so a grandchild reaches the root as a child does. The root drains
- * the queue after its own cleanup pass, on success only, and closes it when
+ * the queue before its own cleanup pass, once its outputs resolved, on
+ * success only, and closes it when
  * the deploy fails or is interrupted. A child that finds no queue (no root
  * engine above it) or a closed one (the root's rollback re-creating it) runs
  * its pass itself, as before.
@@ -31,6 +32,12 @@ export interface QueuedNestedCleanup {
   readonly run: (context: NestedCleanupContext) => Promise<NestedCleanupOutcome>;
   /** The root failed or was interrupted first: the pass never runs. */
   readonly abandon: (why: 'failed' | 'interrupted') => void;
+  /**
+   * The root succeeded but the pass could not run (or threw): warn per entry
+   * left, and count each as a partial update, the exit-2 contract for a
+   * survivor the deploy did not address.
+   */
+  readonly fail: () => NestedCleanupOutcome;
 }
 
 export interface NestedCleanupContext {
@@ -61,8 +68,11 @@ export class NestedCleanupQueue {
 
   /**
    * The root's success: run every queued pass, in the order the children
-   * finished, one stack at a time. An interrupt between stacks stops it; what
-   * is left stays recorded in each child's state for the next deploy.
+   * finished (a grandchild before its parent child), one stack at a time,
+   * BEFORE the root's own pass, so a child's old resource goes before the
+   * parent's old resource it used (dependents first, as within a stack). An
+   * interrupt between stacks stops it; what is left stays recorded in each
+   * child's state for the next deploy.
    */
   async runAll(
     context: NestedCleanupContext,
@@ -83,8 +93,9 @@ export class NestedCleanupQueue {
         updatePartial += (await entry.run(context)).updatePartial;
       } catch (error) {
         logger.warn(
-          safeMsg`  ⚠ The cleanup of nested stack ${displayStackName(entry.stackName)} failed: ${asIsMessage(describeAwsFailure(error).summary)}. Its old resources stay recorded in its state, and the next deploy deletes them`
+          safeMsg`  ⚠ The cleanup of nested stack ${displayStackName(entry.stackName)} failed: ${asIsMessage(describeAwsFailure(error).summary)}. Its old resources were not deleted`
         );
+        updatePartial += entry.fail().updatePartial;
       }
     }
     return { updatePartial };

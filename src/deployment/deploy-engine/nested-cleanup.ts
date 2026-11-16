@@ -15,6 +15,7 @@ import {
 } from '../superseded-resources.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 
 /**
  * A deploy's cleanup phase, after its creates, updates and deletes: the
@@ -102,7 +103,20 @@ export function queueNestedCleanup(
     run: (context) => runQueuedNestedCleanup(engine, stackName, host, pass, context),
     abandon: (why) =>
       warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), why),
+    fail: () => passCouldNotRun(engine),
   });
+}
+
+/**
+ * A queued pass that could not run although the root succeeded: every
+ * deferred delete it left warns, and counts as a partial update (exit 2).
+ * The carried entries stay recorded in the child's state, retried by its next
+ * deploy.
+ */
+function passCouldNotRun(engine: DeployEngine): NestedCleanupOutcome {
+  const left = engine.replacementRun.deferredReplacedDeletes?.size ?? 0;
+  warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'cleanup-failed');
+  return { updatePartial: left };
 }
 
 /**
@@ -136,22 +150,31 @@ async function runQueuedNestedCleanup(
       await engine.lockManager.acquireLockWithRetry(stackName, region, undefined, 'deploy');
     } catch (error) {
       engine.logger.warn(
-        safeMsg`  ⚠ Could not lock nested stack ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}. They stay recorded in its state, and the next deploy deletes them`
+        safeMsg`  ⚠ Could not lock nested stack ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
       );
-      return { updatePartial: 0 };
+      return passCouldNotRun(engine);
     }
     try {
-      const fresh = await engine.stateBackend.getState(stackName, region);
+      let fresh: Awaited<ReturnType<DeployEngine['stateBackend']['getState']>>;
+      try {
+        fresh = await engine.stateBackend.getState(stackName, region);
+      } catch (error) {
+        engine.logger.warn(
+          safeMsg`  ⚠ Could not read the state of nested stack ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
+        );
+        return passCouldNotRun(engine);
+      }
       if (fresh === null || fresh === undefined) {
         engine.logger.warn(
           safeMsg`  ⚠ Nested stack ${display} has no state record any more: its replaced resources were not deleted`
         );
-        return { updatePartial: 0 };
+        return passCouldNotRun(engine);
       }
+      const read = fresh;
       const persisted = supersededResourcesOf(fresh.state);
       const stillOwed = (entry: SupersededResourceRecord): boolean =>
         persisted.some((row) => sameSuperseded(row, entry)) &&
-        !isSupersededHeld(entry, fresh.state.resources);
+        !isSupersededHeld(entry, read.state.resources);
       const run = engine.replacementRun;
       for (const [logicalId] of run.deferredReplacedDeletes ?? []) {
         const recorded = run.supersededEntries.get(logicalId);
@@ -169,8 +192,9 @@ async function runQueuedNestedCleanup(
         Array.isArray(host.supersededResources) ? host.supersededResources : []
       );
       const dropped = before.filter((entry) => !remaining.has(entry));
-      if (dropped.length > 0) await persistDropped(engine, stackName, fresh, dropped);
-      return { updatePartial: counts.updatePartial };
+      const unrecorded =
+        dropped.length > 0 ? await persistDropped(engine, stackName, read, dropped) : 0;
+      return { updatePartial: counts.updatePartial + unrecorded };
     } finally {
       try {
         await engine.lockManager.releaseLock(stackName, region);
@@ -193,52 +217,72 @@ function sameSuperseded(row: SupersededResourceRecord, entry: SupersededResource
   );
 }
 
+/** Conditional writes `persistDropped` makes before it gives up on conflicts. */
+export const PERSIST_DROPPED_ATTEMPTS = 4;
+
 /**
  * Remove `dropped` from the child's persisted `supersededResources`, on the
- * ETag of `fresh`; one re-read and retry on a conflict. Every other field is
- * written back as read.
+ * ETag of `fresh`; on a conflict it re-reads and re-filters, up to
+ * {@link PERSIST_DROPPED_ATTEMPTS} writes in all. Every other field is written
+ * back as read. Answers how many deleted entries it could NOT drop: they stay
+ * listed, and the child's next deploy sends their deletes again, so each
+ * counts as a partial update.
  */
 async function persistDropped(
   engine: DeployEngine,
   stackName: string,
   fresh: { state: StackState; etag: string },
   dropped: readonly SupersededResourceRecord[]
-): Promise<void> {
+): Promise<number> {
   const region = engine.stackRegion;
   let current = fresh;
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     const rows = current.state.supersededResources;
-    if (!Array.isArray(rows)) return;
+    if (!Array.isArray(rows)) return 0;
     const kept = rows.filter(
       (row) =>
         !isSupersededResourceRecord(row) || !dropped.some((entry) => sameSuperseded(row, entry))
     );
-    if (kept.length === rows.length) return;
+    if (kept.length === rows.length) return 0;
     const { supersededResources: _rows, ...rest } = current.state;
     const next: StackState = {
       ...rest,
       ...(kept.length > 0 && { supersededResources: kept }),
       lastModified: Date.now(),
     };
+    let failure: unknown;
     try {
       // Through the persist choke point, as every engine save: the read is
       // already redacted, and redacting it again changes nothing.
       await engine.stateBackend.saveState(stackName, region, engine.withParentInfo(next), {
         expectedEtag: current.etag,
       });
-      return;
+      return 0;
     } catch (error) {
-      const again =
-        attempt === 0
-          ? await engine.stateBackend.getState(stackName, region).catch(() => null)
-          : null;
-      if (again === null || again === undefined) {
-        engine.logger.warn(
-          safeMsg`  ⚠ Could not record in nested stack ${displayStackName(stackName)}'s state that ${dropped.length} replaced resource(s) were deleted: ${asIsMessage(describeAwsFailure(error).summary)}. Its next deploy sends their deletes again`
-        );
-        return;
-      }
-      current = again;
+      failure = error;
     }
+    const again =
+      attempt < PERSIST_DROPPED_ATTEMPTS && isEtagConflict(failure)
+        ? await engine.stateBackend.getState(stackName, region).catch(() => null)
+        : null;
+    if (again === null || again === undefined) {
+      const ids = dropped
+        .map((entry) => `${entry.logicalId} (${entry.state.physicalId})`)
+        .join(', ');
+      engine.logger.warn(
+        safeMsg`  ⚠ Could not record in the state of nested stack ${displayStackName(stackName)} (region ${region}) that these replaced resources were deleted: ${ids}: ${asIsMessage(describeAwsFailure(failure).summary)}. They stay listed there, and its next deploy sends their deletes again`
+      );
+      return dropped.length;
+    }
+    current = again;
   }
+}
+
+/** A conditional write that lost, as `saveState` reports it (wrapped, with the S3 error as cause). */
+function isEtagConflict(error: unknown): boolean {
+  for (let link = error, depth = 0; link !== undefined && link !== null && depth < 5; depth++) {
+    if (isConditionFailure(link)) return true;
+    link = (link as { cause?: unknown }).cause;
+  }
+  return false;
 }
