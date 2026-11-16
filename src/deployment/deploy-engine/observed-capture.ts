@@ -37,6 +37,10 @@ import {
 import { producerRegionsFromState } from '../rollback-executor.js';
 import { buildSgRuleCaptureSiblings } from './observed-capture-sg-siblings.js';
 import {
+  sgRulesSiblingsStoppedWriting,
+  withoutStoppedSiblingSgRules,
+} from '../../provisioning/sg-sibling-rules.js';
+import {
   createUnionSecretMasker,
   carryRedactionMarks,
   markSameGenerationBag,
@@ -655,6 +659,25 @@ export function pruneMembersSiblingsStoppedWriting(
     };
     changed++;
   }
+  // go-to-k/cdkd#6420: the same for a security group's inline rules a removed
+  // or replaced standalone `SecurityGroupIngress` / `SecurityGroupEgress` wrote.
+  for (const [logicalId, stopped] of sgRulesSiblingsStoppedWriting(
+    previous,
+    next,
+    oldMaySurvive,
+    templatePolicies
+  )) {
+    const record = next[logicalId];
+    const observed = record?.observedProperties;
+    if (record === undefined || observed === undefined) continue;
+    const pruned = withoutStoppedSiblingSgRules(observed, stopped, record.properties);
+    if (pruned === observed) continue;
+    next[logicalId] = {
+      ...record,
+      observedProperties: carryRedactionMarks(observed, pruned),
+    };
+    changed++;
+  }
   return changed;
 }
 
@@ -672,7 +695,7 @@ export function pruneStoppedSiblingMembersBestEffort(
   } catch (err) {
     const cause = err instanceof Error ? err.name : typeof err;
     logger.debug(
-      safeMsg`Sibling-written IAM members were not pruned from the observed baselines (${cause}); they stay until 'cdkd state refresh-observed'.`
+      safeMsg`Sibling-written IAM members and security-group rules were not pruned from the observed baselines (${cause}); they stay until 'cdkd state refresh-observed'.`
     );
   }
 }

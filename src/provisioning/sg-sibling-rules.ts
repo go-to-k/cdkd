@@ -38,6 +38,11 @@
 import type { ReadCurrentStateContext } from '../types/resource.js';
 import { isRedactedRecordedValue } from './redacted-delete-address.js';
 import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
+import {
+  previousMaySurvive,
+  type TemplatePolicies,
+  type WriterRecord,
+} from './iam-sibling-managed-policies.js';
 
 type SgDirection = 'ingress' | 'egress';
 type CfnSgRule = Record<string, unknown>;
@@ -163,6 +168,113 @@ export function stripSiblingOwnedSgRules(
       return kept.length === list.length ? bag : { ...bag, [key]: kept };
     };
     out = { baseline: strip(out.baseline), aws: strip(out.aws) };
+  }
+  return out;
+}
+
+/** The rule a standalone rule record writes: its group, direction and identity. */
+function ruleWriteOf(record: WriterRecord): [string, SgDirection, string] | undefined {
+  const direction: SgDirection | undefined =
+    record.resourceType === RULE_TYPE.ingress
+      ? 'ingress'
+      : record.resourceType === RULE_TYPE.egress
+        ? 'egress'
+        : undefined;
+  const props = record.properties;
+  if (direction === undefined || !isPlainRecord(props)) return undefined;
+  const group = props['GroupId'];
+  if (typeof group !== 'string' || group === '' || isRedactedRecordedValue(group)) return undefined;
+  const identity = sgRuleOwnershipIdentity(props, direction);
+  return identity === undefined ? undefined : [group, direction, identity];
+}
+
+/** Per direction, the rule identities to drop from one group's baseline. */
+export type StoppedSiblingSgRules = Record<SgDirection, Set<string>>;
+
+/**
+ * go-to-k/cdkd#6420, the security-group twin of `membersSiblingsStoppedWriting`
+ * (go-to-k/cdkd#6343): per logical id of an `AWS::EC2::SecurityGroup` in
+ * `next`, the rules a standalone rule record wrote onto it before this deploy
+ * (`previous`) and no longer writes after it — the rule resource was removed,
+ * or replaced by a different rule. That resource's own delete has just revoked
+ * the rule, so a group baseline still holding it (one captured before #6418,
+ * which recorded sibling rules on a group UPDATE) would read as a lost rule,
+ * and `drift --revert` would RE-AUTHORIZE access the template no longer grants.
+ *
+ * The evidence is the rule record's own RECORDED write, never the readback. A
+ * rule resource whose previous AWS resource may survive the deploy
+ * (`previousMaySurvive`: retained, or a replaced old rule not confirmed gone)
+ * stopped nothing. In-memory only; no AWS call.
+ */
+export function sgRulesSiblingsStoppedWriting(
+  previous: Readonly<Record<string, WriterRecord>>,
+  next: Readonly<Record<string, WriterRecord>>,
+  oldMaySurvive: (logicalId: string) => boolean = () => false,
+  templatePolicies?: TemplatePolicies
+): Map<string, StoppedSiblingSgRules> {
+  const key = (w: [string, SgDirection, string]): string => JSON.stringify(w);
+  const stillWritten = new Set<string>();
+  // A rule record of `next` cdkd cannot identify (a `GroupName`-addressed or
+  // redacted one) may still write any rule of its direction, so that direction
+  // prunes nothing: dropping a rule it holds would make the drift readback
+  // report it as an ADD and `--revert` revoke access the template grants.
+  const unreadable = new Set<SgDirection>();
+  for (const record of Object.values(next)) {
+    const w = ruleWriteOf(record);
+    if (w !== undefined) stillWritten.add(key(w));
+    else if (record.resourceType === RULE_TYPE.ingress) unreadable.add('ingress');
+    else if (record.resourceType === RULE_TYPE.egress) unreadable.add('egress');
+  }
+  const stoppedByGroup = new Map<string, StoppedSiblingSgRules>();
+  for (const [logicalId, record] of Object.entries(previous)) {
+    const w = ruleWriteOf(record);
+    if (w === undefined || stillWritten.has(key(w))) continue;
+    if (previousMaySurvive(logicalId, record, next, oldMaySurvive, templatePolicies)) continue;
+    const [group, direction, identity] = w;
+    if (unreadable.has(direction)) continue;
+    let entry = stoppedByGroup.get(group);
+    if (entry === undefined) {
+      stoppedByGroup.set(group, (entry = { ingress: new Set(), egress: new Set() }));
+    }
+    entry[direction].add(identity);
+  }
+  const result = new Map<string, StoppedSiblingSgRules>();
+  if (stoppedByGroup.size === 0) return result;
+  for (const [logicalId, record] of Object.entries(next)) {
+    if (record.resourceType !== 'AWS::EC2::SecurityGroup') continue;
+    const stopped =
+      typeof record.physicalId === 'string' ? stoppedByGroup.get(record.physicalId) : undefined;
+    if (stopped !== undefined) result.set(logicalId, stopped);
+  }
+  return result;
+}
+
+/**
+ * `bag` without the {@link sgRulesSiblingsStoppedWriting} rules the group's own
+ * `properties` do not declare inline. Returned by identity when nothing is
+ * dropped.
+ */
+export function withoutStoppedSiblingSgRules(
+  bag: Record<string, unknown>,
+  stopped: StoppedSiblingSgRules,
+  properties: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  let out = bag;
+  for (const direction of ['ingress', 'egress'] as const) {
+    const drop = new Set(stopped[direction]);
+    const inline = properties?.[LIST_KEY[direction]];
+    if (Array.isArray(inline)) {
+      for (const entry of inline) {
+        const identity = sgRuleOwnershipIdentity(entry, direction);
+        if (identity !== undefined) drop.delete(identity);
+      }
+    }
+    if (drop.size === 0) continue;
+    const listKey = LIST_KEY[direction];
+    const list = out[listKey];
+    if (!Array.isArray(list)) continue;
+    const kept = withoutSiblingOwnedSgRules(list as CfnSgRule[], drop, direction);
+    if (kept.length !== list.length) out = { ...out, [listKey]: kept };
   }
   return out;
 }

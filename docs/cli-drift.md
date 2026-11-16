@@ -131,7 +131,10 @@ keeps CIDR rules in the group's own `SecurityGroupIngress` /
 `SecurityGroupEgress`. Drift leaves out of the group's lists every rule such a
 resource in the same stack adds, unless the group's template lists it too, so
 `--revert` never revokes it. A rule nothing in the stack declares is still
-reported, as in CloudFormation, and `--revert` revokes only that one.
+reported, as in CloudFormation, and `--revert` revokes only that one. When a deploy removes
+such a resource, or replaces it with a different rule, its delete revokes the
+rule and the same deploy removes it from the group's recorded snapshot, so
+drift does not report it as lost and `--revert` does not re-authorize it.
 
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.
