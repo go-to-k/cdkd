@@ -28,6 +28,11 @@ export interface DeferredReplacedDelete {
    * cleanup phase (go-to-k/cdkd#6117).
    */
   failureMessage: string | undefined;
+  /**
+   * go-to-k/cdkd#6374: a create-first replacement's delete, deferred up
+   * front to the cleanup phase rather than after a failure.
+   */
+  cleanupPhase?: true;
   /** Set by `provisionResource` when the row already ended partial. */
   rowPartial?: boolean;
   retry: () => Promise<void>;
@@ -50,13 +55,19 @@ export async function retryDeferredReplacedDeletes(
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
   if (deferred === undefined || deferred.size === 0) return;
-  const retried = [...deferred.values()].filter((entry) => entry.failureMessage !== undefined);
-  if (retried.length > 0) {
-    deps.logger.info(safeMsg`Retrying the delete of ${retried.length} replaced resource(s)`);
+  const entries = [...deferred.values()];
+  const retried = entries.filter((entry) => entry.failureMessage !== undefined).length;
+  const cleanup = entries.filter((entry) => entry.cleanupPhase === true).length;
+  const movedIds = entries.length - retried - cleanup;
+  if (retried > 0) {
+    deps.logger.info(safeMsg`Retrying the delete of ${retried} replaced resource(s)`);
   }
-  if (retried.length < deferred.size) {
+  if (cleanup > 0) {
+    deps.logger.info(safeMsg`Deleting the old resource of ${cleanup} replaced resource(s)`);
+  }
+  if (movedIds > 0) {
     deps.logger.info(
-      safeMsg`Deleting the old physical id of ${deferred.size - retried.length} replaced custom resource(s)`
+      safeMsg`Deleting the old physical id of ${movedIds} replaced custom resource(s)`
     );
   }
   const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
@@ -151,14 +162,20 @@ export function warnUnretriedReplacedDeletes(
       : `not retried: ${cause}; it is no longer tracked in state, so delete it manually`;
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
-      deps.logger.warn(
-        entry.failureMessage === undefined
-          ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
-            // update sends the new id an Update with the old properties
-            // (#6120): tracked again only when the handler answers this id.
-            safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
-          : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
-      )
+      entry.cleanupPhase === true
+        ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
+          // deploy re-adopts it. An info line, as nothing went wrong with it.
+          deps.logger.info(
+            safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback re-adopts it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
+          )
+        : deps.logger.warn(
+            entry.failureMessage === undefined
+              ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
+                // update sends the new id an Update with the old properties
+                // (#6120): tracked again only when the handler answers this id.
+                safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
+              : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
+          )
     );
   }
 }

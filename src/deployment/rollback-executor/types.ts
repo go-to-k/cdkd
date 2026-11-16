@@ -92,11 +92,16 @@ export interface CompletedOperation {
    *   live read cannot license re-adopting a resource about to disappear. So
    *   is a refusal after the provider's delete stripped the resource
    *   (`markDeleteStarted`, go-to-k/cdkd#4946): the survivor is not whole.
+   * - `'deferred'` (go-to-k/cdkd#6374): the delete was not sent yet: a
+   *   create-first replacement deletes the old resource in the deploy's
+   *   cleanup phase, after every other change succeeded, as CloudFormation
+   *   does. A deploy failing first leaves it whole, so a live read re-adopts
+   *   it, like `'kept'`, without a warning.
    *
    * ADDITIVE, no `journalVersion` bump: absent (an older binary's journal,
    * or a delete that succeeded) keeps the re-create.
    */
-  oldResourceMaySurvive?: 'kept' | 'unconfirmed' | undefined;
+  oldResourceMaySurvive?: 'kept' | 'unconfirmed' | 'deferred' | undefined;
   /**
    * The type of the resource that existed BEFORE this UPDATE — the state
    * record's `resourceType` (issue

@@ -21,6 +21,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
 import { replacedDeleteFailureVerdict } from '../../rollback-executor/replaced-survivor.js';
 import { reportDeleteGuards } from '../../delete-guard-scope.js';
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { isStandaloneInlinePolicyType } from '../../inline-policy-claims.js';
 import { withPrintingSecrets } from '../../resource-secrets-scope.js';
 import {
@@ -32,7 +33,22 @@ import { replacementDeleteContext } from './delete-context.js';
 import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
 
 /**
- * The delete of a replaced resource once its replacement EXISTS. A failure
+ * The delete of a replaced resource once its replacement EXISTS.
+ *
+ * Inside a deploy it is DEFERRED to the cleanup phase (go-to-k/cdkd#6374),
+ * as CloudFormation deletes replaced resources only after every other change
+ * succeeded: the resources referencing the old one have not moved yet, and
+ * deleting a container can take its children with it (a schedule group's
+ * delete deletes its schedules). A failed deploy never sends it, so the
+ * rollback finds the old resource whole (`'deferred'`) and takes it back.
+ * The old record is kept in state until then (`recordSupersededForDeferral`,
+ * go-to-k/cdkd#5111), so a deploy killed first leaves it for the next deploy
+ * or `cdkd destroy`. The delete runs inline instead where that record cannot
+ * be written (`canRecordSuperseded`), and under `UpdateReplacePolicy:
+ * Snapshot`: the caller may already have taken the snapshot, and a later
+ * delete would let the data move past it.
+ *
+ * A failure
  * or a skip warns rather than fails the resource (issue #1762): the new
  * resource is created and about to be recorded, so the old one is untracked
  * either way, and failing here would roll back a replacement that
@@ -60,6 +76,47 @@ export async function deleteReplacedAfterCreate(
   /** go-to-k/cdkd#4900: the post-DAG retry, which warns rather than defers. */
   isRetry = false
 ): Promise<void> {
+  if (
+    !isRetry &&
+    deferToCleanupPhase(run, deps, logicalId, currentResource, updateReplacePolicy, {
+      finalSnapshotIdentifier,
+      noEchoDeleteValues,
+    })
+  ) {
+    run.replacedOldMaySurvive.set(logicalId, 'deferred');
+    run.deferredReplacedDeletes?.set(logicalId, {
+      physicalId: currentResource.physicalId,
+      resourceType: oldResourceType,
+      provisionedBy: deleteProvisionedBy,
+      failureMessage: undefined,
+      cleanupPhase: true,
+      retry: () =>
+        deleteReplacedAfterCreate(
+          run,
+          deps,
+          logicalId,
+          oldResourceType,
+          currentResource,
+          deleteProvider,
+          deleteProperties,
+          finalSnapshotIdentifier,
+          updateReplacePolicy,
+          secrets,
+          deleteProvisionedBy,
+          noEchoDeleteValues,
+          true
+        ),
+    });
+    deps.logger.info(
+      safeMsg`  Old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) is deleted after the rest of the deploy succeeds`
+    );
+    return;
+  }
+  if (!isRetry) {
+    deps.logger.info(
+      safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
+    );
+  }
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
   let deleteFailed = false;
@@ -226,6 +283,37 @@ export async function deleteReplacedAfterCreate(
         : safeMsg`  ${green('✓')} Old resource deleted`
     );
   }
+}
+
+/**
+ * go-to-k/cdkd#6374: whether this delete waits for the cleanup phase, and
+ * when it does, its record is already written. Only inside a deploy (the
+ * deferred map and the live state are set), never under a Snapshot policy
+ * that takes its snapshot before the delete (see `deleteReplacedAfterCreate`),
+ * and only once the old record is on the live state: a deferral the state
+ * does not carry would be lost to a deploy killed before it ran.
+ */
+function deferToCleanupPhase(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  logicalId: string,
+  oldResource: ResourceState,
+  updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+  context: {
+    finalSnapshotIdentifier: string | undefined;
+    noEchoDeleteValues: NoEchoDeleteValues | undefined;
+  }
+): boolean {
+  if (run.deferredReplacedDeletes === undefined) return false;
+  if (updateReplacePolicy === 'Snapshot' && deps.options.skipFinalSnapshot !== true) return false;
+  if (isStandaloneInlinePolicyType(oldResource.resourceType)) return false;
+  recordSupersededForDeferral(run, deps, logicalId, oldResource, {
+    updateReplacePolicy,
+    finalSnapshotIdentifier: context.finalSnapshotIdentifier,
+    noEchoDeleteValues: context.noEchoDeleteValues,
+    inlinePolicyClaimed: undefined,
+  });
+  return run.supersededEntries.get(logicalId)?.state === oldResource;
 }
 
 /**

@@ -227,9 +227,11 @@ export function displacedOpClause(
     const kept =
       op.oldResourceRetained === true
         ? 'but kept it (UpdateReplacePolicy: Retain)'
-        : op.oldResourceMaySurvive !== undefined
-          ? 'and may have kept it (its delete was not confirmed)'
-          : 'and may have kept it (the journal records no verdict)';
+        : op.oldResourceMaySurvive === 'deferred'
+          ? 'and may have kept it (its delete waits for the deploy to succeed)'
+          : op.oldResourceMaySurvive !== undefined
+            ? 'and may have kept it (its delete was not confirmed)'
+            : 'and may have kept it (the journal records no verdict)';
     return (
       `replaced ${shownOld} ${kept}; cdkd import adopted the replacement, so ${shownOld} ` +
       `is left untracked`

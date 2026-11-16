@@ -174,8 +174,21 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // Alive but `'unconfirmed'`: an accepted delete may still be running
     // (a read of a `deleting` RDS instance answers like a live one), and
     // re-adopting it would delete the new copy for a resource about to go.
-    if (survivor === 'exists' && op.oldResourceMaySurvive !== 'kept') {
+    if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
+    }
+    if (survivor === 'exists' && op.oldResourceMaySurvive === 'deferred') {
+      // go-to-k/cdkd#6374: its delete waited for the deploy's cleanup phase,
+      // which a failed deploy never reaches, so it was never sent: the old
+      // resource is whole, and taking it back is the CloudFormation rollback.
+      logger.info(
+        safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
+      );
+      return replayReadopt(s, {
+        reason:
+          'the old resource was still in place (its delete waits for the deploy to succeed) ' +
+          'and was re-adopted',
+      });
     }
     if (survivor === 'exists') {
       // As a retained one: delete the new copy, point state back at the old.

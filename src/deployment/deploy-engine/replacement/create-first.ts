@@ -3,7 +3,6 @@
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
  * re-exports every symbol it exported, so no importer changes.
  */
-import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import type { NoEchoDeleteValues } from '../../noecho-delete-reresolution.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
 import type { ProvisionedBy } from '../../../provisioning/provider-registry.js';
@@ -209,9 +208,6 @@ export async function createFirstThenDeleteOld(
     );
   }
   if (retainOld) return createResult;
-  deps.logger.info(
-    safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
-  );
   await deleteReplacedAfterCreate(
     run,
     deps,
