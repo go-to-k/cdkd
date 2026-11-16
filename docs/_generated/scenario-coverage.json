@@ -1114,6 +1114,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-instance-volume-attachment-drift",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-route-targets",
       "annotated": false,
       "scenarios": []
@@ -3925,6 +3930,7 @@
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
+    "ec2-instance-volume-attachment-drift",
     "ec2-route-targets",
     "ec2-sg-source-group-name",
     "ec2-subnet-dns64",

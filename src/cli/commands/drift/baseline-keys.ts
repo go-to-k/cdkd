@@ -40,6 +40,14 @@ import { coerceCfnBoolean } from '../../../provisioning/config-shape.js';
  * and `--revert` RE-GRANTED it against the template. A DECLARED list is still
  * compared, and the sibling's members are then stripped on both sides
  * (`stripSiblingOwnedMembers`).
+ *
+ * `AWS::EC2::Instance` `BlockDeviceMappings` (go-to-k/cdkd#6384): an
+ * `AWS::EC2::VolumeAttachment` attaches its volume after the instance settles,
+ * and `DescribeInstances` lists it beside the launch-time devices. The baseline
+ * holds the root volume, so it is not empty, and every later drift run read
+ * the attachment's device as drift that `--revert` could not undo. A DECLARED
+ * list is still compared, over its declared devices only (the EC2 provider's
+ * readback).
  */
 const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::S3::Bucket': ['NotificationConfiguration'],
@@ -48,6 +56,7 @@ const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = 
   'AWS::IAM::Role': ['ManagedPolicyArns'],
   'AWS::IAM::Group': ['ManagedPolicyArns'],
   'AWS::IAM::ManagedPolicy': ['Groups', 'Roles', 'Users'],
+  'AWS::EC2::Instance': ['BlockDeviceMappings'],
 };
 
 /**

@@ -263,7 +263,22 @@ export async function readInstanceCurrentState(
     }
     blockMappings.push(out);
   }
-  result['BlockDeviceMappings'] = blockMappings;
+  // go-to-k/cdkd#6384: for a bag that declares BlockDeviceMappings, only the
+  // declared devices are this property's. A volume another construct attached
+  // after launch (an `AWS::EC2::VolumeAttachment`, the `Volumes` property) is
+  // left out, as `Volumes` below leaves out the attachment's volumes. A bag
+  // that does not declare the key is not compared at all (drift's
+  // `UNDECLARED_UNCOMPARED_KEYS`). When no declared name matches a live
+  // device (a spelling AWS reports differently, every declared device gone),
+  // nothing is narrowed, so the list is still compared rather than emptied.
+  const declaredDevices = declaredBlockDeviceNames(properties);
+  const isDeclared = (m: Record<string, unknown>): boolean =>
+    declaredDevices !== undefined &&
+    typeof m['DeviceName'] === 'string' &&
+    declaredDevices.has(m['DeviceName']);
+  result['BlockDeviceMappings'] = blockMappings.some(isDeclared)
+    ? blockMappings.filter(isDeclared)
+    : blockMappings;
 
   // Volumes (go-to-k/cdkd#5630): read for a bag that declares them, as the
   // live attachments of the declared volume ids, in the declared order. A
@@ -376,6 +391,28 @@ export async function readInstanceCurrentState(
   }
 
   return result;
+}
+
+/**
+ * The device names a bag's `BlockDeviceMappings` declares (go-to-k/cdkd#6384),
+ * or `undefined` when the bag does not declare a readable list: absent, not an
+ * array, or an entry whose `DeviceName` is not a string (an unresolved
+ * intrinsic). `undefined` means "do not narrow", so an unreadable declaration
+ * keeps comparing every live mapping rather than hiding one.
+ */
+export function declaredBlockDeviceNames(
+  properties: Record<string, unknown> | undefined
+): ReadonlySet<string> | undefined {
+  const declared = properties?.['BlockDeviceMappings'];
+  if (!Array.isArray(declared)) return undefined;
+  const names = new Set<string>();
+  for (const entry of declared) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const name = (entry as Record<string, unknown>)['DeviceName'];
+    if (typeof name !== 'string') return undefined;
+    names.add(name);
+  }
+  return names;
 }
 
 /** The {@link EC2Provider} methods this module defines. */
