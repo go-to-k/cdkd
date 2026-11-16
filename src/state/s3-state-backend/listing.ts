@@ -55,11 +55,16 @@ import {
  *
  * Pairs are deduplicated by `(stackName, region)` so a stack mid-migration
  * shows up exactly once.
+ *
+ * `namePrefix` narrows the listing to stack names starting with it, as ONE
+ * prefix-scoped `ListObjectsV2` rather than the whole bucket: a destroy
+ * looking for `<Parent>~*` child records (go-to-k/cdkd#6396) must not scale
+ * with every stack in the bucket.
  */
-export async function listStacks(this: S3StateBackend): Promise<StackStateRef[]> {
+export async function listStacks(this: S3StateBackend, namePrefix = ''): Promise<StackStateRef[]> {
   await this.ensureClientForBucket();
   try {
-    this.logger.debug('Listing all stacks');
+    this.logger.debug(namePrefix === '' ? 'Listing all stacks' : 'Listing stacks by name prefix');
 
     const prefix = `${this.config.prefix}/`;
     const refs: StackStateRef[] = [];
@@ -71,7 +76,7 @@ export async function listStacks(this: S3StateBackend): Promise<StackStateRef[]>
         new ListObjectsV2Command({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
-          Prefix: prefix,
+          Prefix: `${prefix}${namePrefix}`,
           // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
           EncodingType: LISTING_ENCODING_TYPE,
           ...(continuationToken && { ContinuationToken: continuationToken }),

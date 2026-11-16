@@ -87,7 +87,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, number]> = [
   ['purgeDeletedStateHistory', 'state-record', 2],
   ['otherRegionHistoryState', 'state-record', 3],
   ['deleteLegacyState', 'state-record', 1],
-  ['listStacks', 'listing', 0],
+  ['listStacks', 'listing', 1],
   ['listTopLevelPrefixes', 'listing', 0],
   ['putRawObject', 'listing', 3],
   ['earlierStateResources', 'listing', 3],

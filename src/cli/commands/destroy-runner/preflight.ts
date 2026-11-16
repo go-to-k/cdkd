@@ -264,6 +264,11 @@ export interface EmptyStackFrame {
   refusalRecovery: LockRecoveryContext;
   journaledOrphans: Awaited<ReturnType<typeof loadJournaledOrphans>>;
   result: DestroyRunnerResult;
+  /**
+   * Run once the record is deleted, still under this stack's lock
+   * (go-to-k/cdkd#6396: the sweep of the stack's unaddressed child records).
+   */
+  afterStateDeleted?: () => Promise<void>;
 }
 
 /**
@@ -279,6 +284,7 @@ export async function destroyEmptyStack({
   refusalRecovery,
   journaledOrphans,
   result,
+  afterStateDeleted,
 }: EmptyStackFrame): Promise<DestroyRunnerResult> {
   // Issue #2171: this used to delete the state record with NO lock at all,
   // sitting well above the acquire further down. A record reads as empty for
@@ -418,6 +424,7 @@ export async function destroyEmptyStack({
       ),
       releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
     ]);
+    await afterStateDeleted?.();
   } finally {
     await emptyLock.release({
       failureMessage: 'Failed to release lock after empty-state cleanup',

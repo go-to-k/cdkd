@@ -28,6 +28,7 @@ import {
 } from '../../../deployment/superseded-resources.js';
 import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
 import type { DestroyRunnerContext, DestroyRunnerResult, StackRegionScope } from './types.js';
+import { retireUnaddressedChildRecords } from './child-records.js';
 import { NOECHO_PRINTING_BIND_CAP_MS } from './types.js';
 import {
   countProtectedResources,
@@ -255,6 +256,18 @@ async function destroyStackInRegion(
       refusalRecovery,
       journaledOrphans,
       result,
+      // go-to-k/cdkd#6396: a child whose first deploy failed leaves its record
+      // with no row here to address it. Under this stack's lock, so no deploy
+      // of it can add a row meanwhile; each child is re-checked under its own.
+      afterStateDeleted: () =>
+        retireUnaddressedChildRecords(
+          stackName,
+          regionForState,
+          ctx,
+          logger,
+          refusalRecovery,
+          new Set()
+        ),
     });
   }
 

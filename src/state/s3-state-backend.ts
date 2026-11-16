@@ -414,8 +414,8 @@ export class S3StateBackend {
     return deleteLegacyState.call(this, stackName);
   }
 
-  listStacks(): Promise<StackStateRef[]> {
-    return listStacks.call(this);
+  listStacks(namePrefix?: string): Promise<StackStateRef[]> {
+    return listStacks.call(this, namePrefix);
   }
 
   listTopLevelPrefixes(): Promise<string[]> {

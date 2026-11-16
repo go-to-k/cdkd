@@ -1312,6 +1312,23 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
   });
 
   describe('listStacks', () => {
+    // go-to-k/cdkd#6396: a destroy lists a parent's `<Parent>~*` children with
+    // ONE prefix-scoped request, never the whole bucket.
+    it('scopes the listing to a stack-name prefix when given one', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [{ Key: 'cdkd/Parent~Child/us-east-1/state.json' }],
+        IsTruncated: false,
+      });
+
+      const refs = await backend.listStacks('Parent~');
+
+      expect(refs).toEqual([{ stackName: 'Parent~Child', region: 'us-east-1' }]);
+      const listCall = s3Client.send.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof ListObjectsV2Command
+      );
+      expect((listCall![0] as ListObjectsV2Command).input.Prefix).toBe('cdkd/Parent~');
+    });
+
     it('parses both new and legacy keys as {stackName, region} refs', async () => {
       s3Client.send.mockResolvedValueOnce({
         Contents: [
