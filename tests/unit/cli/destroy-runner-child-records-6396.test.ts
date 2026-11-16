@@ -147,6 +147,60 @@ describe('destroy retires the nested-child records no parent row addresses (go-t
     expect(h.deleted).toEqual([PARENT, CHILD]);
   });
 
+  it('sweeps the empty parent path BEFORE the parent lock is released', async () => {
+    const h = makeCtx({ [PARENT]: record(PARENT), [CHILD]: childRecord(CHILD, PARENT) });
+    const order: string[] = [];
+    const lm = h.ctx.lockManager as unknown as {
+      acquireLock: ReturnType<typeof vi.fn>;
+      releaseLock: ReturnType<typeof vi.fn>;
+    };
+    lm.acquireLock.mockImplementation(async (name: string) => {
+      order.push(`acquire ${name}`);
+      return true;
+    });
+    lm.releaseLock.mockImplementation(async (name: string) => {
+      order.push(`release ${name}`);
+    });
+    const backend = h.ctx.stateBackend as unknown as { deleteState: ReturnType<typeof vi.fn> };
+    const inner = backend.deleteState.getMockImplementation()!;
+    backend.deleteState.mockImplementation(async (name: string) => {
+      order.push(`delete ${name}`);
+      return inner(name);
+    });
+    await runDestroyForStack(PARENT, record(PARENT), h.ctx);
+    expect(order).toEqual([
+      `acquire ${PARENT}`,
+      `delete ${PARENT}`,
+      `acquire ${CHILD}`,
+      `delete ${CHILD}`,
+      `release ${CHILD}`,
+      `release ${PARENT}`,
+    ]);
+  });
+
+  it("leaves a retained nested row's child alone, without a warning", async () => {
+    const parent = record(PARENT, {
+      resources: {
+        ChildNestedStackResource: {
+          physicalId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/x/y',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+          deletionPolicy: 'Retain',
+        },
+      },
+    });
+    const h = makeCtx({
+      [PARENT]: parent,
+      [CHILD]: childRecord(CHILD, PARENT, { resources: { P: RESOURCE } }),
+    });
+    const result = await runDestroyForStack(PARENT, parent, h.ctx);
+    expect(result.retainedCount).toBe(1);
+    expect(h.deleted).toEqual([PARENT]);
+    expect(quiet.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+      /Kept the nested-stack record/
+    );
+  });
+
   it('retires a grandchild before its child', async () => {
     const grand = `${CHILD}~Grand`;
     const h = makeCtx({
@@ -179,6 +233,38 @@ describe('destroy retires the nested-child records no parent row addresses (go-t
     const h = makeCtx({ [PARENT]: record(PARENT), [CHILD]: childRecord(CHILD, PARENT, extra) });
     await runDestroyForStack(PARENT, record(PARENT), h.ctx);
     expect(h.deleted).toEqual([PARENT]);
+  });
+
+  it('keeps a child whose journal tracks a Cloud Control request, naming that reason', async () => {
+    const h = makeCtx({ [PARENT]: record(PARENT), [CHILD]: childRecord(CHILD, PARENT) });
+    const backend = h.ctx.stateBackend as unknown as {
+      loadRollbackJournal: ReturnType<typeof vi.fn>;
+    };
+    backend.loadRollbackJournal.mockImplementation(async (name: string) =>
+      name === CHILD
+        ? {
+            segments: [
+              {
+                reason: 'auto-rollback-clean',
+                operations: [],
+                failedOperations: [
+                  {
+                    logicalId: 'Q',
+                    changeType: 'CREATE',
+                    resourceType: 'AWS::SQS::Queue',
+                    pendingCloudControlRequest: { requestToken: 't' },
+                  },
+                ],
+              },
+            ],
+          }
+        : null
+    );
+    await runDestroyForStack(PARENT, record(PARENT), h.ctx);
+    expect(h.deleted).toEqual([PARENT]);
+    expect(quiet.warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+      /tracks a Cloud Control request that may still be running/
+    );
   });
 
   it('leaves a record whose body names another parent, or another region', async () => {

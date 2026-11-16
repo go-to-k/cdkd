@@ -19,9 +19,11 @@ import type { DestroyLogger, DestroyRunnerContext, DestroyRunnerResult } from '.
  * reaches `NestedStackProvider.delete` for that child, and the record outlived
  * the destroy: `cdkd state list` kept listing the child as a stack.
  *
- * Called once the parent's own record is deleted, still under the parent's
- * lock (so no deploy of the parent can be writing a child record meanwhile).
- * A record is retired only when it names this parent (`parentStack` /
+ * Called once the parent's own record is deleted (under the parent's lock on
+ * the main path, just after its release on the empty-record path). What makes
+ * it safe is the CHILD's lock: a child deploy writes its record only under
+ * that lock, and the delete re-checks emptiness under it. A record is retired
+ * only when it names this parent (`parentStack` /
  * `parentRegion`, matching its own key) and holds nothing: no resource, no
  * rollback orphan, no superseded resource, no journaled orphan. The delete
  * itself is `destroyEmptyStack`, which takes the CHILD's lock and re-checks
@@ -39,7 +41,9 @@ export async function retireUnaddressedChildRecords(
   region: string,
   ctx: DestroyRunnerContext,
   logger: DestroyLogger,
-  refusalRecovery: LockRecoveryContext
+  refusalRecovery: LockRecoveryContext,
+  /** Child records a row of the parent addressed (a kept nested row's); left alone. */
+  addressedChildNames: ReadonlySet<string>
 ): Promise<void> {
   const namePrefix = `${parentStackName}~`;
   let names: string[];
@@ -60,13 +64,30 @@ export async function retireUnaddressedChildRecords(
   names.sort((a, b) => depthOf(b) - depthOf(a) || a.localeCompare(b));
   const kept: string[] = [];
   for (const childName of names) {
-    if (kept.some((k) => k.startsWith(`${childName}~`))) {
+    // A kept nested row's child, and everything below it, is that row's.
+    if (
+      [...addressedChildNames].some((n) => childName === n || childName.startsWith(`${n}~`)) ||
+      kept.some((k) => k.startsWith(`${childName}~`))
+    ) {
       kept.push(childName);
       continue;
     }
     const verdict = await retireOne(childName, region, ctx, logger, refusalRecovery);
     if (verdict === 'kept') kept.push(childName);
   }
+}
+
+/** The child record names the parent's nested-stack rows address. */
+export function nestedRowChildNames(
+  parentStackName: string,
+  resources: Readonly<Record<string, { resourceType?: unknown } | null | undefined>>
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const [logicalId, row] of Object.entries(resources)) {
+    if (row?.resourceType === 'AWS::CloudFormation::Stack')
+      names.add(`${parentStackName}~${logicalId}`);
+  }
+  return names;
 }
 
 function depthOf(stackName: string): number {
@@ -115,8 +136,8 @@ async function retireOne(
   if (state.parentStack !== expectedParent || state.parentRegion !== region) return 'not-ours';
   if (!holdsNothing(state)) {
     return keptNote(
-      'it still records resources, rollback orphans or superseded resources that no ' +
-        'row of its parent addresses.'
+      'it still records resources, rollback orphans or superseded resources (or holds a ' +
+        'container cdkd cannot read) that no row of its parent addresses.'
     );
   }
   const journaledOrphans = await loadJournaledOrphans(
@@ -128,6 +149,13 @@ async function retireOne(
   );
   if (journaledOrphans.count > 0 || journaledOrphans.unreadable === true) {
     return keptNote('its rollback journal records resources a failed deploy created.');
+  }
+  // A Cloud Control request the child's journal still tracks may be creating
+  // a resource; the empty-record path refuses it, so name the real reason.
+  if ((journaledOrphans.pendingRequests ?? 0) > 0) {
+    return keptNote(
+      'its rollback journal tracks a Cloud Control request that may still be running.'
+    );
   }
   const result: DestroyRunnerResult = {
     stackName: childName,
@@ -144,9 +172,11 @@ async function retireOne(
     interrupted: false,
   };
   try {
+    // The registry marker and cross-prefix scan are a top-level stack's.
+    const { crossPrefixCheck: _topLevelOnly, ...childCtx } = ctx;
     await destroyEmptyStack({
       stackName: childName,
-      ctx,
+      ctx: childCtx,
       logger,
       stackLockBase: {
         lockManager: ctx.lockManager,

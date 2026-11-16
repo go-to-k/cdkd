@@ -247,7 +247,7 @@ async function destroyStackInRegion(
     !holdsSupersededResources(state) &&
     journaledOrphans.count === 0
   ) {
-    const emptyResult = await destroyEmptyStack({
+    return destroyEmptyStack({
       stackName,
       ctx,
       logger,
@@ -256,13 +256,19 @@ async function destroyStackInRegion(
       refusalRecovery,
       journaledOrphans,
       result,
+      // go-to-k/cdkd#6396: a child whose first deploy failed leaves its record
+      // with no row here to address it. Under this stack's lock, so no deploy
+      // of it can add a row meanwhile; each child is re-checked under its own.
+      afterStateDeleted: () =>
+        retireUnaddressedChildRecords(
+          stackName,
+          regionForState,
+          ctx,
+          logger,
+          refusalRecovery,
+          new Set()
+        ),
     });
-    // go-to-k/cdkd#6396: a child whose first deploy failed leaves its record
-    // with no row here to address it; each is re-checked under its own lock.
-    if (emptyResult.stateDeleted) {
-      await retireUnaddressedChildRecords(stackName, regionForState, ctx, logger, refusalRecovery);
-    }
-    return emptyResult;
   }
 
   // Strong-reference check (schema v4): refuse to destroy if any other

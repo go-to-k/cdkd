@@ -54,7 +54,7 @@ import type {
   DestroyLogger,
   StackLockBase,
 } from './types.js';
-import { retireUnaddressedChildRecords } from './child-records.js';
+import { nestedRowChildNames, retireUnaddressedChildRecords } from './child-records.js';
 import {
   NESTED_STACK_TYPE,
   purgeStateHistoryIfOptedIn,
@@ -766,7 +766,16 @@ export async function destroyStackUnderLock({
         ]);
       }
       // go-to-k/cdkd#6396: the child records no row of this stack addressed.
-      await retireUnaddressedChildRecords(stackName, regionForState, ctx, logger, refusalRecovery);
+      // A nested row this destroy kept (`DeletionPolicy: Retain`) keeps its
+      // child record on purpose: that child is addressed, not swept.
+      await retireUnaddressedChildRecords(
+        stackName,
+        regionForState,
+        ctx,
+        logger,
+        refusalRecovery,
+        nestedRowChildNames(stackName, state.resources)
+      );
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +
       // failed + retained resources). The incremental persists above are
