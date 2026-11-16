@@ -230,7 +230,29 @@ export async function resolveParameters(
         resolver.logger.debug(
           `Parameter ${maskInherited(name)}: resolving SSM parameter path ${maskInherited(ssmPath)}`
         );
-        const resolved = await resolver.resolveSSMParameter(ssmPath);
+        let resolved: string;
+        try {
+          resolved = await resolver.resolveSSMParameter(ssmPath);
+        } catch (error) {
+          // SSM answers a missing path with a MESSAGE-LESS `ParameterNotFound`
+          // (the SDK fills in `UnknownError`), so relayed raw it never names
+          // the path (go-to-k/cdkd#6380). Worded like CloudFormation's
+          // `Unable to fetch parameters [...] from parameter store`.
+          if ((error as { name?: unknown } | null)?.name !== 'ParameterNotFound') throw error;
+          const region =
+            resolver.explicitRegion !== undefined
+              ? ` in region ${displaySafe(resolver.explicitRegion, { asciiOnly: true })}`
+              : '';
+          throw markNonRetryable(
+            new Error(
+              `SSM parameter ${maskInherited(ssmPath)} (the value of template parameter ` +
+                `${maskInherited(name)}) was not found${region}. Create it there, or fix ` +
+                `the path the stack reads (for example the name passed to ` +
+                `ssm.StringParameter.valueForStringParameter).`,
+              { cause: error }
+            )
+          );
+        }
         // Coerced against the INNER type peeled out of `Value<...>`, never
         // the declared outer one -- see {@link ssmResolvedValueType} for why
         // the outer type is a silent no-op here, and for the two
