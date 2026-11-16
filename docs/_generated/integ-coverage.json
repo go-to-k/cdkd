@@ -1344,6 +1344,7 @@
         "dynamodb-globaltable",
         "dynamodb-globaltable-implied-stream",
         "dynamodb-globaltable-replica-settings",
+        "globaltable-delete-protection-preflight",
         "globaltable-fix-forward-orphan",
         "globaltable-keyschema-replace",
         "globaltable-template-baseline-drift",
@@ -1363,6 +1364,9 @@
         "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
+        ],
+        "globaltable-delete-protection-preflight": [
+          "l2"
         ],
         "globaltable-fix-forward-orphan": [
           "l1"

@@ -549,7 +549,7 @@ export async function dropReplicaForDelete(
       // below refuse, and that refusal is what the user sees.
       this.logger.debug(
         maskSecrets(
-          `Could not disable DeletionProtectionEnabled on the ${region} replica of ${tableName}: ` +
+          `Could not disable DeletionProtectionEnabled on the ${region} replica of ${maskSecrets(tableName)}: ` +
             describeAwsFailure(flipError).detail
         )
       );

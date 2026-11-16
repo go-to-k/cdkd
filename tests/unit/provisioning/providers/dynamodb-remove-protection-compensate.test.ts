@@ -621,9 +621,15 @@ describe.each(PROVIDERS)(
       // destroy.
       install({ protectionOn: true, onDelete: () => Promise.reject(terminalDeleteRefusal()) });
 
+      // go-to-k/cdkd#6367: a GlobalTable now refuses a protected table before
+      // any write, so `DeleteTable` is never sent and AWS's refusal never comes.
       await expect(
         provider.make().delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {})
-      ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+      ).rejects.toThrow(
+        provider.resourceType === 'AWS::DynamoDB::GlobalTable'
+          ? /deletion protection enabled in .*cdkd changed nothing/
+          : /Attempt to change a resource which is still in use/
+      );
 
       expect(flipOffCalls()).toHaveLength(0);
       expect(reEnableCalls()).toHaveLength(0);

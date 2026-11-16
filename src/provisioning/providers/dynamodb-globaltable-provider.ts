@@ -74,6 +74,7 @@ import {
   restoreReplicaDeletionProtection,
   waitForRegionalCopyReleased,
 } from './dynamodb-globaltable/replica-ops.js';
+import { protectedRegionsBeforeDelete } from './dynamodb-globaltable/protection-preflight.js';
 import {
   update,
   updateInScope,
@@ -535,6 +536,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   dropReplicaForDelete(...args: Parameters<typeof dropReplicaForDelete>) {
     return dropReplicaForDelete.call(this, ...args);
+  }
+
+  protectedRegionsBeforeDelete(...args: Parameters<typeof protectedRegionsBeforeDelete>) {
+    return protectedRegionsBeforeDelete.call(this, ...args);
   }
 
   restoreReplicaDeletionProtection(...args: Parameters<typeof restoreReplicaDeletionProtection>) {

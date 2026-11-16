@@ -1466,8 +1466,9 @@ describe('the allowance is enforced per POLL, not only at wait entry (issue #195
     })();
     await expect(pending).rejects.toThrow(/did not disappear within 1s/);
 
-    // The pre-delete describe plus exactly ONE replica probe — not zero.
-    expect(replicaPolls).toBe(2);
+    // The pre-delete describe, the us-west-2 deletion-protection read
+    // (go-to-k/cdkd#6367), plus exactly ONE replica probe — not zero.
+    expect(replicaPolls).toBe(3);
   });
 
   it('the SETTLE loop re-checks it too, and reports the polls it RAN', async () => {

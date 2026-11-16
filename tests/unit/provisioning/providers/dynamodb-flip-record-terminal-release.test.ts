@@ -280,6 +280,14 @@ const PROVIDERS: readonly ProviderCase[] = [
 describe.each(PROVIDERS)(
   '$resourceType: the flip record and a TERMINAL delete failure (#2244)',
   (provider: ProviderCase) => {
+    // go-to-k/cdkd#6367: a GlobalTable delete WITHOUT --remove-protection now
+    // reads the guard first and refuses before any write, so a plain delete of
+    // a table the compensation re-protected never reaches `DeleteTable`. That
+    // still proves this file's point: no flip, no unrequested re-enable.
+    const preflightRefuses = provider.resourceType === 'AWS::DynamoDB::GlobalTable';
+    const plainRefusal = (original: RegExp): RegExp =>
+      preflightRefuses ? /deletion protection enabled in .*cdkd changed nothing/ : original;
+    const plainDeleteAttempts = (n: number): number => (preflightRefuses ? n - 1 : n);
     beforeEach(() => {
       mockSend.mockReset();
       mockAutoScalingSend.mockReset();
@@ -326,12 +334,13 @@ describe.each(PROVIDERS)(
       // asks for the guard to be touched, and it fails terminally too.
       await expect(
         instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, PLAIN_DELETE)
-      ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+      ).rejects.toThrow(plainRefusal(/Attempt to change a resource which is still in use/));
 
-      // It really got as far as `DeleteTable` -- otherwise a run that died
-      // before the compensation could fire would satisfy the next line for the
-      // wrong reason.
-      expect(deleteAttempts).toBe(2);
+      // It really got as far as `DeleteTable` (on GlobalTable, as far as the
+      // #6367 guard read) -- otherwise a run that died before the
+      // compensation could fire would satisfy the next line for the wrong
+      // reason.
+      expect(deleteAttempts).toBe(plainDeleteAttempts(2));
       // No new flip: this delete did not ask for one.
       expect(flipOffCalls()).toHaveLength(1);
       // THE DISCRIMINATOR. Broken, the inherited latch adds a second
@@ -438,9 +447,9 @@ describe.each(PROVIDERS)(
       // is still winding down.
       await expect(
         instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, PLAIN_DELETE)
-      ).rejects.toThrow(/interrupted by user \(SIGINT\)/);
+      ).rejects.toThrow(plainRefusal(/interrupted by user \(SIGINT\)/));
 
-      expect(deleteAttempts).toBe(2);
+      expect(deleteAttempts).toBe(plainDeleteAttempts(2));
       expect(flipOffCalls()).toHaveLength(1);
       // THE DISCRIMINATOR.
       expect(reEnableCalls()).toHaveLength(compensations);
@@ -469,9 +478,9 @@ describe.each(PROVIDERS)(
 
       await expect(
         instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, REGIONAL_PLAIN)
-      ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+      ).rejects.toThrow(plainRefusal(/Attempt to change a resource which is still in use/));
 
-      expect(deleteAttempts).toBe(2);
+      expect(deleteAttempts).toBe(plainDeleteAttempts(2));
       expect(flipOffCalls()).toHaveLength(1);
       // THE DISCRIMINATOR.
       expect(reEnableCalls()).toHaveLength(compensations);
