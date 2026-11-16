@@ -115,6 +115,11 @@ live_value() { # usage: live_value <logicalId> <physicalId>
 # the id itself, the id is the witness; a named resource's is its creation time.
 witness() { # usage: witness <logicalId> <physicalId>
   case "$1" in
+    # Cloud Map hands a re-created namespace of the same name the SAME `ns-...`
+    # id (three create operations, each after a delete, returned one id on this
+    # fixture's runs), so its id cannot witness a recreate; its CreateDate can.
+    RerouteHttpNamespace)
+      aws servicediscovery get-namespace --id "$2" --region "${REGION}" --query 'Namespace.CreateDate' --output text ;;
     RerouteGlueDatabase)
       aws glue get-database --name "$2" --region "${REGION}" --query 'Database.CreateTime' --output text ;;
     RerouteGlueJob)

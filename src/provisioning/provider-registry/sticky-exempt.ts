@@ -582,7 +582,8 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // Batch 3 of go-to-k/cdkd#6454, admitted with five other types for the
       // SDK path's speed. Its fixture observed all six flips on live
       // resources, each with an identity witness: the AWS-minted id where
-      // AWS mints one, else the resource's creation time.
+      // AWS mints one, else the resource's creation time (an HttpNamespace's
+      // too: Cloud Map re-mints the same `ns-...` id for a recreated name).
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the bare `E...` identity id: the schema primaryIdentifier is ' +
