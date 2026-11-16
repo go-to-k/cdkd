@@ -177,10 +177,10 @@ Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in
 | `bucketSource` | string | Where the bucket name came from: `cli-flag`, `env`, `cdk.json`, `default` or `default-legacy`. Each is the machine form of one `Source:` line below, in the order of that table. |
 | `schemaVersion` | number or string | The schema version of one state record, or the string `unknown` when the bucket holds no record, the record cannot be read or parsed, or it has no numeric version. |
 | `stackCount` | number | The number of `state.json` files under the state prefix. |
-| `assetStorage` | array | One entry for each region opted into cdkd-owned asset storage by [`cdkd bootstrap`](cli-bootstrap.md), sorted by region. The array is empty when every region still uses the CDK bootstrap destinations. A bootstrap marker that cannot be read is skipped with a warning on stderr. |
+| `assetStorage` | array | One entry for each region opted into cdkd-owned asset storage by [`cdkd bootstrap`](cli-bootstrap.md), sorted by region. The array is empty when every region still uses the CDK bootstrap destinations. A bootstrap marker that is malformed or unreadable, and one written by a newer cdkd (a higher `assetSupportVersion`), is skipped with a warning on stderr. |
 
 Each `assetStorage` entry has four string fields: `region`, `assetBucket`,
-`containerRepo` and `createdAt`, the ISO timestamp the marker records.
+`containerRepo` and `createdAt`, the ISO timestamp the marker records. `createdAt` is an empty string when the marker records none.
 
 The `Source:` line says where the bucket name came from:
 
@@ -422,9 +422,11 @@ The array is empty for a stack with no resources.
 | `dependencies` | array of strings | The logical ids the resource depends on. An empty array when the record holds none. |
 | `attributes` | object | The attributes cdkd recorded, such as `Arn`, keyed by name. Values are as stored, so they can be strings, numbers or nested values. An empty object when the record holds none. |
 
-`logicalId`, `dependencies` and `attributes` are always present. A record
-that lacks `resourceType` or `physicalId` has no such key in the output, so
-the two are absent only for a hand-edited or damaged record.
+The types above hold for a record cdkd wrote. `logicalId`, `dependencies` and
+`attributes` are always present. For a hand-edited or damaged record,
+`resourceType`, `physicalId` and `dependencies` are printed as stored, so they
+can hold another type, and `resourceType` and `physicalId` are absent when the
+record lacks them. Only `attributes` is repaired to an object.
 [cdkd state: malformed records](cli-state-malformed.md) lists what each mode
 prints for one. The [AppSync API key masking](#appsync-api-keys-are-masked) applies to `physicalId`
 and `attributes`.

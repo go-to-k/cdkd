@@ -132,8 +132,8 @@ Without `--run`, `--json` prints one object:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `stackName` | string | The stack name you passed. |
-| `region` | string | The region whose history was read: `--stack-region`, or the one region cdkd found. |
-| `runs` | array | One summary per run, newest first. At most the newest 20 runs when cdkd reads them from `index.json`. |
+| `region` | string | The region whose history was read: `--stack-region` in its lowercase form, or the one region cdkd found. |
+| `runs` | array | One summary per run, newest first, or an empty array when the region holds no run files. At most the newest 20 runs when cdkd reads them from `index.json`. |
 
 Every run summary has these fields:
 
@@ -147,8 +147,9 @@ Every run summary has these fields:
 | `result` | string | `SUCCEEDED` or `FAILED`, or `UNKNOWN` when the run has no `RUN_FINISHED` event. |
 | `eventCount` | number | The number of events the run holds. |
 
-All seven fields are present in every summary. cdkd normally reads the list
-from `index.json`. When that file is missing or unreadable, it rebuilds each
+For an index cdkd wrote, all seven fields are present in every summary. cdkd
+normally reads the list from `index.json`. When that file is missing,
+unreadable, or has no `runs` array, it rebuilds each
 summary from the run's own file, which changes what a field holds:
 `startedAt` and `finishedAt` are empty strings when the run lacks the
 `RUN_STARTED` or `RUN_FINISHED` event that carries them, `cdkdVersion` is

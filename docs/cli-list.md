@@ -169,11 +169,11 @@ The fields depend on the flags:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | Under `--long`, the stack's hierarchical id, its path in the CDK app (`MyStage/Api`). Under `--show-dependencies` alone, the id as the default output prints it: `MyStage/Api (MyStage-Api)` when the path and the physical name differ, and the path alone when they match. |
+| `id` | string | Under `--long`, the stack's display name, which is its path in the CDK app (`MyStage/Api`), or the physical stack name when the assembly records no display name. Under `--show-dependencies` alone, the id as the default output prints it: `MyStage/Api (MyStage-Api)` when the path and the physical name differ, and the path alone when they match. |
 | `name` | string | The stack's physical CloudFormation name. |
 | `environment.account` | string | The AWS account id. It is the string `unknown-account` when the stack is environment-agnostic and has no account. |
 | `environment.region` | string | The region. It is the string `unknown-region` when the stack has none. |
-| `dependencies` | array of strings | The names of the stacks this stack depends on, as the cloud assembly records them. The array is empty for a stack with no dependency. |
+| `dependencies` | array of strings | The physical `stackName` of each stack this stack depends on, or that stack's artifact id when the assembly records no name. A dependency on itself and a dependency that is not a stack, such as an asset manifest, are left out. The array is empty for a stack with no dependency. |
 
 `dependencies` is present only when `--show-dependencies` is set. `name` and
 `environment` are present only under `--long`. A key that a flag combination
