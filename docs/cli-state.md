@@ -155,6 +155,33 @@ Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in
 | --- | --- | --- |
 | `--json` | off | Print the report as one JSON object on stdout, and nothing else. |
 
+`--json` prints one object. Every key is always present:
+
+```json
+{
+  "bucket": "cdkd-state-123456789012",
+  "region": "us-east-1",
+  "regionSource": "auto-detected",
+  "bucketSource": "default",
+  "schemaVersion": 17,
+  "stackCount": 4,
+  "assetStorage": []
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `bucket` | string | The state bucket's name. |
+| `region` | string or `null` | The bucket's region from `GetBucketLocation`. `null` when that call failed. |
+| `regionSource` | string | `auto-detected` when `region` was read from the bucket, and `unknown` when it is `null`. |
+| `bucketSource` | string | Where the bucket name came from: `cli-flag`, `env`, `cdk.json`, `default` or `default-legacy`. Each is the machine form of one `Source:` line below, in the order of that table. |
+| `schemaVersion` | number or string | The schema version of one state record, or the string `unknown` when the bucket holds no record, the record cannot be read or parsed, or it has no numeric version. |
+| `stackCount` | number | The number of `state.json` files under the state prefix. |
+| `assetStorage` | array | One entry for each region opted into cdkd-owned asset storage by [`cdkd bootstrap`](cli-bootstrap.md), sorted by region. The array is empty when every region still uses the CDK bootstrap destinations. A bootstrap marker that is malformed or unreadable, and one written by a newer cdkd (a higher `assetSupportVersion`), is skipped with a warning on stderr. |
+
+Each `assetStorage` entry has four string fields: `region`, `assetBucket`,
+`containerRepo` and `createdAt`, the ISO timestamp the marker records. `createdAt` is an empty string when the marker records none.
+
 The `Source:` line says where the bucket name came from:
 
 | `Source:` | Meaning |
@@ -220,6 +247,25 @@ done
 The plain listing reads no record. `--long`
 costs two extra S3 requests per stack, one for the record and one for its
 lock. `--tree` costs one.
+
+### `--json` on its own
+
+`--json` without `--long` or `--tree` prints an array with one object per stack,
+sorted by stack name and then region. The array is empty when the bucket holds
+no record.
+
+```json
+[
+  { "stackName": "MyStack", "region": "us-east-1" }
+]
+```
+
+| Field | Value |
+| --- | --- |
+| `stackName` | The stack's physical name. |
+| `region` | The record's region, or `null` for a legacy record without one. |
+
+Both fields are always present.
 
 ### `--long`
 
@@ -350,6 +396,41 @@ JobsTable1A2B3C4D
   Attributes:
     Arn: arn:aws:dynamodb:us-east-1:123456789012:table/MyStack-JobsTable1A2B3C4D-9QK2M
 ```
+
+`--json` prints an array with one object per resource, sorted by logical id.
+The array is empty for a stack with no resources.
+
+```json
+[
+  {
+    "logicalId": "JobsTable1A2B3C4D",
+    "resourceType": "AWS::DynamoDB::Table",
+    "physicalId": "MyStack-JobsTable1A2B3C4D-9QK2M",
+    "dependencies": [],
+    "attributes": {
+      "Arn": "arn:aws:dynamodb:us-east-1:123456789012:table/MyStack-JobsTable1A2B3C4D-9QK2M"
+    }
+  }
+]
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `logicalId` | string | The resource's logical id in the template. |
+| `resourceType` | string | The CloudFormation resource type. |
+| `physicalId` | string | The resource's physical id. See the section on physical ids with a pipe character below. |
+| `dependencies` | array of strings | The logical ids the resource depends on. An empty array when the record holds none. |
+| `attributes` | object | The attributes cdkd recorded, such as `Arn`, keyed by name. Values are as stored, so they can be strings, numbers or nested values. An empty object when the record holds none. |
+
+The types above hold for a record cdkd wrote. `logicalId`, `dependencies` and
+`attributes` are always present. For a hand-edited or damaged record,
+`resourceType`, `physicalId` and `dependencies` are printed as stored, so they
+can hold another type, and `resourceType` and `physicalId` are absent when the
+record lacks them. A missing or `null` `dependencies` prints as `[]`. Only
+`attributes` is repaired to an object.
+[cdkd state: malformed records](cli-state-malformed.md) lists what each mode
+prints for one. The [AppSync API key masking](#appsync-api-keys-are-masked) applies to `physicalId`
+and `attributes`.
 
 No mode of this subcommand prints resource properties. Use
 [`cdkd state show`](#cdkd-state-show) for those.

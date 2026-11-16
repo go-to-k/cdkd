@@ -107,6 +107,60 @@ character is written as a `\uXXXX` escape: C0, DEL, C1, `U+2028`, `U+2029`,
 the bidi controls and the zero-width characters. The output parses back to
 exactly the stored values, and printing it cannot run a control sequence.
 
+#### The run list
+
+Without `--run`, `--json` prints one object:
+
+```json
+{
+  "stackName": "MyStack",
+  "region": "us-east-1",
+  "runs": [
+    {
+      "runId": "20260813T051530123Z-1a2b3c4d",
+      "command": "deploy",
+      "cdkdVersion": "0.352.13",
+      "startedAt": "2026-08-13T05:15:30.123Z",
+      "finishedAt": "2026-08-13T05:16:12.870Z",
+      "result": "SUCCEEDED",
+      "eventCount": 14
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `stackName` | string | The stack name you passed. |
+| `region` | string | The region whose history was read: `--stack-region` in its lowercase form, or the one region cdkd found. |
+| `runs` | array | One summary per run, newest first, or an empty array when the region holds no run files. At most the newest 20 runs when cdkd reads them from `index.json`. |
+
+Every run summary has these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `runId` | string | The run's id. Pass it to `--run`. It starts with the run's UTC timestamp. |
+| `command` | string | `deploy`, `destroy` or `rollback`. |
+| `cdkdVersion` | string | The cdkd version that performed the run. |
+| `startedAt` | string | ISO 8601 time the run's recorder opened. |
+| `finishedAt` | string | ISO 8601 time the run was finalized. |
+| `result` | string | `SUCCEEDED` or `FAILED`, or `UNKNOWN` when the run has no `RUN_FINISHED` event. |
+| `eventCount` | number | The number of events the run holds. |
+
+For an index cdkd wrote, all seven fields are present in every summary. cdkd
+normally reads the list from `index.json`. When that file is missing,
+unreadable, or has no `runs` array, it rebuilds each
+summary from the run's own file, which changes what a field holds:
+`startedAt` and `finishedAt` are empty strings when the run lacks the
+`RUN_STARTED` or `RUN_FINISHED` event that carries them, `cdkdVersion` is
+`unknown` and `command` is `deploy` when `RUN_STARTED` is missing or lacks
+that field, and a run whose file cannot be read has `eventCount` `0`. cdkd does not rewrite the index
+when it rebuilds the list. The runs in the rebuilt list are not limited to 20.
+
+`--run` prints the stored events themselves, as a JSON array in the order they
+were recorded. [Deployment Event Format](deployment-events-format.md) lists the
+fields of an event.
+
 Neither format verifies the events. Someone who can write to the state bucket
 can forge a whole event, the `ownLines` mark included.
 

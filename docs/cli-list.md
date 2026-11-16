@@ -138,6 +138,50 @@ done
 `--long` and `--show-dependencies` print a structured document. It is YAML by
 default and JSON under `--json`.
 
+### The structured document
+
+`--long` and `--show-dependencies` print an array with one record per stack,
+in dependency order. The array is the whole of stdout. A run that selects no
+stack exits `1` and prints no array, so a successful run has at least one
+record.
+
+```json
+[
+  {
+    "id": "MyStage/Api",
+    "name": "MyStage-Api",
+    "environment": {
+      "account": "123456789012",
+      "region": "us-east-1"
+    },
+    "dependencies": ["MyStage-Db"]
+  }
+]
+```
+
+The fields depend on the flags:
+
+| Flags | Fields in each record |
+| --- | --- |
+| `--long` | `id`, `name`, `environment` |
+| `--long --show-dependencies` | `id`, `name`, `environment`, `dependencies` |
+| `--show-dependencies` | `id`, `dependencies` |
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Under `--long`, the stack's display name, which is its path in the CDK app (`MyStage/Api`), or the physical stack name when the assembly records no display name. Under `--show-dependencies` alone, the id as the default output prints it: `MyStage/Api (MyStage-Api)` when the path and the physical name differ, and the path alone when they match. |
+| `name` | string | The stack's physical CloudFormation name. |
+| `environment.account` | string | The AWS account id. It is the string `unknown-account` when the stack is environment-agnostic and has no account. |
+| `environment.region` | string | The region. It is the string `unknown-region` when the stack has none. |
+| `dependencies` | array of strings | The physical `stackName` of each stack this stack depends on, or that stack's artifact id when the assembly records no name. A dependency whose name equals this stack's own name and a dependency that is not a stack, such as an asset manifest, are left out. The array is empty for a stack with no dependency. |
+
+`dependencies` is present only when `--show-dependencies` is set. `name` and
+`environment` are present only under `--long`. A key that a flag combination
+does not select is absent, not `null`.
+
+`--json` changes only the encoding: the YAML document holds the same
+records, key for key.
+
 The listing goes to stdout, and everything else goes to stderr. That includes
 progress lines such as `Resolving missing context...`, the CDK app's own
 stderr, and `--verbose` output. A redirect therefore captures the listing

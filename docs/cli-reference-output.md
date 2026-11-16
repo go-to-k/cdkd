@@ -40,7 +40,7 @@ see there is unchanged. To merge the streams in a script, use `2>&1`.
 | Command | When stdout carries only the document |
 | --- | --- |
 | `cdkd synth`, `cdkd list`, `cdkd state list`, `cdkd local invoke`, `cdkd local invoke-agentcore` | Always |
-| `cdkd state resources`, `cdkd state show`, `cdkd state info`, `cdkd drift`, `cdkd events` | Under `--json` only |
+| `cdkd state resources`, `cdkd state show`, `cdkd state info`, `cdkd drift`, `cdkd diff`, `cdkd events` | Under `--json` only |
 | `cdkd deploy`, and the `cdkd local` servers (`start-api`, `run-task`, `start-service`, `start-agentcore`, `start-alb`, `start-cloudfront`, `start-web-function`, `start-microvm`) | Never |
 
 Without `--json`, the commands in the second row print a formatted view for a
@@ -51,6 +51,10 @@ table or container logs, so there is no document to capture.
 
 ### Edge cases
 
+- **`cdkd diff --json`.** It keeps stdout to the document by lowering the log
+  level to warnings, not by moving progress to stderr. Progress and
+  `--verbose` output are not printed at all, and only warnings and errors reach
+  stderr.
 - **`cdkd state list --long` and `--tree`.** These print a formatted view, not
   a record per line. The view still goes to stdout, and cdkd's progress lines
   go to stderr as they do on the plain listing.
@@ -66,5 +70,6 @@ table or container logs, so there is no document to capture.
 
 - [`cdkd synth`](cli-synth.md#the-stdout-contract): what the template on stdout looks like
 - [`cdkd list`](cli-list.md#what-it-prints): the listing formats
+- [`cdkd diff --json`](cli-diff-json.md): the document `cdkd diff` keeps stdout to
 - [Exit codes](cli-reference-exit-codes.md): the other half of scripting cdkd
 - [CLI Reference](cli-reference.md): every command and the shared options
