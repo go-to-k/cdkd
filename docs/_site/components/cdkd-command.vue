@@ -16,8 +16,8 @@ interface CommandTab {
 const {
   lines = [],
   tabs = [],
-  group,
-  initial,
+  group = '',
+  initial = '',
   label = 'Shell command',
 } = defineProps<{
   /** The command, one entry per line, when there is only one. */
@@ -121,9 +121,9 @@ onBeforeUnmount(() => clearTimeout(reset));
         :id="`${id}-tab-${tab.label}`"
         :key="tab.label"
         ref="tabButtons"
+        type="button"
         class="tab"
         role="tab"
-        type="button"
         :aria-selected="index === active"
         :aria-controls="`${id}-panel`"
         :tabindex="index === active ? 0 : -1"
@@ -145,8 +145,8 @@ onBeforeUnmount(() => clearTimeout(reset));
         </code>
       </div>
       <button
-        class="copy"
         type="button"
+        class="copy"
         :aria-label="copied ? 'Copied' : 'Copy command'"
         @click="copy"
       >
