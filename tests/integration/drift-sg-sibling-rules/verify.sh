@@ -20,6 +20,11 @@
 #      names 9999, never the sibling's 5432.
 #   5. `cdkd drift --revert -y` revokes 9999 ONLY: every sibling rule stays.
 #   6. `cdkd drift` exits 0 again.
+#   6b. (go-to-k/cdkd#6420) Plant the sibling's 5432 rule in SgA's recorded
+#      baseline (what a pre-#6418 binary recorded on a group UPDATE), then
+#      remove the standalone 5432 rule (CDKD_TEST_UPDATE=inline,nofrom). The
+#      deploy drops the rule from the baseline, `cdkd drift` exits 0 and
+#      `--revert -y` does not re-authorize 5432.
 #   7. Destroy + gone-probes.
 #
 # Required env vars:
@@ -68,6 +73,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # Phase 3 sets the mode; an inherited value would deploy it early.
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
+PLANT_FILE=""
 GROUP_A=""
 GROUP_B=""
 VPC_ID=""
@@ -78,7 +84,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
-  rm -f "${DRIFT_LOG:-}"
+  rm -f "${DRIFT_LOG:-}" "${PLANT_FILE:-}"
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -236,6 +242,48 @@ expect_ports "SgB ingress (after revert)" "${B_IN}" "22 8080"
 echo "==> Phase 6: cdkd drift is clean again"
 run_drift
 expect_drift_rc 0 "Phase 6"
+
+echo "==> Phase 6b: plant the sibling's 5432 rule in SgA's recorded baseline (go-to-k/cdkd#6420)"
+# The capture leaves sibling rules out since #6418, so a baseline holding one
+# is what an older binary recorded on a group UPDATE. Planted so the arm does
+# not depend on that binary.
+PLANT_FILE="$(mktemp)"
+if ! aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+    let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+      const s = JSON.parse(d);
+      const g = Object.values(s.resources).find(
+        (r) => r.resourceType === "AWS::EC2::SecurityGroup" && r.physicalId === process.argv[1]);
+      const rules = g && g.observedProperties && g.observedProperties.SecurityGroupIngress;
+      if (!Array.isArray(rules)) { process.stderr.write("group has no baseline SecurityGroupIngress\n"); process.exit(1); }
+      rules.push({ IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: process.argv[2],
+        SourceSecurityGroupOwnerId: process.argv[3], Description: "from B" });
+      process.stdout.write(JSON.stringify(s));
+    });' "${GROUP_A}" "${GROUP_B}" "$(aws sts get-caller-identity --query Account --output text)" >"${PLANT_FILE}"; then
+  rm -f "${PLANT_FILE}"
+  echo "FAIL: premise: could not plant the 5432 rule in ${GROUP_A}'s recorded baseline" >&2
+  exit 1
+fi
+aws s3 cp "${PLANT_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --content-type application/json >/dev/null
+rm -f "${PLANT_FILE}"
+# While the sibling record exists, #6418's strip already hides the planted rule.
+run_drift
+expect_drift_rc 0 "Phase 6b (planted, sibling still recorded)"
+echo "==> Phase 6b: remove the standalone 5432 ingress"
+CDKD_TEST_UPDATE=inline,nofrom node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes
+read_ports
+expect_ports "SgA ingress (sibling removed)" "${A_IN}" "443 8443"
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+BASE_IN="$(jq -r --arg l "${SG_A_LID}" \
+  '[.resources[$l].observedProperties.SecurityGroupIngress[]?.FromPort] | sort | map(tostring) | join(" ")' \
+  <<<"${STATE_JSON}")"
+expect_ports "SgA baseline after the sibling's removal" "${BASE_IN}" "443 8443"
+run_drift
+expect_drift_rc 0 "Phase 6b (sibling removed)"
+run_drift --revert -y
+expect_drift_rc 0 "Phase 6b (--revert)"
+read_ports
+expect_ports "SgA ingress (after --revert)" "${A_IN}" "443 8443"
 
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
