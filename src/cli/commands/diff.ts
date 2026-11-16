@@ -33,7 +33,6 @@ import {
   rewriteTemplateAssetReferences,
 } from '../../assets/asset-redirect.js';
 import { createLegacyAssetParameterBinder } from '../../assets/legacy-synthesizer-assets.js';
-import { displaySafe } from '../../utils/display-safe.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -570,9 +569,8 @@ async function diffCommand(
       } catch (error) {
         // A diff reads; it shows the parameters unresolved rather than fail.
         logger.warn(
-          `Could not bind the LegacyStackSynthesizer asset parameters of stack ` +
-            `${displaySafe(stackInfo.stackName)}, so values built from them show as unresolved: ` +
-            `${displaySafe(error instanceof Error ? error.message : String(error))}`
+          safeMsg`Could not bind the LegacyStackSynthesizer asset parameters of stack ${stackInfo.stackName}, ` +
+            safeMsg`so values built from them show as unresolved: ${error instanceof Error ? error.message : String(error)}`
         );
       }
       if (assetRedirect) {

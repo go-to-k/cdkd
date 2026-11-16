@@ -279,7 +279,7 @@ async function publishAssetsCommand(
         // Issue #6421 — a LegacyStackSynthesizer stack: publish the plan its
         // `aws:cdk:asset` metadata builds, to the bucket `cdkd deploy` binds.
         if (stack.legacyAssets) {
-          logger.info(`\nPublishing assets for stack: ${describeStack(stack)}`);
+          logger.info(safeMsg`\nPublishing assets for stack: ${describeStack(stack)}`);
           const stackRegion = await regionForStack(stack);
           const modeResolver = useCdkBootstrapAssets ? null : await getModeResolver();
           const assetMode: AssetMode = modeResolver
@@ -315,9 +315,8 @@ async function publishAssetsCommand(
               },
               (node) => assetPublisher.executeNode(node)
             );
-            logger.info(
-              `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
-            );
+            const seconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+            logger.info(safeMsg`  ✓ Published ${assetCount} asset(s) in ${seconds}s`);
           }
           results.push({
             stackName: stack.stackName,

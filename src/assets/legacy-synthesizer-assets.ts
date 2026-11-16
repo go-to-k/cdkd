@@ -8,6 +8,7 @@ import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { lookupCdkToolkitBucket } from './cdk-toolkit-bucket.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
+import { injectiveKey } from '../state/record-keys.js';
 import {
   createLazyAssetModeContext,
   loadPublishableAssetManifest,
@@ -34,6 +35,9 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
  * ({@link bindLegacyAssetParameters}), so every command that resolves the
  * template sees them without a new parameter channel.
  */
+
+/** The one destination id of every in-memory legacy asset (an id, never parsed). */
+const LEGACY_DESTINATION_ID = 'legacy-synthesizer';
 
 /** The `aws:cdk:asset` metadata entry type. */
 export const LEGACY_ASSET_METADATA_TYPE = 'aws:cdk:asset';
@@ -190,7 +194,7 @@ export function buildLegacyAssetPlan(
           displayName: id,
           source: { path: assetPath, packaging: entry.packaging },
           destinations: {
-            [`${target.accountId}-${target.region}`]: {
+            [LEGACY_DESTINATION_ID]: {
               bucketName,
               objectKey: `${s3Prefix}${baseName}`,
               region: target.region,
@@ -235,7 +239,7 @@ export function buildLegacyAssetPlan(
           displayName: id,
           source,
           destinations: {
-            [`${target.accountId}-${target.region}`]: {
+            [LEGACY_DESTINATION_ID]: {
               repositoryName,
               imageTag,
               region: target.region,
@@ -341,7 +345,7 @@ export async function prepareLegacyStackAssets(
     if (opts.assetMode.mode === 'cdkd-assets') {
       fileBucket = opts.assetMode.marker.assetBucket;
     } else {
-      const key = `${opts.accountId}/${opts.region}`;
+      const key = injectiveKey(opts.accountId, opts.region);
       let pending = toolkitBucketCache.get(key);
       if (!pending) {
         pending = lookupCdkToolkitBucket(opts.region, opts.accountId);

@@ -15,7 +15,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { safeStringify } from '../utils/aws-failure-text.js';
 import { AssetError } from '../utils/error-handler.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { buildDockerImage } from './docker-build.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
@@ -236,7 +236,7 @@ export class DockerAssetPublisher {
     } catch (error) {
       if ((error as { name?: string }).name !== 'RepositoryNotFoundException') throw error;
     }
-    this.logger.debug(`Creating ECR repository ${displayIdent(repositoryName)}`);
+    this.logger.debug(safeMsg`Creating ECR repository ${repositoryName}`);
     try {
       await client.send(
         new CreateRepositoryCommand({

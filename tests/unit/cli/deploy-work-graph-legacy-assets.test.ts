@@ -111,7 +111,7 @@ describe('addStacksToWorkGraph: LegacyStackSynthesizer assets', () => {
       cdkOutputDir: '/cdk.out',
       asset: {
         destinations: {
-          '123456789012-us-east-1': {
+          'legacy-synthesizer': {
             bucketName: 'cdkd-assets-bucket',
             objectKey: `assets/${HASH}.zip`,
           },

@@ -170,7 +170,7 @@ describe('buildLegacyAssetPlan (CDK CLI prepareFileAsset parity)', () => {
         platform: 'linux/arm64',
       },
       destinations: {
-        [`${ACCOUNT}-${REGION}`]: { repositoryName: 'aws-cdk/assets', imageTag: 'img', region: REGION },
+        'legacy-synthesizer': { repositoryName: 'aws-cdk/assets', imageTag: 'img', region: REGION },
       },
     });
     expect(plan.parameters).toEqual({});
