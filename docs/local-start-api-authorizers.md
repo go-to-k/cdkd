@@ -80,6 +80,18 @@ signature against the issuer's JWKS. It also checks the token's `aud` or
   `event.requestContext.authorizer.jwt.claims`.
 - **Denied:** 401.
 
+An `HttpUserPoolAuthorizer` builds its issuer and audience from the user pool
+and app client it names, so the template holds references rather than
+values. cdkd reads them from the deployed stack:
+
+| How you run it | What the authorizer checks |
+| --- | --- |
+| `--from-state` or `--from-cfn-stack` | The deployed pool's issuer and JWKS, and the app client ids as the audience |
+| No state source | Nothing: cdkd warns at startup and accepts every token, as when the JWKS is unreachable |
+
+If the issuer resolves but an audience entry does not, cdkd warns and checks
+the signature, issuer and expiry without the audience.
+
 ## Result caching
 
 cdkd caches an authorizer's verdict, so the authorizer does not run on every
