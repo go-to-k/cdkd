@@ -322,7 +322,7 @@ export async function update(
 
   // The Schema pre-flight (go-to-k/cdkd#6375): AWS can only ADD custom
   // attributes, so a removed / modified attribute (or an added standard one)
-  // is decided here, before any call. Refused after `UpdateUserPool`, the
+  // is decided here, before any write. Refused after `UpdateUserPool`, the
   // rest of the update had already landed: on a rollback, which then failed,
   // the pool held the reverted MFA / password policy while state kept the
   // failed deploy's record, and every later deploy diffed NO_CHANGE.
