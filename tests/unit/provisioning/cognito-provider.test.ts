@@ -491,6 +491,52 @@ describe('CognitoUserPoolProvider', () => {
         );
       });
 
+      it('still adds what the revert adds, and records the old attributes first, then the added ones', async () => {
+        // A revert that both drops `level` and brings `tier` back: `tier` is
+        // sent, `level` is kept, and the recorded order is the one a template
+        // listing the old attributes first would diff equal against.
+        const tier = { Name: 'tier', AttributeDataType: 'String', Mutable: true };
+        const result = await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { ...reverted, Schema: [...reverted.Schema, tier] },
+          forward,
+          { replayingState: true }
+        );
+
+        expect(sent('AddCustomAttributesCommand')).toEqual([
+          { UserPoolId: 'us-east-1_abc123', CustomAttributes: [tier] },
+        ]);
+        expect(result.effectiveProperties?.['Schema']).toEqual([...forward.Schema, tier]);
+      });
+
+      it('drift --revert keeps the refusal: its previous side is the AWS-shaped readback', async () => {
+        // `readCurrentState` returns `SchemaAttributes` verbatim: every
+        // standard attribute, custom ones as `custom:<name>`. Recording that
+        // would leave a Schema no template matches.
+        const readback = {
+          ...reverted,
+          Schema: [
+            { Name: 'sub', AttributeDataType: 'String', Mutable: false, Required: true },
+            { Name: 'email', AttributeDataType: 'String', Mutable: true, Required: false },
+            { Name: 'custom:team', AttributeDataType: 'String', Mutable: true, Required: false },
+          ],
+        };
+        await expect(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            forward,
+            readback,
+            { desiredFromAwsReadback: true }
+          )
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+        expect(sent('UpdateUserPoolCommand')).toEqual([]);
+        expect(sent('AddCustomAttributesCommand')).toEqual([]);
+      });
+
       it('on the template path refuses before sending the password policy', async () => {
         await expect(
           provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', reverted, forward)

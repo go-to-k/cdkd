@@ -130,7 +130,7 @@ custom_attrs() {
 state_pool() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | node -e '
     let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
-      const rec = Object.values(JSON.parse(s).resources).find((r) => r.resourceType === "AWS::Cognito::UserPool");
+      const [, rec] = Object.entries(JSON.parse(s).resources).find(([id]) => /^Pool[0-9A-F]{8}$/.test(id));
       const p = rec.properties;
       const names = (p.Schema || []).map((a) => a.Name).sort().join(" ");
       console.log(`${p.Policies.PasswordPolicy.MinimumLength}|${names}`);
@@ -195,6 +195,12 @@ if [ "${STATE_P2}" != "8|level team" ]; then
 fi
 # Then the wording.
 P2_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P2_LOG}")"
+# Sentinel for the negative grep below: the rollback must have run and
+# reached the pool, or "no failure line" proves nothing.
+if ! grep -qE 'Rollback: .*Pool[0-9A-F]+' <<<"${P2_PLAIN}"; then
+  echo "FAIL: no rollback line naming the pool; cdkd's rollback wording may have drifted" >&2
+  exit 1
+fi
 if grep -qF "Rollback failed for Pool" <<<"${P2_PLAIN}"; then
   echo "FAIL: the pool's rollback failed (issue #6375)" >&2
   exit 1

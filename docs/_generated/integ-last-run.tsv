@@ -69,7 +69,7 @@ cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on 
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-resource-server	2026-11-06T16:30:27Z	PASS	105	verify.sh	#5878 cloud-control split head; rc ok, orph clean
-cognito-schema-rollback	2026-11-16T03:30:11Z	PASS	69	verify.sh	rc ok, orph clean; red on pre-fix build
+cognito-schema-rollback	2026-11-16T03:46:34Z	PASS	66	verify.sh	rc ok, orph clean; red on pre-fix build
 cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-11-04T21:27:03Z	PASS	25	verify.sh	rc 0, orphans clean
