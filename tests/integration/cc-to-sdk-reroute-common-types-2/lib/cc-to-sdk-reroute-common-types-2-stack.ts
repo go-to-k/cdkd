@@ -98,7 +98,8 @@ export class CcToSdkRerouteCommonTypes2Stack extends cdk.Stack {
       new lambda.CfnUrl(this, 'FunctionUrl', {
         targetFunctionArn: handler.functionArn,
         authType: 'AWS_IAM',
-        cors: { maxAge: value === 'a' ? 100 : 200 },
+        // AWS refuses a Cors block without AllowOrigins.
+        cors: { allowOrigins: ['https://example.com'], maxAge: value === 'a' ? 100 : 200 },
       }),
       'RerouteFunctionUrl'
     );
