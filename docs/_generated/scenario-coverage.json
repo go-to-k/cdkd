@@ -2214,6 +2214,11 @@
       ]
     },
     {
+      "name": "nested-stack-transform",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nlb-quic-server-id",
       "annotated": false,
       "scenarios": []
@@ -4037,6 +4042,7 @@
     "nested-stack-deep",
     "nested-stack-replace-guard",
     "nested-stack-rollback",
+    "nested-stack-transform",
     "nlb-quic-server-id",
     "nodejs-function",
     "noecho-named-producer",

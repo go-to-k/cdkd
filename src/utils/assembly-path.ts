@@ -159,7 +159,7 @@ const MAX_PATH_COMPONENTS = 1000;
  *   folds it only after following each preceding component, so a target of
  *   `a/../c.json` under a symlinked `a` diverges.
  *
- * That edge decides which of the TWO sites that WRITE needs a second check,
+ * That edge decides which of the sites that WRITE needs a second check,
  * and the difference is the BASE rather than the act of writing:
  *
  * - `resolveVerboseTemplatePath` (`src/cli/commands/synth.ts`) writes into
@@ -173,7 +173,11 @@ const MAX_PATH_COMPONENTS = 1000;
  *   unreachable. It needs no `lstat`.
  *
  * **A third write site over a base cdkd did not create needs the `lstat`**,
- * and inherits nothing from this function that would give it one.
+ * and inherits nothing from this function that would give it one. It exists:
+ * `writeExpandedTemplate` (`src/synthesis/nested-macro-expansion.ts`, #6395)
+ * writes a nested template's expanded copy into the assembly directory, so it
+ * checks containment, refuses a link at the leaf with `lstat`, and writes a
+ * `wx` temporary file renamed over the leaf.
  *
  * That second site is also the repo's first caller to `mkdirSync(...,
  * { recursive: true })` through a resolved path, which an earlier revision of

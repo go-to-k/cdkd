@@ -52,7 +52,7 @@ export function countDeployableResources(template: CloudFormationTemplate): numb
  *
  * `stackName` is the assembly manifest's own `properties.stackName`, falling
  * back to the artifact id, so it is chosen by whoever wrote the assembly — and
- * this is the ONE place cdkd turns such a string into a path it WRITES. A
+ * here cdkd turns such a string into a path it WRITES. A
  * `../../../..`-bearing name would put attacker-chosen JSON outside the output
  * directory, clobbering whatever `<name>.template.json` it can reach.
  *

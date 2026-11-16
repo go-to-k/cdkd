@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
@@ -9,6 +9,11 @@ import { failedLookupsError, type FailedLookup } from './failed-lookups.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { expandMacros, type ExpandMacrosOptions } from './macro-expander.js';
+import {
+  expandNestedTemplateMacros,
+  macroCarryingNestedTemplates,
+  nestedTemplateBytes,
+} from './nested-macro-expansion.js';
 import type { AssemblyManifest } from '../types/assembly.js';
 import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
@@ -16,6 +21,7 @@ import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
+import { displayAssemblyPath } from '../utils/assembly-path.js';
 import { plainOrDescribed } from '../utils/pasteable-command.js';
 import { defineOwnKey, nullPrototypeRecord } from '../utils/own-keys.js';
 
@@ -404,7 +410,16 @@ export class Synthesizer {
     options: SynthesisOptions,
     resolved?: { region: string | undefined; accountId?: string | undefined }
   ): Promise<void> {
-    const stacksWithMacros = stacks.filter((s) => containsMacro(s.template));
+    // go-to-k/cdkd#6395: a nested template's own Transform counts too; its
+    // file is expanded beside the original (`nested-macro-expansion.ts`).
+    const nestedWithMacros = new Map<StackInfo, string[]>();
+    for (const s of stacks) {
+      const nested = macroCarryingNestedTemplates(s);
+      if (nested.length > 0) nestedWithMacros.set(s, nested);
+    }
+    const stacksWithMacros = stacks.filter(
+      (s) => containsMacro(s.template) || nestedWithMacros.has(s)
+    );
     if (stacksWithMacros.length === 0) return;
 
     // Resolve a region for the CFn client. Priority: explicit caller
@@ -481,10 +496,21 @@ export class Synthesizer {
       // template (≤ 51,200 bytes) → the bucket isn't consulted. Probe
       // sizes here and only hard-error when at least one stack would
       // actually need TemplateURL.
-      const oversize = stacksWithMacros.find((s) => JSON.stringify(s.template).length > 51_200);
+      const oversize = stacksWithMacros.find(
+        (s) =>
+          (containsMacro(s.template) && JSON.stringify(s.template).length > 51_200) ||
+          (nestedWithMacros.get(s) ?? []).some((p) => nestedTemplateBytes(p) > 51_200)
+      );
       if (oversize) {
+        const nestedOversize =
+          containsMacro(oversize.template) && JSON.stringify(oversize.template).length > 51_200
+            ? undefined
+            : (nestedWithMacros.get(oversize) ?? []).find((p) => nestedTemplateBytes(p) > 51_200);
         throw new SynthesisError(
-          `Stack ${plainOrDescribed(oversize.stackName, 'stack name')} uses CloudFormation macros AND its serialized ` +
+          `Stack ${plainOrDescribed(oversize.stackName, 'stack name')} uses CloudFormation macros AND ` +
+            (nestedOversize === undefined
+              ? `its serialized `
+              : safeMsg`its nested template ${basename(nestedOversize)} serialized as a `) +
             `template exceeds the 51,200-byte inline TemplateBody limit, so cdkd must ` +
             `upload the template to S3 for the transient expansion changeset. cdkd could ` +
             `not resolve a state bucket: STS GetCallerIdentity failed AND --state-bucket ` +
@@ -500,29 +526,50 @@ export class Synthesizer {
       stateBucket = undefined;
     }
 
+    const expandOptions = {
+      region,
+      ...(stateBucket !== undefined && { stateBucket }),
+      ...(options.macroExpandS3ClientOpts && {
+        s3ClientOpts: options.macroExpandS3ClientOpts,
+      }),
+    };
     for (const stack of stacksWithMacros) {
-      const macros = enumerateMacros(stack.template);
-      this.logger.info(
-        `[macros] Expanding CloudFormation macros for stack ${displayStackName(stack.stackName)} ` +
-          `via CFn round-trip (transforms: ${macros.map((m) => displaySafe(m)).join(', ')}; ` +
-          `may take 30-60s)...`
-      );
-      const before = Date.now();
-      const expanded = await expandMacros(stack.template, {
-        region,
-        ...(stateBucket !== undefined && { stateBucket }),
-        ...(options.macroExpandS3ClientOpts && {
-          s3ClientOpts: options.macroExpandS3ClientOpts,
-        }),
+      if (containsMacro(stack.template)) {
+        const macros = enumerateMacros(stack.template);
+        this.logger.info(
+          `[macros] Expanding CloudFormation macros for stack ${displayStackName(stack.stackName)} ` +
+            `via CFn round-trip (transforms: ${macros.map((m) => displaySafe(m)).join(', ')}; ` +
+            `may take 30-60s)...`
+        );
+        const before = Date.now();
+        const expanded = await expandMacros(stack.template, expandOptions);
+        // Mutate the stack in place — downstream consumers iterate
+        // `stacks[].template`.
+        stack.template = expanded;
+        const elapsedSec = Math.round((Date.now() - before) / 1000);
+        this.logger.info(
+          `[macros]   ... done in ${elapsedSec}s ` +
+            `(${Object.keys(expanded.Resources ?? {}).length} resources after expansion).`
+        );
+      }
+      if (!nestedWithMacros.has(stack)) continue;
+      await expandNestedTemplateMacros(stack, async (template, templatePath) => {
+        const macros = enumerateMacros(template);
+        const name = displayAssemblyPath(basename(templatePath));
+        const stackName = displayStackName(stack.stackName);
+        const transforms = macros.map((m) => displaySafe(m)).join(', ');
+        this.logger.info(
+          safeMsg`[macros] Expanding CloudFormation macros for nested template ${name} of stack ${stackName} via CFn round-trip (transforms: ${transforms}; may take 30-60s)...`
+        );
+        const before = Date.now();
+        const expanded = await expandMacros(template, expandOptions);
+        const elapsedSec = Math.round((Date.now() - before) / 1000);
+        const count = Object.keys(expanded.Resources ?? {}).length;
+        this.logger.info(
+          safeMsg`[macros]   ... done in ${elapsedSec}s (${count} resources after expansion).`
+        );
+        return expanded;
       });
-      // Mutate the stack in place — downstream consumers iterate
-      // `stacks[].template`.
-      stack.template = expanded;
-      const elapsedSec = Math.round((Date.now() - before) / 1000);
-      this.logger.info(
-        `[macros]   ... done in ${elapsedSec}s ` +
-          `(${Object.keys(expanded.Resources ?? {}).length} resources after expansion).`
-      );
     }
   }
 }
