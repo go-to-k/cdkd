@@ -2717,6 +2717,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -2818,6 +2819,10 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -3051,6 +3056,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -3121,6 +3127,10 @@
         ],
         "cc-final-snapshot-handlers": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -4051,6 +4061,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -4168,6 +4179,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -5454,6 +5468,7 @@
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
       "integs": [
         "alb",
+        "cc-to-sdk-reroute-common-types",
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
@@ -5469,6 +5484,10 @@
       ],
       "signals": {
         "alb": [
+          "l1",
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
         ],
@@ -5888,6 +5907,7 @@
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
+        "cc-to-sdk-reroute-common-types",
         "generated-name-lifecycle",
         "getatt-iam-waf-s3vectors-evaluator",
         "getatt-vpc-managed-policy",
@@ -5902,6 +5922,10 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
+        ],
         "generated-name-lifecycle": [
           "literal"
         ],
@@ -6027,6 +6051,7 @@
         "cc-api-fallback",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -6175,6 +6200,10 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -6668,6 +6697,7 @@
     {
       "resourceType": "AWS::KMS::Key",
       "integs": [
+        "cc-to-sdk-reroute-common-types",
         "cloudtrail-trail",
         "cognito",
         "composite-stack",
@@ -6689,6 +6719,10 @@
         "s3-vectors"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
+        ],
         "cloudtrail-trail": [
           "l2"
         ],
@@ -6891,6 +6925,7 @@
     {
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "integs": [
+        "cc-to-sdk-reroute-common-types",
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "eventsourcemapping-race",
@@ -6900,6 +6935,10 @@
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
+        ],
         "dynamodb-stream-filter": [
           "literal"
         ],
@@ -6941,6 +6980,7 @@
         "bench-cdk-sample",
         "bootstrap-free-region",
         "cache-streaming",
+        "cc-to-sdk-reroute-common-types",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
@@ -7105,6 +7145,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
           "l2"
         ],
         "cloudfront-function-url": [
@@ -9060,6 +9103,7 @@
         "bench-sdk",
         "budgets",
         "cc-getatt-readback",
+        "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
         "cognito-schema-rollback",
@@ -9160,6 +9204,11 @@
         ],
         "cc-getatt-readback": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -9470,6 +9519,7 @@
       "resourceType": "AWS::SSM::Parameter",
       "integs": [
         "bench-sdk",
+        "cc-to-sdk-reroute-common-types",
         "cdk-cross-account-lookup-role",
         "composite-stack",
         "conditions-and-if",
@@ -9603,6 +9653,10 @@
       "signals": {
         "bench-sdk": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
         ],
         "cdk-cross-account-lookup-role": [
           "l1",
@@ -10087,6 +10141,7 @@
       "resourceType": "AWS::SecretsManager::Secret",
       "integs": [
         "cc-final-snapshot-handlers",
+        "cc-to-sdk-reroute-common-types",
         "composite-stack",
         "cross-stack-secret-import",
         "event-driven",
@@ -10112,6 +10167,10 @@
       "signals": {
         "cc-final-snapshot-handlers": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types": [
+          "l1",
+          "literal"
         ],
         "composite-stack": [
           "l2",

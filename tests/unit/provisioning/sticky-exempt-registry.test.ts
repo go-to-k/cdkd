@@ -176,8 +176,19 @@ describe('sticky-CC exemption table', () => {
     ['AWS::EFS::MountTarget', { IpAddress: '10.0.0.100' }],
     ['AWS::Route53::HostedZone', { DelegationSetId: 'N0123456789' }],
     ['AWS::ECS::Service', { Cluster: 'c', DesiredCount: 0, GatewayConnectors: [] }],
+    // go-to-k/cdkd#6454, one property bag each as the integ fixture declares it.
+    ['AWS::EC2::SecurityGroup', { GroupDescription: 'd', VpcId: 'vpc-1', Tags: [] }],
+    ['AWS::EC2::RouteTable', { VpcId: 'vpc-1', Tags: [] }],
+    ['AWS::ElasticLoadBalancingV2::TargetGroup', { VpcId: 'vpc-1', Port: 80, HealthCheckPath: '/a' }],
+    ['AWS::KMS::Key', { Description: 'd', PendingWindowInDays: 7, KeyPolicy: {} }],
+    ['AWS::SecretsManager::Secret', { Description: 'd', GenerateSecretString: {} }],
+    ['AWS::Lambda::EventSourceMapping', { FunctionName: 'f', EventSourceArn: 'arn', BatchSize: 5 }],
+    ['AWS::IAM::Role', { Description: 'd', AssumeRolePolicyDocument: {} }],
+    ['AWS::IAM::ManagedPolicy', { PolicyDocument: {} }],
+    ['AWS::SQS::Queue', { VisibilityTimeout: 30 }],
+    ['AWS::SSM::Parameter', { Type: 'String', Value: 'v' }],
   ])(
-    'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654)',
+    'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
       const registry = new ProviderRegistry();
       registerAllProviders(registry, providerClasses);

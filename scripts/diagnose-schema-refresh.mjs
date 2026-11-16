@@ -3019,7 +3019,7 @@ export const CHANGELOG_ENTRY_LIMIT = 2000;
 
 /**
  * The resource types `STICKY_CC_MIGRATION_EXEMPT` lets return to their SDK
- * provider, read out of `provider-registry.ts` as TEXT.
+ * provider, read out of `provider-registry/sticky-exempt.ts` as TEXT.
  *
  * Only the changelog fragment reads this, and only to decide whether to state
  * that the auto-route pins `provisionedBy: 'cc-api'` ONE-WAY. That sentence is
@@ -3043,7 +3043,7 @@ export function parseStickyCcMigrationExempt(registrySource) {
   );
   if (!table) {
     throw new Error(
-      'could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry.ts — refusing to render a ' +
+      'could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry/sticky-exempt.ts — refusing to render a ' +
         'changelog fragment, because an unread table reads as "no type is exempt" and that is the ' +
         'polarity that ships a FALSE one-way-pin claim.'
     );
@@ -3750,7 +3750,7 @@ export function renderSubIssueBody({ type, properties }) {
     '**Wiring alone only helps resources deployed AFTER it.** The cc-api route is',
     'recorded on the state record and is sticky, so an EXISTING resource stays on Cloud',
     'Control however complete its provider becomes. Returning those needs the type',
-    'admitted to `STICKY_CC_MIGRATION_EXEMPT` in `src/provisioning/provider-registry.ts`',
+    'admitted to `STICKY_CC_MIGRATION_EXEMPT` in `src/provisioning/provider-registry/sticky-exempt.ts`',
     'as `mode: "sdk-coverage"` — and that entry demands evidence, not assertion: a',
     '`physicalIdForm` measured to be the SAME under both layers (false in general, for',
     'composite ids and ARN-vs-name divergences) and an `integFixture` naming a real',
@@ -4409,7 +4409,7 @@ function main() {
       const fragment = renderChangelogFragment({
         writableAdded,
         exemptTypes: parseStickyCcMigrationExempt(
-          readFileSync(join(REPO_ROOT, 'src/provisioning/provider-registry.ts'), 'utf-8')
+          readFileSync(join(REPO_ROOT, 'src/provisioning/provider-registry/sticky-exempt.ts'), 'utf-8')
         ),
         // A type whose provider source could not be READ is treated as
         // unroutable: the routed sentence is the one that can be false in the

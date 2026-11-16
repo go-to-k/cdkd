@@ -3195,7 +3195,7 @@ describe('--changelog-out, through the shipped binary', () => {
       // without these the case would fail as a bare "expected fragment to
       // contain ONE-WAY" and read as a regression in the renderer.
       const registrySource = readFileSync(
-        join(REPO_ROOT, 'src/provisioning/provider-registry.ts'),
+        join(REPO_ROOT, 'src/provisioning/provider-registry/sticky-exempt.ts'),
         'utf-8'
       );
       expect(
@@ -3385,7 +3385,7 @@ describe('parseStickyCcMigrationExempt', () => {
   // synthetic source would encode the same shape assumption the regex makes,
   // and the shape is exactly what can drift out from under it.
   const registrySource = readFileSync(
-    join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'),
+    join(REPO_ROOT, 'src', 'provisioning', 'provider-registry', 'sticky-exempt.ts'),
     'utf-8'
   );
 
@@ -4139,7 +4139,7 @@ describe('renderChangelogFragment', () => {
         },
       ],
       exemptTypes: parseStickyCcMigrationExempt(
-        readFileSync(join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'), 'utf-8')
+        readFileSync(join(REPO_ROOT, 'src', 'provisioning', 'provider-registry', 'sticky-exempt.ts'), 'utf-8')
       ),
     })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
