@@ -77,12 +77,14 @@ are covered. Outside a state schema bump, a minor release only adds objects
 to the bucket and fields to a record.
 
 A state schema bump lands in a minor release and migrates automatically: a
-newer cdkd reads every older record and saves it in the current format the
-next time it writes, with no command to run.
+newer cdkd reads every older record and saves it in the format
+[Schema versions and upgrades](state-management-schema-versions.md) describes
+the next time it writes, with no command to run.
 
 From v1.0.0, a cdkd release can read a record that a newer release wrote
-when that record's schema bump only added fields, and it does not write such
-a record. Any other bump is still refused by an older cdkd, so upgrade every
+when that record's schema bump only added fields. A command that would write
+such a record fails before it changes anything, with an error that names the
+newer version and says to upgrade cdkd. Any other bump is still refused by an older cdkd, so upgrade every
 machine and CI job that deploys the stack, or reads its outputs, together.
 [Schema versions and upgrades](state-management-schema-versions.md) lists the
 versions and what each added.
@@ -102,6 +104,7 @@ These `cdk.json` keys are covered:
 | `context.cdkd.useCdkBootstrapAssets` | [Keeping CDK bootstrap destinations](cli-bootstrap.md#keeping-cdk-bootstrap-destinations) |
 | `context.cdkd.prefixUserSuppliedNames` | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
 | `context.cdkd.captureObservedState` | [`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state) |
+| `context.cdkd.noPrefixUserSuppliedNames` (deprecated) | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
 
 These environment variables are covered:
 
@@ -112,10 +115,12 @@ These environment variables are covered:
 | `CDKD_ROLE_ARN` | [`--role-arn`](cli-reference.md#role-arn) |
 | `CDKD_AWS_EMULATOR` | [Develop Locally with AWS Emulator](aws-emulator.md#cdkd-aws-emulator) |
 | `CDKD_PREFIX_USER_SUPPLIED_NAMES` | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
+| `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` (deprecated) | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
 | `CDKD_NO_LIVE` | [Troubleshooting](troubleshooting.md) |
 | `CDKD_PHASE_TIMINGS` | [Slow deploys, throttling and retries](troubleshooting-slow-deploys.md) |
 | `CDKD_CR_AUTHZ_MAX_RETRIES` | [Slow deploys, throttling and retries](troubleshooting-slow-deploys.md) |
 | `CDKD_ACM_POLL_ATTEMPTS`, `CDKD_ACM_POLL_INTERVAL_MS` | [Failures during a deploy](troubleshooting-deploy.md) |
+| `CDKD_CR_S3_ENDPOINT_URL` | [cdkd deploy: custom resources](cli-deploy-custom-resources.md) |
 | `CDKD_ALLOW_SECRETS_ON_ARGV` | [Local Execution](local-emulation.md) |
 | `CDKD_SHADOW_READY_TIMEOUT_MS` | [`cdkd local start-service`](local-start-service.md) |
 
@@ -129,7 +134,9 @@ in these two tables, including one cdkd sets for itself, is not covered.
 The resources in
 [What bootstrap creates](cli-bootstrap.md#what-bootstrap-creates) are
 covered: what bootstrap creates and the default names. A minor release may
-tighten their configuration, such as a bucket policy.
+tighten their configuration, such as a bucket policy. An existing resource
+gets the tightened configuration when you run `cdkd bootstrap --force`
+([Re-running bootstrap](cli-bootstrap.md#re-running-bootstrap)).
 
 Within a major version, upgrading cdkd never requires re-running
 `cdkd bootstrap` for existing deploys to keep working. A minor release may
