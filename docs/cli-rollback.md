@@ -256,7 +256,9 @@ confirm.
 - **The resource whose operation failed** is left as it is unless you pass
   `--revert-failed`. See
   [failed operations](cli-rollback-failed-operations.md).
-- **A replaced resource** is re-created, and its data does not come back. See
+- **A replaced resource** is adopted again when its delete had not been sent;
+  one that was already deleted is re-created, and its data does not come back.
+  See
   [Reversing a replacement](cli-rollback-limitations.md#reversing-a-replacement).
 - **Old asset objects** must still exist. A revert that points at an old asset
   (a Lambda function's `Code.S3Key`) needs that object to still exist. The

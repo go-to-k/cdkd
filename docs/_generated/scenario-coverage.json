@@ -2677,6 +2677,11 @@
       "scenarios": []
     },
     {
+      "name": "schedule-group-rename-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "scheduled-task",
       "annotated": true,
       "scenarios": []
@@ -4070,6 +4075,7 @@
     "s3-object-lock",
     "s3-replication-and-filter",
     "s3-retry-own-bucket",
+    "schedule-group-rename-rollback",
     "scheduler-custom-group",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",

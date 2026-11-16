@@ -82,8 +82,11 @@ Examples are an `AWS::EFS::FileSystem` `PerformanceMode` change, an
 `AWS::EC2::Volume` `AvailabilityZone` move, an S3 `BucketName` rename, and
 new `AWS::Lambda::LayerVersion` content.
 
-cdkd creates the new resource first and then deletes the old one, which is
-CloudFormation's order.
+cdkd creates the new resource first and deletes the old one after the rest of
+the deploy succeeds, which is CloudFormation's order. Three cases delete it
+right after the new one is created: a record holding a NoEcho value, an IAM
+inline policy, and `UpdateReplacePolicy: Snapshot` without
+`--skip-final-snapshot`.
 
 A type that is not stateful is replaced with no further flag. A stateful
 type is refused with `STATEFUL_REPLACE_BLOCKED`. See

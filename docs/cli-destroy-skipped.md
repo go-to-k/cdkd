@@ -264,8 +264,8 @@ What the deploy does depends on which delete was skipped:
 ### Edge cases
 
 - **A rollback that already re-created the old resource.** When a rollback
-  reverses a replacement, it re-creates the old resource and then deletes the
-  new one. A skip of that last delete only warns, because the revert itself
+  reverses a replacement, it re-creates the old resource (or adopts it again,
+  when its delete had not been sent) and then deletes the new one. A skip of that last delete only warns, because the revert itself
   succeeded. The new resource is left untracked for you to delete by hand.
 - **A custom resource whose Lambda function is gone.** On a deploy cdkd drops
   the entry with a warning. CloudFormation likewise ignores delete failures in

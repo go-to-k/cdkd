@@ -342,9 +342,13 @@ The outcome depends on whether the replacement deletes first or creates first.
   it retries after a name collision, or after a create that returned the
   existing resource.
 - **Create first: the deploy completes with a warning** that the old resource
-  could not be deleted. cdkd retries a failed delete once, after the rest of
-  the deploy. That clears a refusal from a dependent that still used the old
-  resource, but not protection. This order is used by a property-driven replacement.
+  could not be deleted. cdkd deletes the old resource after the rest of the
+  deploy succeeds. Three cases delete it right after the new one is created: a
+  record holding a NoEcho value, an IAM inline policy, and
+  `UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`. A failed
+  delete of those is retried once, after the rest of the deploy. That clears a
+  refusal from a dependent that still used the old resource, but not
+  protection. This order is used by a property-driven replacement.
   The delete-first cases above also use it when the template renames the
   resource, and, on a stack with a `stackInstanceId`, for a resource the
   template does not name, whose replacement gets a new generated name. The
@@ -443,8 +447,8 @@ cdkd replaces these without asking, as CloudFormation does:
   stays.
 - `AWS::S3Tables::Namespace`. AWS refuses to delete a namespace that still
   holds a table, so a replacement cannot take a table with it. A create-first
-  replacement warns `Failed to delete old resource` and leaves the old
-  namespace and its tables in AWS, untracked. A delete-first replacement fails
+  replacement warns `Failed to delete old resource` in its cleanup phase and
+  leaves the old namespace and its tables in AWS, untracked. A delete-first replacement fails
   at the delete.
 
 ### Conditionally stateful types
