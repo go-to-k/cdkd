@@ -2456,6 +2456,11 @@
       "scenarios": []
     },
     {
+      "name": "remote-nested-stack-refusal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -4060,6 +4065,7 @@
     "refactor-command",
     "refactor-lambda-version",
     "refactor-move",
+    "remote-nested-stack-refusal",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",
