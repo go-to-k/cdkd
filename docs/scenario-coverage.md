@@ -273,6 +273,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`lambda-runtime-config`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-runtime-config/)
 - [`lambda-web-function-revision-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-web-function-revision-replace/)
 - [`launchtemplate-asg-inplace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/launchtemplate-asg-inplace/)
+- [`legacy-synthesizer-assets`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/legacy-synthesizer-assets/)
 - [`list-parameters`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/list-parameters/)
 - [`local-aws-emulator`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-aws-emulator/)
 - [`local-engine-role-identity`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-engine-role-identity/)
