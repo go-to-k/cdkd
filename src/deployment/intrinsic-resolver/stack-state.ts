@@ -28,7 +28,7 @@ export async function getSameAccountStackState(
       new Error('Fn::GetStackOutput: state backend is required for cross-stack references')
     );
   }
-  return context.stateBackend.getState(stackName, region);
+  return context.stateBackend.getState(stackName, region, { readOnly: true });
 }
 
 /**
@@ -141,5 +141,5 @@ export async function getCrossAccountStackState(
     }
   );
 
-  return crossAccountBackend.getState(stackName, region);
+  return crossAccountBackend.getState(stackName, region, { readOnly: true });
 }

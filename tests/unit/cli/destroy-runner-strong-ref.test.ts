@@ -42,6 +42,8 @@ describe('scanActiveConsumers (strong-reference check)', () => {
       baseRegion: 'us-east-1',
     });
     expect(consumers).toEqual([]);
+    // Every record read of the scan is read-only (older-reader tolerance, #6440).
+    expect(backend.getState).toHaveBeenCalledWith('Unrelated', 'us-east-1', { readOnly: true });
   });
 
   it('detects a single consumer importing one export', async () => {

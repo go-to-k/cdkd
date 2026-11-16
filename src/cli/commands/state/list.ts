@@ -142,7 +142,7 @@ async function stateListCommand(options: {
         const [stateRead, lockRead] = await Promise.all([
           readOrFailure(() =>
             lookupRegion
-              ? setup.stateBackend.getState(ref.stackName, lookupRegion)
+              ? setup.stateBackend.getState(ref.stackName, lookupRegion, { readOnly: true })
               : Promise.resolve(null)
           ),
           readOrFailure(() => setup.lockManager.isLocked(ref.stackName, ref.region)),
@@ -287,7 +287,7 @@ async function renderTreeMode(
       // from getState already; this catch covers the other failure modes.
       let state: StackState | undefined;
       try {
-        const result = await stateBackend.getState(ref.stackName, ref.region);
+        const result = await stateBackend.getState(ref.stackName, ref.region, { readOnly: true });
         state = result?.state;
       } catch {
         return { stackName: ref.stackName, region: ref.region };

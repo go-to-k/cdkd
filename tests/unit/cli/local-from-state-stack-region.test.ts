@@ -124,7 +124,7 @@ describe('cdkd local --from-state: --stack-region exact match is reachable (issu
     const loaded = await provider.load('MyStack', undefined);
 
     expect(loaded?.region).toBe('US-EAST-1');
-    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
     // The pre-round-3 production behavior, stated as the shape a regression
     // restores: the OTHER record, reported as the exact spelling.
     expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'us-east-1');
@@ -136,7 +136,7 @@ describe('cdkd local --from-state: --stack-region exact match is reachable (issu
     const loaded = await provider.load('MyStack', undefined);
 
     expect(loaded?.region).toBe('us-east-1');
-    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'us-east-1', { readOnly: true });
     expect(mocks.getStateMock).not.toHaveBeenCalledWith('MyStack', 'US-EAST-1');
   });
 
@@ -158,7 +158,7 @@ describe('cdkd local --from-state: --stack-region exact match is reachable (issu
     const loaded = await provider.load('MyStack', undefined);
 
     expect(loaded?.region).toBe('US-EAST-1');
-    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
   });
 
   it('still recovers a case MISMATCH — the exact rule is not a strict compare', async () => {
@@ -170,7 +170,7 @@ describe('cdkd local --from-state: --stack-region exact match is reachable (issu
     const loaded = await provider.load('MyStack', undefined);
 
     expect(loaded?.region).toBe('US-EAST-1');
-    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1');
+    expect(mocks.getStateMock).toHaveBeenCalledWith('MyStack', 'US-EAST-1', { readOnly: true });
   });
 
   it('still folds the value that reaches the S3 CLIENT, which must stay canonical', async () => {

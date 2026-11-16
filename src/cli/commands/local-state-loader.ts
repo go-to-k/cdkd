@@ -343,7 +343,7 @@ export async function loadStateForStack(
       return undefined;
     }
 
-    const stateData = await stateBackend.getState(stackName, targetRegion);
+    const stateData = await stateBackend.getState(stackName, targetRegion, { readOnly: true });
     if (!stateData) {
       warn(
         `${prefix}: state record for '${stackName}' (${targetRegion}) returned empty. Falling back.`
@@ -708,7 +708,7 @@ export async function buildCrossStackResolver(
   // read by cdkd's own post-pass beside cdk-local's contract. The exports
   // index carries the value alone, so its producer record is read for it.
   const secrets = new ProducerSecretReader(
-    (stackName, region) => stateBackend.getState(stackName, region),
+    (stackName, region) => stateBackend.getState(stackName, region, { readOnly: true }),
     (message) => logger.debug(`${prefix}: ${message}`),
     () => stateBackend.listStacks()
   );
@@ -769,7 +769,7 @@ export async function buildCrossStackResolver(
         const region = ref.region ?? consumerRegion;
         if (canonicalizeRegion(region) !== canonicalConsumerRegion) continue; // same-region scope (v1)
         try {
-          const got = await stateBackend.getState(ref.stackName, region);
+          const got = await stateBackend.getState(ref.stackName, region, { readOnly: true });
           if (!got || !got.state.outputs) continue;
           // Through the shared predicate (issue #2193), not `in outputs`: the
           // bag also holds every plain Output name, and matching on those
@@ -856,7 +856,7 @@ export async function buildCrossStackResolver(
         // record, so a missing output there is a genuine miss — reading a
         // case-variant record instead would answer from a record the caller did
         // not name.
-        const got = await stateBackend.getState(producerStack, producerRegion);
+        const got = await stateBackend.getState(producerStack, producerRegion, { readOnly: true });
         if (got) return await readOutput(got, producerRegion);
         // Issue #1836 round 4: case recovery, the same BOTH-SIDES fold
         // `resolveImport`'s index-miss scan does — this arm had none, and it is
@@ -881,7 +881,7 @@ export async function buildCrossStackResolver(
           // case-variant record, so a warning naming `producerRegion` would
           // point the reader at a key that does not exist.
           const recovered = await readOutput(
-            await stateBackend.getState(producerStack, region),
+            await stateBackend.getState(producerStack, region, { readOnly: true }),
             region
           );
           if (recovered.value !== undefined) {

@@ -313,8 +313,8 @@ describe('cdkd state list', () => {
 
     await runStateList(['list', '--long']);
 
-    expect(mockGetState).toHaveBeenCalledWith('One', 'us-east-1');
-    expect(mockGetState).toHaveBeenCalledWith('Two', 'us-west-2');
+    expect(mockGetState).toHaveBeenCalledWith('One', 'us-east-1', { readOnly: true });
+    expect(mockGetState).toHaveBeenCalledWith('Two', 'us-west-2', { readOnly: true });
     expect(mockIsLocked).toHaveBeenCalledWith('One', 'us-east-1');
     expect(mockIsLocked).toHaveBeenCalledWith('Two', 'us-west-2');
   });
@@ -710,6 +710,9 @@ describe('cdkd state list', () => {
       const text = await runStateList(['list', '--tree']);
       const json = await runStateList(['list', '--tree', '--json']);
 
+      // The --tree record reads are read-only (older-reader tolerance, #6440).
+      expect(mockGetState).toHaveBeenCalledWith('Gone', 'us-east-1', { readOnly: true });
+      expect(mockGetState).toHaveBeenCalledWith('Healthy', 'us-east-1', { readOnly: true });
       expect(text.trimEnd().split('\n')).toEqual(['Gone (us-east-1)', 'Healthy (us-east-1)']);
       expect(
         JSON.parse(json).map((n: { stackName: string; parentStack: unknown }) => [n.stackName, n.parentStack])

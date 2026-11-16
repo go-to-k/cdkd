@@ -9,7 +9,9 @@ Every state record carries a schema `version`, and the current one is `17`
 (written only for a record that holds a `NoEcho` value MAC; any other record
 is written as `16`).
 A newer cdkd reads every older version, so upgrading cdkd needs no migration
-step. An older cdkd cannot read a record that a newer one has written.
+step. An older cdkd cannot read a record that a newer one has written, unless
+the newer version only added fields and the older cdkd knows how to read such a
+record read-only ([below](#reading-a-newer-record-read-only)).
 
 ```bash
 # includes the schema version read from the bucket
@@ -44,6 +46,37 @@ a MAC). That includes an older cdkd reading the stack as a consumer: a
 `Fn::GetStackOutput` from another stack or account, or a nested stack's
 parent. Upgrade every machine and CI job that deploys a stack, or reads its
 outputs, at the same time.
+
+### Reading a newer record read-only
+
+A record can also name the oldest schema version that can read it, in a
+`minReaderVersion` field. A future schema version that only adds fields an
+older reader can safely ignore keeps `minReaderVersion` at the older version.
+The cdkd release that includes this change, or a later one, then reads such a
+record even though its `version` is newer, but only for commands that do not
+write it:
+
+- `cdkd diff`, which also reports that `cdkd deploy` would refuse the record
+- `cdkd state show`, `cdkd state resources` and `cdkd state list`
+- another stack reading this stack's outputs through `Fn::GetStackOutput` or
+  `Fn::ImportValue`, and a nested stack's parent reading the child's outputs
+- `cdkd local`, which reads recorded values without writing them
+
+A command that would write the record, such as `cdkd deploy`, `cdkd destroy`,
+`cdkd rollback` or `cdkd import`, refuses it when it loads the record, before it
+changes anything in that stack. Writing would drop the fields this cdkd does not
+know. The refusal is per stack: a multi-stack deploy has already deployed the
+stacks before it, and a nested stack is loaded by its own deploy, after its
+parent's earlier resources. The error names the newer version:
+
+```text
+State for stack MyStack was written by a newer cdkd (state schema version 18). This cdkd binary can read it but must not write it: a write would drop the fields it does not know. Upgrade cdkd to a version that supports schema 18.
+```
+
+Releases before this change do not read `minReaderVersion`, and refuse every
+record whose `version` they do not know. Adding the field is not a schema bump:
+records written by the release that includes this change are the same as
+before, so an older cdkd that reads them today still can.
 
 ## What each version added
 

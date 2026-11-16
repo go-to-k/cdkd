@@ -232,6 +232,7 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
         },
       };
       const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const reads: Array<[string, string, unknown]> = [];
       const tree = await buildDiffTree({
         stackName: 'S',
         displayName: 'S',
@@ -240,11 +241,18 @@ describe('cdkd diff heals only where the deploy runs an engine (go-to-k/cdkd#627
         nestedTemplates: { Child: childPath },
         recursive: true,
         stateBackend: {
-          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+          getState: async (name: string, region: string, options?: unknown) => {
+            reads.push([name, region, options]);
+            return states[name] ? { state: states[name], etag: 'e' } : null;
+          },
         } as unknown as S3StateBackend,
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
       });
+      // Every record read, the tree walk's and the nested SSM check's, is
+      // read-only (older-reader tolerance, #6440).
+      expect(reads.length).toBeGreaterThan(0);
+      for (const r of reads) expect(r).toEqual([r[0], 'us-east-1', { readOnly: true }]);
       // Premise: the parent's row is diffed as the case says.
       expect(tree.changes.get('Child')?.changeType).toBe(rowChange);
       expect(tree.changes.get('Child')?.nestedChildHeal === true).toBe(!marked);

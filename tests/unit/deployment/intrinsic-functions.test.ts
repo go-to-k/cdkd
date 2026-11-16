@@ -852,7 +852,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     );
 
     expect(result).toBe('arn:aws:foo');
-    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-west-2');
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-west-2', { readOnly: true });
   });
 
   it('defaults Region to the consumer deploy region when omitted', async () => {
@@ -880,7 +880,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     );
 
     expect(result).toBe(42);
-    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-east-1');
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
   });
 
   it('resolves nested intrinsics in StackName / OutputName / Region', async () => {
@@ -1208,7 +1208,7 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     );
 
     expect(result).toBe('from-producer');
-    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'US-EAST-1');
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'US-EAST-1', { readOnly: true });
   });
 
   it('allows same-stackName cross-region reference', async () => {

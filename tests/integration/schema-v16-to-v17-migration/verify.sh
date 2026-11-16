@@ -12,6 +12,9 @@
 #
 # Red line (pre-fix): "the no-MAC write stamped 17 / the MAC write stamped 16
 # / the released binary accepted a v17 record".
+# Phase 6 red line (issue #6440): "the local binary refused to read a newer
+# record that names a readable minReaderVersion / a deploy or destroy over it
+# changed AWS or the state".
 #
 # PHASES
 #   0  preflight, pre-run cleanup, the released binary, the region's MAC key
@@ -25,7 +28,19 @@
 #      put and its MAC recorded, so the record is v17.
 #   5  the RELEASED binary refuses the v17 record (`state show` and `deploy`),
 #      state.json VersionId unchanged by the attempts.
-#   6  LOCAL destroy; REST API, parameter and state gone; every object version
+#   6  a NEWER cdkd's record (issue #6440): the v17 record hand-planted as
+#      `version: 18, minReaderVersion: 17`. The LOCAL binary reads it
+#      read-only: `cdkd diff` exits 3 with the deploy-refusal reason, `state
+#      show` / `state resources` succeed, and `cdkd deploy` / `cdkd destroy`
+#      refuse at the load with "written by a newer cdkd ... Upgrade cdkd",
+#      changing nothing: state.json VersionId and ETag, the parameter's value,
+#      the REST API, and no lock.json left. The original record is restored
+#      (by `cleanup` too, so a failure mid-phase never strands a record the
+#      teardown's destroy would refuse).
+#      The plant is an out-of-band edit on purpose: no released cdkd writes a
+#      newer-but-readable record yet, so it is the only way to reach this
+#      read path against real AWS.
+#   7  LOCAL destroy; REST API, parameter and state gone; every object version
 #      under the stack prefix purged.
 #
 # Required env vars:
@@ -75,6 +90,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 STACK="CdkdSchemaV16ToV17Migration"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 PARAM_PATH="/cdkd-schema-v16-v17/"
 PARAM_NAME="${PARAM_PATH}value"
@@ -130,6 +146,40 @@ ASSERTIONS_RUN=0
 STATE_FILE=""
 DEPLOY_LOG=""
 JSON_OUT=""
+# Phase 6: the v17 record as fetched before the plant, and whether a planted
+# record may be in S3 right now (set BEFORE the upload, cleared after the
+# restore).
+ORIGINAL_STATE_FILE=""
+PLANTED_STATE_FILE=""
+STATE_PLANTED=0
+
+# Put the saved v17 record back. Called by `cleanup` (best-effort, under
+# `set +eu`) and on the success path (strict: the caller checks the status).
+restore_planted_state() {
+  [ "${STATE_PLANTED}" = "1" ] || return 0
+  [ -s "${ORIGINAL_STATE_FILE}" ] || { echo "WARN: no saved original state to restore" >&2; return 1; }
+  aws s3 cp "${ORIGINAL_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" \
+    --content-type application/json >/dev/null || return 1
+  STATE_PLANTED=0
+}
+
+# A run killed by SIGKILL mid-Phase-6 runs no trap and leaves the planted
+# record current, which the next run's destroy refuses. Undo exactly that
+# plant (Phase 6 asserts it changed only these two fields); leave any other
+# record alone.
+heal_stranded_plant() (
+  set +eu
+  [ -n "${STATE_BUCKET:-}" ] || exit 0
+  t="$(mktemp)" || exit 1
+  if aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${t}" >/dev/null 2>&1 \
+    && jq -e '.version == 18 and .minReaderVersion == 17' "${t}" >/dev/null 2>&1; then
+    echo "==> restoring a planted state.json left by a killed run"
+    jq 'del(.minReaderVersion) | .version = 17' "${t}" >"${t}.healed" \
+      && aws s3 cp "${t}.healed" "s3://${STATE_BUCKET}/${STATE_KEY}" \
+        --content-type application/json >/dev/null
+  fi
+  rm -f "${t}" "${t}.healed"
+)
 
 cleanup() {
   rc=$?
@@ -143,6 +193,9 @@ cleanup() {
       return
       ;;
   esac
+  # FIRST: the destroy below refuses a planted (newer-schema) record.
+  restore_planted_state || echo "WARN: could not restore the planted state.json; the destroy below will refuse it" >&2
+  heal_stranded_plant || true
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force >/dev/null 2>&1
@@ -181,7 +234,8 @@ cleanup() {
   if [ -n "${RELEASED_TMPDIR}" ] && [ -d "${RELEASED_TMPDIR}" ]; then
     rm -rf "${RELEASED_TMPDIR}"
   fi
-  rm -rf "${STATE_FILE:-}" "${DEPLOY_LOG:-}" "${JSON_OUT:-}"
+  rm -rf "${STATE_FILE:-}" "${DEPLOY_LOG:-}" "${JSON_OUT:-}" \
+    "${ORIGINAL_STATE_FILE:-}" "${PLANTED_STATE_FILE:-}"
   set -eu
 }
 
@@ -209,6 +263,8 @@ cleanup || true
 STATE_FILE="$(mktemp)"
 DEPLOY_LOG="$(mktemp)"
 JSON_OUT="$(mktemp)"
+ORIGINAL_STATE_FILE="$(mktemp)"
+PLANTED_STATE_FILE="$(mktemp)"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -407,7 +463,128 @@ assert_refusal "released deploy over v17"
 assert_eq "released refusals: state.json VersionId is unchanged" "$(state_version_id)" "${VID_V17}"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 6: cdkd destroy; everything is gone"
+echo "==> Phase 6: a newer cdkd's record is read read-only, never written (issue #6440)"
+# ---------------------------------------------------------------------------
+# The current object's ETag — strict, like `state_version_id`.
+state_etag() {
+  local out
+  out="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+    --query ETag --output text)" || return 1
+  [ -n "${out}" ] && [ "${out}" != "None" ] || fail "state.json has no ETag"
+  printf '%s' "${out}"
+}
+
+# The read-only refusal a writer prints at its load. Sentinel: the
+# number-independent `Upgrade cdkd to a version that supports schema` present
+# WITHOUT the parsed `written by a newer cdkd (state schema version 18)` means
+# the wording or the version drifted — a loud failure, not a zero match.
+assert_newer_refusal() { # <label>
+  if grep -qF "Upgrade cdkd to a version that supports schema" "${DEPLOY_LOG}" \
+    && ! grep -qF "written by a newer cdkd (state schema version 18)" "${DEPLOY_LOG}"; then
+    tail -40 "${DEPLOY_LOG}" >&2
+    fail "$1: the output says 'Upgrade cdkd', but not for a newer schema 18 (sentinel: wording or version drifted)"
+  fi
+  if ! grep -qF "written by a newer cdkd (state schema version 18)" "${DEPLOY_LOG}"; then
+    tail -40 "${DEPLOY_LOG}" >&2
+    fail "$1: output lacks 'written by a newer cdkd (state schema version 18)'"
+  fi
+  if ! grep -qF "Upgrade cdkd to a version that supports schema 18" "${DEPLOY_LOG}"; then
+    tail -40 "${DEPLOY_LOG}" >&2
+    fail "$1: output lacks 'Upgrade cdkd to a version that supports schema 18'"
+  fi
+  pass "$1: output refuses the newer schema 18 record and says 'Upgrade cdkd'"
+}
+
+# Nothing changed: the planted object, the parameter, the REST API, no lock.
+assert_nothing_changed() { # <label>
+  assert_eq "$1: state.json VersionId is unchanged" "$(state_version_id)" "${VID_PLANTED}"
+  assert_eq "$1: state.json ETag is unchanged" "$(state_etag)" "${ETAG_PLANTED}"
+  assert_eq "$1: the parameter still holds 'two'" "$(param_value)" "two"
+  if gone_probe aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"; then
+    fail "$1: REST API ${API_ID} is gone"
+  fi
+  pass "$1: the REST API still exists"
+  assert_gone "$1: s3://${STATE_BUCKET}/${LOCK_KEY} was left behind" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}"
+  pass "$1: no lock.json is left behind"
+}
+
+API_ID="$(jq -r '.resources.Api.physicalId' "${STATE_FILE}")"
+[ -n "${API_ID}" ] && [ "${API_ID}" != "null" ] || fail "no REST API id recorded"
+# Save the v17 record (fetched after Phase 4, unchanged since: Phase 5) and
+# plant the same record as a newer writer's, every other field kept.
+assert_eq "premise: the saved record is the current object" "$(state_version_id)" "${VID_V17}"
+cp "${STATE_FILE}" "${ORIGINAL_STATE_FILE}"
+jq '.version = 18 | .minReaderVersion = 17' "${ORIGINAL_STATE_FILE}" >"${PLANTED_STATE_FILE}"
+assert_eq "plant: only version and minReaderVersion differ" \
+  "$(jq -S 'del(.version, .minReaderVersion)' "${PLANTED_STATE_FILE}" | shasum -a 256)" \
+  "$(jq -S 'del(.version, .minReaderVersion)' "${ORIGINAL_STATE_FILE}" | shasum -a 256)"
+STATE_PLANTED=1
+aws s3 cp "${PLANTED_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" \
+  --content-type application/json >/dev/null
+fetch_state "plant"
+assert_version "plant" "18"
+assert_eq "plant: state.minReaderVersion" "$(state_field '.minReaderVersion')" "17"
+VID_PLANTED="$(state_version_id)"
+ETAG_PLANTED="$(state_etag)"
+
+# A template change the deploy WOULD apply, so "nothing changed" is a refusal
+# and not an empty diff.
+export CDKD_TEST_PARAM_VALUE=three
+
+set +e
+AWS_REGION="${REGION}" node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${DEPLOY_LOG}" 2>&1
+DIFF_RC=$?
+set -e
+if [ "${DIFF_RC}" -ne 3 ]; then
+  tail -40 "${DEPLOY_LOG}" >&2
+  fail "local diff over v18: exited ${DIFF_RC}, expected 3 (a deploy refusal)"
+fi
+pass "local diff over v18: exited 3"
+# Sentinel: the `Blocking (cdkd deploy will refuse):` header with no newer-
+# record reason under it means the reason's wording drifted.
+grep -qF "Blocking (cdkd deploy will refuse):" "${DEPLOY_LOG}" \
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: no 'Blocking (cdkd deploy will refuse):' section"; }
+grep -qF "The state record was written by a newer cdkd (state schema version 18)." "${DEPLOY_LOG}" \
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: the Blocking section lacks the newer-record reason (sentinel: wording drifted)"; }
+grep -qF "'cdkd deploy' with this cdkd binary refuses to write it." "${DEPLOY_LOG}" \
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: the reason does not say the deploy refuses"; }
+pass "local diff over v18: the Blocking section names the newer record and the deploy's refusal"
+
+run_cdkd_json "local state show over v18" "${LOCAL_DIST}" state show "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
+assert_eq "local state show over v18: the record is version 18" "$(jq -r '.state.version' "${JSON_OUT}")" "18"
+assert_eq "local state show over v18: the Api's physical id" \
+  "$(jq -r '.state.resources.Api.physicalId' "${JSON_OUT}")" "${API_ID}"
+
+run_cdkd_json "local state resources over v18" "${LOCAL_DIST}" state resources "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
+assert_eq "local state resources over v18: the logical ids" \
+  "$(jq -r '[.[].logicalId] | sort | join(",")' "${JSON_OUT}")" "Api,Param"
+assert_eq "local state resources over v18: the parameter's physical id" \
+  "$(jq -r '.[] | select(.logicalId == "Param") | .physicalId' "${JSON_OUT}")" "${PARAM_NAME}"
+assert_nothing_changed "local reads over v18"
+
+run_cdkd fail "local deploy over v18" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_newer_refusal "local deploy over v18"
+assert_nothing_changed "local deploy over v18"
+
+run_cdkd fail "local destroy over v18" "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_newer_refusal "local destroy over v18"
+assert_nothing_changed "local destroy over v18"
+
+export CDKD_TEST_PARAM_VALUE=two
+restore_planted_state || fail "could not restore the original state.json"
+fetch_state "restore"
+assert_version "restore" "17"
+if jq -e 'has("minReaderVersion")' "${STATE_FILE}" >/dev/null; then fail "restore: state.json still carries minReaderVersion"; fi
+pass "restore: state.json carries no minReaderVersion"
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 7: cdkd destroy; everything is gone"
 # ---------------------------------------------------------------------------
 API_ID="$(jq -r '.resources.Api.physicalId' "${STATE_FILE}")"
 [ -n "${API_ID}" ] && [ "${API_ID}" != "null" ] || fail "no REST API id recorded"
@@ -433,7 +610,7 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-EXPECTED_ASSERTIONS=29
+EXPECTED_ASSERTIONS=62
 if [ "${ASSERTIONS_RUN:-0}" -ne "${EXPECTED_ASSERTIONS}" ]; then
   echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly ${EXPECTED_ASSERTIONS} — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
@@ -441,4 +618,4 @@ if [ "${ASSERTIONS_RUN:-0}" -ne "${EXPECTED_ASSERTIONS}" ]; then
 fi
 
 echo ""
-echo "==> schema-v16-to-v17-migration test passed (a v16 record is read unchanged, a write with no MAC stays 16, the write recording a MAC persists 17, the released binary refuses the v17 record without a write, and the destroy leaves nothing); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v16-to-v17-migration test passed (a v16 record is read unchanged, a write with no MAC stays 16, the write recording a MAC persists 17, the released binary refuses the v17 record without a write, a newer schema 18 record is read read-only and never written, and the destroy leaves nothing); ${ASSERTIONS_RUN} assertions executed"

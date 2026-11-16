@@ -40,7 +40,7 @@ export async function readProducerStateOnce(
         : (async () => {
             if (stateBackend === undefined) return { state: undefined, failed: false };
             try {
-              const data = await stateBackend.getState(stackName, region);
+              const data = await stateBackend.getState(stackName, region, { readOnly: true });
               return { state: data?.state ?? undefined, failed: false };
             } catch {
               // Fail closed: no id is kept, no version pinned.

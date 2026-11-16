@@ -155,7 +155,7 @@ export async function findDownstreamConsumers(input: {
         return null;
       }
       try {
-        const got = await input.stateBackend.getState(ref.stackName, region);
+        const got = await input.stateBackend.getState(ref.stackName, region, { readOnly: true });
         if (!got) return null;
         const out: DownstreamConsumer[] = [];
         // Regions are compared CANONICALIZED (go-to-k/cdkd#3746), the rule the

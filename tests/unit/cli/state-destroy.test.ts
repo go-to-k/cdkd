@@ -437,6 +437,9 @@ describe('cdkd state destroy', () => {
       expect(errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n')).toContain(
         "is nested under 'Root'"
       );
+      // The parent-chain walk reads the root's record read-only (#6440).
+      const rootReads = (mockGetState.mock.calls as unknown[][]).filter((c) => c[0] === 'Root');
+      expect(rootReads).toEqual([['Root', 'us-east-1', { readOnly: true }]]);
     });
 
     it('CONTROL: a nested child under an unprotected root destroys', async () => {

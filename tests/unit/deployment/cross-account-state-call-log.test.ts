@@ -8,13 +8,15 @@ import { describe, it, expect, afterEach, vi } from 'vite-plus/test';
 import { HeadObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 
 const built: S3Client[] = [];
+const reads: unknown[][] = [];
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: class {
     constructor(s3: S3Client) {
       built.push(s3);
     }
-    getState(): Promise<null> {
+    getState(...args: unknown[]): Promise<null> {
+      reads.push(args);
       return Promise.resolve(null);
     }
   },
@@ -45,6 +47,7 @@ afterEach(() => {
   delete process.env[SDK_CALL_LOG_ENV];
   resetSdkCallCounts();
   built.length = 0;
+  reads.length = 0;
 });
 
 describe('the cross-account state read and the SDK call log (go-to-k/cdkd#5219)', () => {
@@ -86,5 +89,15 @@ describe('the cross-account state read and the SDK call log (go-to-k/cdkd#5219)'
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('reads the producer record read-only (older-reader tolerance, go-to-k/cdkd#6440)', async () => {
+    await getCrossAccountStackState(
+      'arn:aws:iam::210987654321:role/Reader',
+      'Producer',
+      'us-east-1',
+      {} as never
+    );
+    expect(reads).toEqual([['Producer', 'us-east-1', { readOnly: true }]]);
   });
 });

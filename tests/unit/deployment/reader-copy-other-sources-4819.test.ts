@@ -240,7 +240,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     await read(first, 'us-east-1');
     await read(second, '');
     expect(backend.getState).toHaveBeenCalledTimes(1);
-    expect(backend.getState).toHaveBeenCalledWith('Producer', 'us-east-1');
+    expect(backend.getState).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
     expect(redactSecretsForState({ Q: URL }, second)).toEqual({ Q: URL });
     // A diff pass records nothing and reads nothing.
     const diffBag: RecordedSecretValues = new Map([[NAME, REF]]);

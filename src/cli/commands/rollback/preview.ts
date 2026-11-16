@@ -188,7 +188,7 @@ export async function previewNestedChildRevert(
   }
   try {
     const [childState, journal] = await Promise.all([
-      backend.getState(childStackName, region),
+      backend.getState(childStackName, region, { readOnly: true }),
       backend.loadRollbackJournal(childStackName, region),
     ]);
     const segments = (journal?.segments ?? []).filter((s) => s.runId === runId);

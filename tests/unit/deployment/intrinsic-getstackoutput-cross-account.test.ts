@@ -690,7 +690,7 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     expect(result).toBe('same-account-value');
     expect(mockStsSend).not.toHaveBeenCalled();
     expect(mockS3Send).not.toHaveBeenCalled();
-    expect(fakeStateBackend.getState).toHaveBeenCalledWith('Producer', 'us-east-1');
+    expect(fakeStateBackend.getState).toHaveBeenCalledWith('Producer', 'us-east-1', { readOnly: true });
   });
 
   it('still rejects RoleArn === "" as not a literal string with content', async () => {

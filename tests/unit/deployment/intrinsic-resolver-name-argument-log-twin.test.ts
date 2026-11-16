@@ -2861,7 +2861,9 @@ describe('the exports-index same-region read debug line masks through the secret
       await resolver.resolve({ 'Fn::ImportValue': 'SharedExport' }, context as never),
       'premise: the cross-region entry is kept after the failed read'
     ).toBe('literal-v');
-    expect(getState, 'premise: the same-region read ran').toHaveBeenCalledWith('Producer', 'us-east-1');
+    expect(getState, 'premise: the same-region read ran').toHaveBeenCalledWith('Producer', 'us-east-1', {
+      readOnly: true,
+    });
     return logSpies.debug.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(PREFIX));
   }
 

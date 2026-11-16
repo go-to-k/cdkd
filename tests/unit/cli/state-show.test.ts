@@ -297,6 +297,8 @@ describe('cdkd state show', () => {
 
     const out = await runStateShow(['show', 'MyStack']);
 
+    // `state show` reads the record read-only (older-reader tolerance, #6440).
+    expect(mockGetState).toHaveBeenCalledWith('MyStack', expect.any(String), { readOnly: true });
     expect(out).toMatch(/Lock: locked by alice@workstation:1234 \(operation: deploy\), expires in /);
   });
 

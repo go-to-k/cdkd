@@ -1260,7 +1260,7 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-west-2']);
       mockGetState.mockClear();
       await publicSsmProof.built[0]!.loadEvidence();
-      expect(mockGetState.mock.calls).toEqual([['TestStack', 'us-west-2']]);
+      expect(mockGetState.mock.calls).toEqual([['TestStack', 'us-west-2', { readOnly: true }]]);
       mockGetState.mockReset();
     });
 

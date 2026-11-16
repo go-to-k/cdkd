@@ -75,7 +75,9 @@ export async function readChildOutputsAsAttributes(
   noEchoAttributeNames: string[];
   secretNamedAttributeNames: string[];
 }> {
-  const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
+  const childStateData = await ctx.stateBackend.getState(childStackName, childRegion, {
+    readOnly: true,
+  });
   if (!childStateData) {
     throw markNonRetryable(
       new Error(

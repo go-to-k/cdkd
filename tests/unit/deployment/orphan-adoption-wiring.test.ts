@@ -228,6 +228,8 @@ describe('readSiblingPhysicalIds (#2934)', () => {
     // kills refusal (d), and cdkd then adopts a resource another stack manages
     // — after which either stack's `cdkd destroy` deletes the other's live one.
     expect([...(await readSiblings(makeEngine()))].sort()).toEqual(['other-a', 'other-b']);
+    // The sibling scan reads read-only (older-reader tolerance, #6440).
+    expect(backend.getState).toHaveBeenCalledWith('Other', 'us-east-1', { readOnly: true });
   });
 
   it('skips THIS stack, so its own record cannot refuse its own adoption', async () => {

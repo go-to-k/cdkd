@@ -88,8 +88,25 @@ export interface StackState {
   /**
    * Schema version. `1` is the legacy unversioned-key layout, `2` is the
    * region-prefixed layout. New writes always use the current version.
+   *
+   * A record loaded READ-ONLY (go-to-k/cdkd#6440) carries a NEWER number
+   * than any `StateSchemaVersion`: the cast is unchecked there, and only
+   * readers see such a record.
    */
   version: StateSchemaVersion;
+
+  /**
+   * No bump (go-to-k/cdkd#6440): the oldest schema version whose reader can
+   * READ this record correctly by ignoring the fields it does not know.
+   * ABSENT means it equals `version`, and a writer omits it in that case —
+   * this binary always does, so its records are unchanged. A newer writer
+   * sets it below `version` when its bump only added ignorable fields; a
+   * binary that reads `minReaderVersion` but not `version` then loads the
+   * record read-only and refuses to write it
+   * (`classifyStateRecordAccess`). Dropping it is harmless: absence is
+   * the strictest reading.
+   */
+  minReaderVersion?: StateSchemaVersion;
 
   /** Stack name */
   stackName: string;

@@ -124,6 +124,10 @@ describe('findDownstreamConsumers (#650)', () => {
     });
     expect(out.map((c) => c.consumerStack).sort()).toEqual(['StackB', 'StackC']);
     expect(out.every((c) => c.intrinsic === 'ImportValue')).toBe(true);
+    // Every consumer scan read is read-only (older-reader tolerance, #6440).
+    const reads = (backend.getState as ReturnType<typeof vi.fn>).mock.calls;
+    expect(reads.length).toBeGreaterThan(0);
+    for (const call of reads) expect(call[2]).toEqual({ readOnly: true });
   });
 
   it('skips the producer itself (self-imports are invalid)', async () => {

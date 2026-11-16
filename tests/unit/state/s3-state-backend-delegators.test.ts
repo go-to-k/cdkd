@@ -81,7 +81,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, number]> = [
   ['stateExists', 'state-record', 2],
   ['stateExistsOwnedBy', 'state-record', 3],
   ['rawObjectExists', 'state-record', 1],
-  ['getState', 'state-record', 2],
+  ['getState', 'state-record', 3],
   ['saveState', 'state-record', 4],
   ['deleteState', 'state-record', 2],
   ['purgeDeletedStateHistory', 'state-record', 2],
@@ -134,8 +134,8 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, number]> = [
   ['probeLegacyState', 'legacy', 1],
   ['readLegacyRegion', 'legacy', 1],
   ['legacyBelongsToRegion', 'legacy', 2],
-  ['tryGetLegacy', 'legacy', 2],
-  ['parseStateBody', 'legacy', 2],
+  ['tryGetLegacy', 'legacy', 3],
+  ['parseStateBody', 'legacy', 3],
 ];
 
 /** Methods whose bodies stay on the class. */

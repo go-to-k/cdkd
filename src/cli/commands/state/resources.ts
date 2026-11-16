@@ -95,7 +95,7 @@ export async function printStackResources(
   if (!ref.region) {
     throw legacyRecordRefusal(stackName);
   }
-  const stateResult = await setup.stateBackend.getState(stackName, ref.region);
+  const stateResult = await setup.stateBackend.getState(stackName, ref.region, { readOnly: true });
   if (!stateResult) {
     throw new Error(
       `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
