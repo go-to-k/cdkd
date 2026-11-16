@@ -2633,6 +2633,11 @@
       ]
     },
     {
+      "name": "s3-autodelete-objects-disable",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "s3-bucket-policy-existing",
       "annotated": false,
       "scenarios": []

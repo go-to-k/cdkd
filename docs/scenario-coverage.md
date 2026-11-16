@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**96 / 96 canonical scenarios** have at least one integ fixture exercising them. **227 / 480 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**96 / 96 canonical scenarios** have at least one integ fixture exercising them. **228 / 481 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 

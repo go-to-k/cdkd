@@ -35,7 +35,13 @@ state record needs repair.
 ### `Delete handler reported FAILED — resource unproven`
 
 The handler ran and refused the delete. Tear down by hand whatever the handler
-manages, then drop the stack's record:
+manages, then drop the stack's record.
+
+One case is not skipped. When CDK's `Custom::S3AutoDeleteObjects` handler fails
+because its bucket has no tags at all, cdkd checks the bucket's tags itself.
+This is what happens when you turn `autoDeleteObjects` off. If S3 confirms the
+bucket has no tags, it was never tagged for auto-delete and there was nothing
+to empty, so cdkd counts the delete as done.
 
 ```bash
 # drop the record, touch nothing in AWS
