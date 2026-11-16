@@ -163,7 +163,7 @@ Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in
   "region": "us-east-1",
   "regionSource": "auto-detected",
   "bucketSource": "default",
-  "schemaVersion": 11,
+  "schemaVersion": 17,
   "stackCount": 4,
   "assetStorage": []
 }
@@ -175,7 +175,7 @@ Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in
 | `region` | string or `null` | The bucket's region from `GetBucketLocation`. `null` when that call failed. |
 | `regionSource` | string | `auto-detected` when `region` was read from the bucket, and `unknown` when it is `null`. |
 | `bucketSource` | string | Where the bucket name came from: `cli-flag`, `env`, `cdk.json`, `default` or `default-legacy`. Each is the machine form of one `Source:` line below, in the order of that table. |
-| `schemaVersion` | number or string | The schema version of one state record, or the string `unknown` when the bucket holds no record or the record cannot be parsed. |
+| `schemaVersion` | number or string | The schema version of one state record, or the string `unknown` when the bucket holds no record, the record cannot be read or parsed, or it has no numeric version. |
 | `stackCount` | number | The number of `state.json` files under the state prefix. |
 | `assetStorage` | array | One entry for each region opted into cdkd-owned asset storage by [`cdkd bootstrap`](cli-bootstrap.md), sorted by region. The array is empty when every region still uses the CDK bootstrap destinations. A bootstrap marker that cannot be read is skipped with a warning on stderr. |
 

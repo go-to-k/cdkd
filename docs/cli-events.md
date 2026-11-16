@@ -152,8 +152,8 @@ from `index.json`. When that file is missing or unreadable, it rebuilds each
 summary from the run's own file, which changes what a field holds:
 `startedAt` and `finishedAt` are empty strings when the run lacks the
 `RUN_STARTED` or `RUN_FINISHED` event that carries them, `cdkdVersion` is
-`unknown` and `command` is `deploy` when `RUN_STARTED` is missing, and a run
-whose file cannot be read has `eventCount` `0`. cdkd does not rewrite the index
+`unknown` and `command` is `deploy` when `RUN_STARTED` is missing or lacks
+that field, and a run whose file cannot be read has `eventCount` `0`. cdkd does not rewrite the index
 when it rebuilds the list. The runs in the rebuilt list are not limited to 20.
 
 `--run` prints the stored events themselves, as a JSON array in the order they

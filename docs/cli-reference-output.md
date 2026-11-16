@@ -51,6 +51,10 @@ table or container logs, so there is no document to capture.
 
 ### Edge cases
 
+- **`cdkd diff --json`.** It keeps stdout to the document by lowering the log
+  level to warnings, not by moving progress to stderr. Progress and
+  `--verbose` output are not printed at all, and only warnings and errors reach
+  stderr.
 - **`cdkd state list --long` and `--tree`.** These print a formatted view, not
   a record per line. The view still goes to stdout, and cdkd's progress lines
   go to stderr as they do on the plain listing.
