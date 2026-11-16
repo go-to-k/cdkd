@@ -265,8 +265,12 @@ that identifier is the physical id cdkd already recorded, and you have nothing
 to do.
 
 cdkd reads the identifier's property names from the type's CloudFormation
-registry schema, through `cloudformation:DescribeType`. A built-in table for
-about thirty common single-field types is the fallback.
+registry schema, through `cloudformation:DescribeType`. When that call cannot
+answer (the permission is missing, or AWS Emulator's registry lacks the
+type), cdkd falls back to a built-in table of about thirty common
+single-field types, then to the schemas it ships for the types it covers. A
+type neither holds blocks the export, as does, from the shipped schemas, a
+type CloudFormation cannot import.
 
 ### Composite identifiers
 
