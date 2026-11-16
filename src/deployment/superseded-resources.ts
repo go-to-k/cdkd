@@ -16,6 +16,7 @@ import type { ResourceState, StackState, SupersededResourceRecord } from '../typ
 import { reportDeleteGuards } from './delete-guard-scope.js';
 import { deleteSkipReason } from './delete-outcome.js';
 import { readsNoEchoDeleteValues } from './noecho-delete-reresolution.js';
+import { isMarkedNonRetryable } from './retryable-errors.js';
 
 /**
  * The well-formed entries of `state.supersededResources`. A malformed entry
@@ -392,14 +393,24 @@ export function isInUseRefusal(error: unknown): boolean {
 /**
  * Run `send` (one delete call), again while it fails with an "in use"
  * refusal, up to {@link supersededInUseRetry}; any other outcome is final.
- * `stop` ends the waiting early (an interrupt).
+ * A refusal marked non-retryable is final too, even when an "in use" AWS
+ * error rides in its cause chain: the provider already waited it out (an Auto
+ * Scaling group's scale-in, go-to-k/cdkd#6466), and repeating the attempt
+ * would multiply that wait. `stop` ends the waiting early (an interrupt).
  */
 export async function retryWhileInUse<T>(send: () => Promise<T>, stop: () => boolean): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await send();
     } catch (error) {
-      if (attempt >= supersededInUseRetry.attempts || stop() || !isInUseRefusal(error)) throw error;
+      if (
+        attempt >= supersededInUseRetry.attempts ||
+        stop() ||
+        !isInUseRefusal(error) ||
+        isMarkedNonRetryable(error)
+      ) {
+        throw error;
+      }
       await new Promise((resolve) => setTimeout(resolve, supersededInUseRetry.delayMs));
       // An interrupt during the wait sends nothing more.
       if (stop()) throw error;

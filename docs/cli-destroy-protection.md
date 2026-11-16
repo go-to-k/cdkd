@@ -89,6 +89,91 @@ The remaining cases (an SES email configuration, throttles, a write that
 timed out) are in
 [cdkd destroy internals](cli-destroy-internals.md#cognito-user-pools).
 
+## Auto Scaling groups with running instances
+
+AWS deletes an Auto Scaling group without `ForceDelete` only when the group
+is empty. Without `--remove-protection`, when AWS refuses the delete because
+the group still has instances, cdkd sets the group's minimum, maximum and
+desired capacity to `0`, waits for the instances to terminate, and then
+deletes the group. This matches CloudFormation. The instances terminate the
+normal way, so termination lifecycle hooks run.
+
+A group that is already empty is deleted with a single call, after the
+[identity check](#the-group-must-be-the-one-the-stack-created). The scale-in applies to every delete of a group, a deploy's
+replacement and a rollback included. It needs
+`autoscaling:DescribeAutoScalingGroups` and
+`autoscaling:UpdateAutoScalingGroup` beside
+`autoscaling:DeleteAutoScalingGroup`.
+
+cdkd waits up to 15 minutes for the instances to terminate, then up to
+15 minutes for the group to be gone. The first wait is cut to what the
+[per-resource timeout](cli-deploy-tuning.md#per-resource-timeout) leaves
+(30 minutes by default), and cdkd sends no delete once that timeout has run
+out.
+
+### When cdkd does not scale the group in
+
+cdkd changes nothing on the group, and the delete fails, in these cases:
+
+- **The group's `DeletionProtection` is `prevent-force-deletion` or
+  `prevent-all-deletion`.** cdkd reports the error AWS returned, as before.
+  Emptying the group would get round protection that exists to stop its
+  instances from being terminated together.
+- **The group of that name is not the one the stack created.** See
+  [below](#the-group-must-be-the-one-the-stack-created).
+- **An instance is protected from scale in, is in `Standby`, or is retained
+  (`Terminating:Retained`, held by the group's instance lifecycle policy).**
+  Scaling the group to `0` would never terminate it. The error names each such
+  instance.
+- **The group has a warm pool that is not being deleted.** A delete without
+  `ForceDelete` cannot remove it.
+
+With `--remove-protection`, `cdkd destroy` and `cdkd state destroy` delete the
+group with `ForceDelete=true` instead, which terminates every instance,
+protected or not, and skips termination lifecycle hooks.
+
+### When the delete fails after the scale-in
+
+The delete fails while the group drains, and names the instances left, in
+these cases:
+
+- every instance still in the group is protected from scale in, in
+  `Standby` or retained (one such instance among others that are still
+  terminating is waited for until the 15 minutes run out);
+- the group's capacity is raised again while it drains, for example by a
+  scheduled action (seen on two reads in a row);
+- the 15 minutes or the per-resource timeout run out, for example because a
+  termination lifecycle hook still holds an instance.
+
+The group then stays at capacity `0`, and cdkd does not put the old capacity
+back. The error states the minimum, maximum and desired capacity the group
+had before cdkd scaled it in.
+
+In `cdkd destroy` the group's state record is kept, and a re-run continues
+the delete. In a deploy (a replacement that deletes the old group first, or a
+group removed from the template) or a rollback, the state record can keep
+the old capacity while the live group is at `0`, so a later deploy of the
+same template shows no change for it. To bring the group back, run
+`cdkd drift --revert` on the stack, which sets the recorded capacity back,
+or set the capacity from the error by hand with
+`aws autoscaling update-auto-scaling-group`.
+
+### The group must be the one the stack created
+
+When the state record holds the group's ARN, every delete of the group
+checks it against the live group of that name first, with or without
+`--remove-protection`. If the ARNs differ, the group was deleted and created
+again outside cdkd, or the name belongs to a group in another region. cdkd
+then changes nothing and the delete fails. With `--remove-protection`, the
+check comes before any protection is turned off, and a failed read fails the
+attempt instead of deleting by name. When a failed delete would put a
+protection back, cdkd checks the group again first and leaves a group that
+is no longer the stack's untouched.
+
+The plain delete reads the group once (`DescribeAutoScalingGroups`) for this
+check. A record written without an ARN (by an older cdkd) has nothing to
+compare, so it keeps deleting the group by name, without the extra read.
+
 ## Restoring a guard after a failed destroy
 
 When cdkd turned protection off and the delete then failed for good, cdkd

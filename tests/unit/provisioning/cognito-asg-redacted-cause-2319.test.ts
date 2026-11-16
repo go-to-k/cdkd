@@ -638,7 +638,13 @@ describe('name-collision verdicts are unchanged by the class-only wrap (go-to-k/
   ] as const)('ASG %s %s', async (op, name, message, expected) => {
     mockAsgSend.mockImplementation(async (command: { constructor: { name: string } }) => {
       if (command.constructor.name === asgCommand[op]) throw aws(name, message);
-      return { AutoScalingGroups: [{ AutoScalingGroupName: 'my-asg' }] };
+      // A protected group, so a not-empty delete refusal is re-thrown as AWS
+      // sent it rather than scaled in (go-to-k/cdkd#6466).
+      return {
+        AutoScalingGroups: [
+          { AutoScalingGroupName: 'my-asg', DeletionProtection: 'prevent-force-deletion' },
+        ],
+      };
     });
 
     expectVerdict(await thrown(runAsg(op)), 'MyAsg', expected);

@@ -486,6 +486,11 @@
       "scenarios": []
     },
     {
+      "name": "asg-destroy-running-instances",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asset-auto-create",
       "annotated": true,
       "scenarios": [
@@ -3942,6 +3947,7 @@
     "app-autoscaling-recreate",
     "appconfig",
     "appconfig-environment-delete-protection",
+    "asg-destroy-running-instances",
     "aws-custom-resource",
     "backup",
     "bootstrap-free-region",
