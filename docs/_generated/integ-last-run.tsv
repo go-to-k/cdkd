@@ -369,6 +369,7 @@ ref-shape-vector-namespace-attachment	2026-11-13T19:37:31Z	PASS	120	verify.sh	rc
 refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 refactor-lambda-version	2026-11-12T11:22:31Z	PASS	477	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
+remote-nested-stack-refusal	2026-11-16T07:40:23Z	PASS	20	verify.sh	rc ok, orph clean
 remove-protection	2026-11-15T17:41:38Z	PASS	773	verify.sh	rc ok, orph clean; #6352 Cognito DcrConfiguration kept-on-omission
 remove-protection-compensation	2026-11-08T03:59:38Z	PASS	267	verify.sh	#6039 split head with the #6045 CC-route fixture; rc ok, orph clean
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean

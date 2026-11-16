@@ -317,7 +317,7 @@ describe('NestedStackProvider', () => {
         (e: unknown) => (e as Error).message
       );
       expect(create).toContain(
-        `AWS::CloudFormation::Stack ${SHOWN} under parent ${SHOWN}. Verify the synth output`
+        `AWS::CloudFormation::Stack ${SHOWN} under parent ${SHOWN}: the resource has no Metadata`
       );
       expect(outside(create)).not.toContain('found and deployed');
 

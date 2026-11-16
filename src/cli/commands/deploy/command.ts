@@ -11,7 +11,10 @@ import { forwardSigtermToSigint } from '../../../utils/interrupt-signals.js';
 import { bold, cyan, gray } from '../../../utils/colors.js';
 import { DeployCancelledError, PartialFailureError } from '../../../utils/error-handler.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
-import { refuseMalformedNestedTemplateTrees } from '../nested-template-preflight.js';
+import {
+  refuseMalformedNestedTemplateTrees,
+  refuseRemoteNestedStackRows,
+} from '../nested-template-preflight.js';
 import { createApprovalPrompter, resolveRequireApproval } from '../require-approval.js';
 import {
   resolveOutputsFile,
@@ -600,6 +603,11 @@ export async function deployCommand(
     runClock.lap('stack selection, stack regions');
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
     runClock.lap('macro expansion');
+    // Issue #6385: a nested stack with no local template (a remote
+    // TemplateURL) is refused HERE, before asset publishing, any lock and any
+    // engine. AFTER expansion: a HostedRotation's row exists only once the
+    // AWS::SecretsManager transform has expanded.
+    refuseRemoteNestedStackRows(targetStacks, (message) => logger.info(message));
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
     const accountId = (await callerIdentityPromise).Account!;

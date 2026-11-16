@@ -602,6 +602,13 @@ Fully supported in both directions. Fresh `cdkd deploy` of nested-stack-bearing
 CDK apps uses the recursive `NestedStackProvider` (issue
 [#459](https://github.com/go-to-k/cdkd/issues/459)).
 
+The exception is a nested stack whose template is not in the cloud assembly: a
+remote `TemplateURL`, such as the one a CDK `HostedRotation` generates through
+the `AWS::SecretsManager-2024-09-16` transform, or a `cdk.NestedStack`
+synthesized with asset metadata disabled. `cdkd deploy` refuses it after
+macro expansion, before anything is published or provisioned (issue
+[#6385](https://github.com/go-to-k/cdkd/issues/6385)).
+
 Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import
 --migrate-from-cloudformation` (issue
 [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive

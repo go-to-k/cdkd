@@ -10001,6 +10001,7 @@
         "local-invoke-from-state",
         "local-run-task-from-state",
         "output-never-resolved-diff",
+        "remote-nested-stack-refusal",
         "replacement-immutable-name",
         "secret-substring-literal",
         "secrets-array-nested",
@@ -10051,6 +10052,9 @@
         "output-never-resolved-diff": [
           "l2",
           "literal"
+        ],
+        "remote-nested-stack-refusal": [
+          "l2"
         ],
         "replacement-immutable-name": [
           "l2",
