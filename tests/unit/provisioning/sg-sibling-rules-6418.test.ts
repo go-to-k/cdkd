@@ -45,6 +45,13 @@ describe('sgRuleOwnershipIdentity', () => {
     );
   });
 
+  it('tells egress rules apart by their Destination* peer', () => {
+    const egress = { IpProtocol: 'tcp', FromPort: 8080, ToPort: 8080, DestinationSecurityGroupId: PEER };
+    expect(
+      sgRuleOwnershipIdentity({ ...egress, DestinationSecurityGroupId: 'sg-0ccccccccccccccc' }, 'egress')
+    ).not.toBe(sgRuleOwnershipIdentity(egress, 'egress'));
+  });
+
   it.each([
     ['a redacted peer', { ...siblingRule, SourceSecurityGroupId: '***' }],
     ['an unreadable port', { ...siblingRule, FromPort: 'all' }],

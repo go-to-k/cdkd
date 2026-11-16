@@ -92,6 +92,43 @@ describe('buildObservedCaptureSiblings for an AWS::EC2::SecurityGroup (go-to-k/c
     expect(owned(ctx)).toBe(1);
   });
 
+  it('hands over a template SecurityGroupEgress sibling, read by its Destination* peer', async () => {
+    const template = templateWith({
+      ToB: {
+        Type: 'AWS::EC2::SecurityGroupEgress',
+        Properties: {
+          GroupId: { 'Fn::GetAtt': ['SgA', 'GroupId'] },
+          IpProtocol: 'tcp',
+          FromPort: 8080,
+          ToPort: 8080,
+          DestinationSecurityGroupId: { 'Fn::GetAtt': ['SgB', 'GroupId'] },
+        },
+      },
+    });
+    const ctx = await capture(depsWith({ SgA: GROUP, SgB: PEER }), template);
+    expect(siblingOwnedSgRuleIdentities(GROUP, 'egress', {}, ctx).size).toBe(1);
+  });
+
+  it('resolves only the identity keys: a Description it cannot (or must not) resolve is left out', async () => {
+    const template = templateWith({
+      FromB: {
+        Type: 'AWS::EC2::SecurityGroupIngress',
+        Properties: { ...ruleProps(GROUP, PEER), Description: { 'Fn::GetAtt': ['SecretHolder', 'Value'] } },
+      },
+    });
+    const ctx = await capture(depsWith({}), template);
+    expect(owned(ctx)).toBe(1);
+    expect(ctx?.siblings?.['FromB']?.properties).not.toHaveProperty('Description');
+  });
+
+  it('hands over a template sibling naming the group by its literal id', async () => {
+    const template = templateWith({
+      FromB: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: ruleProps(GROUP, PEER) },
+    });
+    const ctx = await capture(depsWith({}), template);
+    expect(owned(ctx)).toBe(1);
+  });
+
   it('keeps a recorded rule beside its changed template twin: until its operation runs, the recorded rule is live', async () => {
     const state: Record<string, ResourceState> = {
       FromB: {

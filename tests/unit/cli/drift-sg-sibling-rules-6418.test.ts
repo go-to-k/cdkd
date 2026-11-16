@@ -323,6 +323,25 @@ describe('cdkd drift on a security group a sibling SecurityGroupIngress / Egress
     expect((await runDrift([])) ?? 0).toBe(0);
   });
 
+  it('an out-of-band egress rule on the sibling egress port but to another peer still reports drift', async () => {
+    live = [
+      INLINE_HTTPS,
+      INLINE_EGRESS,
+      SIBLING_EGRESS,
+      { direction: 'egress', port: 8080, peer: 'sg-0cccccccccccccccc' },
+    ];
+    mockGetState.mockResolvedValue(
+      stateWith({
+        declaredIngress: [INLINE_HTTPS],
+        baselineIngress: [INLINE_HTTPS],
+        declaredEgress: [INLINE_EGRESS],
+        baselineEgress: [INLINE_EGRESS],
+      })
+    );
+
+    expect(await runDrift([])).toBe(1);
+  });
+
   it('an out-of-band rule still reports drift', async () => {
     live = [INLINE_HTTPS, SIBLING_PG, STRANGER];
     mockGetState.mockResolvedValue(

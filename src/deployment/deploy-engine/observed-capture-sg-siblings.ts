@@ -31,6 +31,20 @@ const RULE_TYPES: ReadonlySet<string> = new Set([
   'AWS::EC2::SecurityGroupEgress',
 ]);
 
+/** The rule keys `sgRuleOwnershipIdentity` reads, both directions. */
+const IDENTITY_KEYS = [
+  'IpProtocol',
+  'FromPort',
+  'ToPort',
+  'CidrIp',
+  'CidrIpv6',
+  'SourceSecurityGroupId',
+  'SourceSecurityGroupName',
+  'SourcePrefixListId',
+  'DestinationSecurityGroupId',
+  'DestinationPrefixListId',
+] as const;
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -90,7 +104,12 @@ export async function buildSgRuleCaptureSiblings(
     );
     let resolved: unknown;
     try {
-      resolved = await deps.resolver.resolve(props, resolverContext);
+      // Only the keys a rule's identity reads: a `Description` may hold a secret
+      // reference, which nothing here needs fetched or held in plaintext.
+      const identity = Object.fromEntries(
+        IDENTITY_KEYS.filter((key) => props[key] !== undefined).map((key) => [key, props[key]])
+      );
+      resolved = await deps.resolver.resolve(identity, resolverContext);
     } catch {
       continue;
     }

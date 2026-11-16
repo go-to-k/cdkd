@@ -25,6 +25,9 @@
  * record written before this fix) compares clean without a redeploy.
  *
  * Identity is what AWS keeps one rule for: group, protocol, port range and peer.
+ * It differs from `sg-support.ts`'s `comparableIngressIdentity` (#4492) by
+ * dropping the peer owner id: that one pairs two RECORDS, which spell the owner
+ * alike, while this one pairs a record with AWS's readback, which always adds it.
  * `Description` is left out (AWS holds one rule whatever the description), and
  * so is the peer's owner id, which AWS reports on every same-account group pair
  * while a template rarely declares it; a group id names one group in any

@@ -41,7 +41,7 @@ export function sgProtocolKey(value: unknown): unknown {
 
 /**
  * A CFn `FromPort` / `ToPort` in the NUMBER form `DescribeSecurityGroupRules`
- * reports, for {@link securityGroupRuleMatchesCfnIngress}'s compare.
+ * reports, for `sg-support.ts`'s `securityGroupRuleMatchesCfnIngress` compare.
  *
  * An identity compare against `properties['FromPort'] as number` was wrong for
  * the same reason issue #1513 documents one property over: a YAML / JSON
