@@ -31,8 +31,8 @@ verify, clean up.
    `ERR_MODULE_NOT_FOUND`. In a set, run each building fixture
    (`grep -lE '^\s*\(cd [^)]*&& vp run build[ )]' <dir>/*.sh`; a bare
    `vp run build` also matches error text) alone in its tree: BEFORE the
-   others, or beside them run from a `--detach` sibling at the same sha with
-   its own `dist/` (rows and marker in the PR tree). After a
+   others, or beside the rest run from a `--detach` sibling at the same sha,
+   installed and built on its own (rows and marker in the PR tree). After a
    build beside a live run, re-scan per steps 6-7, record that fixture `FAIL`,
    and re-run it.
 

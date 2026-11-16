@@ -164,8 +164,8 @@ A subagent's Bash bypasses the PreToolUse hooks.
   serially, and start ANY vitest of yours only while no lane's is running** —
   concurrent suites trip the 600s watchdog in untouched files.
   Each runs `vp test run <its own suite>`, its files spelled out or inside
-  `bash -c`: zsh passes an unquoted `$files` as ONE argument, a `$(ls <glob>)`
-  matching nothing NONE (so the FULL suite).
+  `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
+  EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`).
