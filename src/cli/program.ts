@@ -10,7 +10,11 @@ import {
 } from '../utils/s3-client-defaults.js';
 import { getLogger } from '../utils/logger.js';
 import { handleError } from '../utils/error-handler.js';
-import { addAwsEmulatorOptions, prepareAwsEmulatorForCommand } from './aws-emulator.js';
+import {
+  addAwsEmulatorOptions,
+  guardAwsEmulatorValues,
+  prepareAwsEmulatorForCommand,
+} from './aws-emulator.js';
 import { setLocalCustomResourceRuntimeEnabled } from '../local/custom-resource-runtime-gate.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
@@ -168,6 +172,7 @@ export function buildProgram(): Command {
   // `--aws-emulator` on every command that talks to AWS (declares `--profile`),
   // the `cdkd local` subtree aside: cdk-local registers it there.
   addAwsEmulatorOptions(program);
+  guardAwsEmulatorValues(program);
 
   // Which long options each subcommand parses, read off the REAL tree, so a
   // pasteable hint only gains a run flag its command accepts (go-to-k/cdkd#4177).
