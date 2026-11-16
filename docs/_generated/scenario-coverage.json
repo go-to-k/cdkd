@@ -2195,6 +2195,11 @@
       "scenarios": []
     },
     {
+      "name": "nested-cleanup-at-root",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nested-required-preflight",
       "annotated": false,
       "scenarios": []
@@ -4066,6 +4071,7 @@
     "neptune-fix-forward-orphan",
     "neptune-restore",
     "nested-child-first-deploy-failure",
+    "nested-cleanup-at-root",
     "nested-required-preflight",
     "nested-stack",
     "nested-stack-deep",

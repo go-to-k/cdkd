@@ -9096,6 +9096,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "nested-child-first-deploy-failure",
+        "nested-cleanup-at-root",
         "nested-required-preflight",
         "nested-stack-rollback",
         "noecho-named-producer",
@@ -9281,6 +9282,9 @@
         ],
         "nested-child-first-deploy-failure": [
           "l1"
+        ],
+        "nested-cleanup-at-root": [
+          "l2"
         ],
         "nested-required-preflight": [
           "l1",

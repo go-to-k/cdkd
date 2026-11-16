@@ -3828,8 +3828,11 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // ...and every read in that module sits inside those two functions, so a
     // helper added beside them owes its own anchor rather than riding this one.
     const execute = code('src/deployment/deploy-engine/execute.ts');
+    // go-to-k/cdkd#6398: `executeDeployment` binds the nested cleanup queue
+    // and delegates to the unexported `executeDeploymentBody`, which holds
+    // the reads.
     const executeFnBody = (name: string): string => {
-      const at = execute.indexOf(`export async function ${name}(`);
+      const at = execute.indexOf(`async function ${name}(`);
       expect(at, `${name} moved or was renamed`).toBeGreaterThan(-1);
       return execute.slice(at, execute.indexOf('\n}\n', at));
     };
@@ -3838,7 +3841,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       reads(execute),
       'deploy-engine/execute.ts reads the orphans container outside executeDeployment / ' +
         'persistStateAfterOutputFailure: give that path its own ANCHORS entry.'
-    ).toBe(reads(executeFnBody('executeDeployment')) + reads(executeFnBody('persistStateAfterOutputFailure')));
+    ).toBe(reads(executeFnBody('executeDeploymentBody')) + reads(executeFnBody('persistStateAfterOutputFailure')));
     // go-to-k/cdkd#5835: the post-rollback saves moved to
     // `execute/rollback-after-failure.ts`. Every read there sits inside
     // `rollbackFailedDeploy`, called once, from inside `executeDeployment`.
@@ -3864,7 +3867,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'src/deployment/deploy-engine/execute/rollback-after-failure.ts',
     ]);
     expect(
-      executeFnBody('executeDeployment').split('rollbackFailedDeploy(').length - 1,
+      executeFnBody('executeDeploymentBody').split('rollbackFailedDeploy(').length - 1,
       'executeDeployment no longer calls rollbackFailedDeploy exactly once'
     ).toBe(1);
     expect(
