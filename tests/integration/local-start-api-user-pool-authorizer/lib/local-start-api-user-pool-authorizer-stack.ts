@@ -18,7 +18,7 @@ exports.handler = async (event) => {
   return {
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sub: claims.sub, aud: claims.aud }),
+    body: JSON.stringify({ sub: claims.sub, aud: claims.aud, clientIdEnv: process.env.CLIENT_ID }),
   };
 };
 `;
@@ -53,6 +53,7 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromInline(HANDLER),
       timeout: cdk.Duration.seconds(10),
+      environment: { CLIENT_ID: clientA.userPoolClientId },
     });
 
     const api = new apigwv2.HttpApi(this, 'Api');

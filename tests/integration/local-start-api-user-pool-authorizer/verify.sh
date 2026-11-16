@@ -174,11 +174,11 @@ echo "==> Phase 1: deploy ${STACK}"
 DEPLOYED=1
 ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-POOL_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPool)" || fail "no user pool id in state"
-CLIENT_A="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientA)" || fail "no client A id in state"
-CLIENT_B="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientB)" || fail "no client B id in state"
-API_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::ApiGatewayV2::Api)" || fail "no HTTP API id in state"
-FN_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Lambda::Function)" || fail "no function name in state"
+POOL_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPool PoolD3F588B8)" || fail "no user pool id in state"
+CLIENT_A="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientA54DA49E6)" || fail "no client A id in state"
+CLIENT_B="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientB32581292)" || fail "no client B id in state"
+API_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::ApiGatewayV2::Api ApiF70053CD)" || fail "no HTTP API id in state"
+FN_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Lambda::Function Handler886CB40B)" || fail "no function name in state"
 # cdkd records a user pool client's physical id as `<poolId>|<clientId>`.
 CLIENT_A="${CLIENT_A##*|}"
 CLIENT_B="${CLIENT_B##*|}"
@@ -251,6 +251,10 @@ GOT_SUB="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sub)
 GOT_AUD="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).aud))' "${BODY}")" \
   || fail "response body is not JSON: ${BODY}"
 [ "${GOT_AUD}" = "${CLIENT_A}" ] || fail "aud mismatch: body ${GOT_AUD} vs client A ${CLIENT_A}"
+# The Lambda env CLIENT_ID is a Ref of the client: it must be the bare client id.
+GOT_ENV="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).clientIdEnv))' "${BODY}")" \
+  || fail "response body is not JSON: ${BODY}"
+[ "${GOT_ENV}" = "${CLIENT_A}" ] || fail "CLIENT_ID env mismatch: body ${GOT_ENV} vs client A ${CLIENT_A}"
 
 echo "    tampered client-A token -> 401"
 CODE="$(http_code "${PORT_STATE}" "Authorization: Bearer ${TOKEN_A_TAMPERED}")" || CODE="curl-failed"
