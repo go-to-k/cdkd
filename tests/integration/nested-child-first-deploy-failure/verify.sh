@@ -153,7 +153,33 @@ for STACK in "${STACKS[@]}"; do
 
   # --- Phase 3: the parent's destroy retires it ------------------------------
   echo "==> [${STACK}] Phase 3: destroy retires the child's record"
-  node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+  if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/state.json"; then
+    echo "FAIL: [${STACK}] no parent record before the destroy: the destroy path is not exercised" >&2
+    exit 1
+  fi
+  DESTROY_RC=0
+  DESTROY_OUT="$(node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || DESTROY_RC=$?
+  DESTROY_OUT="$(printf '%s\n' "${DESTROY_OUT}" | strip_ansi)"
+  printf '%s\n' "${DESTROY_OUT}"
+  if [ "${DESTROY_RC}" -ne 0 ]; then
+    echo "FAIL: [${STACK}] cdkd destroy exited ${DESTROY_RC}" >&2
+    exit 1
+  fi
+  # Which destroy path the parent took: the empty-record fast path for the
+  # parent holding only the row, the main path for the one with a resource.
+  FAST_PATH_LINE="Stack ${STACK} has no resources, cleaning up state..."
+  case "${STACK}" in
+    *Empty)
+      grep -qF "${FAST_PATH_LINE}" <<<"${DESTROY_OUT}" || {
+        echo "FAIL: [${STACK}] the destroy did not take the empty-record path (wording changed?)" >&2
+        exit 1
+      } ;;
+    *)
+      if grep -qF "${FAST_PATH_LINE}" <<<"${DESTROY_OUT}"; then
+        echo "FAIL: [${STACK}] the destroy took the empty-record path; the main path is not exercised" >&2
+        exit 1
+      fi ;;
+  esac
   assert_gone "#6396: [${STACK}] child ${CHILD_STATE} outlived the parent's destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE}"
   assert_gone "#6396: [${STACK}] child ${CHILD_JOURNAL} outlived the parent's destroy" \
