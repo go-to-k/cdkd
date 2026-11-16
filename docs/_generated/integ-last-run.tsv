@@ -324,7 +324,7 @@ nested-stack-deep	2026-11-07T15:18:44Z	PASS	125	verify.sh	#6016 deploy-flow spli
 nested-stack-replace-guard	2026-11-07T16:26:30Z	PASS	65	verify.sh	rc 0, Phase 0 pre-flight refusal ok (#6012), destroy 0 errors, orph clean, own bucket
 nested-stack-rollback	2026-11-14T18:31:46Z	PASS	95	verify.sh	rc ok; own temp state bucket; orph clean
 nested-stack-secret	2026-11-04T20:57:58Z	PASS	297	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
-nested-stack-transform	2026-11-16T08:47:26Z	PASS	150	verify.sh	rc ok, orph clean
+nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-04T18:46:30Z	PASS	341	verify.sh	rc ok, destroy 0 errors, orph clean; own state bucket
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
