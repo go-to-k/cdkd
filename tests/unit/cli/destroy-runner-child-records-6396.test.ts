@@ -162,7 +162,7 @@ describe('destroy retires the nested-child records no parent row addresses (go-t
       order.push(`release ${name}`);
     });
     const backend = h.ctx.stateBackend as unknown as { deleteState: ReturnType<typeof vi.fn> };
-    const inner = backend.deleteState.getMockImplementation()!;
+    const inner = backend.deleteState.getMockImplementation() as (name: string) => Promise<void>;
     backend.deleteState.mockImplementation(async (name: string) => {
       order.push(`delete ${name}`);
       return inner(name);
