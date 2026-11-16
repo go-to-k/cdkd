@@ -1074,9 +1074,14 @@
     {
       "resourceType": "AWS::CloudFront::OriginAccessControl",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "s3-cloudfront"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "s3-cloudfront": [
           "l1",
           "literal"
@@ -1215,6 +1220,7 @@
         "apigateway",
         "appsync",
         "bedrock-agentcore",
+        "cc-to-sdk-reroute-common-types-2",
         "cc-write-only-create-only",
         "cognito",
         "cognito-custom-attribute-add",
@@ -1242,6 +1248,10 @@
         ],
         "bedrock-agentcore": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -1692,6 +1702,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -1794,6 +1805,10 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -2344,11 +2359,16 @@
     {
       "resourceType": "AWS::EC2::NetworkAcl",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "ec2-vpc",
         "import-migrate-vpc",
         "tags-propagation"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "ec2-vpc": [
           "l2"
         ],
@@ -4067,6 +4087,7 @@
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -4187,6 +4208,10 @@
         ],
         "cc-to-sdk-reroute-common-types": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -5818,6 +5843,7 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
@@ -5829,6 +5855,10 @@
         "infra-security"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "iam-access-key": [
           "l2"
         ],
@@ -5864,6 +5894,7 @@
     {
       "resourceType": "AWS::IAM::InstanceProfile",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "ec2-instance",
         "ec2-instance-fanout",
         "emr-cluster",
@@ -5877,6 +5908,10 @@
         "remove-protection"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "ec2-instance": [
           "l1"
         ],
@@ -6065,6 +6100,7 @@
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-2",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -6217,6 +6253,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -6606,6 +6645,7 @@
       "resourceType": "AWS::IAM::User",
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
+        "cc-to-sdk-reroute-common-types-2",
         "iam-access-key",
         "iam-managed-policy",
         "iam-recreate-reattach",
@@ -6619,6 +6659,10 @@
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
         ],
         "iam-access-key": [
           "l2"
@@ -6687,12 +6731,17 @@
     {
       "resourceType": "AWS::KMS::Alias",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "composite-stack",
         "dynamodb-globaltable-replica-settings",
         "infra-security",
         "kms-encryption"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "composite-stack": [
           "literal"
         ],
@@ -6711,6 +6760,7 @@
       "resourceType": "AWS::KMS::Key",
       "integs": [
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-2",
         "cloudtrail-trail",
         "cognito",
         "composite-stack",
@@ -6735,6 +6785,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1"
         ],
         "cloudtrail-trail": [
           "l2"
@@ -6994,6 +7047,7 @@
         "bootstrap-free-region",
         "cache-streaming",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-2",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
@@ -7161,6 +7215,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-common-types": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-2": [
           "l2"
         ],
         "cloudfront-function-url": [
@@ -7711,11 +7768,16 @@
     {
       "resourceType": "AWS::Lambda::Url",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "composite-stack",
         "import-lambda-url-attributes",
         "lambda-url-authtype-replay"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "composite-stack": [
           "literal"
         ],
@@ -10337,6 +10399,7 @@
     {
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
+        "cc-to-sdk-reroute-common-types-2",
         "iam-propagation-stress",
         "import-attribute-readback-final",
         "replacement-immutable-name",
@@ -10346,6 +10409,10 @@
         "stepfunctions-sync-managed-rule"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
         "iam-propagation-stress": [
           "l2"
         ],
