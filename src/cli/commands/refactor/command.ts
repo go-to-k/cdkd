@@ -24,8 +24,10 @@ import { DiffCalculator } from '../../../analyzer/diff-calculator.js';
 import { parseMappingFile, type MappingEnvironment } from '../../../analyzer/refactor-pairing.js';
 import {
   createAssetRedirectResolver,
+  createLazyAssetModeContext,
   rewriteTemplateAssetReferences,
 } from '../../../assets/asset-redirect.js';
+import { createLegacyAssetParameterBinder } from '../../../assets/legacy-synthesizer-assets.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../../utils/role-arn.js';
 import {
@@ -205,13 +207,17 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
     registerAllProviders(registry, providerClasses);
     const canonicalizeProperties = makeCanonicalizePropertiesFn(registry);
     const producerLookup = producerLookupOver(allStacks);
-    const resolveAssetRedirect = createAssetRedirectResolver({
+    const assetModeOptions = {
       stateBackend,
       stsRegion: region,
       ...(options.profile && { profile: options.profile }),
       useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
       suppressLegacyNotice: true,
-    });
+    };
+    const assetModeContext = createLazyAssetModeContext(assetModeOptions);
+    const resolveAssetRedirect = createAssetRedirectResolver(assetModeOptions, assetModeContext);
+    // Issue #6421: bound as `cdkd deploy` binds them.
+    const bindLegacyAssets = createLegacyAssetParameterBinder(assetModeContext);
     let callerAccount: string | undefined;
     const accountOf = async (stackInfo: StackInfo): Promise<string> => {
       if (stackInfo.account) return stackInfo.account;
@@ -290,6 +296,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
       }
       const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, stackRegion);
       if (assetRedirect) rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
+      await bindLegacyAssets(stackInfo, stackRegion);
 
       const overrides =
         environments.length === 0

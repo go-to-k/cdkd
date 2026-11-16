@@ -6,11 +6,35 @@ import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
 } from '../../../assets/asset-redirect.js';
+import {
+  legacyPlanAssetCount,
+  predictedAutoCreatedAssetMode,
+  prepareLegacyStackAssets,
+} from '../../../assets/legacy-synthesizer-assets.js';
 import { WorkGraph } from '../../../deployment/work-graph.js';
 import { deployStackRegion } from '../cross-prefix-gate.js';
 import type { DeployCommandOptions } from './types.js';
 import type { StackInfo } from '../../../synthesis/assembly-reader.js';
 import type { ConsoleLogger } from '../../../utils/logger.js';
+
+/**
+ * Whether a `--dry-run` should show the cdkd asset bucket a region's missing
+ * storage would be auto-created with (#1007, #6421): exactly when the real
+ * deploy, run with the same flags, would auto-create it.
+ */
+export function dryRunPredictsAutoCreatedStorage(flags: {
+  dryRun: boolean | undefined;
+  autoAssetStorage: boolean;
+  skipAssets: boolean | undefined;
+  useCdkBootstrapAssets: boolean;
+}): boolean {
+  return (
+    flags.dryRun === true &&
+    flags.autoAssetStorage &&
+    flags.skipAssets !== true &&
+    !flags.useCdkBootstrapAssets
+  );
+}
 
 /**
  * Adds every target stack, with its asset-publish nodes and its inter-stack
@@ -36,6 +60,12 @@ export async function addStacksToWorkGraph(args: {
     pool: readonly StackInfo[]
   ) => Set<StackInfo>;
   inferredCrossStackDeps: Map<StackInfo, Set<StackInfo>>;
+  /**
+   * `--dry-run` where the real deploy would auto-create a region's missing
+   * asset storage (#1007): a legacy-synthesizer stack's parameters then show
+   * the default cdkd bucket the real deploy binds (#6421).
+   */
+  dryRunPredictsAutoCreatedStorage?: boolean;
 }): Promise<void> {
   const {
     targetStacks,
@@ -52,6 +82,7 @@ export async function addStacksToWorkGraph(args: {
     workGraph,
     dependencyStacks,
     inferredCrossStackDeps,
+    dryRunPredictsAutoCreatedStorage = false,
   } = args;
   for (const stack of targetStacks) {
     const stackNodeId = `stack:${graphKey(stack)}`;
@@ -109,6 +140,45 @@ export async function addStacksToWorkGraph(args: {
           for (const id of nodeIds) {
             stackDeps.add(id);
           }
+        }
+      }
+    }
+
+    // Issue #6421 — a LegacyStackSynthesizer stack has no asset manifest:
+    // its assets are `aws:cdk:asset` metadata plus template parameters the
+    // deploying tool supplies. Mode first, as above, so the bucket the bound
+    // parameters name is the one the objects go to; bound even under
+    // --skip-assets (the CDK CLI computes them regardless).
+    if (stack.legacyAssets) {
+      const assetRegion = stackRegions.get(stack) ?? deployStackRegion(stack, baseRegion);
+      const plan = await prepareLegacyStackAssets(stack, {
+        assetMode: async () => {
+          const mode = await assetModeResolver.resolve(
+            stack.region || rawNamedRegion || assetRegion
+          );
+          // A dry run never auto-creates storage (no marker reads as legacy),
+          // but the real deploy would, and bind the cdkd bucket: show that.
+          return mode.mode === 'legacy' && dryRunPredictsAutoCreatedStorage
+            ? predictedAutoCreatedAssetMode(accountId, assetRegion)
+            : mode;
+        },
+        accountId,
+        region: assetRegion,
+      });
+      if (plan && !options.skipAssets && legacyPlanAssetCount(plan) > 0) {
+        const nodeIds = assetPublisher.addManifestToGraph(workGraph, plan.manifest, {
+          accountId,
+          region: assetRegion,
+          ...(options.profile && { profile: options.profile }),
+          nodePrefix: `${graphKey(stack)}:`,
+          cdkOutputDir: stack.legacyAssets.assemblyDir,
+          ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
+          bucketsChosenByCdkd: true,
+          recognizedImageDestinations: plan.recognizedImageDestinations,
+          repositoriesToEnsure: plan.repositoriesToEnsure,
+        });
+        for (const id of nodeIds) {
+          stackDeps.add(id);
         }
       }
     }

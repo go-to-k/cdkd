@@ -296,7 +296,7 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
   {
     file: 'synthesis/stack-messages.ts',
     errorClass: 'SynthesisError',
-    within: 'collectStackMessages',
+    within: 'readMergedStackMetadata',
     count: 1,
     reason:
       'a local metadata-file read failure, not an AWS error: same path-echo reason as ' +

@@ -7001,6 +7001,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "lambda-versioning",
+        "legacy-synthesizer-assets",
         "local-aws-emulator",
         "local-engine-role-identity",
         "local-invoke",
@@ -7305,6 +7306,10 @@
           "l2"
         ],
         "lambda-versioning": [
+          "l2",
+          "literal"
+        ],
+        "legacy-synthesizer-assets": [
           "l2",
           "literal"
         ],

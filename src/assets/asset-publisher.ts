@@ -16,6 +16,7 @@ import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets
 import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+import { imageDestinationKey } from './legacy-synthesizer-assets.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
@@ -57,6 +58,13 @@ export interface DockerPublishNodeData {
   accountId: string;
   region: string;
   localTag: string;
+  /**
+   * Create the destination repository when it is missing — set for a
+   * `LegacyStackSynthesizer` image asset only, whose repository (e.g.
+   * `aws-cdk/assets`) no bootstrap creates; the CDK CLI creates it too
+   * (issue #6421).
+   */
+  ensureRepository?: true;
 }
 
 export type AssetNodeData = FileAssetNodeData | DockerBuildNodeData | DockerPublishNodeData;
@@ -126,9 +134,51 @@ export class AssetPublisher {
     const content = readFileSync(manifestPath, 'utf-8');
     const manifest = parseAssetManifestBody(content, manifestPath);
     const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
+    return this.addManifestToGraph(graph, manifest, { ...options, cdkOutputDir });
+  }
+
+  /**
+   * {@link addAssetsToGraph} for a manifest already in memory — the one a
+   * `LegacyStackSynthesizer` stack's metadata builds (issue #6421), which is
+   * never written into the user's assembly (the CDK CLI keeps it in memory
+   * too).
+   */
+  addManifestToGraph(
+    graph: WorkGraph,
+    manifest: AssetManifest,
+    options: {
+      accountId: string;
+      region: string;
+      profile?: string;
+      nodePrefix?: string;
+      redirect?: AssetRedirectMap;
+      /** The directory `source.path` / `source.directory` resolve against. */
+      cdkOutputDir: string;
+      /** See {@link addAssetsToGraph}; defaults to `cdkOutputDir`. */
+      assetOutdir?: string;
+      /**
+       * Every file destination's bucket was CHOSEN by cdkd rather than read
+       * from a manifest (the legacy plan's toolkit / cdkd bucket): the
+       * unrecognized-destination warning, which exists to name a
+       * manifest-chosen bucket, does not apply to it.
+       */
+      bucketsChosenByCdkd?: boolean;
+      /**
+       * (repository, tag) pairs, keyed by `imageDestinationKey`, to treat as
+       * recognized beside the bootstrap shapes — a legacy plan's synthesizer
+       * default. Any other pair still warns: a legacy entry's
+       * `repositoryName` / `imageTag` are assembly-chosen.
+       */
+      recognizedImageDestinations?: ReadonlySet<string>;
+      /** Docker repositories to create when missing (legacy image assets). */
+      repositoriesToEnsure?: ReadonlySet<string>;
+    }
+  ): string[] {
+    const cdkOutputDir = options.cdkOutputDir;
     const assetOutdir = options.assetOutdir ?? cdkOutputDir;
     const prefix = options.nodePrefix || '';
     const redirect = options.redirect;
+    const warnBuckets = options.bucketsChosenByCdkd !== true;
     const nodeIds: string[] = [];
 
     // File assets: single publish node
@@ -148,7 +198,7 @@ export class AssetPublisher {
       // The DESTINATION half of go-to-k/cdkd#3497, judged AFTER the redirect so
       // a cdkd-managed target is silent. Warn, never refuse: a custom
       // bootstrap is a legitimate configuration.
-      for (const dest of Object.values(asset.destinations)) {
+      for (const dest of warnBuckets ? Object.values(asset.destinations) : []) {
         // The destination's OWN region, not the deploy region.
         // `buildAssetRedirectMap` deliberately skips a cross-region
         // destination, so it arrives here unrewritten, and judging
@@ -212,6 +262,8 @@ export class AssetPublisher {
           name,
           recognized:
             isDefaultBootstrapRepoName(name, options.accountId, destRegion) ||
+            options.recognizedImageDestinations?.has(imageDestinationKey(name, dest.imageTag)) ===
+              true ||
             (redirect !== undefined && [...redirect.repos.values()].includes(name)),
         });
       }
@@ -245,6 +297,9 @@ export class AssetPublisher {
           accountId: options.accountId,
           region: options.region,
           localTag,
+          ...(Object.values(asset.destinations).some((d) =>
+            options.repositoriesToEnsure?.has(d.repositoryName)
+          ) && { ensureRepository: true as const }),
         } satisfies DockerPublishNodeData,
       });
 
@@ -282,7 +337,13 @@ export class AssetPublisher {
         data.assetOutdir
       );
     } else if (data.kind === 'docker-publish') {
-      await this.dockerPublisher.push(data.asset, data.accountId, data.region, data.localTag);
+      await this.dockerPublisher.push(
+        data.asset,
+        data.accountId,
+        data.region,
+        data.localTag,
+        data.ensureRepository === true
+      );
     }
 
     this.logger.debug(`✅ ${node.id}`);

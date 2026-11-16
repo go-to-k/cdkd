@@ -9,6 +9,7 @@ import type {
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { AssetModeResolver, type BootstrapMarker } from './asset-storage.js';
+import type { AssetMode } from './asset-storage/marker.js';
 import { isCfnTemplateAssetPath, parseAssetManifestBody } from './asset-manifest-loader.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { escapeRegExp } from '../utils/regexp.js';
@@ -556,7 +557,25 @@ export function loadPublishableAssetManifest(manifestPath: string): AssetManifes
  * asset-bearing stack make no extra AWS calls (byte-identical to pre-#1002
  * behavior). `useCdkBootstrapAssets` short-circuits everything to legacy.
  */
-export function createAssetRedirectResolver(opts: {
+export function createAssetRedirectResolver(
+  opts: LazyAssetModeOptions,
+  /** Shared with the legacy-asset binder so a run builds one of each client. */
+  context: LazyAssetModeContext = createLazyAssetModeContext(opts)
+): (manifestPath: string | undefined, region: string) => Promise<AssetRedirectMap | undefined> {
+  return async (manifestPath, region) => {
+    if (opts.useCdkBootstrapAssets || !manifestPath) return undefined;
+    const manifest = loadPublishableAssetManifest(manifestPath);
+    if (!manifest) return undefined;
+    const accountId = await context.accountId();
+    const mode = await context.resolveMode(region);
+    if (mode.mode !== 'cdkd-assets') return undefined;
+    const map = buildAssetRedirectMap(manifest, mode.marker, accountId, region);
+    return map.entries.length > 0 ? map : undefined;
+  };
+}
+
+/** Options of {@link createAssetRedirectResolver} / {@link createLazyAssetModeContext}. */
+export interface LazyAssetModeOptions {
   stateBackend: S3StateBackend;
   /** Region for the lazy STS client (the CLI's base region). */
   stsRegion: string;
@@ -564,11 +583,24 @@ export function createAssetRedirectResolver(opts: {
   useCdkBootstrapAssets?: boolean;
   /** Forwarded to {@link AssetModeResolver} — see its constructor JSDoc. */
   suppressLegacyNotice?: boolean;
-}): (manifestPath: string | undefined, region: string) => Promise<AssetRedirectMap | undefined> {
+}
+
+/**
+ * The lazily-built caller account id and per-region asset mode behind
+ * {@link createAssetRedirectResolver}, shared with the LegacyStackSynthesizer
+ * parameter binder (issue #6421). Nothing is called until first asked;
+ * `useCdkBootstrapAssets` answers `legacy` without reading the marker.
+ */
+export interface LazyAssetModeContext {
+  accountId: () => Promise<string>;
+  resolveMode: (region: string) => Promise<AssetMode>;
+}
+
+export function createLazyAssetModeContext(opts: LazyAssetModeOptions): LazyAssetModeContext {
   let accountIdPromise: Promise<string> | undefined;
   let modeResolver: AssetModeResolver | undefined;
 
-  const getAccountId = (): Promise<string> => {
+  const accountId = (): Promise<string> => {
     accountIdPromise ??= (async () => {
       const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
       const stsClient = new STSClient({
@@ -586,18 +618,14 @@ export function createAssetRedirectResolver(opts: {
     return accountIdPromise;
   };
 
-  return async (manifestPath, region) => {
-    if (opts.useCdkBootstrapAssets || !manifestPath) return undefined;
-    const manifest = loadPublishableAssetManifest(manifestPath);
-    if (!manifest) return undefined;
-    const accountId = await getAccountId();
-    modeResolver ??= new AssetModeResolver(opts.stateBackend, accountId, {
+  const resolveMode = async (region: string): Promise<AssetMode> => {
+    if (opts.useCdkBootstrapAssets) return { mode: 'legacy' };
+    modeResolver ??= new AssetModeResolver(opts.stateBackend, await accountId(), {
       ...(opts.profile && { profile: opts.profile }),
       ...(opts.suppressLegacyNotice && { suppressLegacyNotice: true }),
     });
-    const mode = await modeResolver.resolve(region);
-    if (mode.mode !== 'cdkd-assets') return undefined;
-    const map = buildAssetRedirectMap(manifest, mode.marker, accountId, region);
-    return map.entries.length > 0 ? map : undefined;
+    return modeResolver.resolve(region);
   };
+
+  return { accountId, resolveMode };
 }
