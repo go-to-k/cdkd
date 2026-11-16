@@ -153,6 +153,43 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     expect(String(ok?.reason)).toMatch(/; the old resource survived a delete/);
   });
 
+  // go-to-k/cdkd#6374: a delete deferred to the cleanup phase was never sent,
+  // so nothing went wrong with the old resource: no warning, and no reason on
+  // the event (a reason there marks a survivor record).
+  it('re-adopts a deferred old resource quietly, with no reason on its success event', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);
+    const s = state();
+    const result = await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], s, 'S', ctx);
+
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
+    expect(s['Topic']!.physicalId).toBe('topic-old');
+    expect(result.warnings).toBe(0);
+    expect(warns).toEqual([]);
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok).toBeDefined();
+    expect(ok && 'reason' in ok).toBe(false);
+    expect(ok && 'physicalId' in ok).toBe(false);
+    expect(infos.join('\n')).toContain('Rollback: Topic restored to the surviving old resource');
+  });
+
+  it('a deferred re-adopt whose new copy is retained records only the retained reason', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);
+    await replayRollback(
+      [op({ oldResourceMaySurvive: 'deferred' })],
+      { Topic: rec('topic-new', { updateReplacePolicy: 'Retain' }) },
+      'S',
+      ctx
+    );
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok?.physicalId).toBe('topic-new');
+    expect(String(ok?.reason)).toContain('UpdateReplacePolicy: Retain');
+    expect(String(ok?.reason)).not.toContain('the old resource survived');
+    expect(String(ok?.reason)).not.toContain('undefined');
+  });
+
   it('re-creates an old resource AWS reports gone, as before', async () => {
     live.delete('topic-old');
     const s = state();

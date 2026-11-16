@@ -191,11 +191,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       logger.info(
         safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
       );
-      return replayReadopt(s, {
-        reason:
-          'the old resource was still in place (its delete waits for the deploy to succeed) ' +
-          'and was re-adopted',
-      });
+      return replayReadopt(s, {});
     }
     if (survivor === 'exists') {
       // As a retained one: delete the new copy, point state back at the old.

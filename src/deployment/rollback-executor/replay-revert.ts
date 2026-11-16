@@ -54,9 +54,12 @@ import { withUnprovenUnsettled } from '../unsettled-convergence.js';
  * an unconfirmed delete (go-to-k/cdkd#2631) rather than a retained one:
  * `reason` is recorded on the success event, the one channel that outlives
  * the terminal, so `cdkd events` keeps the "check it with cdkd drift" advice.
+ * A survivor with no `reason` (a delete deferred to the cleanup phase and
+ * never sent, go-to-k/cdkd#6374) has no advice to keep: its event carries
+ * none, since a reason there marks a survivor record.
  */
 export interface ReadoptSurvivor {
-  reason: string;
+  reason?: string;
 }
 
 /**
@@ -362,11 +365,11 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
     // the new copy was deleted (no survivor id rides then: that id was
     // deleted), and beside the retained copy's reason otherwise.
     ...(survivorReason === undefined &&
-      survivor !== undefined && { reason: mask(survivor.reason) }),
+      survivor?.reason !== undefined && { reason: mask(survivor.reason) }),
     ...(survivorReason !== undefined && {
       ...(survivorId !== undefined && { physicalId: survivorId }),
       reason: mask(
-        survivor === undefined ? survivorReason : `${survivorReason}; ${survivor.reason}`
+        survivor?.reason === undefined ? survivorReason : `${survivorReason}; ${survivor.reason}`
       ),
       // Overrides the op's layer spread above -- a later spread wins.
       // Gated with the other two, deliberately: on a non-retain revert

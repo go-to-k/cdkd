@@ -101,8 +101,14 @@
 #                                      name so nothing collides; the invalid
 #                                      queue — which DEPENDS on the role, so the
 #                                      replacement has already completed — is
-#                                      then rejected by AWS and cdkd rolls back
-#                                      in-process.
+#                                      then rejected by AWS. Run with
+#                                      --no-rollback.
+#   3b. delete the old role out of band, then `cdkd rollback`
+#                                   -> the old role's delete waits for a deploy
+#                                      that succeeds (#6374), so only a role
+#                                      gone by the rollback takes the re-create
+#                                      arm: the replay reads AWS, finds it
+#                                      gone, and re-creates it.
 #   4. THE ARM                      -> exactly ONE role under the fixture path,
 #                                      named CC_NAME, with a CHANGED CreateDate;
 #                                      the explicitly-named one gone; state
@@ -585,13 +591,39 @@ echo "[verify] phase 3: ROLE_EXPLICIT_NAME=${EXPLICIT_NAME} REPLAY_CC_NAME_FAIL=
 DEPLOY_LOG="$(mktemp)"
 set +e
 ROLE_EXPLICIT_NAME="${EXPLICIT_NAME}" ROLE_DESCRIPTION="${MIGRATED_DESCRIPTION}" REPLAY_CC_NAME_FAIL=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
     > "${DEPLOY_LOG}" 2>&1
 DEPLOY_RC=$?
 set -e
 sed 's/^/  /' "${DEPLOY_LOG}" || true
 [ "${DEPLOY_RC}" -ne 0 ] || { echo "FAIL: the deploy with REPLAY_CC_NAME_FAIL=true unexpectedly SUCCEEDED (rc=0). The injected queue must be rejected by AWS, otherwise no rollback runs." >&2; exit 1; }
 echo "[verify] phase 3 ok: deploy failed as designed (rc=${DEPLOY_RC})"
+
+# Issue #6374: a create-first replacement deletes the old role only after the
+# deploy succeeds, so a failed deploy leaves it in place and the rollback
+# RE-ADOPTS it -- the re-create arm under test never runs. The arm is still
+# reached when the old resource is gone by the time of the rollback (deleted
+# out of band). So the deploy runs with --no-rollback, the old role is deleted
+# here, and `cdkd rollback` replays the journal: it reads AWS, finds the old
+# role gone, and re-creates it through Cloud Control.
+echo "[verify] phase 3b: delete the old role ${CC_NAME} out of band, then cdkd rollback"
+aws iam delete-role --role-name "${CC_NAME}" --region "${REGION}"
+assert_gone "old role ${CC_NAME} still exists after its out-of-band delete" \
+  aws iam get-role --role-name "${CC_NAME}" --region "${REGION}"
+ROLLBACK_LOG="$(mktemp)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${ROLLBACK_LOG}" 2>&1
+ROLLBACK_RC=$?
+set -e
+sed 's/^/  /' "${ROLLBACK_LOG}" || true
+[ "${ROLLBACK_RC}" -eq 0 ] || { echo "FAIL: cdkd rollback exited ${ROLLBACK_RC}" >&2; exit 1; }
+# Sentinel: the replay must have read the old role as gone and re-created it.
+if ! grep -qF "is gone — re-creating it" "${ROLLBACK_LOG}"; then
+  echo "FAIL: cdkd rollback never took the re-create arm for the gone old role" >&2
+  exit 1
+fi
+rm -f "${ROLLBACK_LOG}"
+echo "[verify] phase 3b ok: cdkd rollback re-created the old role"
 
 # ---------------------------------------------------------------------------
 # PHASE 4: THE ARM — what the rollback restored
