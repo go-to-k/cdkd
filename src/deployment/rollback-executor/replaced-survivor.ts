@@ -12,6 +12,7 @@
  * meets the same answer) and `'unknown'` (an error, no usable old id, or a
  * read that did not answer in time — a re-run reads again).
  */
+import type { ResourceProvider } from '../../types/resource.js';
 import { isDeleteStarted, isRefusedByName } from '../../provisioning/delete-started.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { withReplayDeletePrinting, type ReplayOpScope } from './replay-scope.js';
@@ -32,7 +33,30 @@ export function replacedDeleteFailureVerdict(error: unknown): 'kept' | 'unconfir
 /** How long the read may take; no SDK client here sets a request timeout. */
 export const REPLACED_SURVIVOR_PROBE_TIMEOUT_MS = 30_000;
 
-export type ReplacedSurvivorVerdict = 'exists' | 'gone' | 'unreadable' | 'unknown' | 'interrupted';
+export type ReplacedSurvivorVerdict =
+  | 'exists'
+  | 'gone'
+  | 'unreadable'
+  | 'unknown'
+  | 'interrupted'
+  /**
+   * go-to-k/cdkd#6393: AWS reports a resource under the old physical id, but
+   * an AWS-minted identity the old record carries differs from it: another
+   * resource took the name after the stack's was deleted. Never re-adopted.
+   */
+  | 'foreign';
+
+/**
+ * go-to-k/cdkd#6393: per type, the recorded attribute holding an identity
+ * AWS mints per resource (so a same-named successor carries another one), read
+ * live through the provider's `getAttribute`. A type whose physical id is
+ * already AWS-minted (a KMS key id) needs none; one whose every id is
+ * name-derived (an SNS topic ARN) has none to compare. Add a type only with
+ * an attribute its SDK provider records at create and answers live.
+ */
+export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
+  'AWS::IAM::Role': 'RoleId',
+};
 
 /** How often a running read checks for an interrupted rollback. */
 const INTERRUPT_POLL_MS = 250;
@@ -88,8 +112,36 @@ async function readSurvivor(
     // `undefined` is the contract's "not implemented" for this type.
     if (read === undefined) return 'unreadable';
     if (typeof read !== 'object' || read === null || Array.isArray(read)) return 'unknown';
-    return Object.keys(read).length > 0 ? 'exists' : 'unreadable';
+    if (Object.keys(read).length === 0) return 'unreadable';
+    return (await isForeignSurvivor(s, provider, physicalId, oldType)) ? 'foreign' : 'exists';
   } catch {
     return 'unknown';
+  }
+}
+
+/**
+ * go-to-k/cdkd#6393: whether the live resource under the old physical id is
+ * provably NOT the one the old record describes. Only a recorded, unmasked
+ * identity and a live answer of the same kind can prove it; anything less (no
+ * table entry, nothing recorded, no `getAttribute`, a failed or empty read)
+ * answers `false`, keeping the existence-only verdict it had before.
+ */
+async function isForeignSurvivor(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
+  provider: { getAttribute?: ResourceProvider['getAttribute'] },
+  physicalId: string,
+  oldType: string
+): Promise<boolean> {
+  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType];
+  if (key === undefined || typeof provider.getAttribute !== 'function') return false;
+  const recorded = s.op.previousState?.attributes?.[key];
+  if (typeof recorded !== 'string' || recorded === '' || recorded.includes('***')) return false;
+  try {
+    const live = await withReplayDeletePrinting(s, () =>
+      provider.getAttribute!(physicalId, oldType, key, s.op.logicalId)
+    );
+    return typeof live === 'string' && live !== '' && live !== recorded;
+  } catch {
+    return false;
   }
 }

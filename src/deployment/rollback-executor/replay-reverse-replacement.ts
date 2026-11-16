@@ -43,7 +43,7 @@ import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
-import { probeReplacedSurvivor } from './replaced-survivor.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES, probeReplacedSurvivor } from './replaced-survivor.js';
 import type { MarkedRecreateScope } from './replay-reverse-replacement/failures.js';
 import { recreateOldResource } from './replay-reverse-replacement/recreate.js';
 import { finishReverseReplacement } from './replay-reverse-replacement/finish.js';
@@ -175,6 +175,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // Alive but `'unconfirmed'`: an accepted delete may still be running
     // (a read of a `deleting` RDS instance answers like a live one), and
     // re-adopting it would delete the new copy for a resource about to go.
+    // go-to-k/cdkd#6393: someone else's resource holds the old id now;
+    // re-adopting it would make it the stack's, re-creating would collide.
+    if (survivor === 'foreign') throw survivorUnprovenRefusal(s, oldType, 'foreign');
     if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
     }
@@ -609,7 +612,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
 function survivorUnprovenRefusal(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
   oldType: string,
-  verdict: 'unreadable' | 'unknown' | 'interrupted' | 'maybe-deleting'
+  verdict: 'unreadable' | 'unknown' | 'interrupted' | 'maybe-deleting' | 'foreign'
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
@@ -619,24 +622,30 @@ function survivorUnprovenRefusal(
     : 'no recorded id';
   const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   const why =
-    verdict === 'unreadable'
-      ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
-        `it could duplicate it or collide with it`
-      : verdict === 'interrupted'
-        ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
-          `${rerun} reads it`
-        : verdict === 'unknown'
-          ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
-            `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
-            `with it`
-          : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
-            // the resource before AWS refused it, so "accepted" is not the only cause.
-            `AWS still reports it, but its failed delete may have been accepted and still be ` +
-            `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
-            `running delete finishes, or one that delete already stripped; once ` +
-            `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
-            `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
-            `then re-run ${rerun}`;
+    verdict === 'foreign'
+      ? `AWS reports a resource under it, but not the one this stack recorded (its ` +
+        `${SURVIVOR_IDENTITY_ATTRIBUTES[oldType] ?? 'identity'} differs), so another ` +
+        `resource took its name. Re-adopting it would make that resource this stack's, and ` +
+        `re-creating the old one would collide with it. Rename or delete that resource if ` +
+        `it is not meant to be there, then re-run ${rerun}`
+      : verdict === 'unreadable'
+        ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
+          `it could duplicate it or collide with it`
+        : verdict === 'interrupted'
+          ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
+            `${rerun} reads it`
+          : verdict === 'unknown'
+            ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
+              `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
+              `with it`
+            : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
+              // the resource before AWS refused it, so "accepted" is not the only cause.
+              `AWS still reports it, but its failed delete may have been accepted and still be ` +
+              `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
+              `running delete finishes, or one that delete already stripped; once ` +
+              `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
+              `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
+              `then re-run ${rerun}`;
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(

@@ -222,6 +222,70 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     });
   });
 
+  // go-to-k/cdkd#6393: a same-named resource someone else created after the
+  // old one went is not the stack's. An AWS-minted identity the old record
+  // carries (an IAM role's RoleId) must match the live one to re-adopt.
+  describe('a survivor whose recorded identity differs (#6393)', () => {
+    const ROLE = 'AWS::IAM::Role';
+    const roleOp = (verdict: 'kept' | 'deferred', recordedRoleId: unknown) =>
+      op({
+        resourceType: ROLE,
+        oldResourceMaySurvive: verdict,
+        previousState: {
+          ...rec('topic-old', { provisionedBy: 'cc-api', resourceType: ROLE }),
+          attributes: { RoleId: recordedRoleId },
+        },
+      });
+    const roleState = (): Record<string, ResourceState> => ({
+      Topic: rec('topic-new', { resourceType: ROLE }),
+    });
+    let liveRoleId: () => Promise<unknown>;
+    beforeEach(() => {
+      liveRoleId = async () => 'AROA-OLD';
+      provider['getAttribute'] = vi.fn(async (_id: string, _t: string, name: string) =>
+        name === 'RoleId' ? liveRoleId() : undefined
+      );
+    });
+
+    it.each(['kept', 'deferred'] as const)(
+      'refuses a %s op, sending nothing, when the live RoleId is another role',
+      async (verdict) => {
+        liveRoleId = async () => 'AROA-STRANGER';
+        const s = roleState();
+        const result = await replayRollback([roleOp(verdict, 'AROA-OLD')], s, 'S', ctx);
+        expect(result.failures).toBe(1);
+        expect(provider.delete).not.toHaveBeenCalled();
+        expect(provider.create).not.toHaveBeenCalled();
+        expect(s['Topic']!.physicalId).toBe('topic-new');
+        expect(JSON.stringify(result)).not.toContain('AROA-STRANGER');
+      }
+    );
+
+    it.each([
+      ['the live RoleId matches', 'AROA-OLD', async () => 'AROA-OLD'],
+      ['the record carries no RoleId', undefined, async () => 'AROA-STRANGER'],
+      ['the recorded RoleId is masked', '***', async () => 'AROA-STRANGER'],
+      [
+        'the identity read fails',
+        'AROA-OLD',
+        async () => {
+          throw new Error('AccessDenied');
+        },
+      ],
+    ] as const)('re-adopts as before when %s', async (_label, recorded, live) => {
+      liveRoleId = live;
+      const s = roleState();
+      const result = await replayRollback([roleOp('deferred', recorded)], s, 'S', ctx);
+      expect(result.failures).toBe(0);
+      expect(s['Topic']!.physicalId).toBe('topic-old');
+    });
+
+    it('never asks for an identity on a type the table does not list', async () => {
+      await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], state(), 'S', ctx);
+      expect(provider['getAttribute']).not.toHaveBeenCalled();
+    });
+  });
+
   it('a deferred re-adopt whose new copy is retained records only the retained reason', async () => {
     const events: Array<Record<string, unknown>> = [];
     ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);
