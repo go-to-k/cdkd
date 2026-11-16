@@ -100,7 +100,7 @@ data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 
 deep-getatt-chains	2026-11-10T16:08:27Z	PASS	75	verify.sh	rc ok, orph clean
 deletion-ordering-complex	2026-11-04T09:28:41Z	PASS	191	verify.sh	rc 0, own bucket, orph clean (fixture rebuilt dist itself)
 deletion-policy-retain	2026-11-07T16:15:27Z	PASS	33	verify.sh	#6022 destroy split head; rc ok, orph clean
-deletion-policy-snapshot	2026-11-16T20:22:40Z	PASS	248	verify.sh	rc ok, orph clean (#6445 regression)
+deletion-policy-snapshot	2026-11-16T21:31:32Z	PASS	242	verify.sh	rc ok, orph clean (#6445 regression)
 deletion-policy-snapshot-heavy	2026-11-10T15:44:51Z	PASS	832	verify.sh	rc ok, orph clean; own bucket
 depends-on-flip	2026-11-14T18:31:46Z	PASS	95	verify.sh	rc ok, orph clean; nested arm
 deployment-events	2026-11-04T18:01:46Z	PASS	36	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
@@ -383,9 +383,9 @@ remove-protection	2026-11-16T19:45:59Z	PASS	767	verify.sh	rc 0, final destroy 0 
 remove-protection-compensation	2026-11-16T19:28:52Z	PASS	306	verify.sh	rc ok, orph clean (#6437 PR #6453)
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
-replace-snapshot-failed-rollback	2026-11-16T20:22:40Z	PASS	1596	verify.sh	rc ok, orph clean (#6445 case 3, new)
+replace-snapshot-failed-rollback	2026-11-16T21:31:32Z	PASS	1641	verify.sh	rc ok, orph clean (#6445 case 3, new)
 replace-squatter-refusal	2026-11-16T08:22:27Z	PASS	100	verify.sh	rc ok, orph clean (#6374 sweep)
-replaced-delete-failed-rollback	2026-11-16T20:22:40Z	PASS	198	verify.sh	rc ok, orph clean (#6445 deferral, step 2b --no-rollback)
+replaced-delete-failed-rollback	2026-11-16T21:31:32Z	PASS	259	verify.sh	rc ok, orph clean (#6445 deferral, step 2b --no-rollback)
 replacement-fanout	2026-11-16T12:51:14Z	PASS	104	verify.sh	rc ok, orph clean (#6398)
 replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph clean (#6374 sweep)
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
