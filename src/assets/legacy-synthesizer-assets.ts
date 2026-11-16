@@ -134,12 +134,18 @@ export interface LegacyAssetPlan {
   /** Repositories the publish must create when missing (the CLI creates them). */
   repositoriesToEnsure: Set<string>;
   /**
-   * The repositories that are the synthesizer's OWN default — `aws-cdk/assets`
-   * with the source hash as tag — and so need no unrecognized-destination
+   * The image destinations that are the synthesizer's OWN default —
+   * `aws-cdk/assets` with the source hash as tag — keyed by
+   * {@link imageDestinationKey}, and so need no unrecognized-destination
    * warning. A repository or tag the metadata chose otherwise is warned about
    * like a manifest-chosen one.
    */
-  recognizedRepositories: Set<string>;
+  recognizedImageDestinations: Set<string>;
+}
+
+/** One (repository, tag) pair, as {@link LegacyAssetPlan.recognizedImageDestinations} keys it. */
+export function imageDestinationKey(repositoryName: string, imageTag: string): string {
+  return injectiveKey(repositoryName, imageTag);
 }
 
 /** `LegacyStackSynthesizer`'s default image repository (`ASSETS_ECR_REPOSITORY_NAME`). */
@@ -200,7 +206,7 @@ export function buildLegacyAssetPlan(
   const dockerImages: AssetManifest['dockerImages'] = nullPrototypeRecord();
   const parameters = nullPrototypeRecord<string>();
   const repositoriesToEnsure = new Set<string>();
-  const recognizedRepositories = new Set<string>();
+  const recognizedImageDestinations = new Set<string>();
 
   for (const entry of entries) {
     switch (entry.packaging) {
@@ -277,7 +283,7 @@ export function buildLegacyAssetPlan(
         };
         repositoriesToEnsure.add(repositoryName);
         if (repositoryName === LEGACY_DEFAULT_IMAGE_REPOSITORY && imageTag === sourceHash) {
-          recognizedRepositories.add(repositoryName);
+          recognizedImageDestinations.add(imageDestinationKey(repositoryName, imageTag));
         }
         if (image.imageNameParameter) {
           const { urlSuffix } = derivePartitionAndUrlSuffix(target.region);
@@ -300,7 +306,7 @@ export function buildLegacyAssetPlan(
     manifest: { version: 'legacy-synthesizer', files, dockerImages },
     parameters: { ...parameters },
     repositoriesToEnsure,
-    recognizedRepositories,
+    recognizedImageDestinations,
   };
 }
 

@@ -26,6 +26,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 // would otherwise surface as a runtime crash only when a test exercises
 // a yet-unmocked field.
 import type { CfnStackResourceTree } from '../../../src/cli/commands/retire-cfn-stack.js';
+import { CdkToolkitBucketMissingError } from '../../../src/assets/cdk-toolkit-bucket.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -81,7 +82,8 @@ const legacyAssetMode = vi.hoisted(() => ({
 const mockLookupCdkToolkitBucket = vi.hoisted(() =>
   vi.fn(async () => 'cdk-hnb659fds-assets-111111111111-us-east-1')
 );
-vi.mock('../../../src/assets/cdk-toolkit-bucket.js', () => ({
+vi.mock('../../../src/assets/cdk-toolkit-bucket.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/assets/cdk-toolkit-bucket.js')>()),
   lookupCdkToolkitBucket: mockLookupCdkToolkitBucket,
 }));
 
@@ -715,17 +717,29 @@ describe('cdkd import', () => {
   });
 
   it('records the cdkd storage values when no CDK toolkit stack answers (#6421)', async () => {
+    const { resetLegacyToolkitBucketCache } = await import(
+      '../../../src/assets/legacy-synthesizer-assets.js'
+    );
+    resetLegacyToolkitBucketCache();
+    mockLookupCdkToolkitBucket.mockRejectedValueOnce(
+      new CdkToolkitBucketMissingError('no CDKToolkit stack')
+    );
+    const { state } = await importLegacyStack();
+    expect(state['DataBucket']).toBe('cdkd-assets-111111111111-us-east-1');
+    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'No CDKToolkit stack in us-east-1: recording the cdkd asset storage values'
+    );
+  });
+
+  it('fails the import when the toolkit lookup fails for any other reason (#6421)', async () => {
     const { AssetError } = await import('../../../src/utils/error-handler.js');
     const { resetLegacyToolkitBucketCache } = await import(
       '../../../src/assets/legacy-synthesizer-assets.js'
     );
     resetLegacyToolkitBucketCache();
-    mockLookupCdkToolkitBucket.mockRejectedValueOnce(new AssetError('no CDKToolkit stack'));
-    const { state } = await importLegacyStack();
-    expect(state['DataBucket']).toBe('cdkd-assets-111111111111-us-east-1');
-    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'Recording the cdkd asset storage values for the LegacyStackSynthesizer assets of stack S'
-    );
+    mockLookupCdkToolkitBucket.mockRejectedValueOnce(new AssetError('AccessDenied'));
+    await expect(importLegacyStack()).rejects.toThrow();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 
   it('records the toolkit bucket in state and template alike in legacy mode (#6421)', async () => {

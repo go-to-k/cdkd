@@ -36,7 +36,7 @@ import {
   rewriteTemplateAssetReferences,
 } from '../../../assets/asset-redirect.js';
 import { createLegacyAssetParameterBinder } from '../../../assets/legacy-synthesizer-assets.js';
-import { AssetError } from '../../../utils/error-handler.js';
+import { CdkToolkitBucketMissingError } from '../../../assets/cdk-toolkit-bucket.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   getCloudFormationResourceTree,
@@ -316,9 +316,9 @@ export async function importCommand(
         } catch (error) {
           // No CDK toolkit stack (a stack cdkd deployed, re-imported): the
           // snapshot keeps the cdkd-storage values, which is what AWS holds.
-          if (!(error instanceof AssetError)) throw error;
+          if (!(error instanceof CdkToolkitBucketMissingError)) throw error;
           logger.info(
-            safeMsg`Recording the cdkd asset storage values for the LegacyStackSynthesizer assets of stack ${stackInfo.stackName}: ${error.message}`
+            safeMsg`No CDKToolkit stack in ${targetRegion}: recording the cdkd asset storage values for the LegacyStackSynthesizer assets of stack ${stackInfo.stackName}.`
           );
         }
       }

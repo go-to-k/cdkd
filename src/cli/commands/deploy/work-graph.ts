@@ -18,6 +18,25 @@ import type { StackInfo } from '../../../synthesis/assembly-reader.js';
 import type { ConsoleLogger } from '../../../utils/logger.js';
 
 /**
+ * Whether a `--dry-run` should show the cdkd asset bucket a region's missing
+ * storage would be auto-created with (#1007, #6421): exactly when the real
+ * deploy, run with the same flags, would auto-create it.
+ */
+export function dryRunPredictsAutoCreatedStorage(flags: {
+  dryRun: boolean | undefined;
+  autoAssetStorage: boolean;
+  skipAssets: boolean | undefined;
+  useCdkBootstrapAssets: boolean;
+}): boolean {
+  return (
+    flags.dryRun === true &&
+    flags.autoAssetStorage &&
+    flags.skipAssets !== true &&
+    !flags.useCdkBootstrapAssets
+  );
+}
+
+/**
  * Adds every target stack, with its asset-publish nodes and its inter-stack
  * edges, to the run's work graph, and records each cdkd-assets stack's
  * redirect map in `stackRedirects`.
@@ -155,7 +174,7 @@ export async function addStacksToWorkGraph(args: {
           cdkOutputDir: stack.legacyAssets.assemblyDir,
           ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
           bucketsChosenByCdkd: true,
-          recognizedRepositories: plan.recognizedRepositories,
+          recognizedImageDestinations: plan.recognizedImageDestinations,
           repositoriesToEnsure: plan.repositoriesToEnsure,
         });
         for (const id of nodeIds) {

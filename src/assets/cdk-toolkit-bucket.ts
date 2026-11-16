@@ -3,6 +3,20 @@ import { displaySafe } from '../utils/display-safe.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 
+/**
+ * The toolkit stack does not exist or has no `BucketName` output — the one
+ * lookup failure a caller may fall back from. Every other failure (access
+ * denied, throttling) is a plain `AssetError` and must not be read as "no
+ * toolkit stack".
+ */
+export class CdkToolkitBucketMissingError extends AssetError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CdkToolkitBucketMissingError';
+    Object.setPrototypeOf(this, CdkToolkitBucketMissingError.prototype);
+  }
+}
+
 /** CDK CLI `DEFAULT_TOOLKIT_STACK_NAME`. */
 export const CDK_TOOLKIT_STACK_NAME = 'CDKToolkit';
 
@@ -39,7 +53,7 @@ export async function lookupCdkToolkitBucket(region: string, accountId: string):
       }
     }
     if (!bucket) {
-      throw new AssetError(
+      throw new CdkToolkitBucketMissingError(
         `This stack uses LegacyStackSynthesizer assets, so it needs the ${CDK_TOOLKIT_STACK_NAME} ` +
           `stack's asset bucket in ${displaySafe(region)}, and none was found. ${remedy}`
       );

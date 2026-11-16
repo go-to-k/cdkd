@@ -7,7 +7,10 @@ vi.mock('../../../src/assets/manifest-passthrough-warnings.js', async (importOri
   >()),
   warnUnrecognizedAssetDestination: warnDestination,
 }));
-import { addStacksToWorkGraph } from '../../../src/cli/commands/deploy/work-graph.js';
+import {
+  addStacksToWorkGraph,
+  dryRunPredictsAutoCreatedStorage,
+} from '../../../src/cli/commands/deploy/work-graph.js';
 import { AssetPublisher } from '../../../src/assets/asset-publisher.js';
 import { WorkGraph } from '../../../src/deployment/work-graph.js';
 import type { AssetModeResolver } from '../../../src/assets/asset-storage.js';
@@ -204,5 +207,36 @@ describe('addStacksToWorkGraph: LegacyStackSynthesizer assets', () => {
     stack.legacyAssets!.entries.splice(0, 1);
     await run(stack, {});
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('warns about aws-cdk/assets under a tag other than the source hash', async () => {
+    const stack = legacyStack();
+    stack.legacyAssets!.entries.push({
+      packaging: 'container-image',
+      id: 'retagged',
+      path: 'asset.retagged',
+      sourceHash: 'retagged',
+      repositoryName: 'aws-cdk/assets',
+      imageTag: 'latest',
+    });
+    await run(stack, {});
+    const repoCalls = warnDestination.mock.calls
+      .map(([arg]) => arg as { kind: string; name: string; recognized: boolean })
+      .filter((c) => c.kind === 'repository');
+    expect(repoCalls).toEqual([
+      { kind: 'repository', name: 'aws-cdk/assets', recognized: true },
+      { kind: 'repository', name: 'aws-cdk/assets', recognized: false },
+    ]);
+  });
+});
+
+describe('dryRunPredictsAutoCreatedStorage', () => {
+  const on = { dryRun: true, autoAssetStorage: true, skipAssets: false, useCdkBootstrapAssets: false };
+  it('holds only when the real deploy would auto-create storage', () => {
+    expect(dryRunPredictsAutoCreatedStorage(on)).toBe(true);
+    expect(dryRunPredictsAutoCreatedStorage({ ...on, dryRun: undefined })).toBe(false);
+    expect(dryRunPredictsAutoCreatedStorage({ ...on, autoAssetStorage: false })).toBe(false);
+    expect(dryRunPredictsAutoCreatedStorage({ ...on, skipAssets: true })).toBe(false);
+    expect(dryRunPredictsAutoCreatedStorage({ ...on, useCdkBootstrapAssets: true })).toBe(false);
   });
 });

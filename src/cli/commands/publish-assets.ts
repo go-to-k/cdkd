@@ -301,7 +301,7 @@ async function publishAssetsCommand(
                 cdkOutputDir: stack.legacyAssets.assemblyDir,
                 ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
                 bucketsChosenByCdkd: true,
-                recognizedRepositories: plan.recognizedRepositories,
+                recognizedImageDestinations: plan.recognizedImageDestinations,
                 repositoriesToEnsure: plan.repositoriesToEnsure,
               })
             : [];

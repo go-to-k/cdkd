@@ -35,7 +35,10 @@ import {
   type LegacyAssetEntry,
   type LegacyFileAssetEntry,
 } from '../../../src/assets/legacy-synthesizer-assets.js';
-import { lookupCdkToolkitBucket } from '../../../src/assets/cdk-toolkit-bucket.js';
+import {
+  CdkToolkitBucketMissingError,
+  lookupCdkToolkitBucket,
+} from '../../../src/assets/cdk-toolkit-bucket.js';
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -364,7 +367,7 @@ describe('prepareLegacyStackAssets', () => {
       { assetMode, accountId: ACCOUNT, region: REGION }
     );
     expect(assetMode).not.toHaveBeenCalled();
-    expect([...plan!.recognizedRepositories]).toEqual(['aws-cdk/assets']);
+    expect(plan!.recognizedImageDestinations.size).toBe(1);
   });
 
   it('refuses a stack that carries a publishable asset manifest as well', async () => {
@@ -471,15 +474,19 @@ describe('lookupCdkToolkitBucket', () => {
         name: 'AccessDenied',
       })
     );
-    await expect(lookupCdkToolkitBucket(REGION, ACCOUNT)).rejects.toThrow(
-      /Could not read the CDKToolkit stack in us-east-1.*not authorized/
-    );
+    const failure = lookupCdkToolkitBucket(REGION, ACCOUNT);
+    await expect(failure).rejects.toThrow(/Could not read the CDKToolkit stack in us-east-1.*not authorized/);
+    await expect(failure).rejects.not.toBeInstanceOf(CdkToolkitBucketMissingError);
   });
 
   it('refuses a toolkit stack without a BucketName output', async () => {
     mockCfnSend.mockResolvedValueOnce({ Stacks: [{ Outputs: [{ OutputKey: 'Other' }] }] });
     await expect(lookupCdkToolkitBucket(REGION, ACCOUNT)).rejects.toThrow(
       /needs the CDKToolkit stack's asset bucket in us-east-1, and none was found/
+    );
+    mockCfnSend.mockRejectedValueOnce(new Error('Stack with id CDKToolkit does not exist'));
+    await expect(lookupCdkToolkitBucket(REGION, ACCOUNT)).rejects.toBeInstanceOf(
+      CdkToolkitBucketMissingError
     );
   });
 });

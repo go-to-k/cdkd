@@ -16,6 +16,7 @@ import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets
 import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+import { imageDestinationKey } from './legacy-synthesizer-assets.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
@@ -163,11 +164,12 @@ export class AssetPublisher {
        */
       bucketsChosenByCdkd?: boolean;
       /**
-       * Repository names to treat as recognized beside the bootstrap shapes —
-       * a legacy plan's synthesizer default. Any other repository still warns:
-       * a legacy entry's `repositoryName` is assembly-chosen.
+       * (repository, tag) pairs, keyed by `imageDestinationKey`, to treat as
+       * recognized beside the bootstrap shapes — a legacy plan's synthesizer
+       * default. Any other pair still warns: a legacy entry's
+       * `repositoryName` / `imageTag` are assembly-chosen.
        */
-      recognizedRepositories?: ReadonlySet<string>;
+      recognizedImageDestinations?: ReadonlySet<string>;
       /** Docker repositories to create when missing (legacy image assets). */
       repositoriesToEnsure?: ReadonlySet<string>;
     }
@@ -260,7 +262,8 @@ export class AssetPublisher {
           name,
           recognized:
             isDefaultBootstrapRepoName(name, options.accountId, destRegion) ||
-            options.recognizedRepositories?.has(name) === true ||
+            options.recognizedImageDestinations?.has(imageDestinationKey(name, dest.imageTag)) ===
+              true ||
             (redirect !== undefined && [...redirect.repos.values()].includes(name)),
         });
       }
