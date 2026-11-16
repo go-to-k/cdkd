@@ -242,7 +242,7 @@ lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc
 lambda-config-field-removal	2026-11-15T17:41:38Z	PASS	152	verify.sh	rc ok, orph clean; #6352 lambda-function RuntimeConfig wiring
 lambda-destinations	2026-11-10T15:32:23Z	PASS	100	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-11-05T03:23:13Z	PASS	125	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
-lambda-env-removal	2026-11-07T14:58:13Z	PASS	112	verify.sh	#6013 deploy-engine update-in-place split head; rc ok, orph clean
+lambda-env-removal	2026-11-16T07:29:03Z	PASS	71	verify.sh	#6403 UpdateInProgress retry head; rc ok, orph clean
 lambda-esm-documentdb	2026-11-02T01:39:49Z	PASS	897	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
 lambda-event-invoke-config-update	2026-11-10T15:29:52Z	PASS	161	verify.sh	rc ok, orph clean
