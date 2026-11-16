@@ -317,6 +317,7 @@ multi-resource	2026-11-16T08:22:27Z	PASS	90	standard	rc ok, orph clean (#6374 sw
 multi-stack-deps	2026-11-16T08:22:27Z	PASS	122	standard	rc ok, orph clean (#6374 sweep)
 neptune-fix-forward-orphan	2026-11-06T18:41:33Z	PASS	2306	verify.sh	#5899 neptune split head; own bucket; rc ok, orph clean
 neptune-restore	2026-11-06T18:03:07Z	PASS	1800	verify.sh	#5899 neptune split head; rc ok, orph clean
+nested-child-first-deploy-failure	2026-11-16T10:09:29Z	PASS	125	verify.sh	rc ok, orph clean
 nested-required-preflight	2026-11-07T00:09:01Z	PASS	55	verify.sh	#5939 nested-stack split head; rc ok, orph clean
 nested-stack	2026-11-07T15:20:31Z	PASS	101	verify.sh	#6016 deploy-flow split head; rc ok, orph clean
 nested-stack-3level	2026-11-04T18:57:42Z	PASS	466	verify.sh	rc ok, no seeded secret in any version, orph clean (own temp state bucket)
