@@ -9385,6 +9385,7 @@
           "l1"
         ],
         "schedule-group-rename-rollback": [
+          "l1",
           "l2"
         ],
         "scheduler-custom-group": [
