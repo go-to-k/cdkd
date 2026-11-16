@@ -53,7 +53,11 @@ import type {
   StackState,
   SupersededResourceRecord,
 } from '../types/state.js';
-import { supersededAfterRollback, withoutSuperseded } from './superseded-resources.js';
+import {
+  supersededAfterRollback,
+  supersededResourcesOf,
+  withoutSuperseded,
+} from './superseded-resources.js';
 import { segmentCleanupOptions } from './rollback-executor/replay-moved-id-cleanup.js';
 import {
   isMarkFor,
@@ -820,6 +824,8 @@ export async function revertNestedChildFromJournal(args: {
     );
     const execCtx: RollbackExecutorContext = {
       providerRegistry: ctx.providerRegistry,
+      // go-to-k/cdkd#6399: a later deploy may have deleted a deferred old resource.
+      supersededResources: supersededResourcesOf(base),
       region,
       logger,
       ...(ctx.options?.eventRecorder && {

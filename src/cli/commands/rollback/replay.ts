@@ -1,6 +1,7 @@
 import {
   holdsSupersededResources,
   supersededAfterRollback,
+  supersededResourcesOf,
   withoutSuperseded,
 } from '../../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from '../registry-release.js';
@@ -500,6 +501,8 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
 
     const ctx: RollbackExecutorContext = {
       providerRegistry,
+      // go-to-k/cdkd#6399: a later deploy may have deleted a deferred old resource.
+      supersededResources: supersededResourcesOf(baseState),
       region,
       logger: logger.child('rollback'),
       // go-to-k/cdkd#3869: masked by the printing bags bound where the event

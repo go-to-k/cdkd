@@ -92,7 +92,7 @@ const rec = (physicalId: string, properties: Record<string, unknown>) => ({
 
 let saves: StackState[];
 
-function install(): void {
+function install(opts: { superseded?: boolean } = {}): void {
   const record: StackState = {
     version: 9,
     stackName: STACK,
@@ -101,9 +101,11 @@ function install(): void {
     outputs: {},
     // The failed deploy's row save recorded the old topic, its delete
     // waiting for the cleanup phase the deploy never reached.
-    supersededResources: [
-      { logicalId: 'Topic', supersededAt: 1, state: rec('topic-old', { TopicName: 'topic-old' }) },
-    ],
+    ...(opts.superseded !== false && {
+      supersededResources: [
+        { logicalId: 'Topic', supersededAt: 1, state: rec('topic-old', { TopicName: 'topic-old' }) },
+      ],
+    }),
     lastModified: 1,
   };
   const backend = {
@@ -181,5 +183,33 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
     const last = saves.at(-1)!;
     expect(last.resources['Topic']!.physicalId).toBe('topic-old');
     expect(last.supersededResources).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#6399: a later deploy's cleanup deleted the old topic and
+  // dropped its entry; an unanswered read must not re-adopt a deleted id.
+  it('refuses the re-adopt on an unanswered read once state no longer lists the old topic', async () => {
+    install({ superseded: false });
+    provider.readCurrentState.mockRejectedValue(new Error('ThrottlingException: Rate exceeded'));
+    await expect(
+      rollbackCommand(STACK, {
+        yes: true,
+        stateBucket: 'b',
+        region: REGION,
+      } as unknown as Parameters<typeof rollbackCommand>[1])
+    ).rejects.toThrow();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(saves.every((st) => st.resources['Topic']!.physicalId === 'topic-new')).toBe(true);
+  });
+
+  it('re-adopts on an unanswered read while state still lists the old topic', async () => {
+    install();
+    provider.readCurrentState.mockRejectedValue(new Error('ThrottlingException: Rate exceeded'));
+    await rollbackCommand(STACK, {
+      yes: true,
+      stateBucket: 'b',
+      region: REGION,
+    } as unknown as Parameters<typeof rollbackCommand>[1]);
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
+    expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
   });
 });
