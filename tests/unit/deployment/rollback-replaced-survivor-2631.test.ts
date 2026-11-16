@@ -275,17 +275,17 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     );
 
     it.each([
-      ['the live RoleId matches', 'AROA-OLD', async () => 'AROA-OLD'],
-      ['the record carries no RoleId', undefined, async () => 'AROA-STRANGER'],
-      ['the recorded RoleId is masked', '***', async () => 'AROA-STRANGER'],
+      ['the live RoleId matches', 'AROA-OLD', async (): Promise<unknown> => 'AROA-OLD'],
+      ['the record carries no RoleId', undefined, async (): Promise<unknown> => 'AROA-STRANGER'],
+      ['the recorded RoleId is masked', '***', async (): Promise<unknown> => 'AROA-STRANGER'],
       [
         'the identity read fails',
         'AROA-OLD',
-        async () => {
+        async (): Promise<unknown> => {
           throw new Error('AccessDenied');
         },
       ],
-      ['the identity read cannot name it', 'AROA-OLD', async () => undefined],
+      ['the identity read cannot name it', 'AROA-OLD', async (): Promise<unknown> => undefined],
     ] as const)('re-adopts as before when %s', async (_label, recorded, live) => {
       liveRoleId = live;
       const s = roleState();
