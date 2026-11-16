@@ -789,7 +789,7 @@ conditional the escape is:
   `AWS::Cognito::UserPool`, `AWS::CloudFront::OriginAccessControl`,
   `AWS::KMS::Alias`, `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
   `AWS::ServiceDiscovery::HttpNamespace`, `AWS::Glue::Database`,
-  `AWS::Glue::Job`, `AWS::CodeBuild::Project`, `AWS::Events::EventBus` and
+  `AWS::Glue::Job`, `AWS::Events::EventBus` and
   `AWS::ECR::Repository` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the

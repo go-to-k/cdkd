@@ -1,7 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
-import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as glue from 'aws-cdk-lib/aws-glue';
@@ -22,13 +21,13 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
 };
 
 /**
- * physicalId-parity arm for issue 6454, batch 3: a resource of each of seven
+ * physicalId-parity arm for issue 6454, batch 3: a resource of each of six
  * types, recorded `provisionedBy: 'cc-api'`, returns to its SDK provider
  * without churn.
  *
  * covers: AWS::CloudFront::CloudFrontOriginAccessIdentity,
  * AWS::ServiceDiscovery::HttpNamespace, AWS::Glue::Database, AWS::Glue::Job,
- * AWS::CodeBuild::Project, AWS::Events::EventBus, AWS::ECR::Repository
+ * AWS::Events::EventBus, AWS::ECR::Repository
  *
  * Every resource under test is a LEAF: nothing in the stack references it, so
  * verify.sh's `--recreate-via-cc-api` replaces only that resource and no
@@ -76,7 +75,7 @@ export class CcToSdkRerouteCommonTypes3Stack extends cdk.Stack {
       'RerouteGlueDatabase'
     );
 
-    // The job's and project's roles are NOT under test.
+    // The job's role is NOT under test.
     const glueRole = servicePrincipalRole('GlueRole', 'glue.amazonaws.com');
     fixed(
       new glue.CfnJob(this, 'GlueJob', {
@@ -86,22 +85,6 @@ export class CcToSdkRerouteCommonTypes3Stack extends cdk.Stack {
         maxCapacity: 0.0625,
       }),
       'RerouteGlueJob'
-    );
-
-    const buildRole = servicePrincipalRole('BuildRole', 'codebuild.amazonaws.com');
-    fixed(
-      new codebuild.CfnProject(this, 'BuildProject', {
-        serviceRole: buildRole.attrArn,
-        description: phase,
-        source: { type: 'NO_SOURCE', buildSpec: 'version: 0.2\nphases:\n  build:\n    commands:\n      - echo ok\n' },
-        artifacts: { type: 'NO_ARTIFACTS' },
-        environment: {
-          type: 'LINUX_CONTAINER',
-          image: 'aws/codebuild/standard:7.0',
-          computeType: 'BUILD_GENERAL1_SMALL',
-        },
-      }),
-      'RerouteBuildProject'
     );
 
     fixed(
@@ -116,6 +99,5 @@ export class CcToSdkRerouteCommonTypes3Stack extends cdk.Stack {
     fixed(repository, 'RerouteRepository');
 
     new cdk.CfnOutput(this, 'GlueRoleName', { value: glueRole.ref });
-    new cdk.CfnOutput(this, 'BuildRoleName', { value: buildRole.ref });
   }
 }

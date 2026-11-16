@@ -579,8 +579,8 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   [
     'AWS::CloudFront::CloudFrontOriginAccessIdentity',
     {
-      // Batch 3 of go-to-k/cdkd#6454, admitted with six other types for the
-      // SDK path's speed. Its fixture observed all seven flips on live
+      // Batch 3 of go-to-k/cdkd#6454, admitted with five other types for the
+      // SDK path's speed. Its fixture observed all six flips on live
       // resources, each with an identity witness: the AWS-minted id where
       // AWS mints one, else the resource's creation time.
       mode: 'sdk-coverage' as const,
@@ -623,18 +623,6 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       physicalIdForm:
         'both layers store the bare job name: the schema primaryIdentifier is Name ' +
         'and GlueJobProvider.create records the CreateJob Name',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-3',
-    },
-  ],
-  [
-    'AWS::CodeBuild::Project',
-    {
-      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare project name, not the ARN: the schema ' +
-        'primaryIdentifier is Name and CodeBuildProvider.create records the project name',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types-3',
     },

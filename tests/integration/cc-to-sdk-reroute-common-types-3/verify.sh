@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for seven more types (issue 6454, batch 3).
+# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for six more types (issue 6454, batch 3).
 #
 # Admission evidence for each type's `'sdk-coverage'` sticky exemption. Every
-# phase acts on all seven resources at once. Phases: deploy on the SDK route ->
+# phase acts on all six resources at once. Phases: deploy on the SDK route ->
 # force each resource onto Cloud Control (--recreate-via-cc-api) -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id unchanged, each record flipped to 'sdk', each update reached
@@ -55,7 +55,6 @@ SUBJECTS=(
   RerouteHttpNamespace
   RerouteGlueDatabase
   RerouteGlueJob
-  RerouteBuildProject
   RerouteEventBus
   RerouteRepository
 )
@@ -101,8 +100,6 @@ live_value() { # usage: live_value <logicalId> <physicalId>
       aws glue get-database --name "$2" --region "${REGION}" --query 'Database.Description' --output text ;;
     RerouteGlueJob)
       aws glue get-job --job-name "$2" --region "${REGION}" --query 'Job.Description' --output text ;;
-    RerouteBuildProject)
-      aws codebuild batch-get-projects --names "$2" --region "${REGION}" --query 'projects[0].description' --output text ;;
     RerouteEventBus)
       aws events describe-event-bus --name "$2" --region "${REGION}" --query 'Description' --output text ;;
     RerouteRepository)
@@ -122,8 +119,6 @@ witness() { # usage: witness <logicalId> <physicalId>
       aws glue get-database --name "$2" --region "${REGION}" --query 'Database.CreateTime' --output text ;;
     RerouteGlueJob)
       aws glue get-job --job-name "$2" --region "${REGION}" --query 'Job.CreatedOn' --output text ;;
-    RerouteBuildProject)
-      aws codebuild batch-get-projects --names "$2" --region "${REGION}" --query 'projects[0].created' --output text ;;
     RerouteEventBus)
       aws events describe-event-bus --name "$2" --region "${REGION}" --query 'CreationTime' --output text ;;
     RerouteRepository)
@@ -141,7 +136,7 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
     RerouteOriginAccessIdentity) grep -qE '^E[A-Z0-9]+$' <<<"$2" ;;
     RerouteHttpNamespace) grep -qE '^ns-[a-z0-9]+$' <<<"$2" ;;
     RerouteGlueDatabase) grep -qE '^cdkd_reroute_common_types_3$' <<<"$2" ;;
-    RerouteGlueJob | RerouteBuildProject) grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$' <<<"$2" ;;
+    RerouteGlueJob) grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$' <<<"$2" ;;
     RerouteEventBus) grep -qE '^CdkdCcToSdkRerouteCommonTypes3Example-bus$' <<<"$2" ;;
     RerouteRepository) grep -qE '^[a-z0-9][a-z0-9._/-]*$' <<<"$2" ;;
     *) echo "FAIL: form_ok has no arm for $1" >&2; return 1 ;;
@@ -349,11 +344,9 @@ OAI_ID=$(record RerouteOriginAccessIdentity '.physicalId')
 NAMESPACE_ID=$(record RerouteHttpNamespace '.physicalId')
 DATABASE_NAME=$(record RerouteGlueDatabase '.physicalId')
 JOB_NAME=$(record RerouteGlueJob '.physicalId')
-PROJECT_NAME=$(record RerouteBuildProject '.physicalId')
 BUS_NAME=$(record RerouteEventBus '.physicalId')
 REPOSITORY_NAME=$(record RerouteRepository '.physicalId')
 GLUE_ROLE=$(output GlueRoleName)
-BUILD_ROLE=$(output BuildRoleName)
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # Service Discovery deletes a namespace asynchronously, so it stays readable
 # for a while after the delete is accepted. Each poll still goes through
@@ -376,17 +369,11 @@ assert_gone "glue database ${DATABASE_NAME} survived destroy" \
   aws glue get-database --name "${DATABASE_NAME}" --region "${REGION}"
 assert_gone "glue job ${JOB_NAME} survived destroy" \
   aws glue get-job --job-name "${JOB_NAME}" --region "${REGION}"
-# BatchGetProjects answers an unknown name with rc 0 and an empty list, so
-# this probe counts rows instead of reading an error.
-PROJECT_ROWS=$(aws codebuild batch-get-projects --names "${PROJECT_NAME}" --region "${REGION}" \
-  --query 'length(projects)' --output text)
-[ "${PROJECT_ROWS}" = 0 ] || { echo "FAIL: codebuild project ${PROJECT_NAME} survived destroy" >&2; exit 1; }
 assert_gone "event bus ${BUS_NAME} survived destroy" \
   aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
 assert_gone "repository ${REPOSITORY_NAME} survived destroy" \
   aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region "${REGION}"
 assert_gone "role ${GLUE_ROLE} survived destroy" aws iam get-role --role-name "${GLUE_ROLE}"
-assert_gone "role ${BUILD_ROLE} survived destroy" aws iam get-role --role-name "${BUILD_ROLE}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: destroyed clean"

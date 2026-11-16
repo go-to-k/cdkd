@@ -204,7 +204,6 @@ describe('sticky-CC exemption table', () => {
     ['AWS::ServiceDiscovery::HttpNamespace', { Name: 'n', Description: 'd' }],
     ['AWS::Glue::Database', { CatalogId: '123456789012', DatabaseInput: { Name: 'd', Description: 'd' } }],
     ['AWS::Glue::Job', { Role: 'arn', Description: 'd', Command: { Name: 'pythonshell' } }],
-    ['AWS::CodeBuild::Project', { ServiceRole: 'arn', Description: 'd', Source: { Type: 'NO_SOURCE' } }],
     ['AWS::Events::EventBus', { Name: 'b', Description: 'd' }],
     ['AWS::ECR::Repository', { ImageTagMutability: 'MUTABLE' }],
   ])(
