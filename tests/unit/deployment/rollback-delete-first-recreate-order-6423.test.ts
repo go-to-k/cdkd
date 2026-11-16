@@ -131,7 +131,7 @@ describe('a delete-first reversal re-creates after its dependencies revert (#642
 
   it('keeps reverse completion order for a reversal that did not delete first', () => {
     const ops = [roleOp(), scheduleOp({ oldDeletedBeforeCreate: undefined })];
-    expect(orderDeleteFirstAfterDependencies([...ops].reverse()).map((o) => o.logicalId)).toEqual([
+    expect(orderDeleteFirstAfterDependencies([...ops].reverse(), state()).map((o) => o.logicalId)).toEqual([
       'Schedule',
       'Role',
     ]);
@@ -141,7 +141,7 @@ describe('a delete-first reversal re-creates after its dependencies revert (#642
     const other: CompletedOperation = { ...roleOp(), logicalId: 'Other', physicalId: 'other' };
     // Reverse completion: Schedule, Role, Other. Schedule needs only Role.
     const reversed = [scheduleOp(), roleOp(), other];
-    expect(orderDeleteFirstAfterDependencies(reversed).map((o) => o.logicalId)).toEqual([
+    expect(orderDeleteFirstAfterDependencies(reversed, state()).map((o) => o.logicalId)).toEqual([
       'Role',
       'Schedule',
       'Other',
@@ -150,6 +150,77 @@ describe('a delete-first reversal re-creates after its dependencies revert (#642
 
   it('leaves a delete-first reversal whose dependencies already reverted before it', () => {
     const reversed = [roleOp(), scheduleOp()];
-    expect(orderDeleteFirstAfterDependencies(reversed)).toEqual(reversed);
+    expect(orderDeleteFirstAfterDependencies(reversed, state())).toEqual(reversed);
+  });
+
+  // Review of #6423: the cases a single front-to-back pass got wrong.
+  const deleteFirst = (logicalId: string, deps: string[]): CompletedOperation => ({
+    ...scheduleOp(),
+    logicalId,
+    physicalId: logicalId,
+    previousState: rec(logicalId, SCHEDULE, {}, deps),
+  });
+  const plain = (logicalId: string, deps: string[] = [], resourceType = ROLE): CompletedOperation => ({
+    ...roleOp(),
+    logicalId,
+    resourceType,
+    physicalId: logicalId,
+    previousState: rec(logicalId, resourceType, {}, deps),
+  });
+
+  it('settles a chain of delete-first reversals: each after its own dependency', () => {
+    // Forward completion C, B, A; A needs B, B needs C, A and B delete-first.
+    const reversed = [deleteFirst('A', ['B']), deleteFirst('B', ['C']), plain('C')];
+    expect(orderDeleteFirstAfterDependencies(reversed, {}).map((o) => o.logicalId)).toEqual([
+      'C',
+      'B',
+      'A',
+    ]);
+  });
+
+  it('a cycle of two delete-first reversals stops', () => {
+    const reversed = [deleteFirst('A', ['B']), deleteFirst('B', ['A'])];
+    expect(orderDeleteFirstAfterDependencies(reversed, {})).toHaveLength(2);
+  });
+
+  it('does not move past a renamed reversal, which the replay re-creates ahead (#5064)', () => {
+    const renamedGroup: CompletedOperation = {
+      ...roleOp(),
+      logicalId: 'Grp',
+      resourceType: 'AWS::Scheduler::ScheduleGroup',
+      physicalId: 'g2',
+      previousState: rec('g1', 'AWS::Scheduler::ScheduleGroup', { Name: 'g1' }),
+    };
+    const resources = {
+      Grp: rec('g2', 'AWS::Scheduler::ScheduleGroup', { Name: 'g2' }),
+      Sched: rec('Sched', SCHEDULE, {}, ['Grp']),
+    };
+    const reversed = [deleteFirst('Sched', ['Grp']), renamedGroup];
+    expect(orderDeleteFirstAfterDependencies(reversed, resources).map((o) => o.logicalId)).toEqual([
+      'Sched',
+      'Grp',
+    ]);
+  });
+
+  it('keeps its slot rather than move past an op that depends on it', () => {
+    const reversed = [deleteFirst('Sched', ['Role']), plain('Perm', ['Sched']), plain('Role')];
+    expect(orderDeleteFirstAfterDependencies(reversed, {}).map((o) => o.logicalId)).toEqual([
+      'Sched',
+      'Perm',
+      'Role',
+    ]);
+  });
+
+  it('keeps its slot rather than move past a standalone inline policy (#4821)', () => {
+    const reversed = [
+      deleteFirst('Sched', ['Role']),
+      plain('Pol', [], 'AWS::IAM::RolePolicy'),
+      plain('Role'),
+    ];
+    expect(orderDeleteFirstAfterDependencies(reversed, {}).map((o) => o.logicalId)).toEqual([
+      'Sched',
+      'Pol',
+      'Role',
+    ]);
   });
 });

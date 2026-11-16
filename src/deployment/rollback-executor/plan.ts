@@ -4,6 +4,7 @@ import { type CompletedOperation, type RollbackPlanItem } from './types.js';
 import { effectiveProvisionedBy, rollbackRetainsNewResource } from './messages.js';
 import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import { classifyRollbackOp, isReplacementOp } from './plan/classify.js';
+import { isStandaloneInlinePolicyType } from '../inline-policy-claims.js';
 import { nearestMemberDependencies, recordedDependencies } from '../deploy-engine/dependencies.js';
 
 export {
@@ -51,7 +52,7 @@ export function planRollback(
 ): RollbackPlanItem[] {
   const { createOps, otherOps } = partitionOps(operations);
   const ordered: CompletedOperation[] = [
-    ...orderDeleteFirstAfterDependencies([...otherOps].reverse()),
+    ...orderDeleteFirstAfterDependencies([...otherOps].reverse(), stateResources, orphanLogicalIds),
     ...sortRollbackCreates(createOps, stateResources),
   ];
   return ordered.map((op) => {
@@ -147,31 +148,65 @@ export function revertReferences(
  * AWS holds them then, and a dependency this deploy updated earlier (a
  * schedule's role, whose trust names the schedule's group) reverts later in
  * reverse completion order: re-created first, AWS refuses it against the
- * dependency's NEW configuration. Moved to just after the last such op; the
- * dependency order the forward needed is the one the re-create needs.
+ * dependency's NEW configuration. The dependency order the forward needed is
+ * the one the re-create needs.
+ *
+ * Each move goes to just after the last such dependency, with three limits:
+ *  - a dependency the replay re-creates AHEAD of its slot anyway
+ *    (`renamedReverseReplacement`, #5064) does not count: moving past its
+ *    slot would run the slot that deletes its new copy while the moved op's
+ *    new copy still uses it;
+ *  - never past an op that depends on the moved one, nor past a standalone
+ *    inline policy (#4821's writer-before-policy order): the op keeps its
+ *    slot instead;
+ *  - processed latest-first and repeated until nothing moves, so a chain of
+ *    delete-first reversals settles (C, then B, then A); a cycle stops at the
+ *    bound.
  */
 export function orderDeleteFirstAfterDependencies(
-  ops: readonly CompletedOperation[]
+  ops: readonly CompletedOperation[],
+  stateResources: Record<string, ResourceState>,
+  orphanLogicalIds: Set<string> = new Set()
 ): CompletedOperation[] {
   const out = [...ops];
-  for (const op of ops) {
-    if (op.changeType !== 'UPDATE' || op.oldDeletedBeforeCreate !== true) continue;
-    const deps = new Set(
-      (Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []).filter(
-        (id): id is string => typeof id === 'string' && id !== op.logicalId
-      )
-    );
-    if (deps.size === 0) continue;
-    const from = out.indexOf(op);
-    let last = -1;
-    out.forEach((other, at) => {
-      if (other !== op && deps.has(other.logicalId)) last = at;
-    });
-    if (last <= from) continue;
-    out.splice(from, 1);
-    // `last` shifted down by one with the removal: inserting there places the
-    // op right after that dependency.
-    out.splice(last, 0, op);
+  const renamed = new Set(
+    ops
+      .filter((op) => renamedReverseReplacement(op, stateResources, orphanLogicalIds))
+      .map((op) => op.logicalId)
+  );
+  for (let pass = 0; pass < out.length; pass++) {
+    let moved = false;
+    for (const op of [...out].reverse()) {
+      if (op.changeType !== 'UPDATE' || op.oldDeletedBeforeCreate !== true) continue;
+      const deps = new Set(
+        (Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []).filter(
+          (id): id is string => typeof id === 'string' && id !== op.logicalId && !renamed.has(id)
+        )
+      );
+      if (deps.size === 0) continue;
+      const from = out.indexOf(op);
+      let last = -1;
+      out.forEach((other, at) => {
+        if (other !== op && deps.has(other.logicalId)) last = at;
+      });
+      if (last <= from) continue;
+      const between = out.slice(from + 1, last + 1);
+      if (
+        between.some(
+          (other) =>
+            isStandaloneInlinePolicyType(other.resourceType) ||
+            revertReferences(other, stateResources).has(op.logicalId)
+        )
+      ) {
+        continue;
+      }
+      out.splice(from, 1);
+      // `last` shifted down by one with the removal: inserting there places the
+      // op right after that dependency.
+      out.splice(last, 0, op);
+      moved = true;
+    }
+    if (!moved) break;
   }
   return out;
 }

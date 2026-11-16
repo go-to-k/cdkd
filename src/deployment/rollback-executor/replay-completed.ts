@@ -209,7 +209,9 @@ export async function replayRollbackUnbound(
   // go-to-k/cdkd#6423: and a delete-first reversal runs after the reverts of
   // the ops its old record depends on.
   const stepOne = orderDeleteFirstAfterDependencies(
-    orderInlinePolicyReversals([...otherOps].reverse(), stateResources)
+    orderInlinePolicyReversals([...otherOps].reverse(), stateResources),
+    stateResources,
+    orphanLogicalIds
   );
   const stepOneIds = new Map<string, CompletedOperation>();
   const stepOneIndex = new Map<CompletedOperation, number>();
