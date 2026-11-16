@@ -15,9 +15,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 // Base: group `cdkd-ncar-g1`.
 // CDKD_TEST_UPDATE=true: rename the group to `cdkd-ncar-g2`. That replaces
 //   the group in A (create-first) and moves B's schedule (a replacement under
-//   --replace).
-// CDKD_TEST_FAIL=true: the parent also adds a queue AWS refuses
-//   (`MessageRetentionPeriod` out of range), created after both children.
+//   --replace; without it, B refuses the GroupName change and the parent
+//   fails after A finished).
 //
 // Deleting a schedule group deletes every schedule in it. Before the fix
 // child A deleted g1 when A itself finished, inside the parent's deploy and
@@ -53,17 +52,8 @@ export class NestedCleanupAtRootStack extends cdk.Stack {
     super(scope, id, props);
 
     const update = process.env.CDKD_TEST_UPDATE === 'true';
-    const fail = process.env.CDKD_TEST_FAIL === 'true';
 
     const groups = new GroupStack(this, 'ChildA', update);
-    const schedules = new ScheduleStack(this, 'ChildB', groups.group);
-
-    if (fail) {
-      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
-        // Out of range (max 1209600): AWS refuses the create.
-        messageRetentionPeriod: 9999999,
-      });
-      failing.node.addDependency(schedules);
-    }
+    new ScheduleStack(this, 'ChildB', groups.group);
   }
 }

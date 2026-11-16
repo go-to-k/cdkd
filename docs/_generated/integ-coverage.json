@@ -9204,7 +9204,6 @@
           "l1"
         ],
         "nested-cleanup-at-root": [
-          "l1",
           "l2"
         ],
         "nested-required-preflight": [

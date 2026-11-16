@@ -15,10 +15,13 @@
 # Phases:
 #   1. Deploy group cdkd-ncar-g1 (child A) holding schedule cdkd-ncar-schedule
 #      (child B). Record the schedule's CreationDate.
-#   2. Rename the group to cdkd-ncar-g2 with --replace, plus a parent queue AWS
-#      refuses, created after both children. Assert the deploy fails, no
-#      nested cleanup ran, and, data first: the ORIGINAL schedule (same
-#      CreationDate) still exists in g1, g1 exists, g2 is gone.
+#   2. Rename the group to cdkd-ncar-g2 WITHOUT --replace. Child A replaces
+#      the group and finishes; child B's schedule then refuses its GroupName
+#      change in place, so the parent fails and rolls back. Assert, data first:
+#      the ORIGINAL schedule (same CreationDate) still exists in g1, g1
+#      exists, g2 is gone; then that no nested cleanup ran. (With --replace the
+#      schedule is replaced delete-first, whose data loss is not this issue's;
+#      its rollback re-create is go-to-k/cdkd#6423.)
 #   3. Rename again without the failing queue, --replace. Assert it succeeds,
 #      the schedule lives in g2, g1 is gone, and the root ran A's cleanup only
 #      after B's schedule moved.
@@ -163,35 +166,28 @@ fi
 echo "    schedule is in ${G1} (created ${CREATED_P1})"
 
 # --- Phase 2: rename + a failing parent resource -> fails, rolls back ----
-echo "==> Phase 2: rename the group with --replace while the parent fails after both children"
+echo "==> Phase 2: rename the group without --replace (child B refuses, the parent rolls back)"
 P2_LOG="$(mktemp -t cdkd-ncar-p2.XXXXXX)"
 set +e
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true CDKD_TEST_FAIL=true \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace >"${P2_LOG}" 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P2_LOG}" 2>&1
 P2_RC=$?
 set -e
 cat "${P2_LOG}"
 P2_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P2_LOG}")"
 if [ "${P2_RC}" -eq 0 ]; then
-  echo "FAIL: Phase 2 deploy succeeded, but the parent's FailingQueue should have been refused" >&2
+  echo "FAIL: Phase 2 deploy succeeded, but child B's schedule should have refused its GroupName change" >&2
   exit 1
 fi
-# Sentinels: the run replaced the group in child A and failed on the parent's
-# queue, or this phase tests nothing.
+# Sentinels: the run replaced the group in child A and then failed on child
+# B's schedule, after A had finished, or this phase tests nothing.
 if ! grep -qE 'Replacing Group[0-9A-F]+ \(AWS::Scheduler::ScheduleGroup\)' <<<"${P2_PLAIN}"; then
   echo "FAIL: Phase 2 never replaced the group; the deferred delete was not exercised" >&2
   exit 1
 fi
-if ! grep -qE 'Replacing Schedule[0-9A-F]+ \(AWS::Scheduler::Schedule\)' <<<"${P2_PLAIN}"; then
-  echo "FAIL: Phase 2 never moved child B's schedule; the failure came before both children ran" >&2
-  exit 1
-fi
-# cdkd's own lines about the queue, not the synth validation warning that
-# also names it.
-P2_OWN="$(grep -vE 'CloudFormation-Validate|aws_sqs\.CfnQueue|WARNING MessageRetentionPeriod' <<<"${P2_PLAIN}" || true)"
-if ! grep -qF 'FailingQueue' <<<"${P2_OWN}"; then
-  echo "FAIL: Phase 2 did not fail on the parent's FailingQueue" >&2
+if ! grep -qF 'GroupName addresses the schedule' <<<"${P2_PLAIN}"; then
+  echo "FAIL: Phase 2 did not fail on child B's schedule refusing its GroupName change" >&2
   exit 1
 fi
 
