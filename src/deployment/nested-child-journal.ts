@@ -747,7 +747,8 @@ export async function revertNestedChildFromJournal(args: {
     const { skippedOutputs: _dropped, ...carried } = withoutSuperseded(base);
     const next = (): StackState => ({
       ...carried,
-      ...stackInstanceIdCarriedFrom(base),
+      // The superseded entries are `supersededAfterRollback`'s to write.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(base)),
       ...supersededAfterRollback(base, supersededHost, stateResources),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,

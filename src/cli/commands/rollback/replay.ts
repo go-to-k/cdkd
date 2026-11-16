@@ -562,7 +562,8 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       const { skippedOutputs: _droppedByRollback, ...carriedState } = withoutSuperseded(baseState);
       const next = (): StackState => ({
         ...carriedState,
-        ...stackInstanceIdCarriedFrom(baseState),
+        // The superseded entries are `supersededAfterRollback`'s to write.
+        ...stackInstanceIdCarriedFrom(withoutSuperseded(baseState)),
         ...supersededAfterRollback(baseState, supersededHost, stateResources),
         version: STATE_SCHEMA_VERSION_CURRENT,
         region,

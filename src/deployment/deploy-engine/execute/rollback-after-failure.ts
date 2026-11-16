@@ -9,7 +9,7 @@ import { secretNameBagFor } from '../masking.js';
 import { withPrintingSecrets } from '../../resource-secrets-scope.js';
 import { unionOfSecretBags } from '../../secret-redaction.js';
 import { orphanRecordsPrintingBag } from '../../secret-name-needles.js';
-import { supersededAfterRollback } from '../../superseded-resources.js';
+import { supersededAfterRollback, withoutSuperseded } from '../../superseded-resources.js';
 import { InterruptedError, crossStackReadsForPartialSave } from '../../deploy-engine.js';
 import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
 import {
@@ -316,7 +316,7 @@ export async function rollbackFailedDeploy(
       ...exportNamesCarriedFrom(currentState),
       ...skippedOutputsCarriedFrom(currentState),
       ...orphansAfterRollback(currentState, rollbackOrphans),
-      ...stackInstanceIdCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(currentState)),
       // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
       ...supersededAfterRollback(
         currentState,
@@ -385,7 +385,7 @@ export async function rollbackFailedDeploy(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
-        ...stackInstanceIdCarriedFrom(currentState),
+        ...stackInstanceIdCarriedFrom(withoutSuperseded(currentState)),
         ...supersededAfterRollback(
           currentState,
           { supersededResources: rollbackSuperseded },
