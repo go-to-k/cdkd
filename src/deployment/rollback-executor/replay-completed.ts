@@ -38,6 +38,7 @@ import {
   withPreviousPolicies,
   unroutableReplacementError,
   markDeleteFirstBlocked,
+  orderDeleteFirstAfterDependencies,
   renamedReverseReplacement,
   revertReferences,
 } from './plan.js';
@@ -205,7 +206,13 @@ export async function replayRollbackUnbound(
   // op whose revert may name it, which reverse completion order runs first;
   // its new copy is deleted at its own slot, once those ops have moved off it.
   // The re-create of one it depends on runs before its own.
-  const stepOne = orderInlinePolicyReversals([...otherOps].reverse(), stateResources);
+  // go-to-k/cdkd#6423: and a delete-first reversal runs after the reverts of
+  // the ops its old record depends on.
+  const stepOne = orderDeleteFirstAfterDependencies(
+    orderInlinePolicyReversals([...otherOps].reverse(), stateResources),
+    stateResources,
+    orphanLogicalIds
+  );
   const stepOneIds = new Map<string, CompletedOperation>();
   const stepOneIndex = new Map<CompletedOperation, number>();
   stepOne.forEach((op, at) => {
