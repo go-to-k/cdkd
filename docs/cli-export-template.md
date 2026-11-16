@@ -37,7 +37,7 @@ declares only `BootstrapVersion`, and that Parameter has a default.
 
 An SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) holds the NAME of
 an SSM parameter, which CloudFormation reads when it creates the changeset.
-cdkd reads each one first, the preview included, and stops when one does not
+cdkd reads each one in the root template first, the preview included, and stops when one does not
 exist. `BootstrapVersion` reads `/cdk-bootstrap/<qualifier>/version`, which
 only `cdk bootstrap` creates, so an account and region where the stack was
 deployed with cdkd alone needs `cdk bootstrap` before the export:

@@ -62,6 +62,27 @@ describe('findMissingSsmParameters (go-to-k/cdkd#6410)', () => {
     expect(missing).toEqual([]);
   });
 
+  it('reports a missing --parameter override by the name it overrides with', async () => {
+    const missing = await findMissingSsmParameters(
+      cdkTemplate(),
+      ['BootstrapVersion=/other/version'],
+      reader(new Set([BOOTSTRAP_PATH]))
+    );
+    expect(missing).toEqual([{ parameterKey: 'BootstrapVersion', ssmName: '/other/version' }]);
+  });
+
+  it('reports every missing parameter, not only the first', async () => {
+    const missing = await findMissingSsmParameters(
+      cdkTemplate({ AmiId: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/my/ami' } }),
+      undefined,
+      reader(new Set())
+    );
+    expect(missing).toEqual([
+      { parameterKey: 'BootstrapVersion', ssmName: BOOTSTRAP_PATH },
+      { parameterKey: 'AmiId', ssmName: '/my/ami' },
+    ]);
+  });
+
   it('never reads a parameter that is not SSM-typed', async () => {
     const asked: string[] = [];
     await findMissingSsmParameters(
@@ -112,6 +133,24 @@ describe('missingSsmParametersMessage (go-to-k/cdkd#6410)', () => {
     );
     expect(msg).toContain('--parameter AmiId=<an existing SSM parameter name>');
     expect(msg).not.toContain('cdk bootstrap');
+  });
+
+  it('lists every missing parameter under a plural sentence', () => {
+    const msg = missingSsmParametersMessage(
+      [
+        { parameterKey: 'BootstrapVersion', ssmName: BOOTSTRAP_PATH },
+        { parameterKey: 'AmiId', ssmName: '/my/ami' },
+      ],
+      'us-east-1'
+    );
+    expect(msg).toContain('and they do not exist');
+    expect(msg).toContain(`'BootstrapVersion': SSM parameter ${BOOTSTRAP_PATH}`);
+    expect(msg).toContain("'AmiId': SSM parameter /my/ami");
+  });
+
+  it('never prints an empty key as the --parameter flag', () => {
+    const msg = missingSsmParametersMessage([{ parameterKey: '', ssmName: '/my/ami' }], 'us-east-1');
+    expect(msg).toContain('--parameter <Key>=');
   });
 
   it('never puts a non-plain key into the --parameter flag', () => {

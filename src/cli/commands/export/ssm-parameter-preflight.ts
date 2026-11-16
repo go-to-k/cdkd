@@ -1,7 +1,12 @@
 import { displayIdent, safeMsg } from '../../../utils/display-safe.js';
 import { getLogger } from '../../../utils/logger.js';
 import { isSsmParameterType, rootParameterValues, type SsmParameterReader } from './parameters.js';
-import { quotedOrNotShown, quotedRegion, recordValueOrNotShown } from './render.js';
+import {
+  plainOrNotShown,
+  quotedOrNotShown,
+  quotedRegion,
+  recordValueOrNotShown,
+} from './render.js';
 
 /**
  * An SSM-typed root template Parameter whose SSM parameter does not exist
@@ -87,7 +92,7 @@ export function missingSsmParametersMessage(
       );
     }
     // The key goes into a flag only when it is a plain identifier.
-    const key = quotedOrNotShown(parameterKey).startsWith("'") ? parameterKey : '<Key>';
+    const key = plainOrNotShown(parameterKey) === parameterKey ? parameterKey : '<Key>';
     return `${head}: create it, or pass --parameter ${key}=<an existing SSM parameter name>.`;
   });
   return (

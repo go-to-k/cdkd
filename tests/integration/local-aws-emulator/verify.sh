@@ -404,10 +404,11 @@ fi
 aws ssm put-parameter --name "${BOOTSTRAP_PARAM}" --type String --value 30 >/dev/null
 # The preview still stops on the types the emulator's registry has no schema
 # for (go-to-k/cdkd#6411), so this arm asserts only that the parameter is no
-# longer named, on a run that got as far as the plan (the sentinel).
+# longer named, on a run that printed the blocked list, which comes after the
+# SSM check (the sentinel).
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" export "${STACK}" --aws-emulator="${EMU}" --dry-run >"${EXPORT_LOG}" 2>&1 || true
 strip_ansi "${EXPORT_LOG}"
-grep -qF "Migrating cdkd stack '${STACK}'" "${EXPORT_LOG}" || { echo "FAIL: export --dry-run did not reach its plan after ${BOOTSTRAP_PARAM} was created" >&2; tail -30 "${EXPORT_LOG}" >&2; exit 1; }
+grep -qF 'The following resources block migration:' "${EXPORT_LOG}" || { echo "FAIL: export --dry-run did not reach the SSM check after ${BOOTSTRAP_PARAM} was created" >&2; tail -30 "${EXPORT_LOG}" >&2; exit 1; }
 if grep -qF "SSM parameter ${BOOTSTRAP_PARAM}" "${EXPORT_LOG}"; then
   echo "FAIL: export --dry-run still names ${BOOTSTRAP_PARAM} after it was created" >&2
   tail -30 "${EXPORT_LOG}" >&2
