@@ -580,6 +580,30 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     ).toBe(true);
   });
 
+  // go-to-k/cdkd#6374: an old resource whose delete waits for the deploy's
+  // cleanup phase may be left running too: the clause says why.
+  it('a replacement UPDATE whose NEW resource the import took, old delete deferred, warns naming the old', async () => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: 'new-phys' } }, [
+      {
+        operations: [{ ...replacementOp(false), oldResourceMaySurvive: 'deferred' }],
+        importedResources: [{ ...MARK, physicalId: 'new-phys' }],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(
+      infoLines().some((l) =>
+        l.includes(
+          'replaced old-phys and may have kept it (its delete waits for the deploy to succeed)'
+        )
+      )
+    ).toBe(true);
+  });
+
   it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {
     install({ Topic: topicRecord('imported') }, [
       {

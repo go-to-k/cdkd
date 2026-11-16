@@ -12,6 +12,11 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { supersededResourcesOf } from '../../../src/deployment/superseded-resources.js';
+import {
+  deleteReplacedAfterCreate,
+  retryDeferredReplacedDeletes,
+  warnUnretriedReplacedDeletes,
+} from '../../../src/deployment/deploy-engine/replacement.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
@@ -341,6 +346,39 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     expect(printed.warn.some((l) => l.includes('rev-old'))).toBe(false);
   });
 
+  // The post-rollback save's ETag retry writes the same answer: the re-adopted
+  // old revision's superseded entry is absent there too. (In this flow the
+  // entry has already left the live record before that save, so this pins the
+  // retry's outcome, not its `supersededAfterRollback(..., newResources)` filter.)
+  it('the post-rollback ETag retry save also drops the re-adopted entry', async () => {
+    endpointFails = true;
+    const engine = makeEngine({ noRollback: false });
+    const backend = engine.stateBackend as unknown as {
+      saveState: (...args: unknown[]) => Promise<string>;
+    };
+    const save = backend.saveState;
+    let rejected = 0;
+    // The first save naming rev-old again is the post-rollback one.
+    backend.saveState = vi.fn(async (...args: unknown[]) => {
+      const state = args[2] as StackState;
+      if (rejected === 0 && state.resources['Revision']?.physicalId === 'rev-old') {
+        rejected++;
+        throw awsError('PreconditionFailed', 'At least one of the pre-conditions you specified did not hold');
+      }
+      return save(...args);
+    });
+
+    await expect(deploy({ engine })).rejects.toThrow();
+
+    expect(rejected).toBe(1);
+    // The forward deploy recorded the entry, so the retry had one to drop.
+    expect(
+      saved.some((s) => s.supersededResources?.some((e) => e.state.physicalId === 'rev-old'))
+    ).toBe(true);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(saved.at(-1)!.supersededResources).toBeUndefined();
+  });
+
   // The delete was never sent, so a read that cannot answer still re-adopts.
   it.each([
     [
@@ -469,5 +507,142 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       'update prod',
       'delete rev-old',
     ]);
+  });
+
+  // The failed deploy's notice for a cleanup-phase delete never sent: an info
+  // line, whose remedy reads whether the old record is kept in state.
+  it.each([
+    [true, 'cdkd keeps it in state, and the next deploy deletes it'],
+    [false, 'it is no longer tracked in state, so delete it manually'],
+  ])('an unsent cleanup-phase delete prints an info line, never a warn (kept in state: %s)', (kept, remedy) => {
+    const engine = makeEngine();
+    const run = engine.replacementRun;
+    run.deferredReplacedDeletes = new Map([
+      [
+        'Revision',
+        {
+          physicalId: 'rev-old',
+          resourceType: REVISION,
+          provisionedBy: 'sdk',
+          failureMessage: undefined,
+          cleanupPhase: true,
+          retry: async () => undefined,
+        },
+      ],
+    ]);
+    if (kept) {
+      run.supersededEntries.set('Revision', {
+        logicalId: 'Revision',
+        supersededAt: 0,
+        state: { physicalId: 'rev-old', resourceType: REVISION, properties: {} },
+      });
+    }
+
+    warnUnretriedReplacedDeletes(run, engine.replacementDeps(), 'failed');
+
+    expect(printed.info).toContain(
+      `  Old Revision (rev-old) was not deleted: the deploy failed first. A rollback of the deploy adopts it again; otherwise ${remedy}`
+    );
+    expect(printed.warn).toEqual([]);
+    expect(run.deferredReplacedDeletes).toBeUndefined();
+  });
+
+  // A replacement whose new copy kept the old physical id (a Glue table moved
+  // to another database) cannot keep its old record in state as superseded:
+  // the row's save drops an entry a same-type record holds. Deleted inline.
+  it('deletes inline when the new copy has the old physical id', async () => {
+    const engine = makeEngine();
+    const run = engine.replacementRun;
+    run.deferredReplacedDeletes = new Map();
+    const host: Pick<StackState, 'supersededResources'> = {};
+    run.supersededHost = host;
+    const old: ResourceState = {
+      physicalId: 'db|tbl',
+      resourceType: 'AWS::Glue::Table',
+      properties: { DatabaseName: 'db' },
+    } as ResourceState;
+    const call = (newPhysicalId: string) =>
+      deleteReplacedAfterCreate(
+        run,
+        engine.replacementDeps(),
+        'Table',
+        'AWS::Glue::Table',
+        old,
+        provider,
+        old.properties,
+        undefined,
+        undefined,
+        new Map(),
+        'sdk',
+        undefined,
+        false,
+        newPhysicalId
+      );
+
+    await call('db|tbl');
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['db|tbl']);
+    expect(run.deferredReplacedDeletes.size).toBe(0);
+
+    // Control: a new id defers it.
+    vi.mocked(provider.delete).mockClear();
+    await call('db2|tbl');
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(run.deferredReplacedDeletes.has('Table')).toBe(true);
+  });
+
+  // The cleanup pass deletes a replaced child before the replaced parent it
+  // depended on (an old subnet before its old VPC), as CloudFormation does.
+  it.each([1, 4])('the cleanup pass deletes dependents first (concurrency %s)', async (concurrency) => {
+    const engine = makeEngine({ concurrency });
+    const run = engine.replacementRun;
+    const deleted: string[] = [];
+    const entry = (physicalId: string, dependencies?: string[]) => ({
+      physicalId,
+      resourceType: REVISION,
+      provisionedBy: 'sdk' as const,
+      failureMessage: undefined,
+      cleanupPhase: true as const,
+      ...(dependencies && { dependencies }),
+      retry: async () => {
+        await new Promise((r) => setTimeout(r, physicalId === 'vpc-old' ? 0 : 5));
+        deleted.push(physicalId);
+      },
+    });
+    run.deferredReplacedDeletes = new Map([
+      ['Vpc', entry('vpc-old')],
+      ['Subnet', entry('subnet-old', ['Vpc'])],
+      ['Route', entry('route-old', ['Subnet', 'Vpc'])],
+    ]);
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', {
+      updated: 0,
+      updatePartial: 0,
+    });
+    expect(deleted).toEqual(['route-old', 'subnet-old', 'vpc-old']);
+  });
+
+  it('the cleanup pass still deletes every entry of a dependency cycle', async () => {
+    const engine = makeEngine({ concurrency: 4 });
+    const run = engine.replacementRun;
+    const deleted: string[] = [];
+    const entry = (physicalId: string, dependencies: string[]) => ({
+      physicalId,
+      resourceType: REVISION,
+      provisionedBy: 'sdk' as const,
+      failureMessage: undefined,
+      cleanupPhase: true as const,
+      dependencies,
+      retry: async () => {
+        deleted.push(physicalId);
+      },
+    });
+    run.deferredReplacedDeletes = new Map([
+      ['A', entry('a-old', ['B'])],
+      ['B', entry('b-old', ['A'])],
+    ]);
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', {
+      updated: 0,
+      updatePartial: 0,
+    });
+    expect(deleted.sort()).toEqual(['a-old', 'b-old']);
   });
 });

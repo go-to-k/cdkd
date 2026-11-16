@@ -18,9 +18,10 @@ old resource only after the rest of the deploy succeeds, so after a failed
 deploy it is still in AWS: the rollback adopts it again, and its data is kept.
 The plan labels such an operation `reverse-replace`.
 
-Three cases delete the old resource right after the new one is created: a
-record holding a NoEcho value, an IAM inline policy, and
-`UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`. The rollback
+Four cases delete the old resource right after the new one is created: a
+record holding a NoEcho value, an IAM inline policy,
+`UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`, and an old
+physical id another resource of the stack now records. The rollback
 re-creates the old resource of these, and of a delete-first replacement, from
 the properties the journal saved.
 

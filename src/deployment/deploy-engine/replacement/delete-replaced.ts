@@ -74,10 +74,18 @@ export async function deleteReplacedAfterCreate(
   /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
   noEchoDeleteValues?: NoEchoDeleteValues,
   /** go-to-k/cdkd#4900: the post-DAG retry, which warns rather than defers. */
-  isRetry = false
+  isRetry = false,
+  /**
+   * The replacement's new physical id. Equal to the old one (a Glue table
+   * moved to another database keeps its id), the old resource's superseded
+   * record would be dropped at the row's save as held, so it is deleted
+   * inline as before (go-to-k/cdkd#6374).
+   */
+  newPhysicalId?: string
 ): Promise<void> {
   if (
     !isRetry &&
+    newPhysicalId !== currentResource.physicalId &&
     deferToCleanupPhase(run, deps, logicalId, currentResource, updateReplacePolicy, {
       finalSnapshotIdentifier,
       noEchoDeleteValues,
@@ -90,6 +98,9 @@ export async function deleteReplacedAfterCreate(
       provisionedBy: deleteProvisionedBy,
       failureMessage: undefined,
       cleanupPhase: true,
+      ...(currentResource.dependencies !== undefined && {
+        dependencies: currentResource.dependencies,
+      }),
       retry: () =>
         deleteReplacedAfterCreate(
           run,
@@ -203,6 +214,9 @@ export async function deleteReplacedAfterCreate(
         resourceType: oldResourceType,
         provisionedBy: deleteProvisionedBy,
         failureMessage: deleteMsg,
+        ...(currentResource.dependencies !== undefined && {
+          dependencies: currentResource.dependencies,
+        }),
         retry: () =>
           deleteReplacedAfterCreate(
             run,

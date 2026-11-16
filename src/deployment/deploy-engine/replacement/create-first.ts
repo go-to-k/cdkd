@@ -220,7 +220,9 @@ export async function createFirstThenDeleteOld(
     input.deletePolicy,
     secrets,
     input.deleteProvisionedBy,
-    input.noEchoDeleteValues
+    input.noEchoDeleteValues,
+    false,
+    createResult.physicalId
   );
   return createResult;
 }

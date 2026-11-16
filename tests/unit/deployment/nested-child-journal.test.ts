@@ -32,6 +32,8 @@ const replay = vi.hoisted(() => ({
   orphanFor: new Set<string>(),
   /** go-to-k/cdkd#5064: CREATEs the replay deletes, reported with this generation. */
   deletedCreateFor: new Map<string, number>(),
+  /** go-to-k/cdkd#6374: the record the replay leaves for an id (a re-adopted old resource). */
+  recordFor: new Map<string, unknown>(),
   /** Runs inside the replay, with the scope the replay was bound in. */
   duringReplay: undefined as
     | ((inner: NestedRevertRun, ctx: Record<string, unknown>) => void)
@@ -87,6 +89,8 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
             logicalId: op.logicalId,
             record: { nameGeneration: replay.deletedCreateFor.get(op.logicalId) },
           });
+        } else if (replay.recordFor.has(op.logicalId)) {
+          stateResources[op.logicalId] = replay.recordFor.get(op.logicalId);
         } else {
           stateResources[op.logicalId] = { reverted: true };
         }
@@ -232,6 +236,7 @@ beforeEach(() => {
   replay.warningsFor.clear();
   replay.orphanFor.clear();
   replay.deletedCreateFor.clear();
+  replay.recordFor.clear();
   replay.duringReplay = undefined;
 });
 
@@ -742,6 +747,49 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
 
     const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
+  // go-to-k/cdkd#6374: a replacement's old resource, deferred to the cleanup
+  // phase, is recorded in `supersededResources`; the child's revert re-adopts
+  // it, so a record holds it again and its entry must leave every save. An
+  // entry no record holds stays.
+  describe('supersededResources after the child revert (go-to-k/cdkd#6374)', () => {
+    const QUEUE = 'AWS::SQS::Queue';
+    const entry = (logicalId: string, physicalId: string) => ({
+      logicalId,
+      supersededAt: 0,
+      state: { physicalId, resourceType: QUEUE, properties: {} },
+    });
+    const withSuperseded = (entries: unknown[]): StackState =>
+      ({
+        ...childState({ Q: { physicalId: 'q-new', resourceType: QUEUE, properties: {} } }),
+        supersededResources: entries,
+      }) as StackState;
+
+    it('drops the entry of the re-adopted old resource from every save', async () => {
+      replay.recordFor.set('Q', { physicalId: 'q-old', resourceType: QUEUE, properties: {} });
+      const h = harness({ segments: [seg('r', ['Q'])], state: withSuperseded([entry('Q', 'q-old')]) });
+
+      await h.run('r');
+
+      expect(h.stateBackend.saveState).toHaveBeenCalled();
+      for (const call of h.stateBackend.saveState.mock.calls) {
+        expect(call[2] as StackState).not.toHaveProperty('supersededResources');
+      }
+    });
+
+    it('keeps an entry no record holds after the revert, beside the dropped one', async () => {
+      replay.recordFor.set('Q', { physicalId: 'q-old', resourceType: QUEUE, properties: {} });
+      const h = harness({
+        segments: [seg('r', ['Q'])],
+        state: withSuperseded([entry('Q', 'q-old'), entry('Other', 'other-old')]),
+      });
+
+      await h.run('r');
+
+      const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.supersededResources).toEqual([entry('Other', 'other-old')]);
+    });
   });
 
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {

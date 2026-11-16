@@ -495,7 +495,9 @@ export async function replaceCreateFirst(
         updateReplacePolicy,
         updateSecrets,
         oldDeleteRoute.provisionedBy,
-        noEchoDeleteValues
+        noEchoDeleteValues,
+        false,
+        createResult.physicalId
       );
     }
   }

@@ -33,6 +33,12 @@ export interface DeferredReplacedDelete {
    * front to the cleanup phase rather than after a failure.
    */
   cleanupPhase?: true;
+  /**
+   * go-to-k/cdkd#6374: the old record's `dependencies`, so the cleanup pass
+   * deletes a replaced child before the replaced parent it depended on, as
+   * CloudFormation's cleanup does.
+   */
+  dependencies?: readonly string[];
   /** Set by `provisionResource` when the row already ended partial. */
   rowPartial?: boolean;
   retry: () => Promise<void>;
@@ -131,15 +137,29 @@ export async function retryDeferredReplacedDeletes(
       reason: skip,
     });
   };
-  const queue = [...deferred];
-  const workers = Math.max(1, Math.min(deps.options.concurrency ?? 1, queue.length));
-  await Promise.all(
-    Array.from({ length: workers }, async () => {
-      for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-        await retryOne(...next);
+  // go-to-k/cdkd#6374: in waves, dependents first: an entry runs once no
+  // other pending entry depends on it (an old subnet before its old VPC). A
+  // cycle runs whatever is left at once, as before.
+  const pending = new Map(deferred);
+  while (pending.size > 0) {
+    const dependedOn = new Set<string>();
+    for (const [logicalId, entry] of pending) {
+      for (const dep of entry.dependencies ?? []) {
+        if (dep !== logicalId && pending.has(dep)) dependedOn.add(dep);
       }
-    })
-  );
+    }
+    const wave = [...pending].filter(([logicalId]) => !dependedOn.has(logicalId));
+    const queue = wave.length > 0 ? wave : [...pending];
+    for (const [logicalId] of queue) pending.delete(logicalId);
+    const workers = Math.max(1, Math.min(deps.options.concurrency ?? 1, queue.length));
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+          await retryOne(...next);
+        }
+      })
+    );
+  }
 }
 
 /**
@@ -166,7 +186,7 @@ export function warnUnretriedReplacedDeletes(
         ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
           // deploy re-adopts it. An info line, as nothing went wrong with it.
           deps.logger.info(
-            safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback re-adopts it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
+            safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
           )
         : deps.logger.warn(
             entry.failureMessage === undefined
